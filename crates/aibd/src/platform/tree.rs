@@ -10,6 +10,13 @@
 //!
 //! Signals only ever go to a pid whose start time still matches the record,
 //! so a reused pid is never hit.
+//!
+//! macOS lineage (M1, `crate::lineage`): processes re-parented to launchd
+//! are linked back through their creator's unique id and added as
+//! candidates. A candidate is signalled only after the public identity
+//! check, plus its unique id. Without lineage (self-check failed, not
+//! macOS, or an incomplete pass) a cancel report is never `clean`: it is
+//! `unverified` at best.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -17,6 +24,8 @@ use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::lineage::Lineage;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 pub const SESSION_ENV: &str = "AIBD_SESSION";
@@ -33,6 +42,8 @@ pub struct SpawnSpec {
     /// Layer 2 on macOS: watch forks with kqueue (ADR 0004 update). Always
     /// true in aibd; tests turn it off to check the other layers alone.
     pub watch_forks: bool,
+    /// M1 lineage, shared by every session (`None` = off).
+    pub lineage: Option<Arc<Lineage>>,
 }
 
 /// One step of a cancel / cleanup, for the `session.cancelled` event.
@@ -55,12 +66,42 @@ pub struct Report {
     pub found_by_watch: Vec<u32>,
     /// Fork events the watcher saw (proxy for the B1 descendant count).
     pub forks_seen: u64,
+    /// First recorded through M1 lineage (re-parented, creator recorded).
+    pub found_by_lineage: Vec<u32>,
+    /// Lineage was off or a pass was incomplete: a missing survivor cannot
+    /// be ruled out, so the result is never `clean`.
+    pub lineage_unavailable: bool,
     pub exit_code: Option<i32>,
 }
 
+/// Blind spot named in every report without lineage.
+pub const BLIND_SPOT_REPARENTED: &str = "reparented_after_intermediate_exit";
+
 impl Report {
+    /// No recorded process is still running. Not the same as "clean":
+    /// see [`Report::clean_status`].
     pub fn tree_clean(&self) -> bool {
         self.survivors.is_empty()
+    }
+
+    /// What a cancel may claim: `tree_not_clean` (survivors), `unverified`
+    /// (no survivors seen, but lineage unavailable), or `clean`.
+    pub fn clean_status(&self) -> &'static str {
+        if !self.survivors.is_empty() {
+            "tree_not_clean"
+        } else if self.lineage_unavailable {
+            "unverified"
+        } else {
+            "clean"
+        }
+    }
+
+    pub fn blind_spots(&self) -> Vec<&'static str> {
+        if self.lineage_unavailable {
+            vec![BLIND_SPOT_REPARENTED]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -74,6 +115,11 @@ pub struct TreeHandle {
     known: BTreeMap<u32, u64>,
     found_by_marker: Vec<u32>,
     found_by_watch: Vec<u32>,
+    found_by_lineage: Vec<u32>,
+    lineage: Option<Arc<Lineage>>,
+    /// unique ids read while each process was alive (lineage on only)
+    uniques: BTreeMap<u32, u64>,
+    lineage_incomplete: bool,
     #[cfg(target_os = "macos")]
     watch: Option<super::fork_watch::ForkWatch>,
 }
@@ -161,16 +207,27 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         known: BTreeMap::new(),
         found_by_marker: Vec::new(),
         found_by_watch: Vec::new(),
+        found_by_lineage: Vec::new(),
+        lineage: spec.lineage.clone().filter(|l| l.enabled()),
+        uniques: BTreeMap::new(),
+        lineage_incomplete: false,
         #[cfg(target_os = "macos")]
         watch: None,
     };
+    if let Some(u) = h.lineage.as_ref().and_then(|l| l.unique_of(root)) {
+        h.uniques.insert(root, u);
+    }
     let mut sys = new_system()?;
     refresh(&mut sys, false);
     if let Some(p) = sys.process(Pid::from_u32(root)) {
         h.known.insert(root, p.start_time());
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
-            h.watch = Some(super::fork_watch::ForkWatch::start(root, p.start_time())?);
+            h.watch = Some(super::fork_watch::ForkWatch::start(
+                root,
+                p.start_time(),
+                h.lineage.clone(),
+            )?);
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -208,6 +265,36 @@ impl TreeHandle {
                     self.found_by_watch.push(pid);
                 }
             }
+            for (pid, u) in w.uniques() {
+                self.uniques.entry(pid).or_insert(u);
+            }
+        }
+    }
+
+    /// M1 pass: add processes whose creator is recorded. True if any.
+    fn lineage_pass(&mut self) -> bool {
+        let Some(l) = self.lineage.clone() else {
+            return false;
+        };
+        let a = l.adopt(&self.known, &mut self.uniques, std::process::id());
+        if !a.complete {
+            self.lineage_incomplete = true;
+        }
+        for f in &a.found {
+            if self.known.insert(f.pid, f.start).is_none() {
+                self.found_by_lineage.push(f.pid);
+            }
+        }
+        !a.found.is_empty()
+    }
+
+    /// Extra identity check for a process whose unique id was recorded.
+    /// Only ever refuses; a process without a recorded id relies on the
+    /// `(pid, start_time)` check alone, as before.
+    fn unique_ok(&self, pid: u32) -> bool {
+        match (self.lineage.as_ref(), self.uniques.get(&pid)) {
+            (Some(l), Some(u)) => l.same_unique(pid, *u),
+            _ => true,
         }
     }
 
@@ -230,6 +317,13 @@ impl TreeHandle {
 
     fn scan_with(&mut self, sys: &System) {
         self.absorb();
+        self.ppid_scan(sys);
+        if self.lineage_pass() {
+            self.ppid_scan(sys);
+        }
+    }
+
+    fn ppid_scan(&mut self, sys: &System) {
         let me = std::process::id();
         loop {
             let mut added = false;
@@ -339,8 +433,8 @@ impl TreeHandle {
             refresh(&mut sys, false);
             let mut targets = Vec::new();
             for (pid, start) in alive {
-                // re-check the start time right before signalling
-                if running(&sys, pid, start) {
+                // re-check the identity right before signalling
+                if running(&sys, pid, start) && self.unique_ok(pid) {
                     imp::signal_pid(pid, sig);
                     targets.push(pid);
                 }
@@ -368,6 +462,8 @@ impl TreeHandle {
             found_by_marker: self.found_by_marker.clone(),
             found_by_watch: self.found_by_watch.clone(),
             forks_seen: self.forks_seen(),
+            found_by_lineage: self.found_by_lineage.clone(),
+            lineage_unavailable: self.lineage.is_none() || self.lineage_incomplete,
             exit_code,
         })
     }

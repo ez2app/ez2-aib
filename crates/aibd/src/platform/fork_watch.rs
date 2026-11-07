@@ -7,6 +7,12 @@
 //! The thread blocks in `kevent` with no timeout: it wakes only on a fork, an
 //! exit, or the stop event (`EVFILT_USER`). No timer, no polling.
 //!
+//! With lineage on (M1, `crate::lineage`), each process's unique id is read
+//! the moment it is recorded, while it is still alive. That is what lets a
+//! later pass link a grandchild re-parented to launchd back to a creator
+//! that has since exited. A creator that exits before it is ever recorded
+//! cannot be linked (stated blind spot).
+//!
 //! Level: VERIFIED-mac for the shapes in `tests/tree.rs`. Whether every
 //! short-lived descendant and every `posix_spawn` is seen is **pending
 //! measurement**; until then this is a proxy, not a guarantee, and a miss is
@@ -21,6 +27,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+
+use crate::lineage::Lineage;
 
 const STOP_IDENT: usize = 1;
 
@@ -49,8 +57,26 @@ fn watch(kq: &Kqueue, pid: u32) -> bool {
     kq.kevent(&[ev], &mut [], None).is_ok()
 }
 
+/// What the watcher thread shares with the handle.
+struct Ctx {
+    kq: Arc<Kqueue>,
+    seen: Arc<Seen>,
+    uniques: Arc<Seen>,
+    lineage: Option<Arc<Lineage>>,
+}
+
+impl Ctx {
+    /// Read and keep `pid`'s unique id now, while it is alive.
+    fn note_unique(&self, pid: u32) {
+        if let Some(u) = self.lineage.as_ref().and_then(|l| l.unique_of(pid)) {
+            lock(&self.uniques).insert(pid, u);
+        }
+    }
+}
+
 /// Record and watch every not-yet-known descendant of `parent`.
-fn adopt(kq: &Kqueue, seen: &Seen, parent: u32) {
+fn adopt(cx: &Ctx, parent: u32) {
+    let (kq, seen) = (&*cx.kq, &*cx.seen);
     let mut stack = vec![parent];
     while let Some(p) = stack.pop() {
         let pstart = lock(seen).get(&p).copied();
@@ -69,6 +95,7 @@ fn adopt(kq: &Kqueue, seen: &Seen, parent: u32) {
             }
             lock(seen).insert(k, ks);
             watch(kq, k);
+            cx.note_unique(k);
             stack.push(k);
         }
     }
@@ -77,12 +104,17 @@ fn adopt(kq: &Kqueue, seen: &Seen, parent: u32) {
 pub struct ForkWatch {
     kq: Arc<Kqueue>,
     seen: Arc<Seen>,
+    uniques: Arc<Seen>,
     forks: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ForkWatch {
-    pub fn start(root: u32, root_start: u64) -> std::io::Result<Self> {
+    pub fn start(
+        root: u32,
+        root_start: u64,
+        lineage: Option<Arc<Lineage>>,
+    ) -> std::io::Result<Self> {
         let kq = Arc::new(Kqueue::new().map_err(std::io::Error::from)?);
         let stop = KEvent::new(
             STOP_IDENT,
@@ -96,18 +128,27 @@ impl ForkWatch {
             .map_err(std::io::Error::from)?;
         let seen: Arc<Seen> = Arc::new(Mutex::new(BTreeMap::from([(root, root_start)])));
         let forks = Arc::new(AtomicU64::new(0));
+        let uniques: Arc<Seen> = Arc::new(Mutex::new(BTreeMap::new()));
+        let cx = Ctx {
+            kq: kq.clone(),
+            seen: seen.clone(),
+            uniques: uniques.clone(),
+            lineage,
+        };
         watch(&kq, root);
+        cx.note_unique(root);
         // The root may have forked before the watch was registered.
-        adopt(&kq, &seen, root);
+        adopt(&cx, root);
         let thread = {
-            let (kq, seen, forks) = (kq.clone(), seen.clone(), forks.clone());
+            let forks = forks.clone();
             std::thread::Builder::new()
                 .name("aibd-fork-watch".into())
-                .spawn(move || run(&kq, &seen, &forks))?
+                .spawn(move || run(&cx, &forks))?
         };
         Ok(Self {
             kq,
             seen,
+            uniques,
             forks,
             thread: Some(thread),
         })
@@ -118,6 +159,11 @@ impl ForkWatch {
         lock(&self.seen).iter().map(|(p, s)| (*p, *s)).collect()
     }
 
+    /// Unique ids read when each process was recorded (lineage on only).
+    pub fn uniques(&self) -> Vec<(u32, u64)> {
+        lock(&self.uniques).iter().map(|(p, u)| (*p, *u)).collect()
+    }
+
     /// Fork events seen under this tree (input for the B1 descendant count;
     /// a proxy until measured, see the module comment).
     pub fn forks_seen(&self) -> u64 {
@@ -125,7 +171,8 @@ impl ForkWatch {
     }
 }
 
-fn run(kq: &Kqueue, seen: &Seen, forks: &AtomicU64) {
+fn run(cx: &Ctx, forks: &AtomicU64) {
+    let kq = &*cx.kq;
     let blank = KEvent::new(
         0,
         EventFilter::EVFILT_USER,
@@ -147,7 +194,7 @@ fn run(kq: &Kqueue, seen: &Seen, forks: &AtomicU64) {
                 Ok(EventFilter::EVFILT_PROC) if ev.fflags().contains(FilterFlag::NOTE_FORK) => {
                     forks.fetch_add(1, Ordering::Relaxed);
                     if let Ok(pid) = u32::try_from(ev.ident()) {
-                        adopt(kq, seen, pid);
+                        adopt(cx, pid);
                     }
                 }
                 _ => {}

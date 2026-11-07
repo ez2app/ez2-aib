@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 aib-core = { version = "0.0.1", path = "../aib-core" }
 aib-store = { version = "0.0.1", path = "../aib-store" }
+aib-sys = { version = "0.0.1", path = "../aib-sys" }
 axum = "0.8.9"
 base64 = "0.23.1"
 directories = "6.0.0"

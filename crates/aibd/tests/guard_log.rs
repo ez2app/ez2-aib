@@ -29,6 +29,7 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
         router(
             AppState {
                 store: Arc::new(store),
+                lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
             },
             Arc::new(cfg),
         ),

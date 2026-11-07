@@ -75,7 +75,14 @@ pub async fn run(
         cfg.allowed_origins.clone(),
         token,
     ));
-    let app = api::router(AppState { store }, guard_cfg);
+    // M1 self-check once, off the async threads (it starts one child).
+    let lineage = Arc::new(
+        tokio::task::spawn_blocking(crate::lineage::Lineage::detect)
+            .await
+            .unwrap_or_else(|_| crate::lineage::Lineage::disabled("failed:selfcheck_panicked")),
+    );
+    tracing::info!(lineage = %lineage.status(), "lineage self-check");
+    let app = api::router(AppState { store, lineage }, guard_cfg);
     tracing::info!(%addr, "aibd listening");
     on_started(Started {
         addr,

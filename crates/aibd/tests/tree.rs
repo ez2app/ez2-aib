@@ -6,10 +6,12 @@
 
 use aib_core::outcome::{decide, Observed};
 use aib_core::state::SessionState;
+use aibd::lineage::Lineage;
 use aibd::platform::tree::{spawn_tree, SpawnSpec, TreeHandle};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Path of the fixture binary, built fresh on first use. `cargo test` does not
@@ -49,6 +51,20 @@ fn spec(mode: &str, session: &str) -> SpawnSpec {
     spec_watch(mode, session, true)
 }
 
+/// The real lineage of this test process (self-check run once).
+fn lineage() -> Arc<Lineage> {
+    static L: OnceLock<Arc<Lineage>> = OnceLock::new();
+    L.get_or_init(|| Arc::new(Lineage::detect())).clone()
+}
+
+/// As aibd runs it: fork watcher plus M1 lineage.
+fn spec_lineage(mode: &str, session: &str) -> SpawnSpec {
+    SpawnSpec {
+        lineage: Some(lineage()),
+        ..spec(mode, session)
+    }
+}
+
 /// `watch_forks = false` tests the scan and marker layers on their own; with
 /// the watcher on, it would record everything first and hide a broken layer.
 fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
@@ -59,6 +75,8 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
         session_id: session.to_string(),
         watch_forks,
+        // the layer tests run without M1, so they check the layer alone
+        lineage: None,
     }
 }
 
@@ -230,11 +248,13 @@ fn second_cancel_is_a_clean_no_op() {
 /// starts the system `/bin/sleep` in its own group and exits at once, so the
 /// sleep is re-parented to launchd before any scan, and as an Apple platform
 /// binary it hides `AIBD_SESSION` from the marker sweep. Only the kqueue fork
-/// watcher can record it.
+/// watcher can record it, or M1 lineage when the watcher listed the parent
+/// but missed the child (the watcher alone missed about 1 in 3 under load).
 #[cfg(target_os = "macos")]
 #[test]
 fn fork_watcher_catches_reparented_platform_binary() {
-    let mut h = spawn_tree(&spec("tree-platform", "s-tree-platform")).unwrap();
+    assert!(lineage().enabled(), "self-check failed: {:?}", lineage());
+    let mut h = spawn_tree(&spec_lineage("tree-platform", "s-tree-platform")).unwrap();
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -246,12 +266,44 @@ fn fork_watcher_catches_reparented_platform_binary() {
     assert_eq!(ps_field(orphan, "ppid"), "1");
     assert_eq!(ps_field(orphan, "comm"), "/bin/sleep");
     let rep = h.cancel(Duration::from_millis(500)).unwrap();
-    assert!(rep.found_by_watch.contains(&orphan), "{rep:?}");
+    assert!(
+        rep.found_by_watch.contains(&orphan) || rep.found_by_lineage.contains(&orphan),
+        "{rep:?}"
+    );
     assert!(
         !rep.found_by_marker.contains(&orphan),
         "marker layer saw it: {rep:?}"
     );
     assert!(rep.forks_seen >= 1, "{rep:?}");
     assert!(rep.tree_clean(), "{rep:?}");
+    assert_eq!(rep.clean_status(), "clean", "{rep:?}");
     assert_eq!(still_running(&[main, orphan]), Vec::<u32>::new());
+}
+
+/// DECISION-4 A-4: without lineage a cancel that saw no survivor may still
+/// have missed one, so it is `unverified`, never `clean`, and says why.
+#[test]
+fn without_lineage_a_clean_looking_cancel_is_unverified() {
+    let mut h = spawn_tree(&spec("tree", "s-tree-nolineage")).unwrap();
+    let _ = ready_pids(&first_line(&mut h));
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.lineage_unavailable, "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+    assert_eq!(
+        rep.blind_spots(),
+        vec!["reparented_after_intermediate_exit"]
+    );
+}
+
+/// With lineage on and nothing left, the same cancel may say `clean`.
+#[cfg(target_os = "macos")]
+#[test]
+fn with_lineage_a_clean_cancel_is_clean() {
+    let mut h = spawn_tree(&spec_lineage("tree", "s-tree-lineage")).unwrap();
+    let _ = ready_pids(&first_line(&mut h));
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert_eq!(rep.clean_status(), "clean", "{rep:?}");
+    assert!(rep.blind_spots().is_empty());
 }

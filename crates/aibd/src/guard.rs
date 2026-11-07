@@ -15,7 +15,7 @@ const PUBLIC_PATHS: &[&str] = &["/api/v1/health"];
 
 /// Routes whose path may appear in logs. Anything else is logged as
 /// `UNMATCHED_PATH`, so a path like `/api/v1/<token>` never reaches the log.
-pub const LOGGED_ROUTES: &[&str] = &["/api/v1/health", "/api/v1/events"];
+pub const LOGGED_ROUTES: &[&str] = &["/api/v1/health", "/api/v1/events", "/api/v1/metrics"];
 pub const UNMATCHED_PATH: &str = "<unmatched>";
 
 /// Query parameter names that look like credentials; any of them is refused.

@@ -79,6 +79,7 @@ version = "0.0.1"
 dependencies = [
  "aib-core",
  "aib-store",
+ "aib-sys",
  "axum",
  "base64",
  "directories",
