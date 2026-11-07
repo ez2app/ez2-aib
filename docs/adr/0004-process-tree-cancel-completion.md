@@ -32,7 +32,8 @@ available, so we use three layers:
 2. **Recorded descendants:** record every descendant as `(pid, start_time)`, never pid
    alone, so a reused PID is never signalled. Record them right after spawn and on a
    periodic scan by parent pid while the session runs (every 1 s while BUSY, 5 s while
-   IDLE; tune after the Phase 1 baseline). A child that calls `setsid` keeps its parent
+   IDLE; tune after the Phase 1 baseline). *Superseded (2026-11-07 performance update
+   below): event-driven watcher, scan only as a 10 s backstop.* A child that calls `setsid` keeps its parent
    until that parent exits, so the scan sees it as long as it lives at least one interval.
 3. **Session marker:** start the CLI with `AIBD_SESSION=<session_id>` in its environment.
    Descendants inherit it through `setsid` and re-parenting. At cancel time and at aibd
@@ -46,6 +47,8 @@ available, so we use three layers:
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and **without** `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, then
 resume it. Children cannot leave the job, so `TerminateJobObject` stops the whole tree.
 Status: CI-windows for the API calls; real CLI behaviour is UNVERIFIED-desktop.
+*Superseded in part (2026-11-07 performance update below): the guarantee covers only
+processes confirmed to be in the job and created without breakaway.*
 
 ### 2. Cancel sequence (both OSes, same events)
 
@@ -108,6 +111,7 @@ day one, so adding Codex does not change the cancel path.
   "completed" means the provider said so.
 - Negative: periodic scans cost CPU. The scan reads the process table once per tick for
   all sessions, not once per session, to stay well under the 1.x polling cost (PROBE-B).
+  *Superseded (2026-11-07 performance update): the scan is a 10 s backstop only.*
 - Negative: on macOS a process that both double-forks within one scan interval and
   clears its environment can escape. This is reported as `escaped_marker_check`, not
   hidden.
@@ -140,3 +144,59 @@ watcher) with the periodic scan kept as a backstop; layer 3 stays for non-platfo
 programs. The fixture gains a mode where a short-lived parent starts `/bin/sleep` in a
 new group and exits at once, so the watcher has its own test and knife. The Phase 1 gate
 still needs the real-Claude cancel smoke to come back clean.
+
+## Update 2026-11-07 (performance budget, ADR 0005)
+
+This replaces the scan intervals in section 1 ("every 1 s while BUSY, 5 s while IDLE")
+and the "periodic scans cost CPU" consequence.
+
+- **macOS:** layer 2 is the kqueue fork watcher (`EVFILT_PROC` with `NOTE_FORK` and
+  `NOTE_EXIT` on every recorded pid; on each fork, list that pid's children by parent and
+  watch them too). The ppid scan stays only as a **10 s backstop**, as an `Operation`
+  timer that exists only while a session has a live tree.
+- **Windows:** the Job Object is associated with an I/O completion port; aibd learns about
+  new and exited processes from `JOB_OBJECT_MSG_NEW_PROCESS` / `EXIT_PROCESS` /
+  `ACTIVE_PROCESS_ZERO` without polling. Status: UNVERIFIED (not built yet).
+- **Replaces** the sentence "Children cannot leave the job, so `TerminateJobObject` stops
+  the whole tree" in section 1. New wording: `TerminateJobObject` stops the processes that
+  are **confirmed** to be in the job and were created without breakaway. A process that is
+  not in the job (for example started with breakaway allowed by an outer job, or by
+  something outside the tree), or whose membership cannot be observed, is outside that
+  guarantee: the cancel result is `tree_not_clean` when it is seen still running, and
+  UNVERIFIED when it cannot be observed. It is never reported as a clean cancel.
+- **macOS lineage by unique id** (decided: maintainers' summary DECISION-1, 2026-11-07;
+  the call lives in the `aib-sys` crate, see ADR 0005 Consequences).
+  - Observation, not yet a guarantee: on macOS 15.7.9, after a process was re-parented to
+    launchd its `p_puniqueid` (from `proc_pidinfo` flavor `PROC_PIDUNIQIDENTIFIERINFO`)
+    still held the original parent's `p_uniqueid` in 3 of 3 PoC runs. That unique ids are
+    not reused is an XNU implementation property we rely on, **not** a documented
+    contract. Both are hypotheses until the fixture and a real-machine run confirm them,
+    and they are re-checked on every major macOS version (capability table; versions not
+    tested are UNVERIFIED).
+  - Flavor 17 is a **private SPI**: it is not in the public SDK headers (checked against
+    the macOS 15.7.9 SDK), only in XNU sources. Its availability and the size of the
+    structure are checked on every call; a size mismatch is a failure.
+  - What it may be used for: to *find* more candidates. It never on its own permits a
+    signal. Before any signal aibd re-checks identity with the public data (pid and start
+    time), and with the unique id where available. If identity cannot be read or does not
+    match, **no signal is sent** and the result is `tree_not_clean` (or UNVERIFIED when the
+    process cannot be observed).
+  - If the call fails or is unavailable, aibd falls back to the event watcher plus the
+    10 s backstop described above, marks the result `lineage_unavailable`, and counts it.
+  - Remaining blind spot: an intermediate process that forks and exits before its own
+    unique id is recorded cannot be linked to its children. The 10 s backstop does not
+    claim to find every descendant. Such misses are reported as `tree_not_clean`.
+  - Measured before this change: the fixture's short-lived-parent mode missed about 1 run
+    in 3 under a parallel test load with the fork watcher alone.
+- **Pending measurement — until measured these are proxies, not guarantees** (raised by
+  @bb7dc):
+  - whether `NOTE_FORK` sees every short-lived descendant: a child that forks and exits
+    before we register a watch on it can still let a grandchild slip to launchd;
+  - whether processes started with `posix_spawn` (rather than `fork`) raise `NOTE_FORK`
+    on the parent;
+  - what `TotalProcesses` actually covers on Windows: processes ever assigned to the job,
+    nested jobs created by the CLI itself, and anything started with breakaway.
+  Each gets a fixture mode and a knife in Phase 1; the real-Claude cancel smoke remains
+  the gate. A miss is reported as `tree_not_clean`, never as a clean cancel.
+- The same watchers provide the descendant count for the B1 gate ("count only aibd's own
+  descendants"); the count carries the same proxy caveat.
