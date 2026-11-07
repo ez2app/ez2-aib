@@ -37,7 +37,9 @@ jobs:
       matrix:
         # macOS Apple Silicon + Windows x64 (spec section 15). Windows results
         # are "CI-windows" level, not desktop verification (ADR 0001).
-        os: [macos-14, windows-2022]
+        # *-latest on purpose: pinned images get retired (macos-14 was refused
+        # on 2026-11-07); the first step prints what we actually got.
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
@@ -48,8 +50,9 @@ jobs:
       - name: Toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
           rustup show active-toolchain || rustup toolchain install
-          rustc --version
+          rustc -vV
           cargo --version
       - uses: actions/cache@v4
         with:
