@@ -140,3 +140,28 @@ watcher) with the periodic scan kept as a backstop; layer 3 stays for non-platfo
 programs. The fixture gains a mode where a short-lived parent starts `/bin/sleep` in a
 new group and exits at once, so the watcher has its own test and knife. The Phase 1 gate
 still needs the real-Claude cancel smoke to come back clean.
+
+## Update 2026-11-07 (performance budget, ADR 0005)
+
+This replaces the scan intervals in section 1 ("every 1 s while BUSY, 5 s while IDLE")
+and the "periodic scans cost CPU" consequence.
+
+- **macOS:** layer 2 is the kqueue fork watcher (`EVFILT_PROC` with `NOTE_FORK` and
+  `NOTE_EXIT` on every recorded pid; on each fork, list that pid's children by parent and
+  watch them too). The ppid scan stays only as a **10 s backstop**, as an `Operation`
+  timer that exists only while a session has a live tree.
+- **Windows:** the Job Object is associated with an I/O completion port; aibd learns about
+  new and exited processes from `JOB_OBJECT_MSG_NEW_PROCESS` / `EXIT_PROCESS` /
+  `ACTIVE_PROCESS_ZERO` without polling. Status: UNVERIFIED (not built yet).
+- **Pending measurement — until measured these are proxies, not guarantees** (raised by
+  @bb7dc):
+  - whether `NOTE_FORK` sees every short-lived descendant: a child that forks and exits
+    before we register a watch on it can still let a grandchild slip to launchd;
+  - whether processes started with `posix_spawn` (rather than `fork`) raise `NOTE_FORK`
+    on the parent;
+  - what `TotalProcesses` actually covers on Windows: processes ever assigned to the job,
+    nested jobs created by the CLI itself, and anything started with breakaway.
+  Each gets a fixture mode and a knife in Phase 1; the real-Claude cancel smoke remains
+  the gate. A miss is reported as `tree_not_clean`, never as a clean cancel.
+- The same watchers provide the descendant count for the B1 gate ("count only aibd's own
+  descendants"); the count carries the same proxy caveat.

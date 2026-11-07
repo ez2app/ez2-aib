@@ -81,3 +81,20 @@ for that proof; no Risk 3 operation exists before it is implemented.
   outside Tauri. Planned for Phase 3.
 - Negative: SSE over HTTP/1.1 counts against the browser's per-host connection limit
   (6). The web UI keeps a single stream and multiplexes by event type.
+
+## Update 2026-11-07 (performance budget, ADR 0005)
+
+- **Streaming fragments are not persisted.** `message.delta` is pushed live over SSE and
+  never written to `events`; it has no `global_seq` and no `id:` line. What is persisted:
+  state changes, `message.completed`, and terminal / approval / error / cancel events.
+- For an in-progress message aibd stores a **snapshot** of the partial text at most once
+  per second. On reconnect (`Last-Event-ID` or `?cursor=`) the client gets every persisted
+  event after its cursor, then the latest snapshot of each message still in progress, then
+  live events. It does not get the fragment-by-fragment history.
+- Coalescing per aggregate: trailing 50 ms, at most 250 ms; fragments are merged into one
+  push every 50 ms. Terminal, approval, error and cancel events are never coalesced.
+- No periodic SSE heartbeat by default (loopback has no proxy that drops idle streams). If
+  one is ever added it is an `Operation` timer that lives only while that stream is open
+  (ADR 0005).
+- Clients must use SSE for updates; periodic GET on a route that has an SSE equivalent is
+  a bug, and aibd flags it in `/api/v1/metrics`.
