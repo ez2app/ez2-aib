@@ -109,7 +109,7 @@ a new ticket for every reconnect.
   `GET /` response does not contain the token. The one exception is the pairing exchange
   page, which only a valid one-time code gets (section 7).
 
-### 7. How a browser obtains a credential: pairing, then a page credential (discussions 5, 6, 6b)
+### 7. How a browser obtains a credential: pairing, then a page credential (discussions 5, 6, 6b, 7)
 
 Decided (maintainers' summaries of discussions 5, 6 and 6b, 9320/a63ab, 2026-11-07). Code
 delivery has a candidate (P2) that has not passed security acceptance yet.
@@ -201,13 +201,25 @@ iframes, `data:` pages and any other local file. It identifies nothing.
   automatically. Later retries only cover requests the server explicitly refused and did
   not execute, and they carry a stable idempotency key.
 - **Unlocking needs an independent channel that an attacker who read the file cannot
-  reach.** It does not count as established until a PoC proves it. Candidates:
-  - (i) a short code compared by the person on the terminal and the page. It is bound to
-    this aibd instance, this pairing request and a digest of the credential, and it is
-    never in the `0600` file;
-  - (ii) the existing Touch ID approval pop-up.
-- If both fail or time out, the result is manual pairing or an explicit "blocked". Expiry
-  never turns into confirmed.
+  reach** (DECISION-7 B). It does not count as established until a PoC proves it, and it
+  stays UNVERIFIED until a real person has done it once:
+  - **A short code is always shown and compared by the person.** It is bound to this aibd
+    instance, this pairing request, a digest of the credential, the operation (unlock)
+    and an expiry, and it is never in the `0600` file.
+  - **At least one of the two places that show it is a channel the attacker cannot
+    control**; the candidate is the terminal. The other is the page.
+  - **Touch ID is never enough on its own.** It proves that the person is present and
+    approves, not which browser asked: approving alone would unlock whoever redeemed
+    first (PoC S3b). If the Touch ID pop-up is used, it shows the same short code and
+    only adds the "person present" proof.
+  - The code cannot be replayed, expires fail closed and is rate limited. Cancelling or
+    closing the prompt never authorizes. That another AI on the same account, or a
+    malicious local page, cannot press approve is a PoC item, not an assumption.
+  - Showing both a code and a pop-up is **not proof of safety**. The PoC covers: page A
+    pairs but request B arrives first; codes swapped or replayed; two requests at once;
+    the real page never comes; an impostor pop-up; the person cancels.
+- If confirmation fails or times out, the result is manual pairing or an explicit
+  "blocked". Expiry never turns into confirmed.
 - Revoking after detection is not prevention: it cannot undo what was done in the
   takeover window. That is why the restriction comes first. Risk 3 actions need Touch ID
   as before.
