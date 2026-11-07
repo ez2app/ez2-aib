@@ -23,10 +23,14 @@ V7 40 個寫入者同時 append ⇒ 事件數剛好 +40;V7b 超過 4096 位元�
 V8 四種鉤子任一種那一格被別人佔 ⇒ 不掛、不蓋、狀態 hook_foreign、照退避等
 V8b 障礙:兩艙都查完 show-hooks 才放行 set-hook ⇒ 內容相同(冪等),兩艙都掛上、同一次切窗兩邊都收到
 V8c 一艙撤登 ⇒ 另一艙照收、撤登的不再收、共用鉤子不拔;V8d 懸空登記(艙夾已刪)⇒ 登記時清掉、鉤子不替它建檔
+V8e(r5)障礙:外部在我們那支 tmux 之前插入四種任一 ⇒ 外部原值完整保留、hook_foreign(檢查與寫入同一條指令串)
+V8f(r5)/x/a_b/c 與 /x/a/b_c 兩艙登記不撞名(sha256),兩邊都收到;V8g 清理改名那一刻原主重登 ⇒ 不刪
+V8h 撤登只刪指向自己的;V9 4770 保留(docs/tmux-hook-indexes.md + 掃 src);V10 hook_foreign 與退回輪詢有計數
 S1–S5 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 / 交給被測 bash 的 TMUX ⇒ 一律拒跑、tmux 一次都沒執行
 刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
 K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;
-K7 鉤子內容改成各艙不同(直寫自己的訊號檔,r3 寫法)⇒ V8b;K10 不查別人佔格 ⇒ V8;
+K7 鉤子內容改成各艙不同(直寫自己的訊號檔,r3 寫法)⇒ V8b;K10 拿掉讀回 ⇒ V8;K11 拿掉寫入條件 ⇒ V8e;
+K12 登記名退回「/ 換 _」⇒ V8f;K13 清理不再確認 ⇒ V8g;K14 撤登不確認是自己的 ⇒ V8h;K15 不記退回輪詢 ⇒ V10;
 K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
 (r4:一個全域廣播鉤子,固定下標 4770、內容逐字固定;各艙只登記 / 撤登 <狀態根>/state/pane-vis/reg/*.reg。
  鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
@@ -265,9 +269,10 @@ class RealTmux(Base):
         self.attach()
         bar = self.d / "bar"
         bar.mkdir()
+        # r5:檢查 + 寫入在同一支 tmux(含 if-shell)⇒ 障礙包在那一支前面:兩艙都走到才一起放行
         prog = (". '%s'\n"
-                "tmux() { if [ \"$1\" = set-hook ]; then : > '%s/'$ME; n=0;"
-                " while [ ! -e '%s/'$OTHER ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n+1)); done; fi; command tmux \"$@\"; }\n"
+                "tmux() { case \"$*\" in *if-shell*) : > '%s/'$ME; n=0;"
+                " while [ ! -e '%s/'$OTHER ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n+1)); done ;; esac; command tmux \"$@\"; }\n"
                 "pane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"\n" % (TICK, bar, bar))
         procs = []
         for me, other in (("A", "B"), ("B", "A")):
@@ -278,7 +283,7 @@ class RealTmux(Base):
             procs.append(subprocess.Popen([BASH, "-c", prog], env=env, stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE, text=True))
         outs = [p.communicate(timeout=30)[0] for p in procs]
-        self.assertTrue((bar / "A").exists() and (bar / "B").exists(), "障礙沒走到 set-hook")
+        self.assertTrue((bar / "A").exists() and (bar / "B").exists(), "障礙沒走到掛鉤那一支 tmux")
         self.assertEqual([o.strip() for o in outs], ["hooked=1", "hooked=1"], outs)
         sigs = [self.d / "cabA" / ".panevis.ev", self.d / "cabB" / ".panevis.ev"]
         size0 = [f.stat().st_size for f in sigs]
@@ -318,6 +323,86 @@ class RealTmux(Base):
         self.assertIn("hooked=1", p.stdout, p.stdout + p.stderr)
         self.assertFalse(os.path.lexists(str(dead)), "懸空的登記沒清")
         self.assertFalse((self.d / "gone").exists(), "鉤子不該替懸空登記建檔")
+
+    def _inject_before_hook_call(self, hook, content):
+        """障礙:在 pane_vis_hook 那一支(含 if-shell)tmux 之前,外部程式寫入 hook 的 4770 格。"""
+        return ("tmux() { case \"$*\" in *if-shell*) command tmux set-hook -g '%s[%d]' '%s' ;; esac; "
+                "command tmux \"$@\"; }\n" % (hook, self.IDX, content))
+
+    def test_v8e_foreign_inserted_before_write_survives(self):
+        # 外部(不知道保留表)在我們查與寫之間插入:檢查與寫入同一條指令串 ⇒ 外部原值完整保留、hook_foreign
+        foreign = "run-shell -b true"
+        for h in self.HOOKS:
+            with self.subTest(h):
+                for x in self.HOOKS:
+                    self.sbx.tm("set-hook", "-gu", "%s[%d]" % (x, self.IDX))
+                p = self.bash(". '%s'\n%spane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"" % (
+                    TICK, self._inject_before_hook_call(h, foreign)), self.tick_env(self.pb))
+                self.assertIn("hooked=0", p.stdout, p.stdout + p.stderr)
+                self.assertEqual(self.slot(h), "run-shell -b true", "外部插入的 hook 被蓋掉了")
+                self.assertEqual((self.state / ".panevis.state").read_text().strip(), "hook_foreign")
+
+    def test_v8f_registration_names_do_not_collide(self):
+        # /x/a_b/c 與 /x/a/b_c:舊的「/ 換 _」會同名;sha256 不會
+        self.attach()
+        dirs = [self.d / "a_b" / "c", self.d / "a" / "b_c"]
+        for st in dirs:
+            st.mkdir(parents=True)
+            p = self.bash(". '%s'\npane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"" % TICK,
+                          self.tick_env(self.pb, {"EZ2_COCKPIT_STATE_DIR": str(st)}))
+            self.assertIn("hooked=1", p.stdout, p.stdout + p.stderr)
+        sigs = [st / ".panevis.ev" for st in dirs]
+        z = [f.stat().st_size for f in sigs]
+        self.sbx.tm("select-window", "-t", "h:b")
+        end = time.time() + 3
+        while time.time() < end and any(f.stat().st_size == v for f, v in zip(sigs, z)):
+            time.sleep(0.05)
+        self.assertEqual([f.stat().st_size > v for f, v in zip(sigs, z)], [True, True], "撞名:有一艙收不到")
+
+    def test_v8g_gc_vs_reregister_interleave(self):
+        # 障礙:清理把懸空登記改名的那一刻,原主剛好把目標建回來(登記又有效了)⇒ 不得刪掉
+        reg = self.d / ".ez2-aib" / "state" / "pane-vis" / "reg"
+        reg.mkdir(parents=True)
+        target = self.d / "back" / ".panevis.ev"
+        link = reg / ("b" * 64 + ".reg")
+        os.symlink(str(target), str(link))
+        prog = (". '%s'\n"
+                "mv() { case \"$*\" in *%s*.gc.*) mkdir -p '%s'; : >> '%s' ;; esac; command mv \"$@\"; }\n"
+                "pane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"\n" % (TICK, link.name, target.parent, target))
+        self.attach()
+        p = self.bash(prog, self.tick_env(self.pb))
+        self.assertIn("hooked=1", p.stdout, p.stdout + p.stderr)
+        self.assertTrue(os.path.lexists(str(link)), "原主剛重登的登記被清掉了")
+        self.assertTrue(link.exists(), "登記應指向有效的訊號檔")
+        self.assertEqual([x.name for x in reg.iterdir() if ".gc." in x.name], [], "留下暫存名")
+
+    def test_v8h_unregister_only_own(self):
+        p = self.bash(". '%s'\npane_vis_register && echo \"$PANE_VIS_LINK\"" % TICK)
+        link = Path(p.stdout.strip().splitlines()[-1])
+        self.assertTrue(link.exists(), p.stdout + p.stderr)
+        other = self.d / "other.ev"
+        other.write_text("")
+        link.unlink()
+        os.symlink(str(other), str(link))        # 同名但指到別處(不是自己的)
+        self.bash(". '%s'\npane_vis_unregister" % TICK)
+        self.assertTrue(os.path.lexists(str(link)), "撤登刪了不是自己的登記")
+        link.unlink()
+        self.bash(". '%s'\npane_vis_register" % TICK)
+        self.bash(". '%s'\npane_vis_unregister" % TICK)
+        self.assertFalse(os.path.lexists(str(link)), "撤登沒刪自己的")
+
+    def test_v10_fallback_counted(self):
+        # 沒掛上(別人佔格)與退回輪詢都要記數
+        self.sbx.tm("set-hook", "-g", "client-attached[%d]" % self.IDX, "run-shell -b true")
+        for _ in range(2):
+            p = self.bash(". '%s'\npane_tick_init\npane_wait_if_hidden; echo \"hooked=$PANE_VIS_HOOKED\"" % TICK,
+                          self.tick_env(self.pb, {"EZ2_PANE_DETACHED_TICK": "1", "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
+            self.assertIn("hooked=0", p.stdout, p.stdout + p.stderr)
+        def stat(name):
+            f = self.state / (".panevis.stat." + name)
+            return f.read_text().strip() if f.exists() else "(沒有計數檔)"
+        self.assertEqual(stat("hook_foreign"), "2")
+        self.assertEqual(stat("poll"), "2")
 
     def test_v4_unsafe_path_no_hook(self):
         self.attach()
@@ -427,6 +512,26 @@ class Static(unittest.TestCase):
         self.assertNotIn("pane_wait_if_detached", loop)
 
 
+class Reserved(unittest.TestCase):
+    def test_v9_index_4770_reserved(self):
+        doc = (ROOT / "docs" / "tmux-hook-indexes.md").read_text(encoding="utf-8")
+        self.assertIn("| 4770 |", doc)
+        tick = TICK.read_text(encoding="utf-8")
+        self.assertIn("PANE_VIS_IDX=4770", tick)
+        bad = []
+        for f in (ROOT / "src").rglob("*"):
+            if not f.is_file() or f == TICK or f.suffix not in (".sh", ".py", ""):
+                continue
+            try:
+                txt = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for n, line in enumerate(txt.splitlines(), 1):
+                if "set-hook" in line and "[4770]" in line:
+                    bad.append("%s:%d" % (f.relative_to(ROOT), n))
+        self.assertEqual(bad, [], "4770 是 pane-tick 的保留下標(docs/tmux-hook-indexes.md)")
+
+
 class Guard(unittest.TestCase):
     """沙盒守門:拒跑時 tmux 一次都不准執行(用會記錄的假 tmux 驗)。"""
 
@@ -508,7 +613,7 @@ KNIVES = [
     ("K3", "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if pane_visible; then",
      "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if false; then",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v2c_switch_after_hook_before_baseline"),
-    ("K4", "  case \"$PANE_VIS_SIG\" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_state no_hook_path; return 0 ;; esac",
+    ("K4", "  case \"$PANE_VIS_SIG\" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_nohook no_hook_path; return 0 ;; esac",
      "  case \"$PANE_VIS_SIG\" in '') return 0 ;; esac",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v4_unsafe_path_no_hook"),
     ("K5", '  if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi\n',
@@ -518,8 +623,19 @@ KNIVES = [
      "src/cockpit/pane-tick.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
     ("K7", '  local tgt="$PANE_VIS_REG/*.reg"', '  local tgt="$PANE_VIS_SIG"',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v8b_two_cabins_race_idempotent"),
-    ("K10", '    elif [ "$line" != "$shown" ]; then', '    elif false; then',
+    ("K10", '  if [ "$got" != "1111" ]; then', '  if false; then',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v8_foreign_slot_not_taken"),
+    ("K11", '  cond="#{&&:#{!=:#{command-alias[0]},},$cond}"', '  cond="1"',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8e_foreign_inserted_before_write_survives"),
+    ("K12", '  PANE_VIS_LINK="$PANE_VIS_REG/$h.reg"', '  PANE_VIS_LINK="$PANE_VIS_REG/${canon//\\//_}.reg"',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8f_registration_names_do_not_collide"),
+    ("K13", '    if [ -e "$t" ]; then', '    if false; then',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8g_gc_vs_reregister_interleave"),
+    ("K14", '  [ "$PANE_VIS_LINK" -ef "$PANE_VIS_SIG" ] && rm -f "$PANE_VIS_LINK" 2>/dev/null',
+     '  rm -f "$PANE_VIS_LINK" 2>/dev/null',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8h_unregister_only_own"),
+    ("K15", '    pane_vis_stat poll                # 退回輪詢(登記例外):每睡一次記一筆\n', '',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v10_fallback_counted"),
     ("K8", "        if not self.root.is_dir():\n            raise SandboxRefused",
      "        if False:\n            raise SandboxRefused",
      "tests/test-pane-visible-043dd-1107.py", "Guard.test_s1_dir_gone"),
