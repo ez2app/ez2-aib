@@ -92,6 +92,11 @@ then there is no endpoint. If it is built, it is exactly this:
 - On upgrade, hashed files of the previous version stay available, so an open page that
   still references them keeps working.
 - API responses send `Cache-Control: no-store`; static cache rules never apply to `/api/`.
+- **No page contains the token.** `index.html` and every static file are identical for
+  every caller. Other OS accounts on the same machine can reach `127.0.0.1`, so a token
+  embedded in HTML would bypass the owner-only token file. A browser gets access through
+  the one-time pairing of ADR 0003 (HttpOnly cookie), a desktop shell through its own
+  forwarding. Test: an unauthenticated `GET /` response does not contain the token.
 
 ## Consequences
 
