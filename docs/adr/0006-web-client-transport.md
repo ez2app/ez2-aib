@@ -1,6 +1,6 @@
 # ADR 0006 — Web client transport: aibd's side of the contract
 
-- Status: proposed (input: maintainers' summary of discussion 2, 9320/a63ab,
+- Status: proposed (input: maintainers' summaries of discussions 2 and 5, 9320/a63ab,
   2026-11-07; performance budget spec v0.2.1, P4 / B6 / B7)
 - Deciders: @a9136 (aibd side), the web seat (browser side), 9320/a63ab (approval)
 - Scope: what aibd guarantees to a browser or desktop-shell client. The browser-side
@@ -12,7 +12,7 @@
 ADR 0003 fixes SSE for events, REST for commands, a global cursor, and "no credential in a
 URL". ADR 0005 fixes that streaming fragments are not persisted and that catch-up returns
 persisted events plus snapshots. The web client needs three more things from aibd: a way
-to read the stream without putting a credential in the URL, a clear signal for "you are
+to obtain and present a credential without putting it in the URL, a clear signal for "you are
 too far behind, take a snapshot", and cache rules for static files.
 
 ## Decision
@@ -28,7 +28,8 @@ to make another arrangement work.
 ### 2. Reading the stream: `fetch`, token in a header
 
 - Default: the client reads `GET /api/v1/events/stream` with `fetch` + `ReadableStream`,
-  sends `Authorization: Bearer <token>`, and sends `Last-Event-ID` itself on reconnect.
+  sends `Authorization: Bearer <credential>` (start-up token or page credential, section
+  7), and sends `Last-Event-ID` itself on reconnect.
 - "No credential in a URL" keeps **no exception**: the guard keeps refusing credentials
   in the path or query on every route, including the stream.
 - The client owns reconnection (bounded exponential backoff with jitter, cap 60 s as a
@@ -107,16 +108,64 @@ a new ticket for every reconnect.
   embedded in HTML would bypass the owner-only token file. Test: an unauthenticated
   `GET /` response does not contain the token.
 
-### 7. Open: how a browser obtains a credential (discussion 5)
+### 7. How a browser obtains a credential: pairing, then a page credential (discussion 5)
 
-Section 2 assumes the page holds a bearer credential to put in `Authorization`. How it
-gets one is **not decided here** (discussion 5, 2026-11-07). In particular this ADR does
-not claim that an HttpOnly cookie can become a bearer header: page JavaScript cannot read
-an HttpOnly cookie. Options under discussion: aibd accepts a cookie set by a one-time
-pairing (with CSRF protection); a credential held only in page memory after pairing; a
-desktop shell supplying the credential over its own channel. Also to settle there: cookies
-are scoped by host, not port, so a cookie for `127.0.0.1` is sent to every port on it.
-Until that summary, sections 2 and 4–6 describe the transport once a credential exists.
+Decided (maintainers' summary of discussion 5, 9320/a63ab, 2026-11-07). The delivery of
+the pairing code to the page is still open; see the end of this section.
+
+**No cookie.** A cookie is scoped by host, not by port: a cookie for `127.0.0.1` is sent
+to every port on `127.0.0.1`. `SameSite=Strict` does not help, because another port on the
+same IP counts as the same site. The `__Host-` prefix requires https, which a local http
+server cannot use. So any web server another OS account runs on a local port could collect
+the cookie. aibd therefore sets no cookie, and needs no CSRF protection.
+
+**Pairing.**
+- `aib` (authorised by the owner-only token file) asks aibd for a one-time pairing code.
+  The code is single use and short lived (≤ 30 s). aibd stores only its hash.
+- The page redeems the code with a `POST`. The page credential comes back in the
+  **response body**, never in a URL or a cookie.
+- Redeeming twice, after expiry, or concurrently succeeds at most once.
+
+**Page credential.**
+- Sent as `Authorization: Bearer <credential>` on the stream and on REST (section 2).
+- Stored by aibd only as a hash. Lifetime 12 h (trial value). Revocable. All page
+  credentials become invalid when aibd restarts.
+- Kept by the page in memory. It may also be kept in `sessionStorage` so a reload does not
+  need a new pairing (this tab only; gone when the tab closes; another port is another
+  origin and cannot read it). **Never** in a cookie or `localStorage`.
+
+**Guard.** The guard accepts exactly two kinds of Bearer: the start-up token (owner-only
+token file) and a valid page credential. Everything else in sections 2 and 6 is
+unchanged: no credential in any path or query, no page contains a credential, logs never
+contain one.
+
+**Not decided yet: how the pairing code reaches the page.** Two proofs of concept run first
+(sandbox only); the pairing endpoint is not built until their results are reviewed.
+- P1, URL fragment `#pair=…`: the fragment is not sent to the server; the page redeems it
+  on load and clears it with `history.replaceState`. But the window's URL appears in
+  process arguments, which other accounts can read with `ps`, so P1 needs takeover
+  detection: when the legitimate page finds its code already used, every credential issued
+  for that code is revoked and the page asks to reopen. **P1 literally puts a credential
+  in a URL, which section 2 forbids.** Whether to allow an exception for fragments is a
+  separate discussion after the PoC; it is not allowed by default.
+- P2: `aib` writes a `0600` HTML file inside a `0700` owner-only folder; the file holds the
+  code and posts it to the pairing endpoint. Process arguments show only the path. To
+  verify: whether aibd can accept a `POST` from a `file://` page safely (only on the
+  pairing endpoint; how `Origin: null` is handled), and which shells support it.
+- If neither holds: the terminal shows a short code and the person types it in.
+
+A1-a (a per-install `*.localhost` host name plus a cookie) is kept as a later option and
+is not part of this round.
+
+**Required tests (each with a knife that turns only its own assertion red, plus a positive
+path so "refuse everything" cannot pass):**
+- Reading the API or the stream without pairing is refused.
+- Pairing code reuse, expiry and concurrent takeover: at most one success.
+- A hostile page on another local port can neither read data nor change anything.
+- Wrong, `null` or missing `Origin`, a forged `Host`, DNS rebinding and preflight abuse
+  are refused.
+- No credential or pairing code appears in logs, query strings, HTML or error output.
+- Testing from a real second OS account is UNVERIFIED until it has been run.
 
 ## Consequences
 
@@ -127,5 +176,8 @@ Until that summary, sections 2 and 4–6 describe the transport once a credentia
 - Negative: the client implements SSE parsing and reconnection itself (about 50 lines;
   backoff was required anyway).
 - Negative: the web UI cannot be hosted on another origin. This is intended.
+- Negative: a page reload without `sessionStorage`, or any aibd restart, needs a new
+  pairing.
+- Open: how the pairing code reaches the page (section 7, P1 / P2 proofs of concept).
 - Open: the catch-up threshold and the `must_deliver` cap are trial values until measured
   (B4).
