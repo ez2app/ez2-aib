@@ -198,7 +198,7 @@ fn cmd_run(args: &[String]) -> ExitCode {
     let elapsed = t0.elapsed().as_secs_f64();
     let stats = w.stats();
     let tracked = w.snapshot().len();
-    drop(w);
+    w.stop();
     let out = json!({
         "tool": "aib-forkcount",
         "version": env!("CARGO_PKG_VERSION"),
@@ -371,7 +371,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let elapsed = t0.elapsed().as_secs_f64();
     let stats = w.stats();
     let tracked = w.snapshot().len();
-    drop(w);
+    w.stop();
     let expected: u64 = out
         .ok()
         .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())

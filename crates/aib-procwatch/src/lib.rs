@@ -233,6 +233,13 @@ mod imp {
         }
     }
 
+    impl ForkWatch {
+        /// Stop watching and join the watcher thread (same as dropping it).
+        pub fn stop(self) {
+            drop(self);
+        }
+    }
+
     impl Drop for ForkWatch {
         fn drop(&mut self) {
             let trigger = KEvent::new(
@@ -283,6 +290,8 @@ mod imp {
         pub fn stats(&self) -> Stats {
             Stats::default()
         }
+        /// Stop watching (nothing to stop here).
+        pub fn stop(self) {}
     }
 }
 
