@@ -143,14 +143,40 @@ pub fn loggable_path(path: &str) -> &'static str {
         .unwrap_or(UNMATCHED_PATH)
 }
 
+/// Placeholder for any non-standard HTTP method in logs.
+pub const OTHER_METHOD: &str = "<other>";
+
+/// The method as it may be logged: a standard method, or a fixed
+/// placeholder. A method is an arbitrary token on the wire, so a caller could
+/// put a secret there (review by @3f312, 11-07).
+pub fn loggable_method(m: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    const STANDARD: [Method; 9] = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::HEAD,
+        Method::OPTIONS,
+        Method::CONNECT,
+        Method::TRACE,
+    ];
+    STANDARD
+        .iter()
+        .find(|s| *s == m)
+        .map(|s| s.as_str())
+        .unwrap_or(OTHER_METHOD)
+}
+
 pub async fn guard(
     State(cfg): State<Arc<GuardConfig>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
     let rid = request_id();
-    let method = req.method().clone();
-    // never log the raw path or the query: either may carry a secret
+    // never log the raw method, path or query: any of them may carry a secret
+    let method = loggable_method(req.method());
     let path = loggable_path(req.uri().path());
     let verdict = check(&cfg, &req);
     let resp = match verdict {

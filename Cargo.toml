@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aib-core", "crates/aib-store", "crates/aibd"]
+members = ["crates/aib-core", "crates/aib-store", "crates/aibd", "xtask"]
 
 [workspace.package]
 version = "0.0.1"

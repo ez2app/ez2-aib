@@ -1,0 +1,16 @@
+[package]
+name = "aib-xtask"
+description = "Developer checks for the AIB 2.0 workspace (not shipped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+proc-macro2 = "1.0.107"
+quote = "1"
+syn = { version = "2.0.119", default-features = false, features = ["full", "parsing", "printing", "visit", "clone-impls"] }
+
+[lints]
+workspace = true

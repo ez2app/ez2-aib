@@ -73,7 +73,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buf {
 }
 
 #[tokio::test]
-async fn logs_never_contain_token_raw_path_or_query() {
+async fn logs_never_contain_token_raw_method_path_or_query() {
     let buf = Buf::default();
     let sub = tracing_subscriber::fmt()
         .json()
@@ -83,16 +83,24 @@ async fn logs_never_contain_token_raw_path_or_query() {
     let _guard = tracing::subscriber::set_default(sub);
     let enc: String = TOKEN.bytes().map(|b| format!("%{b:02x}")).collect();
     let attempts = [
-        (format!("/api/v1/{TOKEN}"), true),
-        (format!("/api/v1/{TOKEN}"), false),
-        (format!("/api/v1/events?token={TOKEN}"), true),
-        (format!("/api/v1/x?y={enc}"), true),
-        ("/api/v1/secret-looking-unknown-route".to_string(), true),
-        ("/api/v1/events?cursor=0".to_string(), true),
+        ("GET", format!("/api/v1/{TOKEN}"), true),
+        ("GET", format!("/api/v1/{TOKEN}"), false),
+        ("GET", format!("/api/v1/events?token={TOKEN}"), true),
+        ("GET", format!("/api/v1/x?y={enc}"), true),
+        (
+            "GET",
+            "/api/v1/secret-looking-unknown-route".to_string(),
+            true,
+        ),
+        ("GET", "/api/v1/events?cursor=0".to_string(), true),
+        // a method is an arbitrary token on the wire
+        (TOKEN, "/api/v1/health".to_string(), false),
+        (TOKEN, "/api/v1/events".to_string(), true),
+        ("get", "/api/v1/health".to_string(), false),
     ];
-    for (u, with_auth) in &attempts {
+    for (m, u, with_auth) in &attempts {
         let (a, _d) = app(&[]);
-        let mut b = req(u);
+        let mut b = req(u).method(*m);
         if *with_auth {
             b = b.header("authorization", format!("Bearer {TOKEN}"));
         }
@@ -108,5 +116,7 @@ async fn logs_never_contain_token_raw_path_or_query() {
     );
     assert!(!log.contains("cursor=0"), "query in log:\n{log}");
     assert!(log.contains("<unmatched>"));
+    assert!(log.contains("\"method\":\"<other>\""), "{log}");
+    assert!(log.contains("\"method\":\"GET\""), "{log}");
     assert!(log.contains("\"path\":\"/api/v1/events\""));
 }
