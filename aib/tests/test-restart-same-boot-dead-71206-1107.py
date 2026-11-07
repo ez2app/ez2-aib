@@ -13,9 +13,11 @@ S3 席位是上一次開機以前開的(殘留 socket)⇒ 不列
 S4 build_view 併進 dead、標 same_boot;上一次開機快照已經有的艙不重複;--restore 找得到
 S5 畫面有「這次開機中途被關掉的艙」那一段
 S6(#489 r1 Medium)idle_reaper 收艙(execute)前替每席寫 captain-close、已有原因的不蓋;dry-run 不寫;收過的艙不再列
+S8(#489 r2 註)收完才寫：殘留還活著的席不寫;sweep 先記的 pid-gone 改成 captain-close
 S7(#489 r1 Low)沒記到原因、pid 還活著(tmux 只是卡住)⇒ 不列,免得再開一份
 刀(複本):K1 拿掉退出原因過濾 ⇒ S2 紅;K2 拿掉開機時間過濾 ⇒ S3 紅;K3 build_view 不併 ⇒ S4 紅;
-           K4 execute 不留痕 ⇒ S6 紅;K5 拿掉 pid 判活 ⇒ S7 紅
+           K4 execute 不留痕 ⇒ S6 紅;K5 拿掉 pid 判活 ⇒ S7 紅;
+           K6 留痕不看 pid ⇒ S8 紅;K7 不蓋 sweep 推測的原因 ⇒ S8 紅
 """
 import json
 import os
@@ -157,6 +159,22 @@ class SameBoot(unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(d, "w5.json")))["exit_reason"], "cli-exit")
         self.assertEqual(self.f.dead([cab]), [])
 
+    def test_s8_mark_after_kill_skips_survivors(self):
+        import idle_reaper as IR
+        cab = "20261107-120000-dead"
+        self.f.seat(cab, 4, U1, reason=None, pid=os.getpid())         # 收艙失敗、還活著
+        self.f.seat(cab, 5, U2, reason="pid-gone", pid=2 ** 22 + 777)   # 別艙 sweep 先記了
+        orig = (IR.AIB_MAIN_HOME, IR.save_pane_tails)
+        IR.AIB_MAIN_HOME, IR.save_pane_tails = self.f.root, (lambda *a, **k: None)
+        try:
+            IR.execute({"kind": "inst", "instance": cab, "id": "inst:" + cab, "steps": [], "kill_pids": [],
+                        "seats": []}, dry_run=False, grace_s=0)
+        finally:
+            IR.AIB_MAIN_HOME, IR.save_pane_tails = orig
+        d = os.path.join(self.f.root, "instances", cab, "seats")
+        self.assertNotIn("exit_reason", json.load(open(os.path.join(d, "w4.json"))))
+        self.assertEqual(json.load(open(os.path.join(d, "w5.json")))["exit_reason"], "captain-close")
+
     def test_s7_no_reason_but_pid_alive_not_listed(self):
         cab = "20261107-120000-cafe"
         self.f.seat(cab, 4, U1, reason=None, pid=os.getpid())
@@ -204,6 +222,14 @@ class Knives(unittest.TestCase):
     def test_k5_no_pid_check(self):
         self._knife('if not rec.get("exit_reason") and _pid_alive(rec.get("pid")):', "if False:",
                     "SameBoot.test_s7_no_reason_but_pid_alive_not_listed")
+
+    def test_k6_mark_ignores_pid(self):
+        self._knife_file("idle_reaper.py", "if isinstance(pid, int) and pid > 1 and alive(pid):", "if False:",
+                         "SameBoot.test_s8_mark_after_kill_skips_survivors")
+
+    def test_k7_no_overwrite_sweep_reason(self):
+        self._knife_file("idle_reaper.py", 'if rec.get("exit_reason") and rec.get("exit_reason") not in seat_exit.SWEEP_REASONS:',
+                         'if rec.get("exit_reason"):', "SameBoot.test_s8_mark_after_kill_skips_survivors")
 
 
 if __name__ == "__main__":
