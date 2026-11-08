@@ -219,6 +219,78 @@ impl ChildExit for Macos {
     }
 }
 
+/// How this process treats `SIGCHLD`: M5's premise (ADR 0008 rule 3, 043dd
+/// #522 M1). Ignored (`SIG_IGN`) or `SA_NOCLDWAIT` ⇒ the kernel reaps exited
+/// children at once, so M5 only ever sees `ECHILD` and every group stop is
+/// unverified. Both are inherited across `exec`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sigchld {
+    /// `SIG_DFL`: exited children stay zombies until reaped.
+    Default,
+    /// A handler without `SA_NOCLDWAIT`: zombies stay too.
+    Handled,
+    /// `SIG_IGN`: auto-reaped.
+    Ignored,
+    /// `SA_NOCLDWAIT`: auto-reaped.
+    NoChildWait,
+}
+
+impl Sigchld {
+    /// `true` when exited children are kept for us to look at (M5 works).
+    pub fn keeps_zombies(self) -> bool {
+        matches!(self, Sigchld::Default | Sigchld::Handled)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sigchld::Default => "default",
+            Sigchld::Handled => "handled",
+            Sigchld::Ignored => "ignored",
+            Sigchld::NoChildWait => "no_child_wait",
+        }
+    }
+}
+
+/// Read the current `SIGCHLD` disposition without changing it.
+pub fn sigchld() -> Result<Sigchld, SysError> {
+    let mut old = MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: a null new action only reads; `old` is a live, writable
+    // `sigaction` the kernel fills.
+    let rc = unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), old.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    // SAFETY: zero-initialised, then written by the kernel.
+    let old = unsafe { old.assume_init() };
+    Ok(if old.sa_sigaction == libc::SIG_IGN {
+        Sigchld::Ignored
+    } else if old.sa_flags & libc::SA_NOCLDWAIT != 0 {
+        Sigchld::NoChildWait
+    } else if old.sa_sigaction == libc::SIG_DFL {
+        Sigchld::Default
+    } else {
+        Sigchld::Handled
+    })
+}
+
+/// Set `SIGCHLD` back to `SIG_DFL` (no flags) when it does not keep zombies;
+/// returns what it was. A handler that keeps zombies is left alone.
+pub fn sigchld_keep_zombies() -> Result<Sigchld, SysError> {
+    let was = sigchld()?;
+    if was.keeps_zombies() {
+        return Ok(was);
+    }
+    let sa = MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: an all-zero `sigaction` is valid: SIG_DFL, empty mask, no flags.
+    let sa = unsafe { sa.assume_init() };
+    // SAFETY: `sa` is a valid `sigaction`; the old action is not needed.
+    let rc = unsafe { libc::sigaction(libc::SIGCHLD, &sa, std::ptr::null_mut()) };
+    if rc != 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    Ok(was)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report

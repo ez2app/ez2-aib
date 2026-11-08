@@ -251,8 +251,9 @@ fn m5_reads_the_exit_status_without_reaping() {
     // measured 11-08 (macOS 15.7.9): M1 / M2 say Gone for our own unreaped
     // zombie although it still holds the pid. For our own child, M5 is the
     // answer; "Gone" from M1 / M2 does not mean the pid is free.
-    assert_eq!(Macos.bsd_info(pid), Err(SysError::Gone));
-    assert_eq!(Macos.unique_ids(pid), Err(SysError::Gone));
+    let why = "macOS version behaviour differs: see ADR 0008 Context (measured on 15.7.9)";
+    assert_eq!(Macos.bsd_info(pid), Err(SysError::Gone), "{why}");
+    assert_eq!(Macos.unique_ids(pid), Err(SysError::Gone), "{why}");
     // the one real reap still gets the status: nobody took it
     assert_eq!(c.wait().unwrap().code(), Some(7));
     // after the reap it is not our child any more: NotChild, never "gone"
@@ -281,7 +282,11 @@ fn m5_refuses_a_process_that_is_not_our_child() {
     );
 }
 
-extern "C" fn ignore_signal(_: libc::c_int) {}
+static USR2_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+extern "C" fn ignore_signal(_: libc::c_int) {
+    USR2_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
 
 #[test]
 #[allow(clippy::disallowed_methods)] // test pacing only
@@ -306,11 +311,23 @@ fn m5_wait_retries_when_a_signal_interrupts_it() {
     });
     let th = rx.recv().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(200));
-    // SAFETY: `th` is the live waiting thread (it cannot finish before the
-    // child is killed below); SIGUSR2 has a handler installed above.
-    let rc = unsafe { libc::pthread_kill(th, libc::SIGUSR2) };
-    assert_eq!(rc, 0);
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // three sends 50 ms apart (043dd #522 L2): at least one lands while the
+    // thread is blocked in waitid, whatever the scheduling
+    for _ in 0..3 {
+        // SAFETY: `th` is the live waiting thread (it cannot finish before
+        // the child is killed below); SIGUSR2 has a handler installed above.
+        let rc = unsafe { libc::pthread_kill(th, libc::SIGUSR2) };
+        assert_eq!(rc, 0);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // the handler really ran, and the wait did not come back on EINTR: an
+    // EINTR returned to the caller would have ended the thread already
+    assert!(USR2_HITS.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert!(
+        !t.is_finished(),
+        "wait_exit returned on EINTR instead of retrying"
+    );
     c.kill().unwrap();
     assert_eq!(t.join().unwrap().unwrap(), ExitState::Signaled(9));
     c.wait().unwrap();

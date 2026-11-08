@@ -46,6 +46,19 @@ decides an action alone (aib-sys rules).
 
 ### Rule 3 — Look at the leader, do not reap it until every signal is sent
 
+**Premise: `SIGCHLD` keeps zombies.** If it is `SIG_IGN`, or a handler has `SA_NOCLDWAIT`, the
+kernel reaps every exited child at once: `WNOWAIT` has nothing to look at and the pid is free
+immediately (measured on macOS by 043dd, #522 M1). Both are inherited across `exec`, so a
+launcher that ignores `SIGCHLD` hands it to aibd without aibd doing anything. Therefore:
+
+- `aibd` sets `SIGCHLD` back to `SIG_DFL` when the server starts if it does not keep zombies, and
+  logs `SIGCHLD reset to default` with what it was (`aib_sys::sigchld_keep_zombies`);
+- `aibd selfcheck` shows a `sigchld` row: `ok` when zombies are kept, `unverified` (with
+  `disposition=ignored|no_child_wait`) when it was inherited that way, `failed:sigchld:<tag>` when
+  it cannot be read;
+- `proc_group` (Python) cannot fix a caller's process; its module doc states the consequence:
+  the identity check sees `leader_reaped_elsewhere` and nothing is sent (safe, always unverified).
+
 Whether the leader has exited is read with `waitid(..., WEXITED | WNOWAIT | WNOHANG)`:
 
 | place | call |
@@ -80,14 +93,30 @@ A normal exit that leaves members behind gets the same stop. On Windows without 
 (before J0) only the direct child is killed, and the report says
 `windows_direct_child_only` / `windows_leftovers_not_checked`. It never says `stopped`.
 
-### Interrupted while waiting (#520)
+### Interrupted while waiting (#520, proc_group)
 
-Any `BaseException` from the start to the reap (Ctrl-C, a SIGTERM handler that raises) stops
-the group first and reaps the leader. After that the same exception is raised again, with the
-report attached. SIGINT / SIGTERM that arrive during that stop are held, for at most
-`grace + 2 × KILL_WAIT_S` (5 + 2 + 2 = 9 s by default). At the limit a held signal is
-delivered by itself, without a second press. A held Ctrl-C is dropped only when the exception
-already leaving is itself a `KeyboardInterrupt`.
+- **Handlers only record.** While `run_group` runs on the main thread, its SIGINT / SIGTERM
+  handlers append the signal to a list and never raise. `run_group` looks at the list at fixed
+  points and acts as the caller's own handler would: Python's default Ctrl-C raises
+  `KeyboardInterrupt`, `SIG_DFL` stops the group first and then runs the default action, a
+  callable is called there (what it raises is the interrupt; if it returns, the run goes on),
+  `SIG_IGN` does nothing. So nothing can be raised between `except` and the stop, and nothing is
+  delivered twice. There is no timer thread.
+- **Behaviour change:** a Ctrl-C no longer raises synchronously inside `run_group`; it acts at
+  the next check, at most `POLL_S` (0.05 s) later while waiting. Every wait from the start to the
+  reap is a bounded poll with a check, the final reap included (no bare `wait()`).
+- **One hard deadline per stop**, `grace + 2 × KILL_WAIT_S` (5 + 2 + 2 = 9 s by default), counted
+  from when the stop starts: the timeout stop, the leftovers listing and stop after a normal exit,
+  and the stop after an interrupt. A Ctrl-C during a running stop keeps that stop's deadline (no
+  new 9 s). Every wait in it, the external `ps` included, is cut there (`stop_cut_short_at_limit`,
+  `leader_not_reaped`): one press always gets the user out within the limit.
+- After the stop the same exception is raised again with the report attached. Signals recorded
+  during the stop go to the caller's handlers afterwards, each once, in order; a held Ctrl-C is
+  dropped only when the exception already leaving is itself a `KeyboardInterrupt`.
+- **Nesting:** handlers are per process. The outermost `run_group` on the main thread installs;
+  one started inside it (e.g. from a caller's handler) reuses that record and decides with the
+  caller's real handlers, so one Ctrl-C stops the inner group, then the outer one. Off the main
+  thread nothing is installed and the caller's handlers act as usual.
 
 ## Windows
 
@@ -103,10 +132,14 @@ This PR adds no Windows implementation of `ChildExit`; Windows callers go throug
 
 ## Consequences
 
-- `aib-sys` gets M5 (public POSIX, own children only) and `SysError::NotChild`.
+- `aib-sys` gets M5 (public POSIX, own children only), `SysError::NotChild`, and
+  `sigchld` / `sigchld_keep_zombies` for the premise above.
 - `tree.rs` adopts rule 3 in the next PR. Until then its group signal is guarded by
-  `group_is_ours` (ADR 0004), which reads M2. That check now has a known blind spot: our own
-  zombie reads as gone.
+  `group_is_ours` (ADR 0004), which reads M2. That check has a known blind spot: our own zombie
+  root reads as gone. **Its direction is conservative**: `group_is_ours` then checks the other
+  live members (start time + unique + pgid == root) and still accepts the group if one matches;
+  when only the zombie root is left it sends nothing and reports `unverified`. It never signals
+  someone else's group, so it is not a fix-first item.
 - `proc_group` and `aibd` can be reviewed against one list. A new stop path that breaks a rule
   needs a new ADR, not a code comment.
 
@@ -115,7 +148,15 @@ This PR adds no Windows implementation of `ChildExit`; Windows callers go throug
 - `aib-sys`:
   - `exit_state_counts_only_for_the_asked_pid` (pure mapping, including a foreign `si_pid`);
   - real `m5_*` tests: running, exit status without reaping and the reap still works, a
-    killed child, a process that is not ours;
+    killed child, a process that is not ours, `m5_wait_retries_when_a_signal_interrupts_it`
+    (three SIGUSR2 without `SA_RESTART`; the handler ran and the wait did not return);
+  - `tests/sigchld.rs` (own process): `SIG_IGN` and `SA_NOCLDWAIT` auto-reap ⇒ M5 `NotChild`;
+    `sigchld_keep_zombies` puts `SIG_DFL` back and M5 reads `Exited(7)` again; a handler that
+    keeps zombies is left alone;
+  - the zombie-`Gone` assertion pins macOS 15.7.9 behaviour; its message says so, so a red cell
+    after a runner upgrade points here, not at the code;
   - fake `looking_never_reaps_until_the_caller_does`.
+- `aibd`: `tests/sigchld_reset.rs` starts the real server under a parent that ignores
+  `SIGCHLD` and expects the reset warning; `selfcheck` unit and CLI tests cover the `sigchld` row.
 - Python: `aib/tests/test-proc-group-a9136-1108.py` (rules 1–4, the libc path on 3.9.6, and
   the #520 interrupt tests), with the knife table in #509 / #520.

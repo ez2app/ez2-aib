@@ -55,7 +55,7 @@ mod macos;
 pub mod selfcheck;
 
 #[cfg(target_os = "macos")]
-pub use macos::Macos;
+pub use macos::{sigchld, sigchld_keep_zombies, Macos, Sigchld};
 
 /// M1: `p_uniqueid` / `p_puniqueid`. `parent_unique` is the creator's unique
 /// id and survives re-parenting (measured, not documented by Apple).
