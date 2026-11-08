@@ -37,6 +37,10 @@ RC_OK, RC_BAD, RC_USAGE = 0, 1, 2
 # 白名單(fnmatch,* 不跨目錄;docs/ 底下用前綴判斷,任意深度)
 DOC_PREFIXES = ("docs/",)
 DOC_ROOT_GLOBS = ("SECURITY*.md", "CODE_OF_CONDUCT*.md")
+# docs/ 底下但有程式 / 測試讀的檔(不算純文件,改它要跑全套)。新增一條要寫誰讀。
+DOC_EXCLUDE = (
+    "docs/perf/timers.md",  # crates/aibd/src/timers.rs 的測試比對它跟 timers::ALL(ADR 0005,a63ab #510)
+)
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
 # 守門測試會找「讀 git ls-files 又看 .md」的測試,不在這份清單就紅。
@@ -50,6 +54,8 @@ def is_doc(path):
     if not p or p.startswith("/") or ".." in p.split("/"):
         return False
     if not p.endswith(".md"):
+        return False
+    if p in DOC_EXCLUDE:
         return False
     if any(p.startswith(pre) for pre in DOC_PREFIXES):
         return True
