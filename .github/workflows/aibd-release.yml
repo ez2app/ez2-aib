@@ -252,5 +252,8 @@ jobs:
           got=$(gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) prerelease=\(.prerelease) tag=\(.tag_name)"')
           echo "$got"
           [ "$got" = "draft=false prerelease=true tag=$TAG" ] || { echo "::error::release $RID reads back as '$got', want draft=false prerelease=true tag=$TAG"; exit 1; }
-          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+          # "no latest release at all" (HTTP 404) is fine; any other failure is not a confirmation
+          if out=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>&1); then latest=$out
+          else case "$out" in *"HTTP 404"*) latest="" ;; *) echo "::error::could not read the latest release: $out"; exit 1 ;; esac; fi
+          echo "latest release: ${latest:-<none>}"
           [ "$latest" != "$TAG" ] || { echo "::error::$TAG became the repo's latest release"; exit 1; }

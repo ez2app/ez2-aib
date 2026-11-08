@@ -16,7 +16,7 @@ R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰�
    不靠 gh 用 tag 找 draft 的後備查找(a63ab 11-08 22:00:那條路沒實測)
    (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
-D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 ⇒ 沒裝、沒執行
+D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 / 下載失敗但留著上次的舊檔 ⇒ 沒裝、沒執行
    (bb7dc 11-08 High:舊稿分行寫,sha 失敗仍 chmod / mv / 執行)
 D3 Windows 指令順序:ErrorActionPreference Stop 在最前;找不到行 ⇒ 刪檔停;比對過才 Unblock-File / 執行
 """
@@ -122,6 +122,8 @@ class Static(unittest.TestCase):
         self.assertIn('-X PATCH "repos/$GH_REPO/releases/$RID" -F draft=false -F prerelease=true -f make_latest=false', p)
         self.assertIn('[ "$got" = "draft=false prerelease=true tag=$TAG" ]', p)
         self.assertIn('releases/latest', p)
+        self.assertNotIn('|| true', p, "讀不到 latest 不准當成確認")
+        self.assertIn('*"HTTP 404"*) latest=""', p)
         self.assertNotIn("gh release create", p)
         self.assertNotIn("PATCH", job("draft") + job("verify"))
         self.assertIn("needs: [meta, draft, verify]", p, "verify 全綠才公開")
@@ -209,13 +211,20 @@ for a in "$@"; do case "$a" in -*) ;; *) n=${a##*/}; [ -f "$SRC/$n" ] || exit 22
 class InstallRuns(unittest.TestCase):
     NAME = "aibd-0.2.0-preview.1-aarch64-apple-darwin"
 
-    def run_block(self, f, sums):
+    def run_block(self, f, sums, stale=False):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             home, src, fbin = d / "home", d / "src", d / "fbin"
             for p in (home / "Downloads", src, fbin):
                 p.mkdir(parents=True)
             mark = d / "ran.log"
+            if stale:      # last attempt left an old binary + old SHA256SUMS in ~/Downloads and an old install
+                old = "#!/bin/sh\necho \"stale $*\" >> %s\n" % shlex.quote(str(mark))
+                (home / "Downloads" / self.NAME).write_text(old, encoding="utf-8")
+                (home / "Downloads" / "SHA256SUMS").write_text(
+                    "%s  %s\n" % (hashlib.sha256(old.encode()).hexdigest(), self.NAME), encoding="utf-8")
+                (home / ".local" / "bin").mkdir(parents=True)
+                (home / ".local" / "bin" / "aibd").write_text("old install\n", encoding="utf-8")
             exe = src / self.NAME
             if sums != "no-binary":
                 exe.write_text("#!/bin/sh\necho \"$*\" >> %s\n" % shlex.quote(str(mark)), encoding="utf-8")
@@ -227,7 +236,8 @@ class InstallRuns(unittest.TestCase):
             (fbin / "curl").chmod(0o755)
             env = dict(os.environ, HOME=str(home), SRC=str(src), PATH="%s:%s" % (fbin, os.environ.get("PATH", "")))
             r = subprocess.run(["bash", "-c", block(f, "sh")], env=env, capture_output=True, text=True, timeout=60)
-            installed = (home / ".local" / "bin" / "aibd").exists()
+            inst = home / ".local" / "bin" / "aibd"
+            installed = inst.exists() and inst.read_text(encoding="utf-8") != "old install\n"
             ran = mark.read_text(encoding="utf-8").split("\n")[:-1] if mark.exists() else []
             return r.returncode, installed, ran, r.stdout + r.stderr
 
@@ -242,6 +252,11 @@ class InstallRuns(unittest.TestCase):
                     self.assertNotEqual(rc, 0, log)
                     self.assertFalse(inst, "%s: 不准裝\n%s" % (case, log))
                     self.assertEqual(ran, [], "%s: 不准執行\n%s" % (case, log))
+            with self.subTest(f=f, case="stale old files, download fails"):
+                rc, inst, ran, log = self.run_block(f, "no-binary", stale=True)
+                self.assertNotEqual(rc, 0, log)
+                self.assertFalse(inst, "舊檔不准被搬去裝\n" + log)
+                self.assertEqual(ran, [], "舊檔不准被執行\n" + log)
 
     def test_d2_release_notes_block_too(self):
         rc, inst, ran, log = self.run_block("RELEASE-NOTES-0.2.0-preview.1.md", "bad")
