@@ -324,6 +324,13 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)",
       "new": "            kind, rp, _recorded, info = check_receipt(p, head, now, item.get(\"head_time\") or None, db)"
+    },
+    {
+      "name": "add-silent-recorded",
+      "proves": "add says --cmd implies --needs recorded (ebb36 #531 r2 L1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            if a.expect_cmd:   # ebb36 #531 r2 L1",
+      "new": "            if False:   # ebb36 #531 r2 L1"
     }
   ]
 }

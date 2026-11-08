@@ -508,7 +508,7 @@ def op_add(db, a, by, event_id):
                    " updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (a.id, a.batch, a.title, request["owner"], "queued", request["next"], json.dumps(request["needs"]),
                     request.get("cmd", ""), 1, t, t, by))
-        res = {"ok": True, "id": a.id, "state": "queued", "rev": 1}
+        res = {"ok": True, "id": a.id, "state": "queued", "rev": 1, "needs": request["needs"]}
         _record(db, event_id, "add", a.id, None, "queued", by, request, res)
         return res
     return tx(db, run)
@@ -922,7 +922,10 @@ def main(argv=None):
             emit(a, res, "%s%s is now %s" % ("(replayed) " if res.get("replayed") else "", res["seat"], res["role"]))
         elif a.cmd == "add":
             res = op_add(db, a, by, event_id)
-            emit(a, res, "%squeued %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"], res["rev"]))
+            line = "%squeued %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"], res["rev"])
+            if a.expect_cmd:   # ebb36 #531 r2 L1:讓派工的人看到 --cmd 帶來的後果
+                line += "\n  --cmd implies --needs recorded: only receipts written by aib ledger record are accepted"
+            emit(a, res, line)
         else:
             res = op_move(db, a, by, event_id)
             emit(a, res, "%s%s %s -> %s (rev %d)%s" % (

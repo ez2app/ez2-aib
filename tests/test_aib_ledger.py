@@ -701,6 +701,18 @@ class AibLedger(unittest.TestCase):
         self.assertEqual(it["superseded"][-1]["why"], "before first review")
         self.assertNotIn("resubmitted", self.ok("show", "B-first").stdout)
 
+    def test_531_r2_l1_add_says_cmd_implies_recorded(self):
+        # ebb36 #531 r2 L1:帶 --cmd 時 add 要講出「只收 record 產的收據」,不帶就不講
+        self.roles()
+        r = self.ok("add", "B-say", "--batch", "b117", "--owner", "2240e", "--title", "s", "--cmd", "python3 -m unittest",
+                    "--by", "seat:f1fae")
+        self.assertIn("only receipts written by aib ledger record", r.stdout)
+        r = self.ok("add", "B-quiet", "--batch", "b117", "--owner", "2240e", "--title", "q", "--by", "seat:f1fae")
+        self.assertNotIn("aib ledger record", r.stdout)
+        j = json.loads(self.ok("add", "B-json", "--batch", "b117", "--owner", "2240e", "--title", "j", "--cmd", "x",
+                               "--by", "seat:f1fae", "--json").stdout)
+        self.assertEqual(j["needs"], ["recorded"])
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
