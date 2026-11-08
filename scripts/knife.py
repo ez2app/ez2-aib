@@ -36,6 +36,8 @@ Rules:
   a leftover: the knife is UNDECIDED, the group is killed, and no further knife runs on a dirty machine. The group
   leader is a small sentinel that runs CMD and is reaped only after the last signal, so the pgid cannot have been
   reused by anyone else when it is signalled (bb7dc #525). A process list that cannot be read is UNDECIDED too.
+  knife.py must stay single-threaded (no thread that could wait() the leader): with more than one thread running
+  it starts nothing and signals no group, and the knife is UNDECIDED (a63ab ruling, #525).
   Not covered: processes that left the group (setsid / daemonize: a tmux server or a daemon the test starts is
   not seen; #525 L2) and Windows, which has no process groups here;
   on Windows the run says "leftover check: unavailable".
@@ -49,6 +51,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 OUTCOMES = ("BIT", "SURVIVED", "NOT-FALLEN", "ANCHOR-MISSING", "UNDECIDED")
@@ -96,6 +99,15 @@ sys.stdin.read()
 
 PS = ["ps", "-A", "-o", "pid=,pgid="]
 NO_GROUP_GUARD = "knife: cannot keep SIGCHLD at default (zombies kept): the group leader could be reaped early"
+# a63ab ruling on bb7dc #525 (d54fb9c0): SIG_DFL keeps the leader a zombie, but another thread could still waitpid()
+# it. knife.py starts no threads, and must not: before starting and before every group signal, more than one thread
+# means UNDECIDED and nothing is sent.
+NO_THREADS = "knife: another thread is running (it could reap the group leader): not signalling the group"
+GUARDS = (NO_GROUP_GUARD, NO_THREADS)
+
+
+def alone():
+    return threading.active_count() == 1
 
 
 def group_members(pgid, exclude):
@@ -179,9 +191,10 @@ def _run_plain(cmd, cwd, timeout, log):
 
 
 def _run_posix(cmd, cwd, timeout, log):
-    if not keep_zombies():
+    guard = NO_THREADS if not alone() else (NO_GROUP_GUARD if not keep_zombies() else None)
+    if guard:
         with open(log, "a", encoding="utf-8") as f:
-            f.write(NO_GROUP_GUARD + "\n")
+            f.write(guard + "\n")
         return None, None        # nothing started, nothing signalled: UNDECIDED upstream
     p = subprocess.Popen([sys.executable, "-I", "-c", SENTINEL, log, json.dumps(list(cmd)), cwd or "."],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -191,7 +204,8 @@ def _run_posix(cmd, cwd, timeout, log):
     try:
         rc = _read_rc(p, timeout)
         if rc is None:
-            _kill_group(pgid)    # timeout: the leader is not reaped yet, so pgid is still ours
+            if not _kill_group(pgid):    # timeout: the leader is not reaped yet, so pgid is still ours
+                _note(log, NO_THREADS)
             return None, None
         leftover = True
         for _ in range(20):      # give exiting members up to 2 s
@@ -203,8 +217,9 @@ def _run_posix(cmd, cwd, timeout, log):
                 leftover = False
                 break
             time.sleep(0.1)
-        if leftover:
-            _kill_group(pgid)    # leader still unreaped: only CMD's leftovers (and the sentinel) are hit
+        if leftover and not _kill_group(pgid):   # leader still unreaped: only CMD's leftovers are hit
+            _note(log, NO_THREADS)
+            return None, None    # leftovers we may not signal: UNDECIDED, never a verdict
         return rc, leftover
     finally:
         # every path: signal first (above), reap the leader last
@@ -215,16 +230,26 @@ def _run_posix(cmd, cwd, timeout, log):
         try:
             p.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            _kill_group(pgid)    # still unreaped here, so still ours
+            if not _kill_group(pgid):    # still unreaped here, so still ours
+                p.kill()                 # the sentinel alone, by its own handle
             p.wait()
         p.stdout.close()
 
 
+def _note(log, line):
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def _kill_group(pgid):
+    """SIGKILL the group; False (nothing sent) when another thread runs: it could have reaped the leader."""
+    if not alone():
+        return False
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    return True
 
 
 def name_matches(name, expect_fail):
@@ -264,7 +289,7 @@ def one_knife(k, repo, default_cmd, timeout):
         if f.read() != orig:
             return "UNDECIDED", "%s did not read back identical after restore" % k["file"], True
     if rc is None:
-        why = NO_GROUP_GUARD if NO_GROUP_GUARD in out else "timeout %s s" % k.get("timeout", timeout)
+        why = next((g for g in GUARDS if g in out), "timeout %s s" % k.get("timeout", timeout))
         return "UNDECIDED", why, True
     if leftover:
         return "UNDECIDED", "processes left in the process group after CMD returned (killed); stopping", True

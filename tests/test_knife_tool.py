@@ -384,12 +384,58 @@ class SigchldPremise(unittest.TestCase):
     def test_off_the_main_thread_nothing_runs_and_it_is_undecided(self):
         import threading
         got = []
-        t = threading.Thread(target=lambda: got.append(knife.run([sys.executable, "-c", "print(1)"], ".", 30)))
+        t = threading.Thread(target=lambda: got.append((knife.keep_zombies(),
+                                                        knife.run([sys.executable, "-c", "print(1)"], ".", 30))))
         t.start()
         t.join(60)
-        rc, out, leftover = got[0]
+        kept, (rc, out, leftover) = got[0]
+        self.assertFalse(kept)                             # SIGCHLD cannot be set off the main thread
         self.assertIsNone(rc)
-        self.assertIn(knife.NO_GROUP_GUARD, out)
+        self.assertTrue(any(g in out for g in knife.GUARDS), out)   # the thread guard answers first now
+
+
+class SingleThreadOnly(unittest.TestCase):
+    """a63ab ruling on bb7dc #525: another thread could waitpid() the leader, so with more than one thread knife
+    starts nothing and sends no group signal (UNDECIDED)."""
+
+    def setUp(self):
+        import threading
+        self.stop = threading.Event()
+        self.t = threading.Thread(target=self.stop.wait, daemon=True)
+        self.t.start()
+
+    def tearDown(self):
+        self.stop.set()
+        self.t.join(10)
+
+    def test_with_a_second_thread_nothing_runs_and_it_is_undecided(self):
+        mark = Path(tempfile.mkdtemp()) / "ran"
+        rc, out, leftover = knife.run([sys.executable, "-c", "open(%r, 'w')" % str(mark)], ".", 30)
+        self.assertIsNone(rc)
+        self.assertIn(knife.NO_THREADS, out)
+        self.assertFalse(mark.exists(), "CMD ran although another thread was alive")
+
+    def test_with_a_second_thread_no_group_signal_is_sent(self):
+        sent = []
+        real = knife.os.killpg
+        knife.os.killpg = lambda *a: sent.append(a)
+        try:
+            self.assertFalse(knife._kill_group(12345))
+        finally:
+            knife.os.killpg = real
+        self.assertEqual(sent, [])
+
+    def test_alone_again_signals(self):
+        self.stop.set()
+        self.t.join(10)
+        sent = []
+        real = knife.os.killpg
+        knife.os.killpg = lambda *a: sent.append(a)
+        try:
+            self.assertTrue(knife._kill_group(12345))
+        finally:
+            knife.os.killpg = real
+        self.assertEqual(len(sent), 1)
 
 
 class SingleCliReview525(Base):
