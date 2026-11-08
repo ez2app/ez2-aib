@@ -3,10 +3,12 @@
 //! never `clean` (DECISION-23).
 
 use super::session::{Exit, ExitWait, Running, SpawnFail, Spec, Stop, StopStatus};
-use super::tree::{spawn_tree, RootEnd, RootWatch, SpawnSpec, TreeHandle};
+use super::tree::{
+    start_tree, Left, RootEnd, RootWatch, SpawnSpec, StartFailed, StartFailedOr, TreeHandle,
+};
 use crate::lineage::Lineage;
 use std::ffi::OsString;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 struct UnixRunning {
@@ -88,9 +90,102 @@ pub fn spawn(spec: &Spec, lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runni
         watch_forks: true,
         discard_output: true,
         lineage: lineage.filter(|l| l.enabled()),
+        inject: None,
     };
-    match spawn_tree(&s) {
+    match start_tree(&s) {
         Ok(h) => Ok(Box::new(UnixRunning { h })),
-        Err(e) => Err(SpawnFail::from_io(&e)),
+        Err(StartFailedOr::NotStarted(e)) => Err(SpawnFail::from_io(&e)),
+        Err(StartFailedOr::Started(f)) => Err(settle_failed_start(f)),
+    }
+}
+
+/// How long [`settle_failed_start`] gives the tree after SIGTERM.
+pub const SETTLE_GRACE: Duration = Duration::from_secs(2);
+
+/// Trees whose start failed and whose stop was not clean: they keep their
+/// slot (`left_running`) and are stopped again when aibd ends
+/// ([`stop_leftovers`]).
+static LEFTOVERS: Mutex<Vec<UnixRunning>> = Mutex::new(Vec::new());
+
+/// bb7dc #544 High: the program started but a later step failed. Stop the
+/// tree like a DELETE does; only a stop that releases a slot
+/// ([`Stop::releases_slot`]) may say nothing is left (`left_running: None`).
+/// Otherwise `left_running` = the root's pid and, when the tree is still
+/// under control, it is kept for the shutdown sweep.
+#[doc(hidden)]
+pub fn settle_failed_start(f: StartFailed) -> SpawnFail {
+    let mut out = SpawnFail::from_io(&f.err);
+    let root = f.root();
+    match f.left {
+        Left::Handle(h) => {
+            let mut r = UnixRunning { h: *h };
+            out.left_running = left_after(&r.stop(SETTLE_GRACE), root);
+            if out.left_running.is_some() {
+                LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+            }
+        }
+        Left::Unconfirmed(_) => out.left_running = Some(root),
+    }
+    out
+}
+
+/// What a failed start reports after its stop: nothing left only when the
+/// stop releases a slot (the #539 M1 whitelist), else the root's pid.
+fn left_after(stop: &Stop, root: u32) -> Option<u32> {
+    if stop.releases_slot() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+/// Stop every tree kept by [`settle_failed_start`] once more (aibd is
+/// ending). Returns how many still could not be confirmed.
+pub fn stop_leftovers(grace: Duration) -> usize {
+    let left = std::mem::take(&mut *LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut kept = Vec::new();
+    for mut r in left {
+        if !r.stop(grace).releases_slot() {
+            kept.push(r);
+        }
+    }
+    let n = kept.len();
+    LEFTOVERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(kept);
+    n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stop(status: StopStatus, survivors: Vec<u32>) -> Stop {
+        Stop {
+            status,
+            survivors,
+            tree_size: 1,
+            signals: Vec::new(),
+            blind_spots: Vec::new(),
+        }
+    }
+
+    /// bb7dc #544: a failed start says "nothing left" only on a stop that
+    /// would release a slot.
+    #[test]
+    fn a_failed_start_is_unconfirmed_unless_its_stop_releases_a_slot() {
+        let un = |r: &str| StopStatus::Unverified(r.into());
+        assert_eq!(left_after(&stop(un("observed_clean"), vec![]), 7), None);
+        assert_eq!(left_after(&stop(un("observed_clean"), vec![9]), 7), Some(7));
+        assert_eq!(
+            left_after(&stop(un("candidates_unreadable"), vec![]), 7),
+            Some(7)
+        );
+        assert_eq!(left_after(&stop(un("stop_failed"), vec![]), 7), Some(7));
+        assert_eq!(
+            left_after(&stop(StopStatus::TreeNotClean, vec![]), 7),
+            Some(7)
+        );
     }
 }

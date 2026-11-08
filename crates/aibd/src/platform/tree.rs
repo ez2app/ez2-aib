@@ -59,6 +59,52 @@ pub struct SpawnSpec {
     pub discard_output: bool,
     /// M1 lineage, shared by every session (`None` = off).
     pub lineage: Option<Arc<Lineage>>,
+    /// Test hook: fail this step after the program started (bb7dc #544).
+    /// Always `None` in aibd.
+    #[doc(hidden)]
+    pub inject: Option<Inject>,
+}
+
+/// A step of [`start_tree`] after `spawn()` succeeded that a test can make fail.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inject {
+    RootWait,
+    System,
+    ForkWatch,
+}
+
+fn injected(spec: &SpawnSpec, at: Inject) -> std::io::Result<()> {
+    if spec.inject == Some(at) {
+        return Err(std::io::Error::other("injected"));
+    }
+    Ok(())
+}
+
+/// [`start_tree`] failed after the program had started (bb7dc #544 High):
+/// something may still be running, so the caller must stop it and must not
+/// call it "not started" unless that stop was clean.
+pub struct StartFailed {
+    pub err: std::io::Error,
+    pub left: Left,
+}
+
+pub enum Left {
+    /// Under control: stop it like any session (`TreeHandle::cleanup`).
+    Handle(Box<TreeHandle>),
+    /// Not even the root-exit thread started. The group was sent SIGKILL
+    /// while the root was still our unreaped child, then the root was
+    /// reaped; the rest of the tree cannot be confirmed gone.
+    Unconfirmed(u32),
+}
+
+impl StartFailed {
+    pub fn root(&self) -> u32 {
+        match &self.left {
+            Left::Handle(h) => h.root,
+            Left::Unconfirmed(p) => *p,
+        }
+    }
 }
 
 /// One step of a cancel / cleanup, for the `session.cancelled` event.
@@ -214,6 +260,7 @@ pub struct TreeHandle {
     /// macOS). `None` once reaped, or where the wait thread owns it.
     child: Option<Child>,
     /// H1 latch: the root stopped being provably our unreaped child.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     root_lost: bool,
     known: BTreeMap<u32, u64>,
     found_by_marker: Vec<u32>,
@@ -272,6 +319,7 @@ fn running(sys: &System, pid: u32, start: u64) -> bool {
 struct RootExit {
     status: Mutex<Option<RootEnd>>,
     /// The wait thread could not keep the root unreaped (H1).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     lost: std::sync::atomic::AtomicBool,
     cv: Condvar,
 }
@@ -307,6 +355,21 @@ enum To {
 }
 
 pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
+    start_tree(spec).map_err(|f| match f {
+        StartFailedOr::NotStarted(e) => e,
+        StartFailedOr::Started(f) => {
+            if let Left::Handle(mut h) = f.left {
+                let _ = h.cleanup(Duration::from_secs(2));
+            }
+            f.err
+        }
+    })
+}
+
+/// [`spawn_tree`], but a failure after the program started hands back what
+/// may still be running ([`StartFailed`]) instead of dropping it. A failure
+/// before it started is `left: None` via the plain error.
+pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     let mut c = Command::new(&spec.program);
     if spec.env_clear {
         c.env_clear();
@@ -326,12 +389,30 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         c.current_dir(d);
     }
     imp::new_group(&mut c);
-    let mut child = c.spawn()?;
+    let mut child = c.spawn().map_err(StartFailedOr::NotStarted)?;
     let root = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let exit = Arc::new(RootExit::default());
-    let child = start_root_wait(child, root, exit.clone())?;
+    let waited = match injected(spec, Inject::RootWait) {
+        Ok(()) => start_root_wait_owned(child, root, exit.clone()),
+        Err(e) => Err((e, Some(child))),
+    };
+    let child = match waited {
+        Ok(c) => c,
+        Err((err, child)) => {
+            // the root is our unreaped child (held here, or dropped without a
+            // wait): its pid, so the group number, is still ours to signal
+            imp::signal_group(root, imp::Sig::Kill);
+            if let Some(mut c) = child {
+                let _ = c.wait();
+            }
+            return Err(StartFailedOr::Started(StartFailed {
+                err,
+                left: Left::Unconfirmed(root),
+            }));
+        }
+    };
     let mut h = TreeHandle {
         session_id: spec.session_id.clone(),
         stdout,
@@ -355,20 +436,37 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     if let Some(u) = h.lineage.as_ref().and_then(|l| l.unique_of(root)) {
         h.uniques.insert(root, u);
     }
-    let mut sys = new_system()?;
+    let fail = |h: TreeHandle, err| {
+        StartFailedOr::Started(StartFailed {
+            err,
+            left: Left::Handle(Box::new(h)),
+        })
+    };
+    let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
+        Ok(s) => s,
+        Err(e) => {
+            // nothing is recorded yet, so a later stop would see nothing to
+            // signal: kill the group now, through the H1 check, and wait for
+            // the root (bb7dc #544)
+            if h.kill_group_unrecorded() {
+                let _ = h.exit.wait(Duration::from_secs(2));
+            }
+            return Err(fail(h, e));
+        }
+    };
     refresh(&mut sys, false);
     if let Some(p) = sys.process(Pid::from_u32(root)) {
         h.known.insert(root, p.start_time());
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
-            match super::fork_watch::ForkWatch::start(root, p.start_time(), h.lineage.clone()) {
+            let w = injected(spec, Inject::ForkWatch).and_then(|()| {
+                super::fork_watch::ForkWatch::start(root, p.start_time(), h.lineage.clone())
+            });
+            match w {
                 Ok(w) => h.watch = Some(w),
-                Err(e) => {
-                    // 043dd #510 M2: do not leave the CLI running with nobody
-                    // holding it; only while the group is provably ours
-                    h.signal_checked(&sys, &[], To::Group, imp::Sig::Kill);
-                    return Err(e);
-                }
+                // 043dd #510 M2 / bb7dc #544: never leave it running with
+                // nobody holding it; the caller stops it and checks
+                Err(e) => return Err(fail(h, e)),
             }
         }
     } else {
@@ -380,15 +478,26 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     Ok(h)
 }
 
+/// Why [`start_tree`] failed: before the program started (nothing to stop),
+/// or after (see [`StartFailed`]).
+pub enum StartFailedOr {
+    NotStarted(std::io::Error),
+    Started(StartFailed),
+}
+
 /// The root-exit thread. macOS: M5 `waitid(WNOWAIT)` sees the exit WITHOUT
 /// reaping, so the root's pid (= the group number) cannot be reused until
 /// [`TreeHandle`] reaps it after its last signal (bb7dc H1); the `Child`
 /// stays with the handle. Elsewhere the thread reaps at once (the old way;
 /// group signals then rely on a live member's identity only).
 #[cfg(target_os = "macos")]
-fn start_root_wait(child: Child, root: u32, exit: Arc<RootExit>) -> std::io::Result<Option<Child>> {
+fn start_root_wait_owned(
+    child: Child,
+    root: u32,
+    exit: Arc<RootExit>,
+) -> Result<Option<Child>, (std::io::Error, Option<Child>)> {
     use aib_sys::{ChildExit, ExitState};
-    std::thread::Builder::new()
+    let started = std::thread::Builder::new()
         .name("aibd-root-wait".into())
         .spawn(move || {
             let end = match aib_sys::Macos.wait_exit(root) {
@@ -410,16 +519,21 @@ fn start_root_wait(child: Child, root: u32, exit: Arc<RootExit>) -> std::io::Res
                 }
             };
             exit.set(end);
-        })?;
-    Ok(Some(child))
+        });
+    match started {
+        Ok(_) => Ok(Some(child)),
+        Err(e) => Err((e, Some(child))),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn start_root_wait(
+fn start_root_wait_owned(
     mut child: Child,
     _root: u32,
     exit: Arc<RootExit>,
-) -> std::io::Result<Option<Child>> {
+) -> Result<Option<Child>, (std::io::Error, Option<Child>)> {
+    // the closure owns the child: if the thread cannot start it is dropped
+    // unreaped (a drop never waits), so the group number stays ours
     std::thread::Builder::new()
         .name("aibd-root-wait".into())
         .spawn(move || {
@@ -431,7 +545,8 @@ fn start_root_wait(
                 },
             };
             exit.set(end);
-        })?;
+        })
+        .map_err(|e| (e, None))?;
     Ok(None)
 }
 
@@ -557,26 +672,46 @@ impl TreeHandle {
     fn group_is_ours(&mut self, sys: &System, alive: &[(u32, u64)]) -> bool {
         #[cfg(target_os = "macos")]
         {
-            // H1: the root is our child and not reaped (running or a zombie),
-            // checked right now: its pid, and so the group number, cannot
-            // have been reused. Once that fails, latched: no more group
-            // signals from this handle.
-            if self.root_lost || self.child.is_none() {
-                return false;
-            }
-            use aib_sys::ChildExit;
-            if self.exit.lost.load(std::sync::atomic::Ordering::SeqCst)
-                || aib_sys::Macos.peek(self.root).is_err()
-            {
-                self.root_lost = true;
-                self.gaps.insert(GAP_ROOT_IDENTITY_LOST);
-                return false;
-            }
             let _ = (sys, alive);
-            true
+            self.root_is_our_unreaped_child()
         }
         #[cfg(not(target_os = "macos"))]
         self.group_is_ours_by_members(sys, alive)
+    }
+
+    /// H1: the root is our child and not reaped (running or a zombie),
+    /// checked right now: its pid, and so the group number, cannot have
+    /// been reused. Once that fails, latched: no more group signals from
+    /// this handle.
+    #[cfg(target_os = "macos")]
+    fn root_is_our_unreaped_child(&mut self) -> bool {
+        if self.root_lost || self.child.is_none() {
+            return false;
+        }
+        use aib_sys::ChildExit;
+        if self.exit.lost.load(std::sync::atomic::Ordering::SeqCst)
+            || aib_sys::Macos.peek(self.root).is_err()
+        {
+            self.root_lost = true;
+            self.gaps.insert(GAP_ROOT_IDENTITY_LOST);
+            return false;
+        }
+        true
+    }
+
+    /// A start failed before anything was recorded (no process table yet):
+    /// SIGKILL the group if that is provably safe. macOS: the H1 check.
+    /// Elsewhere only while the root-exit thread has not seen (and so not
+    /// reaped) the root: best effort, not an H1 guarantee.
+    fn kill_group_unrecorded(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
+        let ours = self.root_is_our_unreaped_child();
+        #[cfg(not(target_os = "macos"))]
+        let ours = self.exit.get().is_none();
+        if ours {
+            imp::signal_group(self.root, imp::Sig::Kill);
+        }
+        ours
     }
 
     #[cfg(not(target_os = "macos"))]

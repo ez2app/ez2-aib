@@ -88,7 +88,22 @@ fn unsupported_spawn(
 ) -> Result<Box<dyn session::Running>, session::SpawnFail> {
     Err(session::SpawnFail {
         tag: "unsupported_platform".into(),
+        left_running: None,
     })
+}
+
+/// Stop the trees left by failed starts once more (aibd is ending; bb7dc
+/// #544). Returns how many could not be confirmed. Windows: none are kept here.
+pub fn stop_leftovers(grace: std::time::Duration) -> usize {
+    #[cfg(unix)]
+    {
+        session_unix::stop_leftovers(grace)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = grace;
+        0
+    }
 }
 
 /// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a

@@ -50,6 +50,7 @@ fn spec(session: &str, dir: &std::path::Path) -> SpawnSpec {
         watch_forks: true,
         discard_output: false,
         lineage: None,
+        inject: None,
     }
 }
 

@@ -61,6 +61,7 @@ fn lineage() -> Arc<Lineage> {
 fn spec_lineage(mode: &str, session: &str) -> SpawnSpec {
     SpawnSpec {
         lineage: Some(lineage()),
+        inject: None,
         ..spec(mode, session)
     }
 }
@@ -79,6 +80,7 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         discard_output: false, // these tests read the fixture's stdout
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
+        inject: None,
     }
 }
 
@@ -584,6 +586,7 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
                 .into(),
         ],
         lineage: Some(lineage()),
+        inject: None,
         watch_forks: false,
         discard_output: false,
         ..spec("complete", "s-env-cleared")
@@ -665,6 +668,7 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     let l = Arc::new(Lineage::from_selfcheck(Arc::new(f), Ok(())));
     let mut h = spawn_tree(&SpawnSpec {
         lineage: Some(l),
+        inject: None,
         ..spec("tree", "s-tree-incomplete")
     })
     .unwrap();
@@ -673,4 +677,89 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// bb7dc #544 High: a start that fails after `spawn()` succeeded. The shell
+/// starts a long `sleep` in its group and waits for it, so without a stop
+/// the root would live ~60 s.
+fn group_members(pgid: u32) -> String {
+    let o = Command::new("pgrep")
+        .args(["-g", &pgid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+fn failing_start(
+    session: &str,
+    at: aibd::platform::tree::Inject,
+) -> (aibd::platform::tree::StartFailed, std::time::Instant) {
+    use aibd::platform::tree::{start_tree, StartFailedOr};
+    let t = std::time::Instant::now();
+    let r = start_tree(&SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 60 & wait".into()],
+        inject: Some(at),
+        ..spec_watch("unused", session, true)
+    });
+    match r {
+        Err(StartFailedOr::Started(f)) => (f, t),
+        Err(StartFailedOr::NotStarted(e)) => panic!("reported as not started: {e}"),
+        Ok(_) => panic!("the injected failure did not fail"),
+    }
+}
+
+/// No root-exit thread: the group is killed while the root is still our
+/// unreaped child, the root is reaped at once, and the rest is reported
+/// unconfirmed (never "nothing left").
+#[test]
+fn a_root_wait_failure_kills_the_group_and_reports_it_unconfirmed() {
+    use aibd::platform::tree::{Inject, Left};
+    let (f, t) = failing_start("s-fail-rootwait", Inject::RootWait);
+    let root = f.root();
+    assert!(matches!(f.left, Left::Unconfirmed(p) if p == root));
+    assert!(
+        t.elapsed() < Duration::from_secs(10),
+        "the root was not killed"
+    );
+    assert!(
+        still_running(&[root]).is_empty(),
+        "root {root} still running"
+    );
+    assert_eq!(group_members(root), "", "group {root} not empty");
+    let fail = aibd::platform::session_unix::settle_failed_start(f);
+    assert_eq!(fail.left_running, Some(root));
+}
+
+/// Under control (the handle exists): the failure stops the tree like a
+/// DELETE and reports `left_running` exactly when that stop does not
+/// release a slot.
+fn a_late_failure_is_stopped(session: &str, at: aibd::platform::tree::Inject) {
+    use aibd::platform::tree::Left;
+    let (f, _) = failing_start(session, at);
+    let root = f.root();
+    assert!(matches!(f.left, Left::Handle(_)));
+    let t = std::time::Instant::now();
+    let fail = aibd::platform::session_unix::settle_failed_start(f);
+    assert!(t.elapsed() < Duration::from_secs(10), "not stopped");
+    assert!(
+        still_running(&[root]).is_empty(),
+        "root {root} still running"
+    );
+    assert_eq!(group_members(root), "", "group {root} not empty");
+    assert!(
+        fail.left_running.is_none() || fail.left_running == Some(root),
+        "{fail:?}"
+    );
+}
+
+#[test]
+fn a_system_failure_after_spawn_stops_the_tree() {
+    a_late_failure_is_stopped("s-fail-system", aibd::platform::tree::Inject::System);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_fork_watch_failure_after_spawn_stops_the_tree() {
+    a_late_failure_is_stopped("s-fail-watch", aibd::platform::tree::Inject::ForkWatch);
 }

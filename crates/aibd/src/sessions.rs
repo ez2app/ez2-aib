@@ -622,6 +622,11 @@ impl Sessions {
                     me.finish(&id, stop, "shutdown");
                 });
         }
+        // trees of starts that failed and were not confirmed gone (bb7dc #544)
+        let leftovers = crate::platform::stop_leftovers(SHORT_GRACE);
+        if leftovers > 0 {
+            tracing::warn!(leftovers, "trees of failed starts still not confirmed gone");
+        }
         let mut g = lock(&self.inner);
         loop {
             let busy = g.live.values().filter(|e| e.stopping).count() + g.reserved;
