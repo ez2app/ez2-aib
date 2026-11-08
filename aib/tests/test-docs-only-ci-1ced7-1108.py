@@ -456,12 +456,15 @@ class RustCIPathsCoverScripts(unittest.TestCase):
                 self.assertTrue(do.in_rust_ci(p), "%s 被 aibd.yml 用到,卻不在 RUST_CI_PATHS" % p)
 
     def test_knife_tools_are_listed(self):
-        for p in ("scripts/knife.py", "scripts/knives/win-job.json"):
+        for p in ("scripts/knife.py",):
             with self.subTest(p=p):
                 self.assertTrue(do.in_rust_ci(p))
                 self.assertTrue(do.rust_ci("pull_request", [p])[0], "只改刀工具 ⇒ 真跑 Rust 兩格")
 
     def test_the_scan_sees_a_knife_call(self):
+        # 之後 aibd.yml 引用刀規格檔(scripts/knives/…)時,掃描抓得到 ⇒ 沒加進名單就紅
+        self.assertIn("scripts/knives/win-job.json",
+                      self.referenced("python3 -I scripts/knife.py --spec scripts/knives/win-job.json"))
         # 刀:aibd.yml 換成 #535 那種寫法也要抓得到
         self.assertIn("scripts/knife.py",
                       self.referenced("k() { python3 -I scripts/knife.py crates/x.rs \"$1\" -- cargo test; }"))

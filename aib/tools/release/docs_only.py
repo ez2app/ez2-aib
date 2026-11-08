@@ -74,10 +74,9 @@ RUST_CI_PATHS = (
     "scripts/check-core-purity.sh",
     "scripts/check-sys-deps.sh",
     "scripts/check-win-job-knives.sh",
-    # aibd.yml 的刀經過 knife.py(#535 / #543),之後的刀規格放 scripts/knives/(043dd 提案 2);
+    # aibd.yml 的刀經過 knife.py(#535 / #543);之後加刀規格夾(043dd 提案 2)時也要加進來 ——
     # 守門測試:aibd.yml 與它呼叫的 scripts/* 提到的 scripts/ 路徑都要在這份,不在就紅
     "scripts/knife.py",
-    "scripts/knives/**",
     ".github/workflows/aibd.yml",
 )
 RUST_PREFIXES = ("crates/",)
