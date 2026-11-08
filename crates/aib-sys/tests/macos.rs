@@ -2,7 +2,7 @@
 #![cfg(target_os = "macos")]
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-use aib_sys::{selfcheck, Macos, ProcessInfo, SysError};
+use aib_sys::{selfcheck, ChildExit, ExitState, Macos, ProcessInfo, SysError};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
@@ -209,4 +209,109 @@ fn m1_an_exec_after_the_creator_exited_resets_parent_unique_to_launchd() {
 #[test]
 fn selfcheck_passes_on_this_machine() {
     assert_eq!(selfcheck::run(&Macos), Ok(()));
+}
+
+fn sh(script: &str) -> std::process::Child {
+    Command::new("/bin/sh")
+        .args(["-c", script])
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+/// Poll M5 until `pid` is no longer running (at most 10 s).
+#[allow(clippy::disallowed_methods)] // test pacing only
+fn peek_until_exited(pid: u32) -> ExitState {
+    for _ in 0..1000 {
+        match Macos.peek(pid).unwrap() {
+            ExitState::Running => std::thread::sleep(std::time::Duration::from_millis(10)),
+            st => return st,
+        }
+    }
+    panic!("child {pid} did not exit within 10 s");
+}
+
+#[test]
+fn m5_sees_a_running_child_as_running() {
+    let mut c = sleeper();
+    assert_eq!(Macos.peek(c.id()).unwrap(), ExitState::Running);
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn m5_reads_the_exit_status_without_reaping() {
+    let mut c = sh("exit 7");
+    let pid = c.id();
+    assert_eq!(peek_until_exited(pid), ExitState::Exited(7));
+    // WNOWAIT: still a zombie, so the same answer again, and the pid still
+    // belongs to it (M2 still reads it)
+    assert_eq!(Macos.peek(pid).unwrap(), ExitState::Exited(7));
+    assert_eq!(Macos.wait_exit(pid).unwrap(), ExitState::Exited(7));
+    // measured 11-08 (macOS 15.7.9): M1 / M2 say Gone for our own unreaped
+    // zombie although it still holds the pid. For our own child, M5 is the
+    // answer; "Gone" from M1 / M2 does not mean the pid is free.
+    assert_eq!(Macos.bsd_info(pid), Err(SysError::Gone));
+    assert_eq!(Macos.unique_ids(pid), Err(SysError::Gone));
+    // the one real reap still gets the status: nobody took it
+    assert_eq!(c.wait().unwrap().code(), Some(7));
+    // after the reap it is not our child any more: NotChild, never "gone"
+    assert_eq!(Macos.peek(pid), Err(SysError::NotChild));
+}
+
+#[test]
+#[allow(clippy::disallowed_methods)] // test pacing only
+fn m5_blocks_until_a_killed_child_exits_and_reports_the_signal() {
+    let mut c = sleeper();
+    let pid = c.id();
+    let t = std::thread::spawn(move || Macos.wait_exit(pid));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    c.kill().unwrap(); // SIGKILL
+    assert_eq!(t.join().unwrap().unwrap(), ExitState::Signaled(9));
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(c.wait().unwrap().signal(), Some(9));
+}
+
+#[test]
+fn m5_refuses_a_process_that_is_not_our_child() {
+    assert_eq!(Macos.peek(1), Err(SysError::NotChild));
+    assert_eq!(
+        Macos.peek(std::os::unix::process::parent_id()),
+        Err(SysError::NotChild)
+    );
+}
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+#[test]
+#[allow(clippy::disallowed_methods)] // test pacing only
+fn m5_wait_retries_when_a_signal_interrupts_it() {
+    // a SIGUSR2 handler WITHOUT SA_RESTART: a blocked waitid returns EINTR
+    let sa = std::mem::MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: an all-zero `sigaction` is valid (empty mask, no flags); only
+    // the handler field is set below.
+    let mut sa = unsafe { sa.assume_init() };
+    sa.sa_sigaction = ignore_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    sa.sa_flags = 0;
+    // SAFETY: `sa` is a valid `sigaction`; the old action is not needed.
+    let rc = unsafe { libc::sigaction(libc::SIGUSR2, &sa, std::ptr::null_mut()) };
+    assert_eq!(rc, 0);
+    let mut c = sleeper();
+    let pid = c.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        // SAFETY: `pthread_self` has no preconditions.
+        tx.send(unsafe { libc::pthread_self() }).unwrap();
+        Macos.wait_exit(pid)
+    });
+    let th = rx.recv().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // SAFETY: `th` is the live waiting thread (it cannot finish before the
+    // child is killed below); SIGUSR2 has a handler installed above.
+    let rc = unsafe { libc::pthread_kill(th, libc::SIGUSR2) };
+    assert_eq!(rc, 0);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    c.kill().unwrap();
+    assert_eq!(t.join().unwrap().unwrap(), ExitState::Signaled(9));
+    c.wait().unwrap();
 }

@@ -1,9 +1,12 @@
-//! macOS M1–M4 through libproc. Every `unsafe` block is one FFI call with
+//! macOS M1–M4 through libproc, M5 through `waitid`. Every `unsafe` block is one FFI call with
 //! its own SAFETY note (`clippy::undocumented_unsafe_blocks` and
 //! `multiple_unsafe_ops_per_block` are denied for this crate).
 
 use crate::list::read_pid_list;
-use crate::{check_struct_read, BsdInfo, ProcessInfo, SysError, UniqueIds};
+use crate::{
+    check_struct_read, exit_state_from, BsdInfo, ChildExit, ExitState, ProcessInfo, SysError,
+    UniqueIds,
+};
 use libc::{c_int, c_void};
 use std::mem::{size_of, MaybeUninit};
 
@@ -174,6 +177,46 @@ fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32
         }
         usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
     })
+}
+
+/// M5: one `waitid(P_PID, pid, WEXITED | WNOWAIT | extra)`. Never reaps.
+fn waitid_nowait(pid: u32, extra: c_int) -> Result<ExitState, SysError> {
+    let id = libc::id_t::try_from(pid_arg(pid)?).map_err(|_| SysError::BadPid)?;
+    let mut si = MaybeUninit::<libc::siginfo_t>::zeroed();
+    clear_errno();
+    // SAFETY: `si` is a live, writable, correctly sized and aligned
+    // `siginfo_t`; `waitid` writes at most one `siginfo_t` into it.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            id,
+            si.as_mut_ptr(),
+            libc::WEXITED | libc::WNOWAIT | extra,
+        )
+    };
+    if rc != 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    // SAFETY: `si` started all-zero (a valid `siginfo_t`: integers, padding
+    // and a null pointer) and the kernel only wrote a valid one over it.
+    let si = unsafe { si.assume_init() };
+    exit_state_from(pid, si.si_pid, si.si_code, si.si_status)
+}
+
+impl ChildExit for Macos {
+    fn peek(&self, pid: u32) -> Result<ExitState, SysError> {
+        waitid_nowait(pid, libc::WNOHANG)
+    }
+
+    fn wait_exit(&self, pid: u32) -> Result<ExitState, SysError> {
+        loop {
+            match waitid_nowait(pid, 0) {
+                Err(SysError::Os(e)) if e == libc::EINTR => continue,
+                Ok(ExitState::Running) => return Err(SysError::Unknown), // blocking waitid never says "running"
+                r => return r,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

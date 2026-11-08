@@ -184,3 +184,73 @@ mod tests {
         assert_eq!(f.all_pids(), Err(SysError::Incomplete));
     }
 }
+
+/// An in-memory [`crate::ChildExit`]: you set each child's state and, like
+/// the real call, looking never reaps. [`Self::reap`] stands for the caller's
+/// one real `wait()`; after it the pid is [`SysError::NotChild`].
+#[derive(Debug, Default)]
+pub struct FakeChildExit {
+    st: Mutex<BTreeMap<u32, Result<crate::ExitState, SysError>>>,
+}
+
+impl FakeChildExit {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn st(&self) -> MutexGuard<'_, BTreeMap<u32, Result<crate::ExitState, SysError>>> {
+        self.st.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Set what `peek(pid)` returns (and what `wait_exit` returns once it is
+    /// not `Running`). An `Err` injects that failure.
+    pub fn set(&self, pid: u32, state: Result<crate::ExitState, SysError>) {
+        self.st().insert(pid, state);
+    }
+
+    /// The caller reaped `pid`: from now on it is not our child.
+    pub fn reap(&self, pid: u32) {
+        self.st().insert(pid, Err(SysError::NotChild));
+    }
+}
+
+impl crate::ChildExit for FakeChildExit {
+    fn peek(&self, pid: u32) -> Result<crate::ExitState, SysError> {
+        self.st()
+            .get(&pid)
+            .cloned()
+            .unwrap_or(Err(SysError::NotChild))
+    }
+
+    /// A fake cannot block: a child still `Running` gives `Unknown` so a test
+    /// never hangs.
+    fn wait_exit(&self, pid: u32) -> Result<crate::ExitState, SysError> {
+        match self.peek(pid) {
+            Ok(crate::ExitState::Running) => Err(SysError::Unknown),
+            r => r,
+        }
+    }
+}
+
+#[cfg(test)]
+mod child_exit_tests {
+    use super::FakeChildExit;
+    use crate::{ChildExit, ExitState, SysError};
+
+    #[test]
+    fn looking_never_reaps_until_the_caller_does() {
+        let f = FakeChildExit::new();
+        f.set(7, Ok(ExitState::Running));
+        assert_eq!(f.peek(7), Ok(ExitState::Running));
+        assert_eq!(f.wait_exit(7), Err(SysError::Unknown)); // a fake never blocks
+        f.set(7, Ok(ExitState::Exited(3)));
+        assert_eq!(f.peek(7), Ok(ExitState::Exited(3)));
+        assert_eq!(f.wait_exit(7), Ok(ExitState::Exited(3)));
+        assert_eq!(f.peek(7), Ok(ExitState::Exited(3)));
+        f.reap(7);
+        assert_eq!(f.peek(7), Err(SysError::NotChild));
+        assert_eq!(f.peek(8), Err(SysError::NotChild));
+        f.set(9, Err(SysError::Os(5)));
+        assert_eq!(f.wait_exit(9), Err(SysError::Os(5)));
+    }
+}
