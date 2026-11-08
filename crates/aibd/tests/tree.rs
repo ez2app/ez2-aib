@@ -120,6 +120,58 @@ fn ps_field(pid: u32, field: &str) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// What this machine's process reader sees in a system `/bin/sleep`'s
+/// environment, read the way `check_candidates` reads it. Apple platform
+/// binaries hide it on a stock Mac; the GitHub macOS runner shows it (11-08,
+/// #510 CI). The two tests below assert the branch that applies and say which
+/// one on stderr (not captured, so it is in the CI log). An unclear probe is a
+/// failure, never a silent pick of the weaker branch.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PlatformEnv {
+    Hidden,
+    Readable,
+}
+
+#[cfg(target_os = "macos")]
+fn platform_env(test: &str) -> PlatformEnv {
+    use std::io::Write;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut c = Command::new("/bin/sleep")
+        .arg("30")
+        .env_clear()
+        .env("AIB_ENV_PROBE", "1")
+        .spawn()
+        .unwrap();
+    let pid = c.id();
+    let mut sys = System::new().unwrap();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_environ(UpdateKind::OnlyIfNotSet),
+    );
+    let env: Option<Vec<String>> = sys.process(Pid::from_u32(pid)).map(|p| {
+        p.environ()
+            .iter()
+            .map(|e| e.to_string_lossy().into_owned())
+            .collect()
+    });
+    let _ = c.kill();
+    let _ = c.wait();
+    let got = match &env {
+        Some(e) if e.is_empty() => PlatformEnv::Hidden,
+        Some(e) if e.iter().any(|v| v == "AIB_ENV_PROBE=1") => PlatformEnv::Readable,
+        other => panic!("platform env probe unclear for /bin/sleep {pid}: {other:?}"),
+    };
+    let _ = writeln!(
+        std::io::stderr(),
+        "[{test}] /bin/sleep environment: {got:?}"
+    );
+    got
+}
+
 fn ready_pids(v: &serde_json::Value) -> Vec<u32> {
     assert_eq!(v["type"], "ready", "{v}");
     let m = v["pids"].as_object().unwrap();
@@ -310,15 +362,26 @@ fn fork_watcher_catches_reparented_platform_binary() {
     // preconditions: re-parented, and really the system binary
     assert_eq!(ps_field(orphan, "ppid"), "1");
     assert_eq!(ps_field(orphan, "comm"), "/bin/sleep");
+    let env = platform_env("fork_watcher_catches_reparented_platform_binary");
     let rep = h.cancel(Duration::from_millis(500)).unwrap();
-    assert!(
-        rep.found_by_watch.contains(&orphan) || rep.found_by_lineage.contains(&orphan),
-        "{rep:?}"
-    );
-    assert!(
-        !rep.found_by_marker.contains(&orphan),
-        "marker layer saw it: {rep:?}"
-    );
+    let by_watch_or_lineage =
+        rep.found_by_watch.contains(&orphan) || rep.found_by_lineage.contains(&orphan);
+    match env {
+        // the marker sweep cannot see it: only the watcher or lineage can
+        PlatformEnv::Hidden => {
+            assert!(by_watch_or_lineage, "{rep:?}");
+            assert!(
+                !rep.found_by_marker.contains(&orphan),
+                "marker layer saw a hidden environment: {rep:?}"
+            );
+        }
+        // the marker is visible, so the sweep may record it first; it must
+        // still be recorded by some layer and stopped
+        PlatformEnv::Readable => assert!(
+            by_watch_or_lineage || rep.found_by_marker.contains(&orphan),
+            "{rep:?}"
+        ),
+    }
     assert!(rep.forks_seen >= 1, "{rep:?}");
     assert!(rep.no_recorded_survivors(), "{rep:?}");
     // DECISION-23: no proven containment on macOS, so never `clean`
@@ -409,6 +472,7 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
         #[allow(clippy::disallowed_methods)] // test pacing only
         std::thread::sleep(Duration::from_millis(20));
     }
+    let env = platform_env("an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable");
     let rep = h.cancel(Duration::from_millis(300)).unwrap();
     let left = still_running(&[pid]);
     let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
@@ -418,9 +482,29 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
         rep.steps.iter().all(|s| !s.targets.contains(&pid)),
         "{rep:?}"
     );
-    assert!(rep.candidates_unreadable.contains(&pid), "{rep:?}");
+    assert!(rep.candidates >= 1, "it is a late-exec candidate: {rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
-    assert_eq!(rep.unverified_reason(), Some("candidates_unreadable"));
+    match env {
+        // nothing readable: it cannot be ruled out
+        PlatformEnv::Hidden => {
+            assert!(rep.candidates_unreadable.contains(&pid), "{rep:?}");
+            assert_eq!(rep.unverified_reason(), Some("candidates_unreadable"));
+        }
+        // readable without our marker: taken as someone else's, which is the
+        // listed `env_cleared` blind spot, so still never clean
+        PlatformEnv::Readable => {
+            assert!(!rep.candidates_unreadable.contains(&pid), "{rep:?}");
+            assert!(rep.found_by_marker.is_empty(), "{rep:?}");
+            assert!(
+                matches!(
+                    rep.unverified_reason(),
+                    Some("observed_clean" | "candidates_unreadable")
+                ),
+                "{rep:?}"
+            );
+            assert!(rep.blind_spots().contains(&"env_cleared"), "{rep:?}");
+        }
+    }
 }
 
 /// A process older than the recorded process it claims as parent is a reused
