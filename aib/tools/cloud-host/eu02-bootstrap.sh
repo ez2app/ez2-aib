@@ -9,13 +9,16 @@
 #
 # 第 1 / 2 步 apply 會先在主機排「N 秒自動回滾」,Mac 用全新 ssh 連線驗得進去才取消;
 # 驗不過就什麼都不做，等主機自己回滾(預設 180 秒)。
-# 環境變數:EU02_HOST(預設 EU02-135.181.75.90,裝好 Tailscale 後改 eu02-ts)、SSH_BIN(測試用)。
+# 環境變數(必填):EU02_HOST = ~/.ssh/config 裡那台的 Host 別名(裝好 Tailscale 後改成 *-ts 那個)。
+# 選填:EU02_HOSTNAME(預設 eu02)、EU02_FQDN(寫進 /etc/hosts 的完整名,沒給就只寫短名)、EU02_LOG、SSH_BIN(測試用)。
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-HOST="${EU02_HOST:-EU02-135.181.75.90}"
+HOST="${EU02_HOST:?set EU02_HOST to the host alias in ~/.ssh/config (no default)}"
+HNAME="${EU02_HOSTNAME:-eu02}"
+FQDN="${EU02_FQDN:-}"
 SSH_BIN="${SSH_BIN:-ssh}"
 SSH_OPTS=(-o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=15 -o ControlPath=none)
-LOG="${EU02_LOG:-$HOME/.ez2-aib/pending/eu02-bootstrap-4542e/run.log}"
+LOG="${EU02_LOG:-$HOME/.ez2-aib/cloud-host/${HNAME}-bootstrap.log}"
 STEP=all; MODE=dry-run; TZ_WANT=""; APPROVED=""
 
 while [ $# -gt 0 ]; do
@@ -36,12 +39,12 @@ if [ "$MODE" = apply ] || [ "$MODE" = rollback ]; then
   [ "$STEP" != all ] || { echo "寫入一次只做一步(--step N),做完驗過再下一步" >&2; exit 2; }
 fi
 case "$STEP" in 0|1|2|3|4) STEPS="$STEP";; all) STEPS="0 1 3 4";; *) echo "--step 要 0–4 或 all(all 不含 2:PVE 不疊 ufw)" >&2; exit 2;; esac
-EXPECT_HOST="${EU02_EXPECT_HOST:-eu02}"; [ "$STEP" = 0 ] && EXPECT_HOST="${EU02_EXPECT_HOST:-.*}"
+EXPECT_HOST="${EU02_EXPECT_HOST:-$HNAME}"; [ "$STEP" = 0 ] && EXPECT_HOST="${EU02_EXPECT_HOST:-.*}"
 [ "$STEP" = 4 ] || [ "$STEP" = all ] || [ -z "$TZ_WANT" ] || { echo "--tz 只用在第 4 步" >&2; exit 2; }
 
 log() { mkdir -p "$(dirname "$LOG")"; printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
 remote() {  # remote <mode> <step>
-  "$SSH_BIN" "${SSH_OPTS[@]}" "$HOST" 'bash -s' -- "$1" "$2" "$TZ_WANT" <"$HERE/remote.sh"
+  "$SSH_BIN" "${SSH_OPTS[@]}" "$HOST" 'bash -s' -- "$1" "$2" "$TZ_WANT" "$HNAME" "$FQDN" <"$HERE/remote.sh"
 }
 fresh_login_ok() {  # 全新連線(ControlPath=none)能進 + hostname 對
   local h; h="$("$SSH_BIN" "${SSH_OPTS[@]}" "$HOST" hostname 2>/dev/null)" && [[ "$h" =~ ^${EXPECT_HOST}$ ]]

@@ -30,7 +30,7 @@ case "$n" in
       "--force enable") touch "$SB/.ufw_on" ;;
       "--force disable") rm -f "$SB/.ufw_on" ;;
     esac ;;
-  ip) if [ "$1" = -4 ]; then echo "2: enp35s0    inet 135.181.75.90/26 brd"; else exit 1; fi ;;
+  ip) if [ "$1" = -4 ]; then echo "2: eth0    inet 203.0.113.10/26 brd"; else exit 1; fi ;;
   systemctl) case "$1" in is-active) exit 1;; esac ;;
   timedatectl)
     case "$1" in
@@ -90,12 +90,12 @@ class Sandbox:
         if exe: os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
 
     def run(self, *args, env_extra=None):
-        env = dict(os.environ, SB=self.dir, R=os.path.join(self.dir, "root"), CALLS=self.calls,
+        env = dict(os.environ, SB=self.dir, R=os.path.join(self.dir, "root"), CALLS=self.calls, EU02_HOST="host-under-test",
                    SSH_BIN=os.path.join(self.dir, "fakessh"), EU02_LOG=os.path.join(self.dir, "run.log"),
                    DEADMAN_SEC="5")
         env.update(env_extra or {})
         p = subprocess.run(["bash", os.path.join(self.script_dir, "eu02-bootstrap.sh"), *args],
-                           env=env, capture_output=True, text=True, timeout=60)
+                           env=env, capture_output=True, text=True, errors="replace", timeout=60)
         return p.returncode, p.stdout + p.stderr
 
     def call_lines(self):
@@ -213,6 +213,23 @@ def t_step1_fresh_login_fail_no_confirm(sd):
     finally: sb.close()
 
 
+def t_step0_fqdn_and_no_default_host(sd):
+    sb = Sandbox(sd)
+    try:
+        rc, out = sb.run("--step", "0", "--apply", "--approved", "測試", env_extra={"EU02_FQDN": "eu02.example.test"})
+        assert rc == 0, out
+        assert "203.0.113.10 eu02.example.test eu02\n" in open(os.path.join(sb.dir, "root/etc/hosts")).read()
+    finally: sb.close()
+    sb = Sandbox(sd)
+    try:
+        env = dict(os.environ, SB=sb.dir, R=os.path.join(sb.dir, "root"), CALLS=sb.calls, SSH_BIN=os.path.join(sb.dir, "fakessh"))
+        env.pop("EU02_HOST", None)
+        p = subprocess.run(["bash", os.path.join(sd, "eu02-bootstrap.sh"), "--step", "0"], env=env, capture_output=True, text=True, errors="replace", timeout=60)
+        assert p.returncode != 0 and "EU02_HOST" in p.stderr, ("沒設 EU02_HOST 還跑", p.returncode, p.stderr)
+        assert not open(os.path.join(sb.dir, "ssh.log")).read(), "沒設主機還 ssh"
+    finally: sb.close()
+
+
 def t_step2_refuses_without_allow_ufw(sd):
     sb = Sandbox(sd)
     try:
@@ -227,7 +244,7 @@ def t_step0_hostname_hosts(sd):
         rc, out = sb.run("--step", "0", "--apply", "--approved", "測試")
         assert rc == 0, out
         assert first(sb.call_lines(), "hostnamectl set-hostname eu02") > -1
-        assert "135.181.75.90 eu02.ez2.internal eu02" in open(os.path.join(sb.dir, "root/etc/hosts")).read()
+        assert "203.0.113.10 eu02\n" in open(os.path.join(sb.dir, "root/etc/hosts")).read()
         rc, out = sb.run("--step", "0", "--verify")
         assert rc == 0, ("step0 verify 沒過", out)
     finally: sb.close()
@@ -281,7 +298,7 @@ def t_step4_tz_and_rollback(sd):
     finally: sb.close()
 
 
-TESTS = [t_step0_hostname_hosts, t_step2_refuses_without_allow_ufw, t_dryrun_writes_nothing, t_ssh_hardening_opts, t_apply_needs_approval, t_step1_order_and_confirm,
+TESTS = [t_step0_hostname_hosts, t_step0_fqdn_and_no_default_host, t_step2_refuses_without_allow_ufw, t_dryrun_writes_nothing, t_ssh_hardening_opts, t_apply_needs_approval, t_step1_order_and_confirm,
          t_step1_sshd_t_fail, t_step1_overridden_by_earlier_conf, t_step1_fresh_login_fail_no_confirm, t_step2_22_before_enable_and_ipv6,
          t_step3_no_login_no_key, t_step4_tz_and_rollback]
 

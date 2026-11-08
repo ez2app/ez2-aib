@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # EU02 開機加固 第 1–4 步 — 主機端(由 eu02-bootstrap.sh 經 ssh 'bash -s' 送上去跑)
-# 用法: bash -s -- <dry-run|apply|verify|rollback|confirm> <1|2|3|4> [時區]
+# 用法: bash -s -- <dry-run|apply|verify|rollback|confirm> <0|1|2|3|4> [時區] [主機名=eu02] [完整名,可空]
 # 預設什麼都不改;只有 mode=apply / rollback / confirm 會寫。
 # 測試用:R=<沙盒根> 讓所有路徑落到沙盒;指令用 PATH 上的替身。
 set -u
-MODE="${1:-dry-run}"; STEP="${2:-}"; TZ_WANT="${3:-}"
+MODE="${1:-dry-run}"; STEP="${2:-}"; TZ_WANT="${3:-}"; HNAME="${4:-eu02}"; FQDN="${5:-}"
 R="${R:-}"                                   # 測試沙盒根，正式機為空
 TS="$(date +%Y%m%d-%H%M%S)"
 BK="$R/root/ez2-bootstrap-backup"
@@ -42,17 +42,18 @@ deadman_cancel() { w systemctl stop "$1.timer"; }
 
 # ---------- 第 0 步 hostname(PVE 要 hostname 能解析到公網 IP)----------
 s0_check() {
-  [ "$(hostname)" = eu02 ] && say "OK  hostname eu02" || { say "差  hostname=$(hostname)"; return 1; }
-  grep -qE '^[0-9a-f.:]+\s.*\beu02(\s|$)' "$R/etc/hosts" && say "OK  /etc/hosts 有 eu02" || { say "差  /etc/hosts 沒 eu02"; return 1; }
+  [ "$(hostname)" = "$HNAME" ] && say "OK  hostname $HNAME" || { say "差  hostname=$(hostname)"; return 1; }
+  grep -qE "^[0-9a-f.:]+[[:space:]]+(.*[[:space:]]+)?${HNAME}([[:space:]]|$)" "$R/etc/hosts" && say "OK  /etc/hosts 有 $HNAME" || { say "差  /etc/hosts 沒 $HNAME"; return 1; }
 }
 s0_apply() {
   local ip; ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
   [ -n "$ip" ] || ip="${EU02_IP:-}"
   [ -n "$ip" ] || die "抓不到公網 IPv4"
   backup "$R/etc/hostname"; backup "$R/etc/hosts"
-  w hostnamectl set-hostname eu02
-  if grep -qE '\seu02(\s|$)' "$R/etc/hosts" 2>/dev/null; then say "/etc/hosts 已有 eu02"; else
-    if [ "$MODE" = apply ]; then printf '%s eu02.ez2.internal eu02\n' "$ip" >>"$R/etc/hosts"; say "已加 $ip eu02 到 /etc/hosts"; else plan "加「$ip eu02.ez2.internal eu02」到 /etc/hosts"; fi
+  w hostnamectl set-hostname "$HNAME"
+  local line="$ip ${FQDN:+$FQDN }$HNAME"
+  if grep -qE "[[:space:]]${HNAME}([[:space:]]|$)" "$R/etc/hosts" 2>/dev/null; then say "/etc/hosts 已有 $HNAME"; else
+    if [ "$MODE" = apply ]; then printf '%s\n' "$line" >>"$R/etc/hosts"; say "已加「${line}」到 /etc/hosts"; else plan "加「${line}」到 /etc/hosts"; fi
   fi
 }
 s0_rollback() { local d; d="$(ls -d "$BK"/*/ 2>/dev/null | tail -1)"; [ -n "$d" ] && w cp -a "$d/_etc_hosts" "$R/etc/hosts"; w hostnamectl set-hostname "$(cat "$d/_etc_hostname" 2>/dev/null || echo localhost)"; }
@@ -188,7 +189,7 @@ s4_rollback() {
 
 # ---------- 主流程 ----------
 case "$STEP" in 0|1|2|3|4) ;; *) die "步驟要 0–4";; esac
-[ "$STEP" = 0 ] || [ "$(hostname)" = eu02 ] || [ -n "$R" ] || die "hostname 不是 eu02($(hostname)),先跑第 0 步"
+[ "$STEP" = 0 ] || [ "$(hostname)" = "$HNAME" ] || [ -n "$R" ] || die "hostname 不是 $HNAME($(hostname)),先跑第 0 步"
 [ "$(id -u)" = 0 ] || [ -n "$R" ] || die "要 root"
 case "$MODE" in
   dry-run) say "=== 現況 ==="; "s${STEP}_check"; say "=== 計畫(不會改)==="; "s${STEP}_apply"; exit 0 ;;

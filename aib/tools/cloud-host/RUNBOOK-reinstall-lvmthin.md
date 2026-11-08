@@ -6,7 +6,7 @@
 ## 誰做什麼
 | 步 | 誰 | 動作 | 驗 |
 |---|---|---|---|
-| 0 | Andy | **二選一**:A 一次性建 Robot webservice user(Settings → Web service and app settings),`aib secret ask hetzner_robot_user` / `hetzner_robot_pass` 彈窗填入 → 之後 4542e 用 API `POST /boot/<server#>/rescue os=linux authorized_key[]=<Robot 的 fingerprint>` 自己啟用;B 自己在 Robot Rescue 頁勾 andyimkt 金鑰按 Activate | A:`GET /boot/<server#>/rescue` active=true;B:頁面顯示 active。**60 分鐘內要重開,只供一次 Rescue 開機** |
+| 0 | Andy | **二選一**:A 一次性建 Robot webservice user(Settings → Web service and app settings),`aib secret ask HETZNER_ROBOT_USER` / `HETZNER_ROBOT_PASS` 彈窗填入 → 之後 4542e 用 API `POST /boot/<server#>/rescue os=linux authorized_key[]=<Robot 的 fingerprint>` 自己啟用;B 自己在 Robot Rescue 頁勾你在 Robot 上的 ssh 金鑰按 Activate | A:`GET /boot/<server#>/rescue` active=true;B:頁面顯示 active。**60 分鐘內要重開,只供一次 Rescue 開機** |
 | 1 | 4542e | `systemctl reboot`(已准過一次,這次再問) | 1–3 分鐘後 ssh 進 Rescue |
 | 2 | 4542e | Rescue 內唯讀：`lsblk`、`ls /root/images | grep -i trixie`、`ls /sys/firmware/efi`(已知 BIOS)、對 installimage 分割語法;核對新 Rescue host key | 兩顆 nvme 都在、映像檔名對、legacy BIOS |
 | 3 | 4542e | 把 conf 貼到 /root,`installimage -a -c /root/installimage-eu02-lvmthin.conf` | 結束碼 0、無 ERROR |

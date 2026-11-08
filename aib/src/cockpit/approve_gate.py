@@ -108,7 +108,7 @@ SITES = {
     # paste 句照實寫:值進 pane 後同帳號任何程式 capture-pane / list-buffers / 對話紀錄都讀得到(#435 R1 M1)
     # #528:tools/cloud-host/robot.py 的 rescue / reset --apply;action / server 短碼、fp(金鑰指紋)不截,本人看得到是哪台、哪把鑰
     "cloud_robot.apply": _s("cloud-host/robot.py", "host_rescue", "aib.cloud_robot.touchid_apply",
-                            {"action": 16, "server": 24, "fp": FULL},
+                            {"action": 16, "server": FULL, "fp": FULL},   # r2 H2:server 也不截,彈窗 = 網址
                             "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}"),
     "secret_share.copy": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_copy", {"name": FULL},
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
