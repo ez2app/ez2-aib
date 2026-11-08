@@ -14,7 +14,8 @@
 只有 ok 且 result 是成功三種且 cabin == 目標,才算「已切到」;其他一律不這樣說。
 **未知**(11-08,#369 bb7dc 修法意見 4):外掛回 post_unconfirmed:true(送過 POST 但沒讀回確認)、核心 12 秒硬逾時、
 JSON 壞(外掛可能已 POST)⇒ result=unknown:不報成功、不開窗、不當普通失敗;寫 <鍵>.unknown,同鍵**不自動重試**
-(之後同鍵 ⇒ unknown_kept);人再打一次指令是新請求 ID、新鍵,照常做。<鍵>.unknown 跟 .done 一樣 24 小時 / 32 筆後收。
+(之後同鍵 ⇒ unknown_kept);人再打一次指令是新請求 ID、新鍵,照常做。<鍵>.unknown 只按時間 24 小時後收(不按筆數)。
+請求 ID 帶產生時間,超過 12 小時就拒絕(result=stale)⇒ 標記收掉之後同鍵請求必定已過期,不會被自動再做(#491 bb7dc 讀碼 1)。
 網址進紀錄 / 提示前只留 scheme://host:port/(將來網址帶配對資料也不會被寫出去)。
 
 去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個鎖檔 <鍵>.lock:
@@ -43,10 +44,15 @@ import aib_ui  # noqa: E402
 
 CODE4 = re.compile(r"^[0-9a-f]{4}$")
 OK_RESULTS = ("started", "already", "switched")
-CLEAR_WHY = ("plugin", "spawn")   # 這兩種失敗確定沒留下沒確認的 POST ⇒ 可清標記、同鍵可重試
+CLEAR_WHY = ("spawn",)   # 外掛根本沒起來 ⇒ 確定沒副作用 ⇒ 可清標記、同鍵可重試
+# 外掛自己說失敗(why=plugin)只有明說 "sent": false(沒 POST、沒冷啟伺服器)才清;沒帶 / 帶 true 一律留標記。
+# 對外動作規則 v0.2 第 2 條 (a):「確定沒執行」由接收端自己列出,籠統失敗不算(#491 bb7dc 讀碼 2)。
 PLUGIN_TIMEOUT_S = 12   # 核心這端的硬逾時(外掛自己 10 秒)
 KEEP_S = 24 * 3600
 KEEP_N = 32
+REQ_MAX_AGE_S = KEEP_S // 2   # 請求 ID 帶產生時間;超過就拒絕 ⇒ 標記被收之前,同鍵請求一定已過期
+REQ_SKEW_S = 300
+REQ_RE = re.compile(r"^([0-9]{10})-[0-9A-Za-z-]{1,64}$")
 
 
 def T(key, **params):
@@ -399,7 +405,7 @@ def call_plugin(cabin, switch, run=subprocess.run):
         return {"ok": False, "result": "unknown", "cabin": got, "url": url, "why": "post-unconfirmed"}
     if r.returncode != 0 or d.get("ok") is not True or res not in OK_RESULTS:
         return {"ok": False, "result": res if res in ("not_live", "timeout", "error") else "error",
-                "cabin": got, "url": url, "why": "plugin"}
+                "cabin": got, "url": url, "why": "plugin", "sent": d.get("sent")}
     if got != cabin:
         return {"ok": False, "result": "mismatch", "cabin": got, "url": url, "why": "cabin-mismatch"}
     if origin_only(url) is None:
@@ -419,8 +425,18 @@ def notify(session, msg, env=None, run=subprocess.run):
         pass
 
 
+def req_fresh(req, now):
+    """請求 ID = <產生時的 epoch 秒>-<亂數>。只有 REQ_MAX_AGE_S 以內(容許 REQ_SKEW_S 時鐘誤差)才算數。
+    標記 / .done 最快 KEEP_S 後才按時間收,REQ_MAX_AGE_S < KEEP_S ⇒ 收掉之後同鍵請求必定已過期,不會被自動再做。"""
+    m = REQ_RE.match(req or "")
+    if not m:
+        return False
+    age = now - int(m.group(1))
+    return -REQ_SKEW_S <= age <= REQ_MAX_AGE_S
+
+
 def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.run, popen=subprocess.Popen,
-               find=None, pause=None):
+               find=None, pause=None, now=time.time):
     """背景收尾段呼叫。回結果碼字串;開席 rc 不看它。"""
     out = sys.stdout if out is None else out
     e = os.environ if env is None else env
@@ -430,6 +446,9 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
         return "unavailable"
     target = cabin if CODE4.match(cabin or "") else ""
     switch = bool(caps["switch"] and target)
+    if not req_fresh(req, now()):
+        out.write("AIB_GAMEWORLD result=stale cabin=%s\n" % (target or "-"))
+        return "stale"                                    # 舊 / 格式不對的請求 ID:不叫外掛(GC 收掉標記後同鍵也不會再做)
     why = []
     cl = claim(Path(home) / "cockpit" / "gameworld-req", req, target or "-", pause=pause, why=why)
     if cl is None:
@@ -470,7 +489,8 @@ def _with_claim(cl, target, switch, session, out, e, env, run, popen):
     opened = how in ("app", "browser", "skipped")
     # 只有「確定沒送出 / 確定切好」才清 write-ahead 標記:外掛自己說失敗且沒帶 post_unconfirmed(why=plugin)、
     # 外掛根本沒起來(spawn)、或切好了(r ok,窗開不開都一樣)。外掛說成功但艙不對 / 網址不對 ⇒ 證明不了沒副作用 ⇒ 留著。
-    finish(cl, opened, unknown=cl.armed and not r["ok"] and r["why"] not in CLEAR_WHY)
+    surely_not_sent = r["why"] in CLEAR_WHY or (r["why"] == "plugin" and r.get("sent") is False)
+    finish(cl, opened, unknown=cl.armed and not r["ok"] and not surely_not_sent)
     out.write("AIB_GAMEWORLD result=%s cabin=%s actual=%s how=%s url=%s\n"
               % (r["result"], target or "-", r["cabin"] or "unknown", how or "-", o or "-"))
     if r["ok"] and opened:

@@ -1114,8 +1114,9 @@ case " $PROVIDERS " in *" ${POS[0]-} "*)
     case "${POS[${#POS[@]}-1]}" in
       dm) [ "$_gw_dm" = "0" ] || break; _gw_dm=1; OPEN_DM=on ;;
       gameworld) [ -z "$GAMEWORLD_REQ" ] || break
-        GAMEWORLD_REQ="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
-        [ -n "$GAMEWORLD_REQ" ] || GAMEWORLD_REQ="$$-$(date +%s)-$RANDOM" ;;
+        _gw_rnd="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+        [ -n "$_gw_rnd" ] || _gw_rnd="$$-$RANDOM"
+        GAMEWORLD_REQ="$(date +%s)-$_gw_rnd" ;;   # <產生時間>-<亂數>:gameworld.py 拒絕超過 12 小時的 ID
       *) break ;;
     esac
     unset "POS[${#POS[@]}-1]"
