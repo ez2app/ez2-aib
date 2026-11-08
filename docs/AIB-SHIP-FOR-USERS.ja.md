@@ -75,3 +75,5 @@ This pre-push check, in the end
 - Python 以外の言語：どこまで対応しているかは `AIB-TEST-QUICKSTART.ja.md` の言語表を参照してください（Node、jest/mocha、Go、PHP で確認済み。vitest は正しく実行されますが毎回再実行されます。Ruby、Rust、Java などはコマンドを自分で宣言する必要があり、毎回実際に実行されます）。
 - 時計だけを見てファイルを読まない時間依存のテスト（例：「30 日より古ければ期限切れ」）は記録の有効期限でしかカバーされないため、最大 14 日後まで再実行されないことがあります。
 
+
+<!-- probe #512 docs-only (不合) -->
