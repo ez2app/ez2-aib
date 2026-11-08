@@ -432,6 +432,42 @@ class RustCI(unittest.TestCase):
             self.assertEqual(out.strip(), "rust_ci=true")
 
 
+class RustCIPathsCoverScripts(unittest.TestCase):
+    """aibd.yml 會跑的 scripts/* 改了也要跑 Rust 兩格,不然只改刀工具的 PR 兩格必過直接回綠 = 刀沒跑(1ced7 11-09)。"""
+
+    SCRIPT = re.compile(r"(?<![\w./-])(?:\./)?(scripts/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]+)*)")
+
+    def referenced(self, text):
+        return {m.rstrip("/.") for m in self.SCRIPT.findall(text)}
+
+    def test_every_script_aibd_yml_runs_is_in_rust_ci_paths(self):
+        seen, todo = set(), self.referenced(aibd_text())
+        while todo:                                   # aibd.yml → 它呼叫的腳本 → 腳本再呼叫的
+            p = todo.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            f = ROOT / p
+            if f.is_file() and f.suffix in (".sh", ".py", ""):
+                todo |= self.referenced(f.read_text(encoding="utf-8", errors="replace"))
+        self.assertTrue(seen, "aibd.yml 一個 scripts/ 都沒抓到 = 這支測試壞了")
+        for p in sorted(seen):
+            with self.subTest(p=p):
+                self.assertTrue(do.in_rust_ci(p), "%s 被 aibd.yml 用到,卻不在 RUST_CI_PATHS" % p)
+
+    def test_knife_tools_are_listed(self):
+        for p in ("scripts/knife.py", "scripts/knives/win-job.json"):
+            with self.subTest(p=p):
+                self.assertTrue(do.in_rust_ci(p))
+                self.assertTrue(do.rust_ci("pull_request", [p])[0], "只改刀工具 ⇒ 真跑 Rust 兩格")
+
+    def test_the_scan_sees_a_knife_call(self):
+        # 刀:aibd.yml 換成 #535 那種寫法也要抓得到
+        self.assertIn("scripts/knife.py",
+                      self.referenced("k() { python3 -I scripts/knife.py crates/x.rs \"$1\" -- cargo test; }"))
+        self.assertIn("scripts/check-sys-deps.sh", self.referenced("          ./scripts/check-sys-deps.sh --self-test"))
+
+
 def aibd_text():
     return (ROOT / ".github" / "workflows" / "aibd.yml").read_text(encoding="utf-8")
 
