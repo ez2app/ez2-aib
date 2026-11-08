@@ -45,6 +45,7 @@ import memguard  # noqa: E402  (proc_info / start_of: pid identity, shared with 
 DEFAULT_GRACE_S = 5.0
 KILL_WAIT_S = 2.0
 POLL_S = 0.05
+IDENTITY_RETRIES = 10  # x POLL_S: how long an exiting leader may stay unreadable before identity is unproven
 POSIX = hasattr(os, "killpg")
 
 
@@ -119,14 +120,22 @@ class _Group:
         """None when the leader is provably the process we started; otherwise why not (nothing may be sent)."""
         if self.start is None:
             return "leader_start_unknown"
-        state = self.leader_state(self.pgid)
-        if state == "reaped":
-            return "leader_reaped_elsewhere"
-        if state == "zombie":
-            return None  # exited, not reaped by anyone: its pid (= the group number) cannot be reused
-        if self.start_of(self.pgid) != self.start:  # unreadable (None) counts as unproven, never as "fine"
-            return "leader_identity_changed"
-        return None
+        # Order matters: read the start time FIRST, then look at the state. A leader that dies between the two
+        # shows up as a zombie (ours, fine); one that is still "running" afterwards was alive when its start
+        # time was read, so that reading is its own.
+        # A leader in the middle of exiting is briefly unreadable (macOS proc_pidinfo fails) while waitid does
+        # not report it yet: retry a few polls until it is readable or a zombie; still unreadable = unproven.
+        for _ in range(IDENTITY_RETRIES):
+            now = self.start_of(self.pgid)
+            state = self.leader_state(self.pgid)
+            if state == "reaped":
+                return "leader_reaped_elsewhere"
+            if state == "zombie":
+                return None  # exited, not reaped by anyone: its pid (= the group number) cannot be reused
+            if now is not None:
+                return None if now == self.start else "leader_identity_changed"
+            self.sleep(POLL_S)
+        return "leader_identity_changed"  # unreadable counts as unproven, never as "fine"
 
     def send(self, sig):
         """'sent' | 'gone' (ESRCH) | 'check' (EPERM: verify by listing) | 'not_ours' (self.why says why)."""

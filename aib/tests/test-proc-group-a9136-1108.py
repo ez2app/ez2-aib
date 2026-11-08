@@ -249,6 +249,27 @@ class Fakes(unittest.TestCase):
         self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"), rep)
         self.assertEqual(calls, [signal.SIGTERM])
 
+    def test_a_leader_dying_between_the_two_identity_reads_is_still_ours(self):
+        # Mac Pro 13 flake 2/6: after TERM the leader died between "running?" and "start time?"; the start read
+        # came back None and was taken as "identity changed". Start first, state second.
+        order = []
+        g, calls = self.group(lambda pgid, sig: None, [(424242, "Z")], start_now=None)
+        g.start_of = lambda pid: order.append("start") or None
+        g.leader_state = lambda pid: order.append("state") or "zombie"
+        rep = g.stop(grace=0.01)
+        self.assertEqual(rep.status, "stopped", rep)
+        self.assertEqual(order[:2], ["start", "state"])
+
+    def test_an_exiting_leader_briefly_unreadable_is_retried_not_misjudged(self):
+        # local flake 2/10: right after TERM the leader is unreadable for a moment, then a zombie
+        seq = iter([None, None, None])
+        states = iter(["running", "running", "zombie"])
+        g, calls = self.group(lambda pgid, sig: None, [(424242, "Z")])
+        g.start_of = lambda pid: next(seq, None)
+        g.leader_state = lambda pid: next(states, "zombie")
+        rep = g.stop(grace=0.01)
+        self.assertEqual(rep.status, "stopped", rep)
+
     def test_esrch_means_stopped(self):
         def esrch(pgid, sig):
             raise ProcessLookupError(3, "No such process")
