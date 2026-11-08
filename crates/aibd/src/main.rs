@@ -80,7 +80,12 @@ fn selfcheck(json: bool) -> ExitCode {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
         .map_err(|e| e.to_string());
     let lineage = aibd::lineage::Lineage::detect();
-    let rows = aibd::selfcheck::rows(cfg, &lineage, std::env::consts::OS);
+    let rows = aibd::selfcheck::rows(
+        cfg,
+        &lineage,
+        &platform::child_reaping(),
+        std::env::consts::OS,
+    );
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
     } else {

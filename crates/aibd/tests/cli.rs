@@ -45,6 +45,7 @@ fn selfcheck_json_lists_every_row_and_never_claims_process_management() {
         "version",
         "config",
         "lineage_m1",
+        "sigchld",
         "process_management",
         "windows_job",
     ] {
@@ -55,6 +56,10 @@ fn selfcheck_json_lists_every_row_and_never_claims_process_management() {
     if cfg!(target_os = "macos") {
         // DECISION-23: never "ok" (clean) on macOS
         assert_ne!(status("lineage_m1"), "ok");
+    }
+    if cfg!(target_os = "macos") {
+        // the test runner keeps zombies (aib-sys tests/sigchld.rs pins the other cases)
+        assert_eq!(status("sigchld"), "ok");
     }
     if cfg!(windows) {
         assert_eq!(status("windows_job"), "unverified");

@@ -18,6 +18,52 @@ pub mod windows;
 #[cfg(windows)]
 use windows as imp;
 
+/// How exited children are kept (ADR 0008 rule 3 premise, 043dd #522 M1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildReaping {
+    /// Exited children stay zombies until we reap them (M5 can look).
+    Keeps(&'static str),
+    /// The kernel reaps them at once (`SIGCHLD` ignored / `SA_NOCLDWAIT`).
+    AutoReaps(&'static str),
+    /// Could not read it.
+    Unreadable(String),
+    /// Not a question on this platform (Windows keeps a HANDLE instead).
+    Unsupported,
+}
+
+/// Read the `SIGCHLD` disposition (macOS); changes nothing.
+pub fn child_reaping() -> ChildReaping {
+    #[cfg(target_os = "macos")]
+    {
+        match aib_sys::sigchld() {
+            Ok(s) if s.keeps_zombies() => ChildReaping::Keeps(s.as_str()),
+            Ok(s) => ChildReaping::AutoReaps(s.as_str()),
+            Err(e) => ChildReaping::Unreadable(e.tag().to_owned()),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ChildReaping::Unsupported
+    }
+}
+
+/// At server start: an inherited ignored `SIGCHLD` is set back to default so
+/// our children stay lookable until we reap them. Returns what it was when it
+/// had to change it.
+pub fn keep_child_zombies() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        match aib_sys::sigchld_keep_zombies() {
+            Ok(was) if !was.keeps_zombies() => Some(was.as_str()),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
 /// Windows `%APPDATA%\Ez2\AIB\data` (CI-windows). Never the 1.x `~/.ez2-aib`.
 pub fn default_data_dir() -> Option<PathBuf> {

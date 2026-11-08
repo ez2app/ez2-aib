@@ -44,6 +44,11 @@ pub async fn run(
 
     let _lock =
         platform::instance_lock(&run_dir.join("aibd.lock"))?.ok_or(StartError::AlreadyRunning)?;
+    if let Some(was) = platform::keep_child_zombies() {
+        // inherited from whoever started us (SIG_IGN survives exec): without
+        // this every group stop would be unverified (ADR 0008 rule 3)
+        tracing::warn!(sigchld = was, "SIGCHLD reset to default");
+    }
 
     let db = dirs.data_dir().join("aibd.sqlite");
     let store = tokio::task::spawn_blocking(move || Store::open(&db))

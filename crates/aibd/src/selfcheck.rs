@@ -16,6 +16,7 @@
 
 use crate::config::Config;
 use crate::lineage::Lineage;
+use crate::platform::ChildReaping;
 
 /// One capability's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +77,12 @@ pub fn version_line() -> String {
 
 /// All rows, from what was looked up (injected so tests never touch the real
 /// environment or start a child).
-pub fn rows(config: Result<Config, String>, lineage: &Lineage, os: &str) -> Vec<Row> {
+pub fn rows(
+    config: Result<Config, String>,
+    lineage: &Lineage,
+    reaping: &ChildReaping,
+    os: &str,
+) -> Vec<Row> {
     let mut out = vec![Row::new("version", Status::Ok, version_line())];
     out.push(match config {
         Ok(c) => Row::new(
@@ -91,6 +97,7 @@ pub fn rows(config: Result<Config, String>, lineage: &Lineage, os: &str) -> Vec<
         Err(e) => Row::new("config", Status::Failed("config".into()), e),
     });
     out.push(lineage_row(lineage, os));
+    out.push(reaping_row(reaping));
     out.push(Row::new(
         "process_management",
         Status::NotWired,
@@ -127,6 +134,31 @@ fn lineage_row(lineage: &Lineage, os: &str) -> Row {
             "start-up check failed: lineage is off until restart",
         )
     }
+}
+
+fn reaping_row(r: &ChildReaping) -> Row {
+    let mut row = match r {
+        ChildReaping::Keeps(_) => Row::new(
+            "sigchld",
+            Status::Ok,
+            "exited children stay until reaped (ADR 0008 rule 3)",
+        ),
+        ChildReaping::AutoReaps(_) => Row::new(
+            "sigchld",
+            Status::Unverified,
+            "inherited: the kernel reaps children at once; the server resets it to default when it starts, this check does not",
+        ),
+        ChildReaping::Unreadable(tag) => Row::new(
+            "sigchld",
+            Status::Failed(format!("sigchld:{tag}")),
+            "could not read the SIGCHLD disposition",
+        ),
+        ChildReaping::Unsupported => Row::new("sigchld", Status::Unsupported, "POSIX only"),
+    };
+    if let ChildReaping::Keeps(s) | ChildReaping::AutoReaps(s) = r {
+        row.notes.push(("disposition", (*s).to_owned()));
+    }
+    row
 }
 
 /// 1 when any row failed, else 0.
@@ -189,6 +221,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    const K: ChildReaping = ChildReaping::Keeps("default");
+
     fn cfg() -> Result<Config, String> {
         Config::from_lookup(|_| None, Some(PathBuf::from("/tmp/aibd-x"))).map_err(|e| e.to_string())
     }
@@ -206,7 +240,7 @@ mod tests {
             std::sync::Arc::new(aib_sys::fake::FakeProcessInfo::default()),
             Ok(()),
         );
-        let rows = rows(cfg(), &l, "macos");
+        let rows = rows(cfg(), &l, &K, "macos");
         assert_eq!(status_of(&rows, "lineage_m1"), "unverified");
         assert_eq!(exit_code(&rows), 0);
         assert!(render_text(&rows).contains("not a clean bill"));
@@ -215,7 +249,7 @@ mod tests {
     #[test]
     fn a_failed_lineage_check_is_failed_with_its_tag_and_exit_1() {
         let l = Lineage::disabled("failed:child_ppid");
-        let rows = rows(cfg(), &l, "macos");
+        let rows = rows(cfg(), &l, &K, "macos");
         assert_eq!(status_of(&rows, "lineage_m1"), "failed:child_ppid");
         assert_eq!(exit_code(&rows), 1);
     }
@@ -223,7 +257,7 @@ mod tests {
     #[test]
     fn process_management_is_never_reported_as_working() {
         for os in ["macos", "windows", "linux"] {
-            let rows = rows(cfg(), &Lineage::disabled("unsupported"), os);
+            let rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, os);
             assert_eq!(status_of(&rows, "process_management"), "not_wired", "{os}");
         }
     }
@@ -232,15 +266,15 @@ mod tests {
     fn windows_job_is_unverified_on_windows_and_unsupported_elsewhere() {
         let l = Lineage::disabled("unsupported");
         assert_eq!(
-            status_of(&rows(cfg(), &l, "windows"), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "windows"), "windows_job"),
             "unverified"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, "windows"), "lineage_m1"),
+            status_of(&rows(cfg(), &l, &K, "windows"), "lineage_m1"),
             "unsupported"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, "macos"), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "macos"), "windows_job"),
             "unsupported"
         );
     }
@@ -252,14 +286,14 @@ mod tests {
             Some(PathBuf::from("/tmp/x")),
         )
         .map_err(|e| e.to_string());
-        let rows = rows(bad, &Lineage::disabled("unsupported"), "linux");
+        let rows = rows(bad, &Lineage::disabled("unsupported"), &K, "linux");
         assert_eq!(status_of(&rows, "config"), "failed:config");
         assert_eq!(exit_code(&rows), 1);
     }
 
     #[test]
     fn json_has_one_object_per_row_with_notes_flattened() {
-        let mut rows = rows(cfg(), &Lineage::disabled("unsupported"), "linux");
+        let mut rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "linux");
         rows[0].notes.push(("wait_mode", "poll".into()));
         let j = render_json(&rows);
         let a = j.as_array().expect("array");
@@ -268,5 +302,24 @@ mod tests {
         assert_eq!(a[0]["status"], "ok");
         assert_eq!(a[0]["wait_mode"], "poll");
         assert!(a[0]["detail"].as_str().unwrap_or("").starts_with("aibd "));
+    }
+
+    #[test]
+    fn an_inherited_ignored_sigchld_is_unverified_and_an_unreadable_one_fails() {
+        let l = Lineage::disabled("unsupported");
+        let auto = rows(cfg(), &l, &ChildReaping::AutoReaps("ignored"), "linux");
+        assert_eq!(status_of(&auto, "sigchld"), "unverified");
+        assert_eq!(exit_code(&auto), 0);
+        let j = render_json(&auto);
+        let row = j
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["name"] == "sigchld"))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(row["disposition"], "ignored");
+        let bad = rows(cfg(), &l, &ChildReaping::Unreadable("os".into()), "linux");
+        assert_eq!(status_of(&bad, "sigchld"), "failed:sigchld:os");
+        assert_eq!(exit_code(&bad), 1);
+        assert_eq!(status_of(&rows(cfg(), &l, &K, "linux"), "sigchld"), "ok");
     }
 }
