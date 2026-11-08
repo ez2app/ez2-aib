@@ -54,6 +54,7 @@ CATEGORIES = {
     "auto_update":    {"high_risk": True,  "max_window": 0},
     "window_grant":   {"high_risk": True,  "max_window": 0},   # TID-2b:簽時間窗授權單本身一次一按
     "pixel_real_gen": {"high_risk": True,  "max_window": 0},   # aib-plugins #320:真生圖會扣外部額度;放行多久由外掛檔 until 表示
+    "host_rescue":    {"high_risk": True,  "max_window": 0},   # #528(ebb36 H1 / f1fae 定 b):Hetzner Robot rescue / reset 能重灌整台,一次一按
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -105,6 +106,10 @@ SITES = {
     "secret_ask.ask": _s("cockpit/secret_ask.py", "secret", "aib.secret.touchid_reason", {"name": 64, "dest": FULL}),
     # 10-30 指令庫第二步(@aeb40 §9):copy 也歸 secret 高風險 —— 窗內 AI 自己 copy 再讀剪貼簿 = 拿到值;名字 / 席位不截。
     # paste 句照實寫:值進 pane 後同帳號任何程式 capture-pane / list-buffers / 對話紀錄都讀得到(#435 R1 M1)
+    # #528:tools/cloud-host/robot.py 的 rescue / reset --apply;action / server 短碼、fp(金鑰指紋)不截,本人看得到是哪台、哪把鑰
+    "cloud_robot.apply": _s("cloud-host/robot.py", "host_rescue", "aib.cloud_robot.touchid_apply",
+                            {"action": 16, "server": FULL, "fp": FULL},   # r2 H2:server 也不截,彈窗 = 網址
+                            "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}"),
     "secret_share.copy": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_copy", {"name": FULL},
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
     "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},
