@@ -300,6 +300,18 @@ class Fakes(unittest.TestCase):
         self.assertTrue(p.killed)
         self.assertEqual((rep.status, rep.why), ("unverified", "windows_direct_child_only"))
 
+    def test_without_process_groups_a_normal_exit_says_leftovers_were_not_checked(self):
+        real = pg.POSIX
+        pg.POSIX = False
+        try:
+            r = pg.run_group([sys.executable, "-c", "print('hi')"], timeout=30)
+            kept = pg.run_group([sys.executable, "-c", "print('hi')"], timeout=30, leftovers="keep")
+        finally:
+            pg.POSIX = real
+        self.assertEqual(r.rc, 0)
+        self.assertEqual((r.stop.status, r.stop.why), ("unverified", "windows_leftovers_not_checked"))
+        self.assertIsNone(kept.stop)
+
     def test_leftovers_must_be_stop_or_keep(self):
         with self.assertRaises(ValueError):
             pg.run_group(["true"], timeout=1, leftovers="maybe")

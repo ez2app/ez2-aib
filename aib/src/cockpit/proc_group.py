@@ -30,7 +30,8 @@ Rules (DECISION-20 + ADR 0007):
   reported, so a finished `cargo test` / `aib test` leaves nothing holding the machine. A caller that starts a
   daemon on purpose passes `leftovers="keep"`.
 - Windows has no process groups here: only the direct child is killed and the report says `unverified`
-  (`windows_direct_child_only`). Never claimed as a whole-tree stop.
+  (`windows_direct_child_only`); after a normal exit leftovers cannot be listed, so `leftovers="stop"` reports
+  `unverified` / `windows_leftovers_not_checked`. Never claimed as a whole-tree stop. (UNVERIFIED: no Windows machine.)
 """
 import os
 import signal
@@ -236,6 +237,9 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
             rows = g.members(g.pgid)
             if rows is None or [pid for pid in _live(rows) if pid != g.pgid]:
                 stop = g.stop(grace)
+        elif leftovers == "stop":
+            # Windows: no process group to list, so leftovers are not checked at all — say so, never imply clean
+            stop = StopReport("unverified", "windows_leftovers_not_checked")
         try:  # the first and only reap, after every signal has been sent
             p.wait(timeout=KILL_WAIT_S if timed_out else None)
         except subprocess.TimeoutExpired:

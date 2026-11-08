@@ -141,6 +141,15 @@ class Units(unittest.TestCase):
         self.assertIn("unverified", out)
         self.assertIn("4242", out)
         self.assertIn("rc 0", out)
+        proc_group.run_group = lambda *a, **k: proc_group.Result(
+            None, "", timed_out=True, stop=proc_group.StopReport("unverified", "members_still_running", [4343]))
+        try:
+            rc2, out2 = prepr.run(["cargo", "test"], ".", timeout=7)
+        finally:
+            proc_group.run_group = real
+        self.assertIsNone(rc2)
+        self.assertIn("members_still_running", out2)
+        self.assertIn("4343", out2)
         f = Fake(rust_ok({("cargo", "fmt"): (rc, out)}))
         fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
         self.assertEqual(fmt["status"], "not_run")

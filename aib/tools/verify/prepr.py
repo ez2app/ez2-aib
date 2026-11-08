@@ -53,8 +53,9 @@ def run(cmd, cwd, env=None, timeout=3600):
     `aib test` never stays behind holding the machine."""
     r = proc_group.run_group(cmd, timeout=timeout, cwd=cwd, env=env)
     if r.timed_out:
-        stop = r.stop.status if r.stop else "?"
-        return None, "timed out after %ss (its process group: %s)\n%s" % (timeout, stop, r.out)
+        st = "%s %s, still running: %s" % (r.stop.status, r.stop.why, r.stop.survivors or "none listed") \
+            if r.stop else "?"
+        return None, "timed out after %ss (its process group: %s)\n%s" % (timeout, st, r.out)
     if r.rc is None:
         return None, "not found: %s (%s)" % (cmd[0], r.error)
     if r.stop is not None and r.stop.status != "stopped":
