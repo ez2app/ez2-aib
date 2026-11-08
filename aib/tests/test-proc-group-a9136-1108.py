@@ -380,6 +380,43 @@ class Interrupted(unittest.TestCase):
         self.assertEqual(boom.proc_group_stop.status, "stopped", boom.proc_group_stop)
         self.assertTrue(gone_within(self.gc), "grandchild %s survived an interrupt in the reap" % self.gc)
 
+    def test_inherit_with_a_timeout_still_stops_the_grandchild(self):
+        """bb7dc #520: output="inherit" takes the same stop path; a timeout stops the group, out is ""."""
+        r = pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s; wait" % self.pidfile], timeout=1.0, grace=0.5,
+                         output="inherit")
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        self.assertTrue(r.timed_out, r)
+        self.assertEqual(r.out, "")
+        self.assertEqual(r.stop.status, "stopped", r.stop)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived an inherit timeout" % self.gc)
+
+    def test_an_interrupted_inherit_run_still_stops_the_group(self):
+        """bb7dc #520: interrupted while waiting with output="inherit": group stopped, same object raised."""
+        class Boom(BaseException):
+            pass
+
+        boom = Boom()
+        calls = []
+        real = pg._exited_or_poll
+
+        def poll(p):
+            calls.append(p.pid)
+            if len(calls) == 3:
+                raise boom
+            return real(p)
+
+        pg._exited_or_poll = poll
+        try:
+            with self.assertRaises(Boom) as cm:
+                pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s; wait" % self.pidfile], timeout=30,
+                             grace=0.5, output="inherit")
+        finally:
+            pg._exited_or_poll = real
+        self.assertIs(cm.exception, boom)
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        self.assertEqual(boom.proc_group_stop.status, "stopped", boom.proc_group_stop)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived an interrupted inherit run" % self.gc)
+
     def test_the_default_limit_is_grace_plus_two_kill_waits(self):
         self.assertEqual((pg.DEFAULT_GRACE_S, pg.KILL_WAIT_S), (5.0, 2.0))
         self.assertEqual(pg.defer_limit_s(pg.DEFAULT_GRACE_S), 9.0)
