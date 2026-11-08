@@ -50,14 +50,15 @@ def stop_group(p, grace=5.0):
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
         try:
             os.killpg(p.pid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # macOS answers EPERM, not ESRCH, once only zombies are left in the group: nothing left to stop.
             return
         end = time.monotonic() + wait
         while time.monotonic() < end:
             p.poll()
             try:
                 os.killpg(p.pid, 0)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 return
             time.sleep(0.05)
 

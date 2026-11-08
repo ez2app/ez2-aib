@@ -131,12 +131,13 @@ class Units(unittest.TestCase):
         td = Path(tempfile.mkdtemp(prefix="aib-prepr-tree-"))
         try:
             pidfile = td / "grandchild.pid"
-            child = ("import subprocess, sys, time; g = subprocess.Popen([sys.executable, '-c', "
-                     "'import time; time.sleep(60)']); open(sys.argv[1], 'w').write(str(g.pid)); time.sleep(60)")
+            child = ("import os, subprocess, sys, time; g = subprocess.Popen([sys.executable, '-c', "
+                     "'import time; time.sleep(60)']); open(sys.argv[1], 'w').write('%d %d' % (os.getpid(), g.pid)); "
+                     "time.sleep(60)")
             rc, out = prepr.run([sys.executable, "-c", child, str(pidfile)], str(td), timeout=2)
             self.assertIsNone(rc)
             self.assertIn("timed out", out)
-            gpid = int(pidfile.read_text())
+            gpid = int(pidfile.read_text().split()[1])
             gone = False
             for _ in range(60):
                 try:
@@ -149,7 +150,42 @@ class Units(unittest.TestCase):
                 os.kill(gpid, 9)  # only the pid this test started itself
             self.assertTrue(gone, "grandchild %d outlived the timeout" % gpid)
         finally:
+            # Whatever happened above, collect the two pids this test started itself (never a wider kill).
+            try:
+                pids = [int(x) for x in (td / "grandchild.pid").read_text().split()]
+            except (OSError, ValueError):
+                pids = []
+            for pid in pids:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
             shutil.rmtree(td, ignore_errors=True)
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX")
+    def test_a_group_left_with_only_zombies_counts_as_stopped(self):
+        # macOS answers EPERM (not ESRCH) to killpg once only zombies are left in the group.
+        class P:
+            pid = 999999
+
+            def poll(self):
+                return None
+
+        calls = []
+
+        def fake_killpg(pid, sig):
+            calls.append(sig)
+            if sig == 0:
+                raise PermissionError(1, "Operation not permitted")
+
+        real = prepr.os.killpg
+        prepr.os.killpg = fake_killpg
+        try:
+            prepr.stop_group(P(), grace=0.2)
+        finally:
+            prepr.os.killpg = real
+        self.assertEqual(calls[:2], [prepr.signal.SIGTERM, 0])
+        self.assertNotIn(prepr.signal.SIGKILL, calls)
 
     def test_aib_test_exit_codes_match_test_entry(self):
         src = (ROOT / "aib" / "tools" / "verify" / "test_entry.py").read_text()
