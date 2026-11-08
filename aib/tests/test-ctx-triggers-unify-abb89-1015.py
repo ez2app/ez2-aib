@@ -31,6 +31,7 @@ import tempfile
 import time
 import types
 import unittest
+from aib_tmux_sandbox import Sandbox, SandboxRefused, SHORT_TMP
 from pathlib import Path
 from unittest import mock
 
@@ -496,11 +497,15 @@ class Install(Base):
         """開席是 tmux respawn-pane 起的:窗格的 stdin 是 pty ⇒ [ -t 0 ] 成立 ⇒ 會裝(不是今天沒觸發的原因)。"""
         conf = self.tmp / "conf-b"
         done = self.tmp / "done"
-        sock = "ctxtrig-%d" % os.getpid()
+        sockdir = tempfile.mkdtemp(prefix="aibctx-", dir=SHORT_TMP)
+        self.addCleanup(shutil.rmtree, sockdir, True)
+        box = Sandbox(sockdir, shutil.which("tmux"))
         cmd = "bash %s; echo $? > %s" % (self._script(conf), done)
-        self.addCleanup(lambda: run_guarded(["tmux", "-L", sock, "kill-server"], stdin=subprocess.DEVNULL, timeout=20))
-        r = run_guarded(["tmux", "-L", sock, "-f", "/dev/null", "new-session", "-d", "-s", "p", cmd],
-                        stdin=subprocess.DEVNULL, timeout=30)
+        self.addCleanup(box.cleanup)
+        try:
+            r = box.tm("-f", "/dev/null", "new-session", "-d", "-s", "p", cmd, stdin=subprocess.DEVNULL)
+        except SandboxRefused as exc:
+            self.fail("tmux 沙盒守門拒絕 socket 覆寫: %s" % exc)
         self.assertEqual(r.returncode, 0, r.stderr)
         t0 = time.time()
         while not done.exists() and time.time() - t0 < 60:

@@ -73,6 +73,7 @@ if _HERE_EH17 not in _sys_eh17.path:
     _sys_eh17.path.insert(0, _HERE_EH17)
 from seat_address import uuid_tail5  # noqa: E402
 import glob
+import pathlib
 import json
 import os
 import re
@@ -1100,6 +1101,36 @@ def save_pane_tails(target, out_dir=None, now=None):
     return None
 
 
+def mark_seats_closed(target, alive=None):
+    """收完艙之後替這艙「真的不在了」的席寫退出痕 captain-close(11-07 #489 @742c2 審查)。
+    內艙 kill-server 之後 pane 尾巴的 `seat_exit.py record` 沒機會跑、別艙 watch 的 sweep 打不到 hub 只看 pid ⇒
+    原本會記成 pid-gone,`aib restart` 就把「自己收掉的艙」當成「被關掉的艙」列出來、--restore-all 還會接回。
+    ★ 收完、看過 pid 才寫(#489 r2 註):收艙失敗有殘留的席 pid 還活著 ⇒ 不寫,免得活席帶著「已收」。
+    ★ 真正的原因(record 寫的 cli-exit 等)不蓋;sweep 推測的 pid-gone / window-gone 可以蓋 —— 收的當下別艙 watch
+      可能先 sweep 到、記成 pid-gone,那正是要改掉的那筆。回寫了痕的席位檔路徑。"""
+    inst = target.get("instance")
+    if target.get("kind") != "inst" or not inst:
+        return []
+    alive = alive or _pid_alive
+    sdir = os.path.join(AIB_MAIN_HOME, "seats") if inst == "main" \
+        else os.path.join(AIB_MAIN_HOME, "instances", inst, "seats")
+    done = []
+    for path in sorted(glob.glob(os.path.join(sdir, "w*.json"))):
+        try:
+            rec = seat_exit.load_seat(pathlib.Path(path))
+            if rec.get("exit_reason") and rec.get("exit_reason") not in seat_exit.SWEEP_REASONS:
+                continue
+            pid = rec.get("pid")
+            if isinstance(pid, int) and pid > 1 and alive(pid):
+                continue
+            seat_exit.atomic_write(pathlib.Path(path), seat_exit.stamp_exit(
+                rec, "captain-close", None, "idle_reaper 收艙 %s" % target.get("id"), "idle_reaper.py"))
+            done.append(path)
+        except Exception:  # noqa: BLE001  留痕失敗不能擋收艙
+            continue
+    return done
+
+
 def execute(target, dry_run=False, grace_s=1.5):
     """回 dict(steps_run, killed, survivors, argv, drafts)。只碰 target 自己盤點到的 PID。
     argv:{"<pid>": "<殺之前量到的指令列>"},dry-run 也量(讓 --dry-run 的紀錄說得出會殺到什麼)。
@@ -1133,6 +1164,8 @@ def execute(target, dry_run=False, grace_s=1.5):
     if not dry_run and target["kill_pids"]:
         time.sleep(grace_s)
         survivors = [p for p in target["kill_pids"] if p > 1 and _pid_alive(p)]
+    if not dry_run:
+        mark_seats_closed(target)
     return {"steps_run": ran, "killed": killed, "survivors": survivors, "argv": argv, "drafts": drafts}
 
 

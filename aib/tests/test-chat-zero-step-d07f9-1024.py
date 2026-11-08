@@ -49,10 +49,18 @@ class Defaults(unittest.TestCase):
         self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "Andy 的 MacBook Pro"}), platform="darwin"),
                          "MacBook Pro", "名字會公開 ⇒ 去掉主人名字")
         self.assertEqual(len(CB.default_name(run=fake_run({"ComputerName": "x" * 50}), platform="darwin")), 32)
+        # 退主機名時也照樣去主人名字(default_name 對兩個候選同一套);期望值照同一套算,
+        #   否則主機名長得像「名字-Mac-Pro」的機器(例:Ez2-AL-Mac-Pro ⇒ Mac-Pro)會假紅(2240e 11-06)
         host = socket.gethostname().split(".")[0]
-        self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"),
-                         CR.GF.clean_display_name(host[:32]))
-        self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), CR.GF.clean_display_name(host[:32]))
+        want = CR.GF.clean_display_name(CB.strip_owner_name(host)[:CR.GF.NAME_MAX].strip())
+        self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"), want)
+        self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), want)
+        # 固定的主機名(不靠這台機器的名字):主人名字那段去掉
+        import unittest.mock as M
+        with M.patch("socket.gethostname", return_value="Ez2-AL-Mac-Pro.local"):
+            self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), "Mac-Pro")
+        with M.patch("socket.gethostname", return_value="buildbox"):
+            self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"), "buildbox")
 
     def test_z1b_strip_owner(self):
         cases = {"Andy's MacBook Pro": "MacBook Pro", "Andy\u2019s MacBook Air": "MacBook Air", "Andy 的 MacBook Pro": "MacBook Pro",

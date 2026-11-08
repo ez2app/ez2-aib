@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
+from aib_tmux_sandbox import Sandbox, SHORT_TMP
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -62,6 +63,8 @@ class Box(object):
                if not k.startswith(("EZ2_", "AIB_", "TMUX")) and k not in ("PYTHONPATH", "BASH_ENV")}
         env.update({"HOME": str(self.home), "AIB_CHAT_HOME": str(self.chat), "AIB_CHAT_BRIDGE_DIR": str(self.root),
                     "AIB_CHAT_TICK": "0.1", "EZ2_AIB_LOCALE": "zh-TW", "PYTHONDONTWRITEBYTECODE": "1"})
+        if hasattr(self, "tmux_dir"):
+            env["PATH"] = str(self.tmux_dir) + os.pathsep + env.get("PATH", "/usr/bin:/bin")
         env.update(extra)
         return env
 
@@ -213,13 +216,18 @@ class Window(Base):
     def setUp(self):
         super().setUp()
         self.sock = "aihub-chattest%d" % os.getpid()
-        subprocess.run(["tmux", "-L", self.sock, "new-session", "-d", "-s", "aihub", "-n", "seat", "sleep 300"],
-                       check=True, env=self.b.env())
-        self.addCleanup(lambda: subprocess.run(["tmux", "-L", self.sock, "kill-server"], capture_output=True, env=self.b.env()))
+        root = Path(tempfile.mkdtemp(prefix="aibchat-", dir=SHORT_TMP))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.box = Sandbox(root, shutil.which("tmux"))
+        self.box.make_shim(root / "tmux", self.sock)
+        self.b.tmux_dir = root
+        self.box.environ = self.b.env()
+        self.addCleanup(self.box.cleanup)
+        r = self.box.tm("new-session", "-d", "-s", "aihub", "-n", "seat", "sleep 300")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def tx(self, *args):
-        # 跟建 session、跑 ensure-window 用同一份環境:aib test 底下 TMUX_TMPDIR 不同,混用會連到另一個 tmux(10-16 全套紅一次)
-        return subprocess.run(["tmux", "-L", self.sock] + list(args), capture_output=True, text=True, env=self.b.env()).stdout.strip()
+        return self.box.tm(*args).stdout.strip()
 
     def chat_windows(self):
         rows = self.tx("list-windows", "-t", "aihub", "-F", "#{window_id} #{@aib_role} #{pane_dead}").splitlines()

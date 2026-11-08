@@ -14,14 +14,13 @@ M5  真的找不到 ⇒ 報錯,不靜默給空:note_text raise、brief 列出「
 M6  人格卡:cards.json 記的是舊庫根,EZ2_VAULT_DIR 指新庫 ⇒ persona_fit / persona_pack 讀新庫的卡。
 M7  舊版面新寫的那筆(只有 rel)被拖到別夾:用 rel 的檔名 <uid>-<標題>.md 找回來。
 M8  rel 是 ../ 跑出 Vault ⇒ 不讀外面的檔,當找不到報錯。
-K1  刀測:同一支 M1 在 main 的舊 aib_memory 上要紅(經 aib_proc_guard.run_guarded 跑子行程)。
+K1  刀測:同一支 M1 在修正前的 aib_memory(tests/fixtures/old-ref/,釘 blob id)上要紅(經 aib_proc_guard.run_guarded 跑子行程)。
 """
 import hashlib
 import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -33,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import aib_testlib  # noqa: E402,F401 —— 基因/自動綁預設關
 from aib_proc_guard import run_guarded  # noqa: E402
+from aib_old_fixture import read_old_fixture  # noqa: E402
 
 ROOT = HERE.parent
 for _p in ("memory", "identity", "cockpit", "persona_route"):
@@ -209,6 +209,12 @@ class M6PersonaCardFollowsLiveVault(Base):
 
 
 KNIFE_CHILD = "AIB_MEMUID_KNIFE_CHILD"
+# aec72dd6 修正之前的 aib_memory.py,= git show fa6f3a67:aib/src/memory/aib_memory.py
+OLD_FIXTURE = ("aib_memory.py@fa6f3a67.txt", "86ed9f3ed9ff90b9e7ce733a466f1cd2422a1195")
+
+
+
+
 
 
 @unittest.skipIf(os.environ.get(KNIFE_CHILD), "子行程裡不再開刀")
@@ -216,19 +222,18 @@ class K1KnifeOldCodeIsRed(unittest.TestCase):
     """main 上的舊 aib_memory 換進暫存副本,跑 M1 要紅(證明這支測試抓得到靜默變空)。"""
 
     def test_old_aib_memory_fails_m1(self):
+        # 舊版 = 修正(aec72dd6)之前的檔，放在 tests/fixtures/old-ref/ 並釘 blob id(DECISION-18 後續)。
+        # 以前用 git show 讀：淺層 clone / 非 git 複本只能 skipTest,這把刀在 CI 上沒跑;現在不靠 git,一定跑。
         try:
-            old = subprocess.run(["git", "-C", str(ROOT), "show", "origin/main:aib/src/memory/aib_memory.py"],
-                                 capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            self.skipTest("沒有 git")
-        if old.returncode != 0 or "def note_text" not in old.stdout:
-            self.skipTest("拿不到 origin/main 的舊版")
-        if "def resolve_note_path" in old.stdout:
-            self.skipTest("main 已含本修正")
+            old = read_old_fixture(*OLD_FIXTURE)
+        except AssertionError as ex:
+            self.fail(str(ex))
+        self.assertIn("def note_text", old, "舊版 fixture 格式不對")
+        self.assertNotIn("def resolve_note_path", old, "fixture 釘錯了:舊版已含本修正")
         with tempfile.TemporaryDirectory() as td:
             copy = Path(td) / "aib"
             shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            (copy / "src" / "memory" / "aib_memory.py").write_text(old.stdout, encoding="utf-8")
+            (copy / "src" / "memory" / "aib_memory.py").write_text(old, encoding="utf-8")
             env = dict(os.environ, **{KNIFE_CHILD: "1", "PYTHONDONTWRITEBYTECODE": "1"})
             r = run_guarded([sys.executable, str(copy / "tests" / Path(__file__).name), "M1LegacyOldLayout"],
                             cwd=str(copy), env=env, max_procs=50, timeout=120)

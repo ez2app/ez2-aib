@@ -1,0 +1,15 @@
+[package]
+name = "aib-fixture-tree"
+description = "TEST FIXTURE ONLY: a fake CLI that builds an awkward process tree. Not a provider."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = "1.0.154"
+signal-hook = "0.4.6"

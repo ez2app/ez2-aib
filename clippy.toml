@@ -1,0 +1,19 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# ADR 0005: every sleep / tick goes through crates/aibd/src/timers.rs
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "use a registered timer in aibd::timers (ADR 0005)" },
+  { path = "tokio::time::sleep", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::sleep_until", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::interval", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::interval_at", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  # 043dd #510 M5: these also wake a thread on a clock
+  { path = "std::sync::Condvar::wait_timeout", reason = "use a registered timer in aibd::timers, or a named exception with a comment (ADR 0005)" },
+  { path = "std::sync::Condvar::wait_timeout_while", reason = "use a registered timer in aibd::timers, or a named exception with a comment (ADR 0005)" },
+  { path = "std::sync::Condvar::wait_timeout_ms", reason = "use a registered timer in aibd::timers (ADR 0005)" },
+  { path = "std::sync::mpsc::Receiver::recv_timeout", reason = "use a registered timer in aibd::timers, or a named exception with a comment (ADR 0005)" },
+  { path = "std::thread::park_timeout", reason = "use a registered timer in aibd::timers (ADR 0005)" },
+  { path = "tokio::time::timeout", reason = "use a registered timer in aibd::timers, or a named exception with a comment (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::timeout_at", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+]

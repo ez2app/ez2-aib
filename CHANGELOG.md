@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.69
+
+- **Claude seats can no longer kill a real tmux server by accident**: before a Bash command runs, a check stops any line that would close the cockpit or the AI seats — `tmux kill-server` with no `-S` / `-L` (it hits `TMUX` / `TMUX_TMPDIR` / the default socket, and a missing `TMUX_TMPDIR` folder silently falls back to the real default server), `-L default` / `-L aihub-<cabin>`, `-S` pointing at `default` / `aihub-<cabin>` in the real socket folder, and `killall tmux` / `pkill tmux`. Lines written into a script through a heredoc count too. The message shows the line, the reason and the safe form `tmux -S <sandbox dir>/sock kill-server`. Sandbox sockets, unique `-L` names, quoted text and comments are allowed; if the check itself fails, the command runs. This guards against slips, not against a seat that deliberately works around it; Codex / Grok seats are not covered.
+- **The second pre-tool check now sees the command**: the hook read its input once for the worktree-location check, so any later check got an empty command; the input is now read once and shared.
+- CI: the `(ubuntu-latest, 3.9)` cell runs on ubuntu-24.04 (ubuntu-latest moved to 26.04, which has no Python 3.9); the required check name is unchanged. A newproj bootstrap test no longer reads the real route registry.
+
 ## 0.1.68
 
 - **One-step seat opening can attach a second brain**: `aib newproj --new-seat --project-uid … --persona-card …` now takes `--folder` — a route key, a folder, `seat:<cabin>/<seat>` (share that seat's brain) or `new` (create a folder named after the project under the expert drafts route, route key `proj.<first 12 hex of the project uid>`; rerunning reuses it). All checks run before the seat opens: unknown, not AI-writable, the project card already records another brain, or a title that cannot be a folder — none of these open a seat. The route is written to the project card after binding.

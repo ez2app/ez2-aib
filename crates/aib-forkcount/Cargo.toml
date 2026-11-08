@@ -1,0 +1,15 @@
+[package]
+name = "aib-forkcount"
+description = "Count forks under monitored process trees (legacy AIB before / after measurement, not shipped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aib-procwatch = { path = "../aib-procwatch" }
+serde_json = "1"
+
+[lints]
+workspace = true

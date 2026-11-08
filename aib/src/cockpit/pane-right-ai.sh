@@ -359,6 +359,60 @@ PY
   return 0
 }
 
+# ── 一次問完所有窗的 @aib_role(省熱第 3 項小，11-07 @043dd)────────────────────
+# 原本每窗一次 `tmux show-options`(N 窗 = 每輪 N 個 tmux 行程);改成一次 tmux 串接:
+#   display-message -p "<亂數> <窗>" ; show-options -wqv -t <窗> @aib_role ; …
+# 為什麼不併進 list-windows -F '#{@aib_role}':格式查使用者選項會往 pane / session / server
+#   層找(沙盒實測 server 層的值蓋過窗自己的),跟 show-options -w 只看窗那層不同 ⇒ 判讀會變。
+# 安全(承上面「兩段式」的理由):
+#   - 值內有換行 ⇒ 那窗整筆標「!」,下面白名單照舊拒;
+#   - 分隔行帶每輪亂數，且必須照窗的順序一個不差出現，對不上整批作廢;
+#   - 作廢 / tmux 失敗 / 窗不在批裡 ⇒ 呼叫端逐窗照舊問(行為與改前相同)。
+# 參數：list-windows 快照(每行「@N|…」);輸出 _HUB_ROLES =「\n@N|role\n…」。
+_hub_roles_batch() {
+  local line wid nonce out cur="" val="" first=0 nl=$'\n' i=0
+  local -a cmd=() order=()
+  _HUB_ROLES=""
+  nonce="r${RANDOM}${RANDOM}x$$"
+  while IFS= read -r line; do
+    wid="${line%%|*}"
+    case "$wid" in @[0-9]*) case "$wid" in *[!@0-9]*) continue ;; esac ;; *) continue ;; esac
+    [ "${#order[@]}" -gt 0 ] && cmd+=(";")
+    cmd+=(display-message -p "$nonce $wid" ";" show-options -wqv -t "$wid" @aib_role)
+    order+=("$wid")
+  done <<__HUBIDS__
+$1
+__HUBIDS__
+  [ "${#order[@]}" -gt 0 ] || return 0
+  out="$(env -u TMUX tmux -L "$EZ2_AIHUB_SOCKET" "${cmd[@]}" 2>/dev/null)" || return 0
+  local acc=""
+  # 每窗的值照舊版 `$(tmux show-options …)` 的語義:先去掉所有尾端換行(#482 審:dev+換行 舊版得 dev),
+  # 去完中間還有換行 ⇒ 整筆標 !(白名單照舊拒)。
+  _hub_roles_flush() {
+    [ -n "$cur" ] || return 0
+    while [ "${val%"$nl"}" != "$val" ]; do val="${val%"$nl"}"; done
+    case "$val" in *"$nl"*) val="!" ;; esac
+    acc="${acc}${cur}|${val}${nl}"
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      "$nonce "*)
+        [ "$line" = "$nonce ${order[$i]:-}" ] || return 0
+        _hub_roles_flush
+        cur="${order[$i]}"; val=""; first=1; i=$((i + 1))
+        continue ;;
+    esac
+    [ -n "$cur" ] || return 0
+    if [ "$first" = "1" ]; then val="$line"; first=0; else val="${val}${nl}${line}"; fi
+  done <<__HUBOUT__
+$out
+__HUBOUT__
+  _hub_roles_flush
+  [ "$i" -eq "${#order[@]}" ] || return 0
+  _HUB_ROLES="${nl}${acc}"
+  return 0
+}
+
 _usage_wait_next() {
   local i=0 scroll sm acc am
   scroll="$EZ2_COCKPIT_STATE_DIR/right-scroll.json"
@@ -431,6 +485,8 @@ while true; do
     EZ2_HUB_PANES=""
     EZ2_HUB_DEAD_WINDOWS=""
     if [ "$_hub_rc" -eq 0 ]; then
+      _nl_r=$'\n'
+      _hub_roles_batch "$_hub_ids"
       while IFS= read -r _wline; do
         [ -n "$_wline" ] || continue
         _wdead=""
@@ -446,8 +502,11 @@ while true; do
         esac
         [ -n "$_wpane" ] && EZ2_HUB_PANES="${EZ2_HUB_PANES}${_wid}|${_wpane}
 "
-        _wrole="$(env -u TMUX tmux -L "$EZ2_AIHUB_SOCKET" show-options -wqv \
-          -t "$_wid" @aib_role 2>/dev/null || true)"
+        case "$_HUB_ROLES" in
+          *"$_nl_r$_wid|"*) _wrole="${_HUB_ROLES#*"$_nl_r$_wid|"}"; _wrole="${_wrole%%"$_nl_r"*}" ;;
+          *) _wrole="$(env -u TMUX tmux -L "$EZ2_AIHUB_SOCKET" show-options -wqv \
+               -t "$_wid" @aib_role 2>/dev/null || true)" ;;
+        esac
         # 整值驗證(含 \n 與 |):髒 role=該窗整筆拒,不進活集合(fail-visible)
         case "$_wrole" in
           *[!0-9A-Za-z@._-]*)

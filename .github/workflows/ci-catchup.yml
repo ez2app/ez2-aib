@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# 11-08 DECISION-17 修訂第二步:main 的 macOS 格排隊時,較舊那輪晚到可能頂掉最新那輪 ⇒ 最新頭碼那輪 ci 變成 cancelled。
+#   每輪 main 的 ci 跑完(含被取消的那輪自己)就檢查一次:重讀頭碼、只重跑頭碼那輪、只在 cancelled 時、每 SHA 最多 2 次;
+#   讀不到 / 重跑失敗 / 次數用完 ⇒ 這個 job 紅(告警)並標 macos_unverified。判斷在 aib/tools/release/ci_catchup.py(有測試)。
+name: ci-catchup
+on:
+  workflow_run:
+    workflows: [ci]
+    branches: [main]
+    types: [completed]
+permissions:
+  contents: read
+  actions: write   # gh run rerun
+# 防重入:同時只有一個補跑在判斷,不砍跑中的那個
+concurrency:
+  group: ci-catchup
+  cancel-in-progress: false
+jobs:
+  catchup:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: aib/tools/release/ci_catchup.py
+          sparse-checkout-cone-mode: false
+      - name: rerun main's newest ci run if the queue cancelled it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 aib/tools/release/ci_catchup.py --repo "$GITHUB_REPOSITORY" --branch main --workflow-path .github/workflows/ci.yml --max-reruns 2

@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# AIB 2.0 Rust workspace
+/target/

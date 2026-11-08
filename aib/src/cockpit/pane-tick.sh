@@ -234,3 +234,228 @@ pane_wait_if_detached() {
   pane_tick_sleep "$PANE_DETACHED_WAIT"
   return 0
 }
+
+# ── 看得見才畫(2026-11-07 @043dd,AIB 2.0 省熱七項第 2 項;艦長 @a63ab 裁示併成共用函式)────────
+# pane_attached 只看 session 有沒有人附著:人在同一艙看別的窗(例如駕駛艙窗看對話時的戰情室窗)
+# ⇒ 那個窗的面板照樣每秒整幀渲染,沒人看得到。
+#
+# pane_visible:rc0 = 看得見(或量不到);rc1 = 看不見。
+#   判準 = #{window_active_clients}(此刻正在看這個窗的 client 數,tmux 3.3+):
+#   一個數字同時涵蓋「沒人附著」「人在看別的窗」「多 client」「連結到別的 session 的窗」「grouped session」——
+#   不論從哪個 session、哪個 client 看到這個窗,都算一個(#477 r2 審查第 4 點;測試 V6 逐一建情境)。
+#   ★ 失效側同 pane_attached:tmux 失敗、輸出不是數字(舊 tmux 不認這個格式會印空)一律當看得見 ——
+#     誤判看不見會把畫面凍住,那才是缺陷;誤判看得見只是照舊多畫(刀 K1)。
+pane_visible() {
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  local n
+  n="$(tmux display-message -p -t "$TMUX_PANE" '#{window_active_clients}' 2>/dev/null)" || return 0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -gt 0 ] && return 0
+  return 1
+}
+
+# ── 喚醒事件序號(#477 r5:一個全域廣播鉤子 + 各艙登記;append 一個位元組 = 一個事件)──────
+# 契約:
+#   1) 事件 = tmux 全域鉤子 session-window-changed / client-attached / client-detached / client-session-changed,
+#      四種都掛在**保留下標 PANE_VIS_IDX = 4770**(docs/tmux-hook-indexes.md;靜態測試擋別處用),
+#      內容**逐字固定**(只跟登記夾路徑有關,同一使用者各艙都一樣),內含標記 PANE_VIS_MARK:
+#        對登記夾 <狀態根>/state/pane-vis/reg/ 裡每個 *.reg(符號連結,指到某艙的訊號檔)append 1 個位元組。
+#   2) 掛鉤 = **一支 tmux、一條指令串**:if-shell -F「四種那一格都是 空 或 含標記」才 set-hook,同一串裡再讀回。
+#      tmux 在同一個 client 的指令串跑完前不切去處理別的 client(#477 r5 PoC:兩 / 四個 client 同時搶空格
+#      800 輪零雙贏;拆成先查後寫兩支則每輪都雙贏)⇒ 查與寫之間沒有可被插隊的窗口:
+#      別人(含不知道保留表的外部程式)先寫的內容不會被我們蓋掉(V8e 障礙測試)。
+#      tmux 讀不了陣列格式(探針 #{command-alias[0]} 空)⇒ 不寫、退回輪詢(寧可不掛也不冒蓋人的險)。
+#      讀回不是全部我們的 ⇒ hook_foreign、退回輪詢;下一次「看得見→看不見」再試,一樣只寫空格。
+#   3) 各艙只做登記:登記檔名 = 訊號檔**完整正規路徑(pwd -P)的 sha256**(不會撞名:/a_b/c 對 /a/b_c,V8f),
+#      內容是指到自己訊號檔的符號連結(ln -s 暫存名 + mv 原子換上);每個行程只算一次名字,
+#      之後 [ 連結 -ef 訊號檔 ] 確認 —— 常態零 fork。沒有 sha256 工具 ⇒ 不掛、退回輪詢。
+#   4) 撤登 pane_vis_unregister 只由艙的生命週期呼叫,刪之前確認連結仍指向自己。
+#      懸空登記(艙夾已刪):鉤子 [ -e ] 跳過;登記時順手清,但先把它改名到暫存名再確認仍懸空才刪,
+#      中途被原主重登(變成有效)就還回去(V8d / V8g 交錯障礙)。
+#   5) 序號 = 訊號檔大小:append 原子、只增不減、無鎖;多個寫入者同時寫各記一筆(V7)。
+#   6) 等待方:先讀大小當基準,**讀完基準後再判一次可見性**;看不見才等「大小 ≠ 基準」或退避到期(V2b / V2c)。
+#   7) 檔超過 PANE_VIS_MAX_BYTES(4096)時,由**確認看得見**的那一方 truncate 歸零(inode 不變,登記照樣有效)。
+#   8) 路徑(訊號檔 / 登記夾)有白名單外的字元或不是絕對路徑 ⇒ 不掛、只靠退避輪詢(V4)。
+#   9) 計數:每次沒掛上(原因)與每次退回輪詢各記一筆在 <艙狀態夾>/.panevis.stat.<原因>(數字,內建讀寫零 fork);
+#      掛著鉤子時的等待結果也分兩種記:wake_event(被事件叫醒)/ wake_timeout(等到退避逾時;
+#      鉤子被外部蓋掉時只會看到這個一直增加),
+#      最近一次結果在 .panevis.state —— 看得到多常發生(效能規格登記的例外)。
+# run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode ⇒ 迴圈錯誤導掉、最後 `:` 收 rc0。
+PANE_VIS_SIG="${EZ2_COCKPIT_STATE_DIR:+$EZ2_COCKPIT_STATE_DIR/.panevis.ev}"
+PANE_VIS_REG="${EZ2_AIB_STATE_ROOT:-${EZ2_AIB_HOME:-${HOME:-}/.ez2-aib}}/state/pane-vis/reg"
+PANE_VIS_IDX=4770          # 保留下標:docs/tmux-hook-indexes.md
+PANE_VIS_MARK="aib-pane-vis-4770"
+PANE_VIS_MAX_BYTES=4096
+PANE_VIS_HOOKED=0
+PANE_VIS_LINK=""
+PANE_VIS_HOOKS="session-window-changed client-attached client-detached client-session-changed"
+
+# 鉤子內容(set-hook 的參數;tmux 存起來後會照它自己的格式印,比對靠標記不靠逐字)。
+pane_vis_hook_cmd() {
+  local tgt="$PANE_VIS_REG/*.reg"
+  printf -v "$1" '%s' "run-shell -b ': $PANE_VIS_MARK; for r in $tgt; do [ -e \"\$r\" ] && printf . >> \"\$r\"; done 2>/dev/null; :'"
+}
+
+pane_vis_state() {
+  [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] || return 0
+  printf '%s\n' "$1" > "$EZ2_COCKPIT_STATE_DIR/.panevis.state" 2>/dev/null || :
+}
+
+# 計數 +1(數字檔;內建讀寫,零 fork;同艙多個面板同時加偶爾少記一筆,只是統計)。
+pane_vis_stat() {
+  [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] || return 0
+  local f="$EZ2_COCKPIT_STATE_DIR/.panevis.stat.$1" n=""
+  pane_read_file n "$f"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\n' "$(( n + 1 ))" > "$f" 2>/dev/null || :
+}
+
+pane_vis_nohook() { pane_vis_state "$1"; pane_vis_stat "$1"; return 0; }
+
+# 登記檔路徑:訊號檔完整正規路徑的 sha256。每個行程算一次(會 fork:cd 子殼 + sha256 工具)。
+pane_vis_link_name() {
+  [ -n "$PANE_VIS_LINK" ] && return 0
+  local dir canon h
+  dir="$(cd "${PANE_VIS_SIG%/*}" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$dir" ] || return 1
+  canon="$dir/${PANE_VIS_SIG##*/}"
+  if command -v sha256sum >/dev/null 2>&1; then
+    h="$(printf '%s' "$canon" | sha256sum 2>/dev/null)"
+  elif command -v shasum >/dev/null 2>&1; then
+    h="$(printf '%s' "$canon" | shasum -a 256 2>/dev/null)"
+  else
+    return 1
+  fi
+  h="${h%% *}"
+  case "$h" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#h}" -eq 64 ] || return 1
+  PANE_VIS_LINK="$PANE_VIS_REG/$h.reg"
+}
+
+# 懸空登記清理:先改名到暫存名,確認仍懸空才刪;改名後發現有效(原主剛重登)就還回去。
+pane_vis_gc() {
+  local r t
+  for r in "$PANE_VIS_REG"/*.reg; do
+    [ -L "$r" ] && [ ! -e "$r" ] || continue
+    t="$r.gc.$$"
+    mv -f "$r" "$t" 2>/dev/null || continue
+    if [ -e "$t" ]; then
+      [ -e "$r" ] || [ -L "$r" ] || mv -f "$t" "$r" 2>/dev/null
+      rm -f "$t" 2>/dev/null
+    else
+      rm -f "$t" 2>/dev/null
+    fi
+  done
+  return 0
+}
+
+pane_vis_register() {
+  : >> "$PANE_VIS_SIG" 2>/dev/null || return 1
+  pane_vis_link_name || return 1
+  [ "$PANE_VIS_LINK" -ef "$PANE_VIS_SIG" ] && return 0
+  [ -d "$PANE_VIS_REG" ] || mkdir -p "$PANE_VIS_REG" 2>/dev/null || return 1
+  pane_vis_gc
+  ln -s "$PANE_VIS_SIG" "$PANE_VIS_LINK.$$.tmp" 2>/dev/null && mv -f "$PANE_VIS_LINK.$$.tmp" "$PANE_VIS_LINK" 2>/dev/null \
+    || { rm -f "$PANE_VIS_LINK.$$.tmp" 2>/dev/null; return 1; }
+  [ "$PANE_VIS_LINK" -ef "$PANE_VIS_SIG" ]
+}
+
+# 撤登:只由艙的生命週期呼叫;只刪仍指向自己訊號檔的那一筆。
+pane_vis_unregister() {
+  [ -n "$PANE_VIS_SIG" ] || return 0
+  pane_vis_link_name || return 0
+  [ "$PANE_VIS_LINK" -ef "$PANE_VIS_SIG" ] && rm -f "$PANE_VIS_LINK" 2>/dev/null
+  return 0
+}
+
+pane_vis_hook() {
+  PANE_VIS_HOOKED=0
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  case "$PANE_VIS_SIG" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_nohook no_hook_path; return 0 ;; esac
+  case "$PANE_VIS_REG" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_nohook no_hook_path; return 0 ;; esac
+  pane_vis_register || { pane_vis_nohook no_hook_reg; return 0; }
+  local cmd h slot cond="" c branch="" back="" esc out probe got
+  pane_vis_hook_cmd cmd
+  # if-shell 的分支是一段要再解析的指令字串:鉤子內容放雙引號裡,裡面的 " 和 $ 加反斜線
+  esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"; esc="${esc//\$/\\\$}"
+  for h in $PANE_VIS_HOOKS; do
+    slot="$h[$PANE_VIS_IDX]"
+    c="#{||:#{==:#{$slot},},#{m:*$PANE_VIS_MARK*,#{$slot}}}"
+    if [ -z "$cond" ]; then cond="$c"; else cond="#{&&:$cond,$c}"; fi
+    branch="${branch:+$branch ; }set-hook -g '$slot' \"$esc\""
+    back="${back}#{m:*$PANE_VIS_MARK*,#{$slot}}"
+  done
+  cond="#{&&:#{!=:#{command-alias[0]},},$cond}"
+  out="$(tmux display-message -p '#{command-alias[0]}' \; if-shell -F "$cond" "$branch" \; display-message -p "$back" 2>/dev/null)" \
+    || { pane_vis_nohook no_hook_tmux; return 0; }
+  probe="${out%%$'\n'*}"; got="${out##*$'\n'}"
+  if [ -z "$probe" ] || [ "$probe" = "$out" ]; then
+    pane_vis_nohook no_hook_fmt        # 這個 tmux 讀不了陣列格式:不寫,退回輪詢
+    return 0
+  fi
+  if [ "$got" != "1111" ]; then
+    pane_vis_nohook hook_foreign       # 那一格(至少一種)是別人的:沒寫、也不搶
+    return 0
+  fi
+  PANE_VIS_HOOKED=1
+  pane_vis_state hooked
+  return 0
+}
+
+# 事件數 = 訊號檔大小(讀進來的字元數;檔不在 = 0)。零 fork。
+pane_vis_count() {
+  local __c=""
+  pane_read_file __c "$PANE_VIS_SIG"
+  printf -v "$1" '%s' "${#__c}"
+}
+
+# 看得見時呼叫:檔太大就歸零(truncate 是 shell 內建重導,零 fork)。
+pane_vis_trim() {
+  [ "$PANE_VIS_HOOKED" = "1" ] || return 0
+  local c
+  pane_vis_count c
+  [ "$c" -gt "$PANE_VIS_MAX_BYTES" ] && : > "$PANE_VIS_SIG" 2>/dev/null
+  return 0
+}
+
+# pane_wait_if_hidden:看不見 ⇒ 等到事件數變了或退避時間到(2→10 秒,同 pane_wait_if_detached 的
+# EZ2_PANE_DETACHED_TICK / _MAX),回 rc0(呼叫端 `&& continue`);看得見 ⇒ 退避歸零、回 rc1。
+# 用法:取代主迴圈的 `pane_wait_if_detached && continue`。
+PANE_HIDDEN_WAIT=""
+pane_wait_if_hidden() {
+  if pane_visible; then
+    PANE_HIDDEN_WAIT=""
+    pane_vis_trim
+    return 1
+  fi
+  local t="${EZ2_PANE_DETACHED_TICK:-2}" tmax="${EZ2_PANE_DETACHED_TICK_MAX:-10}" c0=0 c=0 n i
+  case "$t" in ''|*[!0-9]*|0) t=2 ;; esac
+  case "$tmax" in ''|*[!0-9]*|0) tmax=10 ;; esac
+  if [ -z "$PANE_HIDDEN_WAIT" ]; then
+    PANE_HIDDEN_WAIT="$t"
+    pane_vis_hook                     # 每次由看得見轉看不見掛一次(鉤子被清掉也會補回)
+  else
+    PANE_HIDDEN_WAIT=$(( PANE_HIDDEN_WAIT * 2 ))
+    [ "$PANE_HIDDEN_WAIT" -gt "$tmax" ] && PANE_HIDDEN_WAIT="$tmax"
+  fi
+  if [ "$PANE_VIS_HOOKED" != "1" ]; then
+    pane_vis_stat poll                # 退回輪詢(登記例外):每睡一次記一筆
+    pane_tick_sleep "$PANE_HIDDEN_WAIT"
+    return 0
+  fi
+  pane_vis_count c0
+  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。
+  if pane_visible; then
+    PANE_HIDDEN_WAIT=""
+    return 1
+  fi
+  n=$(( PANE_HIDDEN_WAIT * 10 ))
+  for (( i = 0; i < n; i++ )); do
+    pane_tick_sleep 0.1
+    pane_vis_count c
+    [ "$c" = "$c0" ] || { pane_vis_stat wake_event; PANE_HIDDEN_WAIT=""; return 0; }   # 有事件:下一圈立刻重判
+  done
+  # 掛著鉤子卻等到逾時:沒有事件(真的沒切窗),或鉤子已被外部蓋掉(已知限制)—— 等同退回輪詢,要看得到
+  pane_vis_stat wake_timeout
+  return 0
+}

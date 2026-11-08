@@ -1,0 +1,29 @@
+# Text files are LF in the repo and in every checkout, on every OS (043dd 11-08, DECISION-18 follow-up).
+# Windows CI / Windows members with core.autocrlf=true would otherwise get CRLF: shell scripts break
+# ("bad interpreter: /bin/bash^M"), and tests that hash or compare file bytes go red.
+* text=auto eol=lf
+
+# AIB 2.0: migration checksums must be identical on every OS
+migrations/*.sql text eol=lf
+
+# Pinned old versions for "old vs new" tests: the test checks each file's git blob id, so git must never
+# convert these bytes (see aib/tests/aib_old_fixture.py).
+aib/tests/fixtures/old-ref/** -text
+
+# Binary files (none committed yet; listed so a future one is never line-converted)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp4 binary
+*.wasm binary

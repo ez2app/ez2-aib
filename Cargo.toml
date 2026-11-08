@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/aib-core", "crates/aib-store", "crates/aib-sys", "crates/aibd", "crates/aib-procwatch", "crates/aib-forkcount", "crates/aib-fixture-tree", "xtask"]
+
+[workspace.package]
+version = "0.2.0-preview.1"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.99"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+unwrap_used = "warn"
