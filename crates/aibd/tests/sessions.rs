@@ -753,3 +753,217 @@ fn a_start_that_may_have_left_a_process_keeps_its_slot() {
     assert_eq!(evs[0].event_type, "session.spawn_failed");
     assert_eq!(evs[0].payload["left_running"], 424_242);
 }
+
+/// A tree whose stop "could not look" (`candidates_unreadable`) the first
+/// `UNREADABLE_FOR` times, then saw nothing (`observed_clean`). Touches no
+/// process.
+struct Unreadable(&'static std::sync::atomic::AtomicUsize, usize);
+
+impl aibd::platform::session::Running for Unreadable {
+    fn pid(&self) -> u32 {
+        999_997
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(None)
+    }
+    fn exit_wait(&self) -> std::sync::Arc<dyn aibd::platform::session::ExitWait> {
+        std::sync::Arc::new(NeverExits)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{Stop, StopStatus};
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let reason = if n < self.1 {
+            "candidates_unreadable"
+        } else {
+            "observed_clean"
+        };
+        Stop {
+            status: StopStatus::Unverified(reason.into()),
+            survivors: vec![],
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec!["env_cleared"],
+        }
+    }
+}
+
+static FLAKY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static NEVER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn flaky_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Unreadable(&FLAKY, 2)))
+}
+
+fn never_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Unreadable(&NEVER, usize::MAX)))
+}
+
+fn wait_until(d: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + d;
+    while Instant::now() < end {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    f()
+}
+
+fn one_req() -> aibd::sessions::Request {
+    aibd::sessions::Request {
+        argv: vec!["/bin/true".into()],
+        cwd: None,
+        env: vec![],
+    }
+}
+
+/// a63ab 11-09: a held slot with nothing known alive is re-checked in the
+/// background; once a re-check sees nothing (`observed_clean`) the slot comes
+/// back and `session.slot_released` says so.
+#[test]
+fn a_held_slot_is_rechecked_in_the_background_and_released() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        flaky_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let rec = s.start(one_req()).unwrap();
+    let first = s.stop(&rec.id, Duration::ZERO).unwrap();
+    assert!(first.holds_slot, "{first:?}");
+    assert_eq!(
+        first.stop.as_ref().unwrap().reason.as_deref(),
+        Some("candidates_unreadable")
+    );
+    // 1 stop + 1 unreadable re-check + 1 clean re-check, 2 s apart
+    assert!(
+        wait_until(Duration::from_secs(8), || s.slots_in_use() == 0),
+        "slot never came back"
+    );
+    let got = s.get(&rec.id).unwrap();
+    assert!(!got.holds_slot, "{got:?}");
+    assert_eq!(
+        got.stop.as_ref().unwrap().reason.as_deref(),
+        Some("observed_clean")
+    );
+    let evs = store.events_after(0, 100).unwrap();
+    let rel = evs
+        .iter()
+        .find(|e| e.event_type == "session.slot_released")
+        .expect("no slot_released");
+    assert_eq!(rel.payload["tries"], 2, "{evs:?}");
+    assert!(s.start(one_req()).is_ok(), "the released slot is usable");
+}
+
+/// ... and when every re-check in the window still cannot look, the slot
+/// stays held and `session.slot_held` records the reason.
+#[test]
+fn a_slot_that_stays_unreadable_stays_held_with_the_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        never_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    s.set_rescan_window_for_test(Duration::from_secs(3));
+    let rec = s.start(one_req()).unwrap();
+    assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
+    let held = wait_until(Duration::from_secs(8), || {
+        store
+            .events_after(0, 100)
+            .unwrap()
+            .iter()
+            .any(|e| e.event_type == "session.slot_held")
+    });
+    assert!(held, "no slot_held event");
+    assert_eq!(s.slots_in_use(), 1);
+    let evs = store.events_after(0, 100).unwrap();
+    let h = evs
+        .iter()
+        .find(|e| e.event_type == "session.slot_held")
+        .unwrap();
+    assert_eq!(h.payload["reason"], "candidates_unreadable", "{evs:?}");
+    assert!(!evs.iter().any(|e| e.event_type == "session.slot_released"));
+    assert_eq!(
+        s.start(one_req()).unwrap_err().0,
+        aib_core::ErrorCode::TooManySessions
+    );
+}
+
+/// Measurement, not a gate (a63ab 11-09: how often a real macOS stop ends
+/// `candidates_unreadable`). `AIBD_MEASURE_N` sessions (default 50) over
+/// `AIBD_MEASURE_PAR` threads (default 1 = one at a time); prints one JSON
+/// line `MEASURE {...}` with the first-DELETE reason counts. Run with
+/// `cargo test -p aibd --test sessions measure -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn measure_stop_reasons() {
+    let n: usize = std::env::var("AIBD_MEASURE_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    let par: usize = std::env::var("AIBD_MEASURE_PAR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 64).await;
+    let v = view(&d);
+    let dir = tmp.path().to_path_buf();
+    let reasons = blocking!(v, |v| {
+        let hs: Vec<_> = (0..par)
+            .map(|t| {
+                let (v, dir) = (v.clone(), dir.clone());
+                std::thread::spawn(move || {
+                    let d = v.d();
+                    let mut out = Vec::new();
+                    for i in (t..n).step_by(par) {
+                        let f = dir.join(format!("m{i}"));
+                        let argv = sh_gc(&f, "wait");
+                        let (c, s) = d.call(
+                            "POST",
+                            "/api/v1/sessions",
+                            Some(&serde_json::json!({"argv": argv}).to_string()),
+                        );
+                        assert_eq!(c, 201, "{s}");
+                        let id = s["id"].as_str().unwrap().to_owned();
+                        let gc = read_pid(&f);
+                        let _own = Own(vec![gc]);
+                        let (c, s) = d.call(
+                            "DELETE",
+                            &format!("/api/v1/sessions/{id}?grace_ms=500"),
+                            None,
+                        );
+                        assert_eq!(c, 200, "{s}");
+                        out.push(s["stop"]["reason"].as_str().unwrap_or("none").to_owned());
+                    }
+                    out
+                })
+            })
+            .collect();
+        hs.into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect::<Vec<String>>()
+    });
+    let mut counts = std::collections::BTreeMap::new();
+    for r in &reasons {
+        *counts.entry(r.clone()).or_insert(0usize) += 1;
+    }
+    println!(
+        "MEASURE {}",
+        serde_json::json!({"n": reasons.len(), "par": par, "reasons": counts})
+    );
+    d.shutdown().await;
+}

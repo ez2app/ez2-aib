@@ -53,6 +53,9 @@ pub const MAX_GRACE_MS: u64 = 30_000;
 pub const SHORT_GRACE: Duration = Duration::from_secs(2);
 /// aibd's whole shutdown sweep (contract §5).
 pub const SHUTDOWN_CAP: Duration = Duration::from_secs(10);
+/// Background slot re-check (a63ab 11-09): every 2 s (the
+/// `session.slot_rescan` timer), at most this long.
+pub const RESCAN_WINDOW: Duration = Duration::from_secs(30);
 /// How long a DELETE waits for a stop already running on the same session.
 const BUSY_WAIT: Duration = Duration::from_secs(40);
 
@@ -250,6 +253,8 @@ struct Entry {
     /// Next event sequence for this session's aggregate.
     seq: i64,
     order: u64,
+    /// A background re-check of its slot is running (one at a time).
+    rescanning: bool,
 }
 
 #[derive(Default)]
@@ -274,6 +279,9 @@ pub struct Sessions {
     spawn: SpawnFn,
     max: usize,
     default_cwd: PathBuf,
+    /// How long the background slot re-check runs (a63ab: 30 s; tests shorten it).
+    rescan_window: Mutex<Duration>,
+    me: std::sync::Weak<Sessions>,
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -289,7 +297,7 @@ impl Sessions {
         max: usize,
         default_cwd: PathBuf,
     ) -> Arc<Sessions> {
-        Arc::new(Sessions {
+        Arc::new_cyclic(|me| Sessions {
             inner: Mutex::new(Inner::default()),
             cv: Condvar::new(),
             store,
@@ -297,7 +305,15 @@ impl Sessions {
             spawn,
             max,
             default_cwd,
+            rescan_window: Mutex::new(RESCAN_WINDOW),
+            me: me.clone(),
         })
+    }
+
+    /// Test hook: a shorter background re-check window.
+    #[doc(hidden)]
+    pub fn set_rescan_window_for_test(&self, d: Duration) {
+        *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner()) = d;
     }
 
     /// Newest first: running and stop_unconfirmed, then the recent ended.
@@ -413,6 +429,7 @@ impl Sessions {
                 stopping: shutting,
                 seq: 1,
                 order,
+                rescanning: false,
             },
         );
         self.event(
@@ -554,9 +571,134 @@ impl Sessions {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
+        } else if stop.survivors.is_empty() && !g.shutting {
+            // nothing known alive, but the stop could not look everywhere
+            // (e.g. candidates_unreadable): re-check in the background
+            self.start_rescan(&mut g, id);
         }
         self.cv.notify_all();
         Some(rec)
+    }
+
+    fn start_rescan(&self, g: &mut Inner, id: &str) {
+        let Some(e) = g.live.get_mut(id) else {
+            return;
+        };
+        if e.rescanning {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        e.rescanning = true;
+        let tid = id.to_owned();
+        let spawned = std::thread::Builder::new()
+            .name("aibd-slot-rescan".into())
+            .spawn(move || me.rescan(&tid));
+        if spawned.is_err() {
+            // no thread: the slot stays held (a DELETE still re-checks)
+            if let Some(e) = g.live.get_mut(id) {
+                e.rescanning = false;
+            }
+        }
+    }
+
+    /// Background re-check of a held slot (a63ab 11-09): every 2 s for at
+    /// most the window, re-run the stop (it signals nothing when nothing is
+    /// alive, and re-reads the candidates). `observed_clean` ⇒ slot back +
+    /// `session.slot_released`; still not at the end ⇒ kept +
+    /// `session.slot_held` with the last reason. Gives way to a DELETE or the
+    /// shutdown (neither waits long: one pass is short).
+    fn rescan(&self, id: &str) {
+        let window = *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner());
+        let op = crate::timers::SESSION_SLOT_RESCAN.begin(Some(Instant::now() + window));
+        let mut tries = 0u32;
+        let mut last: Option<String> = None;
+        while op.tick() {
+            let run = {
+                let mut g = lock(&self.inner);
+                if g.shutting {
+                    return self.end_rescan(&mut g, id, None, tries, last);
+                }
+                let Some(e) = g.live.get_mut(id) else {
+                    return; // released by a DELETE meanwhile
+                };
+                if !e.rec.holds_slot || !e.rec.stop.as_ref().is_some_and(|s| s.survivors.is_empty())
+                {
+                    e.rescanning = false;
+                    return; // a DELETE changed it (survivors now: H2, DELETE again)
+                }
+                if e.stopping {
+                    continue; // a DELETE is on it right now
+                }
+                e.stopping = true;
+                e.run.clone()
+            };
+            tries += 1;
+            let stop = run
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .stop(SHORT_GRACE);
+            let mut g = lock(&self.inner);
+            let Some(e) = g.live.get_mut(id) else {
+                return;
+            };
+            e.stopping = false;
+            last = stop.status.reason().map(str::to_owned);
+            if stop.releases_slot() {
+                return self.end_rescan(&mut g, id, Some(stop), tries, last);
+            }
+            e.rec.stop = Some(StopView::of(&stop));
+            self.cv.notify_all();
+            if !stop.survivors.is_empty() {
+                // something it can see again: no longer this re-check's case
+                e.rec.holds_slot = true;
+                return self.end_rescan(&mut g, id, None, tries, last);
+            }
+        }
+        let mut g = lock(&self.inner);
+        self.end_rescan(&mut g, id, None, tries, last);
+    }
+
+    fn end_rescan(
+        &self,
+        g: &mut Inner,
+        id: &str,
+        released: Option<Stop>,
+        tries: u32,
+        last: Option<String>,
+    ) {
+        let Some(e) = g.live.get_mut(id) else {
+            return;
+        };
+        e.rescanning = false;
+        match released {
+            Some(stop) => {
+                e.rec.stop = Some(StopView::of(&stop));
+                e.rec.holds_slot = false;
+                self.event(
+                    g,
+                    id,
+                    "session.slot_released",
+                    serde_json::json!({"id": id, "reason": stop.status.reason(), "tries": tries}),
+                );
+                tracing::info!(session = %id, tries, "slot released after re-check");
+                if let Some(e) = g.live.remove(id) {
+                    g.ended.push_front((e.order, e.rec));
+                    g.ended.truncate(KEEP_ENDED);
+                }
+            }
+            None => {
+                self.event(
+                    g,
+                    id,
+                    "session.slot_held",
+                    serde_json::json!({"id": id, "reason": last, "tries": tries}),
+                );
+                tracing::warn!(session = %id, tries, reason = ?last, "slot still held after re-check");
+            }
+        }
+        self.cv.notify_all();
     }
 
     /// DELETE. Blocking: answers after the stop (≈ grace + 4 s at most).

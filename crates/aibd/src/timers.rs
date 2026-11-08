@@ -145,7 +145,14 @@ pub static TREE_CANCEL_WAIT: Timer = Timer::operation(
 );
 
 /// Every timer aibd has. A test checks that nothing is declared but missing.
-pub static ALL: &[&Timer] = &[&TREE_CANCEL_WAIT];
+pub static SESSION_SLOT_RESCAN: Timer = Timer::operation(
+    "session.slot_rescan",
+    secs(2),
+    secs(30),
+    "re-check a stopped session whose stop could not show the tree gone, so its slot can come back (a63ab 11-09)",
+);
+
+pub static ALL: &[&Timer] = &[&TREE_CANCEL_WAIT, &SESSION_SLOT_RESCAN];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sample {

@@ -6,3 +6,4 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | Name | Kind | Period | Max lifetime | Purpose |
 |---|---|---|---|---|
 | `tree.cancel_wait` | operation | 50 ms | 30 s | re-check a signalled process tree until it is gone (ADR 0004 cancel steps) |
+| `session.slot_rescan` | operation | 2 s | 30 s | re-check a stopped session whose stop could not show the tree gone, so its slot can come back (a63ab 11-09) |
