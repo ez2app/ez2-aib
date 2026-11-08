@@ -1983,6 +1983,10 @@ PYSEAT
 #   只在「同一個 pane 行程」時沿用:舊 pid 非空、= 現在的 pane_pid(呼叫端已驗活著)、舊 uuid 格式正確、
 #   帶了 --session-uuid 就要相同。印出要沿用的 uuid;任一條不成立回 1(照舊寫 pending,不猜)。
 #   沿用之後 write_seat_record 的 _archive_same_uuid_exit 會把退出欄搬進 prior_exits(同 uuid、pid 活著)。
+#   不讀 AIB_RESUME_SESSION_UUID(043dd #521 審:那是呼叫端 shell 的環境、會從席裡開的 shell 繼承,不是 pane 的證據;
+#   respawn 接回同一段要沿用,改由 seat_launch_evidence 從 pane 子孫 argv 認 --resume,另開)。
+#   已知限制(043dd #521 Low 1):同一個 pid 裡開了新的一段(Codex /new)時 pid 不變、uuid 變,這裡會沿用舊碼;
+#   seat-detect 只填空欄、不會改正 ⇒ 要等下一次量得到 uuid 的登記才會更正(UNVERIFIED,PR 已列)。
 _rereg_keep_uuid() {
   local old_pid="$1" pane_pid="$2" old_uuid="$3" expect="$4"
   [ -n "$old_pid" ] && [ "$old_pid" = "$pane_pid" ] || return 1

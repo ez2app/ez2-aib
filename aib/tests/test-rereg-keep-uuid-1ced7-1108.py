@@ -10,6 +10,7 @@ uuid 退成 previous + pending,退出欄也留著(handoff 第 8 項判 gone;bb7d
 K1 _rereg_keep_uuid:舊 pid = pane pid、舊 uuid 格式對、--session-uuid 沒給或相同 ⇒ 印舊 uuid;
    pid 不同 / 舊 pid 空 / uuid 壞 / 自報不同 ⇒ rc 1(照舊寫 pending,不猜)
 K2 seat_reregister 的 rc 3 分支真的走 _rereg_keep_uuid,沿用時 RESET_SESSION_IDENTITY=0
+K4 呼叫端環境繼承來的 AIB_RESUME_SESSION_UUID 不是證據:pane respawn、舊 pid 不在 ⇒ 不沿用(043dd #521 審)
 W1 沿用後寫席位檔(write_seat_record 的 Python 段):session_uuid 不變、退出五欄搬進 prior_exits
 W2 不沿用(reset)時:uuid 退成 previous + pending、退出欄留在頂層(死席紀錄不被擦掉)—— 舊行為不變
 """
@@ -40,6 +41,12 @@ def segment(start, end):
 KEEP_FN = segment("_rereg_keep_uuid() {\n", "\n}\n")
 PYSEAT = segment("<<'PYSEAT' 2>/dev/null || write_rc=$?\n", "\nPYSEAT\n")
 PYSEAT = PYSEAT[PYSEAT.index("\n") + 1:-len("PYSEAT\n")]
+
+
+def dead_pid():
+    p = subprocess.Popen(["/bin/sh", "-c", "exit 0"])
+    p.wait()
+    return str(p.pid)   # 剛收掉的 pid:幾毫秒內不會被重用
 
 
 def keep(old_pid, pane_pid, old_uuid, expect=""):
@@ -74,6 +81,20 @@ class KeepRule(unittest.TestCase):
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r.stdout.strip()
+
+    def test_k4_inherited_resume_env_is_not_evidence(self):
+        """043dd #521 審:呼叫端 shell 繼承來的 AIB_RESUME_SESSION_UUID(= 舊 uuid)、pane 已 respawn、舊 pid 不在 ⇒ 不沿用。"""
+        gone = dead_pid()
+        body = segment("seat_reregister() {\n", "\n}\n")
+        case = body[body.index('  case "$ev_rc" in'):]
+        case = case[:case.index("  esac\n") + len("  esac\n")]
+        script = "\n".join([KEEP_FN, 'die() { echo "DIE $*"; exit 9; }', "ev_rc=3", 'ev=""',
+                             'old_pid=%s pane_pid=30001 old_uuid=%s REREG_UUID="" kept=""' % (gone, U),
+                             case, 'echo "UUID=$SEAT_SESSION_UUID RESET=$RESET_SESSION_IDENTITY KEPT=$kept"'])
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10,
+                           env=dict(os.environ, AIB_RESUME_SESSION_UUID=U))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "UUID= RESET=1 KEPT="), r.stdout + r.stderr)
+        self.assertNotIn("AIB_RESUME_SESSION_UUID", KEEP_FN + case, "沿用規則不准讀呼叫端環境")
 
     def test_k2_rc3_branch_keeps_only_same_pane(self):
         self.assertEqual(self.run_branch("28123", "28123", U), "UUID=%s RESET=0 KEPT=%s" % (U, U))
