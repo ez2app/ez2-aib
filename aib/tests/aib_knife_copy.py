@@ -7,7 +7,7 @@
     with knife_copy(ROOT, "src/messaging/dm_paste.py", needle, replacement) as copy_root:
         subprocess.run([sys.executable, str(copy_root / "tests" / THIS_NAME), ...], cwd=str(copy_root))
 
-複本內容:整棵樹(不含 .git、__pycache__);tests/ 只帶輔助檔(非 test-*)與呼叫端指定的測試檔。
+複本內容:整棵樹(不含 .git、__pycache__);tests/ 只帶輔助檔(非 test-*)、呼叫端指定的測試檔、tests/ 底下的資料夾(fixtures/ 等)。
 ★ 10-04 改成整棵抄:原本只抄 src/i18n/tools/deploy,帳本要的 schemas/ 不在複本 ⇒ 子行程因「找不到 schema」而紅,
   刀看起來有牙其實沒驗到(E 組實踩:an internal service-client、inbox-prescreen 補抄前六格全因缺 schema 紅)。
   少抄一個資料夾 = 假紅;寧可多抄。
@@ -43,6 +43,9 @@ def knife_copy(root, rel, needle, replacement, tests=(), drop=()):
         for f in (root / "tests").glob("*.py"):
             if not f.name.startswith("test-") or f.name in tests:
                 shutil.copy2(f, dst / "tests" / f.name)
+        for d in (root / "tests").iterdir():   # fixtures/ 等資料夾整個帶(043dd 11-08:#519 的舊版 fixture 不在複本 ⇒ 刀假紅)
+            if d.is_dir() and not d.is_symlink() and d.name != "__pycache__":
+                shutil.copytree(d, dst / "tests" / d.name, ignore=ign, symlinks=True)
         for d in drop:
             shutil.rmtree(dst / d, ignore_errors=True)
         layer = dst / rel
