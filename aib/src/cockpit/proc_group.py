@@ -138,7 +138,11 @@ class _Group:
         return "leader_identity_changed"  # unreadable counts as unproven, never as "fine"
 
     def send(self, sig):
-        """'sent' | 'gone' (ESRCH) | 'check' (EPERM: verify by listing) | 'not_ours' (self.why says why)."""
+        """'sent' | 'gone' (ESRCH) | 'check' (EPERM: verify by listing) | 'not_ours' (self.why says why).
+        Identity loss is latched: once lost in this stop, nothing more is ever sent, even if a later read
+        looks fine again (bb7dc #509)."""
+        if self.why:
+            return "not_ours"
         self.why = self.identity_problem()
         if self.why:
             return "not_ours"
@@ -202,6 +206,7 @@ class _Group:
                 continue  # live members under EPERM: try the next signal, then report
             if self.wait_empty(wait):
                 return self.verify()
+            # identity lost while waiting: the next send() is refused by the latch -> unverified, no KILL
         return self.verify()
 
 

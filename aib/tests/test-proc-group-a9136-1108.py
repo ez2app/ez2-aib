@@ -270,6 +270,19 @@ class Fakes(unittest.TestCase):
         rep = g.stop(grace=0.01)
         self.assertEqual(rep.status, "stopped", rep)
 
+    def test_identity_lost_once_stays_lost_and_nothing_more_is_sent(self):
+        # bb7dc #509 (3): lost on the probe after TERM, readable again before KILL -> still lost, no KILL
+        states = iter(["running", "reaped"])
+        g, calls = self.group(self.ok, [(424250, "S")], start_now=100)
+        g.leader_state = lambda pid: next(states, "running")
+        rep = g.stop(grace=0.01)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"), rep)
+        self.assertEqual(calls, [signal.SIGTERM], "signalled again after identity was lost")
+        # the latch itself: identity reads fine now, still nothing goes out
+        self.assertIsNone(g.identity_problem())
+        self.assertEqual(g.send(signal.SIGKILL), "not_ours")
+        self.assertEqual(calls, [signal.SIGTERM])
+
     def test_esrch_means_stopped(self):
         def esrch(pgid, sig):
             raise ProcessLookupError(3, "No such process")
