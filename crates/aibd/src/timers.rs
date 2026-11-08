@@ -236,8 +236,9 @@ mod tests {
 
     #[test]
     fn timers_every_declared_timer_is_registered() {
-        let src = include_str!("timers.rs");
-        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        // Windows checkouts may turn LF into CRLF (core.autocrlf): compare on LF
+        let src = include_str!("timers.rs").replace("\r\n", "\n");
+        let body = src.split("#[cfg(test)]").next().unwrap_or(&src);
         let declared = body.matches("Timer::operation(\n").count()
             + body.matches("Timer::resident(\n").count();
         assert_eq!(declared, ALL.len(), "a timer is declared but not in ALL");
@@ -250,7 +251,9 @@ mod tests {
         if std::env::var_os("AIBD_WRITE_TIMERS_DOC").is_some() {
             std::fs::write(path, &want).unwrap();
         }
-        let have = std::fs::read_to_string(path).unwrap_or_default();
+        let have = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n"); // Windows checkouts may turn LF into CRLF
         assert_eq!(
             have, want,
             "docs/perf/timers.md is out of date: run AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers"
