@@ -296,6 +296,185 @@ class Units(unittest.TestCase):
         self.assertEqual(prepr.kinds([])["docs_only"], False)
 
 
+class TimeoutCalls(unittest.TestCase):
+    """Item 10 (DECISION-20, a63ab 11-08): a NEW subprocess call with its own timeout outside proc_group warns.
+    Only added lines count; the first week it is `warn` (never green, never a failure)."""
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp(prefix="aib-prepr-to-"))
+        self.r = self.td / "r"
+        self.r.mkdir()
+        self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.git("init", "-q", "-b", "main")
+        self.write("old.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n\n\n")
+        self.commit("base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", str(self.r)] + list(a), env=self.env, check=True, capture_output=True,
+                              text=True).stdout
+
+    def write(self, name, text):
+        (self.r / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.r / name).write_text(text)
+
+    def commit(self, msg):
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg)
+
+    def items(self):
+        return prepr.timeout_items(str(self.r), self.base, prepr.changed_files(str(self.r), self.base))
+
+    def item(self):
+        got = self.items()
+        self.assertEqual(len(got), 1, got)
+        return got[0]
+
+    def test_a_new_multi_line_call_warns_with_file_and_line(self):
+        self.write("new.py", "import subprocess\nx = 1\nsubprocess.run(\n    ['true'],\n    timeout=5)\n")
+        self.commit("add")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("new.py:3 subprocess.run(timeout=)", i["reason"])
+        self.assertNotIn("old.py", i["reason"])
+
+    def test_an_untouched_old_call_in_an_edited_file_is_not_reported(self):
+        self.write("old.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n\nprint('edit')\n")
+        i = self.item()
+        self.assertEqual(i["status"], "pass", i)
+
+    def test_an_uncommitted_call_is_found_at_its_working_copy_line(self):
+        self.write("old.py", "import subprocess\n# a\n# b\nsubprocess.run(['true'], timeout=5)\n\n"
+                             "subprocess.check_output(['true'], timeout=9)\n")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("old.py:6 subprocess.check_output(timeout=)", i["reason"])
+        self.assertNotIn("old.py:4", i["reason"])   # the moved old call is not new
+
+    def test_an_untracked_file_counts_every_call(self):
+        self.write("tools/u.py", "import subprocess\nsubprocess.call(['true'], timeout=1)\n")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("tools/u.py:2 subprocess.call(timeout=)", i["reason"])
+
+    def test_a_marked_call_is_left_alone(self):
+        self.write("new.py", "import subprocess\nsubprocess.run(['true'],\n    timeout=5)  # proc-group: ok daemon\n")
+        self.assertEqual(self.item()["status"], "pass")
+
+    def test_wait_counts_only_on_a_process_object_and_communicate_too(self):
+        self.write("ev.py", "import threading\nthreading.Event().wait(timeout=1)\n")
+        self.assertEqual(self.item()["status"], "pass")
+        self.write("pw.py", "import subprocess\np = subprocess.Popen(['true'])\np.wait(timeout=1)\n"
+                            "p.communicate(timeout=2)\n")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("pw.py:3 .wait(timeout)", i["reason"])
+        self.assertIn("pw.py:4 .communicate(timeout)", i["reason"])
+        self.assertNotIn("ev.py", i["reason"])
+
+    def test_a_marker_needs_a_real_comment_and_a_reason(self):
+        self.write("m.py", "import subprocess\n"
+                           "subprocess.run(['x'], timeout=5)  # proc-group: ok\n"
+                           "subprocess.run(['echo', 'proc-group: ok it is'], timeout=5)\n"
+                           "subprocess.run(['x'], timeout=5)  # proc-group: ok   starts a daemon on purpose\n")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("m.py:2 subprocess.run(timeout=) (marked `# proc-group: ok` without a reason)", i["reason"])
+        self.assertIn("m.py:3 subprocess.run(timeout=)", i["reason"])   # the words in a string are no marker
+        self.assertNotIn("m.py:4", i["reason"])
+
+    def test_aliases_positional_timeouts_and_asyncio_are_found(self):
+        """043dd #518 M1 / M2: every form below is a call with its own timeout."""
+        cases = {
+            "import subprocess as sp\nsp.run(['x'], timeout=5)\n": "subprocess.run(timeout=)",
+            "from subprocess import run\nrun(['x'], timeout=5)\n": "subprocess.run(timeout=)",
+            "from subprocess import check_output as co\nco(['x'], timeout=5)\n": "subprocess.check_output(timeout=)",
+            "from subprocess import Popen as P\np = P(['x'])\np.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\np = subprocess.Popen(['x'])\np.wait(5)\n": ".wait(timeout)",
+            "import subprocess\np = subprocess.Popen(['x'])\np.communicate(None, 5)\n": ".communicate(timeout)",
+            "import subprocess\nwith subprocess.Popen(['x']) as q:\n    q.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\nclass C:\n    def f(self):\n        self.proc = subprocess.Popen(['x'])\n"
+            "        self.proc.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\nsubprocess.Popen(['x']).wait(timeout=5)\n": ".wait(timeout)",
+            "import asyncio\nasync def f():\n    p = await asyncio.create_subprocess_exec('x')\n"
+            "    await asyncio.wait_for(p.wait(), timeout=5)\n": "asyncio.wait_for(.wait())",
+            "import asyncio as aio\nasync def f():\n    p = await aio.create_subprocess_shell('x')\n"
+            "    await aio.wait_for(p.communicate(), 5)\n": "asyncio.wait_for(.communicate())",
+        }
+        for text, label in cases.items():
+            with self.subTest(text=text):
+                got = prepr.timeout_calls(text)
+                self.assertIn(label, [g[2] for g in got if g[3] == "hit"], got)
+
+    def test_what_cannot_be_told_is_unclear_never_dropped(self):
+        unclear = {
+            "import subprocess\nkw = {}\nsubprocess.run(['x'], **kw)\n": "subprocess.run(**kwargs): timeout unknown",
+            "import subprocess\np = subprocess.Popen(['x'])\np.wait(**kw)\n": ".wait(**kwargs): timeout unknown",
+            "import subprocess\nsubprocess.Popen(['x'])\ndef f(child):\n    child.wait(timeout=5)\n":
+                ".wait(timeout) on child: not known to be a process",
+        }
+        for text, label in unclear.items():
+            with self.subTest(text=text):
+                got = prepr.timeout_calls(text)
+                self.assertIn((label, "unclear"), [(g[2], g[3]) for g in got], got)
+        # no process started in the file: a .wait(timeout) is not a question at all
+        self.assertEqual(prepr.timeout_calls("import threading\nthreading.Event().wait(timeout=1)\n"), [])
+        self.assertEqual(prepr.timeout_calls("import subprocess\nsubprocess.run(['x'])\n"), [])
+
+    def test_a_hit_and_an_unchecked_file_are_reported_as_two_items(self):
+        self.write("h.py", "import subprocess\nsubprocess.run(['x'], timeout=5)\n")
+        self.write("bad.py", "def (:\n")
+        got = self.items()
+        self.assertEqual([(i["item"], i["status"]) for i in got], [(10, "warn"), (10, "not_run")], got)
+        self.assertIn("h.py:2", got[0]["reason"])
+        self.assertNotIn("bad.py", got[0]["reason"])
+        self.assertIn("bad.py (does not parse)", got[1]["reason"])
+
+    def test_an_unclear_call_alone_is_not_run_never_pass(self):
+        self.write("u.py", "import subprocess\nkw = {}\nsubprocess.run(['x'], **kw)\n")
+        i = self.item()
+        self.assertEqual(i["status"], "not_run", i)
+        self.assertIn("could not check: u.py:3 subprocess.run(**kwargs): timeout unknown", i["reason"])
+
+    def test_a_file_that_does_not_parse_is_not_run_never_pass(self):
+        self.write("bad.py", "def (:\n")
+        i = self.item()
+        self.assertEqual(i["status"], "not_run", i)
+        self.assertIn("bad.py (does not parse)", i["reason"])
+
+    def test_a_failing_git_diff_is_not_run_never_pass(self):
+        self.write("new.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")
+        self.commit("add")
+        i, = prepr.timeout_items(str(self.r), "no-such-ref", ["new.py"])
+        self.assertEqual(i["status"], "not_run", i)
+        self.assertIn("new.py (git diff failed)", i["reason"])
+
+    def test_proc_group_itself_and_non_python_are_skipped(self):
+        self.write("aib/src/cockpit/proc_group.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")
+        i = self.item()   # the shared tool itself is the one place that may call subprocess with a timeout
+        self.assertEqual((i["status"], i["reason"]), ("not_run", "not applicable: no Python change"), i)
+        self.assertEqual([i["status"] for i in prepr.timeout_items(str(self.r), self.base, ["a.md"])], ["not_run"])
+
+    def test_warn_is_not_a_failure_of_the_whole_run(self):
+        self.write("new.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")
+        self.assertEqual(prepr.TIMEOUT_CALLS_STATUS, "warn")
+        with tempfile.TemporaryFile("w+") as out:
+            old = sys.stdout
+            sys.stdout = out
+            try:
+                rc = prepr.main(["--repo", str(self.r), "--base", self.base])
+            finally:
+                sys.stdout = old
+            out.seek(0)
+            text = out.read()
+        self.assertEqual(rc, 0, text)
+        self.assertIn("[WARN   ] 10", text)
+        self.assertIn("1 warning(s)", text)
+
+
 class Cli(unittest.TestCase):
     """Real `aib prepr` on a throwaway git repo: docs-only change, nothing run, every manual item listed."""
 
@@ -322,7 +501,7 @@ class Cli(unittest.TestCase):
         v = json.loads(p.stdout)
         self.assertEqual(v["files"], ["a.md"])
         self.assertEqual({i["status"] for i in v["items"]}, {"not_run"})
-        self.assertEqual(sorted({i["item"] for i in v["items"]}), list(range(1, 10)))
+        self.assertEqual(sorted({i["item"] for i in v["items"]}), list(range(1, 11)))
 
     def test_a_new_file_not_yet_added_counts_as_changed(self):
         (self.td / "r" / "new.md").write_text("z\n")
