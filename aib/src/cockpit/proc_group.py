@@ -33,6 +33,7 @@ Rules (DECISION-20 + ADR 0007):
   (`windows_direct_child_only`); after a normal exit leftovers cannot be listed, so `leftovers="stop"` reports
   `unverified` / `windows_leftovers_not_checked`. Never claimed as a whole-tree stop. (UNVERIFIED: no Windows machine.)
 """
+import errno
 import os
 import signal
 import subprocess
@@ -92,25 +93,61 @@ def _live(rows):
     return [pid for pid, stat in rows if not stat.startswith("Z")]
 
 
-def _leader_state(pid):
-    """Look at our child `pid` without reaping it:
-    'running' | 'zombie' (exited, not reaped: the pid is still ours) | 'reaped' (someone already waited on it:
-    the pid may be reused by anyone) | 'unknown' (no waitid here)."""
-    if not hasattr(os, "waitid"):
-        return "unknown"
+def _os_waitid_state(pid):
     try:
         return "running" if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None else "zombie"
     except ChildProcessError:
         return "reaped"
 
 
+_libc_waitid = None
+
+
+def _darwin_waitid_state(pid):
+    """Python before 3.13 has no os.waitid on macOS (#509 CI, macOS 3.12): the same libc call through ctypes.
+    <sys/wait.h>: P_PID 1, WNOHANG 0x1, WEXITED 0x4, WNOWAIT 0x20; siginfo_t is 104 bytes, si_pid at offset 12
+    (si_pid 0 = no state change = still running). Anything unexpected = 'unknown' (= unproven)."""
+    global _libc_waitid
+    try:
+        if _libc_waitid is None:
+            import ctypes
+            import ctypes.util
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            f = libc.waitid
+            f.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+            f.restype = ctypes.c_int
+            _libc_waitid = (ctypes, f)
+        ctypes, f = _libc_waitid
+        si = ctypes.create_string_buffer(104)
+        if f(1, pid, si, 0x4 | 0x1 | 0x20) != 0:
+            return "reaped" if ctypes.get_errno() == errno.ECHILD else "unknown"
+        got = int.from_bytes(si.raw[12:16], sys.byteorder, signed=True)
+        if got == 0:
+            return "running"
+        return "zombie" if got == pid else "unknown"
+    except Exception:  # noqa: BLE001  no libc / no symbol: unproven, never "fine"
+        return "unknown"
+
+
+def _leader_state(pid, *, has_os_waitid=None, platform=None):
+    """Look at our child `pid` without reaping it:
+    'running' | 'zombie' (exited, not reaped: the pid is still ours) | 'reaped' (someone already waited on it:
+    the pid may be reused by anyone) | 'unknown' (cannot look: identity stays unproven)."""
+    if hasattr(os, "waitid") if has_os_waitid is None else has_os_waitid:
+        return _os_waitid_state(pid)
+    if (sys.platform if platform is None else platform) == "darwin":
+        return _darwin_waitid_state(pid)
+    return "unknown"
+
+
 class _Group:
     """The group led by `p` (started with start_new_session=True), with the leader's identity recorded."""
 
     def __init__(self, p, start=None, *, killpg=None, members=_ps_group, start_of=memguard.start_of,
-                 leader_state=_leader_state, sleep=time.sleep, clock=time.monotonic):
+                 leader_state=None, sleep=time.sleep, clock=time.monotonic):
         self.p, self.pgid = p, p.pid
-        self.start_of, self.leader_state = start_of, leader_state
+        # looked up at call time, so run_group's exit check and the identity check always use the same reader
+        self.start_of, self.leader_state = start_of, leader_state or (lambda pid: _leader_state(pid))
         self.start = start_of(p.pid) if start is None else start
         self.killpg = killpg or (os.killpg if POSIX else None)
         self.members, self.sleep, self.clock = members, sleep, clock
@@ -254,7 +291,10 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
 
 
 def _exited_or_poll(p):
-    """Leader exited? On POSIX look without reaping (waitid WNOWAIT); elsewhere poll()."""
-    if POSIX and hasattr(os, "waitid"):
-        return _leader_state(p.pid) != "running"
+    """Leader exited? On POSIX look without reaping (waitid WNOWAIT, os or libc); poll() only where neither
+    exists (Windows, or a POSIX without waitid): poll() reaps, and a reaped leader is unproven afterwards."""
+    if POSIX:
+        st = _leader_state(p.pid)
+        if st != "unknown":
+            return st != "running"
     return p.poll() is not None

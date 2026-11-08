@@ -155,6 +155,41 @@ class RealGroups(unittest.TestCase):
         self.assertIn("could not start", r.error)
 
 
+class LeaderStateWithoutOsWaitid(unittest.TestCase):
+    """#509 CI (macOS 3.12): os.waitid exists on macOS only from Python 3.13. Without it the leader state comes from
+    libc waitid through ctypes; where neither exists it is 'unknown' (= unproven), never a guess."""
+
+    @unittest.skipUnless(sys.platform == "darwin", "the libc fallback is macOS only")
+    def test_the_libc_fallback_tells_running_zombie_and_reaped_apart(self):
+        p = subprocess.Popen(["/bin/sleep", "0.3"], start_new_session=True)
+        try:
+            self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "running")
+            end = time.monotonic() + 5
+            st = "running"
+            while st == "running" and time.monotonic() < end:
+                time.sleep(0.05)
+                st = pg._leader_state(p.pid, has_os_waitid=False)
+            self.assertEqual(st, "zombie")
+            self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "zombie")  # looking does not reap
+        finally:
+            p.wait()
+        self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "reaped")
+
+    def test_without_any_waitid_the_state_is_unknown(self):
+        self.assertEqual(pg._leader_state(os.getpid(), has_os_waitid=False, platform="linux"), "unknown")
+
+    @unittest.skipUnless(sys.platform == "darwin", "the libc fallback is macOS only")
+    def test_a_stop_without_os_waitid_is_verified_on_macos(self):
+        real = pg._leader_state
+        pg._leader_state = lambda pid: real(pid, has_os_waitid=False)
+        try:
+            r = pg.run_group(["/bin/sh", "-c", "trap '' TERM; sleep 30"], timeout=0.5, grace=0.3)
+        finally:
+            pg._leader_state = real
+        self.assertTrue(r.timed_out, r)
+        self.assertEqual(r.stop.status, "stopped", r)
+
+
 class FakeP:
     pid = 424242
 
