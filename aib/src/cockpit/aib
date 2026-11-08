@@ -1172,8 +1172,9 @@ fi
 #      所以 tmux 不管用什麼方式重跑那條指令(裸 respawn-pane、右鍵選單 Respawn),
 #      pane 一起來就自己登記,不依賴任何 hook 有沒有裝。
 #   乙 人工入口——不帶身份旗標時從既有席位檔讀 provider/mode/role/cwd/model。
-# 兩者的 session_uuid **都不從舊檔沿用**:由 seat_launch_evidence.py 從 pane 行程樹的
-# 指令列現讀,量不到就寫 pending(HANDOFF 未結案 3b:窗號重用會給格式正確的錯答案)。
+# 兩者的 session_uuid 由 seat_launch_evidence.py 從 pane 行程樹的指令列現讀,量不到就寫 pending
+# (HANDOFF 未結案 3b:窗號重用會給格式正確的錯答案)。唯一例外(11-08 P2-9):量不到、但 pane 行程
+# 就是席位檔記的那一個(pid 相同、還活著)⇒ 同一個行程不會換窗,沿用舊 uuid,見 _rereg_keep_uuid。
 # ★ 為什麼這段擺在這裡而不是子指令那格:下面的三參驗證要 POS 是真值,而 HUB/T_PY3
 #   到這裡才在手上;把 POS 填成佔位符讓驗證過關,失效形狀是佔位符被寫進席位檔。
 if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
@@ -1977,8 +1978,21 @@ PYSEAT
 # ── 工單 AS:重登記的寫入端(前置解析在上面 seat-env 之後那段)────────────────
 # 唯一寫入仍是 write_seat_record;本函式只負責三件事:量 pane(死 pane 不登記——
 # 登記死 pid 只是把今天的洞再挖一次)、量 session uuid 證據、寫後讀回核 pid。
+# 11-08 P2-9(大綱 r2):Codex 的 session uuid 不在指令列(seat-detect 事後從 rollout 檔量)⇒ 原地 re-register
+#   一律量不到(rc 3)⇒ 以前會把好好的 uuid 退成 previous、標 pending,席位檔的退出欄也留著(handoff 第 8 項判 gone)。
+#   只在「同一個 pane 行程」時沿用:舊 pid 非空、= 現在的 pane_pid(呼叫端已驗活著)、舊 uuid 格式正確、
+#   帶了 --session-uuid 就要相同。印出要沿用的 uuid;任一條不成立回 1(照舊寫 pending,不猜)。
+#   沿用之後 write_seat_record 的 _archive_same_uuid_exit 會把退出欄搬進 prior_exits(同 uuid、pid 活著)。
+_rereg_keep_uuid() {
+  local old_pid="$1" pane_pid="$2" old_uuid="$3" expect="$4"
+  [ -n "$old_pid" ] && [ "$old_pid" = "$pane_pid" ] || return 1
+  [[ "$old_uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  [ -z "$expect" ] || [ "$expect" = "$old_uuid" ] || return 1
+  printf '%s' "$old_uuid"
+}
+
 seat_reregister() {
-  local wid="$REREG_WID" pane_dead="" pane_pid="" seats_file="" old_pid="" new_pid=""
+  local wid="$REREG_WID" pane_dead="" pane_pid="" seats_file="" old_pid="" old_uuid="" new_pid="" kept=""
   pane_dead="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$wid" '#{pane_dead}' 2>/dev/null)" || \
     die "aib seat re-register: hub '$HUB' 裡沒有窗 $wid(或 tmux 連不上)" 2
   [ "$pane_dead" = "0" ] || \
@@ -1988,12 +2002,17 @@ seat_reregister() {
     die "aib seat re-register: 窗 $wid 的 pane_pid 量不到或已死:'$pane_pid'" 2
   seats_file="$(aib_seats_dir)/w${wid#@}.json"
   old_pid="$("$T_PY3" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("pid",""))' "$seats_file" 2>/dev/null || true)"
+  old_uuid="$("$T_PY3" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("session_uuid") or "")' "$seats_file" 2>/dev/null || true)"
   # session uuid:只認 pane 行程樹此刻的指令列。rc 0 量到 / 3 量不到 / 4 自報≠實跑 / 其他=工具壞。
   local ev="" ev_rc=0
   ev="$("$T_PY3" "$HERE/seat_launch_evidence.py" --pane-pid "$pane_pid" ${REREG_UUID:+--expect "$REREG_UUID"})" || ev_rc=$?
   case "$ev_rc" in
     0) SEAT_SESSION_UUID="$ev"; RESET_SESSION_IDENTITY=0 ;;
-    3) SEAT_SESSION_UUID=""; RESET_SESSION_IDENTITY=1 ;;   # 量不到 ⇒ 舊值退 previous、標 pending,不沿用
+    3) if kept="$(_rereg_keep_uuid "$old_pid" "$pane_pid" "$old_uuid" "$REREG_UUID")"; then
+         SEAT_SESSION_UUID="$kept"; RESET_SESSION_IDENTITY=0      # 同一個 pane 行程 ⇒ 沿用(P2-9)
+       else
+         kept=""; SEAT_SESSION_UUID=""; RESET_SESSION_IDENTITY=1  # 量不到 ⇒ 舊值退 previous、標 pending,不沿用
+       fi ;;
     *) die "aib seat re-register: session uuid 證據不成立(rc=$ev_rc),拒寫:$seats_file" 3 ;;
   esac
   write_seat_record "$wid" "$wid" 1 || die "aib seat re-register: 席位檔寫入失敗:$seats_file" 1
@@ -2001,8 +2020,9 @@ seat_reregister() {
   [ "$new_pid" = "$pane_pid" ] || \
     die "aib seat re-register: 寫後讀回 pid=$new_pid ≠ pane_pid=$pane_pid:$seats_file" 1
   if [ "${AIB_QUIET:-0}" != "1" ]; then
-    printf 'aib: re-registered %s pid %s→%s session_uuid=%s seats=%s\n' \
-      "$wid" "${old_pid:-∅}" "$pane_pid" "${SEAT_SESSION_UUID:-pending}" "$seats_file" >&2
+    printf 'aib: re-registered %s pid %s→%s session_uuid=%s%s seats=%s\n' \
+      "$wid" "${old_pid:-∅}" "$pane_pid" "${SEAT_SESSION_UUID:-pending}" \
+      "${kept:+ (kept: same pane pid, not measured)}" "$seats_file" >&2
   fi
 }
 if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
