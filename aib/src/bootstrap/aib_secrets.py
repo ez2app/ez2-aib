@@ -110,6 +110,13 @@ LAYOUT = (
      (("GITHUB_TOKEN", "GitHub 個人 token", "dev", "dev", False),
       ("SSH_HOST_EU01_KEY", "~/.ssh 檔名(EU01)", "dev", "dev", False),
       ("SSH_HOST_SIN01_KEY", "~/.ssh 檔名(SIN01)", "dev", "dev", False))),
+    # 11-08 @4542e(EU02 代管節點,Andy「我不想我去操作」):Hetzner Robot webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
+    #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
+    #   不送伺服器(被救的那台不能是唯一副本);讀端只給 Robot API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
+    ("hetzner-robot.env", "hetzner-robot", "type",
+     "Hetzner Robot webservice 使用者(Settings → Web service and app settings)。給 aib 啟用 Rescue / 重置用;不是 Cloud API token、不是主機 root。",
+     (("HETZNER_ROBOT_USER", "Robot webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
+      ("HETZNER_ROBOT_PASS", "Robot webservice 密碼", "cloud-host", "host-rescue", False))),
     ("payment.env", "payment", "type",
      "收款。定 provider 後才填。",
      (("STRIPE_SECRET_KEY", "Stripe 密鑰", "payment", "payment", False),
