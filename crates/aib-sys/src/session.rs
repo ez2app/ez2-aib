@@ -51,20 +51,23 @@ impl SpawnError {
     }
 }
 
-/// What a kill actually did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a kill actually did (the session API's `stop`: `tree_size` = `members.len()`,
+/// `survivors` = the pids below; clean only when [`KillReport::all_gone`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillReport {
-    /// Processes in the Job just before the terminate (root + descendants).
-    pub members: usize,
+    /// Pids in the Job just before the terminate (root + descendants).
+    pub members: Vec<u32>,
     /// The Job reported empty within the limit.
     pub emptied: bool,
-    /// Members whose own handle still said "running" afterwards (0 = all gone).
-    pub survivors: usize,
+    /// Members whose own handle still said "running" afterwards (empty = all gone).
+    pub survivors: Vec<u32>,
 }
 
 impl KillReport {
+    /// The Job is empty and every member we opened says exited: on Windows this is
+    /// a proof (the Job contains the whole tree), so the API may report `clean`.
     pub fn all_gone(&self) -> bool {
-        self.emptied && self.survivors == 0
+        self.emptied && self.survivors.is_empty()
     }
 }
 
@@ -137,10 +140,10 @@ impl SessionTree {
         }
         self.job.terminate(1)?;
         let emptied = self.job.wait_empty(limit)?;
-        let mut survivors = 0;
+        let mut survivors = Vec::new();
         for p in &handles {
             if !p.wait(Duration::ZERO)? {
-                survivors += 1;
+                survivors.push(p.pid());
             }
         }
         // reap the root, but never block: if the Job did not empty, the root
@@ -151,7 +154,7 @@ impl SessionTree {
             let _ = self.child.try_wait();
         }
         Ok(KillReport {
-            members: members.len(),
+            members: members.iter().map(|m| m.pid).collect(),
             emptied,
             survivors,
         })

@@ -35,7 +35,8 @@ fn killing_a_session_takes_the_whole_tree() {
     let mut s = SessionTree::spawn(&cmd("ping -n 60 127.0.0.1 >nul")).unwrap();
     let ours = tree_of(&s, 2);
     let r = s.kill(Duration::from_secs(10)).unwrap();
-    assert!(r.members >= 2, "{r:?}");
+    assert!(r.members.len() >= 2, "{r:?}");
+    assert!(r.members.contains(&s.pid()), "{r:?}");
     assert!(r.all_gone(), "{r:?}");
     // our own handles, opened before the kill, independently say exited
     for p in &ours {
