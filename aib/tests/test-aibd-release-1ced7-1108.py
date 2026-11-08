@@ -11,7 +11,9 @@ R4 draft / verify / publish 只在 meta 說 publish=true;draft 拒絕碰已存�
 R5 跑 meta 那段 bash(假 Cargo.toml):tag 版號對得上 + 嚴格 X.Y.Z-preview.N ⇒ publish=true;對不上 / 其他 pre-release 寫法 ⇒ rc 1;
    不是 tag ⇒ publish=false
 R6 verify 從 draft 下載、對 SHA256SUMS、再跑一次(--version 精確、uname -m);權杖只給下載那步,執行那步沒有
-R7 先 draft → verify 全綠 → 才 publish(edit --draft=false --latest=false)並用 API 讀回 draft=false prerelease=true、不是 latest
+R7 先 draft → verify 全綠 → 才 publish(PATCH draft=false、make_latest=false)並用 API 讀回 draft=false prerelease=true、不是 latest
+R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰一筆 id 傳下去;verify 用 asset API 下載、publish 用 id PATCH / 讀回),
+   不靠 gh 用 tag 找 draft 的後備查找(a63ab 11-08 22:00:那條路沒實測)
    (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 """
@@ -89,8 +91,7 @@ class Static(unittest.TestCase):
         for n in ("draft", "verify", "publish"):
             self.assertIn("if: needs.meta.outputs.publish == 'true'", job(n))
         d = job("draft")
-        self.assertIn('gh release view "$TAG"', d)
-        self.assertIn("already exists", d)
+        self.assertIn("already exist", d)
         self.assertRegex(d, r'gh release create "\$TAG" --draft --prerelease --latest=false --verify-tag')
         self.assertIn("RELEASE-NOTES-${VERSION}.md", d)
         self.assertIn('[ "$n" -eq "$EXPECTED_FILES" ]', d)
@@ -98,7 +99,6 @@ class Static(unittest.TestCase):
     def test_r6_verify_downloads_and_checks(self):
         v = job("verify")
         self.assertIn("needs: [meta, draft]", v)
-        self.assertIn('gh release download "$TAG"', v)
         self.assertIn("-c mine.sha", v)
         self.assertRegex(v, r'if "\./\$NAME" selfcheck; then')
         self.assertIn('[ "$out" = "aibd $VERSION $PLAT" ]', v)
@@ -113,14 +113,30 @@ class Static(unittest.TestCase):
 
     def test_r7_draft_then_verify_then_publish(self):
         p = job("publish")
-        self.assertIn("needs: [meta, verify]", p, "verify 全綠才公開")
-        self.assertIn('gh release edit "$TAG" --draft=false --prerelease --latest=false', p)
-        self.assertIn('[ "$got" = "draft=false prerelease=true" ]', p)
+        self.assertIn('-X PATCH "repos/$GH_REPO/releases/$RID" -F draft=false -F prerelease=true -f make_latest=false', p)
+        self.assertIn('[ "$got" = "draft=false prerelease=true tag=$TAG" ]', p)
         self.assertIn('releases/latest', p)
         self.assertNotIn("gh release create", p)
-        self.assertNotIn("gh release edit", job("draft") + job("verify"))
+        self.assertNotIn("PATCH", job("draft") + job("verify"))
+        self.assertIn("needs: [meta, draft, verify]", p, "verify 全綠才公開")
         order = [T.index("\n  %s:\n" % n) for n in ("meta", "build", "draft", "verify", "publish")]
         self.assertEqual(order, sorted(order))
+
+
+    def test_r8_draft_found_by_release_id_not_by_tag(self):
+        for bad in ("gh release view", "gh release download", "gh release edit", "releases/tags/"):
+            self.assertNotIn(bad, T, "draft 不准靠 tag 查找:%s" % bad)
+        d = job("draft")
+        self.assertIn("release_id: ${{ steps.mk.outputs.release_id }}", d)
+        self.assertIn('echo "release_id=$ids" >> "$GITHUB_OUTPUT"', d)
+        self.assertIn("rel_ids true", d)
+        self.assertIn("expected exactly one draft", d)
+        for n in ("verify", "publish"):
+            self.assertIn("RID: ${{ needs.draft.outputs.release_id }}", job(n))
+            self.assertIn('[ -n "$RID" ]', job(n))
+        v = job("verify")
+        self.assertIn('repos/$GH_REPO/releases/$RID/assets', v)
+        self.assertIn('-H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid"', v)
 
 
 @unittest.skipUnless(sys.version_info >= (3, 11), "meta uses tomllib (Python 3.11+, as on ubuntu-latest)")

@@ -40,6 +40,7 @@ $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
 Invoke-WebRequest "$B/$F" -OutFile "$D\aibd.exe"
 Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
 $line = Select-String -SimpleMatch " $F" "$D\SHA256SUMS" | Select-Object -First 1
+if (-not $line) { Remove-Item "$D\aibd.exe"; throw "檢查碼檔裡找不到 $F,已刪除下載檔" }
 $want = ([regex]::Match($line.Line, '^[0-9a-fA-F]{64}')).Value.ToLower()
 $got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
 if (-not $want -or $want -ne $got) { Remove-Item "$D\aibd.exe"; throw "檢查碼不一致，已刪除下載檔" }

@@ -129,6 +129,8 @@ jobs:
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.mk.outputs.release_id }}
     permissions:
       contents: write          # create the draft release and upload files; nothing else
     env:
@@ -154,14 +156,25 @@ jobs:
           sha256sum aibd-* > SHA256SUMS
           cat SHA256SUMS
       - name: create a draft pre-release (not public; refuses to touch an existing release)
+        id: mk
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::release $TAG already exists (maybe a draft from a red run) — not touching it; a new preview gets a new tag"; exit 1
+          set -o pipefail       # a failing `gh api` in rel_ids must not read as "no release yet"
+          # every lookup goes through the releases API by tag_name (drafts included), not gh's look-up-by-tag commands:
+          # a draft has no public tag page, so gh would need its draft fallback, which nothing here has tested.
+          rel_ids() { gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | [.id, .tag_name, .draft] | @tsv' \
+                        | awk -F'\t' -v t="$TAG" -v want="$1" '$2 == t && (want == "any" || $3 == want) {print $1}'; }
+          old=$(rel_ids any)
+          if [ -n "$old" ]; then
+            echo "::error::release(s) for $TAG already exist (ids: $old; maybe a draft from a red run) — not touching them; a new preview gets a new tag"; exit 1
           fi
           notes=docs/aibd/RELEASE-NOTES-${VERSION}.md
           [ -f "$notes" ] || { echo "::error::$notes is missing (release notes are reviewed by a human before tagging)"; exit 1; }
           gh release create "$TAG" --draft --prerelease --latest=false --verify-tag \
             --title "aibd $VERSION (preview)" --notes-file "$notes" dist/aibd-* dist/SHA256SUMS
+          ids=$(rel_ids true)
+          [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || { echo "::error::expected exactly one draft for $TAG, got: '$ids'"; exit 1; }
+          echo "draft release id: $ids"
+          echo "release_id=$ids" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: [meta, draft]
@@ -178,7 +191,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.meta.outputs.version }}
-      TAG: ${{ github.ref_name }}
+      RID: ${{ needs.draft.outputs.release_id }}
       NAME: aibd-${{ needs.meta.outputs.version }}-${{ matrix.target }}${{ matrix.exe }}
       PLAT: ${{ matrix.plat }}
       ARCH: ${{ matrix.arch }}
@@ -189,8 +202,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
           mkdir v && cd v
-          gh release download "$TAG" -p "$NAME" -p SHA256SUMS
+          # by release id + asset API (works for a draft; no tag lookup)
+          gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) assets=\(.assets | length)"'
+          for want in "$NAME" SHA256SUMS; do
+            aid=$(gh api "repos/$GH_REPO/releases/$RID/assets?per_page=100" --jq '.[] | [.id, .name] | @tsv' \
+                    | awk -F'\t' -v n="$want" '$2 == n {print $1}')
+            [ "$(printf '%s\n' "$aid" | grep -c .)" = 1 ] || { echo "::error::asset $want: expected one, got '$aid'"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid" > "$want"
+            ls -l "$want"
+          done
           grep " ${NAME}\$" SHA256SUMS > mine.sha
           [ -s mine.sha ] || { echo "::error::$NAME is not in SHA256SUMS"; exit 1; }
           if command -v sha256sum >/dev/null; then sha256sum -c mine.sha; else shasum -a 256 -c mine.sha; fi
@@ -208,7 +230,7 @@ jobs:
           if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::uploaded $NAME selfcheck exited $rc"; exit 1; fi
 
   publish:
-    needs: [meta, verify]      # every verify cell green, or this never runs and the draft stays private
+    needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -216,15 +238,19 @@ jobs:
       contents: write          # flip the draft to public; nothing else
     env:
       TAG: ${{ github.ref_name }}
+      RID: ${{ needs.draft.outputs.release_id }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: publish the verified draft as a pre-release (not latest)
-        run: gh release edit "$TAG" --draft=false --prerelease --latest=false
+        run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
+          gh api -X PATCH "repos/$GH_REPO/releases/$RID" -F draft=false -F prerelease=true -f make_latest=false \
+            --jq '"patched id=\(.id) tag=\(.tag_name)"'
       - name: read it back through the API
         run: |
-          got=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '"draft=\(.draft) prerelease=\(.prerelease)"')
+          got=$(gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) prerelease=\(.prerelease) tag=\(.tag_name)"')
           echo "$got"
-          [ "$got" = "draft=false prerelease=true" ] || { echo "::error::release $TAG reads back as '$got', want draft=false prerelease=true"; exit 1; }
+          [ "$got" = "draft=false prerelease=true tag=$TAG" ] || { echo "::error::release $RID reads back as '$got', want draft=false prerelease=true tag=$TAG"; exit 1; }
           latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
           [ "$latest" != "$TAG" ] || { echo "::error::$TAG became the repo's latest release"; exit 1; }
