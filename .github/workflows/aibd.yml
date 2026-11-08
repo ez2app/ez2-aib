@@ -14,6 +14,7 @@ on:
       - "xtask/**"
       - "migrations/**"
       - "scripts/check-core-purity.sh"
+      - "scripts/check-sys-deps.sh"
       - ".github/workflows/aibd.yml"
   pull_request:
     paths:
@@ -25,12 +26,16 @@ on:
       - "xtask/**"
       - "migrations/**"
       - "scripts/check-core-purity.sh"
+      - "scripts/check-sys-deps.sh"
       - ".github/workflows/aibd.yml"
 permissions:
   contents: read
+# 11-08 DECISION-8 第 3 項:同一張 PR 推新頭碼就取消舊的那一輪;main 每次推送各自一組、不取消。
+#   group 帶 workflow 名(ci / aibd 互不取消);PR 用 PR 號,main 用 github.sha(每次推送獨立,不會被下一次蓋掉)。
+#   labeled 重跑同一個 SHA 也算同一張 PR ⇒ 會取消正在跑的那輪、照新標籤重跑。
 concurrency:
-  group: aibd-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   rust:
     timeout-minutes: 30
@@ -70,6 +75,11 @@ jobs:
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
+      - name: aib-sys dependents (only aibd)
+        shell: bash
+        run: |
+          ./scripts/check-sys-deps.sh
+          ./scripts/check-sys-deps.sh --self-test
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy

@@ -9,6 +9,12 @@ on:
     types: [opened, synchronize, reopened, labeled]
 permissions:
   contents: read
+# 11-08 DECISION-8 第 3 項:同一張 PR 推新頭碼就取消舊的那一輪;main 每次推送各自一組、不取消。
+#   group 帶 workflow 名(ci / aibd 互不取消);PR 用 PR 號,main 用 github.sha(每次推送獨立,不會被下一次蓋掉)。
+#   labeled 重跑同一個 SHA 也算同一張 PR ⇒ 會取消正在跑的那輪、照新標籤重跑。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   smoke:
     # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。

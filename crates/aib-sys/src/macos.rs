@@ -1,0 +1,353 @@
+//! macOS M1–M4 through libproc. Every `unsafe` block is one FFI call with
+//! its own SAFETY note (`clippy::undocumented_unsafe_blocks` and
+//! `multiple_unsafe_ops_per_block` are denied for this crate).
+
+use crate::list::read_pid_list;
+use crate::{check_struct_read, BsdInfo, ProcessInfo, SysError, UniqueIds};
+use libc::{c_int, c_void};
+use std::mem::{size_of, MaybeUninit};
+
+/// Not in any public SDK header (checked in the 13.3, 14.4, 15.5 and 26.0
+/// SDKs). Value and layout from XNU `bsd/sys/proc_info.h` (`#ifdef PRIVATE`).
+const PROC_PIDUNIQIDENTIFIERINFO: c_int = 17;
+/// `sys/proc_info.h`: `#define PROC_PPID_ONLY 6`.
+const PROC_PPID_ONLY: u32 = 6;
+
+/// XNU `struct proc_uniqidentifierinfo` (56 bytes). The size is checked
+/// against what the kernel returns on every call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ProcUniqIdentifierInfo {
+    p_uuid: [u8; 16],
+    p_uniqueid: u64,
+    p_puniqueid: u64,
+    p_idversion: i32,
+    p_reserve2: u32,
+    p_reserve3: u64,
+    p_reserve4: u64,
+}
+
+const _: () = assert!(size_of::<ProcUniqIdentifierInfo>() == 56);
+
+fn clear_errno() {
+    // SAFETY: `__error()` has no preconditions; it returns this thread's
+    // errno slot, which lives as long as the thread.
+    let slot = unsafe { libc::__error() };
+    // SAFETY: `slot` is this thread's errno, non-null and aligned; only this
+    // thread writes it, and writing an int to it is what C does.
+    unsafe { *slot = 0 };
+}
+
+fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn pid_arg(pid: u32) -> Result<c_int, SysError> {
+    c_int::try_from(pid).map_err(|_| SysError::BadPid)
+}
+
+/// Read one fixed-size `proc_pidinfo` flavor into `T`.
+///
+/// `T` must be a plain C structure (`repr(C)`, integers and arrays only) for
+/// which every bit pattern is valid; both callers in this file are.
+fn pidinfo<T: Copy>(pid: u32, flavor: c_int) -> Result<T, SysError> {
+    pidinfo_with(pid, |pid, buf, size| {
+        // SAFETY: `buf` is a live, exclusively borrowed `size`-byte buffer
+        // (see `pidinfo_with`); the kernel writes at most `size` bytes.
+        unsafe { libc::proc_pidinfo(pid, flavor, 0, buf, size) }
+    })
+}
+
+/// [`pidinfo`] with the raw call passed in, so the errno rules are tested
+/// without the kernel. `raw` gets `(pid, buffer, size)` and returns what
+/// `proc_pidinfo` returns.
+///
+/// errno is cleared right before the call: a failure that sets no errno is
+/// `Unknown`, never a classification left over from an earlier call (a stale
+/// ESRCH would read as `Gone`).
+fn pidinfo_with<T: Copy>(
+    pid: u32,
+    raw: impl FnOnce(c_int, *mut c_void, c_int) -> c_int,
+) -> Result<T, SysError> {
+    let pid = pid_arg(pid)?;
+    let want = size_of::<T>();
+    let size = c_int::try_from(want).map_err(|_| SysError::Unknown)?;
+    let mut out = MaybeUninit::<T>::zeroed();
+    clear_errno();
+    let n = raw(pid, out.as_mut_ptr().cast::<c_void>(), size);
+    check_struct_read(n, want, errno())?;
+    // SAFETY: `out` was zeroed and every bit pattern is valid for `T`, so it
+    // is initialised whatever `raw` wrote; the length was checked above.
+    Ok(unsafe { out.assume_init() })
+}
+
+fn comm(raw: &[libc::c_char]) -> String {
+    let bytes: Vec<u8> = raw
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| c.to_ne_bytes()[0])
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The real implementation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Macos;
+
+impl ProcessInfo for Macos {
+    fn unique_ids(&self, pid: u32) -> Result<UniqueIds, SysError> {
+        let u: ProcUniqIdentifierInfo = pidinfo(pid, PROC_PIDUNIQIDENTIFIERINFO)?;
+        Ok(UniqueIds {
+            unique: u.p_uniqueid,
+            parent_unique: u.p_puniqueid,
+        })
+    }
+
+    fn bsd_info(&self, pid: u32) -> Result<BsdInfo, SysError> {
+        let b: libc::proc_bsdinfo = pidinfo(pid, libc::PROC_PIDTBSDINFO)?;
+        Ok(BsdInfo {
+            pid: b.pbi_pid,
+            ppid: b.pbi_ppid,
+            pgid: b.pbi_pgid,
+            uid: b.pbi_uid,
+            start_sec: b.pbi_start_tvsec,
+            start_usec: b.pbi_start_tvusec,
+            comm: comm(&b.pbi_comm),
+        })
+    }
+
+    fn children(&self, ppid: u32) -> Result<Vec<u32>, SysError> {
+        list(Unit::Bytes, |buf, size| {
+            // SAFETY: `buf` is null with size 0 (size query) or a live,
+            // exclusively borrowed `size`-byte buffer.
+            unsafe { libc::proc_listpids(PROC_PPID_ONLY, ppid, buf, size) }
+        })
+    }
+
+    fn all_pids(&self) -> Result<Vec<u32>, SysError> {
+        list(Unit::Pids, |buf, size| {
+            // SAFETY: as in `children`.
+            unsafe { libc::proc_listallpids(buf, size) }
+        })
+    }
+}
+
+/// What a list call returns: `proc_listpids` counts bytes,
+/// `proc_listallpids` counts pids (libproc.c).
+#[derive(Clone, Copy)]
+enum Unit {
+    Bytes,
+    Pids,
+}
+
+impl Unit {
+    fn to_bytes(self, n: usize) -> usize {
+        match self {
+            Unit::Bytes => n,
+            Unit::Pids => n.saturating_mul(size_of::<i32>()),
+        }
+    }
+}
+
+/// Size query (an estimate), then [`read_pid_list`], which grows the buffer
+/// and refuses to return a list that may be truncated. errno is cleared
+/// before **each** call (the size query and every fill), so a classification
+/// is always this call's own. A failed size query is an error even if a fill
+/// would work: the estimate is what the buffer is sized from.
+fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32>, SysError> {
+    clear_errno();
+    let need = raw(std::ptr::null_mut(), 0);
+    if need < 0 || (need == 0 && errno() != 0) {
+        return Err(SysError::from_errno(errno()));
+    }
+    let hint = unit.to_bytes(usize::try_from(need).unwrap_or(0)) / size_of::<i32>();
+    read_pid_list(hint, |buf| {
+        let size = c_int::try_from(std::mem::size_of_val(buf)).map_err(|_| 0)?;
+        clear_errno();
+        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size);
+        // Errors: a negative return, with this call's errno. A success never
+        // touches errno (measured: a 0 keeps whatever errno was before), so a
+        // 0 that comes with an errno this very call set is not trusted as
+        // "no pids" (fail closed).
+        if n < 0 || (n == 0 && errno() != 0) {
+            return Err(errno());
+        }
+        usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    use super::*;
+
+    fn me() -> u32 {
+        std::process::id()
+    }
+
+    /// Measured on 15.7.9: the kernel writes the real size (56 / 136 bytes)
+    /// into a larger buffer. That must be a mismatch, never a success.
+    #[test]
+    fn m1_m2_a_larger_struct_than_the_kernels_is_a_length_mismatch() {
+        assert_eq!(
+            pidinfo::<[u8; 64]>(me(), PROC_PIDUNIQIDENTIFIERINFO).map(|_| ()),
+            Err(SysError::LengthMismatch { got: 56, want: 64 })
+        );
+        let real = size_of::<libc::proc_bsdinfo>();
+        assert_eq!(
+            pidinfo::<[u8; 144]>(me(), libc::PROC_PIDTBSDINFO).map(|_| ()),
+            Err(SysError::LengthMismatch {
+                got: real,
+                want: 144
+            })
+        );
+    }
+
+    /// A smaller buffer is refused by the kernel (ENOMEM, measured).
+    #[test]
+    fn m1_m2_a_smaller_struct_is_refused() {
+        assert_eq!(
+            pidinfo::<[u8; 48]>(me(), PROC_PIDUNIQIDENTIFIERINFO).map(|_| ()),
+            Err(SysError::Os(libc::ENOMEM))
+        );
+        assert_eq!(
+            pidinfo::<[u8; 128]>(me(), libc::PROC_PIDTBSDINFO).map(|_| ()),
+            Err(SysError::Os(libc::ENOMEM))
+        );
+    }
+
+    /// pid 0 (kernel_task), measured as a user: M1 reads, M2 is EPERM.
+    #[test]
+    fn pid_0_m1_reads_and_m2_is_permission_denied_for_a_user() {
+        assert!(Macos.unique_ids(0).is_ok());
+        // SAFETY: getuid has no preconditions.
+        if unsafe { libc::getuid() } != 0 {
+            assert_eq!(Macos.bsd_info(0), Err(SysError::PermissionDenied));
+        }
+    }
+
+    fn set_errno(e: i32) {
+        // SAFETY: as in `clear_errno`.
+        let slot = unsafe { libc::__error() };
+        // SAFETY: as in `clear_errno`.
+        unsafe { *slot = e };
+    }
+
+    /// M3 counts bytes, M4 counts pids (libproc.c): the glue converts both,
+    /// so a list longer than the first guess is still read whole.
+    #[test]
+    fn m3_m4_list_glue_counts_bytes_and_pids_right() {
+        let pids: Vec<i32> = (1..=200).collect();
+        for unit in [Unit::Bytes, Unit::Pids] {
+            let got = list(unit, |buf, size| {
+                if buf.is_null() {
+                    // size query: an estimate that is too small
+                    return match unit {
+                        Unit::Bytes => 10 * 4,
+                        Unit::Pids => 10,
+                    };
+                }
+                let cap = usize::try_from(size).unwrap() / 4;
+                let n = pids.len().min(cap);
+                // SAFETY: `buf` is the live `size`-byte buffer `list` passed.
+                let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<i32>(), cap) };
+                out[..n].copy_from_slice(&pids[..n]);
+                let n = i32::try_from(n).unwrap();
+                match unit {
+                    Unit::Bytes => n * 4,
+                    Unit::Pids => n,
+                }
+            });
+            assert_eq!(got.map(|v| v.len()), Ok(200));
+        }
+    }
+
+    #[test]
+    fn m3_m4_a_failed_call_is_classified_by_errno() {
+        let r = list(Unit::Pids, |_, _| {
+            set_errno(libc::EPERM);
+            -1
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::ESRCH);
+            -1
+        });
+        assert_eq!(r, Err(SysError::Gone));
+    }
+    /// errno hygiene (043dd K6 / K11): a failure that sets no errno must be
+    /// `Unknown`, even when an earlier call left ESRCH behind. Without the
+    /// clear it would read as `Gone`, the most dangerous mistake.
+    #[test]
+    fn a_failure_without_errno_is_unknown_not_a_stale_gone() {
+        set_errno(libc::ESRCH);
+        let r = pidinfo_with::<[u8; 8]>(me(), |_, _, _| -1);
+        assert_eq!(r.map(|_| ()), Err(SysError::Unknown));
+        set_errno(libc::ESRCH);
+        let r = pidinfo_with::<[u8; 8]>(me(), |_, _, _| 0);
+        assert_eq!(r.map(|_| ()), Err(SysError::Unknown));
+        // the list: stale ESRCH before the size query, and again before a fill
+        set_errno(libc::ESRCH);
+        assert_eq!(list(Unit::Pids, |_, _| -1), Err(SysError::Unknown));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::ESRCH); // left by "something else" before the fill
+            -1
+        });
+        assert_eq!(r, Err(SysError::Gone), "this call's own ESRCH is Gone");
+        let first = std::cell::Cell::new(true);
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                set_errno(libc::ESRCH); // stale from the size query
+                return 64;
+            }
+            if first.replace(false) {
+                -1 // fill fails without setting errno
+            } else {
+                0
+            }
+        });
+        assert_eq!(r, Err(SysError::Unknown));
+    }
+
+    /// A stale errno never turns an empty list into an error (the libproc
+    /// crate bug seen in calibration), and an errno set by this very call
+    /// with a 0 is not trusted as empty.
+    #[test]
+    fn an_empty_list_is_empty_and_a_zero_with_errno_is_refused() {
+        set_errno(libc::ESRCH);
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            0
+        });
+        assert_eq!(r, Ok(Vec::new()));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::EPERM);
+            0
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
+    }
+
+    /// 043dd K10: a failed size query is an error even if the fill works.
+    #[test]
+    fn a_failed_size_query_is_an_error() {
+        let r = list(Unit::Pids, |buf, _| {
+            if buf.is_null() {
+                set_errno(libc::EPERM);
+                return -1;
+            }
+            0
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
+    }
+}
