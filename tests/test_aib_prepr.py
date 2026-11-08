@@ -359,16 +359,71 @@ class TimeoutCalls(unittest.TestCase):
         self.write("new.py", "import subprocess\nsubprocess.run(['true'],\n    timeout=5)  # proc-group: ok daemon\n")
         self.assertEqual(self.item()["status"], "pass")
 
-    def test_wait_counts_only_next_to_popen_and_communicate_always(self):
+    def test_wait_counts_only_on_a_process_object_and_communicate_too(self):
         self.write("ev.py", "import threading\nthreading.Event().wait(timeout=1)\n")
         self.assertEqual(self.item()["status"], "pass")
         self.write("pw.py", "import subprocess\np = subprocess.Popen(['true'])\np.wait(timeout=1)\n"
                             "p.communicate(timeout=2)\n")
         i = self.item()
         self.assertEqual(i["status"], "warn", i)
-        self.assertIn("pw.py:3 .wait(timeout=)", i["reason"])
-        self.assertIn("pw.py:4 .communicate(timeout=)", i["reason"])
+        self.assertIn("pw.py:3 .wait(timeout)", i["reason"])
+        self.assertIn("pw.py:4 .communicate(timeout)", i["reason"])
         self.assertNotIn("ev.py", i["reason"])
+
+    def test_a_marker_needs_a_real_comment_and_a_reason(self):
+        self.write("m.py", "import subprocess\n"
+                           "subprocess.run(['x'], timeout=5)  # proc-group: ok\n"
+                           "subprocess.run(['echo', 'proc-group: ok it is'], timeout=5)\n"
+                           "subprocess.run(['x'], timeout=5)  # proc-group: ok   starts a daemon on purpose\n")
+        i = self.item()
+        self.assertEqual(i["status"], "warn", i)
+        self.assertIn("m.py:2 subprocess.run(timeout=) (marked `# proc-group: ok` without a reason)", i["reason"])
+        self.assertIn("m.py:3 subprocess.run(timeout=)", i["reason"])   # the words in a string are no marker
+        self.assertNotIn("m.py:4", i["reason"])
+
+    def test_aliases_positional_timeouts_and_asyncio_are_found(self):
+        """043dd #518 M1 / M2: every form below is a call with its own timeout."""
+        cases = {
+            "import subprocess as sp\nsp.run(['x'], timeout=5)\n": "subprocess.run(timeout=)",
+            "from subprocess import run\nrun(['x'], timeout=5)\n": "subprocess.run(timeout=)",
+            "from subprocess import check_output as co\nco(['x'], timeout=5)\n": "subprocess.check_output(timeout=)",
+            "from subprocess import Popen as P\np = P(['x'])\np.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\np = subprocess.Popen(['x'])\np.wait(5)\n": ".wait(timeout)",
+            "import subprocess\np = subprocess.Popen(['x'])\np.communicate(None, 5)\n": ".communicate(timeout)",
+            "import subprocess\nwith subprocess.Popen(['x']) as q:\n    q.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\nclass C:\n    def f(self):\n        self.proc = subprocess.Popen(['x'])\n"
+            "        self.proc.wait(timeout=5)\n": ".wait(timeout)",
+            "import subprocess\nsubprocess.Popen(['x']).wait(timeout=5)\n": ".wait(timeout)",
+            "import asyncio\nasync def f():\n    p = await asyncio.create_subprocess_exec('x')\n"
+            "    await asyncio.wait_for(p.wait(), timeout=5)\n": "asyncio.wait_for(.wait())",
+            "import asyncio as aio\nasync def f():\n    p = await aio.create_subprocess_shell('x')\n"
+            "    await aio.wait_for(p.communicate(), 5)\n": "asyncio.wait_for(.communicate())",
+        }
+        for text, label in cases.items():
+            with self.subTest(text=text):
+                got = prepr.timeout_calls(text)
+                self.assertIn(label, [g[2] for g in got if g[3] == "hit"], got)
+
+    def test_what_cannot_be_told_is_unclear_never_dropped(self):
+        unclear = {
+            "import subprocess\nkw = {}\nsubprocess.run(['x'], **kw)\n": "subprocess.run(**kwargs): timeout unknown",
+            "import subprocess\np = subprocess.Popen(['x'])\np.wait(**kw)\n": ".wait(**kwargs): timeout unknown",
+            "import subprocess\nsubprocess.Popen(['x'])\ndef f(child):\n    child.wait(timeout=5)\n":
+                ".wait(timeout) on child: not known to be a process",
+        }
+        for text, label in unclear.items():
+            with self.subTest(text=text):
+                got = prepr.timeout_calls(text)
+                self.assertIn((label, "unclear"), [(g[2], g[3]) for g in got], got)
+        # no process started in the file: a .wait(timeout) is not a question at all
+        self.assertEqual(prepr.timeout_calls("import threading\nthreading.Event().wait(timeout=1)\n"), [])
+        self.assertEqual(prepr.timeout_calls("import subprocess\nsubprocess.run(['x'])\n"), [])
+
+    def test_an_unclear_call_alone_is_not_run_never_pass(self):
+        self.write("u.py", "import subprocess\nkw = {}\nsubprocess.run(['x'], **kw)\n")
+        i = self.item()
+        self.assertEqual(i["status"], "not_run", i)
+        self.assertIn("could not check: u.py:3 subprocess.run(**kwargs): timeout unknown", i["reason"])
 
     def test_a_file_that_does_not_parse_is_not_run_never_pass(self):
         self.write("bad.py", "def (:\n")
