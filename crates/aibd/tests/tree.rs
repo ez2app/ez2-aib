@@ -294,10 +294,96 @@ fn reused_pid_with_other_start_time_is_never_signalled() {
     bystander.wait().unwrap();
 }
 
+/// `/bin/sh` that starts `sleep 60`, prints its pid and exits 0.3 s later
+/// (so the fork watcher records the child: `/bin/sleep`'s environment cannot
+/// be read, a known macOS blind spot): the root is gone, its grandchild is
+/// still in the group.
+fn sh_root_exits(session: &str) -> (TreeHandle, u32) {
+    let mut h = spawn_tree(&SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 60 & echo $!; sleep 0.3; exit 0".into()],
+        ..spec_watch("unused", session, true)
+    })
+    .unwrap();
+    let out = h.take_stdout().unwrap();
+    let mut l = String::new();
+    BufReader::new(out).read_line(&mut l).unwrap();
+    let gc: u32 = l.trim().parse().unwrap();
+    assert!(
+        h.root_watch().wait(Duration::from_secs(5)).is_some(),
+        "root did not exit"
+    );
+    (h, gc)
+}
+
+fn ps_stat(pid: u32) -> String {
+    let o = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// bb7dc H1: after the root exits by itself it stays unreaped (a zombie we
+/// hold) until the last signal, so the group signal is provably ours; only
+/// then is it reaped.
+#[cfg(target_os = "macos")]
+#[test]
+fn h1_the_root_stays_unreaped_until_the_group_signal_then_is_reaped() {
+    let (mut h, gc) = sh_root_exits("s-h1-keep");
+    let root = h.root_pid();
+    assert!(
+        ps_stat(root).starts_with('Z'),
+        "root {root} was reaped early: {:?}",
+        ps_stat(root)
+    );
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    assert!(
+        rep.steps.iter().any(|s| s.signal == "SIGTERM(group)"),
+        "{:?}",
+        rep.steps
+    );
+    assert_eq!(still_running(&[gc]), Vec::<u32>::new(), "{rep:?}");
+    assert_eq!(ps_stat(root), "", "root {root} not reaped after the stop");
+    assert_eq!(h.root_end().and_then(|e| e.code), Some(0));
+}
+
+/// bb7dc H1: the root was reaped by someone else (here: this test, as
+/// another handler would): the group number is no longer provably ours, so
+/// no group signal, the loss is latched and reported; the recorded
+/// grandchild is still stopped by its own checked pid.
+#[cfg(target_os = "macos")]
+#[test]
+fn h1_a_root_reaped_elsewhere_gets_no_group_signal_and_is_reported() {
+    let (mut h, gc) = sh_root_exits("s-h1-lost");
+    let root = h.root_pid();
+    let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(root as i32), None);
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    let again = h.cleanup(Duration::from_millis(300)).unwrap();
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    assert!(
+        rep.steps.iter().all(|s| !s.signal.ends_with("(group)")),
+        "group signal after the root was reaped elsewhere: {:?}",
+        rep.steps
+    );
+    assert!(rep.known_gaps.contains(&"root_identity_lost"), "{rep:?}");
+    assert_ne!(rep.clean_status(), "clean");
+    assert!(
+        again.steps.iter().all(|s| !s.signal.ends_with("(group)")),
+        "latch: {:?}",
+        again.steps
+    );
+    assert_eq!(still_running(&[gc]), Vec::<u32>::new(), "{rep:?}");
+}
+
 /// 043dd #510 H3: when nothing proves the root's group number is still ours
 /// (root recorded with another start time = "its pid is someone else's now",
 /// no checked member left in that group), no group signal goes out; the
-/// checked single pids are still stopped.
+/// checked single pids are still stopped. Not on macOS: there the root is
+/// kept unreaped (H1), so its pid cannot be someone else's; the macOS form
+/// is `h1_a_root_reaped_elsewhere_gets_no_group_signal_and_is_reported`.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn no_group_signal_when_the_group_number_is_not_provably_ours() {
     let mut h = spawn_tree(&spec_watch("tree", "s-tree-h3", false)).unwrap();

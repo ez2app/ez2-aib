@@ -45,6 +45,7 @@ fn spec(session: &str, dir: &std::path::Path) -> SpawnSpec {
         .collect(),
         cwd: Some(dir.to_path_buf()),
         env: vec![],
+        env_remove: vec![],
         session_id: session.into(),
         watch_forks: true,
         discard_output: false,

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod session;
+#[cfg(unix)]
+pub mod session_unix;
 pub mod tree;
 
 #[cfg(unix)]
@@ -65,22 +67,28 @@ pub fn keep_child_zombies() -> Option<&'static str> {
     }
 }
 
-/// Exit code and (POSIX) terminating signal name of a finished process.
-pub fn exit_parts(st: &std::process::ExitStatus) -> (Option<i32>, Option<String>) {
+/// The platform's session starter (`session::SpawnFn`).
+pub fn default_spawn() -> session::SpawnFn {
     #[cfg(unix)]
     {
-        use std::os::unix::process::ExitStatusExt;
-        let sig = st.signal().map(|n| {
-            nix::sys::signal::Signal::try_from(n)
-                .map(|s| s.as_str().to_owned())
-                .unwrap_or_else(|_| format!("SIG{n}"))
-        });
-        (st.code(), sig)
+        session_unix::spawn
     }
     #[cfg(not(unix))]
     {
-        (st.code(), None)
+        // Windows: 043dd's `session_windows::spawn` (J0 + Job per session)
+        // lands separately; until then every start is refused honestly.
+        unsupported_spawn
     }
+}
+
+#[cfg(not(unix))]
+fn unsupported_spawn(
+    _: &session::Spec,
+    _: Option<std::sync::Arc<crate::lineage::Lineage>>,
+) -> Result<Box<dyn session::Running>, session::SpawnFail> {
+    Err(session::SpawnFail {
+        tag: "unsupported_platform".into(),
+    })
 }
 
 /// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a
