@@ -248,6 +248,7 @@ CFG = {
     "count": dict(term=True, trap=True, count_int=True, pokes=[("TERM", 0.5), ("INT", 1.0)]),  # cell 15
     "custom": dict(custom=True, pokes=[("INT", 0.5)]),                                 # cell 17
     "ign-stuck": dict(term=True, count_int=True, stuck=True, pokes=[("TERM", 0.5), ("INT", 0.8)]),  # cell 19
+    "plain-term": dict(trap=False, pokes=[("TERM", 0.5)]),                            # SIG_DFL TERM while waiting
     "inherited-ign": dict(ign_int=True, timeout=1.0, pokes=[("INT", 0.3)]),           # SIGINT ignored by the caller
 }[mode]
 # Precondition: the caller has Python's default Ctrl-C. A shell's background job (`cmd &`, nohup) starts
@@ -425,6 +426,13 @@ class Interrupted(_Interrupt):
         self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
         self.assertIn("stop result for group", err)
         self.assertIn("held during the stop: SIGTERM", err)
+
+    def test_a_plain_sigterm_while_waiting_stops_the_group_then_ends_the_process(self):
+        """SIGTERM with no handler (SIG_DFL) arrives while waiting, not during a stop: run_group stops the group
+        first (the _Fatal path in check), then the process ends by SIGTERM, as it would have."""
+        got, err = self.drive("plain-term", rc=-signal.SIGTERM)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
+        self.assertIn("interrupted by _Fatal: stop result for group", err)
 
     def test_ctrl_c_during_the_timeout_stop_still_stops_the_group(self):
         """cell 9"""
