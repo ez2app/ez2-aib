@@ -15,7 +15,7 @@
 //! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
 
 use crate::job::{Job, Member, Process};
-use crate::settle::still_running;
+use crate::settle::{root_reap, still_running, RootReap};
 use crate::SysError;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -154,17 +154,19 @@ impl SessionTree {
         let emptied = self
             .job
             .wait_empty(deadline.saturating_duration_since(Instant::now()))?;
-        let survivors = still_running(&handles, deadline, |p, left| p.wait(left))?
-            .into_iter()
-            .map(|i| handles[i].pid())
-            .collect();
-        // reap the root, but never block: if the Job did not empty, the root
-        // may still be running and a blocking wait would hang the caller
-        if emptied {
-            let _ = self.child.wait();
-        } else {
-            let _ = self.child.try_wait();
+        let left = still_running(&handles, deadline, |p, left| p.wait(left))?;
+        // collect the root only once its own handle said exited: "Job empty"
+        // comes before the handle signals, so it is no reason to block
+        let root = handles.iter().position(|p| p.pid() == self.pid);
+        match root_reap(root, &left) {
+            RootReap::Wait => {
+                let _ = self.child.wait();
+            }
+            RootReap::TryOnly => {
+                let _ = self.child.try_wait();
+            }
         }
+        let survivors = left.into_iter().map(|i| handles[i].pid()).collect();
         Ok(KillReport {
             members: members.iter().map(|m| m.pid).collect(),
             emptied,

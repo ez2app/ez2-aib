@@ -34,6 +34,27 @@ pub fn still_running<T, E>(
     Ok(left_running)
 }
 
+/// How to collect the root's exit after a kill (bb7dc #535 cac62694).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootReap {
+    /// The root's own handle signaled within the deadline: a blocking wait
+    /// returns at once.
+    Wait,
+    /// Not confirmed exited (still running at the deadline, or no handle was
+    /// opened for it): only a non-blocking look. A Job that reported empty is
+    /// NOT enough: its count drops before the handle signals.
+    TryOnly,
+}
+
+/// `root` = the root's index in the handles given to [`still_running`]
+/// (`None` = it was not opened); `left_running` = what that call returned.
+pub fn root_reap(root: Option<usize>, left_running: &[usize]) -> RootReap {
+    match root {
+        Some(i) if !left_running.contains(&i) => RootReap::Wait,
+        _ => RootReap::TryOnly,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
@@ -104,6 +125,29 @@ mod tests {
         let left =
             still_running(&m, t0 + Duration::from_millis(50), |f, l| Ok::<_, ()>(f(l))).unwrap();
         assert_eq!(left, vec![0]);
+    }
+
+    #[test]
+    fn a_root_that_never_signals_is_only_looked_at_never_waited_for() {
+        // the cac62694 case: Job empty, root handle still unsignaled at the deadline
+        let t0 = Instant::now();
+        let m = [fake(t0, None), fake(t0, Some(Duration::ZERO))];
+        let left = still_running(&m, t0 + Duration::from_millis(100), |f, l| {
+            Ok::<_, ()>(f(l))
+        })
+        .unwrap();
+        assert_eq!(root_reap(Some(0), &left), RootReap::TryOnly);
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "kill(limit) not bounded"
+        );
+    }
+
+    #[test]
+    fn only_a_root_seen_exited_is_waited_for() {
+        assert_eq!(root_reap(Some(1), &[0]), RootReap::Wait);
+        assert_eq!(root_reap(Some(1), &[1]), RootReap::TryOnly);
+        assert_eq!(root_reap(None, &[]), RootReap::TryOnly); // root not opened: unknown
     }
 
     #[test]

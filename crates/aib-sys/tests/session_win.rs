@@ -128,3 +128,17 @@ fn a_spawn_that_was_not_reaped_is_not_reported_as_nothing_left() {
     assert!(!SpawnError::Spawn(aib_sys::SysError::Unknown).may_have_left_running());
     assert!(!SpawnError::NoProgram.may_have_left_running());
 }
+
+#[test]
+fn kill_returns_within_its_limit() {
+    // bb7dc #535 cac62694: no step of kill may block past the limit
+    let mut s = SessionTree::spawn(&cmd("ping -n 60 127.0.0.1 >nul")).unwrap();
+    let _ours = tree_of(&s, 2);
+    let t0 = Instant::now();
+    let _ = s.kill(Duration::from_millis(500)).unwrap();
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "kill took {:?}",
+        t0.elapsed()
+    );
+}
