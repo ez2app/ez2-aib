@@ -231,6 +231,34 @@ def _with_evidence(what):
     return "%s  [%s]" % (what, p) if p else what
 
 
+# 11-08 DECISION-20 PR-B:推包跑 aib test 的三處(reds_on / _rerun_selected / rerun_same)改走共用收整組工具
+#   proc_group.run_group(#509):aib test 在自己的行程組跑,逾時整組 TERM→KILL→驗證(以前 subprocess.run 逾時只殺
+#   直接子行程 bash,底下的測試行程留著佔機器);正常結束後組裡還活著的也收掉。三條規則照 #509:
+#   確認不了身分不送訊號、回收權只歸工具(Popen 不外流)、紅燈優先 —— 逾時 rc 124、起不來 rc 127(都不是 0,
+#   呼叫端照紅看),收尾沒驗證只附原因、不改 rc。
+AIB_TEST_TIMEOUT_S = 7200
+RC_TIMEOUT, RC_NOSTART = 124, 127
+
+
+def _run_aib_test(cmd, cwd):
+    """跑一次 aib test,回 (rc, 合併的 stdout+stderr)。見上面註解。"""
+    import proc_group
+    r = proc_group.run_group(list(cmd), timeout=AIB_TEST_TIMEOUT_S, cwd=str(cwd))
+    out, rc = r.out or "", r.rc
+    st = r.stop
+    detail = "" if st is None else "%s %s %s" % (st.status, st.why or "-", st.survivors or "")
+    if r.timed_out:
+        rc = RC_TIMEOUT
+        print(T("aib_test_timeout", {"s": AIB_TEST_TIMEOUT_S, "stop": detail.strip() or "-"}))
+    elif rc is None:
+        rc = RC_NOSTART
+        out += "\n" + (r.error or "")
+        print(T("aib_test_nostart", {"why": r.error or "-"}))
+    elif st is not None:
+        print(T("aib_test_leftovers", {"rc": rc, "stop": detail.strip()}))
+    return rc, out
+
+
 def reds_on(repo, base, tests, prof=None):
     """在 base 的暫存副本上跑這幾支,回紅的那些。aib 用 base 自己的 aib;別的專案用這一份 aib(--repo 指向副本)。"""
     prof = prof or sp.load(repo)
@@ -242,10 +270,11 @@ def reds_on(repo, base, tests, prof=None):
         git(repo, "worktree", "add", "-f", "-q", "--detach", wt, base)
         cmd = (["bash", "src/cockpit/aib", "test"] if prof.gate_mode == "aib"
                else ["bash", str(ROOT / "src" / "cockpit" / "aib"), "test", "--repo", wt])
-        p = subprocess.run(cmd + sorted(tests), cwd=wt, capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=7200)
-        write_base_evidence(repo, base, wt, tests, p.returncode, p.stdout + p.stderr)
-        return gate_reds(p.stdout + p.stderr)
+        rc, out = _run_aib_test(cmd + sorted(tests), wt)
+        write_base_evidence(repo, base, wt, tests, rc, out)
+        if rc in (RC_TIMEOUT, RC_NOSTART):
+            return set()          # 主線那邊沒量完 ⇒ 一支都不算「主線也紅」(紅燈優先:不放行)
+        return gate_reds(out)
     finally:
         git(repo, "worktree", "remove", "--force", wt, check=False)
         shutil.rmtree(d, ignore_errors=True)
@@ -497,10 +526,9 @@ def _rerun_selected(repo, tests, prof, wait=False):
     """把挑出來的測試在疊好的樹上重跑。回 (rc, 紅的集合);rc≠0 而列不出紅 ⇒ 呼叫端當紅看(沒證據不算過)。
     wait ⇒ 遇到別人的獨佔租約排隊等(推前預檢用;那時推包自己還沒拿租約)。"""
     cmd = ["bash", str(Path(repo) / "src" / "cockpit" / "aib"), "test"] + (["--wait"] if wait else [])
-    p = subprocess.run(cmd + sorted(tests), cwd=str(repo), capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                       timeout=7200)
-    sys.stdout.write((p.stdout or "")[-3000:])
-    return p.returncode, gate_reds(p.stdout + p.stderr)
+    rc, out = _run_aib_test(cmd + sorted(tests), repo)
+    sys.stdout.write(out[-3000:])
+    return rc, gate_reds(out)
 
 
 def _select_tests(repo, base, head):
@@ -722,9 +750,13 @@ def rerun_same(repo, tests, prof):
     """同一份程式上把這幾支再跑一次,回「這次還是紅」的那些(aib test 紅永遠重跑,不會沿用)。"""
     cmd = (["bash", str(Path(repo) / "src" / "cockpit" / "aib"), "test"] if prof.gate_mode == "aib"
            else ["bash", str(ROOT / "src" / "cockpit" / "aib"), "test", "--repo", str(repo)])
-    p = subprocess.run(cmd + sorted(tests), cwd=str(repo), capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                       timeout=7200)
-    return gate_reds(p.stdout + p.stderr)
+    rc, out = _run_aib_test(cmd + sorted(tests), repo)
+    reds = gate_reds(out)
+    # 紅燈優先(PR-B):回的是「還是紅」⇒ 呼叫端拿 新紅 − 這個 當成偶發。只有 rc 0(全綠)或 rc 1 且列得出紅
+    #   才照輸出算;逾時 / 起不來 / 跑壞 / 只有沒驗 / rc≠0 卻列不出紅 ⇒ 一支都沒證明變綠,全部算還是紅
+    if rc == 0 or (rc == 1 and reds):
+        return reds | (gate_unverified(out) & set(tests))     # 沒驗 ≠ 變綠
+    return set(tests)
 
 
 def judge_flaky(repo, new, flaky, out, base, sha):
