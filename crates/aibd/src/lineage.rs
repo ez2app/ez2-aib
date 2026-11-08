@@ -90,6 +90,11 @@ impl Lineage {
         Self::disabled("unsupported")
     }
 
+    /// The self-check result: `ok`, `failed:<tag>`, `unsupported`, ...
+    pub fn selfcheck_status(&self) -> &str {
+        &self.selfcheck
+    }
+
     pub fn enabled(&self) -> bool {
         self.info.is_some()
     }
