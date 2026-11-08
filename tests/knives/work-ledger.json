@@ -1,0 +1,63 @@
+{
+  "tests": [
+    "tests/test_aib_ledger.py"
+  ],
+  "knives": [
+    {
+      "name": "dup-dispatch",
+      "proves": "dispatching the same item twice is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if old is not None:\n",
+      "new": "        if False:\n"
+    },
+    {
+      "name": "no-receipt",
+      "proves": "accepted without a receipt is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if not ev:\n",
+      "new": "    if False:\n"
+    },
+    {
+      "name": "sha-mismatch",
+      "proves": "a receipt for another SHA is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if not sha_match(r.get(\"sha\"), head):\n",
+      "new": "    if False:\n"
+    },
+    {
+      "name": "any-role-writes",
+      "proves": "roles do not overlap",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "def _may_write(roles, by, target, owner):\n",
+      "new": "def _may_write(roles, by, target, owner):\n    return True\n"
+    },
+    {
+      "name": "red-rc-ok",
+      "proves": "a receipt with rc != 0 is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    elif rc != 0:\n",
+      "new": "    elif False:\n"
+    },
+    {
+      "name": "no-output-check",
+      "proves": "the raw output file must exist",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if not p.is_file() or p.stat().st_size == 0:\n",
+      "new": "        if False:\n"
+    },
+    {
+      "name": "no-event-dedup",
+      "proves": "the same event id is applied once",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if row is None:\n        return None\n    if row[\"op\"] == op",
+      "new": "    if True:\n        return None\n    if row[\"op\"] == op"
+    },
+    {
+      "name": "no-chrome-check",
+      "proves": "needs chrome wants a chrome receipt for the same head",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if \"chrome\" in (item.get(\"needs\") or []) and \"chrome\" not in good_kinds:\n",
+      "new": "    if False:\n"
+    }
+  ]
+}
