@@ -34,7 +34,7 @@ permissions:
 #   group 帶 workflow 名(ci / aibd 互不取消);PR 用 PR 號,main 用 github.sha(每次推送獨立,不會被下一次蓋掉)。
 #   labeled 重跑同一個 SHA 也算同一張 PR ⇒ 會取消正在跑的那輪、照新標籤重跑。
 concurrency:
-  group: ${{ github.workflow }}-${{ (github.event.action == 'edited' && !github.event.changes.base) && format('edit-noop-{0}', github.run_id) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha) }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   rust:

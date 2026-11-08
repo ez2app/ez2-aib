@@ -6,18 +6,17 @@ on:
     branches: [main]
   pull_request:
     # labeled:補貼 full-ci 標籤時重跑,完整 macOS 那幾格才會真的跑
-    # 11-08 DECISION-24:ready_for_review = 草稿轉正式那一刻才跑 macOS;edited 只為「改 base」(疊著的 PR 改回 main)
-    #   —— 只改標題 / 說明的 edited 不跑任何 job、也不取消正在跑的那輪(見 concurrency 與 tip / docs / smoke / fresh-machine 的 if)
-    types: [opened, synchronize, reopened, labeled, ready_for_review, edited]
+    # 11-08 DECISION-24:ready_for_review = 草稿轉正式那一刻才跑 macOS。
+    #   不收 edited:探針 #516 實測「只改說明」的 edited 輪就算整輪 skipped,也會讓 PR 從 CLEAN 變 BLOCKED
+    #   (必過 6 格仍是 success)⇒ 疊著的 PR 改 base 回 main 不會自動重跑,所以疊著的 PR 照樣跑 macOS 3.12(第 3 項不做)。
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
 permissions:
   contents: read
 # 11-08 DECISION-8 第 3 項:同一張 PR 推新頭碼就取消舊的那一輪;main 每次推送各自一組、不取消。
 #   group 帶 workflow 名(ci / aibd 互不取消);PR 用 PR 號,main 用 github.sha(每次推送獨立,不會被下一次蓋掉)。
 #   labeled 重跑同一個 SHA 也算同一張 PR ⇒ 會取消正在跑的那輪、照新標籤重跑。
-# 11-08 DECISION-24:沒改 base 的 edited(改標題 / 說明)自成一組,不取消同一張 PR 正在跑的那輪(aibd.yml 同一句;
-#   aibd 不收 edited,那半句在它那邊永遠是假)
 concurrency:
-  group: ${{ github.workflow }}-${{ (github.event.action == 'edited' && !github.event.changes.base) && format('edit-noop-{0}', github.run_id) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha) }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # 11-08 DECISION-17 修訂:job 層排隊看「進入等待」的時間、不看推送先後 ⇒ 較舊那輪晚到會頂掉較新那輪在等的 macOS 格。
@@ -25,9 +24,6 @@ jobs:
   #   只印原因(macos_unverified)不跑;發版那邊 release.yml 也只發「當下仍是 main 頭碼」的那輪。讀不到頭碼 ⇒ 當成最新照跑。
   #   只能縮小交錯窗口,不保證最新那輪一定跑完(補跑另一張)。
   tip:
-    # 11-08 DECISION-24:沒改 base 的 edited ⇒ 整輪不跑(docs / smoke / fresh-machine 同一句;跳過的 job 只以
-    #   「smoke」「fresh-machine」這種沒展開的名字出現,不會蓋到必過格的名字)
-    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -53,7 +49,6 @@ jobs:
   #   smoke / fresh-machine needs 這個 job:只改文件 ⇒ 換到 ubuntu 只印一行;這個 job 紅 ⇒ 6 格跟著紅(不改 ruleset 也擋得住合併)。
   #   判斷腳本優先用 base 那邊的版本(PR 改不到判斷本身);base 還沒有這支(第一次)才用這輪的。
   docs:
-    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -95,7 +90,7 @@ jobs:
   smoke:
     needs: [tip, docs]
     # 11-08 PROPOSAL-19:docs 紅 / 被跳過時也要跑到下面那一步把格子判紅(不然必過格只會卡在等待)
-    if: ${{ !cancelled() && !(github.event.action == 'edited' && !github.event.changes.base) }}
+    if: ${{ !cancelled() }}
     # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。
     #   macOS 整套 260 支約 40 分(最慢一支約 4 分)⇒ 上限 75 分,留將近一倍
     timeout-minutes: 75
@@ -115,11 +110,11 @@ jobs:
     #   這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改。
     # 11-07:ubuntu-latest 換成 26.04 後 setup-python 找不到 3.9 ⇒ 只有 (ubuntu-latest, 3.9) 這格改跑 ubuntu-24.04;
     #   格子名字仍照矩陣(main 必過清單不變),pyproject 下限 3.9 不改。
-    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && github.base_ref == 'main'))) && needs.docs.outputs.docs_only != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
+    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.docs_only != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
     env:
       # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
       #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
-      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && github.base_ref == 'main'))) && needs.docs.outputs.docs_only != 'true' }}
+      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.docs_only != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
@@ -132,7 +127,7 @@ jobs:
 
       - name: cell not run on this PR
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.docs_only != 'true'
-        run: echo "::notice::macOS ${{ matrix.python }} not run on this PR — PRs run macOS 3.12 only, and only when ready for review (not draft) and targeting main; 3.9/3.14 run on main, int/*, release/*; label full-ci to run every cell"
+        run: echo "::notice::macOS ${{ matrix.python }} not run on this PR — PRs run macOS 3.12 only, and only when ready for review (not draft); 3.9/3.14 run on main, int/*, release/*; label full-ci to run every cell"
       - name: macOS cell skipped, main moved on (macos_unverified)
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.docs_only != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no macOS ${{ matrix.python }} result of its own"
@@ -184,7 +179,7 @@ jobs:
   #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
   fresh-machine:
     needs: [tip, docs]
-    if: ${{ !cancelled() && !(github.event.action == 'edited' && !github.event.changes.base) }}
+    if: ${{ !cancelled() }}
     timeout-minutes: 20
     # 11-08 DECISION-17:main 推送的 macOS 格同一格 1 跑 1 等 —— group = workflow + job + ref + 格子、不砍跑中;
     #   新的一輪會頂掉還在等的舊輪(那個 commit 就沒有單獨的 macOS 結果,發版只認 workflow_run 那輪的 head_sha)。
@@ -197,11 +192,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     # 11-08 DECISION-24:macOS 格在一般 PR 不跑(比照 smoke 3.9 / 3.14:main、int/*、release/*、full-ci 才跑),
-    #   草稿 / base 不是 main 也不跑;這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改
-    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && github.base_ref == 'main'))))) || needs.docs.outputs.docs_only == 'true') && 'ubuntu-latest' || matrix.os }}
+    #   草稿也不跑;這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改
+    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) || needs.docs.outputs.docs_only == 'true') && 'ubuntu-latest' || matrix.os }}
     env:
       # 同上:main 已前進 / 這張 PR 不輪 macOS ⇒ 這輪的 macOS 格只印原因、不跑(這條件跟 runs-on 同一句,改一邊要一起改)
-      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || (!github.event.pull_request.draft && github.base_ref == 'main'))))) && needs.docs.outputs.docs_only != 'true' }}
+      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) && needs.docs.outputs.docs_only != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
@@ -214,7 +209,7 @@ jobs:
       # 跳過原因三選一、各印各的:只改文件(上面)/ 這張 PR 不輪 macOS / main 已前進(bb7dc #512 審:PR 跳過不能印成 main moved on)
       - name: macOS cell not run on this PR
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.docs_only != 'true'
-        run: echo "::notice::fresh-machine on macOS runs on main, int/*, release/* or PRs labelled full-ci (not on drafts or PRs that do not target main)"
+        run: echo "::notice::fresh-machine on macOS runs on main, int/*, release/* or PRs labelled full-ci (not on drafts)"
       - name: macOS cell skipped, main moved on (macos_unverified)
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.docs_only != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no fresh-machine macOS result of its own"

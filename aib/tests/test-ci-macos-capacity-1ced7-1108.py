@@ -4,13 +4,13 @@
 守:
 1. fresh-machine (macos) 在一般 PR 不跑(main / int/* / release/* / full-ci 才跑);
 2. 草稿 PR 不跑任何 macOS 格;types 有 ready_for_review(轉正式那輪 macOS 3.12 會跑);
-3. base 不是 main 的 PR(疊著的)不跑 macOS;types 有 edited,改 base 那次照跑,
-   只改標題 / 說明的 edited 整輪不跑、也不取消同一張 PR 正在跑的那輪(concurrency 自成一組);
+3. (不做)疊著的 PR 不跑 macOS:要靠 edited 在改 base 時重跑,但探針 #516 實測「只改說明」的 edited 輪
+   就算整輪 skipped 也會讓 PR 從 CLEAN 變 BLOCKED ⇒ types 不收 edited,疊著的 PR 照一般 PR 跑 macOS 3.12;
 - runs-on 與 RUN_CELL 每個情境都一致(macOS 機器只在真的要跑時才排);
 - ubuntu 格一律跑;main 推送 stale 時 macOS 不跑(DECISION-17 照舊);
 - 沒跑的格子印的原因對,三選一各印各的:只改文件 / 這張 PR 不輪 macOS / main 已前進(真 stale 才印 main moved on,
   bb7dc #512 審);
-- 跟 #504(docs job、needs: [tip, docs]、!cancelled())並存:只改標題的 edited 四個 job 全跳過(不會走到 guard 判紅)。
+- 跟 #504(docs job、needs: [tip, docs]、!cancelled())並存,結構不動。
 """
 import re
 import unittest
@@ -234,14 +234,14 @@ class MacosCells(unittest.TestCase):
     def test_ready_for_review_run_has_smoke_312(self):
         self.assert_cells({"3.12"}, False, action="ready_for_review", draft=False)
 
-    def test_stacked_pr_runs_no_macos_until_retargeted(self):
-        self.assert_cells(set(), False, base="feat/lease-two-lanes-1ced7-1108")      # 3. 疊著的不跑
-        self.assert_cells({"3.12"}, False, action="edited", base="main",
-                          changes={"base": {"ref": {"from": "feat/lease-two-lanes-1ced7-1108"}}})
+    def test_stacked_pr_runs_like_any_pr(self):
+        # 3. 不做(見檔頭):疊著的 PR 照一般 PR 跑 macOS 3.12 ⇒ 改 base 回 main 時,必過格已有真的 macOS 結果
+        self.assert_cells({"3.12"}, False, base="feat/lease-two-lanes-1ced7-1108")
+        self.assert_cells(set(), False, base="feat/lease-two-lanes-1ced7-1108", draft=True)
 
     def test_full_ci_label_runs_everything_even_on_a_draft(self):
         self.assert_cells(set(self.SMOKE_MAC), True, draft=True, labels=("full-ci",))
-        self.assert_cells(set(self.SMOKE_MAC), True, base="other", labels=("full-ci",))
+        self.assert_cells(set(self.SMOKE_MAC), True, base="other", labels=("full-ci",), head="feat/y")
 
     def test_int_and_release_prs_run_everything_when_ready(self):
         for h in ("int/x", "release/v0.1.70"):
@@ -324,58 +324,29 @@ class SkipMessages(unittest.TestCase):
         self.assertEqual(fired("fresh-machine", os="ubuntu-latest", draft=True), [])
 
 
-class EditedEvents(unittest.TestCase):
-    def group(self, **kw):
-        g = re.search(r"(?m)^concurrency:\n  group: (.*)$", CI).group(1)
-        return ev(g, ctx_for(**kw))
-
-    def tip_runs(self, **kw):
-        return truthy(ev(re.search(r"(?m)^    if: (.*)$", job_text("tip")).group(1), ctx_for(**kw)))
-
-    def test_types(self):
+class Triggers(unittest.TestCase):
+    def test_types_have_ready_for_review_not_edited(self):
         types = re.search(r"(?m)^    types: \[(.*)\]$", CI).group(1).replace(" ", "").split(",")
-        for t in ("opened", "synchronize", "reopened", "labeled", "ready_for_review", "edited"):
+        for t in ("opened", "synchronize", "reopened", "labeled", "ready_for_review"):
             self.assertIn(t, types)
+        # #516:CLEAN → 改一次說明(edited 輪整輪 skipped)→ BLOCKED;收了 edited,每張改過說明的 PR 都合不了
+        self.assertNotIn("edited", types)
 
-    def test_title_edit_runs_nothing_and_cancels_nothing(self):
-        title = {"title": {"from": "old"}}
-        self.assertFalse(self.tip_runs(action="edited", changes=title))
-        self.assertEqual(self.group(action="edited", changes=title), "ci-edit-noop-99", "不能跟 pr-7 同組(會取消正在跑的那輪)")
-
-    def test_base_edit_runs_like_a_push(self):
-        base = {"base": {"ref": {"from": "feat/x"}}}
-        self.assertTrue(self.tip_runs(action="edited", changes=base))
-        self.assertEqual(self.group(action="edited", changes=base), "ci-pr-7")
-
-    def test_other_events_unchanged(self):
-        for kw in ({"action": "synchronize"}, {"action": "ready_for_review"}, {"action": "labeled"}):
-            self.assertTrue(self.tip_runs(**kw))
-            self.assertEqual(self.group(**kw), "ci-pr-7")
-        self.assertTrue(self.tip_runs(event="push", action=None))
-        self.assertEqual(self.group(event="push", action=None), "ci-abc")
-
-    def job_runs(self, job, **kw):
-        c = ctx_for(**kw)
-        return truthy(ev(re.search(r"(?m)^    if: (.*)$", job_text(job)).group(1), c))
-
-    def test_title_edit_skips_all_four_jobs(self):
-        # #504 讓 smoke / fresh-machine 帶 !cancelled()(上游紅也要跑到 guard 判紅)⇒ 光靠 needs 跟著跳過不夠,
-        #   只改標題時 guard 會看到 tip=skipped 把格子判紅;四個 job 都要帶同一句
-        title = {"title": {"from": "old"}}
-        base = {"base": {"ref": {"from": "feat/x"}}}
-        for job in ("tip", "docs", "smoke", "fresh-machine"):
-            with self.subTest(job=job):
-                self.assertFalse(self.job_runs(job, action="edited", changes=title))
-                self.assertTrue(self.job_runs(job, action="edited", changes=base))
-                self.assertTrue(self.job_runs(job))
-                self.assertTrue(self.job_runs(job, event="push", action=None))
+    def test_no_edited_leftovers(self):
+        self.assertNotIn("changes.base", CI)
+        self.assertNotIn("edit-noop", CI)
+        g = re.search(r"(?m)^concurrency:\n  group: (.*)$", CI).group(1)
+        self.assertEqual(ev(g, ctx_for()), "ci-pr-7")
+        self.assertEqual(ev(g, ctx_for(event="push", action=None)), "ci-abc")
 
     def test_smoke_and_fresh_keep_504_structure(self):
         for job in ("smoke", "fresh-machine"):
             t = job_text(job)
             self.assertRegex(t, r"(?m)^    needs: \[tip, docs\]$")
-            self.assertRegex(t, r"(?m)^    if: \$\{\{ !cancelled\(\) && ")
+            self.assertRegex(t, r"(?m)^    if: \$\{\{ !cancelled\(\) \}\}$")
             self.assertIn("if: needs.tip.result != 'success' || needs.docs.result != 'success'", t)
+        for job in ("tip", "docs"):
+            self.assertNotRegex(job_text(job), r"(?m)^    if: ", job)
 
 if __name__ == "__main__":
     unittest.main()
