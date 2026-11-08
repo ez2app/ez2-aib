@@ -47,6 +47,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 11-08 DECISION-17 修訂:自動發版只發「檢查這一刻仍是 main 頭碼」的那輪。main 已前進 ⇒ 不發、交給頭碼那輪
+          #   (較舊那輪可能是 macOS 被跳過的 macos_unverified 輪)。讀不到頭碼 ⇒ 不發、紅(fail closed)。
+          #   可發的是檢查瞬間的頭碼;檢查後 main 再前進,下一輪會再發新的版本(標籤已在就略過)。
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            checked=$(git rev-parse HEAD)
+            now=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) || now=""
+            [ -n "$now" ] || { echo "::error::cannot read the head of main; not releasing (fail closed)"; exit 1; }
+            if [ "$now" != "$checked" ]; then
+              echo "::notice::main moved on: this run is for $checked, main is now $now; the run for main's head releases instead"
+              exit 0
+            fi
+          fi
           v=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           t="v$v"
           if git rev-parse -q --verify "refs/tags/$t" >/dev/null; then
