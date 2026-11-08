@@ -16,7 +16,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # 11-08 DECISION-17 修訂:job 層排隊看「進入等待」的時間、不看推送先後 ⇒ 較舊那輪晚到會頂掉較新那輪在等的 macOS 格。
+  #   先用這個幾秒的 ubuntu job 比對 main 現在的頭碼:main 推送且已經不是頭碼(stale)⇒ macOS 格不進共用組、改在 ubuntu
+  #   只印原因(macos_unverified)不跑;發版那邊 release.yml 也只發「當下仍是 main 頭碼」的那輪。讀不到頭碼 ⇒ 當成最新照跑。
+  #   只能縮小交錯窗口,不保證最新那輪一定跑完(補跑另一張)。
+  tip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stale: ${{ steps.t.outputs.stale }}
+      head: ${{ steps.t.outputs.head }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ]; then echo "stale=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha) || head=""
+          if [ -z "$head" ]; then
+            echo "::warning::could not read the head of $GITHUB_REF_NAME; treating this run as the newest (macOS runs)"
+            echo "stale=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          if [ "$head" = "$GITHUB_SHA" ]; then echo "stale=false" >> "$GITHUB_OUTPUT"
+          else echo "stale=true" >> "$GITHUB_OUTPUT"; echo "::notice::$GITHUB_REF_NAME moved on to $head; macOS cells of this run ($GITHUB_SHA) are skipped (macos_unverified)"; fi
   smoke:
+    needs: tip
     # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。
     #   macOS 整套 260 支約 40 分(最慢一支約 4 分)⇒ 上限 75 分,留將近一倍
     timeout-minutes: 75
@@ -24,7 +49,7 @@ jobs:
     #   新的一輪會頂掉還在等的舊輪(那個 commit 就沒有單獨的 macOS 結果,發版只認 workflow_run 那輪的 head_sha)。
     #   ubuntu 格與 PR 一律用 run_id 自成一組(等於不限),PR 的取消照頂層 concurrency。
     concurrency:
-      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && format('{0}-smoke-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-smoke-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
+      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && needs.tip.outputs.stale != 'true' && format('{0}-smoke-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-smoke-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
@@ -36,15 +61,18 @@ jobs:
     #   這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改。
     # 11-07:ubuntu-latest 換成 26.04 後 setup-python 找不到 3.9 ⇒ 只有 (ubuntu-latest, 3.9) 這格改跑 ubuntu-24.04;
     #   格子名字仍照矩陣(main 必過清單不變),pyproject 下限 3.9 不改。
-    runs-on: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
+    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true')) && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
     env:
       # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
       #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
-      RUN_CELL: ${{ matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') }}
     steps:
       - name: cell not run on this PR
-        if: env.RUN_CELL != 'true'
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true'
         run: echo "::notice::macOS ${{ matrix.python }} runs only on main, int/* and release/* branches, or PRs labelled full-ci"
+      - name: macOS cell skipped, main moved on (macos_unverified)
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true'
+        run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no macOS ${{ matrix.python }} result of its own"
       - uses: actions/checkout@v4
         if: env.RUN_CELL == 'true'
       - uses: actions/setup-python@v5
@@ -92,24 +120,34 @@ jobs:
   # 10-12:「全新電腦」—— 空的家目錄、沒有任何設定,照 README 的一行安裝裝起來,再跑新用戶最先會打的指令。
   #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
   fresh-machine:
+    needs: tip
     timeout-minutes: 20
     # 11-08 DECISION-17:main 推送的 macOS 格同一格 1 跑 1 等 —— group = workflow + job + ref + 格子、不砍跑中;
     #   新的一輪會頂掉還在等的舊輪(那個 commit 就沒有單獨的 macOS 結果,發版只認 workflow_run 那輪的 head_sha)。
     #   ubuntu 格與 PR 一律用 run_id 自成一組(等於不限),PR 的取消照頂層 concurrency。
     concurrency:
-      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && format('{0}-fresh-machine-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-fresh-machine-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
+      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && needs.tip.outputs.stale != 'true' && format('{0}-fresh-machine-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-fresh-machine-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (matrix.os == 'macos-latest' && needs.tip.outputs.stale == 'true') && 'ubuntu-latest' || matrix.os }}
+    env:
+      # 同上:main 已前進 ⇒ 這輪的 macOS 格只印原因、不跑(這條件跟 runs-on 同一句,改一邊要一起改)
+      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && needs.tip.outputs.stale == 'true') }}
     steps:
+      - name: macOS cell skipped, main moved on (macos_unverified)
+        if: env.RUN_CELL != 'true'
+        run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no fresh-machine macOS result of its own"
       - uses: actions/checkout@v4
+        if: env.RUN_CELL == 'true'
       - uses: actions/setup-python@v5
+        if: env.RUN_CELL == 'true'
         with:
           python-version: "3.12"
       - name: one-line install into an empty home, then a new user's first commands
+        if: env.RUN_CELL == 'true'
         shell: bash
         run: |
           set -u
