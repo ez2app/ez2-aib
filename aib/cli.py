@@ -11,6 +11,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
+    aib ledger add|move|show|list|verify   cabin work ledger: who owns what, in which state, accepted only with receipts
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib update auto on|off|status   update automatically when a new version is released (default on)
     aib update status [--host H]   installed versions and the room's PID-verified startup version
@@ -28,7 +29,8 @@ TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
            "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),
            "prepr": os.path.join(HERE, "tools", "verify", "prepr.py"),
            "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py"),
-           "chat-mcp": os.path.join(HERE, "src", "chat_mcp", "cli_main.py")}
+           "chat-mcp": os.path.join(HERE, "src", "chat_mcp", "cli_main.py"),
+           "ledger": os.path.join(HERE, "tools", "governance", "work_ledger.py")}
 
 
 def _locale():
