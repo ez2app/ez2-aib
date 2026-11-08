@@ -246,16 +246,20 @@ def _run_aib_test(cmd, cwd):
     r = proc_group.run_group(list(cmd), timeout=AIB_TEST_TIMEOUT_S, cwd=str(cwd))
     out, rc = r.out or "", r.rc
     st = r.stop
-    detail = "" if st is None else "%s %s %s" % (st.status, st.why or "-", st.survivors or "")
+    # 收尾只有 stopped(驗過組裡沒有活的)才說「已收掉」;unverified(還有活的 / 身分證不了 / Windows 只殺直接子行程)
+    #   照實說沒能確認,附原因與還活著的 pid(bb7dc #517 審)。兩種都不改 rc。
+    clean = st is not None and st.status == "stopped"
+    why = {"why": (st.why if st is not None else "") or "no_stop_report",
+           "pids": " ".join(str(x) for x in (st.survivors if st is not None else [])) or "-"}
     if r.timed_out:
         rc = RC_TIMEOUT
-        print(T("aib_test_timeout", {"s": AIB_TEST_TIMEOUT_S, "stop": detail.strip() or "-"}))
+        print(T("aib_test_timeout" if clean else "aib_test_timeout_unverified", dict(why, s=AIB_TEST_TIMEOUT_S)))
     elif rc is None:
         rc = RC_NOSTART
         out += "\n" + (r.error or "")
         print(T("aib_test_nostart", {"why": r.error or "-"}))
     elif st is not None:
-        print(T("aib_test_leftovers", {"rc": rc, "stop": detail.strip()}))
+        print(T("aib_test_leftovers" if clean else "aib_test_leftovers_unverified", dict(why, rc=rc)))
     return rc, out
 
 
