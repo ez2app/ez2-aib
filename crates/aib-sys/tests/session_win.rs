@@ -128,3 +128,51 @@ fn a_spawn_that_was_not_reaped_is_not_reported_as_nothing_left() {
     assert!(!SpawnError::Spawn(aib_sys::SysError::Unknown).may_have_left_running());
     assert!(!SpawnError::NoProgram.may_have_left_running());
 }
+
+#[test]
+fn the_root_handle_waits_and_reads_the_exit_code_from_another_thread() {
+    let s = SessionTree::spawn(&cmd("ping -n 2 127.0.0.1 >nul & exit 7")).unwrap();
+    let root = s.root();
+    assert_eq!(root.pid(), s.pid());
+    assert_eq!(
+        root.exit_code().unwrap(),
+        None,
+        "running root reported an exit"
+    );
+    let t = std::thread::spawn(move || {
+        assert!(
+            root.wait(Duration::from_secs(20)).unwrap(),
+            "root never exited"
+        );
+        root.exit_code().unwrap()
+    });
+    assert_eq!(t.join().unwrap(), Some(7));
+}
+
+#[test]
+fn clear_env_passes_only_the_given_environment() {
+    // aibd passes its own environment minus AIBD_* this way
+    let mut spec =
+        cmd("if defined AIB_SESSION_LEAK (exit 5) else if \"%ONLY%\"==\"1\" (exit 0) else exit 4");
+    std::env::set_var("AIB_SESSION_LEAK", "1");
+    spec.clear_env = true;
+    spec.env = vec![
+        ("ONLY".into(), "1".into()),
+        (
+            "SystemRoot".into(),
+            std::env::var("SystemRoot").unwrap_or_default(),
+        ),
+    ];
+    let s = SessionTree::spawn(&spec).unwrap();
+    let root = s.root();
+    assert!(
+        root.wait(Duration::from_secs(20)).unwrap(),
+        "root never exited"
+    );
+    std::env::remove_var("AIB_SESSION_LEAK");
+    assert_eq!(
+        root.exit_code().unwrap(),
+        Some(0),
+        "5 = parent env leaked, 4 = given env missing"
+    );
+}

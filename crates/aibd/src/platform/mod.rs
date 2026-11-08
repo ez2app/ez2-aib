@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod session;
+#[cfg(windows)]
+pub mod session_windows;
 pub mod tree;
 
 #[cfg(unix)]

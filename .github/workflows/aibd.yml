@@ -133,3 +133,16 @@ jobs:
                   -- cargo test -p aib-sys --locked --test session_win; }
           k '        self.job.terminate(1)?;' '        let _ = 1; // knife: no terminate'
           k '        self.job.terminate(1)?;' '        let _ = self.child.kill(); // knife: root only'
+      - name: aibd Windows session adapter knives (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # session_windows.rs maps aib-sys results to the shared stop: clean only
+        # when the Job emptied AND every handle signaled; AIBD_* dropped in any case.
+        run: |
+          set -eu
+          k() { python3 -I scripts/knife.py crates/aibd/src/platform/session_windows.rs "$1" "$2" \
+                  --expect-fail "$3" -- cargo test -p aibd --locked --lib platform::session_windows; }
+          k '            let status = if k.all_gone() {' '            let status = if k.survivors.is_empty() {' \
+            a_job_that_did_not_empty_is_never_clean
+          k 'k[..5].eq_ignore_ascii_case("AIBD_")' 'k.starts_with("AIBD_")' \
+            aibd_keys_are_dropped_in_any_case_and_the_marker_is_last

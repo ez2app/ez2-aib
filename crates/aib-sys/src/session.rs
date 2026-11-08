@@ -19,15 +19,18 @@ use crate::settle::still_running;
 use crate::SysError;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// What to start. `env` is added to (not replacing) aibd's environment; the
-/// API layer decides which keys are allowed.
+/// What to start. `env` is added to aibd's environment, or is the whole
+/// environment when `clear_env` is set (aibd passes its own environment minus
+/// `AIBD_*` that way); the API layer decides which keys are allowed.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    pub clear_env: bool,
 }
 
 /// Why a session could not start.
@@ -80,12 +83,14 @@ impl KillReport {
     }
 }
 
-/// One running session: its Job and its root child.
+/// One running session: its Job, its root child, and a second handle to the
+/// root that can be shared with a waiter thread.
 #[derive(Debug)]
 pub struct SessionTree {
     job: Job,
     child: Child,
     pid: u32,
+    root: Arc<Process>,
 }
 
 impl SessionTree {
@@ -101,12 +106,38 @@ impl SessionTree {
         if let Some(dir) = &spec.cwd {
             cmd.current_dir(dir);
         }
+        if spec.clear_env {
+            cmd.env_clear();
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
-        let child = job.spawn(&mut cmd).map_err(SpawnError::Spawn)?;
+        let mut child = job.spawn(&mut cmd).map_err(SpawnError::Spawn)?;
         let pid = child.id();
-        Ok(SessionTree { job, child, pid })
+        // the unwaited `child` pins the pid, so this handle is the root's;
+        // it stays valid (and readable) after the root exits
+        let root = match Process::open(pid) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                // the root already exited (Gone) or cannot be opened: no waiter
+                // handle, no session. The Job still holds whatever it started.
+                drop(job); // KILL_ON_JOB_CLOSE
+                let _ = child.wait();
+                return Err(SpawnError::Spawn(e));
+            }
+        };
+        Ok(SessionTree {
+            job,
+            child,
+            pid,
+            root,
+        })
+    }
+
+    /// A handle to the root for waiting from another thread (never reaps;
+    /// Windows has no reaping race: the handle pins the identity).
+    pub fn root(&self) -> Arc<Process> {
+        Arc::clone(&self.root)
     }
 
     pub fn pid(&self) -> u32 {
