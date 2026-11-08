@@ -302,6 +302,96 @@ class NoSignalAfterReap(Base):
         self.assertIn("NOOP RED", out)
 
 
+class TrustworthyProcessList(Base):
+    """bb7dc #525 (32f6878d): a ps that fails or prints nothing must not read as "no leftovers"."""
+
+    def with_ps(self, script):
+        real = knife.PS
+        knife.PS = ["/bin/sh", "-c", script]
+        self.addCleanup(setattr, knife, "PS", real)
+        return knife.group_members(12345, exclude=12345)
+
+    def test_ps_failing_empty_or_garbled_is_none(self):
+        self.assertIsNone(self.with_ps("echo '1 12345'; exit 1"))      # rc != 0, even with output
+        self.assertIsNone(self.with_ps("true"))                         # nothing printed
+        self.assertIsNone(self.with_ps("echo 'abc 12345'"))             # not two numbers
+        self.assertIsNone(self.with_ps("echo '1 2 3'"))
+        self.assertEqual(self.with_ps("printf ' 7 12345\\n 8 99\\n12345 12345\\n'"), [7])
+
+    def test_a_failing_ps_makes_the_knife_undecided(self):
+        real = knife.PS
+        knife.PS = ["/bin/sh", "-c", "exit 1"]
+        self.addCleanup(setattr, knife, "PS", real)
+        rc, out = self.spec([self.k("plus-to-minus", "return a + b", "return a - b")], noop=False)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("UNDECIDED", out)
+        self.assertIn("process list", out)
+
+
+SIGCHLD_CHILD = r"""
+import ctypes, os, signal, subprocess, sys, time
+sys.path.insert(0, sys.argv[1]); import knife
+mode = sys.argv[2]
+def auto_reaped():
+    p = subprocess.Popen([sys.executable, "-c", "pass"]); time.sleep(0.5)
+    try:
+        os.waitpid(p.pid, os.WNOHANG); return False   # a zombie was there for us
+    except ChildProcessError:
+        return True                                    # the kernel reaped it
+    finally:
+        p.returncode = 0                               # keep Popen from waiting again
+if mode == "ign":
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+elif mode == "nocldwait":
+    class SA(ctypes.Structure):                        # macOS struct sigaction
+        _fields_ = [("handler", ctypes.c_void_p), ("mask", ctypes.c_uint32), ("flags", ctypes.c_int)]
+    libc = ctypes.CDLL(None, use_errno=True)
+    sa = SA(0, 0, 0x20)                                # SIG_DFL + SA_NOCLDWAIT
+    assert libc.sigaction(signal.SIGCHLD, ctypes.byref(sa), None) == 0
+print("before", auto_reaped())
+cmd = [sys.executable, "-c",
+       "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])"]
+rc, out, leftover = knife.run(cmd, ".", 30)
+print("run", rc, leftover)
+print("after", auto_reaped(), signal.getsignal(signal.SIGCHLD) is signal.SIG_DFL)
+"""
+
+
+@unittest.skipUnless(knife.POSIX, "process groups are POSIX")
+class SigchldPremise(unittest.TestCase):
+    """bb7dc #525: the sentinel pins the pgid only while unreaped; SIG_IGN / SA_NOCLDWAIT would let the kernel
+    reap it early. knife.run puts SIGCHLD back to default first (real processes, own interpreter each)."""
+
+    def run_child(self, mode):
+        r = subprocess.run([sys.executable, "-I", "-c", SIGCHLD_CHILD, str(ROOT / "scripts"), mode],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout.split("\n")
+
+    def test_sig_ign_is_reset_and_the_leftover_check_still_works(self):
+        out = self.run_child("ign")
+        self.assertIn("before True", out)                  # the premise really was broken
+        self.assertIn("run 0 True", out)                   # leftover found and killed
+        self.assertIn("after False True", out)             # zombies kept again, SIG_DFL
+
+    @unittest.skipUnless(sys.platform == "darwin", "struct sigaction layout used here is macOS")
+    def test_sa_nocldwait_is_cleared(self):
+        out = self.run_child("nocldwait")
+        self.assertIn("before True", out)
+        self.assertIn("run 0 True", out)
+        self.assertIn("after False True", out)
+
+    def test_off_the_main_thread_nothing_runs_and_it_is_undecided(self):
+        import threading
+        got = []
+        t = threading.Thread(target=lambda: got.append(knife.run([sys.executable, "-c", "print(1)"], ".", 30)))
+        t.start()
+        t.join(60)
+        rc, out, leftover = got[0]
+        self.assertIsNone(rc)
+        self.assertIn(knife.NO_GROUP_GUARD, out)
+
+
 class SingleCliReview525(Base):
     run_cli = SingleCli.run_cli  # borrowed, not inherited: SingleCli's tests run once
 

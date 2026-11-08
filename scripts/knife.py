@@ -27,6 +27,8 @@ Rules:
   pass, or no knife runs: a knife on a red baseline cannot bite anything of its own (1ced7 #525 H3). Positive
   and knife results are printed separately. The single-knife CLI runs the same noop first (#525 L1).
 - name, file, old and expect_fail must be non-empty strings; only new may be "" (#525 H1).
+- `"noop": false` in the spec skips the noop run. Only for a CMD known to be red without any knife; a BIT then
+  proves less (the red may not be the knife's), so leave it on unless you must (1ced7 #525 L5).
 - The file is restored by writing the original text back, so its mtime is new and cargo / Python rebuild it.
   Never restore with cp/mv: an old mtime makes cargo reuse the knifed build and every later run fails for the
   wrong reason. After restoring, the file must read back byte-identical, or the run stops.
@@ -92,19 +94,43 @@ sys.stdin.read()
 """
 
 
+PS = ["ps", "-A", "-o", "pid=,pgid="]
+NO_GROUP_GUARD = "knife: cannot keep SIGCHLD at default (zombies kept): the group leader could be reaped early"
+
+
 def group_members(pgid, exclude):
-    """pids in process group `pgid` other than `exclude` (POSIX, from ps); None if ps cannot be read."""
+    """pids in process group `pgid` other than `exclude` (POSIX, from ps); None when the list cannot be trusted:
+    ps failed (rc != 0), printed nothing (it always lists at least us), or printed a line that is not two numbers.
+    None is UNDECIDED upstream, never "no leftovers" (bb7dc #525)."""
     try:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid="], capture_output=True, text=True, timeout=10,
-                             stdin=subprocess.DEVNULL).stdout
+        r = subprocess.run(PS, capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
     got = []
-    for line in out.splitlines():
+    for line in r.stdout.splitlines():
         f = line.split()
-        if len(f) == 2 and f[1] == str(pgid) and f[0] != str(exclude):
+        if not f:
+            continue
+        if len(f) != 2 or not (f[0].isdigit() and f[1].isdigit()):
+            return None
+        if f[1] == str(pgid) and f[0] != str(exclude):
             got.append(int(f[0]))
     return got
+
+
+def keep_zombies():
+    """The sentinel pins the pgid only while it is unreaped, so the kernel must not reap it for us: SIGCHLD must
+    not be SIG_IGN and must not carry SA_NOCLDWAIT. signal.signal(SIG_DFL) clears both (CPython installs it with
+    sigaction and no SA_NOCLDWAIT). False if it cannot be set (not the main thread): the caller sends nothing."""
+    try:
+        # always install it, even when Python already reports SIG_DFL: C code may have set SA_NOCLDWAIT on a
+        # default handler, and Python cannot read the flags
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    except (ValueError, OSError):
+        return False
+    return signal.getsignal(signal.SIGCHLD) is signal.SIG_DFL
 
 
 def _read_rc(p, timeout):
@@ -153,6 +179,10 @@ def _run_plain(cmd, cwd, timeout, log):
 
 
 def _run_posix(cmd, cwd, timeout, log):
+    if not keep_zombies():
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(NO_GROUP_GUARD + "\n")
+        return None, None        # nothing started, nothing signalled: UNDECIDED upstream
     p = subprocess.Popen([sys.executable, "-I", "-c", SENTINEL, log, json.dumps(list(cmd)), cwd or "."],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                          start_new_session=True)
@@ -234,7 +264,8 @@ def one_knife(k, repo, default_cmd, timeout):
         if f.read() != orig:
             return "UNDECIDED", "%s did not read back identical after restore" % k["file"], True
     if rc is None:
-        return "UNDECIDED", "timeout %s s" % k.get("timeout", timeout), True
+        why = NO_GROUP_GUARD if NO_GROUP_GUARD in out else "timeout %s s" % k.get("timeout", timeout)
+        return "UNDECIDED", why, True
     if leftover:
         return "UNDECIDED", "processes left in the process group after CMD returned (killed); stopping", True
     if leftover is None and POSIX:
