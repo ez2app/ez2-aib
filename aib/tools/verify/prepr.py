@@ -3,8 +3,8 @@
 
     aib prepr [--repo DIR] [--base REF] [--run-tests] [--json]
 
-Each item prints pass / fail / not_run, with the reason, the scope, the tool version and the real exit code.
-"not_run" is never counted as green. Without --run-tests the test items are not run (they are long and need the
+Each item prints pass / fail / warn / not_run, with the reason, the scope, the tool version and the real exit code.
+"not_run" and "warn" are never counted as green; "warn" is not a failure either. Without --run-tests the test items are not run (they are long and need the
 machine lease); the items only a person can check (reruns, knives, formulas, PR text, dm, watchers) are listed as
 not_run with what to do. Exit code: 1 if any item failed, 2 on a usage error, else 0.
 
@@ -12,6 +12,7 @@ Nothing is installed: a missing tool or target is reported as not_run with the r
 Standard library only.
 """
 import argparse
+import ast
 import json
 import os
 import re
@@ -29,6 +30,16 @@ AIB_TEST_PER_TEST_TIMEOUT_S = 900   # `aib test --timeout`: per test
 # The whole `aib test` run: only a backstop, aib test stops a hung test itself. 3600 s stopped healthy big
 # batches (244 tests took about 3685 s; #494 L7).
 AIB_TEST_OUTER_TIMEOUT_S = 6 * 3600
+
+# Item 10 (DECISION-20, a63ab 11-08): a NEW subprocess call with its own timeout that does not go through
+# proc_group. Its timeout kills only the direct child; the tree it started stays (the 11-07 / 11-08 orphans).
+# Only lines this change adds are looked at, so the existing calls do not drown the report.
+# a63ab: the first week only warns. Turning it into a failure is a separate, reviewed PR (no date switch here).
+TIMEOUT_CALLS_STATUS = "warn"
+SUBPROCESS_FUNCS = ("run", "call", "check_call", "check_output")
+# a call written on purpose this way says why on one of its lines
+TIMEOUT_EXEMPT = "proc-group: ok"
+TIMEOUT_SKIP = ("aib/src/cockpit/proc_group.py",)
 
 # (item number in DECISION-7 A, what to do) for the items a person checks
 MANUAL = (
@@ -273,6 +284,99 @@ def python_item(repo, base, run_tests, aib, runner=run):
     return item(2, name, "pass" if rc == 0 else "fail", rc=rc, cmd=cmd, out=o)
 
 
+def added_lines(repo, base, path, runner=run):
+    """Line numbers of the working copy of `path` that this change adds: one diff from the merge base with `base`
+    to the working tree (committed + uncommitted, numbered as the file is now). "all" = untracked (every line is
+    new); None = could not tell (the caller says so)."""
+    rc, _ = runner(["git", "ls-files", "--error-unmatch", "--", path], repo)
+    if rc is None:
+        return None
+    if rc != 0:
+        return "all"
+    rc, mb = runner(["git", "merge-base", base, "HEAD"], repo)
+    if rc != 0 or not mb.strip():
+        return None
+    rc, out = runner(["git", "diff", "-U0", "--no-color", "--no-ext-diff", mb.strip(), "--", path], repo)
+    if rc != 0:
+        return None
+    got = set()
+    for m in _HUNK.finditer(out):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        got.update(range(start, start + count))
+    return got
+
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def timeout_calls(text):
+    """[(first line, last line, label)] for subprocess calls with timeout= and Popen.communicate / wait
+    (timeout=...). Raises SyntaxError on code that does not parse."""
+    found = []
+    popen = "Popen(" in text   # .wait(timeout=) is a subprocess wait only where Popen is used (Event.wait is not)
+    for node in ast.walk(ast.parse(text)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and any(k.arg == "timeout" for k in node.keywords)):
+            continue
+        f, base = node.func, node.func.value
+        if isinstance(base, ast.Name) and base.id == "subprocess" and f.attr in SUBPROCESS_FUNCS:
+            label = "subprocess.%s(timeout=)" % f.attr
+        elif f.attr == "communicate" or (f.attr == "wait" and popen):
+            label = ".%s(timeout=)" % f.attr
+        else:
+            continue
+        found.append((node.lineno, getattr(node, "end_lineno", node.lineno) or node.lineno, label))
+    return sorted(found)
+
+
+def timeout_item(repo, base, files, runner=run):
+    name = "timeout without proc_group"
+    py = [f for f in files if f.endswith(".py") and f not in TIMEOUT_SKIP]
+    if not py:
+        return item(10, name, "not_run", "not applicable: no Python change")
+    hits, unknown = [], []
+    for f in py:
+        path = os.path.join(repo, f)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            continue   # deleted by this change
+        except (OSError, UnicodeDecodeError) as e:
+            unknown.append("%s (%s)" % (f, e.__class__.__name__))
+            continue
+        try:
+            calls = timeout_calls(text)
+        except SyntaxError:
+            unknown.append("%s (does not parse)" % f)
+            continue
+        if not calls:
+            continue
+        new = added_lines(repo, base, f, runner)
+        if new is None:
+            unknown.append("%s (git diff failed)" % f)
+            continue
+        src = text.splitlines()
+        for first, last, label in calls:
+            span = range(first, last + 1)
+            if new != "all" and not any(n in new for n in span):
+                continue
+            if any(TIMEOUT_EXEMPT in src[n - 1] for n in span if n - 1 < len(src)):
+                continue
+            hits.append("%s:%d %s" % (f, first, label))
+    if not hits and not unknown:
+        return item(10, name, "pass", "no new timeout call outside proc_group in %d Python file(s)" % len(py))
+    reason = []
+    if hits:
+        reason.append("%d new call(s) with their own timeout: a timeout there kills only the direct child, "
+                      "not what it started. Use proc_group.run_group, or mark the call `# %s <why>`: %s"
+                      % (len(hits), TIMEOUT_EXEMPT, "; ".join(hits)))
+    if unknown:
+        reason.append("could not check: %s" % "; ".join(unknown))
+    status = TIMEOUT_CALLS_STATUS if hits else "not_run"
+    return item(10, name, status, " | ".join(reason))
+
+
 def collect(repo, base, run_tests, aib, runner=run):
     try:
         files = changed_files(repo, base, runner)
@@ -291,6 +395,7 @@ def collect(repo, base, run_tests, aib, runner=run):
         items.append(item(2, "docs", "not_run", "not applicable: docs only; run the doc's own check"))
     else:
         items.append(item(2, "aib test --changed", "not_run", "not applicable: no change outside Rust"))
+    items.append(timeout_item(repo, base, files, runner))
     for n, what in MANUAL:
         items.append(item(n, "manual", "not_run", "by hand: " + what))
     return files, items
@@ -325,7 +430,9 @@ def main(argv=None):
                     print("            %s: %s" % (key, i[key]))
             if i["tail"] and (i["status"] == "fail" or (i["status"] == "not_run" and i["rc"] is not None)):
                 print("            " + i["tail"].strip().replace("\n", "\n            "))
-        print("not_run is not green. %s" % ("FAILED" if failed else "no failures"))
+        warned = sum(i["status"] == "warn" for i in items)
+        print("not_run and warn are not green. %s%s" % ("FAILED" if failed else "no failures",
+                                                       ", %d warning(s)" % warned if warned else ""))
     return 1 if failed else 0
 
 
