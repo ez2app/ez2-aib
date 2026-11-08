@@ -131,8 +131,9 @@ jobs:
           k() { python3 -I scripts/knife.py crates/aib-sys/src/session.rs "$1" "$2" \
                   --expect-fail killing_a_session_takes_the_whole_tree \
                   -- cargo test -p aib-sys --locked --test session_win; }
-          k '        self.job.terminate(1)?;' '        let _ = 1; // knife: no terminate'
-          k '        self.job.terminate(1)?;' '        let _ = self.child.kill(); // knife: root only'
+          k '        self.job.terminate(1)' '        Ok(()) // knife: no terminate'
+          k '        self.job.terminate(1)' \
+            '        self.child.kill().map_err(|_| SysError::Unknown) // knife: root only'
       - name: aibd Windows session adapter knives (Windows)
         if: runner.os == 'Windows'
         shell: bash
