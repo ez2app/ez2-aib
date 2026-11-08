@@ -17,7 +17,7 @@ from cockpit_lib import trunc
 
 reg_path = os.environ.get('EZ2_ROUTE_REGISTRY', '')
 depth_path = os.path.join(os.environ['EZ2_COCKPIT_STATE_DIR'], 'brain-depth')
-VAULT = os.environ.get('EZ2_VAULT_DIR', os.path.expanduser('~/Desktop/Obsidian/Ez2'))
+VAULT = os.environ.get('EZ2_VAULT_DIR') or os.path.join(os.environ.get('EZ2_AIB_HOME') or os.path.expanduser('~/.ez2-aib'), 'vault')  # 11-06:cockpit-env.sh 已照 route_register 規則 export;沒有才退 aib 預設,不猜舊空殼
 
 try:
     depth = int(open(depth_path).read().strip())

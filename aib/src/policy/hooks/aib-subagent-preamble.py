@@ -12,8 +12,8 @@ the maintainer 09-03 直令關閉舊載體。舊 hook `subagent-guard.{sh,py}` �
   「只讀不寫、查無即說無、宣稱=落檔」那份契約,而**畫面上一模一樣**——行為變了,沒有任何一格會紅。
 
 模版來源是 the maintainer 的 Obsidian 角色庫(不是舊載體的資料):
-`~/Desktop/Obsidian/Ez2/P-Ez2 AI專家/P10-專家模板/角色庫/_子AI模版/{探索型,審查型,執行型}.md`
-`AIB_SUBAGENT_TEMPLATE_DIR` 可覆寫(治具用)。vault 缺席=不注入(優雅降級),不是錯誤。
+`<vault 根>/P-Ez2 AI專家/P10-專家模板/角色庫/_子AI模版/{探索型,審查型,執行型}.md`
+`AIB_SUBAGENT_TEMPLATE_DIR` 可覆寫(治具用)。vault 根照 brain_write_plan.vault_root()(= route_register.configured_vault)。vault 缺席=不注入(優雅降級),不是錯誤。
 
 契約細節(逐條照舊,改動會改變子代理行為):
 - 型別 → 模版:含 `explore`=探索型;`review|plan|qa|judge`=審查型;`general|code|fix|dev`=執行型;

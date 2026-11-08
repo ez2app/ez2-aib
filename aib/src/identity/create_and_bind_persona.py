@@ -56,12 +56,13 @@ def _aib_default_vault():
     return Path(os.environ.get("EZ2_AIB_HOME") or os.path.expanduser("~/.ez2-aib")) / "vault"
 
 
-def _default_vault():   # 與 route_register.default_vault 同一條規則(這裡不在載入時 import 它)
-    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
-        if os.environ.get(var):
-            return Path(os.path.expanduser(os.environ[var]))
-    legacy = Path(os.path.expanduser("~/Desktop/Obsidian/Ez2"))
-    return legacy if legacy.is_dir() else _aib_default_vault()
+def _default_vault():   # 11-06:規則只寫在 route_register.default_vault 一處,這裡問它(載入失敗才退 aib 預設)
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "persona_route"))
+        import route_register
+        return Path(route_register.default_vault())
+    except Exception:  # noqa: BLE001
+        return _aib_default_vault()
 
 
 DEFAULT_VAULT = _default_vault()
