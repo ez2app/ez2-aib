@@ -62,7 +62,3 @@ The command needs the existing `gh` login to read GitHub and contacts the public
 PyPI index. It does not request additional scopes or approve environments.
 Known failed stages return 1; unavailable evidence returns 3; valid pending
 progress returns 0 and remains explicitly pending in the payload.
-
-<!-- PROPOSAL-19 probe (1ced7, temporary; this draft PR is closed without merging) -->
-
-[probe broken link](does-not-exist-1ced7.md)
