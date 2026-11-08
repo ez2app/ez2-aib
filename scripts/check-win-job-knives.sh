@@ -82,5 +82,16 @@ knife record-after-resume the_member_is_recorded_before_the_child_runs \
         .and_then(|()| resume(pid));' \
   '        .and_then(|()| resume(pid))
         .and_then(|()| record_member(pid, record));'
+knife j0-no-adopt the_owner_dying_before_the_assign_still_kills_the_child \
+  '        assign(raw(&j0.job))?;' \
+  '        let _ = assign; // knife: J0 created but the caller is not in it'
+knife j0-inheritable the_owner_dying_before_the_assign_still_kills_the_child \
+  '        assign(raw(&j0.job))?;' \
+  '        assign(raw(&j0.job))?;
+        // knife: make the J0 handle inheritable
+        unsafe { windows_sys::Win32::Foundation::SetHandleInformation(raw(&j0.job), 1, 1) };'
+knife j0-breakaway-ok j0_refuses_breakaway_loudly \
+  'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;' \
+  'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;'
 echo "win job knives: bit $bit / not fallen $nf / undecided $und / survived $sv"
 [ $nf -eq 0 ] && [ $und -eq 0 ] && [ $sv -eq 0 ] && [ $bit -gt 0 ]

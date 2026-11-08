@@ -56,9 +56,10 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
+    GetCurrentProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    THREAD_SUSPEND_RESUME,
 };
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
@@ -401,6 +402,42 @@ impl Job {
             }
         }
         Ok(child)
+    }
+
+    /// DECISION-21: put the **calling process** into a new Job (J0) with
+    /// `KILL_ON_JOB_CLOSE` and no breakaway, and return it. aibd calls this
+    /// first thing in `main`, before the async runtime and before any child
+    /// exists, and keeps the returned `Job` for its whole life.
+    ///
+    /// Every process aibd starts afterwards is born inside J0 (children
+    /// inherit their parent's Jobs), so when aibd dies for any reason the
+    /// last J0 handle closes and the OS kills them all, including a child
+    /// still suspended before its session-Job assign (#492 review point 1).
+    /// Session Jobs from [`Job::new`] become nested child Jobs of J0.
+    ///
+    /// The J0 handle is not inheritable (null security attributes): a child
+    /// holding a copy would keep J0 open after aibd died.
+    ///
+    /// Failure (for example aibd started inside a Job that refuses the
+    /// assign) is returned as is; the caller must refuse to start. There is
+    /// no "run unprotected" mode (DECISION-21).
+    pub fn adopt_current() -> Result<Job, SysError> {
+        // SAFETY: plain call; returns a pseudo-handle that needs no closing.
+        let me = unsafe { GetCurrentProcess() };
+        Self::adopt_current_with(|jh| {
+            check_bool(|| {
+                // SAFETY: `jh` is our live Job, `me` our own process.
+                unsafe { AssignProcessToJobObject(jh, me) }
+            })
+        })
+    }
+
+    fn adopt_current_with(
+        assign: impl FnOnce(HANDLE) -> Result<(), SysError>,
+    ) -> Result<Job, SysError> {
+        let j0 = Job::new()?;
+        assign(raw(&j0.job))?;
+        Ok(j0)
     }
 
     /// `JobObjectBasicAccountingInformation.ActiveProcesses`.
@@ -830,6 +867,12 @@ mod tests {
             let _ = p.terminate(1);
         }
         assert!(gone, "child still alive after a failed resume");
+    }
+
+    #[test]
+    fn a_failed_adopt_is_returned() {
+        let r = Job::adopt_current_with(|_| Err(SysError::PermissionDenied));
+        assert_eq!(r.err(), Some(SysError::PermissionDenied));
     }
 
     /// #492 review point 3: a kill that does nothing must not be reported as

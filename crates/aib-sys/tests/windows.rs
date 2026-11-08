@@ -86,6 +86,48 @@ fn helper() {
             std::thread::sleep(Duration::from_secs(120));
             drop(job);
         }
+        // stands in for aibd with J0 (DECISION-21): adopt first, then make a
+        // child that is suspended and in no session Job (the window between
+        // create and assign), report it, wait to be killed
+        "j0-window" => {
+            let _j0 = Job::adopt_current().unwrap();
+            // std always creates with bInheritHandles = TRUE: an inheritable
+            // J0 handle would be copied into this child
+            #[allow(clippy::zombie_processes)]
+            let g = helper_cmd("sleep")
+                .stdout(Stdio::null())
+                .creation_flags(0x0000_0004) // CREATE_SUSPENDED
+                .spawn()
+                .unwrap();
+            say(&format!("GPID {}", g.id()));
+            std::thread::sleep(Duration::from_secs(120));
+        }
+        // J0 then a session Job nested in it; report whether the nested
+        // spawn worked (the GitHub runner itself already runs in a Job)
+        "j0-nested" => {
+            let _j0 = Job::adopt_current().unwrap();
+            let job = Job::new().unwrap();
+            match job.spawn(helper_cmd("sleep").stdout(Stdio::null())) {
+                Ok(g) => say(&format!("NESTED ok {}", g.id())),
+                Err(e) => say(&format!("NESTED failed {e:?}")),
+            }
+            std::thread::sleep(Duration::from_secs(120));
+        }
+        // J0 allows no breakaway: a child asking for it must fail loudly
+        "j0-breakaway" => {
+            let _j0 = Job::adopt_current().unwrap();
+            match helper_cmd("sleep")
+                .stdout(Stdio::null())
+                .creation_flags(BREAKAWAY)
+                .spawn()
+            {
+                Ok(mut g) => {
+                    say(&format!("BREAKAWAY ok {}", g.id()));
+                    let _ = g.kill();
+                }
+                Err(e) => say(&format!("BREAKAWAY denied {:?}", e.raw_os_error())),
+            }
+        }
         m => panic!("unknown helper mode {m}"),
     }
 }
@@ -260,6 +302,66 @@ fn the_owner_crashing_kills_the_tree() {
         g.wait(Duration::from_secs(10)).unwrap(),
         "tree survived its owner (KILL_ON_JOB_CLOSE missing?)"
     );
+}
+
+/// DECISION-21 / #492 review point 1: aibd (with J0) is killed while a
+/// child exists that is suspended and not yet in any session Job. The child
+/// must be gone within the bound. Knives: no adopt; an inheritable J0 handle.
+#[test]
+fn the_owner_dying_before_the_assign_still_kills_the_child() {
+    let (mut cmd, out) = reporting("j0-window");
+    let mut owner = cmd.spawn().unwrap();
+    let _owner_reap = Reap::open(owner.id());
+    let gpid: u32 = read_tagged(&mut owner, &out, "GPID ").parse().unwrap();
+    let reap = Reap::open(gpid);
+    let g = &reap.0;
+    assert!(
+        !g.wait(Duration::from_millis(200)).unwrap(),
+        "suspended child should still exist"
+    );
+    owner.kill().unwrap(); // TerminateProcess: no destructor runs
+    owner.wait().unwrap();
+    assert!(
+        g.wait(Duration::from_secs(10)).unwrap(),
+        "an unassigned child survived its owner (J0 missing or its handle inherited?)"
+    );
+}
+
+/// A session Job nests inside J0, also when the test itself already runs in
+/// a Job (GitHub runners do); killing the owner kills the session tree.
+#[test]
+fn a_session_job_nests_inside_j0() {
+    let (mut cmd, out) = reporting("j0-nested");
+    let mut owner = cmd.spawn().unwrap();
+    let _owner_reap = Reap::open(owner.id());
+    let r = read_tagged(&mut owner, &out, "NESTED ");
+    let gpid: u32 = r
+        .strip_prefix("ok ")
+        .unwrap_or_else(|| panic!("nested spawn failed: {r}"))
+        .parse()
+        .unwrap();
+    let reap = Reap::open(gpid);
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    assert!(
+        reap.0.wait(Duration::from_secs(10)).unwrap(),
+        "session tree survived"
+    );
+}
+
+/// J0 allows no breakaway: a child that asks for `CREATE_BREAKAWAY_FROM_JOB`
+/// gets an error, it is not silently started outside.
+#[test]
+fn j0_refuses_breakaway_loudly() {
+    let (mut cmd, out) = reporting("j0-breakaway");
+    let mut owner = cmd.spawn().unwrap();
+    let _owner_reap = Reap::open(owner.id());
+    let r = read_tagged(&mut owner, &out, "BREAKAWAY ");
+    assert!(
+        r.starts_with("denied"),
+        "breakaway from J0 was allowed: {r}"
+    );
+    let _ = owner.wait();
 }
 
 #[test]
