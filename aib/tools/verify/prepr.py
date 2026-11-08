@@ -14,6 +14,7 @@ Standard library only.
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -102,21 +103,86 @@ def changed_files(repo, base, runner=run):
     return sorted(files)
 
 
-# Paths that make the Rust checks apply: the same list as `.github/workflows/aibd.yml` `paths`
-# (a test keeps the two in step), plus any `.rs` file.
-RUST_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
-              ".github/workflows/aibd.yml")
-RUST_DIRS = ("crates/", "xtask/", "migrations/")
+# Paths that make the Rust checks apply are read from the repo's own `.github/workflows/aibd.yml`
+# (`on.pull_request.paths`, the filter the PR CI applies), never copied by hand: when aibd.yml gains a path,
+# prepr follows it. Any `.rs` file and any `Cargo.toml` count as Rust as well.
+AIBD_WORKFLOW = ".github/workflows/aibd.yml"
+# Only when a repo has no aibd.yml (or it cannot be parsed): the bare minimum, and the report says so.
+FALLBACK_RUST_PATHS = ("Cargo.toml", "Cargo.lock", "crates/**")
 
 
-def is_rust(f):
-    return f.endswith(".rs") or f in RUST_FILES or f.startswith(RUST_DIRS) or f.endswith(("/Cargo.toml",))
+def workflow_paths(text, event="pull_request"):
+    """The `paths:` list under `on.<event>` of a workflow, in order (the `!` negations kept). [] if there is none.
+    A small line reader on purpose (no YAML dependency): it reads the block form GitHub workflows use here."""
+    out, ev_indent, in_paths, paths_indent = [], None, False, None
+    for ln in text.splitlines():
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        st = ln.strip()
+        if ev_indent is None:
+            if re.match(r"^%s:\s*(#.*)?$" % re.escape(event), st):
+                ev_indent = ind
+            continue
+        if ind <= ev_indent:
+            break
+        if in_paths:
+            m = re.match(r"""^-\s*["']?([^"'#]+?)["']?\s*(#.*)?$""", st)
+            if m and ind >= paths_indent:
+                out.append(m.group(1).strip())
+                continue
+            in_paths = False
+        if re.match(r"^paths:\s*(#.*)?$", st):
+            in_paths, paths_indent = True, ind
+    return out
 
 
-def kinds(files):
+def glob_re(pattern):
+    """GitHub's path filter glob: `**` any characters including `/`, `*` and `?` stop at `/`."""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif pattern[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif pattern[i] == "?":
+            out += "[^/]"
+            i += 1
+        else:
+            out += re.escape(pattern[i])
+            i += 1
+    return re.compile("^%s$" % out)
+
+
+def rust_paths(repo):
+    """(patterns, where they came from) for `repo`."""
+    try:
+        with open(os.path.join(repo, AIBD_WORKFLOW), encoding="utf-8") as f:
+            paths = workflow_paths(f.read())
+    except OSError:
+        paths = []
+    if paths:
+        return tuple(paths), AIBD_WORKFLOW
+    return FALLBACK_RUST_PATHS, "built-in fallback (no readable %s)" % AIBD_WORKFLOW
+
+
+def is_rust(f, patterns=FALLBACK_RUST_PATHS):
+    if f.endswith(".rs") or f == "Cargo.toml" or f.endswith("/Cargo.toml"):
+        return True
+    hit = False
+    for pat in patterns:  # in order, like GitHub: a later `!pattern` takes a match back
+        neg = pat.startswith("!")
+        if glob_re(pat[1:] if neg else pat).match(f):
+            hit = not neg
+    return hit
+
+
+def kinds(files, patterns=FALLBACK_RUST_PATHS):
     """Which checks apply: rust, python (code that `aib test` covers), docs-only."""
-    rust = any(is_rust(f) for f in files)
-    code = any(not is_rust(f) and not f.endswith(".md") for f in files)
+    rust = any(is_rust(f, patterns) for f in files)
+    code = any(not is_rust(f, patterns) and not f.endswith(".md") for f in files)
     return {"rust": rust, "python": code, "docs_only": bool(files) and not rust and not code}
 
 
@@ -220,12 +286,13 @@ def collect(repo, base, run_tests, aib, runner=run):
         files = changed_files(repo, base, runner)
     except RuntimeError as e:
         return None, [item(0, "changed files", "fail", str(e))]
-    k = kinds(files)
+    patterns, source = rust_paths(repo)
+    k = kinds(files, patterns)
     items = []
     if k["rust"]:
         items += rust_items(repo, run_tests, runner)
     else:
-        items.append(item(1, "rust", "not_run", "not applicable: no Rust change"))
+        items.append(item(1, "rust", "not_run", "not applicable: no Rust change (Rust paths from %s)" % source))
     if k["python"]:
         items.append(python_item(repo, base, run_tests, aib, runner))
     elif k["docs_only"]:

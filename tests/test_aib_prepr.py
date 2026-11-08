@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -195,27 +196,55 @@ class Units(unittest.TestCase):
         self.assertRegex(src, r"整批 rc %d" % prepr.AIB_TEST_RC_ALL_SKIPPED)
 
     def test_files_that_aibd_ci_treats_as_rust_trigger_the_rust_checks(self):
+        # the patterns come from the repo's own aibd.yml, so a path added there (check-sys-deps.sh, #485) follows
+        patterns, source = prepr.rust_paths(str(ROOT))
+        self.assertEqual(source, prepr.AIBD_WORKFLOW)
+        wf = (ROOT / ".github" / "workflows" / "aibd.yml").read_text()
+        self.assertEqual(list(patterns), prepr.workflow_paths(wf))
         for f in ("migrations/0002_x.sql", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
-                  "crates/aibd/README.md", "xtask/Cargo.toml", ".github/workflows/aibd.yml"):
-            self.assertTrue(prepr.kinds([f])["rust"], f)
-            self.assertFalse(prepr.kinds([f])["python"], f)
-        # the list stays in step with the aibd workflow's own path filter
-        wf = ROOT / ".github" / "workflows" / "aibd.yml"
-        self.assertTrue(wf.exists(), wf)
-        item_re = re.compile(r"""^\s*-\s*["']?([^"'\s#]+)["']?\s*(#.*)?$""")
-        paths, inside = set(), False
-        for ln in wf.read_text().splitlines():
-            if re.match(r"^\s*paths:\s*$", ln):
-                inside = True
-                continue
-            m = item_re.match(ln) if inside else None
-            if m:
-                paths.add(m.group(1))
-            elif inside and ln.strip():
-                inside = False
-        self.assertTrue(paths)
-        for p in paths:
-            self.assertTrue(prepr.is_rust(p.replace("**", "x.sql")), p)
+                  "scripts/check-sys-deps.sh", "crates/aibd/README.md", "xtask/Cargo.toml",
+                  ".github/workflows/aibd.yml"):
+            self.assertTrue(prepr.kinds([f], patterns)["rust"], f)
+            self.assertFalse(prepr.kinds([f], patterns)["python"], f)
+        for p in patterns:
+            self.assertTrue(prepr.is_rust(p.replace("**", "x/y.sql"), patterns), p)
+
+    def test_the_workflow_reader_takes_pull_request_paths_globs_and_negations(self):
+        wf = textwrap.dedent("""\
+            name: x
+            on:
+              push:
+                paths:
+                  - "push-only/**"
+              pull_request:
+                types: [opened]
+                paths:
+                  - 'crates/**'   # quoted with single quotes
+                  - "scripts/*.sh"
+                  - "!crates/legacy/**"
+                  - Cargo.lock
+            permissions:
+              contents: read
+            """)
+        pats = prepr.workflow_paths(wf)
+        self.assertEqual(pats, ["crates/**", "scripts/*.sh", "!crates/legacy/**", "Cargo.lock"])
+        self.assertTrue(prepr.is_rust("crates/a/b/c.toml", pats))
+        self.assertFalse(prepr.is_rust("crates/legacy/a.toml", pats))
+        self.assertTrue(prepr.is_rust("scripts/x.sh", pats))
+        self.assertFalse(prepr.is_rust("scripts/sub/x.sh", pats))
+        self.assertFalse(prepr.is_rust("push-only/a.txt", pats))
+        self.assertTrue(prepr.is_rust("Cargo.lock", pats))
+        self.assertTrue(prepr.is_rust("any/where.rs", pats))
+        self.assertEqual(prepr.workflow_paths("on:\n  push:\n    paths:\n      - a\n"), [])
+
+    def test_a_repo_without_the_workflow_uses_the_fallback_and_says_so(self):
+        td = tempfile.mkdtemp(prefix="aib-prepr-nowf-")
+        try:
+            patterns, source = prepr.rust_paths(td)
+            self.assertEqual(patterns, prepr.FALLBACK_RUST_PATHS)
+            self.assertIn("fallback", source)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
 
     def test_which_checks_apply(self):
         self.assertEqual(prepr.kinds(["a/b.rs"]), {"rust": True, "python": False, "docs_only": False})
