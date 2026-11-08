@@ -365,5 +365,3 @@ ACB's architecture no longer fit the way it is used today, so instead of patchin
 ## License
 
 Apache License 2.0 — see `LICENSE`.
-
-<!-- PROPOSAL-19 probe 2 (1ced7, temporary) -->
