@@ -226,7 +226,7 @@ import json, os, signal, sys, threading, time
 sys.path.insert(0, sys.argv[1])
 import proc_group as pg
 mode, pidfile = sys.argv[2], sys.argv[3]
-if mode == "term":
+if mode in ("term", "term-int"):
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(143))
 if mode == "stuck":
     # a stop that never finishes; the limit is grace 0.5 + 2 x 0.2 = 0.9 s
@@ -238,14 +238,17 @@ def poke(sig, at):
         os.kill(os.getpid(), sig)
     threading.Thread(target=go, daemon=True).start()
 # the grandchild writes its pid, the leader waits; with "trap" the whole group ignores TERM (KILL needed)
-trap = "trap '' TERM; " if mode == "twice" else ""
+trap = "trap '' TERM; " if mode in ("twice", "term-int", "int-trap") else ""
 cmd = ["/bin/sh", "-c", trap + "sleep 60 & echo $! > " + pidfile + "; wait"]
 if mode == "twice":
     poke(signal.SIGINT, 0.5)
     poke(signal.SIGINT, 1.0)   # during the 1.5 s grace of the stop the first one started
+elif mode == "term-int":
+    poke(signal.SIGTERM, 0.5)  # the SIGTERM handler exits ...
+    poke(signal.SIGINT, 1.0)   # ... and Ctrl-C comes while that exit is stopping the group (bb7dc #520)
 elif mode == "stuck":
     poke(signal.SIGINT, 0.5)
-    poke(signal.SIGINT, 2.5)   # well past the 0.9 s limit: must go through at once
+    poke(signal.SIGINT, 0.8)   # pressed once during the stuck stop, never again: must go through by itself
 else:
     poke(signal.SIGTERM if mode == "term" else signal.SIGINT, 0.5)
 got = {"exc": None}
@@ -256,6 +259,9 @@ except BaseException as e:
     rep = getattr(e, "proc_group_stop", None)
     got = {"exc": e.__class__.__name__, "code": getattr(e, "code", None),
            "status": rep.status if rep else None, "why": rep.why if rep else None,
+           "held": getattr(e, "proc_group_held", None),
+           "context": e.__context__.__class__.__name__ if e.__context__ is not None else None,
+           "context_code": getattr(e.__context__, "code", None),
            "sigint_restored": signal.getsignal(signal.SIGINT) is signal.default_int_handler,
            "elapsed": time.monotonic() - t0, "limit": pg.defer_limit_s(0.5 if mode == "stuck" else 1.5)}
 print(json.dumps(got))
@@ -299,7 +305,7 @@ class Interrupted(unittest.TestCase):
         self.assertEqual(got["status"], "stopped", got)
         self.assertIsNotNone(self.gc, "the grandchild never started")
         self.assertTrue(gone_within(self.gc), "grandchild %s survived the interrupt" % self.gc)
-        self.assertIn("[proc_group] interrupted by KeyboardInterrupt", err)
+        self.assertIn("[proc_group] interrupted by KeyboardInterrupt: stop result for group", err)
         self.assertTrue(got["sigint_restored"], got)
 
     def test_a_sigterm_handler_that_exits_still_gets_the_group_stopped(self):
@@ -314,14 +320,65 @@ class Interrupted(unittest.TestCase):
         self.assertEqual(got["status"], "stopped", got)   # TERM ignored: only the KILL after the grace stops it
         self.assertTrue(gone_within(self.gc), "grandchild %s survived the second Ctrl-C" % self.gc)
         self.assertTrue(got["sigint_restored"], got)
+        self.assertEqual(got["held"], ["SIGINT"], got)
 
-    def test_a_stuck_stop_holds_ctrl_c_only_up_to_the_limit(self):
-        """a63ab 11-08: held for at most grace + 2 x KILL_WAIT_S; after that Ctrl-C goes through at once."""
-        got, _ = self.drive("stuck")
+    def test_ctrl_c_after_a_sigterm_exit_started_the_stop_still_interrupts(self):
+        """bb7dc #520: SIGTERM's handler raised SystemExit(143) and the stop is running when Ctrl-C comes. The
+        Ctrl-C is held until the group is stopped, then still interrupts (never swallowed); the SystemExit is its
+        __context__ and the report is on the KeyboardInterrupt too."""
+        got, err = self.drive("term-int")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertEqual((got["context"], got["context_code"]), ("SystemExit", 143), got)
+        self.assertEqual(got["status"], "stopped", got)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
+        self.assertEqual(got["held"], ["SIGINT"], got)
+        self.assertIn("held during the stop: SIGINT", err)
+        self.assertTrue(got["sigint_restored"], got)
+
+    def test_one_ctrl_c_with_a_group_ignoring_term_gets_out_within_the_limit(self):
+        """a63ab #520: the group ignores TERM, the user presses Ctrl-C once: KeyboardInterrupt reaches the caller
+        within the limit (grace 1.5 + 2 x 2 = 5.5 s) plus a small margin, and the grandchild is gone (KILL)."""
+        got, _ = self.drive("int-trap")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertEqual(got["status"], "stopped", got)
+        self.assertLess(got["elapsed"], 0.5 + got["limit"] + 1.0, got)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
+
+    def test_a_stuck_stop_delivers_the_held_ctrl_c_by_itself_at_the_limit(self):
+        """a63ab #520: the stop is stuck (30 s), Ctrl-C is pressed once during it and never again. At the limit
+        (0.5 + 2 x 0.2 = 0.9 s after the interrupt) it goes through by itself; the report says the stop was cut."""
+        got, err = self.drive("stuck")
         self.assertEqual(got["exc"], "KeyboardInterrupt", got)
         self.assertAlmostEqual(got["limit"], 0.9, places=6)
-        self.assertLess(got["elapsed"], 6.0, "the second Ctrl-C was held past the limit: %s" % got)
+        self.assertGreater(got["elapsed"], 1.2, "delivered before the limit: %s" % got)
+        self.assertLess(got["elapsed"], 2.9, "the held Ctrl-C did not go through by itself at the limit: %s" % got)
+        self.assertEqual((got["status"], got["why"]), ("unverified", "stop_cut_short_at_limit"), got)
+        self.assertIn("stop result for group", err)
+        self.assertIn("unverified stop_cut_short_at_limit", err)   # the log never reads as a clean stop
         self.assertTrue(got["sigint_restored"], got)
+
+    def test_an_interrupt_during_the_final_reap_still_stops_the_group(self):
+        """bb7dc #520: the reap is inside the guarded block too. The leader exits and leaves a grandchild
+        (leftovers kept), the interrupt lands in the reap: the group is still stopped, same object comes out."""
+        class Boom(BaseException):
+            pass
+
+        boom = Boom()
+
+        class P(subprocess.Popen):
+            def wait(self, timeout=None):
+                if timeout is None and not getattr(self, "_boomed", False):
+                    self._boomed = True
+                    raise boom
+                return super().wait(timeout=timeout)
+
+        with self.assertRaises(Boom) as cm:
+            pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s" % self.pidfile], timeout=30, grace=0.5,
+                         leftovers="keep", popen=P)
+        self.assertIs(cm.exception, boom)
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        self.assertEqual(boom.proc_group_stop.status, "stopped", boom.proc_group_stop)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived an interrupt in the reap" % self.gc)
 
     def test_the_default_limit_is_grace_plus_two_kill_waits(self):
         self.assertEqual((pg.DEFAULT_GRACE_S, pg.KILL_WAIT_S), (5.0, 2.0))

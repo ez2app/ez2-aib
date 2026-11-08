@@ -24,12 +24,14 @@ Rules (DECISION-20 + ADR 0007):
 - macOS answers killpg with EPERM (not ESRCH) when only zombies are left in a group. EPERM is "to be checked",
   never "done" and never "failed": the group's members are listed again; only zombies left = stopped, a live
   member or a listing that fails = unverified (with the pids).
-- Interrupted while waiting (Ctrl-C, a SIGTERM handler that raises, any BaseException): the group is stopped and
-  the leader reaped first, then the SAME exception is raised again with the StopReport as `exc.proc_group_stop`
-  and one line on stderr. SIGINT / SIGTERM arriving during that stop are held (main thread only) and delivered
-  to the previous handler afterwards, so a second Ctrl-C cannot cut the stop short (1ced7 / a63ab, 11-08) —
-  but only for `defer_limit_s(grace)` = grace + 2 x KILL_WAIT_S (5 + 2 + 2 = 9 s by default): after that a
-  signal goes through at once, so a stuck stop can never make the program impossible to interrupt.
+- Interrupted anywhere from the start to the reap (Ctrl-C, a SIGTERM handler that raises, any BaseException):
+  the group is stopped and the leader reaped first, then the SAME exception is raised again with the StopReport
+  as `exc.proc_group_stop` (held signals in `exc.proc_group_held`) and one line on stderr. SIGINT / SIGTERM
+  arriving during that stop are held (main thread only) so a second Ctrl-C cannot cut the stop short
+  (1ced7 / a63ab, 11-08), then go to the previous handler; a held Ctrl-C is dropped only when the exception
+  leaving already is a KeyboardInterrupt (after a SystemExit it still interrupts, bb7dc #520). Holding lasts
+  at most `defer_limit_s(grace)` = grace + 2 x KILL_WAIT_S (5 + 2 + 2 = 9 s by default): at the limit a held
+  signal is delivered by itself, without a second press, even if the stop is stuck (a63ab #520).
 - Output goes to a temporary file, not a pipe: a grandchild that inherited stdout cannot make a finished command
   look like a timeout (the "false timeout" in 043dd's scan). `output="inherit"` sends it straight to the caller's
   stdout / stderr instead (live; still no pipe).
@@ -263,7 +265,7 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
     output="capture" (default): stdout + stderr go to a temporary file and come back as `r.out`.
     output="inherit": they go straight to the caller's stdout / stderr (live, no pipe, so a grandchild holding
     them cannot fake a timeout either); `r.out` is "".
-    Interrupted while waiting (KeyboardInterrupt, a SIGTERM handler raising SystemExit, any BaseException):
+    Interrupted anywhere up to the reap (KeyboardInterrupt, a SIGTERM handler raising SystemExit, any BaseException):
     the group is stopped and the leader reaped FIRST, then the same exception is raised again, carrying the
     StopReport as `exc.proc_group_stop`; one line on stderr says what was stopped (1ced7 / a63ab #509 gap)."""
     if leftovers not in ("stop", "keep"):
@@ -273,15 +275,15 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
     out_fh = tempfile.TemporaryFile() if output == "capture" else None
     try:
         io = {"stdout": out_fh, "stderr": subprocess.STDOUT} if out_fh is not None else {}
-        try:
-            p = popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin is None else stdin,
-                      start_new_session=True, **io)
-        except (OSError, ValueError) as e:
-            return Result(None, "", error="could not start %s: %s" % (argv[0] if argv else "?", e))
-        g = None
-        try:
+        p = g = None
+        timed_out, stop = False, None
+        try:  # everything from the start to the reap: an interrupt anywhere here still stops the group (bb7dc #520)
+            try:
+                p = popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin is None else stdin,
+                          start_new_session=True, **io)
+            except (OSError, ValueError) as e:
+                return Result(None, "", error="could not start %s: %s" % (argv[0] if argv else "?", e))
             g = _Group(p)
-            timed_out, stop = False, None
             deadline = None if timeout is None else time.monotonic() + timeout
             while not _exited_or_poll(p):
                 if deadline is not None and time.monotonic() >= deadline:
@@ -297,12 +299,14 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
             elif leftovers == "stop":
                 # Windows: no process group to list, so leftovers are not checked at all — say so, never imply clean
                 stop = StopReport("unverified", "windows_leftovers_not_checked")
+            try:  # the first and only reap, after every signal has been sent
+                p.wait(timeout=KILL_WAIT_S if timed_out else None)
+            except subprocess.TimeoutExpired:
+                pass
         except BaseException as e:
+            if p is None:   # nothing was started
+                raise
             _stop_then_reraise(p, g, grace, e)
-        try:  # the first and only reap, after every signal has been sent
-            p.wait(timeout=KILL_WAIT_S if timed_out else None)
-        except subprocess.TimeoutExpired:
-            pass
         out = ""
         if out_fh is not None:
             out_fh.seek(0)
@@ -322,8 +326,8 @@ _DEFERRED = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM") if hasattr(s
 
 def defer_limit_s(grace):
     """How long signals are held while an interrupted run stops its group: TERM + `grace`, KILL + KILL_WAIT_S for
-    the group to empty, then KILL_WAIT_S to reap the leader. Default 5 + 2 + 2 = 9 s. After that a signal is
-    delivered at once even if the stop is still stuck, so the user can always get out (a63ab 11-08)."""
+    the group to empty, then KILL_WAIT_S to reap the leader. Default 5 + 2 + 2 = 9 s. At the limit a held signal
+    is delivered by itself (a timer), even if the stop is still stuck: the user never has to press again (a63ab)."""
     return grace + 2 * KILL_WAIT_S
 
 
@@ -341,6 +345,7 @@ def _deliver(sig, h):
 def _stop_then_reraise(p, g, grace, exc, clock=time.monotonic):
     pending = []
     saved = {}
+    state = {"expired": False, "cut": False, "timer": None}
     deadline = clock() + defer_limit_s(grace)
 
     def restore():
@@ -351,11 +356,30 @@ def _stop_then_reraise(p, g, grace, exc, clock=time.monotonic):
             except (ValueError, OSError):
                 pass
 
+    def expire(sig):
+        # the limit is reached and the stop is still running: the held signal goes through by itself, the user
+        # does not have to press again (a63ab #520). Python runs the handler on the main thread.
+        state["expired"] = True
+        try:
+            os.kill(os.getpid(), sig)
+        except OSError:
+            pass
+
     def hold(sig, frame):
-        if clock() < deadline:
+        if not state["expired"] and clock() < deadline:
             pending.append(sig)
+            if state["timer"] is None:
+                t = threading.Timer(max(0.0, deadline - clock()), expire, (sig,))
+                t.daemon = True
+                state["timer"] = t
+                t.start()
             return
-        h = saved.get(sig)            # past the limit: the stop is stuck, the user's signal goes through now
+        if sig in pending:            # the held one is released now, not again after the stop
+            pending.remove(sig)
+        h = saved.get(sig)
+        if state["timer"] is not None:
+            state["timer"].cancel()
+        state["cut"] = True
         restore()
         _deliver(sig, h)
 
@@ -370,30 +394,54 @@ def _stop_then_reraise(p, g, grace, exc, clock=time.monotonic):
         try:
             rep = (g if g is not None else _Group(p)).stop(grace)
         except Exception as e:  # noqa: BLE001  the stop itself broke: say so, the original exception still wins
+            if state["cut"]:          # ... unless it is the caller's own handler, run at the limit, raising
+                raise
             rep = StopReport("unverified", "stop_failed_after_interrupt: %s" % e.__class__.__name__)
         try:
             p.wait(timeout=KILL_WAIT_S)
         except subprocess.TimeoutExpired:
             pass
-        try:
-            exc.proc_group_stop = rep
-        except (AttributeError, TypeError):
-            pass
-        try:
-            sys.stderr.write("[proc_group] interrupted by %s: stopped group %s: %s %s%s\n" % (
-                exc.__class__.__name__, p.pid, rep.status, rep.why,
-                ", still running: %s" % rep.survivors if rep.survivors else ""))
-        except Exception:  # noqa: BLE001  a closed stderr must not hide the original exception
-            pass
+    except BaseException as cut:  # a held signal went through at the limit and cut the stop short
+        _report(cut, p, StopReport("unverified", "stop_cut_short_at_limit"), [signal.Signals(s).name for s in
+                                                                                 pending])
+        raise
     finally:
+        if state["timer"] is not None:
+            state["timer"].cancel()
         restore()
-    # A signal held during the stop goes now to the handler that was in place before; Python's default Ctrl-C
-    # handler is skipped, the exception raised below already is that interrupt.
+    names = [signal.Signals(s).name for s in pending]
+    _report(exc, p, rep, names)
+    # A signal held during the stop now goes to the handler that was in place before. Only when the exception
+    # already leaving IS a Ctrl-C is a held default Ctrl-C dropped (it would be the same interrupt twice); after a
+    # SystemExit or any other exception the user's Ctrl-C still interrupts, it is never swallowed (bb7dc #520).
     for sig in pending:
         h = held.get(sig)
-        if h is not signal.default_int_handler:
+        if h is signal.default_int_handler and isinstance(exc, KeyboardInterrupt):
+            continue
+        try:
             _deliver(sig, h)
+        except BaseException as e2:
+            _report(e2, p, rep, names, quiet=True)
+            raise
     raise exc
+
+
+def _report(exc, p, rep, held, quiet=False):
+    """Hang the StopReport and the held signals on `exc`; one neutral line on stderr (status says if it is clean)."""
+    try:
+        exc.proc_group_stop = rep
+        exc.proc_group_held = held
+    except (AttributeError, TypeError):
+        pass
+    if quiet:
+        return
+    try:
+        sys.stderr.write("[proc_group] interrupted by %s: stop result for group %s: %s %s%s%s\n" % (
+            exc.__class__.__name__, p.pid, rep.status, rep.why or "",
+            ", still running: %s" % rep.survivors if rep.survivors else "",
+            ", held during the stop: %s" % ",".join(held) if held else ""))
+    except Exception:  # noqa: BLE001  a closed stderr must not hide the original exception
+        pass
 
 
 def _exited_or_poll(p):
