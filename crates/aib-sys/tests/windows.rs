@@ -5,7 +5,7 @@
 #![cfg(windows)]
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-use aib_sys::job::{Job, Process, WaitMode, BREAKAWAY_FLAGS, LIMIT_FLAGS};
+use aib_sys::job::{Job, Member, Process, WaitMode, BREAKAWAY_FLAGS, LIMIT_FLAGS};
 use aib_sys::SysError;
 use std::io::Write;
 use std::os::windows::process::CommandExt;
@@ -296,4 +296,60 @@ fn a_reaped_child_is_gone() {
         Err(SysError::Gone) | Ok(_) => {}
         Err(e) => panic!("reaped child classified as {e:?}"),
     }
+}
+
+/// ADR 0008: the member is recorded while the child is still suspended (it
+/// cannot have written its marker yet), with the identity the kernel reports.
+#[test]
+fn the_member_is_recorded_before_the_child_runs() {
+    let job = Job::new().unwrap();
+    let marker = marker_path();
+    let (mut cmd, out) = reporting("tree");
+    cmd.env(MARKER, &marker);
+    let mut got: Option<Member> = None;
+    let mut ran_before_record = true;
+    let mut mid = job
+        .spawn_recorded(&mut cmd, |m| {
+            // a running child writes the marker at once; give it the chance
+            ran_before_record = wait_for(&marker, Duration::from_secs(2));
+            got = Some(m);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        !ran_before_record,
+        "the child ran before its member was recorded"
+    );
+    let m = got.expect("record was called");
+    assert_eq!(m.pid, mid.id());
+    let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
+    assert!(
+        wait_for(&marker, Duration::from_secs(10)),
+        "child never ran"
+    );
+    let _ = std::fs::remove_file(&marker);
+    let g = Process::open(gpid).unwrap();
+    job.terminate(1).unwrap();
+    assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
+    assert!(g.wait(Duration::from_secs(5)).unwrap());
+    mid.wait().unwrap();
+}
+
+/// Reconciliation path: open with terminate rights, check identity, then
+/// terminate through the same handle.
+#[test]
+fn a_terminable_handle_stops_its_process() {
+    let mut c = helper_cmd("sleep").stdout(Stdio::null()).spawn().unwrap();
+    let p = Process::open_terminable(c.id()).unwrap();
+    assert!(p.created_100ns().unwrap() > 0);
+    assert!(!p.wait(Duration::from_millis(100)).unwrap());
+    p.terminate(1).unwrap();
+    assert!(p.wait(Duration::from_secs(5)).unwrap());
+    c.wait().unwrap();
+    // a plain handle has no terminate right
+    let mut d = helper_cmd("sleep").stdout(Stdio::null()).spawn().unwrap();
+    let q = Process::open(d.id()).unwrap();
+    assert_eq!(q.terminate(1), Err(SysError::PermissionDenied));
+    d.kill().unwrap();
+    d.wait().unwrap();
 }

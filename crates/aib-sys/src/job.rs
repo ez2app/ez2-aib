@@ -55,9 +55,9 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, WaitForSingleObject,
     CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, THREAD_SUSPEND_RESUME,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
 };
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
@@ -164,21 +164,31 @@ pub struct Process {
 }
 
 impl Process {
-    /// Open `pid`. A pid with no process is [`SysError::Gone`].
+    /// Open `pid` for identity checks and waiting. A pid with no process is
+    /// [`SysError::Gone`].
     pub fn open(pid: u32) -> Result<Process, SysError> {
+        Self::open_access(pid, PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
+    }
+
+    /// [`Process::open`] plus the right to [`Process::terminate`] it. For
+    /// start-up reconciliation (ADR 0008): open, check
+    /// [`Process::created_100ns`] against the recorded member, then
+    /// terminate through the same handle, so a reused pid is never hit.
+    pub fn open_terminable(pid: u32) -> Result<Process, SysError> {
+        Self::open_access(
+            pid,
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+        )
+    }
+
+    fn open_access(pid: u32, access: u32) -> Result<Process, SysError> {
         if pid == 0 {
             return Err(SysError::BadPid);
         }
         let (h, e) = with_last_error(|| {
             // SAFETY: plain call with a pid and access mask; the returned
             // handle (if any) is taken over below.
-            unsafe {
-                OpenProcess(
-                    PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                    0,
-                    pid,
-                )
-            }
+            unsafe { OpenProcess(access, 0, pid) }
         });
         if h.is_null() {
             return Err(match e {
@@ -227,6 +237,16 @@ impl Process {
             WAIT_TIMEOUT => Ok(false),
             _ => Err(SysError::from_win32(e)),
         }
+    }
+
+    /// `TerminateProcess` through this handle (needs
+    /// [`Process::open_terminable`]; otherwise `PermissionDenied`).
+    pub fn terminate(&self, exit_code: u32) -> Result<(), SysError> {
+        let h = raw(&self.h);
+        check_bool(|| {
+            // SAFETY: `h` is a live process handle owned by `self`.
+            unsafe { TerminateProcess(h, exit_code) }
+        })
     }
 
     fn in_job(&self, job: HANDLE) -> Result<bool, SysError> {
@@ -326,7 +346,19 @@ impl Job {
     /// failure after the process exists, it is terminated and reaped before
     /// `Err` is returned. stdio is whatever `cmd` says (std pipes work).
     pub fn spawn(&self, cmd: &mut Command) -> Result<Child, SysError> {
-        self.spawn_with(cmd, || {})
+        self.spawn_full(cmd, || {}, |_| Ok(()))
+    }
+
+    /// [`Job::spawn`] with `record` called after the assign and **before**
+    /// the child runs, with its identity. ADR 0008: the session member is
+    /// written to disk here; if `record` fails, the child is terminated and
+    /// never ran, so no unrecorded process exists.
+    pub fn spawn_recorded(
+        &self,
+        cmd: &mut Command,
+        record: impl FnOnce(Member) -> Result<(), SysError>,
+    ) -> Result<Child, SysError> {
+        self.spawn_full(cmd, || {}, record)
     }
 
     /// [`Job::spawn`] with `before_assign` run between process creation and
@@ -336,6 +368,15 @@ impl Job {
         &self,
         cmd: &mut Command,
         before_assign: impl FnOnce(),
+    ) -> Result<Child, SysError> {
+        self.spawn_full(cmd, before_assign, |_| Ok(()))
+    }
+
+    fn spawn_full(
+        &self,
+        cmd: &mut Command,
+        before_assign: impl FnOnce(),
+        record: impl FnOnce(Member) -> Result<(), SysError>,
     ) -> Result<Child, SysError> {
         let jh = raw(&self.job);
         spawn_inner(
@@ -348,6 +389,7 @@ impl Job {
                     unsafe { AssignProcessToJobObject(jh, ph) }
                 })
             },
+            record,
             resume_only_thread,
         )
     }
@@ -557,6 +599,7 @@ fn spawn_inner(
     cmd: &mut Command,
     before_assign: impl FnOnce(),
     assign: impl FnOnce(HANDLE) -> Result<(), SysError>,
+    record: impl FnOnce(Member) -> Result<(), SysError>,
     resume: impl FnOnce(u32) -> Result<(), SysError>,
 ) -> Result<Child, SysError> {
     cmd.creation_flags(SPAWN_FLAGS);
@@ -565,7 +608,10 @@ fn spawn_inner(
             .map_or(SysError::Unknown, |c| SysError::from_win32(c as u32))
     })?;
     before_assign();
-    let step = assign(child.as_raw_handle() as HANDLE).and_then(|()| resume(child.id()));
+    let pid = child.id();
+    let step = assign(child.as_raw_handle() as HANDLE)
+        .and_then(|()| record_member(pid, record))
+        .and_then(|()| resume(pid));
     match step {
         Ok(()) => Ok(child),
         Err(e) => {
@@ -575,6 +621,15 @@ fn spawn_inner(
             Err(e)
         }
     }
+}
+
+/// Read the identity of the still-suspended child and hand it to `record`.
+fn record_member(
+    pid: u32,
+    record: impl FnOnce(Member) -> Result<(), SysError>,
+) -> Result<(), SysError> {
+    let created_100ns = Process::open(pid)?.created_100ns()?;
+    record(Member { pid, created_100ns })
 }
 
 /// The one thread a just-created suspended process has.
@@ -686,17 +741,20 @@ mod tests {
             &mut sleeper(),
             || {},
             |_| Ok(()),
+            |_| Ok(()),
             |p| {
-                seen = Some(Process::open(p).expect("child exists while suspended"));
+                seen = Some(Process::open_terminable(p).expect("child exists while suspended"));
                 Err(SysError::Unknown)
             },
         );
         assert_eq!(r.err(), Some(SysError::Unknown));
         let p = seen.expect("resume was called");
-        assert!(
-            p.wait(Duration::from_secs(5)).unwrap(),
-            "child still alive after a failed resume"
-        );
+        let gone = p.wait(Duration::from_secs(5)).unwrap();
+        if !gone {
+            // knife case: clean up our own leftover so the run cannot hang
+            let _ = p.terminate(1);
+        }
+        assert!(gone, "child still alive after a failed resume");
     }
 
     #[test]
@@ -710,9 +768,10 @@ mod tests {
                 // open our own handle to the child before failing
                 // SAFETY: `ph` is the live child handle std created.
                 let pid = unsafe { windows_sys::Win32::System::Threading::GetProcessId(ph) };
-                held = Some(Process::open(pid).expect("child exists"));
+                held = Some(Process::open_terminable(pid).expect("child exists"));
                 Err(SysError::PermissionDenied)
             },
+            |_| Ok(()),
             |_| {
                 resumed = true;
                 Ok(())
@@ -721,9 +780,40 @@ mod tests {
         assert_eq!(r.err(), Some(SysError::PermissionDenied));
         assert!(!resumed, "resume ran after a failed assign");
         let p = held.expect("assign was called");
-        assert!(
-            p.wait(Duration::from_secs(5)).unwrap(),
-            "child survived a failed assign"
+        let gone = p.wait(Duration::from_secs(5)).unwrap();
+        if !gone {
+            let _ = p.terminate(1);
+        }
+        assert!(gone, "child survived a failed assign");
+    }
+
+    #[test]
+    fn a_failed_record_leaves_no_process_and_never_resumes() {
+        let mut held: Option<Process> = None;
+        let mut resumed = false;
+        let r = spawn_inner(
+            &mut sleeper(),
+            || {},
+            |_| Ok(()),
+            |m| {
+                held = Some(Process::open_terminable(m.pid).expect("child exists"));
+                Err(SysError::Os(112)) // e.g. disk full while writing the member
+            },
+            |_| {
+                resumed = true;
+                Ok(())
+            },
         );
+        assert_eq!(r.err(), Some(SysError::Os(112)));
+        assert!(
+            !resumed,
+            "resume ran after the member could not be recorded"
+        );
+        let p = held.expect("record was called");
+        let gone = p.wait(Duration::from_secs(5)).unwrap();
+        if !gone {
+            let _ = p.terminate(1);
+        }
+        assert!(gone, "child survived a failed record");
     }
 }

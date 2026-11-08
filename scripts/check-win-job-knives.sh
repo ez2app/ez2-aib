@@ -24,8 +24,14 @@ if n != 1:
 open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY
   then echo "  FAIL $name: knife did not apply"; fail=$((fail+1)); restore; return; fi
-  out=$(cargo test -q -p aib-sys --locked -- "$filter" 2>&1); rc=$?
-  if [ $rc -ne 0 ] && grep -qF -- "$filter" <<<"$out" && grep -q "FAILED\|panicked" <<<"$out"; then
+  # output to a file, not $(...): on Windows a leftover child can inherit
+  # the pipe and hold it open (CI run 42436895264 hung 39 min here);
+  # timeout is the last guard, and a timeout never counts as red
+  local log; log=$(mktemp)
+  timeout 900 cargo test -q -p aib-sys --locked -- "$filter" >"$log" 2>&1; rc=$?
+  out=$(cat "$log"); rm -f "$log"
+  [ $rc -eq 124 ] && out="TIMEOUT (900 s): $out"
+  if [ $rc -ne 0 ] && [ $rc -ne 124 ] && grep -qF -- "$filter" <<<"$out" && grep -q "FAILED\|panicked" <<<"$out"; then
     echo "  ok   $name (rc $rc, $filter red)"; pass=$((pass+1))
   else
     echo "  FAIL $name survived (rc $rc): $(tail -5 <<<"$out")"; fail=$((fail+1))
@@ -37,7 +43,7 @@ knife no-suspended a_grandchild_whose_parent_exited \
   'pub const SPAWN_FLAGS: u32 = CREATE_NEW_PROCESS_GROUP; const _: u32 = CREATE_SUSPENDED;'
 knife no-terminate a_grandchild_whose_parent_exited \
   'unsafe { TerminateJobObject(jh, exit_code) }' \
-  '{ let _ = (jh, exit_code, TerminateJobObject as usize); 1 }'
+  '{ let _ = (jh, exit_code); let _ = TerminateJobObject; 1 }'
 knife breakaway-ok a_member_cannot_break_away \
   'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;' \
   'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;'
@@ -54,6 +60,11 @@ knife resume-fail-no-kill resume_failure_terminates_the_child \
   '            let _ = &mut child; // knife: left suspended / unmanaged'
 knife no-clear-last-error a_failure_without_last_error_is_unknown \
   '    unsafe { SetLastError(0) };' \
-  '    let _ = SetLastError as usize;'
+  '    let _ = SetLastError;'
+knife record-after-resume the_member_is_recorded_before_the_child_runs \
+  '        .and_then(|()| record_member(pid, record))
+        .and_then(|()| resume(pid));' \
+  '        .and_then(|()| resume(pid))
+        .and_then(|()| record_member(pid, record));'
 echo "win job knives: $pass red as required, $fail survived"
 [ $fail -eq 0 ]
