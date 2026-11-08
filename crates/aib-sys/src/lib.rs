@@ -39,6 +39,8 @@
 pub mod fake;
 #[cfg(windows)]
 pub mod job;
+#[cfg(windows)]
+pub mod job_selfcheck;
 pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;

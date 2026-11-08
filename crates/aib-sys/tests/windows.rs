@@ -554,3 +554,29 @@ fn a_terminable_handle_stops_its_process() {
     d.kill().unwrap();
     d.wait().unwrap();
 }
+
+/// B2: the start-up self-check passes on the real kernel, sees the
+/// grandchild in the Job, and leaves nothing behind.
+#[test]
+fn the_job_selfcheck_passes_on_this_machine() {
+    let p = aib_sys::job_selfcheck::run(Duration::from_secs(10)).unwrap();
+    assert!(
+        p.members >= 2,
+        "child + grandchild expected, saw {}",
+        p.members
+    );
+    assert_eq!(p.wait_mode, WaitMode::CompletionPort);
+}
+
+#[test]
+fn job_selfcheck_tags_are_stable() {
+    use aib_sys::job_selfcheck::Failure;
+    assert_eq!(Failure::NotEmpty.tag(), "not_empty");
+    assert_eq!(Failure::Survivor(7).tag(), "survivor:7");
+    assert_eq!(Failure::TreeNotSeen(1).tag(), "tree_not_seen:1");
+    assert_eq!(
+        Failure::Spawn(SysError::PermissionDenied).tag(),
+        "spawn:permission_denied"
+    );
+    assert_eq!(Failure::Limits(0x2000).tag(), "limits:0x2000");
+}

@@ -93,5 +93,14 @@ knife j0-inheritable the_owner_dying_before_the_assign_still_kills_the_child \
 knife j0-breakaway-ok j0_refuses_breakaway_loudly \
   'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;' \
   'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;'
+# B2 self-check (job_selfcheck.rs); restore() follows $f
+restore; f="crates/aib-sys/src/job_selfcheck.rs"
+knife selfcheck-no-terminate the_job_selfcheck_passes_on_this_machine \
+  '    job.terminate(1).map_err(Failure::Terminate)?;
+    if !job.wait_empty(limit)' \
+  '    if !job.wait_empty(limit)'
+knife selfcheck-no-tree-wait the_job_selfcheck_passes_on_this_machine \
+  '        if m.len() >= 2 {' \
+  '        if true {'
 echo "win job knives: bit $bit / not fallen $nf / undecided $und / survived $sv"
 [ $nf -eq 0 ] && [ $und -eq 0 ] && [ $sv -eq 0 ] && [ $bit -gt 0 ]
