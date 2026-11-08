@@ -346,6 +346,16 @@ impl TreeHandle {
         self.known.insert(pid, start_time);
     }
 
+    /// Test hook: what the fork watcher holds right now, without merging it.
+    #[doc(hidden)]
+    pub fn watched_for_test(&self) -> Vec<u32> {
+        #[cfg(target_os = "macos")]
+        if let Some(w) = &self.watch {
+            return w.snapshot().into_iter().map(|(p, _)| p).collect();
+        }
+        Vec::new()
+    }
+
     pub fn known(&mut self) -> Vec<u32> {
         self.absorb();
         self.known.keys().copied().collect()
@@ -487,7 +497,11 @@ impl TreeHandle {
     }
 
     /// Layer 3: same-user processes that carry this session's marker.
+    /// What the fork watcher has recorded is merged first, so the sweep only
+    /// claims what no other layer found (043dd #510: with readable
+    /// environments it took the watcher's finds as `found_by_marker`).
     pub fn sweep_marker(&mut self) -> std::io::Result<()> {
+        self.absorb();
         let mut sys = new_system()?;
         refresh(&mut sys, true);
         self.sweep_with(&sys);

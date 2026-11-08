@@ -18,6 +18,10 @@
 //!                 update). Apple platform binaries hide their environment,
 //!                 so the marker sweep cannot see it; only the fork watcher
 //!                 can. Unix only.
+//!   tree-plain    as `tree-platform`, but the re-parented process is this
+//!                 fixture (a regular program: its environment, marker
+//!                 included, is readable), and its parent stays 300 ms so the
+//!                 fork watcher records it. Unix only.
 //!
 //! Every process exits by itself after AIB_FIXTURE_TTL seconds (default 60), so
 //! a failing test cannot leave processes behind for long.
@@ -150,15 +154,20 @@ fn main() {
             write_pid("orphan");
             sleep_until_ttl();
         }
-        "tree-platform" => {
+        "tree-platform" | "tree-plain" => {
             ignore(&[signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]);
             let piddir = std::env::temp_dir().join(format!("aib-fixture-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&piddir);
-            spawn_role("platform-parent", false, &piddir);
+            let (role, file) = if mode == "tree-plain" {
+                ("plain-parent", "orphan")
+            } else {
+                ("platform-parent", "platform-orphan")
+            };
+            spawn_role(role, false, &piddir);
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut orphan = None;
             while Instant::now() < deadline && orphan.is_none() {
-                orphan = std::fs::read_to_string(piddir.join("platform-orphan"))
+                orphan = std::fs::read_to_string(piddir.join(file))
                     .ok()
                     .and_then(|s| s.trim().parse::<u32>().ok());
                 std::thread::sleep(Duration::from_millis(20));
@@ -169,6 +178,13 @@ fn main() {
                 "platform_orphan": orphan,
             }}));
             sleep_until_ttl();
+        }
+        "plain-parent" => {
+            if let Ok(d) = std::env::var("AIB_FIXTURE_PIDDIR") {
+                spawn_role("orphan", true, std::path::Path::new(&d));
+            }
+            // stay long enough for the fork watcher to list this child
+            std::thread::sleep(Duration::from_millis(300));
         }
         "platform-parent" => {
             // start /bin/sleep in its own group, record its pid, exit at once
@@ -192,7 +208,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("usage: aib-fixture-tree complete|no-complete|tree|tree-platform");
+            eprintln!("usage: aib-fixture-tree complete|no-complete|tree|tree-stable|tree-platform|tree-plain");
             std::process::exit(2);
         }
     }

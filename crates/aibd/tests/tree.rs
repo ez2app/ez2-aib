@@ -396,6 +396,50 @@ fn fork_watcher_catches_reparented_platform_binary() {
     assert_eq!(still_running(&[main, orphan]), Vec::<u32>::new());
 }
 
+/// 043dd #510: a regular program's environment is readable, so the marker
+/// sweep can see a re-parented process the fork watcher already recorded.
+/// It stays `found_by_watch`: `found_by_marker` means only the marker found it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_watched_process_with_a_readable_marker_stays_found_by_watch() {
+    let mut h = spawn_tree(&spec_lineage("tree-plain", "s-tree-plain")).unwrap();
+    let v = first_line(&mut h);
+    assert_eq!(v["type"], "ready", "{v}");
+    let main = v["pids"]["main"].as_u64().unwrap() as u32;
+    let orphan = v["pids"]["platform_orphan"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("fixture did not report the orphan: {v}"))
+        as u32;
+    // preconditions: re-parented once its parent left, and already recorded
+    // by the watcher (its parent stayed 300 ms for that)
+    let mut ready = false;
+    for _ in 0..100 {
+        if ps_field(orphan, "ppid") == "1" && h.watched_for_test().contains(&orphan) {
+            ready = true;
+            break;
+        }
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        ready,
+        "precondition: ppid {} watched {:?}",
+        ps_field(orphan, "ppid"),
+        h.watched_for_test()
+    );
+    let rep = h.cancel(Duration::from_millis(500)).unwrap();
+    let _ = Command::new("kill")
+        .args(["-9", &main.to_string(), &orphan.to_string()])
+        .status();
+    assert!(rep.found_by_watch.contains(&orphan), "{rep:?}");
+    assert!(
+        !rep.found_by_marker.contains(&orphan),
+        "the marker sweep claimed what the watcher found: {rep:?}"
+    );
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified", "{rep:?}");
+}
+
 /// DECISION-4 A-4: without lineage a cancel that saw no survivor may still
 /// have missed one, so it is `unverified`, never `clean`, and says why.
 #[test]
@@ -495,13 +539,7 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
         PlatformEnv::Readable => {
             assert!(!rep.candidates_unreadable.contains(&pid), "{rep:?}");
             assert!(rep.found_by_marker.is_empty(), "{rep:?}");
-            assert!(
-                matches!(
-                    rep.unverified_reason(),
-                    Some("observed_clean" | "candidates_unreadable")
-                ),
-                "{rep:?}"
-            );
+            assert_eq!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
             assert!(rep.blind_spots().contains(&"env_cleared"), "{rep:?}");
         }
     }
