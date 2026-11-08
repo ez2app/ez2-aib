@@ -7,7 +7,7 @@
 
 use aib_sys::job::{Job, Process, WaitMode, BREAKAWAY_FLAGS, LIMIT_FLAGS};
 use aib_sys::SysError;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 const MODE: &str = "AIB_SYS_HELPER";
 const MARKER: &str = "AIB_SYS_MARKER";
+const OUT: &str = "AIB_SYS_OUT";
 /// `CREATE_BREAKAWAY_FROM_JOB`.
 const BREAKAWAY: u32 = 0x0100_0000;
 
@@ -28,10 +29,18 @@ fn helper_cmd(mode: &str) -> Command {
     c
 }
 
+/// Report one line to the test through the file named by `AIB_SYS_OUT`
+/// (written to a temp name, then renamed, so the reader never sees half a
+/// line). Not stdout: the test harness and inherited pipe handles on
+/// Windows make a pipe unreliable for this (CI run 42435816408).
 fn say(line: &str) {
-    let mut o = std::io::stdout().lock();
-    writeln!(o, "{line}").unwrap();
-    o.flush().unwrap();
+    let out = PathBuf::from(std::env::var(OUT).unwrap());
+    let tmp = out.with_extension("tmp");
+    let mut f = std::fs::File::create(&tmp).unwrap();
+    writeln!(f, "{line}").unwrap();
+    f.sync_all().unwrap();
+    drop(f);
+    std::fs::rename(&tmp, &out).unwrap();
 }
 
 /// The helper entry point. A no-op in a normal test run.
@@ -70,10 +79,9 @@ fn helper() {
         // killed (the crash)
         "owner" => {
             let job = Job::new().unwrap();
-            let mut t = job
-                .spawn(helper_cmd("tree").stdout(Stdio::piped()))
-                .unwrap();
-            let g = read_tagged(&mut t, "GPID ");
+            let (mut cmd, out) = reporting("tree");
+            let mut t = job.spawn(&mut cmd).unwrap();
+            let g = read_tagged(&mut t, &out, "GPID ");
             say(&format!("GPID {g}"));
             std::thread::sleep(Duration::from_secs(120));
             drop(job);
@@ -82,16 +90,36 @@ fn helper() {
     }
 }
 
-/// First stdout line starting with `tag`, rest of the line.
-fn read_tagged(c: &mut Child, tag: &str) -> String {
-    let out = c.stdout.take().unwrap();
-    for line in BufReader::new(out).lines() {
-        let line = line.unwrap();
-        if let Some(rest) = line.strip_prefix(tag) {
-            return rest.trim().to_owned();
+/// A helper command whose report goes to a fresh file; returns both.
+fn reporting(mode: &str) -> (Command, PathBuf) {
+    let out = marker_path();
+    let mut c = helper_cmd(mode);
+    c.stdout(Stdio::null()).env(OUT, &out);
+    (c, out)
+}
+
+/// The helper's report line starting with `tag` (rest of the line), waiting
+/// at most 30 s. Fails early if the helper exited without reporting.
+fn read_tagged(c: &mut Child, out: &Path, tag: &str) -> String {
+    let end = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < end {
+        if let Ok(s) = std::fs::read_to_string(out) {
+            let _ = std::fs::remove_file(out);
+            return s
+                .lines()
+                .find_map(|l| l.strip_prefix(tag))
+                .unwrap_or_else(|| panic!("report without `{tag}`: {s:?}"))
+                .trim()
+                .to_owned();
         }
+        if let Ok(Some(st)) = c.try_wait() {
+            if !out.exists() {
+                panic!("helper exited ({st}) without a `{tag}` report");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("helper ended without a `{tag}` line");
+    panic!("no `{tag}` report within 30 s");
 }
 
 fn marker_path() -> PathBuf {
@@ -138,8 +166,8 @@ fn the_job_kills_on_close_and_allows_no_breakaway() {
 fn a_grandchild_whose_parent_exited_is_still_in_the_job_and_dies() {
     let job = Job::new().unwrap();
     let marker = marker_path();
-    let mut cmd = helper_cmd("tree");
-    cmd.stdout(Stdio::piped()).env(MARKER, &marker);
+    let (mut cmd, out) = reporting("tree");
+    cmd.env(MARKER, &marker);
     let mut ran_early = false;
     let r = job.spawn_with(&mut cmd, || {
         ran_early = wait_for(&marker, Duration::from_secs(3))
@@ -149,7 +177,7 @@ fn a_grandchild_whose_parent_exited_is_still_in_the_job_and_dies() {
         "the child ran before it was assigned (CREATE_SUSPENDED missing?)"
     );
     let mut mid = r.expect("spawn into the job");
-    let gpid: u32 = read_tagged(&mut mid, "GPID ").parse().unwrap();
+    let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
     let g = Process::open(gpid).unwrap();
     assert!(mid.wait().unwrap().success(), "middle layer exits first");
     let _ = std::fs::remove_file(&marker);
@@ -186,8 +214,9 @@ fn a_grandchild_whose_parent_exited_is_still_in_the_job_and_dies() {
 /// DECISION-11 B: the owner dying (aibd crash) ends the whole tree.
 #[test]
 fn the_owner_crashing_kills_the_tree() {
-    let mut owner = helper_cmd("owner").stdout(Stdio::piped()).spawn().unwrap();
-    let gpid: u32 = read_tagged(&mut owner, "GPID ").parse().unwrap();
+    let (mut cmd, out) = reporting("owner");
+    let mut owner = cmd.spawn().unwrap();
+    let gpid: u32 = read_tagged(&mut owner, &out, "GPID ").parse().unwrap();
     let g = Process::open(gpid).unwrap();
     assert!(
         !g.wait(Duration::from_millis(200)).unwrap(),
@@ -204,10 +233,9 @@ fn the_owner_crashing_kills_the_tree() {
 #[test]
 fn dropping_the_job_kills_the_tree() {
     let job = Job::new().unwrap();
-    let mut mid = job
-        .spawn(helper_cmd("tree").stdout(Stdio::piped()))
-        .unwrap();
-    let gpid: u32 = read_tagged(&mut mid, "GPID ").parse().unwrap();
+    let (mut cmd, out) = reporting("tree");
+    let mut mid = job.spawn(&mut cmd).unwrap();
+    let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
     let g = Process::open(gpid).unwrap();
     mid.wait().unwrap();
     drop(job);
@@ -220,10 +248,9 @@ fn dropping_the_job_kills_the_tree() {
 #[test]
 fn a_member_cannot_break_away() {
     let job = Job::new().unwrap();
-    let mut c = job
-        .spawn(helper_cmd("breakaway").stdout(Stdio::piped()))
-        .unwrap();
-    let r = read_tagged(&mut c, "BREAKAWAY ");
+    let (mut cmd, out) = reporting("breakaway");
+    let mut c = job.spawn(&mut cmd).unwrap();
+    let r = read_tagged(&mut c, &out, "BREAKAWAY ");
     assert!(r.starts_with("denied"), "breakaway was allowed: {r}");
     job.terminate(1).unwrap();
     assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
