@@ -325,8 +325,13 @@ class TimeoutCalls(unittest.TestCase):
         self.git("add", "-A")
         self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg)
 
+    def items(self):
+        return prepr.timeout_items(str(self.r), self.base, prepr.changed_files(str(self.r), self.base))
+
     def item(self):
-        return prepr.timeout_item(str(self.r), self.base, prepr.changed_files(str(self.r), self.base))
+        got = self.items()
+        self.assertEqual(len(got), 1, got)
+        return got[0]
 
     def test_a_new_multi_line_call_warns_with_file_and_line(self):
         self.write("new.py", "import subprocess\nx = 1\nsubprocess.run(\n    ['true'],\n    timeout=5)\n")
@@ -419,6 +424,15 @@ class TimeoutCalls(unittest.TestCase):
         self.assertEqual(prepr.timeout_calls("import threading\nthreading.Event().wait(timeout=1)\n"), [])
         self.assertEqual(prepr.timeout_calls("import subprocess\nsubprocess.run(['x'])\n"), [])
 
+    def test_a_hit_and_an_unchecked_file_are_reported_as_two_items(self):
+        self.write("h.py", "import subprocess\nsubprocess.run(['x'], timeout=5)\n")
+        self.write("bad.py", "def (:\n")
+        got = self.items()
+        self.assertEqual([(i["item"], i["status"]) for i in got], [(10, "warn"), (10, "not_run")], got)
+        self.assertIn("h.py:2", got[0]["reason"])
+        self.assertNotIn("bad.py", got[0]["reason"])
+        self.assertIn("bad.py (does not parse)", got[1]["reason"])
+
     def test_an_unclear_call_alone_is_not_run_never_pass(self):
         self.write("u.py", "import subprocess\nkw = {}\nsubprocess.run(['x'], **kw)\n")
         i = self.item()
@@ -434,7 +448,7 @@ class TimeoutCalls(unittest.TestCase):
     def test_a_failing_git_diff_is_not_run_never_pass(self):
         self.write("new.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")
         self.commit("add")
-        i = prepr.timeout_item(str(self.r), "no-such-ref", ["new.py"])
+        i, = prepr.timeout_items(str(self.r), "no-such-ref", ["new.py"])
         self.assertEqual(i["status"], "not_run", i)
         self.assertIn("new.py (git diff failed)", i["reason"])
 
@@ -442,7 +456,7 @@ class TimeoutCalls(unittest.TestCase):
         self.write("aib/src/cockpit/proc_group.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")
         i = self.item()   # the shared tool itself is the one place that may call subprocess with a timeout
         self.assertEqual((i["status"], i["reason"]), ("not_run", "not applicable: no Python change"), i)
-        self.assertEqual(prepr.timeout_item(str(self.r), self.base, ["a.md"])["status"], "not_run")
+        self.assertEqual([i["status"] for i in prepr.timeout_items(str(self.r), self.base, ["a.md"])], ["not_run"])
 
     def test_warn_is_not_a_failure_of_the_whole_run(self):
         self.write("new.py", "import subprocess\nsubprocess.run(['true'], timeout=5)\n")

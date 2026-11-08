@@ -450,11 +450,11 @@ def exemptions(text):
     return got
 
 
-def timeout_item(repo, base, files, runner=run):
+def timeout_items(repo, base, files, runner=run):
     name = "timeout without proc_group"
     py = [f for f in files if f.endswith(".py") and f not in TIMEOUT_SKIP]
     if not py:
-        return item(10, name, "not_run", "not applicable: no Python change")
+        return [item(10, name, "not_run", "not applicable: no Python change")]
     hits, unknown = [], []
     for f in py:
         path = os.path.join(repo, f)
@@ -489,17 +489,19 @@ def timeout_item(repo, base, files, runner=run):
             if why:
                 where += " (marked `# %s` without a reason)" % TIMEOUT_EXEMPT
             (hits if kind == "hit" else unknown).append(where)
-    if not hits and not unknown:
-        return item(10, name, "pass", "no new timeout call outside proc_group in %d Python file(s)" % len(py))
-    reason = []
+    # a63ab #518: a hit and a "could not check" are two separate items, so that turning the hits into a failure
+    # later never hides files that were not checked (and an unchecked file never reads as a pass)
+    out = []
     if hits:
-        reason.append("%d new call(s) with their own timeout: a timeout there kills only the direct child, "
-                      "not what it started. Use proc_group.run_group, or mark the call `# %s <why>`: %s"
-                      % (len(hits), TIMEOUT_EXEMPT, "; ".join(hits)))
+        out.append(item(10, name, TIMEOUT_CALLS_STATUS,
+                        "%d new call(s) with their own timeout: a timeout there kills only the direct child, not "
+                        "what it started. Use proc_group.run_group, or mark the call `# %s <why>`: %s"
+                        % (len(hits), TIMEOUT_EXEMPT, "; ".join(hits))))
     if unknown:
-        reason.append("could not check: %s" % "; ".join(unknown))
-    status = TIMEOUT_CALLS_STATUS if hits else "not_run"
-    return item(10, name, status, " | ".join(reason))
+        out.append(item(10, name + ": could not check", "not_run", "could not check: %s" % "; ".join(unknown)))
+    if not out:
+        out.append(item(10, name, "pass", "no new timeout call outside proc_group in %d Python file(s)" % len(py)))
+    return out
 
 
 def collect(repo, base, run_tests, aib, runner=run):
@@ -520,7 +522,7 @@ def collect(repo, base, run_tests, aib, runner=run):
         items.append(item(2, "docs", "not_run", "not applicable: docs only; run the doc's own check"))
     else:
         items.append(item(2, "aib test --changed", "not_run", "not applicable: no change outside Rust"))
-    items.append(timeout_item(repo, base, files, runner))
+    items += timeout_items(repo, base, files, runner)
     for n, what in MANUAL:
         items.append(item(n, "manual", "not_run", "by hand: " + what))
     return files, items
