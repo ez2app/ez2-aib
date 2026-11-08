@@ -2483,16 +2483,16 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             else:
                 rec.pop("stalled_at", None)
             TR.write(path, rec)
-    if not tidy_on and auto_on and why in ("rewake", "triage-stalled"):
-        # 叫過、ACK 窗過了、本席沒動作 ⇒ 不再只是再叫,起背景整理(只擬不結);回合中 ⇒ 延後(SPEC v2 §2.1)
-        if in_turn:
-            r2 = dict(rec)
-            r2["headless"] = {"state": "deferred", "why": "seat-busy", "at": now, "next_at": now + 60}
-            TR.write(path, r2)
-            auto = "headless-deferred:seat-busy"
-        else:
-            auto = _triage_headless_auto(seat, rec, path, env, now)
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned}
+    if not tidy_on and auto_on and (why in ("rewake", "triage-stalled") or (in_turn and (normal or why == "waiting-pickup"))):
+        # 叫過、ACK 窗過了、本席沒動作 ⇒ 不再只是再叫,起背景整理(只擬不結)。
+        # 流程優化 7b(Andy 11-09 06:0x「dm 能在 >=2 封時，立刻必定由子 ai 先處理…而不用等」):
+        #   本席在回合中(UserPromptSubmit 比 Stop 晚)⇒ 貼進輸入框它要等回合結束才看得到，所以不再延後(舊:seat-busy)、
+        #   也不先叫醒等 ACK(叫過還在等它接 = waiting-pickup 也一樣:05:33 那批就卡在這)—— 門檻到了(待審 ≥2 /
+        #   進行中 ≥2)就當下起背景整理。上限照舊(長工作 / 每日 / 每小時 /
+        #   全機名額 / 負載 / 記憶體 / 同一批只一次),背景整理只擬不結、跳過本席 15 分內讀過的(SEAT_READ_SKIP_S)。
+        auto = _triage_headless_auto(seat, rec, path, env, now)
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned,
+                **({"in_turn": True} if in_turn else {})}
     if not normal:
         if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
             rec = dict(rec)
@@ -2518,8 +2518,13 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if busy:
+        if not tidy_on and auto_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
+            # 7b:畫面在動(沒有回合邊界紀錄的引擎，例如 Codex)也不等忙滿 30 分 —— 當下起背景整理，上限同上
+            auto = _triage_headless_auto(seat, rec, path, env, now)
+            return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "busy": why or "busy"}
         if not tidy_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
             # 審查 M5:死窗 / 問不到窗 / 登記表對不上 ≠ 在忙,不替關掉的席起背景整理
+            # triage_auto=off:0.1.62 舊行為(忙滿 HEADLESS_AFTER_S 才起)
             started = _triage_headless_maybe(seat, rec, path, env, now, probe)
             if started:
                 return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "headless-started"}
