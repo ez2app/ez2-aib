@@ -259,6 +259,16 @@ class FailedNames(unittest.TestCase):
         self.assertEqual(knife.failed_names(out), ["job::tests::the_owner_crashing_kills_the_tree", "test_add",
                                                    "test_sub", "test_y"])
 
+    def test_cargo_quiet_failures_list(self):
+        # `cargo test -q`: dots, the stdout blocks, then the indented list; no "test x ... FAILED" line
+        out = ("running 3 tests\n.F.\nfailures:\n\n---- job::tests::kills_the_tree stdout ----\n"
+               "thread 'job::tests::kills_the_tree' panicked at src/job.rs:9:5\n\n\n"
+               "failures:\n    job::tests::kills_the_tree\n\ntest result: FAILED. 2 passed; 1 failed\n")
+        self.assertEqual(knife.failed_names(out), ["job::tests::kills_the_tree"])
+        self.assertEqual(knife.judge(101, out, "kills_the_tree")[0], "BIT")
+        self.assertEqual(knife.judge(101, out.replace("\n", "\r\n"), "kills_the_tree")[0], "BIT")
+        self.assertEqual(knife.judge(101, out, "kills")[0], "SURVIVED")
+
     def test_build_failure_patterns(self):
         for s in ("error: could not compile `aib-sys`", "error[E0425]: cannot find value", "LINK : fatal error LNK1104",
                   "SyntaxError: invalid syntax"):

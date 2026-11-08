@@ -54,6 +54,10 @@ BUILD_FAILED = re.compile(r"could not compile|^error\[E\d+\]|error: linking|LNK\
 FAILED_NAMES = (re.compile(r"^test (\S+) \.\.\. FAILED", re.M),
                 re.compile(r"^(?:FAIL|ERROR): (\S+) \(", re.M),
                 re.compile(r"^FAILED \S*?::(\S+)", re.M))
+# libtest's closing list, printed with and without -q (`cargo test -q` prints no "test x ... FAILED" lines):
+#   failures:
+#       job::tests::the_owner_crashing_kills_the_tree
+LIBTEST_FAILURES = re.compile(r"^failures:\r?\n((?:    \S+\r?\n?)+)", re.M)
 POSIX = os.name == "posix"
 
 
@@ -61,6 +65,8 @@ def failed_names(out):
     got = set()
     for rx in FAILED_NAMES:
         got.update(m.group(1) for m in rx.finditer(out))
+    for m in LIBTEST_FAILURES.finditer(out):
+        got.update(line.strip() for line in m.group(1).splitlines() if line.strip())
     return sorted(got)
 
 
