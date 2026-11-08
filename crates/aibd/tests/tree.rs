@@ -276,7 +276,15 @@ fn fork_watcher_catches_reparented_platform_binary() {
     );
     assert!(rep.forks_seen >= 1, "{rep:?}");
     assert!(rep.tree_clean(), "{rep:?}");
-    assert_eq!(rep.clean_status(), "clean", "{rep:?}");
+    // DECISION-23: no proven containment on macOS, so never `clean`
+    assert_eq!(rep.clean_status(), "unverified", "{rep:?}");
+    assert!(
+        matches!(
+            rep.unverified_reason(),
+            Some("observed_clean" | "candidates_unreadable")
+        ),
+        "{rep:?}"
+    );
     assert_eq!(still_running(&[main, orphan]), Vec::<u32>::new());
 }
 
@@ -290,10 +298,10 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
     assert!(rep.tree_clean(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
-    assert_eq!(
-        rep.blind_spots(),
-        vec!["reparented_after_intermediate_exit"]
-    );
+    assert_eq!(rep.unverified_reason(), Some("lineage_unavailable"));
+    let spots = rep.blind_spots();
+    assert_eq!(spots[0], "reparented_after_intermediate_exit", "{spots:?}");
+    assert!(spots.contains(&"exec_after_creator_exit"), "{spots:?}");
 }
 
 /// DECISION-23: with lineage on and nothing left, macOS still does not say
