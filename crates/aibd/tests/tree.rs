@@ -307,3 +307,44 @@ fn with_lineage_a_clean_cancel_is_clean() {
     assert_eq!(rep.clean_status(), "clean", "{rep:?}");
     assert!(rep.blind_spots().is_empty());
 }
+
+/// A process older than the recorded process it claims as parent is a reused
+/// parent pid, not a child: the scan must not adopt it. Only `scan()` and
+/// `known()` are called, so nothing is ever signalled.
+#[test]
+fn a_process_older_than_its_recorded_parent_is_not_adopted() {
+    let mut bystander = Command::new("sleep").arg("30").spawn().unwrap();
+    let bpid = bystander.id();
+    let mut h = spawn_tree(&spec_watch("complete", "s-parent-age", false)).unwrap();
+    let _ = lines(&mut h);
+    h.wait_root(Duration::from_secs(10)).unwrap();
+    // Record this test process as if it had started far in the future: its
+    // real child `bystander` is then older than that "parent".
+    h.record_for_test(std::process::id(), u64::MAX / 2);
+    h.scan().unwrap();
+    let known = h.known();
+    bystander.kill().unwrap();
+    bystander.wait().unwrap();
+    assert!(!known.contains(&bpid), "adopted {bpid}: {known:?}");
+}
+
+/// A lineage pass that cannot list the processes is incomplete, so a cancel
+/// that looks clean must still say `unverified`, not `clean`.
+#[test]
+fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
+    use aib_sys::fake::{Call, FakeProcessInfo};
+    use aib_sys::SysError;
+    let f = FakeProcessInfo::new();
+    f.fail(Call::AllPids, 0, SysError::Incomplete);
+    let l = Arc::new(Lineage::from_selfcheck(Arc::new(f), Ok(())));
+    let mut h = spawn_tree(&SpawnSpec {
+        lineage: Some(l),
+        ..spec("tree", "s-tree-incomplete")
+    })
+    .unwrap();
+    let _ = ready_pids(&first_line(&mut h));
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.lineage_unavailable, "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+}
