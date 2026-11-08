@@ -57,6 +57,11 @@ def run(cmd, cwd, env=None, timeout=3600):
         return None, "timed out after %ss (its process group: %s)\n%s" % (timeout, stop, r.out)
     if r.rc is None:
         return None, "not found: %s (%s)" % (cmd[0], r.error)
+    if r.stop is not None and r.stop.status != "stopped":
+        # bb7dc #509: the command finished, but what it left running could not be shown stopped. Never green:
+        # not_run with the reason and the survivors (the exit code is kept in the text, not as a pass).
+        return None, "finished with rc %s, but its leftovers are unverified (%s, still running: %s)\n%s" % (
+            r.rc, r.stop.why, r.stop.survivors or "unknown", r.out)
     return r.rc, r.out
 
 

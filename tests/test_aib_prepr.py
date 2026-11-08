@@ -127,6 +127,25 @@ class Units(unittest.TestCase):
         f = Fake({("aib",): (None, "not found: aib")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "not_run")
 
+    def test_a_finished_command_with_unverified_leftovers_is_not_run_never_green(self):
+        # bb7dc #509: rc 0 + leftovers that could not be shown stopped must not read as a pass
+        import proc_group
+        real = proc_group.run_group
+        rep = proc_group.StopReport("unverified", "members_still_running", [4242])
+        proc_group.run_group = lambda *a, **k: proc_group.Result(0, "all good\n", stop=rep)
+        try:
+            rc, out = prepr.run(["cargo", "test"], ".")
+        finally:
+            proc_group.run_group = real
+        self.assertIsNone(rc)
+        self.assertIn("unverified", out)
+        self.assertIn("4242", out)
+        self.assertIn("rc 0", out)
+        f = Fake(rust_ok({("cargo", "fmt"): (rc, out)}))
+        fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
+        self.assertEqual(fmt["status"], "not_run")
+        self.assertIn("4242", fmt["reason"])
+
     @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX")
     def test_a_timeout_stops_the_whole_tree_not_just_the_child(self):
         td = Path(tempfile.mkdtemp(prefix="aib-prepr-tree-"))
