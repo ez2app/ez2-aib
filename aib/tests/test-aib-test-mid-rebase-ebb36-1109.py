@@ -5,12 +5,12 @@
 半套的樹跑出來的綠 / 紅不代表任何一個提交,還會寫進沿用紀錄;以前照跑。全部治具在暫存目錄、用真的 git 造狀態,
 不碰真租約、真池(EZ2_AIB_STATE_ROOT / HOME 都指到暫存)。
 
-M1 mid_git_op:真的 rebase / merge / cherry-pick / revert 衝突各認得出操作名;乾淨的樹 ⇒ None
+M1 mid_git_op:真的 rebase / am / merge / cherry-pick / revert 衝突各認得出操作名(am 不能報成 rebase,#542 L2);乾淨的樹 ⇒ None
 M2 只剩沒解完的衝突(git stash pop 衝突,沒有 MERGE_HEAD)⇒ "conflict"
 M3 工作樹(.git 是檔案)和倉裡的子目錄(aib/ 這種子專案)一樣認得出(路徑用 git rev-parse --git-path 解)
 M4 量不到不擋:不是 git 倉、git 叫不起來 ⇒ None;bisect 半路不算(git bisect run aib test 是正當用法)
 M5 main:半路 ⇒ rc 6、印下一步、不排隊不跑;--allow-mid-rebase ⇒ 照跑;--dry 不擋(只列不跑)
-M6 字:四語兩個鍵都在、帶 {what} / {path} 並教 --allow-mid-rebase;usage 列出這個旗標
+M6 字:四語兩個鍵都在、帶 {what} / {path} 並教 --allow-mid-rebase;usage 列出這個旗標;--help 寫明放過所有操作(#542 L3)
 
 刀:tests/knives/test-mid-rebase.json(本檔 --knives 逐把換上重跑,每把都要讓本檔紅,印 N/M)。
 """
@@ -100,6 +100,15 @@ class M1Ops(_Base):
         self.git("checkout", "-q", "side")
         self.git("rebase", "--apply", "main", check=False)
         self.assertEqual(self.te.mid_git_op(self.repo)[0], "rebase")
+
+    def test_m1_am_conflict_is_am_not_rebase(self):
+        # git am 也用 rebase-apply/ 資料夾;衝突時提示要叫 git am --continue,不是 git rebase --continue
+        self.two_branches()
+        patch = self.git("format-patch", "-1", "--stdout", "side").stdout
+        (Path(self.tmp) / "p.patch").write_text(patch, encoding="utf-8")
+        self.assertNotEqual(self.git("am", str(Path(self.tmp) / "p.patch"), check=False).returncode, 0, "治具:am 要停住")
+        self.assertTrue((self.repo / ".git" / "rebase-apply" / "applying").exists(), "治具:am 半路")
+        self.assertEqual(self.te.mid_git_op(self.repo)[0], "am")
 
     def test_m1_merge_conflict(self):
         self.two_branches()
@@ -241,6 +250,19 @@ class M6Words(unittest.TestCase):
                 self.assertIn("{path}", msg, (lang, key))
             self.assertIn("{what}", d["aib.test.mid_git_op"], lang)
             self.assertIn("--allow-mid-rebase", d["aib.test.usage"], lang)
+            h = d["aib.test.help_allow_mid_rebase"]
+            for op in ("rebase", "am", "merge", "cherry-pick", "revert"):
+                self.assertIn(op, h, (lang, op))
+
+    def test_m6_help_shows_the_scope(self):
+        sys.path.insert(0, str(ROOT / "tools" / "verify"))
+        import test_entry
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            test_entry.main(["--help"])
+        text = " ".join(out.getvalue().split())
+        self.assertIn("--allow-mid-rebase", text)
+        self.assertIn(" ".join(test_entry.T("help_allow_mid_rebase").split()), text)
 
 
 def run_knives():

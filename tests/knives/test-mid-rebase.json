@@ -58,6 +58,20 @@
       "file": "aib/tools/verify/test_entry.py",
       "old": "    for (_, op), rel in zip(_GIT_OP_MARKERS, paths):\n        p = ",
       "new": "    for (_, op), rel in zip(_GIT_OP_MARKERS, paths):\n        rel = \".\"\n        p = "
+    },
+    {
+      "name": "am-as-rebase",
+      "proves": "git am is told apart from rebase (prompt says git am --continue; #542 L2)",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "(\"rebase-apply/applying\", \"am\"), ",
+      "new": ""
+    },
+    {
+      "name": "help-silent",
+      "proves": "--help says the flag lets every git operation / conflict through (#542 L3)",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "                    help=T(\"help_allow_mid_rebase\"))",
+      "new": "                    )"
     }
   ]
 }

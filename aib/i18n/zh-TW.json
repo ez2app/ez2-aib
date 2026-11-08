@@ -1150,6 +1150,7 @@
   "aib.test.lease_exclusive_blocked": "沒跑:機器正被 {name} 獨佔量耗時({what}),預計用到 {at}。並跑會弄髒它的數字。要排隊等它就加 --wait(會登記排隊名單,輪到就跑);或等它放掉再跑。",
   "aib.test.mid_git_op": "沒跑:這棵樹在 git {what} 半路({path})。半套的樹跑出來的綠 / 紅不代表任何一個提交，還會寫進沿用紀錄。先 git {what} --continue(或 --abort)收掉再跑;真的要在半路跑(例如 git rebase --exec)就加 --allow-mid-rebase。",
   "aib.test.mid_git_conflict": "沒跑:這棵樹還有沒解完的合併衝突(git ls-files --unmerged 不是空的,{path})。半套的樹跑出來的綠 / 紅不算數。先解完衝突、git add 再跑;真的要照跑就加 --allow-mid-rebase。",
+  "aib.test.help_allow_mid_rebase": "樹在任何 git 操作半路(rebase / am / merge / cherry-pick / revert)或有沒解完的衝突也照跑(例如 git rebase --exec 裡);不加時這些情況回 rc 6、不跑。",
   "aib.test.lease_queue_done": "排到了:等了 {waited} 秒,拿到機器租約",
   "aib.test.lease_queue_unavailable": "讀不到機器租約(rc={rc}),這批不排隊照跑,可能跟別席同時跑",
   "aib.test.lease_queue_note": "這批排隊等機器 {waited} 秒",

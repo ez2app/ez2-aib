@@ -1150,6 +1150,7 @@
   "aib.test.lease_exclusive_blocked": "未実行:マシンは {name} が時間計測のため独占中({what})、{at} まで使用予定。並行すると計測が乱れます。並ぶなら --wait を付けてください(順番待ちに登録し、番が来たら実行)。または解放後に再実行。",
   "aib.test.mid_git_op": "実行しませんでした:このツリーは git {what} の途中です({path})。途中のツリーでの緑 / 赤はどのコミットの証明にもならず、再利用記録にも残ります。先に git {what} --continue(または --abort)で終わらせてください。途中で実行したい場合(git rebase --exec など)は --allow-mid-rebase を付けてください。",
   "aib.test.mid_git_conflict": "実行しませんでした:このツリーには未解決のマージ競合があります(git ls-files --unmerged が空ではありません、{path})。途中のツリーの結果は数えません。競合を解決して git add してから実行してください。それでも実行する場合は --allow-mid-rebase を付けてください。",
+  "aib.test.help_allow_mid_rebase": "ツリーが git 操作(rebase / am / merge / cherry-pick / revert)の途中、または未解決の競合があっても実行します(git rebase --exec の中など)。付けない場合は rc 6 を返し、実行しません。",
   "aib.test.lease_queue_done": "順番が来ました:{waited} 秒待ってマシンリースを取得",
   "aib.test.lease_queue_unavailable": "マシンリースを読めません(rc={rc})。順番待ちせず実行、他の席と重なる可能性あり",
   "aib.test.lease_queue_note": "このバッチはマシン待ちで {waited} 秒並びました",

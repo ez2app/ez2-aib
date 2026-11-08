@@ -1150,6 +1150,7 @@
   "aib.test.lease_exclusive_blocked": "실행 안 함: 머신을 {name}이(가) 시간 측정용으로 독점 중({what}), {at}까지 사용 예정. 동시에 돌리면 측정이 흐트러집니다. 줄을 서려면 --wait를 붙이세요(대기열에 등록, 차례가 오면 실행). 또는 해제 후 다시 실행.",
   "aib.test.mid_git_op": "실행하지 않음: 이 트리는 git {what} 진행 중입니다({path}). 반쯤 적용된 트리의 초록 / 빨강은 어떤 커밋도 증명하지 않으며 재사용 기록에도 남습니다. 먼저 git {what} --continue(또는 --abort)로 끝내세요. 중간에 꼭 실행해야 하면(예: git rebase --exec) --allow-mid-rebase 를 붙이세요.",
   "aib.test.mid_git_conflict": "실행하지 않음: 이 트리에 해결되지 않은 병합 충돌이 있습니다(git ls-files --unmerged 가 비어 있지 않음, {path}). 반쯤 병합된 트리의 결과는 인정되지 않습니다. 충돌을 해결하고 git add 한 뒤 실행하세요. 그래도 실행하려면 --allow-mid-rebase 를 붙이세요.",
+  "aib.test.help_allow_mid_rebase": "트리가 git 작업(rebase / am / merge / cherry-pick / revert) 진행 중이거나 해결되지 않은 충돌이 있어도 실행합니다(예: git rebase --exec 안). 없으면 rc 6 을 반환하고 실행하지 않습니다.",
   "aib.test.lease_queue_done": "차례가 됨: {waited}초 대기 후 머신 임대 획득",
   "aib.test.lease_queue_unavailable": "머신 임대를 읽을 수 없음(rc={rc}). 대기 없이 실행, 다른 자리와 겹칠 수 있음",
   "aib.test.lease_queue_note": "이 배치는 머신을 {waited}초 기다렸음",

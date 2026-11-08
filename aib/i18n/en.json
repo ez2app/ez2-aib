@@ -1150,6 +1150,7 @@
   "aib.test.lease_exclusive_blocked": "Not run: the machine is held exclusively by {name} for timing ({what}), expected until {at}. Running alongside would spoil its numbers. Add --wait to queue (you join the queue and run when it is your turn), or rerun after it releases.",
   "aib.test.mid_git_op": "Not run: this tree is in the middle of a git {what} ({path}). Green or red on a half-applied tree proves no commit and would be recorded for reuse. Finish it with git {what} --continue (or --abort) first; to run anyway (e.g. inside git rebase --exec) add --allow-mid-rebase.",
   "aib.test.mid_git_conflict": "Not run: this tree has unresolved merge conflicts (git ls-files --unmerged is not empty, {path}). Results on a half-merged tree do not count. Resolve the conflicts and git add them first; to run anyway add --allow-mid-rebase.",
+  "aib.test.help_allow_mid_rebase": "Run even when the tree is in the middle of any git operation (rebase / am / merge / cherry-pick / revert) or has unresolved conflicts (e.g. inside git rebase --exec); without it those cases return rc 6 and nothing runs.",
   "aib.test.lease_queue_done": "Our turn: got the machine lease after waiting {waited} s",
   "aib.test.lease_queue_unavailable": "Could not read the machine lease (rc={rc}); this batch runs without queuing and may overlap other seats",
   "aib.test.lease_queue_note": "This batch queued {waited} s for the machine",

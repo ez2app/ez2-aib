@@ -1365,14 +1365,15 @@ RC_EXCLUSIVE = 5    # 沒跑:別人在獨佔量耗時(rc 4 已經是「全部跳
 RC_MID_GIT_OP = 6   # 沒跑:樹在 rebase / merge / cherry-pick / revert 半路或有沒解完的衝突(b117)
 
 # (git-path 名稱, 操作)。用 `git rev-parse --git-path` 解路徑:工作樹各有自己的 rebase-merge / MERGE_HEAD。
+# rebase-apply 也是 git am 的資料夾;裡面有 applying 檔 = am(提示要叫 git am --continue,#542 L2)。
 # bisect 不算:`git bisect run aib test …` 本來就是在 bisect 半路跑測試。
-_GIT_OP_MARKERS = (("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HEAD", "merge"),
+_GIT_OP_MARKERS = (("rebase-merge", "rebase"), ("rebase-apply/applying", "am"), ("rebase-apply", "rebase"), ("MERGE_HEAD", "merge"),
                    ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("sequencer", "cherry-pick"))
 
 
 def mid_git_op(repo):
     """樹在 git 操作半路 ⇒ (操作, 證據路徑或 None);沒有 ⇒ None。
-    操作 = rebase / merge / cherry-pick / revert;只剩沒解完的衝突(stash pop、checkout -m 之後)⇒ "conflict"。
+    操作 = rebase / am / merge / cherry-pick / revert;只剩沒解完的衝突(stash pop、checkout -m 之後)⇒ "conflict"。
     量不到(不是 git 倉、git 叫不起來)⇒ None:照跑,不因為量不到就擋人(b117)。"""
     names = [n for n, _ in _GIT_OP_MARKERS]
     args = []
@@ -1923,7 +1924,8 @@ def main(argv=None):
     ap.add_argument("--changed", action="store_true")    # 10-13(取代 aib deliver):依改動挑測試,挑法同推包 select_changed
     ap.add_argument("--base", default="")                # --changed 的比較基準(預設 HEAD 與遠端 main 的分岔點)
     ap.add_argument("--dry", action="store_true")        # 只列出要跑哪些、幾支、估計幾秒,不跑
-    ap.add_argument("--allow-mid-rebase", action="store_true")   # b117:樹在 rebase / 合併半路也照跑(git rebase --exec 用)
+    ap.add_argument("--allow-mid-rebase", action="store_true",   # b117:樹在 git 操作半路也照跑(git rebase --exec 用)
+                    help=T("help_allow_mid_rebase"))   # #542 L3:名字只寫 rebase,說明寫明放過所有操作與衝突
     a = ap.parse_args(argv)
     if a.estimate:
         return _estimate(a.repo or os.getcwd(), a.json)
