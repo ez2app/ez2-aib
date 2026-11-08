@@ -18,6 +18,7 @@ R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰�
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 / 下載失敗但留著上次的舊檔 ⇒ 沒裝、沒執行
    (bb7dc 11-08 High:舊稿分行寫,sha 失敗仍 chmod / mv / 執行)
+D4 三份 macOS 區塊沒有 `#` 註解:macOS Terminal 是互動式 zsh,interactivecomments 預設關 ⇒ `V=… # 註解` 會把 V 變空(11-08 1ced7 實測)
 D3 Windows 指令順序:ErrorActionPreference Stop 在最前;找不到行 ⇒ 刪檔停;比對過才 Unblock-File / 執行
 """
 import hashlib
@@ -264,6 +265,15 @@ class InstallRuns(unittest.TestCase):
         self.assertFalse(inst, log)
         self.assertEqual(ran, [], log)
 
+
+
+class InstallZshPaste(unittest.TestCase):
+    def test_d4_no_comments_in_sh_blocks(self):
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+            with self.subTest(f=f):
+                for n, ln in enumerate(block(f, "sh").splitlines(), 1):
+                    code = re.sub(r'"[^"]*"', '""', ln)       # 引號裡的 # 不算(例:網址片段)
+                    self.assertNotIn("#", code, "%s 第 %d 行有 # 註解:互動式 zsh 貼上會壞(V 變空)" % (f, n))
 
 class InstallWindowsOrder(unittest.TestCase):
     def test_d3(self):
