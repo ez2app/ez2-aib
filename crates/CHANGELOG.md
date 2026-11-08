@@ -3,7 +3,12 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## 0.2.0-preview.1 — unreleased
+## 0.2.0-preview.2 — unreleased
+
+- `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
+  (macOS process group, Windows Job). Details and limits: the preview.2 release notes.
+
+## 0.2.0-preview.1 — 2026-11-09
 
 Preview build, not signed, does not replace the Python `aib`.
 
