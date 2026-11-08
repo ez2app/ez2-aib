@@ -127,6 +127,46 @@ class Units(unittest.TestCase):
         f = Fake({("aib",): (None, "not found: aib")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "not_run")
 
+    def test_a_finished_command_with_unverified_leftovers_is_not_run_never_green(self):
+        # bb7dc #509: rc 0 + leftovers that could not be shown stopped must not read as a pass
+        import proc_group
+        real = proc_group.run_group
+        rep = proc_group.StopReport("unverified", "members_still_running", [4242])
+        proc_group.run_group = lambda *a, **k: proc_group.Result(0, "all good\n", stop=rep)
+        try:
+            rc, out = prepr.run(["cargo", "test"], ".")
+        finally:
+            proc_group.run_group = real
+        self.assertIsNone(rc)
+        self.assertIn("unverified", out)
+        self.assertIn("4242", out)
+        self.assertIn("rc 0", out)
+        # red first: a real failure stays a failure, with the leftover reason in the kept tail
+        proc_group.run_group = lambda *a, **k: proc_group.Result(7, "x" * 5000 + "boom\n", stop=rep)
+        try:
+            rc7, out7 = prepr.run(["cargo", "test"], ".")
+        finally:
+            proc_group.run_group = real
+        self.assertEqual(rc7, 7)
+        f = Fake(rust_ok({("cargo", "fmt"): (rc7, out7)}))
+        fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
+        self.assertEqual((fmt["status"], fmt["rc"]), ("fail", 7))
+        self.assertIn("4242", fmt["tail"])
+        self.assertIn("members_still_running", fmt["tail"])
+        proc_group.run_group = lambda *a, **k: proc_group.Result(
+            None, "", timed_out=True, stop=proc_group.StopReport("unverified", "members_still_running", [4343]))
+        try:
+            rc2, out2 = prepr.run(["cargo", "test"], ".", timeout=7)
+        finally:
+            proc_group.run_group = real
+        self.assertIsNone(rc2)
+        self.assertIn("members_still_running", out2)
+        self.assertIn("4343", out2)
+        f = Fake(rust_ok({("cargo", "fmt"): (rc, out)}))
+        fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
+        self.assertEqual(fmt["status"], "not_run")
+        self.assertIn("4242", fmt["reason"])
+
     @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX")
     def test_a_timeout_stops_the_whole_tree_not_just_the_child(self):
         td = Path(tempfile.mkdtemp(prefix="aib-prepr-tree-"))
@@ -163,30 +203,33 @@ class Units(unittest.TestCase):
                     pass
             shutil.rmtree(td, ignore_errors=True)
 
-    @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX")
-    def test_a_group_left_with_only_zombies_counts_as_stopped(self):
-        # macOS answers EPERM (not ESRCH) to killpg once only zombies are left in the group.
-        class P:
-            pid = 999999
+    def test_aib_test_gets_the_long_outer_timeout_not_3600(self):
+        # #494 L7: aib test stops a hung test itself; the outer limit is only a backstop
+        seen = {}
 
-            def poll(self):
-                return None
+        def runner(cmd, cwd, env=None, timeout=0):
+            seen["timeout"] = timeout
+            return 0, "ok"
 
-        calls = []
+        prepr.python_item("/r", "origin/main", True, ["aib"], runner)
+        self.assertEqual(seen["timeout"], prepr.AIB_TEST_OUTER_TIMEOUT_S)
+        self.assertGreater(prepr.AIB_TEST_OUTER_TIMEOUT_S, 3685)
 
-        def fake_killpg(pid, sig):
-            calls.append(sig)
-            if sig == 0:
-                raise PermissionError(1, "Operation not permitted")
-
-        real = prepr.os.killpg
-        prepr.os.killpg = fake_killpg
+    def test_glob_patterns_prepr_cannot_read_make_every_file_rust(self):
+        # #494 L9: wrong in the safe direction only
+        self.assertTrue(prepr.glob_re("**/README.md").match("README.md"))
+        self.assertTrue(prepr.glob_re("**/README.md").match("a/b/README.md"))
+        td = tempfile.mkdtemp(prefix="aib-prepr-odd-")
         try:
-            prepr.stop_group(P(), grace=0.2)
+            wf = Path(td) / ".github" / "workflows"
+            wf.mkdir(parents=True)
+            for odd in ("crates/[ab]*/**", "x?.toml", "a+b", "c\\d"):
+                (wf / "aibd.yml").write_text("on:\n  pull_request:\n    paths:\n      - 'crates/**'\n      - '%s'\n" % odd)
+                patterns, source = prepr.rust_paths(td)
+                self.assertIn("cannot read", source, odd)
+                self.assertTrue(prepr.kinds(["aib/x.py"], patterns)["rust"], odd)
         finally:
-            prepr.os.killpg = real
-        self.assertEqual(calls[:2], [prepr.signal.SIGTERM, 0])
-        self.assertNotIn(prepr.signal.SIGKILL, calls)
+            shutil.rmtree(td, ignore_errors=True)
 
     def test_aib_test_exit_codes_match_test_entry(self):
         src = (ROOT / "aib" / "tools" / "verify" / "test_entry.py").read_text()

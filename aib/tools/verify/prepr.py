@@ -16,16 +16,19 @@ import json
 import os
 import re
 import shutil
-import signal
-import subprocess
 import sys
-import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "cockpit"))
+import proc_group  # noqa: E402  (DECISION-20 shared tool)
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 TAIL = 600   # characters of output kept per item
 AIB_TEST_RC_ALL_SKIPPED = 4   # test_entry.py: every selected test skipped
 AIB_TEST_RC_EXCLUSIVE = 5     # test_entry.py RC_EXCLUSIVE: did not run, someone holds the machine exclusively
 AIB_TEST_PER_TEST_TIMEOUT_S = 900   # `aib test --timeout`: per test
+# The whole `aib test` run: only a backstop, aib test stops a hung test itself. 3600 s stopped healthy big
+# batches (244 tests took about 3685 s; #494 L7).
+AIB_TEST_OUTER_TIMEOUT_S = 6 * 3600
 
 # (item number in DECISION-7 A, what to do) for the items a person checks
 MANUAL = (
@@ -42,48 +45,28 @@ MANUAL = (
 )
 
 
-def stop_group(p, grace=5.0):
-    """Stop everything `p` started: its own process group only (it was started in a new session), TERM, then KILL
-    after `grace`. Never signals anything outside that group. Windows: no process groups here, kill the child."""
-    if not hasattr(os, "killpg"):
-        p.kill()
-        return
-    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
-        try:
-            os.killpg(p.pid, sig)
-        except (ProcessLookupError, PermissionError):
-            # macOS answers EPERM, not ESRCH, once only zombies are left in the group: nothing left to stop.
-            return
-        end = time.monotonic() + wait
-        while time.monotonic() < end:
-            p.poll()
-            try:
-                os.killpg(p.pid, 0)
-            except (ProcessLookupError, PermissionError):
-                return
-            time.sleep(0.05)
-
-
 def run(cmd, cwd, env=None, timeout=3600):
     """(rc, combined output). rc None = could not start or timed out (the reason is the output).
 
-    The command runs in a new session, so on a timeout its whole tree is stopped (grandchildren too), not just the
-    direct child: a timed-out `aib test` / `cargo test` must not stay behind holding the machine."""
-    try:
-        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, text=True, start_new_session=True)
-    except FileNotFoundError:
-        return None, "not found: %s" % cmd[0]
-    try:
-        out, _ = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        stop_group(p)
-        try:
-            out, _ = p.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            out = ""
-        return None, "timed out after %ds (its process group was stopped)\n%s" % (timeout, out or "")
-    return p.returncode, out or ""
+    Runs through the shared proc_group tool (DECISION-20): its own process group, a timeout stops the whole tree
+    (TERM, grace, KILL, verified), and leftovers of a finished command are stopped too, so a `cargo test` /
+    `aib test` never stays behind holding the machine."""
+    r = proc_group.run_group(cmd, timeout=timeout, cwd=cwd, env=env)
+    if r.timed_out:
+        st = "%s %s, still running: %s" % (r.stop.status, r.stop.why, r.stop.survivors or "none listed") \
+            if r.stop else "?"
+        return None, "timed out after %ss (its process group: %s)\n%s" % (timeout, st, r.out)
+    if r.rc is None:
+        return None, "not found: %s (%s)" % (cmd[0], r.error)
+    if r.stop is not None and r.stop.status != "stopped":
+        # bb7dc / a63ab #509: what the command left running could not be shown stopped. Red first: a non-zero
+        # exit stays a failure with its real code, the leftover reason appended at the END (the item keeps the
+        # tail). Only rc 0 + unverified is lowered to not_run — never green.
+        note = "leftovers unverified (%s, still running: %s)" % (r.stop.why, r.stop.survivors or "unknown")
+        if r.rc != 0:
+            return r.rc, "%s\n[prepr] rc %s; %s\n" % (r.out.rstrip("\n"), r.rc, note)
+        return None, "finished with rc 0, but its %s\n%s" % (note, r.out)
+    return r.rc, r.out
 
 
 def item(n, name, status, reason="", scope="", version="", rc=None, cmd=None, out=""):
@@ -137,18 +120,24 @@ def workflow_paths(text, event="pull_request"):
     return out
 
 
+# GitHub path-filter characters prepr does not reproduce: `?` (zero or one of the previous character), `+`,
+# `[...]`, `\` escapes. A workflow using any of them makes every file count as Rust (#494 L9: a reader that is
+# wrong must err towards running the Rust checks, never towards skipping them).
+GLOB_UNSUPPORTED = set("?+[]\\")
+
+
 def glob_re(pattern):
-    """GitHub's path filter glob: `**` any characters including `/`, `*` and `?` stop at `/`."""
+    """GitHub's path filter glob for `*` and `**`: `**` any characters including `/`, `*` stops at `/`, and a
+    leading `**/` also matches at the top level (`**/README.md` matches `README.md`)."""
     out, i = "", 0
+    if pattern.startswith("**/"):
+        out, i = "(?:.*/)?", 3
     while i < len(pattern):
         if pattern.startswith("**", i):
             out += ".*"
             i += 2
         elif pattern[i] == "*":
             out += "[^/]*"
-            i += 1
-        elif pattern[i] == "?":
-            out += "[^/]"
             i += 1
         else:
             out += re.escape(pattern[i])
@@ -163,6 +152,9 @@ def rust_paths(repo):
             paths = workflow_paths(f.read())
     except OSError:
         paths = []
+    odd = [p for p in paths if GLOB_UNSUPPORTED & set(p)]
+    if odd:
+        return ("**",), "every file (%s has patterns prepr cannot read: %s)" % (AIBD_WORKFLOW, ", ".join(odd))
     if paths:
         return tuple(paths), AIBD_WORKFLOW
     return FALLBACK_RUST_PATHS, "built-in fallback (no readable %s)" % AIBD_WORKFLOW
@@ -266,7 +258,7 @@ def python_item(repo, base, run_tests, aib, runner=run):
     # aib test stops a hung test itself (per test); run()'s own timeout + group stop is the backstop
     cmd = aib + ["test", "--repo", repo, "--changed", "--base", base, "--timeout", str(AIB_TEST_PER_TEST_TIMEOUT_S)]
     env = dict(os.environ, EZ2_AIB_LOCALE="en")
-    rc, o = runner(cmd, repo, env)
+    rc, o = runner(cmd, repo, env, timeout=AIB_TEST_OUTER_TIMEOUT_S)
     if rc is None:
         return item(2, name, "not_run", o, cmd=cmd)
     if rc == 0 and "Nothing was run" in o:
