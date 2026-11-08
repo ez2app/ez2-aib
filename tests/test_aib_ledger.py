@@ -238,6 +238,104 @@ class AibLedger(unittest.TestCase):
                 "--blocker", "Andy decides the copy")
         self.assertIn("BLOCKED: Andy decides the copy", self.ok("list").stdout)
 
+    # ---------- aib ledger record ----------
+    def repo(self, test_body="        self.assertTrue(True)\n"):
+        d = self.td / "proj"
+        d.mkdir(exist_ok=True)
+        (d / "test_x.py").write_text("import unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n"
+                                     + test_body + "    def test_b(self):\n        pass\n", encoding="utf-8")
+        g = ["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for c in (["init", "-q"], ["add", "test_x.py"], ["commit", "-q", "-m", "x"]):
+            subprocess.run(g + c, check=True, capture_output=True, env=self.env)
+        sha = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True,
+                             env=self.env).stdout.strip()
+        return d, sha
+
+    def record(self, tree, *cmd, kind="positive"):
+        r = self.L("record", "--kind", kind, "--tree", str(tree), "--out", str(self.td / "rcpt"), "--", *cmd)
+        last = (r.stdout.strip().splitlines() or [""])[-1]
+        path = last.split(" ", 2)[1] if last.startswith("RECEIPT ") else None
+        return r, path
+
+    def review_at(self, sha, item="B-rec", needs=()):
+        if not self.L("role", "list", "--json").stdout.strip().startswith("[{"):
+            self.roles()
+        extra = []
+        for n in needs:
+            extra += ["--needs", n]
+        self.ok("add", item, "--batch", "b114", "--owner", "2240e", "--title", "rec", "--by", "seat:f1fae", *extra)
+        self.ok("move", item, "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        self.ok("move", item, "--from", "running", "--to", "review", "--head", sha, "--by", "seat:2240e")
+
+    def test_record_writes_a_receipt_that_verifies(self):
+        d, sha = self.repo()
+        r, path = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertEqual((rec["sha"], rec["rc"], rec["passed"], rec["total"], rec["producer"], rec["dirty"]),
+                         (sha, 0, 2, 2, "aib ledger record", False))
+        self.assertTrue(Path(rec["output"]).is_file())
+        self.review_at(sha, needs=("recorded",))
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_record_keeps_the_real_rc_and_counts_failures(self):
+        d, sha = self.repo(test_body="        self.fail('red')\n")
+        r, path = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertEqual((rec["rc"], rec["passed"], rec["total"]), (1, 1, 2))
+        self.review_at(sha)
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", path)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+
+    def test_hand_written_receipt_cannot_pass_as_recorded(self):
+        d, sha = self.repo()
+        self.review_at(sha)
+        fake = self.receipt(sha=sha, producer="aib ledger record")
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", fake)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("not in the ledger's record registry", r.stderr)
+
+    def test_needs_recorded_refuses_a_hand_written_receipt(self):
+        d, sha = self.repo()
+        self.review_at(sha, needs=("recorded",))
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae",
+                   "--evidence", self.receipt(sha=sha))
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("needs recorded", r.stderr)
+
+    def test_recorded_receipt_or_output_edited_afterwards_is_refused(self):
+        d, sha = self.repo(test_body="        self.fail('red')\n")
+        r, path = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+        rec.update(rc=0, passed=2)
+        Path(path).write_text(json.dumps(rec), encoding="utf-8")
+        self.review_at(sha)
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", path)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("receipt was changed after aib ledger record wrote it", r.stderr)
+        d2 = self.td / "p2"
+        r2 = self.L("record", "--tree", str(d), "--out", str(d2), "--", sys.executable, "-c", "print('3/3 ok')")
+        p2 = r2.stdout.strip().splitlines()[-1].split(" ", 2)[1]
+        out = Path(json.loads(Path(p2).read_text(encoding="utf-8"))["output"])
+        out.write_text("3/3 ok, edited\n", encoding="utf-8")
+        self.ok("move", "B-rec", "--from", "review", "--to", "queued", "--by", "seat:f1fae")
+        self.ok("move", "B-rec", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        self.ok("move", "B-rec", "--from", "running", "--to", "review", "--head", sha, "--by", "seat:2240e")
+        r = self.L("move", "B-rec", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", p2)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("raw output was changed after aib ledger record wrote it", r.stderr)
+
+    def test_record_refuses_a_dirty_tree(self):
+        d, sha = self.repo()
+        (d / "test_x.py").write_text("changed\n", encoding="utf-8")
+        r, path = self.record(d, sys.executable, "-c", "print('1/1')")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIsNone(path)
+        self.assertIn("uncommitted changes", r.stderr)
+        self.assertFalse((self.td / "rcpt").exists() and any((self.td / "rcpt").iterdir()))
+
     # ---------- ebb36 review of #527 ----------
     def test_h1_rework_with_a_new_head_can_still_be_accepted(self):
         self.to_review()
