@@ -51,9 +51,7 @@ async fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+    let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {
         // Port and file locations only; the token value is never printed.
         println!(

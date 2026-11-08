@@ -65,6 +65,48 @@ pub fn keep_child_zombies() -> Option<&'static str> {
     }
 }
 
+/// Exit code and (POSIX) terminating signal name of a finished process.
+pub fn exit_parts(st: &std::process::ExitStatus) -> (Option<i32>, Option<String>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        let sig = st.signal().map(|n| {
+            nix::sys::signal::Signal::try_from(n)
+                .map(|s| s.as_str().to_owned())
+                .unwrap_or_else(|_| format!("SIG{n}"))
+        });
+        (st.code(), sig)
+    }
+    #[cfg(not(unix))]
+    {
+        (st.code(), None)
+    }
+}
+
+/// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a
+/// plain `kill` still collects every session, D11).
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
 /// Windows `%APPDATA%\Ez2\AIB\data` (CI-windows). Never the 1.x `~/.ez2-aib`.
 pub fn default_data_dir() -> Option<PathBuf> {

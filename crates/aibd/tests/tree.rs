@@ -73,8 +73,10 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         args: vec![mode.into()],
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
+        env_remove: vec![],
         session_id: session.to_string(),
         watch_forks,
+        discard_output: false, // these tests read the fixture's stdout
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
     }
@@ -497,6 +499,7 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
         ],
         lineage: Some(lineage()),
         watch_forks: false,
+        discard_output: false,
         ..spec("complete", "s-env-cleared")
     })
     .unwrap();

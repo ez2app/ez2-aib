@@ -46,10 +46,16 @@ pub struct SpawnSpec {
     /// Extra environment. The caller decides what is inherited; aibd adds
     /// only `AIBD_SESSION`.
     pub env: Vec<(OsString, OsString)>,
+    /// Inherited variables to drop before `env` is applied (sessions: `AIBD_*`).
+    pub env_remove: Vec<OsString>,
     pub session_id: String,
     /// Layer 2 on macOS: watch forks with kqueue (ADR 0004 update). Always
     /// true in aibd; tests turn it off to check the other layers alone.
     pub watch_forks: bool,
+    /// stdout / stderr go to the null device instead of pipes (sessions API:
+    /// nobody reads them, and an unread pipe would block the program once it
+    /// fills). stdin is always the null device.
+    pub discard_output: bool,
     /// M1 lineage, shared by every session (`None` = off).
     pub lineage: Option<Arc<Lineage>>,
 }
@@ -258,9 +264,15 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     let mut c = Command::new(&spec.program);
     c.args(&spec.args)
         .env(SESSION_ENV, &spec.session_id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(Stdio::null());
+    if spec.discard_output {
+        c.stdout(Stdio::null()).stderr(Stdio::null());
+    } else {
+        c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+    for k in &spec.env_remove {
+        c.env_remove(k);
+    }
     for (k, v) in &spec.env {
         c.env(k, v);
     }
@@ -331,7 +343,23 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     Ok(h)
 }
 
+/// Waits for the root's exit without holding the [`TreeHandle`] (so a cancel
+/// can run meanwhile). Woken by the root-wait thread, not by polling.
+#[derive(Clone)]
+pub struct RootWatch(Arc<RootExit>);
+
+impl RootWatch {
+    /// The root's exit status once it has exited, or `None` at the timeout.
+    pub fn wait(&self, timeout: Duration) -> Option<ExitStatus> {
+        self.0.wait(timeout)
+    }
+}
+
 impl TreeHandle {
+    pub fn root_watch(&self) -> RootWatch {
+        RootWatch(self.exit.clone())
+    }
+
     pub fn root_pid(&self) -> u32 {
         self.root
     }
