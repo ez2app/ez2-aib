@@ -15,10 +15,11 @@
 //! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
 
 use crate::job::{Job, Member, Process};
+use crate::settle::still_running;
 use crate::SysError;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// What to start. `env` is added to (not replacing) aibd's environment; the
 /// API layer decides which keys are allowed.
@@ -36,12 +37,20 @@ pub enum SpawnError {
     NoProgram,
     /// `Job::new` failed.
     Job(SysError),
-    /// The process could not be started (or assigned) in its Job; nothing is
-    /// left running (aib-sys reaps it).
+    /// The process could not be started (or assigned) in its Job. aib-sys kills
+    /// and waits for it, but that is only confirmed when the inner error is
+    /// **not** [`SysError::NotReaped`]: `NotReaped` = it may still be running,
+    /// outside any session Job (see [`SpawnError::may_have_left_running`]).
     Spawn(SysError),
 }
 
 impl SpawnError {
+    /// True when a process may have been left running (`Spawn(NotReaped)`):
+    /// the API must not report "nothing started" for this one.
+    pub fn may_have_left_running(&self) -> bool {
+        matches!(self, SpawnError::Spawn(SysError::NotReaped { .. }))
+    }
+
     pub fn tag(&self) -> String {
         match self {
             SpawnError::NoProgram => "no_program".into(),
@@ -120,9 +129,12 @@ impl SessionTree {
         self.job.active_processes()
     }
 
-    /// Kill the whole tree and prove it. `limit` bounds the wait for the Job
-    /// to empty. Safe to call when the tree already exited (members = 0).
+    /// Kill the whole tree and prove it. `limit` is one hard deadline for both
+    /// the Job to empty and every member's handle to signal (they can lag the
+    /// Job count: see [`crate::settle`]). Safe to call when the tree already
+    /// exited (members = 0).
     pub fn kill(&mut self, limit: Duration) -> Result<KillReport, SysError> {
+        let deadline = Instant::now() + limit;
         let members = self.job.members()?;
         // open each member before the terminate: our handle pins the pid, so
         // the answer below is about this process, not a reused pid
@@ -139,13 +151,13 @@ impl SessionTree {
             }
         }
         self.job.terminate(1)?;
-        let emptied = self.job.wait_empty(limit)?;
-        let mut survivors = Vec::new();
-        for p in &handles {
-            if !p.wait(Duration::ZERO)? {
-                survivors.push(p.pid());
-            }
-        }
+        let emptied = self
+            .job
+            .wait_empty(deadline.saturating_duration_since(Instant::now()))?;
+        let survivors = still_running(&handles, deadline, |p, left| p.wait(left))?
+            .into_iter()
+            .map(|i| handles[i].pid())
+            .collect();
         // reap the root, but never block: if the Job did not empty, the root
         // may still be running and a blocking wait would hang the caller
         if emptied {

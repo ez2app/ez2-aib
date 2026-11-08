@@ -116,3 +116,15 @@ fn cwd_and_env_reach_the_root() {
     let _ = std::fs::remove_file(dir.join("aib-session-cwd-043dd.txt"));
     assert_eq!(code, 3, "4 = env missing, 0 = cwd file not seen");
 }
+
+#[test]
+fn a_spawn_that_was_not_reaped_is_not_reported_as_nothing_left() {
+    // bb7dc #535: Spawn(NotReaped) = the process may still be running
+    let left = SpawnError::Spawn(aib_sys::SysError::NotReaped {
+        pid: 1,
+        cause: Box::new(aib_sys::SysError::Unknown),
+    });
+    assert!(left.may_have_left_running());
+    assert!(!SpawnError::Spawn(aib_sys::SysError::Unknown).may_have_left_running());
+    assert!(!SpawnError::NoProgram.may_have_left_running());
+}
