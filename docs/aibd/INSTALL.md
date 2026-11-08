@@ -8,7 +8,7 @@ Python `aib`, it does not replace it, and it is not on PyPI.
 | Your computer | File |
 |---|---|
 | Mac with Apple Silicon (M1 or later) | `aibd-<version>-aarch64-apple-darwin` |
-| Mac with an Intel processor | `aibd-<version>-x86_64-apple-darwin` |
+| Mac with an Intel processor | not in this preview yet (no Intel machine to verify it on) |
 | Windows 10 / 11 (64-bit) | `aibd-<version>-x86_64-pc-windows-msvc.exe` |
 
 All files and `SHA256SUMS` are on the release page:
@@ -21,7 +21,7 @@ you; the steps below check the file against `SHA256SUMS` before you run it.
 
 ```sh
 V=0.2.0-preview.1                                   # the version you want
-T=aarch64-apple-darwin                              # Intel Mac: x86_64-apple-darwin
+T=aarch64-apple-darwin                              # Apple Silicon only in this preview
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads
 curl -fLO "$B/aibd-$V-$T" && curl -fLO "$B/SHA256SUMS"

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # aibd (Rust) preview releases. Separate from release.yml / PyPI (Python aib), which this file never touches.
 # 11-08 PLAN-rust-preview-today (C1):
-#   tag aibd-v<version>  ⇒ build 3 targets (--locked, release profile) ⇒ smoke each on its own platform
+#   tag aibd-v<version>  ⇒ build 2 targets (macOS Apple Silicon, Windows x64; macOS Intel later via lipo) (--locked, release profile) ⇒ smoke each on its own platform
 #   (--version must print the tag's version; selfcheck must exit 0) ⇒ SHA256SUMS ⇒ GitHub **pre-release**
 #   ⇒ download the published files again on each platform, check SHA256SUMS, run --version (post-publish check).
 #   A pull request that changes this file runs build + smoke only (no publish): the PR is its own probe.
@@ -63,9 +63,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest          # Apple Silicon runner: native build + native smoke
             exe: ""
-          - target: x86_64-apple-darwin
-            os: macos-15-intel        # Intel runner: native build + native smoke (no Rosetta guesswork)
-            exe: ""
+          # 11-08 a63ab:macOS Intel 先不發 —— 沒有 Intel 實機 / 可靠的 Intel runner 能驗,發出去就是沒驗的檔。
+          #   擴充點:之後在這裡加 x86_64-apple-darwin,另開一個 job 用 lipo 把兩個 macOS 檔合成 universal binary,
+          #   並在能驗 Intel 的機器上 smoke 過才放進 publish(EXPECTED_FILES 跟著改)。
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             exe: ".exe"
@@ -123,6 +123,7 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      EXPECTED_FILES: "2"      # = build 矩陣的目標數;加 Intel / universal 時一起改
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,7 +137,7 @@ jobs:
         run: |
           cd dist
           n=$(ls aibd-* | wc -l)
-          [ "$n" -eq 3 ] || { echo "::error::expected 3 files, got $n"; ls -l; exit 1; }
+          [ "$n" -eq "$EXPECTED_FILES" ] || { echo "::error::expected $EXPECTED_FILES files, got $n"; ls -l; exit 1; }
           sha256sum aibd-* > SHA256SUMS
           cat SHA256SUMS
       - name: create pre-release (refuses to touch an existing release)
@@ -158,7 +159,6 @@ jobs:
       matrix:
         include:
           - {os: macos-latest, target: aarch64-apple-darwin, exe: ""}
-          - {os: macos-15-intel, target: x86_64-apple-darwin, exe: ""}
           - {os: windows-latest, target: x86_64-pc-windows-msvc, exe: ".exe"}
     runs-on: ${{ matrix.os }}
     env:

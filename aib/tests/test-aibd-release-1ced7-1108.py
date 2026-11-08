@@ -5,7 +5,7 @@
 
 R1 只由 tag aibd-v* 發版;PR 只在改這支 / docs/aibd 時跑 build + smoke(自己當探針),沒有 pull_request_target
 R2 權限:頂層 contents: read;只有 publish 有 contents: write;每個 checkout persist-credentials: false;不碰 PyPI / release.yml
-R3 三目標原生 build + smoke(--locked、release、-p aibd;--version 要含版號、selfcheck rc 0,用 if 判,不靠 -e 中止)
+R3 兩目標(macOS Apple Silicon、Windows x64;Intel 先不發)原生 build + smoke(--locked、release、-p aibd;--version 要含版號、selfcheck rc 0,用 if 判,不靠 -e 中止)
 R4 publish / verify 只在 meta 說 publish=true;publish 拒絕蓋掉已存在的 release、只建 pre-release、發版說明檔不在就停
 R5 跑 meta 那段 bash(假 Cargo.toml):tag 版號對得上 + 有 pre-release 段 ⇒ publish=true;對不上 / 沒有 -xxx ⇒ rc 1;
    不是 tag ⇒ publish=false
@@ -66,8 +66,13 @@ class Static(unittest.TestCase):
 
     def test_r3_build_and_smoke(self):
         b = job("build")
-        for tgt in ("aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"):
-            self.assertIn("target: %s" % tgt, b)
+        targets = re.findall(r"(?m)^          - target: (\S+)$", b)
+        self.assertEqual(targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"],
+                         "11-08 a63ab:macOS Intel 沒有機器能驗 ⇒ 不發(之後 lipo universal 補)")
+        self.assertNotIn("macos-15-intel", T)
+        self.assertIn('EXPECTED_FILES: "%d"' % len(targets), job("publish"), "publish 檢查的檔數要跟矩陣一致")
+        vt = re.findall(r"target: ([\w-]+), exe", job("verify"))
+        self.assertEqual(vt, targets, "verify 矩陣要跟 build 一致")
         self.assertIn('cargo build --release --locked -p aibd --target "$TARGET"', b)
         self.assertIn('case "$out" in *"$VERSION"*)', b)
         self.assertRegex(b, r'if "\$bin" selfcheck; then')
@@ -82,7 +87,7 @@ class Static(unittest.TestCase):
         self.assertIn("--prerelease", p)
         self.assertIn("--verify-tag", p)
         self.assertIn("RELEASE-NOTES-${VERSION}.md", p)
-        self.assertIn('[ "$n" -eq 3 ]', p)
+        self.assertIn('[ "$n" -eq "$EXPECTED_FILES" ]', p)
 
     def test_r6_verify_downloads_and_checks(self):
         v = job("verify")

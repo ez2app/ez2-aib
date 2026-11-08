@@ -7,7 +7,7 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 | 你的電腦 | 檔案 |
 |---|---|
 | Apple 晶片的 Mac(M1 以後) | `aibd-<版本>-aarch64-apple-darwin` |
-| Intel 處理器的 Mac | `aibd-<版本>-x86_64-apple-darwin` |
+| Intel 處理器的 Mac | 這個預覽版還沒有(沒有 Intel 機器可以驗) |
 | Windows 10 / 11(64 位元) | `aibd-<版本>-x86_64-pc-windows-msvc.exe` |
 
 所有檔案和 `SHA256SUMS` 都在發版頁:`https://github.com/ez2app/ez2-aib/releases/tag/aibd-v<版本>`
@@ -19,7 +19,7 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 
 ```sh
 V=0.2.0-preview.1                                   # 要裝的版本
-T=aarch64-apple-darwin                              # Intel Mac 改成 x86_64-apple-darwin
+T=aarch64-apple-darwin                              # 這個預覽版只有 Apple 晶片
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads
 curl -fLO "$B/aibd-$V-$T" && curl -fLO "$B/SHA256SUMS"
