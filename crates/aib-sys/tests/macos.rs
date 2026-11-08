@@ -114,14 +114,26 @@ fn m1_parent_unique_survives_reparenting() {
     let grandchild: u32 = line.trim().parse().unwrap();
     sh.wait().unwrap();
 
-    let info = Macos.bsd_info(grandchild);
+    // Re-parenting is not always visible the instant wait() returns (043dd saw ppid != 1 once):
+    // poll for up to 2 s instead of reading once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut info = Macos.bsd_info(grandchild);
+    while !matches!(&info, Ok(i) if i.ppid == 1) && std::time::Instant::now() < deadline {
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        info = Macos.bsd_info(grandchild);
+    }
     let ids = Macos.unique_ids(grandchild);
     // only the pid we were told about, which our own child started
     let _ = Command::new("/bin/kill")
         .arg(grandchild.to_string())
         .status();
 
-    assert_eq!(info.unwrap().ppid, 1, "not re-parented to launchd");
+    assert_eq!(
+        info.unwrap().ppid,
+        1,
+        "not re-parented to launchd within 2 s"
+    );
     assert_eq!(ids.unwrap().parent_unique, sh_ids.unique);
 }
 
