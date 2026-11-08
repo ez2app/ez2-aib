@@ -4,7 +4,7 @@
 1. 每拍(0.1 秒)問一次 hub 的 #{pane_activity}:tmux 沒有這個格式,永遠空,從沒生效 ⇒ 拿掉。
 2. 每 3 拍問一次 hub 在哪一窗 ⇒ 每幀問窗號時同一支 tmux 順便在 hub 掛 session-window-changed 鉤子,
    切窗時 hub 自己寫訊號檔;拍間只讀檔,保底每 30 拍再問一次;鉤子掛不上就照舊每 3 拍問。
-從 pane-right-tabs.sh 截出那幾段,用真的 bash(與有裝的話真的 tmux,私有 -L socket)驗。
+從 pane-right-tabs.sh 截出那幾段,用真的 bash(與有裝的話真的 tmux,受守門的 -S socket)驗。
 H1 真 tmux:掛上鉤子(HUBWIN_HOOKED=1)、拿到窗號;切窗 / 關窗後訊號檔變成新窗號
 H2 訊號檔路徑有 tmux 會解析的字元 / 不是絕對路徑 ⇒ 不掛鉤子、照舊拿得到窗號
 H3 訊號檔寫不了(夾被刪)⇒ 切窗後 hub 那格不會被切進 view-mode 顯示錯誤
@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from aib_tmux_sandbox import Sandbox
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -80,23 +81,21 @@ class RealTmux(Base):
         self.sock = "rtick%d" % os.getpid()
         self.tmx = self.d / "tmx"              # 自己的 socket 夾:起伺服器與被測的 bash 都用它
         self.tmx.mkdir()
+        self.box = Sandbox(self.tmx, TMUX)
+        self.box.make_shim(self.tmx / "tmux", self.sock)
         self.tm("-f", "/dev/null", "new-session", "-d", "-s", "h", "-n", "a", "sleep 120",
                 ";", "new-window", "-d", "-n", "b", "sleep 120")
         self.addCleanup(self.tm, "kill-server")
 
     def tm(self, *a):
-        env = dict(os.environ)
-        env.pop("TMUX", None)
-        env["TMUX_TMPDIR"] = str(self.tmx)
-        return subprocess.run([TMUX, "-L", self.sock] + list(a), env=env, capture_output=True,
-                              text=True, timeout=10)
+        return self.box.tm(*a)
 
     def probe(self, state=None):
         st = state or str(self.state)
         out = self.bash(". '%s'\n%s\nhub_window_probe\n"
                         "echo \"$HUB_WIN $HUBWIN_HOOKED\"\n" % (TICK, probe_block()),
                         {"EZ2_AIHUB_SOCKET": self.sock, "EZ2_COCKPIT_STATE_DIR": st,
-                         "TMUX_TMPDIR": str(self.tmx)})
+                         "PATH": str(self.tmx) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")})
         return out.split()
 
     def wait_sig(self, path, want, secs=3.0):

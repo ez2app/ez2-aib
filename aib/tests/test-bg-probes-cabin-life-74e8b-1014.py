@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from aib_tmux_sandbox import Sandbox
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,12 +44,16 @@ class Base(unittest.TestCase):
         self.cabin = os.path.join(self.home, ".ez2-aib", "instances", "t1")
         os.makedirs(os.path.join(self.cabin, "seats"))
         self.hub = "aihub-t1"
-        self.env = dict(os.environ, HOME=self.home, TMUX_TMPDIR=self.sock, EZ2_AIHUB_SOCKET=self.hub,
+        self.box = Sandbox(self.sock, TMUX or "tmux")
+        self.shim = self.box.make_shim(os.path.join(self.sock, "tmux"), self.hub) if TMUX else "tmux"
+        self.env = dict(os.environ, HOME=self.home, EZ2_AIHUB_SOCKET=self.hub,
                         EZ2_AIB_INSTANCE_HOME=self.cabin, EZ2_AIB_HOME=os.path.join(self.home, ".ez2-aib"),
                         EZ2_AIB_STATE_ROOT=os.path.join(self.home, ".ez2-aib"),
-                        EZ2_COCKPIT_STATE_DIR=os.path.join(self.cabin, "cockpit"), AIB_DM_TMUX=TMUX or "tmux")
-        for k in ("TMUX", "TMUX_PANE", "EZ2_AIB_INSTANCE", "EZ2_USAGE_PROBE_LIVE", "EZ2_USAGE_PROBE_LIVE_ENGINES"):
+                        EZ2_COCKPIT_STATE_DIR=os.path.join(self.cabin, "cockpit"), AIB_DM_TMUX=self.shim)
+        self.env["PATH"] = self.sock + os.pathsep + self.env.get("PATH", "/usr/bin:/bin")
+        for k in ("TMUX", "TMUX_TMPDIR", "TMUX_PANE", "EZ2_AIB_INSTANCE", "EZ2_USAGE_PROBE_LIVE", "EZ2_USAGE_PROBE_LIVE_ENGINES"):
             self.env.pop(k, None)
+        self.box.environ = self.env
 
     def tearDown(self):
         self.kill_server()
@@ -56,8 +61,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.sock, ignore_errors=True)
 
     def tmux(self, *a):
-        return subprocess.run([TMUX, "-L", self.hub, *a], env=self.env, capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL)
+        return self.box.tm(*a, stdin=subprocess.DEVNULL)
 
     def kill_server(self):
         if TMUX:
@@ -75,7 +79,7 @@ class Watch(Base):
     def watch(self, window, timeout):
         return subprocess.Popen([sys.executable, str(OPEN_ATTEMPT), "watch", "--home", self.cabin,
                                  "--attempt", "a1", "--window", window, "--provider", "claude",
-                                 "--timeout", str(timeout), "--interval", "0.2", "--tmux-bin", TMUX],
+                                 "--timeout", str(timeout), "--interval", "0.2", "--tmux-bin", self.shim],
                                 env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
 
