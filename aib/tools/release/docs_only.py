@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""只改文件的 PR 只跑文件檢查(11-08 PROPOSAL-19,a63ab 總結 3/4 表態)。
+"""只改文件的 PR 只跑文件檢查(11-08 PROPOSAL-19,a63ab 總結 3/4 表態);
+只改 Rust 的 PR 也不跑 Python smoke 六格(11-09 Andy「只動 Rust 就跳過」,a63ab 派 1ced7):Rust 由 aibd.yml 測。
 
 由 `.github/workflows/ci.yml` 的 `docs` job 呼叫:
 
     python3 aib/tools/release/docs_only.py decide --event pull_request --base <sha> --head <sha>
-        印 docs_only=true|false(給 $GITHUB_OUTPUT),原因印到 stderr
+        印 docs_only=true|false 與 rust_only=true|false 兩行(給 $GITHUB_OUTPUT),原因印到 stderr
     python3 aib/tools/release/docs_only.py check --base <sha> --head <sha>
         只改文件時才跑:改到的 md 裡相對連結都在、不是空檔、換行是 LF;有刪除 / 改名時整份白名單跑連結檢查
     python3 aib/tools/release/docs_only.py md-tests
         列出 main 推送時會掃 .md 的測試(隱形字元等);只改文件時 docs job 逐支直接跑,不在這裡重寫
+    python3 aib/tools/release/docs_only.py rust-tests
+        只改 Rust 時 docs job 逐支直接跑的 Python 測試:讀 crates/ 或 Cargo.* 的(RUST_READ_TESTS)+ 上面那份
 
 規則:
 - **白名單**,不在名單內的都算程式。名單只放已核實沒有程式 / 測試讀的純文件:
@@ -20,6 +23,9 @@
 - 混合改動(只要有一個檔不在名單)⇒ false。
 - **算不出來一律 false**(base 抓不到、diff 失敗、0 個檔):寧可多跑。
 - 改名當成「刪舊 + 加新」,兩邊都要在名單內(diff 用 --no-renames)。
+- rust_only:每個檔都是 Rust(根目錄 Cargo.toml / Cargo.lock、crates/**)或上面白名單內的文件,且至少一個 Rust 檔。
+  main 推送 / 混合 / 算不出來 / 0 個檔 ⇒ false;**動到 .github/** 一律 false**(就算之後有人把 Rust 範圍改寬)。
+  Rust 檔一定也會觸發 aibd.yml(守門測試對 aibd.yml 的 paths),所以 Rust 本身照樣有測。
 - 守門測試(aib/tests/test-docs-only-ci-1ced7-1108.py)掃程式 / 測試裡寫到名單內檔名的地方;
   之後有人寫測試去讀 docs/ 底下的檔,會在那支被擋下,提醒把那個檔移出名單。
 
@@ -48,6 +54,18 @@ DOC_EXCLUDE = (
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
 # 守門測試會找「讀 git ls-files 又看 .md」的測試,不在這份清單就紅。
 MD_SCAN_TESTS = ("aib/tests/test-invisible-chars-d07f9-1021.py",)
+# Rust 範圍(rust_only 用):根目錄這兩個檔 + crates/ 底下任意深度。xtask/、migrations/、clippy.toml、
+# rust-toolchain.toml 雖然 aibd.yml 也看,但沒核實沒有 Python 讀 ⇒ 不算(寧可多跑)。
+RUST_FILES = ("Cargo.toml", "Cargo.lock")
+RUST_PREFIXES = ("crates/",)
+NEVER_LIGHT_PREFIXES = (".github/",)
+# 讀 crates/ 或 Cargo.* 的 Python 測試:只改 Rust 時 docs job 照這份直接跑(a63ab 11-09,比照 MD_SCAN_TESTS);
+# 守門測試找「寫到 crates/ / Cargo.toml / Cargo.lock / ".rs"」的測試,不在這份就紅。
+RUST_READ_TESTS = (
+    "aib/tests/test-aibd-release-1ced7-1108.py",
+    "aib/tests/test-docs-only-ci-1ced7-1108.py",
+    "tests/test_aib_prepr.py",
+)
 LINK = re.compile(r"\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
@@ -63,6 +81,43 @@ def is_doc(path):
     if any(p.startswith(pre) for pre in DOC_PREFIXES):
         return True
     return "/" not in p and any(fnmatch.fnmatchcase(p, g) for g in DOC_ROOT_GLOBS)
+
+
+def is_rust(path):
+    """單一路徑算不算 Rust(rust_only 用)。"""
+    p = path.strip()
+    if not p or p.startswith("/") or ".." in p.split("/"):
+        return False
+    return p in RUST_FILES or any(p.startswith(pre) for pre in RUST_PREFIXES)
+
+
+def rust_only(event, files):
+    """(True/False, 原因):只改 Rust(+ 白名單文件)的 PR。規則同 docs_only,另外動到 .github/** 一律 false。"""
+    if event != "pull_request":
+        return False, "event %s is not a pull_request (main pushes always run everything)" % event
+    if files is None:
+        return False, "could not list the changed files; running everything"
+    files = [f for f in files if f.strip()]
+    if not files:
+        return False, "no changed files found; running everything"
+    gh = [f for f in files if any(f.strip().startswith(pre) for pre in NEVER_LIGHT_PREFIXES)]
+    if gh:
+        return False, "touches %s; running everything" % gh[0]
+    other = [f for f in files if not is_rust(f) and not is_doc(f)]
+    if other:
+        return False, "%d of %d changed files are neither Rust nor docs (first: %s)" % (len(other), len(files), other[0])
+    rust = [f for f in files if is_rust(f)]
+    if not rust:
+        return False, "no Rust file changed"
+    return True, "all %d changed files are Rust (%d) or docs" % (len(files), len(rust))
+
+
+def rust_tests():
+    out = []
+    for t in RUST_READ_TESTS + MD_SCAN_TESTS:
+        if t not in out:
+            out.append(t)
+    return out
 
 
 def docs_only(event, files):
@@ -172,6 +227,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="docs_only", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("md-tests")
+    sub.add_parser("rust-tests")
     d = sub.add_parser("decide")
     d.add_argument("--event", required=True)
     for p in (d, sub.add_parser("check")):
@@ -182,21 +238,31 @@ def main(argv=None):
     if a.cmd == "md-tests":
         print("\n".join(MD_SCAN_TESTS))
         return RC_OK
+    if a.cmd == "rust-tests":
+        print("\n".join(rust_tests()))
+        return RC_OK
     if a.cmd == "decide":
         files = changed_files(a.root, a.base, a.head) if a.event == "pull_request" else []
         ok, why = docs_only(a.event, files)
+        rok, rwhy = (False, "docs-only already") if ok else rust_only(a.event, files)
         print("docs_only=%s" % ("true" if ok else "false"))
+        print("rust_only=%s" % ("true" if rok else "false"))
         print("docs_only: " + why, file=sys.stderr)
+        print("rust_only: " + rwhy, file=sys.stderr)
         return RC_OK
     files = changed_files(a.root, a.base, a.head)
     ok, why = docs_only("pull_request", files)
     if not ok:
-        print("::error::docs check asked for, but this change is not docs-only: " + why)
-        return RC_BAD
+        rok, rwhy = rust_only("pull_request", files)
+        if not rok:
+            print("::error::docs check asked for, but this change is neither docs-only nor Rust-only: %s / %s"
+                  % (why, rwhy))
+            return RC_BAD
     bad = []
     for rel in files:
-        bad += check_file(a.root, rel)
-    for b in after_delete(a.root, [rel for rel in files if not os.path.exists(os.path.join(a.root, rel))]):
+        if is_doc(rel):
+            bad += check_file(a.root, rel)
+    for b in after_delete(a.root, [rel for rel in files if is_doc(rel) and not os.path.exists(os.path.join(a.root, rel))]):
         if b not in bad:
             bad.append(b)
     for b in bad:
