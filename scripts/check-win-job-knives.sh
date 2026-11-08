@@ -11,7 +11,7 @@ f="crates/aib-sys/src/job.rs"
 cd "$root" || exit 2
 restore() { git checkout -q -- "$f"; touch "$f"; }
 trap restore EXIT
-pass=0 fail=0
+bit=0 nf=0 und=0 sv=0 fail=0
 knife() {  # name, test filter, python expression old, new
   local name="$1" filter="$2" old="$3" new="$4" out rc
   if ! python3 - "$f" "$old" "$new" <<'PY'
@@ -23,18 +23,23 @@ if n != 1:
     sys.exit(f"knife text found {n} times, wanted 1: {old!r}")
 open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY
-  then echo "  FAIL $name: knife did not apply"; fail=$((fail+1)); restore; return; fi
+  then echo "  NOT-FALLEN $name (knife text not found)"; nf=$((nf+1)); restore; return; fi
   # output to a file, not $(...): on Windows a leftover child can inherit
   # the pipe and hold it open (CI run 42436895264 hung 39 min here);
   # timeout is the last guard, and a timeout never counts as red
   local log; log=$(mktemp)
   timeout 900 cargo test -q -p aib-sys --locked -- "$filter" >"$log" 2>&1; rc=$?
   out=$(cat "$log"); rm -f "$log"
-  [ $rc -eq 124 ] && out="TIMEOUT (900 s): $out"
-  if [ $rc -ne 0 ] && [ $rc -ne 124 ] && grep -qF -- "$filter" <<<"$out" && grep -q "FAILED\|panicked" <<<"$out"; then
-    echo "  ok   $name (rc $rc, $filter red)"; pass=$((pass+1))
+  # three outcomes besides "bit" (a63ab 11-08): a knife that did not build
+  # never fell; a timeout is undecided. Neither counts as bitten.
+  if [ $rc -eq 124 ]; then
+    echo "  UNDECIDED  $name (timeout 900 s)"; und=$((und+1))
+  elif grep -qE "could not compile|LNK[0-9]+|error: linking" <<<"$out"; then
+    echo "  NOT-FALLEN $name (build failed): $(grep -m1 -E 'LNK[0-9]+|^error' <<<"$out")"; nf=$((nf+1))
+  elif [ $rc -ne 0 ] && grep -qF -- "$filter" <<<"$out" && grep -q "FAILED\|panicked" <<<"$out"; then
+    echo "  BIT        $name (rc $rc, $filter red)"; bit=$((bit+1))
   else
-    echo "  FAIL $name survived (rc $rc): $(tail -5 <<<"$out")"; fail=$((fail+1))
+    echo "  SURVIVED   $name (rc $rc): $(tail -5 <<<"$out")"; sv=$((sv+1))
   fi
   restore
 }
@@ -66,5 +71,5 @@ knife record-after-resume the_member_is_recorded_before_the_child_runs \
         .and_then(|()| resume(pid));' \
   '        .and_then(|()| resume(pid))
         .and_then(|()| record_member(pid, record));'
-echo "win job knives: $pass red as required, $fail survived"
-[ $fail -eq 0 ]
+echo "win job knives: bit $bit / not fallen $nf / undecided $und / survived $sv"
+[ $nf -eq 0 ] && [ $und -eq 0 ] && [ $sv -eq 0 ] && [ $bit -gt 0 ]

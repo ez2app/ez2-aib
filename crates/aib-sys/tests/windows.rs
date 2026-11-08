@@ -122,6 +122,31 @@ fn read_tagged(c: &mut Child, out: &Path, tag: &str) -> String {
     panic!("no `{tag}` report within 30 s");
 }
 
+/// Terminates the process on drop if it is still running, so a failed
+/// assertion (or a knife) cannot leave a helper that keeps this test binary
+/// locked on Windows (CI run 42440283596: LNK1104 for every later knife).
+struct Reap(Process);
+
+impl Reap {
+    fn open(pid: u32) -> Reap {
+        Reap(Process::open_terminable(pid).unwrap())
+    }
+}
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        if !self.0.wait(Duration::ZERO).unwrap_or(true) {
+            let _ = self.0.terminate(1);
+        }
+    }
+}
+
+/// The grandchild pid the `tree` helper wrote to `marker`, as a reaper.
+fn reap_from_marker(marker: &Path) -> Option<Reap> {
+    let pid: u32 = std::fs::read_to_string(marker).ok()?.trim().parse().ok()?;
+    Process::open_terminable(pid).ok().map(Reap)
+}
+
 fn marker_path() -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
@@ -172,13 +197,19 @@ fn a_grandchild_whose_parent_exited_is_still_in_the_job_and_dies() {
     let r = job.spawn_with(&mut cmd, || {
         ran_early = wait_for(&marker, Duration::from_secs(3))
     });
+    let _early = if ran_early {
+        reap_from_marker(&marker)
+    } else {
+        None
+    };
     assert!(
         !ran_early,
         "the child ran before it was assigned (CREATE_SUSPENDED missing?)"
     );
     let mut mid = r.expect("spawn into the job");
     let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
-    let g = Process::open(gpid).unwrap();
+    let reap = Reap::open(gpid);
+    let g = &reap.0;
     assert!(mid.wait().unwrap().success(), "middle layer exits first");
     let _ = std::fs::remove_file(&marker);
 
@@ -217,7 +248,8 @@ fn the_owner_crashing_kills_the_tree() {
     let (mut cmd, out) = reporting("owner");
     let mut owner = cmd.spawn().unwrap();
     let gpid: u32 = read_tagged(&mut owner, &out, "GPID ").parse().unwrap();
-    let g = Process::open(gpid).unwrap();
+    let reap = Reap::open(gpid);
+    let g = &reap.0;
     assert!(
         !g.wait(Duration::from_millis(200)).unwrap(),
         "grandchild should be running"
@@ -236,7 +268,8 @@ fn dropping_the_job_kills_the_tree() {
     let (mut cmd, out) = reporting("tree");
     let mut mid = job.spawn(&mut cmd).unwrap();
     let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
-    let g = Process::open(gpid).unwrap();
+    let reap = Reap::open(gpid);
+    let g = &reap.0;
     mid.wait().unwrap();
     drop(job);
     assert!(
@@ -328,7 +361,8 @@ fn the_member_is_recorded_before_the_child_runs() {
         "child never ran"
     );
     let _ = std::fs::remove_file(&marker);
-    let g = Process::open(gpid).unwrap();
+    let reap = Reap::open(gpid);
+    let g = &reap.0;
     job.terminate(1).unwrap();
     assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
     assert!(g.wait(Duration::from_secs(5)).unwrap());
