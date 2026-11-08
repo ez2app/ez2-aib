@@ -97,6 +97,11 @@ pub enum SysError {
     /// The pid does not fit the OS type (above `i32::MAX`).
     #[error("pid out of range")]
     BadPid,
+    /// A spawn failed with `cause` after the process existed, and the
+    /// process could not be confirmed gone within the bound. It may still
+    /// exist: the caller must report it, never treat it as cleaned up.
+    #[error("spawn failed ({cause}); child {pid} not confirmed gone")]
+    NotReaped { pid: u32, cause: Box<SysError> },
 }
 
 impl SysError {
@@ -121,6 +126,7 @@ impl SysError {
             SysError::Unknown => "unknown",
             SysError::Unsupported => "unsupported",
             SysError::BadPid => "bad_pid",
+            SysError::NotReaped { .. } => "not_reaped",
         }
     }
 }

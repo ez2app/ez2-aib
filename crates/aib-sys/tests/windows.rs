@@ -293,8 +293,70 @@ fn a_member_cannot_break_away() {
 #[test]
 fn ctrl_break_only_reaches_members() {
     let job = Job::new().unwrap();
-    assert_eq!(job.ctrl_break(0), Err(SysError::BadPid));
-    assert_eq!(job.ctrl_break(std::process::id()), Err(SysError::BadPid));
+    let me = Member {
+        pid: std::process::id(),
+        created_100ns: Process::open(std::process::id())
+            .unwrap()
+            .created_100ns()
+            .unwrap(),
+    };
+    let zero = Member {
+        pid: 0,
+        created_100ns: 0,
+    };
+    assert_eq!(job.ctrl_break(zero), Err(SysError::BadPid));
+    assert_eq!(
+        job.ctrl_break(me),
+        Err(SysError::BadPid),
+        "not started by this Job"
+    );
+}
+
+/// A member that is in the Job but was not started by it (a grandchild:
+/// its pid is not a group id we created) is refused before any send.
+#[test]
+fn ctrl_break_refuses_a_member_it_did_not_start() {
+    let job = Job::new().unwrap();
+    let (mut cmd, out) = reporting("tree");
+    let mut mid = job.spawn(&mut cmd).unwrap();
+    let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
+    let _reap = Reap::open(gpid);
+    let g = job
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.pid == gpid)
+        .expect("grandchild is a member");
+    assert_eq!(job.ctrl_break(g), Err(SysError::BadPid));
+    job.terminate(1).unwrap();
+    assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
+    let _ = mid.wait();
+}
+
+/// #492 review point 2: the identity is fixed before sending. A root this
+/// Job started but with the wrong creation time is not ours; a root that
+/// has exited is refused (its pid, the group id, may be reused), so nothing
+/// is sent and the caller terminates.
+#[test]
+fn ctrl_break_refuses_a_stale_or_foreign_identity() {
+    let job = Job::new().unwrap();
+    let mut root = None;
+    let mut c = job
+        .spawn_recorded(helper_cmd("none-such").stdout(Stdio::null()), |m| {
+            root = Some(m);
+            Ok(())
+        })
+        .unwrap();
+    let root = root.unwrap();
+    let other = Member {
+        created_100ns: root.created_100ns + 1,
+        ..root
+    };
+    assert_eq!(job.ctrl_break(other), Err(SysError::BadPid));
+    c.wait().unwrap(); // the helper exits at once in this mode
+    assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
+    // exited but still openable while std holds the handle; refused either way
+    assert!(matches!(job.ctrl_break(root), Err(SysError::Gone)));
 }
 
 #[test]

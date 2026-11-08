@@ -36,6 +36,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
@@ -226,17 +227,7 @@ impl Process {
     /// Wait until the process has exited. `Ok(false)` = still running after
     /// `timeout`.
     pub fn wait(&self, timeout: Duration) -> Result<bool, SysError> {
-        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
-        let h = raw(&self.h);
-        let (r, e) = with_last_error(|| {
-            // SAFETY: `h` is a live process handle with SYNCHRONIZE access.
-            unsafe { WaitForSingleObject(h, ms) }
-        });
-        match r {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(SysError::from_win32(e)),
-        }
+        wait_handle(raw(&self.h), timeout)
     }
 
     /// `TerminateProcess` through this handle (needs
@@ -266,6 +257,10 @@ impl Process {
 pub struct Job {
     job: OwnedHandle,
     port: Option<OwnedHandle>,
+    /// Processes this Job started (each with `CREATE_NEW_PROCESS_GROUP`, so
+    /// each is a console process-group leader). Only these may get
+    /// [`Job::ctrl_break`].
+    roots: Mutex<Vec<Member>>,
 }
 
 impl Job {
@@ -297,7 +292,11 @@ impl Job {
             }
         })?;
         let port = Self::attach_port(jh).ok();
-        Ok(Job { job, port })
+        Ok(Job {
+            job,
+            port,
+            roots: Mutex::new(Vec::new()),
+        })
     }
 
     fn attach_port(jh: HANDLE) -> Result<OwnedHandle, SysError> {
@@ -379,7 +378,8 @@ impl Job {
         record: impl FnOnce(Member) -> Result<(), SysError>,
     ) -> Result<Child, SysError> {
         let jh = raw(&self.job);
-        spawn_inner(
+        let mut me = None;
+        let child = spawn_inner(
             cmd,
             before_assign,
             |ph| {
@@ -389,9 +389,18 @@ impl Job {
                     unsafe { AssignProcessToJobObject(jh, ph) }
                 })
             },
-            record,
+            |m| {
+                me = Some(m);
+                record(m)
+            },
             resume_only_thread,
-        )
+        )?;
+        if let Some(m) = me {
+            if let Ok(mut roots) = self.roots.lock() {
+                roots.push(m);
+            }
+        }
+        Ok(child)
     }
 
     /// `JobObjectBasicAccountingInformation.ActiveProcesses`.
@@ -494,23 +503,50 @@ impl Job {
         Err(SysError::Incomplete)
     }
 
-    /// Graceful stop: `CTRL_BREAK_EVENT` to the process group of `root_pid`
-    /// (the child [`Job::spawn`] started; it leads its own group).
+    /// Graceful stop: `CTRL_BREAK_EVENT` to the process group led by `root`
+    /// (a process this Job started; each leads its own group).
     ///
-    /// Refuses (`BadPid`) unless `root_pid` is a current member of this Job,
-    /// so it can never reach a group outside the Job; `0` would mean "every
-    /// process on our console" and is refused too. When the event cannot be
-    /// delivered (no shared console, ConPTY) the result is
-    /// [`SysError::Unsupported`] and the caller should go straight to
-    /// [`Job::terminate`]. Delivery when it returns `Ok` is UNVERIFIED.
-    pub fn ctrl_break(&self, root_pid: u32) -> Result<(), SysError> {
-        if root_pid == 0 || !self.members()?.iter().any(|m| m.pid == root_pid) {
+    /// The identity is fixed before sending (#492 review, point 2):
+    /// - `root` must be one this Job started (`BadPid` otherwise; `pid` 0,
+    ///   "every process on our console", is refused too);
+    /// - a handle to it is opened and held across the send, so its pid, which
+    ///   is the group id, cannot be reused meanwhile;
+    /// - its creation time must match and it must still run (`Gone`
+    ///   otherwise: once the leader is gone its pid may be reused, so nothing
+    ///   is sent and the caller goes to [`Job::terminate`]);
+    /// - it must still be in this Job (`BadPid` otherwise).
+    ///
+    /// When the event cannot be delivered (no shared console, ConPTY) the
+    /// result is [`SysError::Unsupported`] and the caller should go straight
+    /// to [`Job::terminate`]. Delivery when it returns `Ok` is UNVERIFIED.
+    pub fn ctrl_break(&self, root: Member) -> Result<(), SysError> {
+        if root.pid == 0 {
             return Err(SysError::BadPid);
         }
-        match check_bool(|| {
-            // SAFETY: plain call with an event id and a group id that is a
-            // member of our own Job (checked above).
-            unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, root_pid) }
+        let is_root = self
+            .roots
+            .lock()
+            .map(|r| r.contains(&root))
+            .unwrap_or(false);
+        if !is_root {
+            return Err(SysError::BadPid);
+        }
+        // Hold a handle to the group leader for the whole send: while it is
+        // open its pid cannot be reused, so the group id names our group.
+        let p = Process::open(root.pid)?;
+        if p.created_100ns()? != root.created_100ns {
+            return Err(SysError::Gone); // a different process now has the pid
+        }
+        if p.wait(Duration::ZERO)? {
+            return Err(SysError::Gone); // leader exited: refuse, caller terminates
+        }
+        if !p.in_job(raw(&self.job))? {
+            return Err(SysError::BadPid);
+        }
+        let r = match check_bool(|| {
+            // SAFETY: plain call with an event id and a group id; the group
+            // leader is a live member of our Job, held open by `p`.
+            unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, root.pid) }
         }) {
             Err(SysError::Os(c))
                 if u32::try_from(c) == Ok(ERROR_INVALID_HANDLE)
@@ -519,7 +555,9 @@ impl Job {
                 Err(SysError::Unsupported)
             }
             r => r,
-        }
+        };
+        drop(p);
+        r
     }
 
     /// `TerminateJobObject`: every process in the Job, asynchronously. Use
@@ -614,12 +652,49 @@ fn spawn_inner(
         .and_then(|()| resume(pid));
     match step {
         Ok(()) => Ok(child),
-        Err(e) => {
-            // never leave a suspended or unmanaged child behind
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(e)
+        Err(e) => Err(reap_failed(&mut child, e, REAP_LIMIT, |c| {
+            let _ = c.kill();
+        })),
+    }
+}
+
+/// How long a failed spawn waits for its child to be gone.
+const REAP_LIMIT: Duration = Duration::from_secs(5);
+
+/// Terminate the child of a failed spawn and confirm, within `limit`, that it
+/// is gone. The result of `kill` is not trusted (it can fail, or report Ok
+/// for a process that is still there); only the wait decides. Not confirmed
+/// gone ⇒ [`SysError::NotReaped`], never `cause` alone.
+fn reap_failed(
+    child: &mut Child,
+    cause: SysError,
+    limit: Duration,
+    kill: impl FnOnce(&mut Child),
+) -> SysError {
+    kill(child);
+    match wait_handle(child.as_raw_handle() as HANDLE, limit) {
+        Ok(true) => {
+            let _ = child.try_wait(); // collect the exit status; never blocks
+            cause
         }
+        Ok(false) | Err(_) => SysError::NotReaped {
+            pid: child.id(),
+            cause: Box::new(cause),
+        },
+    }
+}
+
+/// `WaitForSingleObject` on a process handle. `Ok(false)` = still there.
+fn wait_handle(h: HANDLE, timeout: Duration) -> Result<bool, SysError> {
+    let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    let (r, e) = with_last_error(|| {
+        // SAFETY: `h` is a live process handle with SYNCHRONIZE access.
+        unsafe { WaitForSingleObject(h, ms) }
+    });
+    match r {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(SysError::from_win32(e)),
     }
 }
 
@@ -755,6 +830,43 @@ mod tests {
             let _ = p.terminate(1);
         }
         assert!(gone, "child still alive after a failed resume");
+    }
+
+    /// #492 review point 3: a kill that does nothing must not be reported as
+    /// cleaned up; the bounded wait decides, and a real kill is confirmed.
+    #[test]
+    fn a_child_that_is_not_gone_is_reported_not_reaped() {
+        // suspended: it never runs, so it has no grandchildren to leak
+        let mut c = sleeper().creation_flags(SPAWN_FLAGS).spawn().unwrap();
+        let pid = c.id();
+        let t = Instant::now();
+        let e = reap_failed(
+            &mut c,
+            SysError::Unknown,
+            Duration::from_millis(200),
+            |_| {},
+        );
+        let waited = t.elapsed();
+        let p = Process::open_terminable(pid).expect("still there");
+        let _ = p.terminate(1);
+        let _ = p.wait(Duration::from_secs(5));
+        assert_eq!(
+            e,
+            SysError::NotReaped {
+                pid,
+                cause: Box::new(SysError::Unknown)
+            }
+        );
+        assert!(
+            waited < Duration::from_secs(3),
+            "wait not bounded: {waited:?}"
+        );
+
+        let mut c = sleeper().creation_flags(SPAWN_FLAGS).spawn().unwrap();
+        let e = reap_failed(&mut c, SysError::Unknown, REAP_LIMIT, |c| {
+            let _ = c.kill();
+        });
+        assert_eq!(e, SysError::Unknown, "a confirmed kill returns the cause");
     }
 
     #[test]

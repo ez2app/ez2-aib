@@ -56,13 +56,24 @@ knife no-kill-on-close the_owner_crashing_kills_the_tree \
   'pub const LIMIT_FLAGS: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;' \
   'pub const LIMIT_FLAGS: u32 = 0; const _: u32 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;'
 knife assign-fail-no-kill a_failed_assign_leaves_no_process \
-  '            let _ = child.kill();
-            let _ = child.wait();' \
-  '            let _ = &mut child; // knife: left suspended / unmanaged'
+  'e, REAP_LIMIT, |c| {
+            let _ = c.kill();' \
+  'e, REAP_LIMIT, |c| {
+            let _ = c; // knife: left suspended / unmanaged'
 knife resume-fail-no-kill resume_failure_terminates_the_child \
-  '            let _ = child.kill();
-            let _ = child.wait();' \
-  '            let _ = &mut child; // knife: left suspended / unmanaged'
+  'e, REAP_LIMIT, |c| {
+            let _ = c.kill();' \
+  'e, REAP_LIMIT, |c| {
+            let _ = c; // knife: left suspended / unmanaged'
+knife trust-the-kill a_child_that_is_not_gone_is_reported_not_reaped \
+  '    match wait_handle(child.as_raw_handle() as HANDLE, limit) {' \
+  '    let _ = limit; match Ok::<bool, SysError>(true) {'
+knife break-an-exited-root ctrl_break_refuses_a_stale_or_foreign_identity \
+  '        if p.wait(Duration::ZERO)? {' \
+  '        if false && p.wait(Duration::ZERO)? {'
+knife break-a-non-root ctrl_break_refuses_a_member_it_did_not_start \
+  '        if !is_root {' \
+  '        if !is_root && false {'
 knife no-clear-last-error a_failure_without_last_error_is_unknown \
   '    unsafe { SetLastError(0) };' \
   '    let _ = SetLastError;'
