@@ -4,7 +4,7 @@
 守:
 - 白名單(根目錄 docs/**.md、SECURITY*.md、CODE_OF_CONDUCT*.md),其他都算程式;
 - main 推送 / 混合改動 / 算不出來 / 0 個檔 ⇒ false(寧可多跑);改名兩邊都要在名單內;
-- 文件檢查:相對連結、隱形字元、空檔、CRLF;
+- 文件檢查:相對連結、空檔、CRLF(隱形字元交給 main 那支測試,照 MD_SCAN_TESTS 直接跑);刪除 / 改名整份跑連結;
 - **守門**:程式 / 測試裡寫到名單內檔名 ⇒ 紅(之後有人讀 docs/ 底下的檔,要把那個檔移出名單);
 - ci.yml:docs job、smoke / fresh-machine needs docs、!cancelled() + 上游沒過就判紅、只改文件換 ubuntu 不跑。
 """
@@ -150,7 +150,6 @@ class Check(unittest.TestCase):
     def test_each_problem_is_red(self):
         cases = {
             "broken relative link": b"# x\n\n[gone](nope.md)\n",
-            "invisible character": ("# x\n\nzero" + chr(0x200B) + "width\n").encode(),
             "CR line endings": b"# x\r\n\r\nline\r\n",
             "empty": b"\n\n",
         }
@@ -159,6 +158,60 @@ class Check(unittest.TestCase):
                 rc, out, _ = self._run({"docs/bad.md": data})
                 self.assertEqual(rc, 1, out)
                 self.assertIn(want, out)
+
+    def test_md_scan_tests_list_is_complete(self):
+        # 043dd #504 High / a63ab:只改文件時直接跑 main 上掃 .md 的測試,不自己重寫。
+        # 「讀 git ls-files 又看 .md」的測試都要在 MD_SCAN_TESTS(之後新增一支這種測試卻沒列進來 ⇒ 紅)
+        found = []
+        for f in sorted((ROOT / "aib" / "tests").glob("test-*.py")) + sorted((ROOT / "tests").glob("test_*.py")):
+            rel = f.relative_to(ROOT).as_posix()
+            if rel == "aib/tests/test-docs-only-ci-1ced7-1108.py":
+                continue
+            t = f.read_text(encoding="utf-8")
+            if "ls-files" in t and re.search(r"[\"']\.md[\"']", t):
+                found.append(rel)
+        self.assertEqual(sorted(do.MD_SCAN_TESTS), found)
+        for t in do.MD_SCAN_TESTS:
+            self.assertTrue((ROOT / t).is_file(), t)
+        rc, out, _ = cli("md-tests")
+        self.assertEqual((rc, out.split()), (0, list(do.MD_SCAN_TESTS)))
+
+    def test_a_delete_rechecks_every_whitelisted_doc(self):
+        # a63ab 裁示「有刪除 / 改名就整份跑」:沒改到的白名單文件裡本來就斷的連結也要報
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td) / "r"
+            (r / "docs").mkdir(parents=True)
+            (r / "docs" / "gone.md").write_text("# gone\n", encoding="utf-8")
+            (r / "docs" / "other.md").write_text("# other\n\n[x](missing.md)\n", encoding="utf-8")
+            git(r, "init", "-q", "-b", "main")
+            git(r, "add", "-A")
+            git(r, "commit", "-qm", "base")
+            base = git(r, "rev-parse", "HEAD")
+            git(r, "rm", "-q", "docs/gone.md")
+            git(r, "commit", "-qm", "rm")
+            rc, out, _ = cli("check", "--base", base, "--head", "HEAD", "--root", str(r))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/other.md:3: broken relative link missing.md", out)
+
+    def test_deleting_a_doc_that_another_md_links_to_is_red(self):
+        # 043dd #504 Medium:刪 / 改名文件,別的 md 連過來的連結斷了要查得到
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td) / "r"
+            (r / "docs").mkdir(parents=True)
+            (r / "docs" / "gone.md").write_text("# gone\n", encoding="utf-8")
+            (r / "docs" / "keep.md").write_text("# keep\n\n[g](gone.md#x)\n", encoding="utf-8")
+            (r / "README.md").write_text("# r\n\n[g](docs/gone.md)\n[already broken](nope.md)\n", encoding="utf-8")
+            git(r, "init", "-q", "-b", "main")
+            git(r, "add", "-A")
+            git(r, "commit", "-qm", "base")
+            base = git(r, "rev-parse", "HEAD")
+            git(r, "rm", "-q", "docs/gone.md")
+            git(r, "commit", "-qm", "rm")
+            rc, out, _ = cli("check", "--base", base, "--head", "HEAD", "--root", str(r))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/keep.md:3: broken relative link gone.md#x", out)
+            self.assertIn("README.md:3: links to deleted file docs/gone.md", out)
+            self.assertNotIn("nope.md", out, "白名單外的 md 只報連到這次刪掉的檔,本來就斷的不算")
 
     def test_check_refuses_a_change_that_is_not_docs_only(self):
         rc, out, _ = self._run({"docs/ok.md": b"# ok\n", "x.py": b"x = 1\n"})
@@ -217,6 +270,8 @@ class Workflow(unittest.TestCase):
         self.assertIn("*) out=docs_only=false", t, "輸出不是 docs_only=true 就當 false")
         self.assertIn("docs_only.py check", t)
         self.assertIn("if: steps.d.outputs.docs_only == 'true'", t)
+        self.assertIn("docs_only.py md-tests", t, "只改文件時照清單直接跑 main 掃 .md 的測試")
+        self.assertIn('python3 "$t" || {', t)
 
     def test_required_cells_depend_on_docs_and_propagate_failure(self):
         for job in ("smoke", "fresh-machine"):

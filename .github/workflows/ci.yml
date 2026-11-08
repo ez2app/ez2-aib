@@ -71,6 +71,16 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: python3 aib/tools/release/docs_only.py check --base "$BASE" --head "$HEAD"
+      # 043dd #504 審 / a63ab 裁示:main 推送時會掃 .md 的測試(清單在 docs_only.py MD_SCAN_TESTS,守門測試管名單),
+      #   只改文件時這裡逐支直接跑同一支,不自己重寫那些檢查(約 20 秒)
+      - name: tests main runs over .md files
+        if: steps.d.outputs.docs_only == 'true'
+        run: |
+          rc=0
+          for t in $(python3 aib/tools/release/docs_only.py md-tests); do
+            echo "::group::$t"; python3 "$t" || { echo "::error::$t failed"; rc=1; }; echo "::endgroup::"
+          done
+          exit $rc
       - name: not docs-only
         if: steps.d.outputs.docs_only != 'true'
         run: echo "::notice::not a docs-only change; smoke / fresh-machine run as usual"

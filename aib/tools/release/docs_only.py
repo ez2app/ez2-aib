@@ -6,7 +6,9 @@
     python3 aib/tools/release/docs_only.py decide --event pull_request --base <sha> --head <sha>
         印 docs_only=true|false(給 $GITHUB_OUTPUT),原因印到 stderr
     python3 aib/tools/release/docs_only.py check --base <sha> --head <sha>
-        只改文件時才跑:改到的 md 裡相對連結都在、沒有隱形字元、不是空檔、換行是 LF;有問題 rc 1
+        只改文件時才跑:改到的 md 裡相對連結都在、不是空檔、換行是 LF;有刪除 / 改名時整份白名單跑連結檢查
+    python3 aib/tools/release/docs_only.py md-tests
+        列出 main 推送時會掃 .md 的測試(隱形字元等);只改文件時 docs job 逐支直接跑,不在這裡重寫
 
 規則:
 - **白名單**,不在名單內的都算程式。名單只放已核實沒有程式 / 測試讀的純文件:
@@ -35,7 +37,10 @@ RC_OK, RC_BAD, RC_USAGE = 0, 1, 2
 # 白名單(fnmatch,* 不跨目錄;docs/ 底下用前綴判斷,任意深度)
 DOC_PREFIXES = ("docs/",)
 DOC_ROOT_GLOBS = ("SECURITY*.md", "CODE_OF_CONDUCT*.md")
-INVISIBLE = tuple(chr(c) for c in (0x200B, 0x202E, 0x2060, 0xFEFF))
+# main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
+# 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
+# 守門測試會找「讀 git ls-files 又看 .md」的測試,不在這份清單就紅。
+MD_SCAN_TESTS = ("aib/tests/test-invisible-chars-d07f9-1021.py",)
 LINK = re.compile(r"\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 
@@ -102,10 +107,15 @@ def check_file(root, rel):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         return bad + ["%s: not UTF-8 (%s)" % (rel, e)]
-    for n, line in enumerate(text.splitlines(), 1):
-        for ch in INVISIBLE:
-            if ch in line:
-                bad.append("%s:%d: invisible character U+%04X" % (rel, n, ord(ch)))
+    bad += ["%s:%d: broken relative link %s" % (rel, n, target)
+            for n, target, dest in links(root, rel, text) if not os.path.exists(dest)]
+    return bad
+
+
+def links(root, rel, text):
+    """(行號, 原字面, 解析後的絕對路徑):md 裡的相對連結(略過 code fence、網址、頁內錨點)。"""
+    path = os.path.join(root, rel)
+    out = []
     in_fence = False
     for n, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith("```"):
@@ -122,14 +132,37 @@ def check_file(root, rel):
                 continue
             dest = os.path.normpath(os.path.join(root, t.lstrip("/")) if t.startswith("/")
                                     else os.path.join(os.path.dirname(path), t))
-            if not os.path.exists(dest):
-                bad.append("%s:%d: broken relative link %s" % (rel, n, target))
+            out.append((n, target, dest))
+    return out
+
+
+def after_delete(root, deleted):
+    """有刪除 / 改名時(043dd #504 審 Medium、a63ab 裁示「整份跑」):
+    1. 白名單內的文件**整份**跑連結檢查(不只改到的那幾個);
+    2. 其他 .md(README 等)連到這次刪掉的路徑也報(那些檔不在白名單,整份查會把本來就斷的算進來)。"""
+    if not deleted:
+        return []
+    out = git(root, "ls-files", "-z", "--", "*.md")
+    if out is None:
+        return ["cannot list the tracked .md files to re-check links after a delete"]
+    gone = {os.path.normpath(os.path.join(root, d)) for d in deleted}
+    bad = []
+    for rel in [f for f in out.split("\0") if f]:
+        try:
+            text = open(os.path.join(root, rel), encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        whole = is_doc(rel)
+        bad += ["%s:%d: %s %s" % (rel, n, "broken relative link" if whole else "links to deleted file", target)
+                for n, target, dest in links(root, rel, text)
+                if (whole and not os.path.exists(dest)) or (not whole and dest in gone)]
     return bad
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="docs_only", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("md-tests")
     d = sub.add_parser("decide")
     d.add_argument("--event", required=True)
     for p in (d, sub.add_parser("check")):
@@ -137,6 +170,9 @@ def main(argv=None):
         p.add_argument("--head", default="")
         p.add_argument("--root", default=".")
     a = ap.parse_args(argv)
+    if a.cmd == "md-tests":
+        print("\n".join(MD_SCAN_TESTS))
+        return RC_OK
     if a.cmd == "decide":
         files = changed_files(a.root, a.base, a.head) if a.event == "pull_request" else []
         ok, why = docs_only(a.event, files)
@@ -151,6 +187,9 @@ def main(argv=None):
     bad = []
     for rel in files:
         bad += check_file(a.root, rel)
+    for b in after_delete(a.root, [rel for rel in files if not os.path.exists(os.path.join(a.root, rel))]):
+        if b not in bad:
+            bad.append(b)
     for b in bad:
         print("::error::" + b)
     print("docs check: %d file(s), %d problem(s)" % (len(files), len(bad)))
