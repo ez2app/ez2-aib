@@ -40,6 +40,8 @@ DOC_ROOT_GLOBS = ("SECURITY*.md", "CODE_OF_CONDUCT*.md")
 # docs/ 底下但有程式 / 測試讀的檔(不算純文件,改它要跑全套)。新增一條要寫誰讀。
 DOC_EXCLUDE = (
     "docs/perf/timers.md",  # crates/aibd/src/timers.rs 的測試比對它跟 timers::ALL(ADR 0005,a63ab #510)
+    "docs/aibd/INSTALL.md",  # aib/tests/test-aibd-release-1ced7-1108.py D1 檢查(先對雜湊才執行、寫明沒簽章)
+    "docs/aibd/INSTALL.zh-TW.md",  # 同上(D1)
 )
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
