@@ -24,8 +24,13 @@ Rules (DECISION-20 + ADR 0007):
 - macOS answers killpg with EPERM (not ESRCH) when only zombies are left in a group. EPERM is "to be checked",
   never "done" and never "failed": the group's members are listed again; only zombies left = stopped, a live
   member or a listing that fails = unverified (with the pids).
+- Interrupted while waiting (Ctrl-C, a SIGTERM handler that raises, any BaseException): the group is stopped and
+  the leader reaped first, then the SAME exception is raised again with the StopReport as `exc.proc_group_stop`
+  and one line on stderr. SIGINT / SIGTERM arriving during that stop are held (main thread only) and delivered
+  to the previous handler afterwards, so a second Ctrl-C cannot cut the stop short (1ced7 / a63ab, 11-08).
 - Output goes to a temporary file, not a pipe: a grandchild that inherited stdout cannot make a finished command
-  look like a timeout (the "false timeout" in 043dd's scan).
+  look like a timeout (the "false timeout" in 043dd's scan). `output="inherit"` sends it straight to the caller's
+  stdout / stderr instead (live; still no pipe).
 - After a NORMAL exit, members still running in the group are stopped too (`leftovers="stop"`, the default) and
   reported, so a finished `cargo test` / `aib test` leaves nothing holding the machine. A caller that starts a
   daemon on purpose passes `leftovers="keep"`.
@@ -39,6 +44,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -249,45 +255,112 @@ class _Group:
 
 
 def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, leftovers="stop", stdin=None,
-              popen=subprocess.Popen):
-    """Run `argv` in a new session; see the module doc. `timeout` None = no limit (still stops leftovers)."""
+              output="capture", popen=subprocess.Popen):
+    """Run `argv` in a new session; see the module doc. `timeout` None = no limit (still stops leftovers).
+
+    output="capture" (default): stdout + stderr go to a temporary file and come back as `r.out`.
+    output="inherit": they go straight to the caller's stdout / stderr (live, no pipe, so a grandchild holding
+    them cannot fake a timeout either); `r.out` is "".
+    Interrupted while waiting (KeyboardInterrupt, a SIGTERM handler raising SystemExit, any BaseException):
+    the group is stopped and the leader reaped FIRST, then the same exception is raised again, carrying the
+    StopReport as `exc.proc_group_stop`; one line on stderr says what was stopped (1ced7 / a63ab #509 gap)."""
     if leftovers not in ("stop", "keep"):
         raise ValueError("leftovers must be 'stop' or 'keep'")
-    out_fh = tempfile.TemporaryFile()
+    if output not in ("capture", "inherit"):
+        raise ValueError("output must be 'capture' or 'inherit'")
+    out_fh = tempfile.TemporaryFile() if output == "capture" else None
     try:
+        io = {"stdout": out_fh, "stderr": subprocess.STDOUT} if out_fh is not None else {}
         try:
             p = popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin is None else stdin,
-                      stdout=out_fh, stderr=subprocess.STDOUT, start_new_session=True)
+                      start_new_session=True, **io)
         except (OSError, ValueError) as e:
             return Result(None, "", error="could not start %s: %s" % (argv[0] if argv else "?", e))
-        g = _Group(p)
-        timed_out, stop = False, None
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while not _exited_or_poll(p):
-            if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
-                break
-            time.sleep(POLL_S)
-        if timed_out:
-            stop = g.stop(grace)
-        elif leftovers == "stop" and POSIX:
-            rows = g.members(g.pgid)
-            if rows is None or [pid for pid in _live(rows) if pid != g.pgid]:
+        g = None
+        try:
+            g = _Group(p)
+            timed_out, stop = False, None
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while not _exited_or_poll(p):
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                time.sleep(POLL_S)
+            if timed_out:
                 stop = g.stop(grace)
-        elif leftovers == "stop":
-            # Windows: no process group to list, so leftovers are not checked at all — say so, never imply clean
-            stop = StopReport("unverified", "windows_leftovers_not_checked")
+            elif leftovers == "stop" and POSIX:
+                rows = g.members(g.pgid)
+                if rows is None or [pid for pid in _live(rows) if pid != g.pgid]:
+                    stop = g.stop(grace)
+            elif leftovers == "stop":
+                # Windows: no process group to list, so leftovers are not checked at all — say so, never imply clean
+                stop = StopReport("unverified", "windows_leftovers_not_checked")
+        except BaseException as e:
+            _stop_then_reraise(p, g, grace, e)
         try:  # the first and only reap, after every signal has been sent
             p.wait(timeout=KILL_WAIT_S if timed_out else None)
         except subprocess.TimeoutExpired:
             pass
-        out_fh.seek(0)
-        out = out_fh.read().decode("utf-8", errors="replace")
+        out = ""
+        if out_fh is not None:
+            out_fh.seek(0)
+            out = out_fh.read().decode("utf-8", errors="replace")
         if timed_out:
             return Result(None, out, timed_out=True, error="timed out after %ss" % timeout, stop=stop)
         return Result(p.returncode, out, stop=stop)
     finally:
-        out_fh.close()
+        if out_fh is not None:
+            out_fh.close()
+
+
+# Signals deferred while an interrupted run stops its group: a second Ctrl-C (or a SIGTERM) must not cut the
+# stop short and leave the group behind. Only the main thread can swap handlers; elsewhere nothing is deferred.
+_DEFERRED = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM") if hasattr(signal, n))
+
+
+def _stop_then_reraise(p, g, grace, exc):
+    pending = []
+    saved = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in _DEFERRED:
+            try:
+                saved[sig] = signal.signal(sig, lambda s, f: pending.append(s))
+            except (ValueError, OSError):
+                pass
+    try:
+        try:
+            rep = (g if g is not None else _Group(p)).stop(grace)
+        except Exception as e:  # noqa: BLE001  the stop itself broke: say so, the original exception still wins
+            rep = StopReport("unverified", "stop_failed_after_interrupt: %s" % e.__class__.__name__)
+        try:
+            p.wait(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            exc.proc_group_stop = rep
+        except (AttributeError, TypeError):
+            pass
+        try:
+            sys.stderr.write("[proc_group] interrupted by %s: stopped group %s: %s %s%s\n" % (
+                exc.__class__.__name__, p.pid, rep.status, rep.why,
+                ", still running: %s" % rep.survivors if rep.survivors else ""))
+        except Exception:  # noqa: BLE001  a closed stderr must not hide the original exception
+            pass
+    finally:
+        for sig, h in saved.items():
+            try:
+                signal.signal(sig, h)
+            except (ValueError, OSError):
+                pass
+    # A signal that came in during the stop is delivered now, to the handler that was in place before.
+    for sig in pending:
+        h = saved.get(sig)
+        if h is signal.SIG_DFL:
+            signal.raise_signal(sig)       # e.g. a plain SIGTERM: the process ends, as it would have
+        elif callable(h) and h is not signal.default_int_handler:
+            h(sig, None)                   # the caller's own handler (it may raise; the original is its context)
+        # SIG_IGN, or Python's default Ctrl-C handler: the exception raised below already is that interrupt
+    raise exc
 
 
 def _exited_or_poll(p):

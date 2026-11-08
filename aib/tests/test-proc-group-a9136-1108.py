@@ -221,6 +221,140 @@ class LeaderStateWithoutOsWaitid(unittest.TestCase):
         self.assertEqual(r.stop.status, "stopped", r)
 
 
+DRIVER = r"""
+import json, os, signal, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import proc_group as pg
+mode, pidfile = sys.argv[2], sys.argv[3]
+if mode == "term":
+    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(143))
+def poke(sig, at):
+    def go():
+        time.sleep(at)
+        os.kill(os.getpid(), sig)
+    threading.Thread(target=go, daemon=True).start()
+# the grandchild writes its pid, the leader waits; with "trap" the whole group ignores TERM (KILL needed)
+trap = "trap '' TERM; " if mode == "twice" else ""
+cmd = ["/bin/sh", "-c", trap + "sleep 60 & echo $! > " + pidfile + "; wait"]
+if mode == "twice":
+    poke(signal.SIGINT, 0.5)
+    poke(signal.SIGINT, 1.0)   # during the 1.5 s grace of the stop the first one started
+else:
+    poke(signal.SIGTERM if mode == "term" else signal.SIGINT, 0.5)
+got = {"exc": None}
+try:
+    pg.run_group(cmd, timeout=30, grace=1.5)
+except BaseException as e:
+    rep = getattr(e, "proc_group_stop", None)
+    got = {"exc": e.__class__.__name__, "code": getattr(e, "code", None),
+           "status": rep.status if rep else None, "why": rep.why if rep else None,
+           "sigint_restored": signal.getsignal(signal.SIGINT) is signal.default_int_handler}
+print(json.dumps(got))
+"""
+
+
+@unittest.skipUnless(POSIX, "process groups are POSIX")
+class Interrupted(unittest.TestCase):
+    """1ced7 / a63ab 11-08 (#509 gap): interrupted while waiting, run_group stops the group and reaps the leader
+    BEFORE the exception leaves; the same exception comes out with the StopReport on it."""
+
+    def setUp(self):
+        import tempfile
+        self.td = tempfile.mkdtemp(prefix="pg-int-")
+        self.pidfile = os.path.join(self.td, "gc")
+        self.gc = None
+
+    def tearDown(self):
+        if self.gc:
+            try:
+                os.kill(self.gc, signal.SIGKILL)
+            except OSError:
+                pass
+        import shutil
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def drive(self, mode):
+        import json
+        p = subprocess.run([sys.executable, "-c", DRIVER, str(ROOT / "src" / "cockpit"), mode, self.pidfile],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        try:
+            self.gc = int(Path(self.pidfile).read_text().strip())
+        except (OSError, ValueError):
+            self.gc = None
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return json.loads(p.stdout.strip().splitlines()[-1]), p.stderr
+
+    def test_ctrl_c_stops_the_grandchild_before_the_interrupt_leaves(self):
+        got, err = self.drive("int")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertEqual(got["status"], "stopped", got)
+        self.assertIsNotNone(self.gc, "the grandchild never started")
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived the interrupt" % self.gc)
+        self.assertIn("[proc_group] interrupted by KeyboardInterrupt", err)
+        self.assertTrue(got["sigint_restored"], got)
+
+    def test_a_sigterm_handler_that_exits_still_gets_the_group_stopped(self):
+        got, _ = self.drive("term")
+        self.assertEqual((got["exc"], got["code"]), ("SystemExit", 143), got)
+        self.assertEqual(got["status"], "stopped", got)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived SIGTERM" % self.gc)
+
+    def test_a_second_ctrl_c_during_the_stop_does_not_cut_it_short(self):
+        got, _ = self.drive("twice")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertEqual(got["status"], "stopped", got)   # TERM ignored: only the KILL after the grace stops it
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived the second Ctrl-C" % self.gc)
+        self.assertTrue(got["sigint_restored"], got)
+
+    def test_any_base_exception_is_raised_again_as_the_same_object(self):
+        class Boom(BaseException):
+            pass
+
+        boom = Boom()
+        calls = []
+        real = pg._exited_or_poll
+
+        def poll(p):
+            calls.append(p.pid)
+            if len(calls) == 3:
+                raise boom
+            return real(p)
+
+        pg._exited_or_poll = poll
+        try:
+            with self.assertRaises(Boom) as cm:
+                pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s; wait" % self.pidfile], timeout=30,
+                             grace=0.5)
+        finally:
+            pg._exited_or_poll = real
+        self.assertIs(cm.exception, boom)
+        self.assertEqual(boom.proc_group_stop.status, "stopped", boom.proc_group_stop)
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        self.assertTrue(gone_within(self.gc))
+
+
+class Output(unittest.TestCase):
+    @unittest.skipUnless(POSIX, "uses /bin/sh")
+    def test_inherit_writes_live_to_the_callers_streams_and_returns_no_out(self):
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import proc_group as pg; "
+                "r = pg.run_group(['/bin/sh', '-c', 'echo live-out; echo live-err >&2'], timeout=10, "
+                "output='inherit'); print('rc=%s out=%r' % (r.rc, r.out))")
+        p = subprocess.run([sys.executable, "-c", code, str(ROOT / "src" / "cockpit")], capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.splitlines(), ["live-out", "rc=0 out=''"])
+        self.assertEqual(p.stderr.strip(), "live-err")
+
+    @unittest.skipUnless(POSIX, "uses /bin/sh")
+    def test_capture_stays_the_default(self):
+        r = pg.run_group(["/bin/sh", "-c", "echo hi; echo there >&2"], timeout=10)
+        self.assertEqual((r.rc, sorted(r.out.split())), (0, ["hi", "there"]))
+
+    def test_output_must_be_capture_or_inherit(self):
+        with self.assertRaises(ValueError):
+            pg.run_group(["true"], timeout=1, output="pipe")
+
+
 class FakeP:
     pid = 424242
 
