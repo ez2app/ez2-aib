@@ -81,24 +81,86 @@ pub fn version_line() -> String {
     )
 }
 
+/// What [`check_process_management`] saw: the stop, and whether the tree's
+/// child had reported it started before the stop (bb7dc #549 3bacd239: a
+/// stop that only met the root is not a tree stopped).
+#[derive(Debug)]
+pub struct Checked {
+    pub stop: Stop,
+    pub child_started: bool,
+}
+
+/// How long the check waits for its child to report it started.
+pub const CHILD_WAIT: Duration = Duration::from_secs(3);
+
+/// The check tree: a shell that starts `sleep`, then writes the child's pid
+/// to the marker file (`$1`) and waits.
+pub const CHECK_SCRIPT: &str = "sleep 30 & echo $! > \"$1\"; wait";
+
 /// Start one small tree (a shell with a child) and stop it, the way a
-/// session is started and stopped. Blocks about 2 s + the stop's checks.
+/// session is started and stopped: the stop comes only once the child has
+/// reported it started, or after [`CHILD_WAIT`] (then `child_started` is
+/// false and the row cannot say a tree was stopped). Blocks at most about
+/// 3 s + 2 s + the stop's checks.
 pub fn check_process_management(
     spawn: SpawnFn,
     lineage: Option<Arc<Lineage>>,
-) -> Result<Stop, SpawnFail> {
+) -> Result<Checked, SpawnFail> {
+    check_tree(spawn, lineage, CHECK_SCRIPT, CHILD_WAIT)
+}
+
+/// [`check_process_management`] with the script and the wait given (tests:
+/// a script whose child never starts).
+#[doc(hidden)]
+pub fn check_tree(
+    spawn: SpawnFn,
+    lineage: Option<Arc<Lineage>>,
+    script: &str,
+    wait: Duration,
+) -> Result<Checked, SpawnFail> {
+    let marker = std::env::temp_dir().join(format!(
+        "aibd-selfcheck-{}-{}.child",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    let _ = std::fs::remove_file(&marker);
     let spec = Spec {
         id: format!("selfcheck-{}", std::process::id()),
-        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30 & wait".into()],
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            script.into(),
+            "sh".into(),
+            marker.to_string_lossy().into_owned(),
+        ],
         cwd: std::env::temp_dir(),
         env: Vec::new(),
     };
     let mut run = spawn(&spec, lineage)?;
-    Ok(run.stop(Duration::from_secs(2)))
+    let started = || {
+        std::fs::read_to_string(&marker)
+            .ok()
+            .is_some_and(|s| s.trim().parse::<u32>().is_ok())
+    };
+    let op = crate::timers::SELFCHECK_CHILD_WAIT.begin(Some(std::time::Instant::now() + wait));
+    let mut child_started = started();
+    while !child_started && op.tick() {
+        child_started = started();
+    }
+    drop(op);
+    // stopped whatever the handshake said: never leave the check tree behind
+    let stop = run.stop(Duration::from_secs(2));
+    let _ = std::fs::remove_file(&marker);
+    Ok(Checked {
+        stop,
+        child_started,
+    })
 }
 
 /// The `process_management` row from [`check_process_management`]'s answer.
-pub fn process_row(r: &Result<Stop, SpawnFail>) -> Row {
+pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
     const N: &str = "process_management";
     match r {
         Err(f) if f.tag == "unsupported_platform" => Row::new(
@@ -119,7 +181,9 @@ pub fn process_row(r: &Result<Stop, SpawnFail>) -> Row {
             row.notes.push(("tag", f.tag.clone()));
             row
         }
-        Ok(stop) if !stop.survivors.is_empty() || stop.status == StopStatus::TreeNotClean => {
+        Ok(Checked { stop, .. })
+            if !stop.survivors.is_empty() || stop.status == StopStatus::TreeNotClean =>
+        {
             let mut row = Row::new(
                 N,
                 Status::Failed("tree_not_clean".into()),
@@ -133,7 +197,25 @@ pub fn process_row(r: &Result<Stop, SpawnFail>) -> Row {
                 .push(("survivors", stop.survivors.len().to_string()));
             row
         }
-        Ok(stop) => match &stop.status {
+        // only the root was there to stop: not a tree stopped (bb7dc #549)
+        Ok(Checked {
+            child_started: false,
+            stop,
+        }) => {
+            let mut row = Row::new(
+                N,
+                Status::Unverified,
+                format!(
+                    "the check tree's child did not report it started within {} s: \
+                     only the root was stopped (tree of {}), not a tree",
+                    CHILD_WAIT.as_secs(),
+                    stop.tree_size
+                ),
+            );
+            row.notes.push(("reason", "child_not_started".to_string()));
+            row
+        }
+        Ok(Checked { stop, .. }) => match &stop.status {
             StopStatus::Clean => Row::new(
                 N,
                 Status::Ok,
@@ -340,17 +422,21 @@ mod tests {
         assert_eq!(exit_code(&rows), 1);
     }
 
-    fn stop(status: StopStatus, survivors: Vec<u32>) -> Stop {
-        Stop {
-            status,
-            survivors,
-            tree_size: 2,
-            signals: Vec::new(),
-            blind_spots: Vec::new(),
+    /// A stop of a tree whose child reported it started.
+    fn stop(status: StopStatus, survivors: Vec<u32>) -> Checked {
+        Checked {
+            stop: Stop {
+                status,
+                survivors,
+                tree_size: 2,
+                signals: Vec::new(),
+                blind_spots: Vec::new(),
+            },
+            child_started: true,
         }
     }
 
-    fn fail(tag: &str, left: Option<u32>) -> Result<Stop, SpawnFail> {
+    fn fail(tag: &str, left: Option<u32>) -> Result<Checked, SpawnFail> {
         Err(SpawnFail {
             tag: tag.into(),
             left_running: left,
@@ -361,7 +447,7 @@ mod tests {
     #[test]
     fn process_management_reports_the_real_stop_never_better() {
         let un = |r: &str| StopStatus::Unverified(r.into());
-        let label = |r: Result<Stop, SpawnFail>| process_row(&r).status.label();
+        let label = |r: Result<Checked, SpawnFail>| process_row(&r).status.label();
         assert_eq!(label(Ok(stop(un("observed_clean"), vec![]))), "unverified");
         assert_eq!(
             process_row(&Ok(stop(un("observed_clean"), vec![]))).notes,
@@ -384,6 +470,31 @@ mod tests {
         assert_eq!(label(fail("unsupported_platform", None)), "not_wired");
         assert_eq!(label(fail("enoent", None)), "failed:spawn_failed");
         assert_eq!(label(fail("os_1", Some(9))), "failed:spawn_left_running");
+    }
+
+    /// bb7dc #549 3bacd239: a stop that only met the root (the child never
+    /// reported it started) is `unverified` / `child_not_started`, never ok;
+    /// a survivor still fails the row.
+    #[test]
+    fn a_tree_whose_child_never_started_is_never_reported_as_stopped() {
+        let only_root = |status, survivors| {
+            let mut c = stop(status, survivors);
+            c.child_started = false;
+            c.stop.tree_size = 1;
+            process_row(&Ok(c))
+        };
+        for st in [
+            StopStatus::Clean,
+            StopStatus::Unverified("observed_clean".into()),
+        ] {
+            let row = only_root(st, vec![]);
+            assert_eq!(row.status.label(), "unverified");
+            assert_eq!(row.notes, vec![("reason", "child_not_started".to_string())]);
+        }
+        assert_eq!(
+            only_root(StopStatus::Clean, vec![5]).status.label(),
+            "failed:tree_not_clean"
+        );
     }
 
     #[test]

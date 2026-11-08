@@ -152,7 +152,18 @@ pub static SESSION_SLOT_RESCAN: Timer = Timer::operation(
     "re-check a stopped session whose stop could not show the tree gone, so its slot can come back (a63ab 11-09)",
 );
 
-pub static ALL: &[&Timer] = &[&TREE_CANCEL_WAIT, &SESSION_SLOT_RESCAN];
+pub static SELFCHECK_CHILD_WAIT: Timer = Timer::operation(
+    "selfcheck.child_wait",
+    ms(20),
+    secs(3),
+    "wait for the selfcheck tree's child to report it started, before stopping the tree (bb7dc #549)",
+);
+
+pub static ALL: &[&Timer] = &[
+    &TREE_CANCEL_WAIT,
+    &SESSION_SLOT_RESCAN,
+    &SELFCHECK_CHILD_WAIT,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sample {
