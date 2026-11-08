@@ -184,7 +184,9 @@ def field(job, key):
 
 
 def ctx_for(event="pull_request", action="synchronize", draft=False, base="main", head="feat/x", labels=(),
-            stale="false", os="macos-latest", python="3.12", changes=None, number=7, docs_only="false"):
+            stale="false", os="macos-latest", python="3.12", changes=None, number=7, docs_only="false", rust_only="false", light=None):
+    if light is None:  # 照 ci.yml docs job:light = docs_only 或 rust_only(#538)
+        light = "true" if "true" in (docs_only, rust_only) else "false"
     pr = {"number": number, "draft": draft, "labels": [{"name": n} for n in labels], "base": {"ref": base}}
     gh = {"event_name": event, "workflow": "ci", "run_id": 99, "sha": "abc", "ref": "refs/heads/main",
           "head_ref": head if event == "pull_request" else "", "base_ref": base if event == "pull_request" else "",
@@ -192,7 +194,8 @@ def ctx_for(event="pull_request", action="synchronize", draft=False, base="main"
                     "changes": changes}}
     return {"github": gh, "matrix": {"os": os, "python": python},
             "needs": {"tip": {"result": "success", "outputs": {"stale": stale}},
-                      "docs": {"result": "success", "outputs": {"docs_only": docs_only}}}}
+                      "docs": {"result": "success", "outputs": {"docs_only": docs_only, "rust_only": rust_only,
+                                                                "light": light}}}}
 
 
 def cell(job, **kw):
@@ -253,14 +256,23 @@ class MacosCells(unittest.TestCase):
         self.assert_cells(set(self.SMOKE_MAC), True, event="push")
         self.assert_cells(set(), False, event="push", stale="true")       # DECISION-17 照舊
 
+    LIGHT = ({"docs_only": "true"}, {"rust_only": "true"})   # #504 只改文件、#538 只改 Rust
+
     def test_docs_only_runs_no_cell_at_all(self):
-        # #504:只改文件 ⇒ 六格 + fresh-machine 都換到 ubuntu 只印一行(macOS 也不排)
-        for kw in ({}, {"draft": True}, {"labels": ("full-ci",)}, {"event": "push"}, {"head": "int/x"}):
-            with self.subTest(kw=kw):
-                self.assert_cells(set(), False, docs_only="true", **kw)
-                for py in self.SMOKE_MAC:
-                    self.assertEqual(cell("smoke", os="ubuntu-latest", python=py, docs_only="true", **kw),
-                                     ("ubuntu-latest", False))
+        # #504:只改文件 ⇒ 六格 + fresh-machine 都換到 ubuntu 只印一行(macOS 也不排);#538 只改 Rust 同
+        for light in self.LIGHT:
+            for kw in ({}, {"draft": True}, {"labels": ("full-ci",)}, {"event": "push"}, {"head": "int/x"}):
+                with self.subTest(light=light, kw=kw):
+                    self.assert_cells(set(), False, **light, **kw)
+                    for py in self.SMOKE_MAC:
+                        self.assertEqual(cell("smoke", os="ubuntu-latest", python=py, **light, **kw),
+                                         ("ubuntu-latest", False))
+
+    def test_cells_follow_light_not_docs_only(self):
+        # #538:格子只看 docs job 的 light;docs_only / rust_only 都 false 但 light 被算成 true 也不跑,反之照跑
+        self.assert_cells(set(), False, light="true")
+        self.assert_cells({"3.12"}, False, docs_only="true", light="false")
+        self.assert_cells({"3.12"}, False, rust_only="true", light="false")
 
     def test_ubuntu_cells_always_run(self):
         for kw in ({}, {"draft": True}, {"base": "other"}, {"event": "push", "stale": "true"}):
@@ -287,7 +299,7 @@ def fired(job, **kw):
     run = truthy(ev(field(job, "RUN_CELL"), c))
     c["env"] = {"RUN_CELL": "true" if run else "false"}
     return [n for n, cond in steps(job)
-            if cond and ("RUN_CELL != 'true'" in cond or cond == "needs.docs.outputs.docs_only == 'true'")
+            if cond and ("RUN_CELL != 'true'" in cond or cond == "needs.docs.outputs.light == 'true'")
             and truthy(ev(cond, c))]
 
 
@@ -295,7 +307,7 @@ class SkipMessages(unittest.TestCase):
     """bb7dc #512 審:沒跑的格子印的原因要對 —— 一般 PR / 草稿 / 疊著的不能印「main moved on」。"""
 
     STALE = "macOS cell skipped, main moved on (macos_unverified)"
-    DOCS = "docs-only change, nothing else to run"
+    DOCS = "docs-only or Rust-only change, nothing else to run"
 
     def test_pr_skips_say_pr_not_main_moved_on(self):
         for kw in ({}, {"draft": True}, {"base": "other"}):
@@ -311,12 +323,13 @@ class SkipMessages(unittest.TestCase):
 
     def test_docs_only_says_docs_only_only(self):
         # 只改文件時,即使同時是草稿 / 疊著的 / main 已前進,也只印「只改文件」那一行
-        for kw in ({}, {"draft": True}, {"base": "other"}, {"event": "push", "stale": "true"}):
+        for light, kw in ((l, k) for l in MacosCells.LIGHT
+                          for k in ({}, {"draft": True}, {"base": "other"}, {"event": "push", "stale": "true"})):
             for job, os_, py in (("fresh-machine", "macos-latest", "3.12"), ("fresh-machine", "ubuntu-latest", "3.12"),
                                  ("smoke", "macos-latest", "3.9"), ("smoke", "macos-latest", "3.12"),
                                  ("smoke", "ubuntu-latest", "3.12")):
-                with self.subTest(kw=kw, job=job, os=os_, py=py):
-                    self.assertEqual(fired(job, os=os_, python=py, docs_only="true", **kw), [self.DOCS])
+                with self.subTest(light=light, kw=kw, job=job, os=os_, py=py):
+                    self.assertEqual(fired(job, os=os_, python=py, **light, **kw), [self.DOCS])
 
     def test_cells_that_run_print_no_skip_message(self):
         self.assertEqual(fired("smoke", python="3.12"), [])
