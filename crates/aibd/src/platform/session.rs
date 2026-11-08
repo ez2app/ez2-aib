@@ -12,6 +12,7 @@
 //! Every call that can block ([`Running::stop`], [`ExitWait::wait`]) is run by
 //! the API layer off the async runtime (`spawn_blocking` or its own thread).
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,7 +91,16 @@ pub const UNVERIFIED_REASONS: &[&str] = &[
     // auto-reaps): the group number is no longer provably ours, so no group
     // signal was sent after that point
     "root_identity_lost",
+    // the stop itself failed (an OS error while listing / signalling)
+    "stop_failed",
 ];
+
+/// Reasons after which nothing can say whether the tree is still there: the
+/// slot is kept (H2, 043dd #539 M1), whatever `survivors` says.
+pub const SLOT_HOLDING_REASONS: &[&str] = &["root_identity_lost", "stop_failed"];
+
+/// The marker every session process inherits (`AIBD_SESSION=<id>`).
+pub const SESSION_ENV: &str = "AIBD_SESSION";
 
 /// Windows reason prefix: `job_error:<tag>` (043dd).
 pub const JOB_ERROR_PREFIX: &str = "job_error:";
@@ -145,7 +155,11 @@ impl Stop {
     /// down, not that the tree is proven gone (bb7dc 11-09): blind spots stay
     /// in the record, and the limit is not a resource-isolation boundary.
     pub fn releases_slot(&self) -> bool {
-        self.survivors.is_empty() && self.status != StopStatus::TreeNotClean
+        let unknowable = self
+            .status
+            .reason()
+            .is_some_and(|r| r.starts_with(JOB_ERROR_PREFIX) || SLOT_HOLDING_REASONS.contains(&r));
+        self.survivors.is_empty() && self.status != StopStatus::TreeNotClean && !unknowable
     }
 
     /// The macOS / POSIX mapping of a tree [`super::tree::Report`].
@@ -177,6 +191,10 @@ impl Stop {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnFail {
     pub tag: String,
+    /// A process was started but could not be put under control nor
+    /// confirmed gone (Windows: `Spawn(NotReaped)`, 043dd #539 M2): the API
+    /// keeps the slot and records it. `None` = nothing is left running.
+    pub left_running: Option<u32>,
 }
 
 impl SpawnFail {
@@ -190,8 +208,51 @@ impl SpawnFail {
                 None => "spawn_error".to_owned(),
             },
         };
-        SpawnFail { tag }
+        SpawnFail {
+            tag,
+            left_running: None,
+        }
     }
+}
+
+/// Is `k` one of aibd's own variables? Case-insensitive on every platform:
+/// Windows names are, and on POSIX dropping `aibd_x` too costs nothing.
+pub fn is_aibd_key(k: &OsStr) -> bool {
+    k.to_string_lossy()
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("AIBD_"))
+}
+
+fn same_key(a: &OsStr, b: &OsStr) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    } else {
+        a == b
+    }
+}
+
+/// The child's whole environment (contract §1, one rule for both platforms,
+/// 043dd #539 M3): `parent` (aibd's own) minus every `AIBD_*`, then the
+/// request's `env` (replacing a parent entry of the same name; Windows
+/// compares names without case), then `AIBD_SESSION=<id>` last.
+pub fn child_env(
+    spec: &Spec,
+    parent: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let mut out: Vec<(OsString, OsString)> = parent
+        .into_iter()
+        .filter(|(k, _)| !is_aibd_key(k))
+        .filter(|(k, _)| !spec.env.iter().any(|(rk, _)| same_key(k, OsStr::new(rk))))
+        .collect();
+    out.extend(
+        spec.env
+            .iter()
+            .filter(|(k, _)| !is_aibd_key(OsStr::new(k)))
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    out.push((OsString::from(SESSION_ENV), OsString::from(&spec.id)));
+    out
 }
 
 /// Waits for the root's exit while someone else may hold the [`Running`]
@@ -256,6 +317,12 @@ mod tests {
         let left = stop(StopStatus::TreeNotClean, vec![42]);
         assert!(!left.confirmed());
         assert!(!left.releases_slot());
+        // nothing knowable: Windows job errors and the H1 latch keep the slot
+        assert!(
+            !stop(StopStatus::Unverified("job_error:terminate".into()), vec![]).releases_slot()
+        );
+        assert!(!stop(StopStatus::Unverified("root_identity_lost".into()), vec![]).releases_slot());
+        assert!(!stop(StopStatus::Unverified("stop_failed".into()), vec![]).releases_slot());
         // a status that disagrees with its survivor list never frees the slot
         assert!(!stop(StopStatus::TreeNotClean, vec![]).releases_slot());
         assert!(!stop(StopStatus::Unverified("x".into()), vec![7]).releases_slot());
@@ -325,6 +392,51 @@ mod tests {
         ] {
             assert!(UNVERIFIED_REASONS.contains(&g), "{g} missing");
         }
+    }
+
+    fn os(a: &str, b: &str) -> (OsString, OsString) {
+        (a.into(), b.into())
+    }
+
+    #[test]
+    fn child_env_drops_aibd_keys_applies_the_request_and_sets_the_marker_last() {
+        let spec = Spec {
+            id: "s_0123456789abcdef".into(),
+            argv: vec!["/bin/true".into()],
+            cwd: "/".into(),
+            env: vec![("LANG".into(), "C".into()), ("MY".into(), "1".into())],
+        };
+        let parent = vec![
+            os("AIBD_TOKEN_FILE", "x"),
+            os("aibd_lower", "x"),
+            os("AIBD_SESSION", "s_parent"),
+            os("LANG", "en_US.UTF-8"),
+            os("HOME", "/h"),
+        ];
+        let env = child_env(&spec, parent);
+        let keys: Vec<String> = env
+            .iter()
+            .map(|(k, _)| k.to_string_lossy().into())
+            .collect();
+        assert_eq!(keys, ["HOME", "LANG", "MY", "AIBD_SESSION"], "{env:?}");
+        assert_eq!(
+            env.last().unwrap(),
+            &os("AIBD_SESSION", "s_0123456789abcdef")
+        );
+        assert!(env.contains(&os("LANG", "C")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn child_env_replaces_a_parent_name_without_case_on_windows() {
+        let spec = Spec {
+            id: "s_1".into(),
+            argv: vec!["C:\\x.exe".into()],
+            cwd: "C:\\".into(),
+            env: vec![("TEMP".into(), "D:\\t".into())],
+        };
+        let env = child_env(&spec, vec![os("Temp", "C:\\t"), os("Aibd_X", "1")]);
+        assert_eq!(env, vec![os("TEMP", "D:\\t"), os("AIBD_SESSION", "s_1")]);
     }
 
     #[test]
