@@ -19,16 +19,16 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 
 ```sh
 V=0.2.0-preview.1                                   # 要裝的版本
-T=aarch64-apple-darwin                              # 這個預覽版只有 Apple 晶片
+F=aibd-$V-aarch64-apple-darwin                      # 這個預覽版只有 Apple 晶片
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
-cd ~/Downloads
-curl -fLO "$B/aibd-$V-$T" && curl -fLO "$B/SHA256SUMS"
-grep " aibd-$V-$T\$" SHA256SUMS | shasum -a 256 -c -    # 一定要印 OK
-chmod +x "aibd-$V-$T"
-mkdir -p ~/.local/bin && mv "aibd-$V-$T" ~/.local/bin/aibd
-~/.local/bin/aibd --version
-~/.local/bin/aibd selfcheck
+cd ~/Downloads \
+  && curl -fLO "$B/$F" && curl -fLO "$B/SHA256SUMS" \
+  && grep " $F\$" SHA256SUMS | shasum -a 256 -c - \
+  && chmod +x "$F" && mkdir -p ~/.local/bin && mv "$F" ~/.local/bin/aibd \
+  && ~/.local/bin/aibd --version && ~/.local/bin/aibd selfcheck
 ```
+整段一起貼上。下載失敗或檢查碼不一致時會停在那一步:不會安裝、也不會執行。想直接打 `aibd`,要把 `~/.local/bin`
+加進 PATH;不加也可以用完整路徑 `~/.local/bin/aibd`。
 
 用瀏覽器下載(不是 curl)的話,macOS 會在檔案上做記號;核對 OK 之後用
 `xattr -d com.apple.quarantine ~/.local/bin/aibd` 拿掉。
@@ -36,20 +36,25 @@ mkdir -p ~/.local/bin && mv "aibd-$V-$T" ~/.local/bin/aibd
 ## Windows(PowerShell)
 
 ```powershell
+$ErrorActionPreference = "Stop"
 $V = "0.2.0-preview.1"
-$T = "x86_64-pc-windows-msvc"
+$F = "aibd-$V-x86_64-pc-windows-msvc.exe"
 $B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
 $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
-Invoke-WebRequest "$B/aibd-$V-$T.exe" -OutFile "$D\aibd.exe"
+Invoke-WebRequest "$B/$F" -OutFile "$D\aibd.exe"
 Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
-$want = ((Get-Content "$D\SHA256SUMS") | Where-Object { $_ -match " aibd-$V-$T\.exe$" }).Split(" ")[0]
-$got  = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
-if ($want -ne $got) { Remove-Item "$D\aibd.exe"; throw "核對不符 —— 檔案已刪除" } else { "核對 OK" }
+$line = Select-String -SimpleMatch " $F" "$D\SHA256SUMS" | Select-Object -First 1
+if (-not $line) { Remove-Item "$D\aibd.exe"; throw "檢查碼檔裡找不到 $F,已刪除下載檔" }
+$want = ([regex]::Match($line.Line, '^[0-9a-fA-F]{64}')).Value.ToLower()
+$got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
+if (-not $want -or $want -ne $got) { Remove-Item "$D\aibd.exe"; throw "檢查碼不一致,已刪除下載檔" }
+Unblock-File "$D\aibd.exe"
 & "$D\aibd.exe" --version
 & "$D\aibd.exe" selfcheck
 ```
+整段一起貼上。檢查碼不一致時會停下並刪掉下載的檔案,不會執行。
 
-如果 SmartScreen 顯示「Windows 已保護您的電腦」,是因為檔案沒簽章;只有上面核對 OK 才繼續。
+如果 SmartScreen 顯示「Windows 已保護您的電腦」,是因為檔案沒簽章;上面那段只有檢查碼一致才會執行。
 
 ## selfcheck 在說什麼
 

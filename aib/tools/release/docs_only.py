@@ -41,7 +41,8 @@ DOC_ROOT_GLOBS = ("SECURITY*.md", "CODE_OF_CONDUCT*.md")
 DOC_EXCLUDE = (
     "docs/perf/timers.md",  # crates/aibd/src/timers.rs 的測試比對它跟 timers::ALL(ADR 0005,a63ab #510)
     "docs/aibd/INSTALL.md",  # aib/tests/test-aibd-release-1ced7-1108.py D1 檢查(先對雜湊才執行、寫明沒簽章)
-    "docs/aibd/INSTALL.zh-TW.md",  # 同上(D1)
+    "docs/aibd/INSTALL.zh-TW.md",  # 同上(D1、D2 實跑 macOS 指令、D3)
+    "docs/aibd/RELEASE-NOTES-0.2.0-preview.1.md",  # 同上(D2 實跑 macOS 指令、D3 Windows 順序);發版時 aibd-release.yml 也讀
 )
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。

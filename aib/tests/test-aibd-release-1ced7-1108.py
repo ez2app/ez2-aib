@@ -16,9 +16,15 @@ R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰�
    不靠 gh 用 tag 找 draft 的後備查找(a63ab 11-08 22:00:那條路沒實測)
    (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
+D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 ⇒ 沒裝、沒執行
+   (bb7dc 11-08 High:舊稿分行寫,sha 失敗仍 chmod / mv / 執行)
+D3 Windows 指令順序:ErrorActionPreference Stop 在最前;找不到行 ⇒ 刪檔停;比對過才 Unblock-File / 執行
 """
+import hashlib
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -185,6 +191,81 @@ class Docs(unittest.TestCase):
                 self.assertTrue("not signed" in t or "沒有簽章" in t)
                 i_check, i_run = t.index("shasum -a 256 -c"), t.index("--version")
                 self.assertLess(i_check, i_run, "先對雜湊才執行")
+
+
+
+def block(f, lang):
+    t = (ROOT / "docs" / "aibd" / f).read_text(encoding="utf-8")
+    return re.search(r"```%s\n(.*?)```" % lang, t, re.S).group(1)
+
+
+FAKE_CURL = """#!/bin/sh
+# fake curl: `curl -fLO URL...` copies basename(URL) from $SRC; missing file => rc 22 like curl -f
+for a in "$@"; do case "$a" in -*) ;; *) n=${a##*/}; [ -f "$SRC/$n" ] || exit 22; cp "$SRC/$n" "./$n" ;; esac; done
+"""
+
+
+@unittest.skipUnless(shutil.which("shasum") and shutil.which("bash"), "needs shasum + bash")
+class InstallRuns(unittest.TestCase):
+    NAME = "aibd-0.2.0-preview.1-aarch64-apple-darwin"
+
+    def run_block(self, f, sums):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            home, src, fbin = d / "home", d / "src", d / "fbin"
+            for p in (home / "Downloads", src, fbin):
+                p.mkdir(parents=True)
+            mark = d / "ran.log"
+            exe = src / self.NAME
+            if sums != "no-binary":
+                exe.write_text("#!/bin/sh\necho \"$*\" >> %s\n" % shlex.quote(str(mark)), encoding="utf-8")
+            good = hashlib.sha256(exe.read_bytes()).hexdigest() if exe.exists() else "0" * 64
+            lines = {"ok": "%s  %s\n" % (good, self.NAME), "no-binary": "%s  %s\n" % (good, self.NAME),
+                     "bad": "%s  %s\n" % ("f" * 64, self.NAME), "missing": "%s  aibd-other\n" % good}[sums]
+            (src / "SHA256SUMS").write_text(lines, encoding="utf-8")
+            (fbin / "curl").write_text(FAKE_CURL, encoding="utf-8")
+            (fbin / "curl").chmod(0o755)
+            env = dict(os.environ, HOME=str(home), SRC=str(src), PATH="%s:%s" % (fbin, os.environ.get("PATH", "")))
+            r = subprocess.run(["bash", "-c", block(f, "sh")], env=env, capture_output=True, text=True, timeout=60)
+            installed = (home / ".local" / "bin" / "aibd").exists()
+            ran = mark.read_text(encoding="utf-8").split("\n")[:-1] if mark.exists() else []
+            return r.returncode, installed, ran, r.stdout + r.stderr
+
+    def test_d2_only_a_matching_checksum_installs_and_runs(self):
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md"):
+            with self.subTest(f=f, case="ok"):
+                rc, inst, ran, log = self.run_block(f, "ok")
+                self.assertEqual((rc, inst, ran), (0, True, ["--version", "selfcheck"]), log)
+            for case in ("bad", "missing", "no-binary"):
+                with self.subTest(f=f, case=case):
+                    rc, inst, ran, log = self.run_block(f, case)
+                    self.assertNotEqual(rc, 0, log)
+                    self.assertFalse(inst, "%s: 不准裝\n%s" % (case, log))
+                    self.assertEqual(ran, [], "%s: 不准執行\n%s" % (case, log))
+
+    def test_d2_release_notes_block_too(self):
+        rc, inst, ran, log = self.run_block("RELEASE-NOTES-0.2.0-preview.1.md", "bad")
+        self.assertNotEqual(rc, 0, log)
+        self.assertFalse(inst, log)
+        self.assertEqual(ran, [], log)
+
+
+class InstallWindowsOrder(unittest.TestCase):
+    def test_d3(self):
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+            with self.subTest(f=f):
+                b = block(f, "powershell")
+                lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
+                self.assertEqual(lines[0], '$ErrorActionPreference = "Stop"')
+                i_none = b.index("if (-not $line) { Remove-Item")
+                i_cmp = b.index("if (-not $want -or $want -ne $got) { Remove-Item")
+                i_unblock = b.index("Unblock-File")
+                i_run = b.index("--version")
+                self.assertLess(b.index("Get-FileHash"), i_cmp)
+                self.assertLess(i_none, i_cmp)
+                self.assertLess(i_cmp, i_unblock)
+                self.assertLess(i_unblock, i_run)
+                self.assertEqual(b.count("throw"), 2)
 
 
 if __name__ == "__main__":

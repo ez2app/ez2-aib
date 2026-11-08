@@ -21,16 +21,16 @@ you; the steps below check the file against `SHA256SUMS` before you run it.
 
 ```sh
 V=0.2.0-preview.1                                   # the version you want
-T=aarch64-apple-darwin                              # Apple Silicon only in this preview
+F=aibd-$V-aarch64-apple-darwin                      # Apple Silicon only in this preview
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
-cd ~/Downloads
-curl -fLO "$B/aibd-$V-$T" && curl -fLO "$B/SHA256SUMS"
-grep " aibd-$V-$T\$" SHA256SUMS | shasum -a 256 -c -    # must print: OK
-chmod +x "aibd-$V-$T"
-mkdir -p ~/.local/bin && mv "aibd-$V-$T" ~/.local/bin/aibd
-~/.local/bin/aibd --version
-~/.local/bin/aibd selfcheck
+cd ~/Downloads \
+  && curl -fLO "$B/$F" && curl -fLO "$B/SHA256SUMS" \
+  && grep " $F\$" SHA256SUMS | shasum -a 256 -c - \
+  && chmod +x "$F" && mkdir -p ~/.local/bin && mv "$F" ~/.local/bin/aibd \
+  && ~/.local/bin/aibd --version && ~/.local/bin/aibd selfcheck
 ```
+Paste it as one block. If a download fails or the checksum does not match, it stops there: nothing is installed
+and nothing is run. To type plain `aibd`, add `~/.local/bin` to your PATH; the full path `~/.local/bin/aibd` works too.
 
 Downloaded with a browser instead of `curl`? macOS marks the file; after the checksum says OK, remove the mark
 with `xattr -d com.apple.quarantine ~/.local/bin/aibd`.
@@ -38,21 +38,26 @@ with `xattr -d com.apple.quarantine ~/.local/bin/aibd`.
 ## Windows (PowerShell)
 
 ```powershell
+$ErrorActionPreference = "Stop"
 $V = "0.2.0-preview.1"
-$T = "x86_64-pc-windows-msvc"
+$F = "aibd-$V-x86_64-pc-windows-msvc.exe"
 $B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
 $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
-Invoke-WebRequest "$B/aibd-$V-$T.exe" -OutFile "$D\aibd.exe"
+Invoke-WebRequest "$B/$F" -OutFile "$D\aibd.exe"
 Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
-$want = ((Get-Content "$D\SHA256SUMS") | Where-Object { $_ -match " aibd-$V-$T\.exe$" }).Split(" ")[0]
-$got  = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
-if ($want -ne $got) { Remove-Item "$D\aibd.exe"; throw "checksum does not match — file removed" } else { "checksum OK" }
+$line = Select-String -SimpleMatch " $F" "$D\SHA256SUMS" | Select-Object -First 1
+if (-not $line) { Remove-Item "$D\aibd.exe"; throw "$F is not in SHA256SUMS — file removed" }
+$want = ([regex]::Match($line.Line, '^[0-9a-fA-F]{64}')).Value.ToLower()
+$got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
+if (-not $want -or $want -ne $got) { Remove-Item "$D\aibd.exe"; throw "checksum does not match — file removed" }
+Unblock-File "$D\aibd.exe"
 & "$D\aibd.exe" --version
 & "$D\aibd.exe" selfcheck
 ```
+Paste it as one block. If the checksum does not match it stops and deletes the download; nothing is run.
 
-If SmartScreen says "Windows protected your PC", that is because the file is not signed. Only continue if the
-checksum above said OK.
+If SmartScreen says "Windows protected your PC", that is because the file is not signed. The block above only runs
+the file after the checksum matched.
 
 ## What `selfcheck` tells you
 
