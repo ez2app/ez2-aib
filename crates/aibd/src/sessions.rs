@@ -56,10 +56,13 @@ pub const SHUTDOWN_CAP: Duration = Duration::from_secs(10);
 /// Background slot re-check (a63ab 11-09): every 2 s (the
 /// `session.slot_rescan` timer), at most this long.
 pub const RESCAN_WINDOW: Duration = Duration::from_secs(30);
-/// The longest one re-check pass may take (a stop: grace + KILL + checks).
-/// No pass starts unless it fits in what is left of [`RESCAN_WINDOW`], so
-/// the whole re-check ends within the window (bb7dc #546 (2)).
-pub const RESCAN_PASS_MAX: Duration = Duration::from_secs(6);
+/// What a re-check pass needs after its grace (KILL, its 2 s check, a
+/// margin). A pass starts only with at least this much of the window left;
+/// its grace is what is left beyond it, at most [`SHORT_GRACE`].
+pub const RESCAN_PASS_MIN: Duration = Duration::from_secs(3);
+/// `session.slot_held` reason when a pass did not answer by the end of the
+/// window (bb7dc #546 7ebde8d1): the slot stays held, never released.
+pub const RESCAN_PASS_TIMEOUT: &str = "rescan_pass_timeout";
 /// The only stop reasons worth re-checking (a63ab 05:42, DECIDED #9): what
 /// another pass can change. `lineage_unavailable`, `root_identity_lost`,
 /// `job_error:*`… come out the same every time (bb7dc #546 (3)).
@@ -323,16 +326,16 @@ impl Sessions {
             spawn,
             max,
             default_cwd,
-            rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MAX)),
+            rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
             me: me.clone(),
         })
     }
 
     /// Test hook: a shorter background re-check window (and, since test
-    /// stops return at once, a shorter longest pass).
+    /// stops return at once, a shorter least time a pass needs).
     #[doc(hidden)]
-    pub fn set_rescan_window_for_test(&self, window: Duration, pass_max: Duration) {
-        *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner()) = (window, pass_max);
+    pub fn set_rescan_window_for_test(&self, window: Duration, pass_min: Duration) {
+        *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner()) = (window, pass_min);
     }
 
     /// Newest first: running and stop_unconfirmed, then the recent ended.
@@ -627,16 +630,20 @@ impl Sessions {
     /// alive, and re-reads the candidates). `observed_clean` ⇒ slot back +
     /// `session.slot_released`; still not at the end ⇒ kept +
     /// `session.slot_held` with the last reason. Gives way to a DELETE or the
-    /// shutdown (neither waits long: one pass is short).
+    /// shutdown. Bounded by one absolute end (bb7dc #546 7ebde8d1): each
+    /// pass gets the grace that still fits and is waited for only until the
+    /// end; a pass that has not answered by then ends the re-check with
+    /// `slot_held {reason: rescan_pass_timeout}` (slot kept), and its late
+    /// result is recorded by [`Self::late_pass`] without releasing the slot.
     fn rescan(&self, id: &str) {
-        let (window, pass_max) = *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner());
+        let (window, pass_min) = *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner());
         let end = Instant::now() + window;
         let op = crate::timers::SESSION_SLOT_RESCAN.begin(Some(end));
         let mut tries = 0u32;
         let mut last: Option<String> = None;
         while op.tick() {
-            if Instant::now() + pass_max > end {
-                break; // a pass would run past the window
+            if Instant::now() + pass_min > end {
+                break; // not enough of the window left for a pass
             }
             let run = {
                 let mut g = lock(&self.inner);
@@ -658,11 +665,19 @@ impl Sessions {
                 e.run.clone()
             };
             tries += 1;
-            let stop = run
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .stop(SHORT_GRACE);
-            let mut g = lock(&self.inner);
+            let grace = end
+                .saturating_duration_since(Instant::now())
+                .saturating_sub(pass_min)
+                .min(SHORT_GRACE);
+            let (stop, mut g) = match self.pass_until(id, run, grace, end) {
+                Ok(done) => done,
+                Err(why) => {
+                    // timeout: still `stopping`, the pass thread hands its
+                    // late result to `late_pass`; nothing here touches `run`
+                    let mut g = lock(&self.inner);
+                    return self.end_rescan(&mut g, id, None, tries, Some(why.to_owned()));
+                }
+            };
             let shutting = g.shutting;
             let Some(e) = g.live.get_mut(id) else {
                 return;
@@ -694,6 +709,84 @@ impl Sessions {
         }
         let mut g = lock(&self.inner);
         self.end_rescan(&mut g, id, None, tries, last);
+    }
+
+    /// One re-check pass on its own thread, waited for until `end`.
+    /// `Ok((stop, guard))` = it answered in time (the guard is the inner
+    /// lock, taken before the give-up flag could be set).
+    /// `Err(RESCAN_PASS_TIMEOUT)` = it did not (it is still `stopping`).
+    /// `Err("rescan_pass_not_started")` = no thread: nothing was stopped and
+    /// the session is no longer `stopping`.
+    fn pass_until(
+        &self,
+        id: &str,
+        run: Arc<Mutex<Box<dyn Running>>>,
+        grace: Duration,
+        end: Instant,
+    ) -> Result<(Stop, MutexGuard<'_, Inner>), &'static str> {
+        let not_started = || {
+            let mut g = lock(&self.inner);
+            if let Some(e) = g.live.get_mut(id) {
+                e.stopping = false;
+            }
+            self.cv.notify_all();
+            Err("rescan_pass_not_started")
+        };
+        let Some(me) = self.me.upgrade() else {
+            return not_started();
+        };
+        let gave_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (flag, tid) = (gave_up.clone(), id.to_owned());
+        let spawned = std::thread::Builder::new()
+            .name("aibd-rescan-pass".into())
+            .spawn(move || {
+                let stop = run.lock().unwrap_or_else(|e| e.into_inner()).stop(grace);
+                // under the inner lock: either the re-check still waits (send)
+                // or it gave up (late result), never both, never neither
+                let g = lock(&me.inner);
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    me.late_pass(g, &tid, stop);
+                } else {
+                    let _ = tx.send(stop);
+                }
+            });
+        if spawned.is_err() {
+            return not_started();
+        }
+        // One wake-up for the answer, or at the end: not a periodic timer
+        // (ADR 0005 named exception, as `sessions::wait_timeout`).
+        #[allow(clippy::disallowed_methods)]
+        let got = rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+        let g = lock(&self.inner);
+        match got.ok().or_else(|| rx.try_recv().ok()) {
+            Some(stop) => Ok((stop, g)),
+            None => {
+                gave_up.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(RESCAN_PASS_TIMEOUT)
+            }
+        }
+    }
+
+    /// A re-check pass that answered after its window ended: record what it
+    /// found, keep the slot (the re-check is over), clear `stopping`. If the
+    /// shutdown began meanwhile it skipped this session, so the pass is
+    /// handed over as the shutdown's stop.
+    fn late_pass(&self, mut g: MutexGuard<'_, Inner>, id: &str, stop: Stop) {
+        let shutting = g.shutting;
+        let Some(e) = g.live.get_mut(id) else {
+            return;
+        };
+        if shutting {
+            drop(g);
+            self.finish(id, stop, "shutdown");
+            return;
+        }
+        e.stopping = false;
+        e.rec.stop = Some(StopView::of(&stop));
+        e.rec.holds_slot = true;
+        tracing::warn!(session = %id, stop = stop.status.as_str(), "re-check pass answered after its window");
+        self.cv.notify_all();
     }
 
     fn end_rescan(

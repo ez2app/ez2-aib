@@ -1125,7 +1125,8 @@ fn a_recheck_with_slow_passes_still_ends_within_its_window() {
         1,
         tmp.path().to_path_buf(),
     );
-    let window = Duration::from_secs(3);
+    // ticks sleep first: a 900 ms pass at 2 s, then 4 s - 1 s left < pass_min
+    let window = Duration::from_secs(4);
     s.set_rescan_window_for_test(window, Duration::from_secs(1));
     let rec = s.start(one_req()).unwrap();
     assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
@@ -1141,6 +1142,10 @@ fn a_recheck_with_slow_passes_still_ends_within_its_window() {
     );
     let evs = rescan_events(&store, &rec.id);
     assert_eq!(evs[0].0, "session.slot_held", "{evs:?}");
+    // the window ended between passes, not by cutting one short: a pass is
+    // never started without pass_min left (else rescan_pass_timeout here)
+    assert_eq!(evs[0].1["reason"], "candidates_unreadable", "{evs:?}");
+    assert_eq!(evs[0].1["tries"], 1, "{evs:?}");
 }
 
 /// bb7dc #546 (3) / DECIDED #9: only candidates_unreadable is re-checked; a
@@ -1165,4 +1170,117 @@ fn a_reason_another_pass_cannot_change_is_not_rechecked() {
     )
     .is_empty()));
     assert!(s.get(&rec.id).unwrap().holds_slot);
+}
+
+/// bb7dc #546 7ebde8d1: a re-check pass whose stop hangs past the window.
+/// The first stop (the DELETE) answers at once with `candidates_unreadable`;
+/// every later one blocks until the test opens the gate, then answers
+/// `observed_clean` with no survivor (a result that WOULD release the slot).
+struct Stuck;
+
+static STUCK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static STUCK_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl aibd::platform::session::Running for Stuck {
+    fn pid(&self) -> u32 {
+        999_994
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(None)
+    }
+    fn exit_wait(&self) -> std::sync::Arc<dyn aibd::platform::session::ExitWait> {
+        std::sync::Arc::new(NeverExits)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{Stop, StopStatus};
+        use std::sync::atomic::Ordering::SeqCst;
+        let reason = if STUCK_CALLS.fetch_add(1, SeqCst) == 0 {
+            "candidates_unreadable"
+        } else {
+            while !STUCK_OPEN.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            "observed_clean"
+        };
+        Stop {
+            status: StopStatus::Unverified(reason.into()),
+            survivors: vec![],
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec![],
+        }
+    }
+}
+
+fn stuck_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Stuck))
+}
+
+/// The window bounds the re-check even when its stop never returns: it ends
+/// within the window with `slot_held {reason: rescan_pass_timeout}`, the slot
+/// kept. The late answer (`observed_clean`) is recorded but releases nothing,
+/// and the session is not left `stopping` (a DELETE afterwards answers).
+#[test]
+fn a_recheck_whose_stop_hangs_still_ends_within_its_window_and_keeps_the_slot() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        stuck_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let window = Duration::from_secs(3);
+    s.set_rescan_window_for_test(window, Duration::from_millis(500));
+    let rec = s.start(one_req()).unwrap();
+    assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
+    let t = Instant::now(); // the re-check starts as the DELETE answers
+    assert!(wait_until(Duration::from_secs(10), || !rescan_events(
+        &store, &rec.id
+    )
+    .is_empty()));
+    let took = t.elapsed();
+    assert!(STUCK_CALLS.load(SeqCst) >= 2, "no re-check pass ran");
+    assert!(
+        took <= window + Duration::from_millis(400),
+        "re-check took {took:?}, window {window:?}"
+    );
+    let evs = rescan_events(&store, &rec.id);
+    assert_eq!(evs[0].0, "session.slot_held", "{evs:?}");
+    assert_eq!(
+        evs[0].1["reason"],
+        aibd::sessions::RESCAN_PASS_TIMEOUT,
+        "{evs:?}"
+    );
+    assert!(s.get(&rec.id).unwrap().holds_slot);
+    STUCK_OPEN.store(true, SeqCst);
+    assert!(
+        wait_until(Duration::from_secs(5), || s
+            .get(&rec.id)
+            .and_then(|g| g.stop)
+            .is_some_and(|v| v.reason.as_deref() == Some("observed_clean"))),
+        "late answer not recorded: {:?}",
+        s.get(&rec.id)
+    );
+    let got = s.get(&rec.id).unwrap();
+    assert!(got.holds_slot, "a late pass released the slot: {got:?}");
+    assert_eq!(
+        rescan_events(&store, &rec.id).len(),
+        1,
+        "{:?}",
+        rescan_events(&store, &rec.id)
+    );
+    // not left `stopping`: a DELETE runs its own stop and answers
+    let t = Instant::now();
+    assert!(s.stop(&rec.id, Duration::ZERO).is_ok());
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "DELETE waited {:?}",
+        t.elapsed()
+    );
 }
