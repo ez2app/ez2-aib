@@ -5975,5 +5975,7 @@
   "aib.gameworld.legacy_opened": "大廳已開,但不一定是這一艙(實際艙未知);更新艦長室外掛後會自動切。",
   "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
-  "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。"
+  "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
+  "aib.cloud_robot.touchid_apply": "aib:對 Hetzner 主機 {server} 執行 {action}(可重灌整台);救援金鑰 {fp}",
+  "aib.approve_gate.cat.host_rescue": "主機救援(Hetzner Robot rescue / reset)"
 }

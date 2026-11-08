@@ -113,6 +113,9 @@ LAYOUT = (
     # 11-08 @4542e(EU02 代管節點,Andy「我不想我去操作」):Hetzner Robot webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
     #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
     #   不送伺服器(被救的那台不能是唯一副本);讀端只給 Robot API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
+    #   #528 審(ebb36 / f1fae 定):同機每個席都讀得到這檔 ⇒ 會改機器的 rescue / reset --apply 在讀值前走 approve_gate
+    #   「cloud_robot.apply」彈窗 + Touch ID(tools/cloud-host/robot.py);status / keys 唯讀不用。缺值不補填(NO_FILL_FILES)、
+    #   只登記 HETZNER_ROBOT_ 前綴(NO_SEGMENT_PREFIX_FILES),HETZNER_CLOUD_… 要另開一格。
     ("hetzner-robot.env", "hetzner-robot", "type",
      "Hetzner Robot webservice 使用者(Settings → Web service and app settings)。給 aib 啟用 Rescue / 重置用;不是 Cloud API token、不是主機 root。",
      (("HETZNER_ROBOT_USER", "Robot webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
@@ -283,7 +286,7 @@ CUSTOMER_FIRST_BATCH = (
 # 只登記完整平台前綴、不登記行名第一段的檔:10-29 @aeb40(#416 R1 L1)PIXEL_ 整段會被 pixel-claude.env 吃掉,
 #   像素工坊之後的別的秘密(PIXEL_GROK_…)會默默寫進 claude 專用 token 檔;不登記 ⇒ 那些名字回 unknown_name,要另開一格。
 #   新的 pixel-* 檔(例 pixel-grok.env)也要加進來:這是檔名清單,沒列的那一檔會改登記 PIXEL_、整段又被它吃掉(@aeb40 #425 L1)。
-NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env",)
+NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env")   # 11-08 #528 M1(ebb36):HETZNER_CLOUD_… 不能落進 Robot 檔
 
 
 def _name_maps():
@@ -314,7 +317,7 @@ REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAI
 #   由名冊決定、不靠呼叫端旗標(呼叫端另可 secret(name, fill=False),兩者取「不補填」)
 NO_FILL_NAMES = ("PIXEL_CLAUDE_OAUTH_TOKEN",)
 # 依檔判斷:落到這些檔的名字(PIXEL_CLAUDE_OAUTH_TOKEN_2 這類前綴名)也一律不補填(@aeb40 #425 L2:只認完整名會漏)
-NO_FILL_FILES = ("pixel-claude.env",)
+NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env")   # 11-08 #528 H2(ebb36):Robot 密碼缺值絕不發 LINE 補填
 
 
 def no_fill(name):

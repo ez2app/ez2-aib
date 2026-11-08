@@ -5975,5 +5975,7 @@
   "aib.gameworld.legacy_opened": "Lobby opened, but it may not show this cabin (actual cabin unknown); update the Captain Room plugin to switch automatically.",
   "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
-  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected."
+  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
+  "aib.cloud_robot.touchid_apply": "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}",
+  "aib.approve_gate.cat.host_rescue": "Host rescue (Hetzner Robot rescue / reset)"
 }

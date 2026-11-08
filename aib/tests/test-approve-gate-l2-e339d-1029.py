@@ -439,6 +439,7 @@ ASK_SITES = (
     ("newproj.approve_amend", ()), ("newproj.boot_confirm", ()),
     ("chat_owner_cli.protect", ()), ("chat_owner_cli.repair", ()), ("chat_owner_cli.off_owner", ()),
     ("secret_share.copy", ()), ("secret_share.paste", ()),
+    ("cloud_robot.apply", ()),   # #528:Hetzner Robot rescue / reset --apply
 )
 
 
