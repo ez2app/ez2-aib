@@ -162,6 +162,43 @@ class AibLedger(unittest.TestCase):
         r = self.L("role", "set", "dispatch", "2240e", "--by", "seat:2240e")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
 
+    def test_one_seat_two_roles_must_say_which(self):
+        # f1fae 11-08:派工 = f1fae、整合 = f1fae(正本),兩個 session;一席掛兩個角色 ⇒ 寫入要帶 --as
+        self.ok("role", "set", "dispatch", "f1fae", "--by", "seat:f1fae")
+        self.ok("role", "set", "integrate", "f1fae", "--by", "seat:f1fae")
+        r = self.L("add", "B-ledger", "--batch", "b114", "--owner", "2240e", "--title", "w", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("--as", r.stderr)
+        r = self.L("add", "B-ledger", "--batch", "b114", "--owner", "2240e", "--title", "w", "--by", "seat:f1fae",
+                   "--as", "integrate")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.ok("add", "B-ledger", "--batch", "b114", "--owner", "2240e", "--title", "w", "--by", "seat:f1fae",
+                "--as", "dispatch")
+        self.ok("move", "B-ledger", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        self.ok("move", "B-ledger", "--from", "running", "--to", "review", "--head", HEAD, "--by", "seat:2240e")
+        r = self.L("move", "B-ledger", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--as",
+                   "integrate", "--evidence", self.receipt())
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.ok("move", "B-ledger", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--as", "dispatch",
+                "--evidence", self.receipt())
+        r = self.L("move", "B-ledger", "--from", "accepted", "--to", "integrating", "--by", "seat:f1fae",
+                   "--as", "dispatch")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.ok("move", "B-ledger", "--from", "accepted", "--to", "integrating", "--by", "seat:f1fae",
+                "--as", "integrate")
+        r = self.L("move", "B-ledger", "--from", "integrating", "--to", "deployed", "--by", "seat:2240e",
+                   "--as", "integrate")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        r = self.L("role", "set", "integrate", "a0f9b", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        hist = json.loads(self.ok("show", "B-ledger", "--json").stdout)["history"]
+        self.assertEqual([h["as"] for h in hist], ["dispatch", None, None, "dispatch", "integrate"])
+        self.assertIn("by f1fae as integrate", self.ok("show", "B-ledger").stdout)
+
+    def test_help_says_mis_dispatch_not_impersonation(self):
+        out = " ".join(self.ok("--help").stdout.split())
+        self.assertIn("guards against mis-dispatch, not impersonation", out)
+
     def test_bad_receipts_are_refused(self):
         self.to_review()
         cases = {"rc is 1": self.receipt(rc=1),

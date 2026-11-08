@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """aib ledger —— 艙級工作帳(自動推進 v2 B 項,11-08 f1fae 派;三家深審一致第一名「一本帳 + 權責不重疊 + 收據綁頭碼」)。
 
-    aib ledger role set dispatch|integrate <seat> --by <seat>   誰是派工席 / 整合席(第一次誰都能設,之後只有派工席能改)
+    aib ledger role set dispatch|integrate <seat> --by <seat> [--as dispatch]   誰是派工席 / 整合席(第一次誰都能設,之後只有派工席能改)
     aib ledger role list
     aib ledger add <id> --batch B --owner <seat> --title T [--next N] [--needs chrome] [--event-id E] --by <seat>
     aib ledger move <id> --from S --to S [--head SHA] [--evidence RECEIPT.json …] [--next N] [--blocker WHY]
@@ -30,7 +30,11 @@
   通過支數 ≥ 1(有 total 就要等於 total)、原始輸出檔存在且非空(有 output_sha256 就要對得上)。
   至少一張非 chrome 的收據;件標 --needs chrome ⇒ 還要一張同頭碼的 chrome 收據。
 
-身分:--by 是自報的席碼(跟 aib dm-queue --by 一樣),帳只保證「誰說了什麼、照規則有沒有放行」,不做密碼學身分。
+身分:--by 是自報的席碼(跟 aib dm-queue --by 一樣):**防誤派,不防冒用**。帳只保證「誰說了什麼、照規則有沒有放行」;
+  同一個帳號的 AI 都改得到本機檔,所以這是分工約定,不是安全閘(11-08 f1fae 定)。
+同一席分角色(f1fae 定:派工 = f1fae、整合 = f1fae 正本,兩個 session):role set 可以把兩個角色設給同一席;
+  一席同時掛兩個角色時,寫入一律要帶 --as dispatch|integrate|owner 說這次戴哪頂帽子,只照那個角色判;
+  沒帶 ⇒ rc 3(不猜)。--as 也記進事件,回頭查得到哪個 session 做的。
 帳檔:$AIB_LEDGER_DB,否則 $EZ2_AIB_INSTANCE_HOME/state/work-ledger.sqlite(艙級),否則 ~/.ez2-aib/state/work-ledger.sqlite。
 rc:0 成功 / 2 用法錯 / 3 被規則擋(沒權限、不准的轉移、重複派、找不到)/ 4 舊狀態對不上 / 5 收據不過 / 6 事件 id 衝突。
 只用標準函式庫。
@@ -271,13 +275,22 @@ def _record(db, event_id, op, item_id, frm, to, by, request, result):
                (event_id, item_id, op, frm, to, by, now_iso(), canonical(request), canonical(result)))
 
 
-def _may_write(roles, by, target, owner):
-    for w in WRITERS[target]:
-        if w == "owner" and by == owner:
-            return True
-        if w in ROLES and roles.get(w) == by:
-            return True
-    return False
+def hats(roles, by, owner, as_role):
+    """這次寫入戴的帽子集合。一席掛兩個角色又沒帶 --as ⇒ 擋(不猜是哪個 session)。"""
+    held = {r for r in ROLES if roles.get(r) == by}
+    if owner is not None and by == owner:
+        held.add("owner")
+    if as_role:
+        if as_role not in held:
+            raise Refused(RC_RULE, "%s is not %s%s" % (by, as_role, " of this item" if as_role == "owner" else ""))
+        return {as_role}
+    if len(held & set(ROLES)) > 1:
+        raise Refused(RC_RULE, "%s holds %s; say which with --as" % (by, " and ".join(sorted(held & set(ROLES)))))
+    return held
+
+
+def _may_write(roles, by, target, owner, as_role=None):
+    return bool(hats(roles, by, owner, as_role) & set(WRITERS[target]))
 
 
 def tx(db, fn):
@@ -291,15 +304,15 @@ def tx(db, fn):
     return res
 
 
-def op_role_set(db, role, seat, by, event_id):
-    request = {"role": role, "seat": seat, "by": by}
+def op_role_set(db, role, seat, by, event_id, as_role=None):
+    request = {"role": role, "seat": seat, "by": by, "as": as_role}
 
     def run():
         rep = _replay_or_claim(db, event_id, "role", None, request)
         if rep is not None:
             return rep
         roles = roles_of(db)
-        if roles.get("dispatch") and roles["dispatch"] != by:
+        if roles.get("dispatch") and "dispatch" not in hats(roles, by, None, as_role):
             raise Refused(RC_RULE, "only the dispatch seat (%s) can change roles" % roles["dispatch"])
         db.execute("INSERT INTO roles(role, seat, set_by, set_at) VALUES (?,?,?,?) "
                    "ON CONFLICT(role) DO UPDATE SET seat=excluded.seat, set_by=excluded.set_by, set_at=excluded.set_at",
@@ -312,7 +325,7 @@ def op_role_set(db, role, seat, by, event_id):
 
 def op_add(db, a, by, event_id):
     request = {"id": a.id, "batch": a.batch, "owner": seat_of(a.owner), "title": a.title, "next": a.next or "",
-               "needs": sorted(set(a.needs or [])), "by": by}
+               "needs": sorted(set(a.needs or [])), "by": by, "as": a.as_role}
 
     def run():
         rep = _replay_or_claim(db, event_id, "add", a.id, request)
@@ -321,7 +334,7 @@ def op_add(db, a, by, event_id):
         roles = roles_of(db)
         if not roles.get("dispatch"):
             raise Refused(RC_RULE, "no dispatch seat yet; run: aib ledger role set dispatch <seat> --by <seat>")
-        if not _may_write(roles, by, "queued", None):
+        if not _may_write(roles, by, "queued", None, a.as_role):
             raise Refused(RC_RULE, "only the dispatch seat (%s) can queue work" % roles["dispatch"])
         old = db.execute("SELECT state FROM items WHERE id=?", (a.id,)).fetchone()
         if old is not None:
@@ -340,7 +353,7 @@ def op_add(db, a, by, event_id):
 def op_move(db, a, by, event_id):
     evidence = [str(Path(p).expanduser().resolve()) for p in (a.evidence or [])]
     request = {"id": a.id, "from": a.from_state, "to": a.to, "head": (a.head or "").lower(), "evidence": evidence,
-               "next": a.next, "blocker": a.blocker, "by": by}
+               "next": a.next, "blocker": a.blocker, "by": by, "as": a.as_role}
 
     def run():
         rep = _replay_or_claim(db, event_id, "move", a.id, request)
@@ -354,7 +367,7 @@ def op_move(db, a, by, event_id):
         if a.to not in TRANSITIONS[a.from_state]:
             raise Refused(RC_RULE, "%s -> %s is not an allowed move" % (a.from_state, a.to))
         roles = roles_of(db)
-        if not _may_write(roles, by, a.to, item["owner"]):
+        if not _may_write(roles, by, a.to, item["owner"], a.as_role):
             raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
         if request["head"]:
             if not SHA_RE.match(request["head"]):
@@ -399,8 +412,13 @@ def get_item(db, item_id):
 
 
 def history(db, item_id):
-    return [dict(r) for r in db.execute("SELECT event_id, op, from_state, to_state, by_seat, at FROM events "
-                                        "WHERE item_id=? ORDER BY rowid", (item_id,))]
+    out = []
+    for r in db.execute("SELECT event_id, op, from_state, to_state, by_seat, at, request FROM events "
+                        "WHERE item_id=? ORDER BY rowid", (item_id,)):
+        d = dict(r)
+        d["as"] = json.loads(d.pop("request")).get("as")
+        out.append(d)
+    return out
 
 
 def print_item(it, hist=None):
@@ -416,17 +434,23 @@ def print_item(it, hist=None):
         print("  evidence: %s" % p)
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))
     for h in hist or []:
-        print("  - %s %s %s -> %s by %s (%s)" % (h["at"], h["op"], h["from_state"] or "", h["to_state"] or "",
-                                                  h["by_seat"], h["event_id"]))
+        print("  - %s %s %s -> %s by %s%s (%s)" % (h["at"], h["op"], h["from_state"] or "", h["to_state"] or "",
+                                                    h["by_seat"], (" as " + h["as"]) if h.get("as") else "",
+                                                    h["event_id"]))
 
 
 def build_parser():
     p = argparse.ArgumentParser(prog="aib ledger", description="Cabin work ledger: one row per piece of work, "
-                                "every state change in a transaction, acceptance only with receipts bound to the head.")
+                                "every state change in a transaction, acceptance only with receipts bound to the head. "
+                                "--by is a self-declared seat code: the ledger guards against mis-dispatch, not "
+                                "impersonation (any AI on the same account can edit local files).")
     sub = p.add_subparsers(dest="cmd")
 
     def mut(sp):
-        sp.add_argument("--by", required=True, help="your seat code, e.g. seat:2240e")
+        sp.add_argument("--by", required=True, help="your seat code, e.g. seat:2240e (self-declared: guards against "
+                        "mis-dispatch, not impersonation)")
+        sp.add_argument("--as", dest="as_role", choices=ROLES + ("owner",),
+                        help="which role you act as; required when your seat holds both dispatch and integrate")
         sp.add_argument("--event-id", help="same id sent twice is applied once (default: a new random id)")
         sp.add_argument("--json", action="store_true")
 
@@ -544,7 +568,7 @@ def main(argv=None):
         if not ID_RE.match(event_id):
             raise Refused(RC_USAGE, "--event-id must match %s" % ID_RE.pattern)
         if a.cmd == "role":
-            res = op_role_set(db, a.role, seat_of(a.seat), by, event_id)
+            res = op_role_set(db, a.role, seat_of(a.seat), by, event_id, a.as_role)
             emit(a, res, "%s%s is now %s" % ("(replayed) " if res.get("replayed") else "", res["seat"], res["role"]))
         elif a.cmd == "add":
             res = op_add(db, a, by, event_id)
