@@ -57,7 +57,7 @@ class ThrottleWarm(unittest.TestCase):
 
     def test_machine_status_cell_warn_between(self):
         def top(kt):
-            out = "PID COMMAND %CPU\n0    kernel_task  0.0\n0    kernel_task  %.1f\n" % kt
+            out = "PID COMMAND %%CPU\n0    kernel_task  0.0\n0    kernel_task  %.1f\n" % kt
             return lambda argv, timeout=None: (0, out)
         for kt, st in ((10.0, "ok"), (25.0, "warn"), (40.0, "hot")):
             with self.subTest(kt=kt):
