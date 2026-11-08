@@ -1,0 +1,259 @@
+# SPDX-License-Identifier: Apache-2.0
+# aibd (Rust) preview releases. Separate from release.yml / PyPI (Python aib), which this file never touches.
+# 11-08 PLAN-rust-preview-today (C1):
+#   tag aibd-v<X.Y.Z-preview.N>  ⇒ build 2 targets (macOS Apple Silicon, Windows x64; macOS Intel later via lipo) (--locked, release profile)
+#   ⇒ smoke each on its own platform (--version must print exactly "aibd <version> <os>-<arch>"; selfcheck must exit 0)
+#   ⇒ SHA256SUMS ⇒ **draft** pre-release (not public) ⇒ verify: download from the draft on each platform, check SHA256SUMS, run it
+#   ⇒ only when every verify cell is green: publish the draft (pre-release, not "latest") and read it back through the API.
+#   A red verify leaves the draft unpublished for good (11-08 three-model deep review, a63ab SUMMARY-deep-launch point 1).
+#   A pull request that changes this file runs build + smoke only (no publish): the PR is its own probe.
+# Nothing here is signed (Apple / Windows signing costs money ⇒ waits for Andy); the install notes say so.
+name: aibd-release
+on:
+  push:
+    tags: ["aibd-v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/aibd-release.yml"
+      - "docs/aibd/**"
+permissions:
+  contents: read
+concurrency:
+  group: aibd-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          ver=$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
+          echo "workspace version: $ver"
+          if [ "$REF_TYPE" = tag ]; then
+            want="${REF_NAME#aibd-v}"
+            if [ "$want" != "$ver" ]; then
+              echo "::error::tag $REF_NAME says $want but Cargo.toml [workspace.package] version is $ver — not releasing"; exit 1
+            fi
+            if ! printf '%s\n' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$'; then
+              echo "::error::$ver is not X.Y.Z-preview.N (e.g. 0.2.0-preview.1); this workflow only makes previews"; exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest          # Apple Silicon runner: native build + native smoke
+            exe: ""
+            plat: macos-aarch64       # what `aibd --version` prints after the version (std::env::consts OS-ARCH)
+            arch: arm64               # uname -m the runner must report (smoke on the wrong CPU proves nothing)
+          # 11-08 a63ab:macOS Intel 先不發 —— 沒有 Intel 實機 / 可靠的 Intel runner 能驗,發出去就是沒驗的檔。
+          #   擴充點:之後在這裡加 x86_64-apple-darwin,另開一個 job 用 lipo 把兩個 macOS 檔合成 universal binary,
+          #   並在能驗 Intel 的機器上 smoke 過才放進 publish(EXPECTED_FILES 跟著改)。
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            exe: ".exe"
+            plat: windows-x86_64
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ matrix.exe }}
+      PLAT: ${{ matrix.plat }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          m=$(uname -m)
+          [ "$m" = "$ARCH" ] || { echo "::error::runner CPU is $m, this cell needs $ARCH — a smoke here would not test the shipped binary"; exit 1; }
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+          rustc -vV
+      - name: build
+        shell: bash
+        run: cargo build --release --locked -p aibd --target "$TARGET"
+      - name: package
+        shell: bash
+        run: |
+          mkdir -p dist
+          name="aibd-${VERSION}-${TARGET}${EXE}"
+          cp "target/${TARGET}/release/aibd${EXE}" "dist/${name}"
+          echo "NAME=${name}" >> "$GITHUB_ENV"
+          ls -l dist
+      - name: smoke (--version, selfcheck)
+        shell: bash
+        run: |
+          bin="dist/${NAME}"
+          out=$("$bin" --version) || { echo "::error::$NAME --version failed"; exit 1; }
+          out=${out%$'\r'}
+          echo "--version: $out"
+          [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
+          if "$bin" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::$NAME selfcheck exited $rc"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    needs: [meta, build]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.mk.outputs.release_id }}
+    permissions:
+      contents: write          # create the draft release and upload files; nothing else
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EXPECTED_FILES: "2"      # = build 矩陣的目標數;加 Intel / universal 時一起改
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: aibd-*
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          n=$(ls aibd-* | wc -l)
+          [ "$n" -eq "$EXPECTED_FILES" ] || { echo "::error::expected $EXPECTED_FILES files, got $n"; ls -l; exit 1; }
+          sha256sum aibd-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: create a draft pre-release (not public; refuses to touch an existing release)
+        id: mk
+        run: |
+          set -o pipefail       # a failing `gh api` in rel_ids must not read as "no release yet"
+          # every lookup goes through the releases API by tag_name (drafts included), not gh's look-up-by-tag commands:
+          # a draft has no public tag page, so gh would need its draft fallback, which nothing here has tested.
+          rel_ids() { gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | [.id, .tag_name, .draft] | @tsv' \
+                        | awk -F'\t' -v t="$TAG" -v want="$1" '$2 == t && (want == "any" || $3 == want) {print $1}'; }
+          old=$(rel_ids any)
+          if [ -n "$old" ]; then
+            echo "::error::release(s) for $TAG already exist (ids: $old; maybe a draft from a red run) — not touching them; a new preview gets a new tag"; exit 1
+          fi
+          notes=docs/aibd/RELEASE-NOTES-${VERSION}.md
+          [ -f "$notes" ] || { echo "::error::$notes is missing (release notes are reviewed by a human before tagging)"; exit 1; }
+          gh release create "$TAG" --draft --prerelease --latest=false --verify-tag \
+            --title "aibd $VERSION (preview)" --notes-file "$notes" dist/aibd-* dist/SHA256SUMS
+          ids=$(rel_ids true)
+          [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || { echo "::error::expected exactly one draft for $TAG, got: '$ids'"; exit 1; }
+          echo "draft release id: $ids"
+          echo "release_id=$ids" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: [meta, draft]
+    if: needs.meta.outputs.publish == 'true'
+    timeout-minutes: 10
+    permissions:
+      contents: write          # a draft is only visible to tokens that can write; the token is given to the download step only
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-latest, target: aarch64-apple-darwin, exe: "", plat: macos-aarch64, arch: arm64}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc, exe: ".exe", plat: windows-x86_64, arch: x86_64}
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      RID: ${{ needs.draft.outputs.release_id }}
+      NAME: aibd-${{ needs.meta.outputs.version }}-${{ matrix.target }}${{ matrix.exe }}
+      PLAT: ${{ matrix.plat }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: download from the draft and check SHA256SUMS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
+          mkdir v && cd v
+          # by release id + asset API (works for a draft; no tag lookup)
+          gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) assets=\(.assets | length)"'
+          for want in "$NAME" SHA256SUMS; do
+            aid=$(gh api "repos/$GH_REPO/releases/$RID/assets?per_page=100" --jq '.[] | [.id, .name] | @tsv' \
+                    | awk -F'\t' -v n="$want" '$2 == n {print $1}')
+            [ "$(printf '%s\n' "$aid" | grep -c .)" = 1 ] || { echo "::error::asset $want: expected one, got '$aid'"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid" > "$want"
+            ls -l "$want"
+          done
+          grep " ${NAME}\$" SHA256SUMS > mine.sha
+          [ -s mine.sha ] || { echo "::error::$NAME is not in SHA256SUMS"; exit 1; }
+          if command -v sha256sum >/dev/null; then sha256sum -c mine.sha; else shasum -a 256 -c mine.sha; fi
+      - name: run what was uploaded (no token in this step)
+        shell: bash
+        run: |
+          m=$(uname -m)
+          [ "$m" = "$ARCH" ] || { echo "::error::runner CPU is $m, this cell needs $ARCH"; exit 1; }
+          cd v
+          chmod +x "$NAME" 2>/dev/null || true
+          out=$("./$NAME" --version) || { echo "::error::--version failed"; exit 1; }
+          out=${out%$'\r'}
+          echo "--version: $out"
+          [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
+          if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::uploaded $NAME selfcheck exited $rc"; exit 1; fi
+
+  publish:
+    needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write          # flip the draft to public; nothing else
+    env:
+      TAG: ${{ github.ref_name }}
+      RID: ${{ needs.draft.outputs.release_id }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: publish the verified draft as a pre-release (not latest)
+        run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
+          gh api -X PATCH "repos/$GH_REPO/releases/$RID" -F draft=false -F prerelease=true -f make_latest=false \
+            --jq '"patched id=\(.id) tag=\(.tag_name)"'
+      - name: read it back through the API
+        run: |
+          got=$(gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) prerelease=\(.prerelease) tag=\(.tag_name)"')
+          echo "$got"
+          [ "$got" = "draft=false prerelease=true tag=$TAG" ] || { echo "::error::release $RID reads back as '$got', want draft=false prerelease=true tag=$TAG"; exit 1; }
+          # "no latest release at all" (HTTP 404) is fine; any other failure is not a confirmation
+          if out=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>&1); then latest=$out
+          else case "$out" in *"HTTP 404"*) latest="" ;; *) echo "::error::could not read the latest release: $out"; exit 1 ;; esac; fi
+          echo "latest release: ${latest:-<none>}"
+          [ "$latest" != "$TAG" ] || { echo "::error::$TAG became the repo's latest release"; exit 1; }
