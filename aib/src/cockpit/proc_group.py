@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run a command in its own process group and, on a timeout, stop the whole group (DECISION-20, 11-08).
 
-    from proc_group import run_group
+    from proc_group import run_group      # the only public entry point
     r = run_group(["aib", "test", "--changed"], timeout=900, cwd=repo)
     r.rc          # exit code; None = timed out or could not start (r.error says which)
     r.out         # combined stdout + stderr (text)
@@ -17,6 +17,10 @@ Rules (DECISION-20 + ADR 0007):
     leader already reaped by someone else      -> leader_reaped_elsewhere (its pid may belong to anyone now)
     running, start time unreadable or changed  -> leader_identity_changed
   A leader that exited but is not reaped (zombie) is still ours: nobody can reuse its pid.
+- Reaping belongs to run_group alone: it creates the Popen, never hands it out, and waits on it only after the
+  stop is finished. There is deliberately no public "stop this Popen" call — a caller holding the Popen could
+  wait on it between our zombie check and killpg (bb7dc / a63ab #509). Once identity is lost at any point of a
+  stop, the result is `unverified` with that reason, whatever a later listing shows.
 - macOS answers killpg with EPERM (not ESRCH) when only zombies are left in a group. EPERM is "to be checked",
   never "done" and never "failed": the group's members are listed again; only zombies left = stopped, a live
   member or a listing that fails = unverified (with the pids).
@@ -140,7 +144,10 @@ class _Group:
         return "sent"
 
     def verify(self):
-        """StopReport from a fresh listing of the group."""
+        """StopReport from a fresh listing of the group. Identity lost earlier in this stop = unverified, always:
+        an empty listing of a group number that may be someone else's proves nothing."""
+        if self.why:
+            return StopReport("unverified", self.why, signals=self.signals)
         rows = self.members(self.pgid)
         if rows is None:
             return StopReport("unverified", "group_listing_failed", signals=self.signals)
@@ -189,19 +196,6 @@ class _Group:
         return self.verify()
 
 
-def stop_group(p, *, start, grace=DEFAULT_GRACE_S, **kw):
-    """Stop the group of `p` (started with start_new_session=True). Returns a StopReport. Never signals
-    anything outside that group; never reaps `p` (the caller does, afterwards).
-
-    `start` is REQUIRED: the leader's start time as the caller recorded it right after starting it
-    (memguard.start_of(p.pid)). The tool compares it itself before every signal; None (never recorded)
-    means nothing is sent (unverified, leader_start_unknown). It is not read here, because by now the
-    caller may already have reaped `p` and its pid may belong to someone else."""
-    g = _Group(p, start=0, **kw)
-    g.start = start
-    return g.stop(grace)
-
-
 def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, leftovers="stop", stdin=None,
               popen=subprocess.Popen):
     """Run `argv` in a new session; see the module doc. `timeout` None = no limit (still stops leftovers)."""
@@ -228,7 +222,7 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
             rows = g.members(g.pgid)
             if rows is None or [pid for pid in _live(rows) if pid != g.pgid]:
                 stop = g.stop(grace)
-        try:
+        try:  # the first and only reap, after every signal has been sent
             p.wait(timeout=KILL_WAIT_S if timed_out else None)
         except subprocess.TimeoutExpired:
             pass

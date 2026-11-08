@@ -101,8 +101,8 @@ class RealGroups(unittest.TestCase):
         self.assertEqual(r.rc, 7)
         self.assertFalse(r.timed_out)
 
-    def test_stop_group_on_a_child_already_reaped_elsewhere_sends_nothing(self):
-        # bb7dc #509: the public stop_group cannot assume nobody waited on p
+    def test_a_group_whose_leader_was_reaped_elsewhere_gets_no_signal(self):
+        # bb7dc #509: someone else waited on the leader -> its pid may be anyone's -> nothing is sent
         import tempfile
         with tempfile.TemporaryFile() as fh:
             p = subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 60 & echo gc $!"], stdout=fh,
@@ -111,20 +111,42 @@ class RealGroups(unittest.TestCase):
             p.wait()
             fh.seek(0)
             gc = self.own.take(fh.read().decode())
-        rep = pg.stop_group(p, grace=0.2, start=start)
+        rep = pg._Group(p, start=start).stop(grace=0.2)
         self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"), rep)
         self.assertEqual(rep.signals, [])
         self.assertTrue(alive(gc), "signalled a group whose leader we could no longer prove")
 
-    def test_stop_group_needs_the_recorded_start_and_none_sends_nothing(self):
-        # a63ab #509: the public stop_group takes (pid, start) and compares itself; it never reads start late
-        with self.assertRaises(TypeError):
-            pg.stop_group(FakeP())
-        calls = []
-        rep = pg.stop_group(FakeP(), start=None, killpg=lambda g, s: calls.append(s),
-                            start_of=lambda pid: 100, leader_state=lambda pid: "running", members=lambda g: [])
-        self.assertEqual((rep.status, rep.why), ("unverified", "leader_start_unknown"))
-        self.assertEqual(calls, [])
+    def test_run_group_reaps_only_after_every_signal_and_hands_out_no_popen(self):
+        # a63ab #509 (1): reaping is run_group's alone; there is no public stop for a caller-held Popen
+        self.assertFalse(hasattr(pg, "stop_group"), "a public stop for a caller-held Popen is back")
+        events = []
+        real_killpg = os.killpg
+
+        class Rec(subprocess.Popen):
+            def wait(self, *a, **k):
+                events.append("wait")
+                return super().wait(*a, **k)
+
+            def poll(self):
+                events.append("poll")
+                return super().poll()
+
+        def kp(pgid, sig):
+            events.append("sig%d" % sig)
+            return real_killpg(pgid, sig)
+
+        os.killpg = kp
+        try:
+            r = pg.run_group(["/bin/sh", "-c", "/bin/sleep 60 & echo gc $!; echo done"], timeout=30, grace=0.5,
+                             popen=Rec)
+        finally:
+            os.killpg = real_killpg
+        self.own.take(r.out)
+        self.assertEqual(r.stop.status, "stopped", r)
+        sent = [i for i, e in enumerate(events) if e.startswith("sig") and e != "sig0"]
+        reaped = [i for i, e in enumerate(events) if e in ("wait", "poll")]
+        self.assertTrue(sent, events)
+        self.assertTrue(all(i > max(sent) for i in reaped), "reaped before the last signal: %s" % events)
 
     def test_a_command_that_cannot_start_says_so(self):
         r = pg.run_group(["/no/such/command"], timeout=1)
@@ -216,6 +238,16 @@ class Fakes(unittest.TestCase):
         rep = g.stop(grace=0.01)
         self.assertEqual(rep.status, "stopped", rep)
         self.assertEqual(calls[:1], [signal.SIGTERM])
+
+    def test_identity_lost_while_waiting_after_term_is_unverified_even_if_the_listing_is_empty(self):
+        # bb7dc #509 (2): TERM sent, then the leader is reaped elsewhere during the grace; the empty listing
+        # that follows must not turn into "stopped"
+        states = iter(["running", "reaped"])
+        g, calls = self.group(self.ok, [], start_now=100)
+        g.leader_state = lambda pid: next(states, "reaped")
+        rep = g.stop(grace=0.01)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"), rep)
+        self.assertEqual(calls, [signal.SIGTERM])
 
     def test_esrch_means_stopped(self):
         def esrch(pgid, sig):
