@@ -16,6 +16,7 @@ on:
     paths:
       - ".github/workflows/aibd-release.yml"
       - "docs/aibd/**"
+      - "scripts/aibd-*-smoke.py"
 permissions:
   contents: read
 concurrency:
@@ -117,6 +118,17 @@ jobs:
           echo "--version: $out"
           [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
           if "$bin" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::$NAME selfcheck exited $rc"; exit 1; fi
+      - name: API smoke (health / metrics / events, token, Host guard)
+        shell: bash
+        run: |
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I scripts/aibd-api-smoke.py "dist/${NAME}"; then echo "API smoke pass"; else rc=$?; echo "::error::API smoke rc $rc"; exit 1; fi
+      - name: sessions smoke (open a program with a grandchild, DELETE, whole tree gone; SKIP while the API is absent)
+        shell: bash
+        run: |
+          # 11-09 a63ab:skip-if-absent 直到 a9136 的 sessions API 合進來;合了把 --require 加上(轉必過)
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I scripts/aibd-sessions-smoke.py "dist/${NAME}"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::sessions smoke rc $rc"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
@@ -196,6 +208,9 @@ jobs:
       PLAT: ${{ matrix.plat }}
       ARCH: ${{ matrix.arch }}
     steps:
+      - uses: actions/checkout@v4          # only for scripts/aibd-*-smoke.py; the binary still comes from the draft
+        with:
+          persist-credentials: false
       - name: download from the draft and check SHA256SUMS
         shell: bash
         env:
@@ -228,6 +243,10 @@ jobs:
           echo "--version: $out"
           [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
           if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::uploaded $NAME selfcheck exited $rc"; exit 1; fi
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I ../scripts/aibd-api-smoke.py "./$NAME"; then echo "API smoke pass"; else rc=$?; echo "::error::uploaded $NAME API smoke rc $rc"; exit 1; fi
+          # sessions:skip-if-absent 直到 a9136 的 API 合進來,之後加 --require
+          if "$PY" -I ../scripts/aibd-sessions-smoke.py "./$NAME"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::uploaded $NAME sessions smoke rc $rc"; exit 1; fi
 
   publish:
     needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private
