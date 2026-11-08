@@ -144,22 +144,71 @@ fn left_after(stop: &Stop, root: u32) -> Option<u32> {
 }
 
 /// Stop every tree kept by [`settle_failed_start`] once more (aibd is
-/// ending). Returns how many still could not be confirmed.
-pub fn stop_leftovers(grace: Duration) -> usize {
+/// ending), all at once and all within ONE absolute `deadline` (bb7dc #544
+/// 310cf95c D4): each tree gets its own thread and the same grace, cut so
+/// TERM + grace + KILL + check fits before the deadline. Nothing waits past
+/// it. Returns the roots not confirmed gone by then, as (pid, recorded
+/// start time) (still running, not provable, or not answered in time);
+/// never reports them clean.
+pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
     let left = std::mem::take(&mut *LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()));
-    let mut kept = Vec::new();
+    if left.is_empty() {
+        return Vec::new();
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    // the stop after the grace: KILL + its 2 s check, plus a margin
+    let grace = remaining
+        .saturating_sub(Duration::from_secs(3))
+        .min(SETTLE_GRACE);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut waiting = std::collections::BTreeSet::new();
     for mut r in left {
         SWEPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if !r.stop(grace).releases_slot() {
-            kept.push(r);
+        let root = (r.pid(), r.h.root_start());
+        waiting.insert(root);
+        let tx = tx.clone();
+        // a thread that cannot start drops its tree unstopped: it stays in
+        // `waiting` and is reported unconfirmed
+        let _ = std::thread::Builder::new()
+            .name("aibd-leftover-stop".into())
+            .spawn(move || {
+                let ok = r.stop(grace).releases_slot();
+                if !ok {
+                    LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+                }
+                let _ = tx.send((root, ok));
+            });
+    }
+    drop(tx);
+    let mut unconfirmed = Vec::new();
+    while !waiting.is_empty() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        // One wake-up per answer, or at the deadline: not a periodic timer
+        // (ADR 0005 named exception, as `sessions::wait_timeout`).
+        #[allow(clippy::disallowed_methods)]
+        let got = rx.recv_timeout(left);
+        match got {
+            Ok((root, ok)) => {
+                waiting.remove(&root);
+                if !ok {
+                    unconfirmed.push(root);
+                }
+            }
+            Err(_) => break, // the deadline, or every thread gone
         }
     }
-    let n = kept.len();
+    unconfirmed.extend(waiting);
+    unconfirmed.sort_unstable();
+    unconfirmed
+}
+
+/// Test hook: keep a running tree as if its start had failed unconfirmed.
+#[doc(hidden)]
+pub fn keep_as_leftover_for_test(h: TreeHandle) {
     LEFTOVERS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .extend(kept);
-    n
+        .push(UnixRunning { h });
 }
 
 #[cfg(test)]

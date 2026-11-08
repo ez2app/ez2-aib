@@ -636,12 +636,13 @@ impl Sessions {
         }
         let reserved = g.reserved;
         drop(g);
-        let leftovers = crate::platform::stop_leftovers(SHORT_GRACE);
-        if leftovers > 0 || reserved > 0 {
+        // same deadline as everything else here (bb7dc #544 310cf95c D4)
+        let leftovers = crate::platform::stop_leftovers(deadline);
+        if !leftovers.is_empty() || reserved > 0 {
             tracing::warn!(
-                leftovers,
+                left_running = ?leftovers,
                 reserved,
-                "trees of failed starts not confirmed gone, or starts still in flight at the cap"
+                "trees of failed starts not confirmed gone by the shutdown cap, or starts still in flight"
             );
         }
         let mut g = lock(&self.inner);

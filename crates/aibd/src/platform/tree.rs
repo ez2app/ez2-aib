@@ -564,6 +564,12 @@ impl TreeHandle {
         self.root
     }
 
+    /// The root's recorded start time (with its pid: its identity), if it
+    /// was recorded.
+    pub fn root_start(&self) -> Option<u64> {
+        self.known.get(&self.root).copied()
+    }
+
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.stdout.take()
     }

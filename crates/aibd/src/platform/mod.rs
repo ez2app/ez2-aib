@@ -92,17 +92,19 @@ fn unsupported_spawn(
     })
 }
 
-/// Stop the trees left by failed starts once more (aibd is ending; bb7dc
-/// #544). Returns how many could not be confirmed. Windows: none are kept here.
-pub fn stop_leftovers(grace: std::time::Duration) -> usize {
+/// Stop the trees left by failed starts once more, all within `deadline`
+/// (aibd is ending; bb7dc #544). Returns the roots not confirmed gone, as
+/// (pid, recorded start time).
+/// Windows: none are kept here.
+pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
     #[cfg(unix)]
     {
-        session_unix::stop_leftovers(grace)
+        session_unix::stop_leftovers(deadline)
     }
     #[cfg(not(unix))]
     {
-        let _ = grace;
-        0
+        let _ = deadline;
+        Vec::new()
     }
 }
 
