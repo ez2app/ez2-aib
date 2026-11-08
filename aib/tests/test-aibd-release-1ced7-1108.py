@@ -4,12 +4,15 @@
 """11-08 PLAN-rust-preview-today C1/C2:aibd-release.yml(Rust 預覽版發版)+ 安裝說明。
 
 R1 只由 tag aibd-v* 發版;PR 只在改這支 / docs/aibd 時跑 build + smoke(自己當探針),沒有 pull_request_target
-R2 權限:頂層 contents: read;只有 publish 有 contents: write;每個 checkout persist-credentials: false;不碰 PyPI / release.yml
-R3 兩目標(macOS Apple Silicon、Windows x64;Intel 先不發)原生 build + smoke(--locked、release、-p aibd;--version 要含版號、selfcheck rc 0,用 if 判,不靠 -e 中止)
-R4 publish / verify 只在 meta 說 publish=true;publish 拒絕蓋掉已存在的 release、只建 pre-release、發版說明檔不在就停
-R5 跑 meta 那段 bash(假 Cargo.toml):tag 版號對得上 + 有 pre-release 段 ⇒ publish=true;對不上 / 沒有 -xxx ⇒ rc 1;
+R2 權限:頂層 contents: read;只有 draft / verify / publish 有 contents: write;每個 checkout persist-credentials: false;不碰 PyPI / release.yml
+R3 兩目標(macOS Apple Silicon、Windows x64;Intel 先不發)原生 build + smoke(--locked、release、-p aibd;
+   --version 精確等於「aibd <版號> <os>-<arch>」、selfcheck rc 0,用 if 判,不靠 -e 中止;uname -m 要是該格的 CPU)
+R4 draft / verify / publish 只在 meta 說 publish=true;draft 拒絕碰已存在的 release、建 draft + pre-release + 不當 latest、發版說明檔不在就停
+R5 跑 meta 那段 bash(假 Cargo.toml):tag 版號對得上 + 嚴格 X.Y.Z-preview.N ⇒ publish=true;對不上 / 其他 pre-release 寫法 ⇒ rc 1;
    不是 tag ⇒ publish=false
-R6 verify 從 release 頁重下載、對 SHA256SUMS、再跑一次
+R6 verify 從 draft 下載、對 SHA256SUMS、再跑一次(--version 精確、uname -m);權杖只給下載那步,執行那步沒有
+R7 先 draft → verify 全綠 → 才 publish(edit --draft=false --latest=false)並用 API 讀回 draft=false prerelease=true、不是 latest
+   (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 """
 import os
@@ -54,8 +57,8 @@ class Static(unittest.TestCase):
     def test_r2_permissions_and_scope(self):
         head = T[:T.index("\njobs:")]
         self.assertRegex(head, r"(?m)^permissions:\n  contents: read$")
-        writes = [n for n in ("meta", "build", "publish", "verify") if "contents: write" in job(n)]
-        self.assertEqual(writes, ["publish"])
+        writes = [n for n in ("meta", "build", "draft", "verify", "publish") if "contents: write" in job(n)]
+        self.assertEqual(writes, ["draft", "verify", "publish"])
         cos = re.findall(r"uses: actions/checkout@v4\n(?:\s+with:\n(?:\s{10}.*\n)*)?", T)
         self.assertGreaterEqual(len(cos), 3)
         for c in cos:
@@ -70,30 +73,54 @@ class Static(unittest.TestCase):
         self.assertEqual(targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"],
                          "11-08 a63ab:macOS Intel 沒有機器能驗 ⇒ 不發(之後 lipo universal 補)")
         self.assertNotIn("macos-15-intel", T)
-        self.assertIn('EXPECTED_FILES: "%d"' % len(targets), job("publish"), "publish 檢查的檔數要跟矩陣一致")
+        self.assertIn('EXPECTED_FILES: "%d"' % len(targets), job("draft"), "draft 檢查的檔數要跟矩陣一致")
         vt = re.findall(r"target: ([\w-]+), exe", job("verify"))
         self.assertEqual(vt, targets, "verify 矩陣要跟 build 一致")
         self.assertIn('cargo build --release --locked -p aibd --target "$TARGET"', b)
-        self.assertIn('case "$out" in *"$VERSION"*)', b)
+        self.assertEqual(re.findall(r"(?m)^            plat: (\S+)", b), ["macos-aarch64", "windows-x86_64"])
+        self.assertEqual(re.findall(r"(?m)^            arch: (\S+)", b), ["arm64", "x86_64"])
+        self.assertIn('[ "$out" = "aibd $VERSION $PLAT" ]', b)
+        self.assertNotIn('*"$VERSION"*', T, "--version 不准用子字串比對")
+        self.assertIn('[ "$m" = "$ARCH" ]', b)
         self.assertRegex(b, r'if "\$bin" selfcheck; then')
         self.assertIn("if-no-files-found: error", b)
 
     def test_r4_publish_guards(self):
-        for n in ("publish", "verify"):
+        for n in ("draft", "verify", "publish"):
             self.assertIn("if: needs.meta.outputs.publish == 'true'", job(n))
-        p = job("publish")
-        self.assertIn('gh release view "$TAG"', p)
-        self.assertIn("already exists", p)
-        self.assertIn("--prerelease", p)
-        self.assertIn("--verify-tag", p)
-        self.assertIn("RELEASE-NOTES-${VERSION}.md", p)
-        self.assertIn('[ "$n" -eq "$EXPECTED_FILES" ]', p)
+        d = job("draft")
+        self.assertIn('gh release view "$TAG"', d)
+        self.assertIn("already exists", d)
+        self.assertRegex(d, r'gh release create "\$TAG" --draft --prerelease --latest=false --verify-tag')
+        self.assertIn("RELEASE-NOTES-${VERSION}.md", d)
+        self.assertIn('[ "$n" -eq "$EXPECTED_FILES" ]', d)
 
     def test_r6_verify_downloads_and_checks(self):
         v = job("verify")
+        self.assertIn("needs: [meta, draft]", v)
         self.assertIn('gh release download "$TAG"', v)
         self.assertIn("-c mine.sha", v)
         self.assertRegex(v, r'if "\./\$NAME" selfcheck; then')
+        self.assertIn('[ "$out" = "aibd $VERSION $PLAT" ]', v)
+        self.assertIn('[ "$m" = "$ARCH" ]', v)
+        dl, run = v.split("- name: run what was uploaded")
+        self.assertIn("GH_TOKEN", dl)
+        self.assertNotIn("GH_TOKEN", run, "跑剛下載的執行檔時不給它權杖")
+        self.assertNotIn("GH_TOKEN", v[:v.index("steps:")], "權杖不放 job 層 env")
+        vt = re.findall(r"target: ([\w-]+), exe: \S+, plat: ([\w-]+), arch: (\w+)", v)
+        self.assertEqual(vt, [("aarch64-apple-darwin", "macos-aarch64", "arm64"),
+                              ("x86_64-pc-windows-msvc", "windows-x86_64", "x86_64")])
+
+    def test_r7_draft_then_verify_then_publish(self):
+        p = job("publish")
+        self.assertIn("needs: [meta, verify]", p, "verify 全綠才公開")
+        self.assertIn('gh release edit "$TAG" --draft=false --prerelease --latest=false', p)
+        self.assertIn('[ "$got" = "draft=false prerelease=true" ]', p)
+        self.assertIn('releases/latest', p)
+        self.assertNotIn("gh release create", p)
+        self.assertNotIn("gh release edit", job("draft") + job("verify"))
+        order = [T.index("\n  %s:\n" % n) for n in ("meta", "build", "draft", "verify", "publish")]
+        self.assertEqual(order, sorted(order))
 
 
 @unittest.skipUnless(sys.version_info >= (3, 11), "meta uses tomllib (Python 3.11+, as on ubuntu-latest)")
@@ -118,6 +145,13 @@ class Meta(unittest.TestCase):
         self.assertNotIn("publish=true", got)
         rc, got, log = self.run_meta("0.2.0", "tag", "aibd-v0.2.0")
         self.assertEqual(rc, 1, "正式版號不准走這支(只發 pre-release)")
+        for bad in ("0.2.0-rc.1", "0.2.0-preview", "0.2.0-preview.1-x", "0.2-preview.1", "0.2.0-preview.a"):
+            with self.subTest(bad=bad):
+                rc, got, log = self.run_meta(bad, "tag", "aibd-v" + bad)
+                self.assertEqual(rc, 1, "只收 X.Y.Z-preview.N:%s" % bad)
+                self.assertNotIn("publish=true", got)
+        rc, got, log = self.run_meta("1.12.30-preview.12", "tag", "aibd-v1.12.30-preview.12")
+        self.assertEqual(rc, 0, log)
         rc, got, log = self.run_meta("0.2.0-preview.1", "branch", "feat/x")
         self.assertEqual(rc, 0, log)
         self.assertIn("publish=false", got)
