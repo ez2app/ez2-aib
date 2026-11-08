@@ -9,6 +9,8 @@
     python3 tools/governance/host_lease.py queue add    --owner <誰> --what <什麼> --run-id <id> [--pid <pid>] [--notify <艙位碼/席碼>]
     python3 tools/governance/host_lease.py queue remove --run-id <id>
     python3 tools/governance/host_lease.py queue list   [--json]
+    python3 tools/governance/host_lease.py run-short --owner <誰> --what <跑什麼> --no-browser --no-fixed-port [--est-s 秒≤300] -- <指令…>
+      (11-08 PROPOSAL-12 short 隊:要先 export EZ2_AIB_STATE_ROOT=<暫存>;規則見檔內「short 隊」段)
 
   acquire 另有:--pid <長跑那個殼的 pid>(它死了租約立刻可接管,活著絕不可接管;沒給只看時間)、
   --exclusive(在量耗時,連小批 aib test 也不准並跑)、--priority(推包用,機器空時不必排名單)。
@@ -49,6 +51,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -101,15 +104,16 @@ def iso(epoch):
     return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
 
 
-def read_lease(path):
-    """(dict|None, why)。None+why=None 是「沒有租約」(檔不存在);None+why 是「讀不到」—— 兩者不是同一個值。"""
+def read_lease(path, schema=SCHEMA):
+    """(dict|None, why)。None+why=None 是「沒有租約」(檔不存在);None+why 是「讀不到」—— 兩者不是同一個值。
+    schema:long 隊 SCHEMA、short 隊 SHORT_SCHEMA(11-08 PROPOSAL-12),兩個檔互不認。"""
     if not path.exists():
         return None, None
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return None, T("aib.lease.unreadable", {"path": str(path), "err": e})
-    if not isinstance(d, dict) or d.get("schema") != SCHEMA or "expiry_epoch" not in d:
+    if not isinstance(d, dict) or d.get("schema") != schema or "expiry_epoch" not in d:
         return None, T("aib.lease.bad_schema", {"path": str(path)})
     return d, None
 
@@ -353,6 +357,8 @@ def _cmd_acquire(a, now, path, ledger):
     if a.pid and new["pid_start"] is None and a.ttl < SHORT_TTL_FLOOR_S:
         # a seat 審 1:量不到起始時刻 ⇒ holder_alive 回 None、只看時間;短 TTL 會讓還在跑的持有者被接管 ⇒ 至少 3 小時(以前的值)
         new["expiry_epoch"], new["expiry_at"] = int(now + SHORT_TTL_FLOOR_S), iso(now + SHORT_TTL_FLOOR_S)
+    if getattr(a, "chrome", False):
+        new["chrome"] = True        # 11-08 PROPOSAL-12:long 在開真 Chrome ⇒ short 上限降到 SHORT_CAP_WHEN_CHROME
     if getattr(a, "exclusive", False):
         new["exclusive"] = True     # 10-13:持有者在量耗時(推包、耗時對照)⇒ 小批 aib test 不准並跑(test_entry 看這一欄)
     free_now = cur is None or (cur.get("run_id") != a.run_id and is_expired(cur, now))
@@ -705,10 +711,12 @@ def recent_denied(ledger, now, window_s=1800, block=65536):
 def cmd_status(a, now, path, ledger):
     st, cur, why = status(path, now)
     denied = recent_denied(ledger, now)
+    sst, scur, swhy = short_status(path, now)
+    short_info = {"state": sst, "lease": scur, "why": swhy}
     if a.json:
         print(json.dumps({"state": st, "lease": cur, "why": why, "path": str(path),
                           "queued_recent": denied, "queue": queue_live(path, now), "measured_at": iso(now),
-                          "ship_waiting": ship_waiting(path)},
+                          "ship_waiting": ship_waiting(path), "short": short_info},
                          ensure_ascii=False, indent=2))
     elif st == "unreadable":
         print(why)
@@ -719,6 +727,9 @@ def cmd_status(a, now, path, ledger):
     else:
         print(describe(cur))
         _say_dead_but_shipping(cur)
+    if not a.json and sst == "held":       # short 不影響結束碼(結束碼照舊只講 long 那把)
+        print(T("aib.lease.short_holder", {"name": scur.get("owner", "?"), "what": scur.get("what", "?"),
+                                           "at": scur.get("expiry_at", "?")}))
     q = [] if a.json else queue_live(path, now)
     if q:
         print(T("aib.lease.queue_summary", {"n": len(q), "name": q[0].get("owner", "?"), "what": q[0].get("what", "?")}))
@@ -726,6 +737,276 @@ def cmd_status(a, now, path, ledger):
         print(T("aib.lease.queued", {"n": len(denied), "name": denied[0].get("owner", "?"),
                                      "what": denied[0].get("what", "?"), "at": denied[0].get("ts", "?")}))
     return {"free": RC_OK, "expired": RC_OK, "held": RC_HELD, "unreadable": RC_UNREADABLE}[st]
+
+
+# ── short 隊(11-08 PROPOSAL-12,Andy「全部照建議」+ f1fae 四個條件)───────────────────────────────────
+#   long 隊 = 上面那把(全套 / 推送 / 真 Chrome,一次 1 份,照舊);short 隊 = 本段,一次 1 份,可以跟 long 同時跑。
+#   只能經 `run-short -- <指令>` 拿:租約、nice 10、宣告時間到就收自己那一組、放鎖全在同一個行程裡,
+#   不給「拿了 short 再自己去跑」的入口 —— nice 與時間上限靠呼叫端自律的話,f1fae 的條件 2 等於沒寫。
+#   發 short 的條件(任何一條不成立就不發,rc=4,denied 留痕帶 lane=short 與 why):
+#     1. 宣告三件都要有(條件 1):--no-browser、--no-fixed-port、環境變數 EZ2_AIB_STATE_ROOT 指向暫存
+#        (不能在真 ~/.ez2-aib 底下);宣告寫進 short 租約與留痕。不管 long 是誰都要 —— long 是不是
+#        ez2-ai 推送量不準(ez2-ai 那邊拿租約的寫法這張不改),量不準就照最嚴的那條。
+#        其中「不開瀏覽器」「不用固定埠」只是宣告,本檔查不到;EZ2_AIB_STATE_ROOT 本檔有查。
+#     2. 熱保護(條件 3):load1 > SHORT_LOAD1_MAX、或任一艙 cooldown 剛寫過 heavy-work-nogo(NOGO_FRESH_S 內)。
+#     3. long 標了 --chrome ⇒ short 上限 SHORT_CAP_WHEN_CHROME。
+#     4. 同一棵樹:這棵樹有活的推包、或 long 租約就是這棵樹 ⇒ 不發(推送中不併跑測試的老規矩)。
+#     5. short 位子有人(活著)⇒ 不發;持有者死了 / 過期 ⇒ 接管並留痕,同 long。
+#   跑:子行程自成一組、nice SHORT_NICE;超過宣告秒數 ⇒ 降級:留痕 short_overrun,對**自己那一組** TERM → KILL,
+#   rc=RC_OVERRUN(結果作廢,要跑請排 long 隊)。不碰別人的行程。
+#   long 同時在跑 ⇒ 印「併跑」:紅燈不得當真紅結案,先單跑或排 long 重跑(條件 2)。
+# ★ 沒做:試用期只在 aib 倉(條件 4)是靠「只有 aib 倉的工具知道 run-short」,不是本檔擋 ez2-ai;
+#   short 跑的時候 long 照常可以拿(本來就是要並跑),long 開始開 Chrome 後已發出去的 short 不會被收回。
+SHORT_SCHEMA = "aib-host-lease-short/v1"
+SHORT_MAX_S = 300           # 宣告上限 5 分鐘
+SHORT_GRACE_S = 60          # 租約到期 = 宣告 + 這麼多(收組 / 放鎖的時間);持有者活著本來就不會被接管
+SHORT_NICE = 10
+SHORT_LOAD1_MAX = 12.0
+SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(提案寫 0 或 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)
+NOGO_FRESH_S = 600          # cooldown 每輪重寫旗標;10 分鐘沒動的是收掉的艙留下的,不算
+SHORT_KILL_WAIT_S = 10
+RC_OVERRUN = 6
+
+
+def short_path(path):
+    return pathlib.Path(str(path) + ".short.json")
+
+
+def nogo_glob(env=None):
+    """cooldown 的 heavy-work-nogo 落點(每艙一份)。AIB_HOST_LEASE_NOGO_GLOB 只搬落點(治具用)。"""
+    env = os.environ if env is None else env
+    g = (env.get("AIB_HOST_LEASE_NOGO_GLOB") or "").strip()
+    return g or str(pathlib.Path.home() / ".ez2-aib" / "instances" / "*" / "cockpit" / "heavy-work-nogo")
+
+
+def _load1():
+    try:
+        return os.getloadavg()[0]
+    except OSError:
+        return None
+
+
+def fresh_nogo(now, env=None):
+    """NOGO_FRESH_S 內寫過的 heavy-work-nogo 路徑清單。"""
+    import glob
+    out = []
+    for f in sorted(glob.glob(nogo_glob(env))):
+        try:
+            if float(now) - os.stat(f).st_mtime <= NOGO_FRESH_S:
+                out.append(f)
+        except OSError:
+            continue
+    return out
+
+
+def _toplevel(d):
+    try:
+        p = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                           timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = p.stdout.strip()
+    return os.path.realpath(out) if p.returncode == 0 and out else None
+
+
+def _real_home_state():
+    return os.path.realpath(str(pathlib.Path.home() / ".ez2-aib"))
+
+
+def check_state_root(env=None):
+    """EZ2_AIB_STATE_ROOT 有設、不在真 ~/.ez2-aib 底下 ⇒ (路徑, None);否則 (None, 原因)。"""
+    env = os.environ if env is None else env
+    raw = (env.get("EZ2_AIB_STATE_ROOT") or "").strip()
+    if not raw:
+        return None, "state_root_missing"
+    real = os.path.realpath(raw)
+    home = _real_home_state()
+    if real == home or real.startswith(home + os.sep):
+        return None, "state_root_real"
+    return real, None
+
+
+def short_gate(path, now, cwd, env=None):
+    """發不發 short:(None, extra) 可以發;(why, extra) 不發。只讀,不寫。extra 給留痕與訊息用。"""
+    load = _load1()
+    if load is not None and load > SHORT_LOAD1_MAX:
+        return "load1", {"load1": round(load, 2)}
+    hot = fresh_nogo(now, env)
+    if hot:
+        return "cooldown_hot", {"nogo": hot[:3]}
+    long_cur, why = read_lease(path)
+    if why:
+        return "long_unreadable", {"err": why}
+    long_live = long_cur if long_cur and not is_expired(long_cur, now) else None
+    if long_live and long_live.get("chrome") and SHORT_CAP_WHEN_CHROME < 1:
+        return "long_chrome", {"long": long_live.get("run_id")}
+    if live_ships(cwd):
+        return "same_tree_shipping", {"cwd": cwd}
+    if long_live and long_live.get("cwd") and long_live.get("host") == socket.gethostname():
+        mine, theirs = _toplevel(cwd), _toplevel(long_live.get("cwd"))
+        if mine and mine == theirs:
+            return "same_tree_long", {"cwd": mine, "long": long_live.get("run_id")}
+    return None, {"long": long_live}
+
+
+def _short_take(a, now, path, ledger, state_root):
+    """在鎖裡判斷 + 寫 short 租約。回 (rc, 租約 dict 或 None)。"""
+    sp = short_path(path)
+    cwd = os.getcwd()
+    why, extra = short_gate(path, now, cwd)
+    if why:
+        log_event(ledger, "denied", now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id, why=why,
+                  **{k: v for k, v in extra.items() if k != "long" or isinstance(v, str)})
+        print(T("aib.lease.short_denied", {"why": why, "what": a.what}))
+        return RC_HELD, None
+    cur, rwhy = read_lease(sp, SHORT_SCHEMA)
+    if rwhy:
+        print(rwhy); return RC_UNREADABLE, None
+    if cur is not None and cur.get("run_id") != a.run_id and not is_expired(cur, now):
+        log_event(ledger, "denied", now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id, why="short_busy",
+                  holder=cur.get("owner"), holder_what=cur.get("what"))
+        print(T("aib.lease.short_busy", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
+                                         "at": cur.get("expiry_at", "?")}))
+        return RC_HELD, None
+    long_live = extra.get("long")
+    pid = os.getpid()
+    new = {"schema": SHORT_SCHEMA, "lane": "short", "owner": a.owner, "what": a.what, "run_id": a.run_id,
+           "pid": pid, "pid_start": proc_start(pid), "host": socket.gethostname(), "cwd": cwd,
+           "declared": {"no_browser": True, "no_fixed_port": True, "state_root": state_root, "est_s": a.est_s},
+           "nice": SHORT_NICE,
+           "concurrent_with": ({"run_id": long_live.get("run_id"), "owner": long_live.get("owner"),
+                                "what": long_live.get("what"), "chrome": bool(long_live.get("chrome"))}
+                               if long_live else None),
+           "acquired_epoch": int(now), "acquired_at": iso(now),
+           "expiry_epoch": int(now + a.est_s + SHORT_GRACE_S), "expiry_at": iso(now + a.est_s + SHORT_GRACE_S)}
+    event = "acquire"
+    fields = {}
+    if cur is not None and cur.get("run_id") != a.run_id:
+        event = "takeover"
+        fields = {"prev_owner": cur.get("owner"), "prev_run_id": cur.get("run_id"), "why": takeover_why(cur, now)}
+    write_lease(sp, new)
+    log_event(ledger, event, now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id,
+              expiry=new["expiry_at"], declared=new["declared"], concurrent_with=new["concurrent_with"], **fields)
+    return RC_OK, new
+
+
+def _short_release(a, now, path, ledger, held_s, rc, overrun):
+    sp = short_path(path)
+    cur, why = read_lease(sp, SHORT_SCHEMA)
+    if why or cur is None or cur.get("run_id") != a.run_id:
+        return              # 被接管 / 讀不到:不動別人的
+    try:
+        sp.unlink()
+    except OSError:
+        return
+    log_event(ledger, "release", now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id,
+              held_s=int(held_s), rc=rc, overrun=overrun, concurrent=bool(cur.get("concurrent_with")))
+
+
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _kill_own_group(pgid):
+    """只收自己起的那一組(start_new_session ⇒ pgid = 子行程 pid)。"""
+    for sig, wait in ((signal.SIGTERM, SHORT_KILL_WAIT_S), (signal.SIGKILL, 0)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        t0 = time.time()
+        while wait and time.time() - t0 < wait:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return
+            time.sleep(0.2)
+
+
+def cmd_run_short(a, now, path, ledger):
+    cmd = list(a.command or [])
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        sys.stderr.write(T("aib.lease.short_usage") + "\n"); return RC_USAGE
+    if not (a.no_browser and a.no_fixed_port):
+        sys.stderr.write(T("aib.lease.short_need_declare") + "\n"); return RC_USAGE
+    if not (0 < a.est_s <= SHORT_MAX_S):
+        sys.stderr.write(T("aib.lease.short_need_declare") + "\n"); return RC_USAGE
+    state_root, why = check_state_root()
+    if why:
+        sys.stderr.write(T("aib.lease.short_state_root", {"why": why}) + "\n"); return RC_USAGE
+    a.run_id = a.run_id or "short-%d-%d" % (os.getpid(), int(now))
+    try:
+        with _mutex(path):
+            rc, lease = _short_take(a, now, path, ledger, state_root)
+    except OSError as e:
+        print(T("aib.lease.unreadable", {"path": str(path) + ".lock", "err": e})); return RC_UNREADABLE
+    if rc != RC_OK:
+        return rc
+    cw = lease.get("concurrent_with")
+    print(T("aib.lease.short_acquired", {"what": a.what, "at": lease["expiry_at"]}))
+    if cw:
+        print(T("aib.lease.short_concurrent", {"name": cw.get("owner", "?"), "what": cw.get("what", "?")}))
+    env = dict(os.environ, AIB_LEASE_SHORT_RUN_ID=a.run_id)
+    t0 = time.time()
+    overrun = False
+    child_rc = None
+    proc = None
+
+    def _on_term(signum, _frame):
+        raise KeyboardInterrupt
+    old = signal.signal(signal.SIGTERM, _on_term)
+    try:
+        proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                preexec_fn=lambda: os.nice(SHORT_NICE))
+        try:
+            child_rc = proc.wait(timeout=a.est_s)
+            if _group_alive(proc.pid):      # 子行程結束了、它留在同一組的背景行程還在 ⇒ 一起收(只收自己這一組)
+                log_event(ledger, "short_leftover", time.time(), lane="short", run_id=a.run_id, pgid=proc.pid)
+                _kill_own_group(proc.pid)
+        except subprocess.TimeoutExpired:
+            overrun = True
+            log_event(ledger, "short_overrun", time.time(), lane="short", owner=a.owner, what=a.what, run_id=a.run_id,
+                      est_s=a.est_s, pgid=proc.pid)
+            print(T("aib.lease.short_overrun", {"what": a.what, "n": a.est_s}))
+            _kill_own_group(proc.pid)
+            proc.wait()
+            child_rc = RC_OVERRUN
+    except KeyboardInterrupt:
+        if proc is not None:
+            _kill_own_group(proc.pid)
+            proc.wait()
+        child_rc = 130
+    except OSError as e:
+        print(T("aib.lease.unreadable", {"path": cmd[0], "err": e}))
+        child_rc = 127
+    finally:
+        signal.signal(signal.SIGTERM, old)
+        end = time.time()
+        try:
+            with _mutex(path):
+                _short_release(a, end, path, ledger, end - t0, child_rc, overrun)
+        except OSError:
+            pass
+    if cw and child_rc not in (0, None):
+        print(T("aib.lease.short_concurrent_red", {"rc": child_rc}))
+    return child_rc if child_rc is not None else RC_UNREADABLE
+
+
+def short_status(path, now):
+    """(state, dict|None, why),同 status() 但看 short 隊。"""
+    cur, why = read_lease(short_path(path), SHORT_SCHEMA)
+    if why:
+        return "unreadable", None, why
+    if cur is None:
+        return "free", None, None
+    return ("expired" if is_expired(cur, now) else "held"), cur, None
+
 
 
 def main(argv=None):
@@ -739,6 +1020,13 @@ def main(argv=None):
     p.add_argument("--pid", type=int, default=None, help=T("aib.lease.cli_pid"))
     p.add_argument("--exclusive", action="store_true", help=T("aib.lease.cli_exclusive"))
     p.add_argument("--priority", action="store_true", help=T("aib.lease.cli_priority"))
+    p.add_argument("--chrome", action="store_true", help=T("aib.lease.cli_chrome"))
+    p = sub.add_parser("run-short", help=T("aib.lease.cli_run_short"))
+    p.add_argument("--owner", required=True); p.add_argument("--what", required=True)
+    p.add_argument("--run-id", default=None)
+    p.add_argument("--est-s", type=int, default=SHORT_MAX_S)
+    p.add_argument("--no-browser", action="store_true"); p.add_argument("--no-fixed-port", action="store_true")
+    p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("release"); p.add_argument("--run-id", required=True)
     p = sub.add_parser("renew"); p.add_argument("--run-id", required=True); p.add_argument("--ttl", type=int, default=DEFAULT_TTL_S)
     p = sub.add_parser("status"); p.add_argument("--json", action="store_true")
@@ -760,7 +1048,7 @@ def main(argv=None):
     now = time.time() if a.now is None else a.now
     path, ledger = lease_path(), ledger_path()
     return {"acquire": cmd_acquire, "release": cmd_release, "renew": cmd_renew, "status": cmd_status,
-            "queue": cmd_queue}[a.cmd](a, now, path, ledger)
+            "queue": cmd_queue, "run-short": cmd_run_short}[a.cmd](a, now, path, ledger)
 
 
 if __name__ == "__main__":

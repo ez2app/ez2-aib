@@ -5970,5 +5970,18 @@
   "aib.gameworld.legacy_opened": "Lobby opened, but it may not show this cabin (actual cabin unknown); update the Captain Room plugin to switch automatically.",
   "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
-  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected."
+  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
+  "aib.lease.short_denied": "short lane refused ({why}): {what} did not run. load1 / cooldown hot ⇒ wait to cool; same tree shipping or holding long ⇒ use another tree or wait; long running Chrome ⇒ wait for it",
+  "aib.lease.short_busy": "short lane held by {name} ({what}, expires {at}); one at a time, try again when it finishes",
+  "aib.lease.short_acquired": "short lease acquired: {what} (nice 10, stopped by {at} at the latest)",
+  "aib.lease.short_concurrent": "concurrent: {name} ({what}) is running on the long lane; a red from this run must not be closed as a real failure, rerun alone or on the long lane first",
+  "aib.lease.short_concurrent_red": "red while concurrent (exit {rc}): rerun alone or on the long lane before treating it as a real failure",
+  "aib.lease.short_overrun": "short run exceeded its declared {n} s: {what} downgraded (own process group stopped, result void); queue on the long lane to run it",
+  "aib.lease.short_usage": "usage: run-short --owner <who> --what <what> --no-browser --no-fixed-port [--est-s seconds] -- <command…>",
+  "aib.lease.short_need_declare": "the short lane needs declarations: --no-browser, --no-fixed-port, --est-s between 1 and 300; otherwise queue on the long lane",
+  "aib.lease.short_state_root": "the short lane needs EZ2_AIB_STATE_ROOT pointing at a temporary folder (not the real ~/.ez2-aib): {why}",
+  "aib.lease.short_holder": "short lane: {name} ({what}, until {at} at the latest)",
+  "aib.lease.cli_chrome": "this long-lane run opens a real Chrome (the short lane cap drops)",
+  "aib.lease.cli_run_short": "short lane: named tests / knives up to 5 minutes, may run alongside long (nice 10, declares no browser / no fixed port / temporary state root)",
+  "aib.test.short_big_refused": "not run: the short lane is for a few named tests / knives; this batch of {n} counts as big. Queue on the long lane (plain aib test, without run-short)."
 }

@@ -1345,6 +1345,21 @@ def _lease_tool(*args, env=None):
     return p.returncode, p.stdout
 
 
+def short_inherited(env=None):
+    """11-08 PROPOSAL-12:這一批是不是在 `host_lease.py run-short` 底下跑(short 租約活著、持有者是祖先、
+    run_id 跟 run-short 交給子行程的 AIB_LEASE_SHORT_RUN_ID 對得上)。只是排程協調,不是安全邊界。"""
+    want = (os.environ.get("AIB_LEASE_SHORT_RUN_ID") or "").strip()
+    if not want:
+        return False
+    rc, out = _lease_tool("status", "--json", env=env)
+    try:
+        short = (json.loads(out) or {}).get("short") or {}
+    except (TypeError, ValueError):
+        return False
+    cur = short.get("lease") or {}
+    return short.get("state") == "held" and cur.get("run_id") == want and _holder_is_ancestor(cur) is True
+
+
 def _lease_now(env=None, with_ship=False):
     """(state, lease);with_ship ⇒ 多回一個「推包在等」記號(活著才有)。"""
     rc, out = _lease_tool("status", "--json", env=env)
@@ -1986,6 +2001,13 @@ def main(argv=None):
         lease = {"run_id": None, "waited": 0, "why": "nested"}
     elif inherited:
         lease = {"run_id": None, "waited": 0, "why": "inherited"}
+    elif short_inherited():
+        # 11-08 PROPOSAL-12:run-short 底下 ⇒ 不再看 long 的獨佔、不排 long 隊(short 本來就是要跟 long 並跑);
+        #   大批不准走 short(short 只給指定幾支 / 刀測)
+        if big:
+            say(T("short_big_refused", {"n": len(names)}))
+            return RC_EXCLUSIVE
+        lease = {"run_id": None, "waited": 0, "why": "short"}
     else:
         excl = None if (big or a.exclusive) else exclusive_block(cur if state == "held" else None)
         if excl is not None and not a.wait:

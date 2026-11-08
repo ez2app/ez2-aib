@@ -5970,5 +5970,18 @@
   "aib.gameworld.legacy_opened": "ロビーを開きましたが、このキャビンとは限りません(実際のキャビン不明)。プラグインを更新すると自動で切り替わります。",
   "aib.gameworld.open_failed": "ロビーのウィンドウを開けませんでした。手動で開いてください:{url}",
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
-  "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。"
+  "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
+  "aib.lease.short_denied": "short レーン不可({why}):{what} は未実行。load1 / cooldown 高温 ⇒ 冷却待ち;同じツリーで push 中か long 保持中 ⇒ 別ツリーか解放待ち;long が Chrome 実行中 ⇒ 終了待ち",
+  "aib.lease.short_busy": "short レーンは {name} が使用中({what}、期限 {at})。1 件ずつ、終了後に再試行",
+  "aib.lease.short_acquired": "short リース取得:{what}(nice 10、遅くとも {at} に停止)",
+  "aib.lease.short_concurrent": "並走:long レーンで {name}({what})が実行中。この回の赤は本物の失敗として閉じず、単独か long レーンで再実行",
+  "aib.lease.short_concurrent_red": "並走中に赤(終了コード {rc}):本物の失敗扱いの前に単独か long レーンで再実行",
+  "aib.lease.short_overrun": "short が申告 {n} 秒を超過:{what} を降格(自分のプロセスグループを停止、結果は無効)。実行は long レーンへ",
+  "aib.lease.short_usage": "使い方:run-short --owner <誰> --what <何を> --no-browser --no-fixed-port [--est-s 秒] -- <コマンド…>",
+  "aib.lease.short_need_declare": "short レーンには申告が必要:--no-browser、--no-fixed-port、--est-s は 1–300 秒。できなければ long レーンへ",
+  "aib.lease.short_state_root": "short レーンは EZ2_AIB_STATE_ROOT を一時フォルダに向ける必要あり(本物の ~/.ez2-aib は不可):{why}",
+  "aib.lease.short_holder": "short レーン:{name}({what}、遅くとも {at} まで)",
+  "aib.lease.cli_chrome": "この long レーン実行は本物の Chrome を開く(short レーン上限が下がる)",
+  "aib.lease.cli_run_short": "short レーン:5 分以内の指定テスト / ナイフ、long と並走可(nice 10、ブラウザなし / 固定ポートなし / 一時状態ルートを申告)",
+  "aib.test.short_big_refused": "未実行:short レーンは指定した数本 / ナイフ専用。この {n} 本は大バッチ扱い。long レーンへ(run-short なしで aib test)。"
 }
