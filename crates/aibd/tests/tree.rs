@@ -80,6 +80,37 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
     }
 }
 
+/// `tree-platform` / `tree-plain` fork once the go file exists. Started this
+/// way, the fork happens after `spawn_tree` returned, so the fork watcher is
+/// already on the root: under load the fork could otherwise come before the
+/// watch (forks_seen 0, the exiting parent unreadable). The returned guard
+/// gives the go and removes the file.
+struct Go(std::path::PathBuf);
+
+impl Go {
+    fn give(&self) {
+        std::fs::write(&self.0, b"go").unwrap();
+    }
+}
+
+impl Drop for Go {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn spawn_after_watch(mode: &str, session: &str) -> (TreeHandle, Go) {
+    let go =
+        Go(std::env::temp_dir().join(format!("aib-fixture-go-{}-{session}", std::process::id())));
+    let _ = std::fs::remove_file(&go.0);
+    let mut s = spec_lineage(mode, session);
+    s.env
+        .push(("AIB_FIXTURE_GO".into(), go.0.clone().into_os_string()));
+    let h = spawn_tree(&s).unwrap();
+    go.give();
+    (h, go)
+}
+
 fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
     let out = h.take_stdout().unwrap();
     BufReader::new(out)
@@ -351,7 +382,7 @@ fn second_cancel_is_a_clean_no_op() {
 #[test]
 fn fork_watcher_catches_reparented_platform_binary() {
     assert!(lineage().enabled(), "self-check failed: {:?}", lineage());
-    let mut h = spawn_tree(&spec_lineage("tree-platform", "s-tree-platform")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-platform", "s-tree-platform");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -402,7 +433,7 @@ fn fork_watcher_catches_reparented_platform_binary() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_watched_process_with_a_readable_marker_stays_found_by_watch() {
-    let mut h = spawn_tree(&spec_lineage("tree-plain", "s-tree-plain")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-plain", "s-tree-plain");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
