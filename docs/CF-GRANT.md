@@ -74,3 +74,5 @@ First move unattended jobs that cannot wait for a fingerprint (certificate renew
 2. Global key and broad tokens on servers: back up, then remove them from the config files; old backup copies in the same directory hold the same keys and must be handled too.
 3. Revoke the broad token in the Cloudflare dashboard; the owner **Changes / Rolls** the global key (it cannot just be disabled).
 4. Within 24 hours check the logs of certificate renewal, cache purge, domain audit and similar jobs.
+
+probe x‪y (1ced7, temporary)
