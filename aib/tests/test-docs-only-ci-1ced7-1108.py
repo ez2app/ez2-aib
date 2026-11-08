@@ -440,6 +440,7 @@ case "$1" in
       empty) exit 0 ;;
       missing) echo "no/such/test.py" ;;
       partial) echo "$T1"; exit 1 ;;
+      blank) printf ' \t \n\t\n' ;;
       *) echo "$T1"; echo "$T2" ;;
     esac ;;
   *) echo "$1" >> "$RAN"; exit "${TEST_RC:-0}" ;;
@@ -480,7 +481,7 @@ class ListStepsRun(unittest.TestCase):
                 self.assertEqual(got, ["t1.py", "t2.py"], "一支紅也要跑完其他支")
             # GitHub 的預設是 bash -e;不靠 -e 也要紅(之後有人改 shell / 加 set +e 不會變假綠)
             for shell in (("bash", "-e"), ("bash",)):
-                for mode in ("fail", "empty", "missing", "partial"):
+                for mode in ("fail", "empty", "missing", "partial", "blank"):
                     with self.subTest(step=marker, case=mode, shell=" ".join(shell)):
                         rc, got, log = self.run_step(marker, mode, shell=shell)
                         self.assertNotEqual(rc, 0, "清單 %s ⇒ 要紅,不能零支跑完當綠\n%s" % (mode, log))

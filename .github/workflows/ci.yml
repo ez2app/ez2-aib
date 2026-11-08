@@ -99,6 +99,8 @@ jobs:
             n=$((n + 1))
           done
           echo "ran $n test file(s)"
+          # bb7dc #538 b5ea0e7d:只有空白 / tab 的清單 [ -n ] 會過、迴圈 0 次 ⇒ 一定要真的跑到至少一支
+          [ "$n" -gt 0 ] || { echo "::error::no listed test ran (the list was blank or every file was missing)"; exit 1; }
           exit $rc
       # a63ab 11-09:只改 Rust 時,讀 crates/ / Cargo.* 的 Python 測試(清單在 docs_only.py RUST_READ_TESTS,守門測試管名單)
       #   + 掃 .md 的那份,逐支直接跑同一支
@@ -115,6 +117,8 @@ jobs:
             n=$((n + 1))
           done
           echo "ran $n test file(s)"
+          # bb7dc #538 b5ea0e7d:只有空白 / tab 的清單 [ -n ] 會過、迴圈 0 次 ⇒ 一定要真的跑到至少一支
+          [ "$n" -gt 0 ] || { echo "::error::no listed test ran (the list was blank or every file was missing)"; exit 1; }
           exit $rc
       - name: not docs-only nor Rust-only
         if: steps.d.outputs.light != 'true'
