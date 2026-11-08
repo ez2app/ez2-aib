@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: Apache-2.0
+# aibd (Rust) preview releases. Separate from release.yml / PyPI (Python aib), which this file never touches.
+# 11-08 PLAN-rust-preview-today (C1):
+#   tag aibd-v<version>  ⇒ build 3 targets (--locked, release profile) ⇒ smoke each on its own platform
+#   (--version must print the tag's version; selfcheck must exit 0) ⇒ SHA256SUMS ⇒ GitHub **pre-release**
+#   ⇒ download the published files again on each platform, check SHA256SUMS, run --version (post-publish check).
+#   A pull request that changes this file runs build + smoke only (no publish): the PR is its own probe.
+# Nothing here is signed (Apple / Windows signing costs money ⇒ waits for Andy); the install notes say so.
+name: aibd-release
+on:
+  push:
+    tags: ["aibd-v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/aibd-release.yml"
+      - "docs/aibd/**"
+permissions:
+  contents: read
+concurrency:
+  group: aibd-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          ver=$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
+          echo "workspace version: $ver"
+          if [ "$REF_TYPE" = tag ]; then
+            want="${REF_NAME#aibd-v}"
+            if [ "$want" != "$ver" ]; then
+              echo "::error::tag $REF_NAME says $want but Cargo.toml [workspace.package] version is $ver — not releasing"; exit 1
+            fi
+            case "$ver" in *-*) ;; *) echo "::error::$ver has no pre-release part (e.g. 0.2.0-preview.1); this workflow only makes pre-releases"; exit 1 ;; esac
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest          # Apple Silicon runner: native build + native smoke
+            exe: ""
+          - target: x86_64-apple-darwin
+            os: macos-15-intel        # Intel runner: native build + native smoke (no Rosetta guesswork)
+            exe: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            exe: ".exe"
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ matrix.exe }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+          rustc -vV
+      - name: build
+        shell: bash
+        run: cargo build --release --locked -p aibd --target "$TARGET"
+      - name: package
+        shell: bash
+        run: |
+          mkdir -p dist
+          name="aibd-${VERSION}-${TARGET}${EXE}"
+          cp "target/${TARGET}/release/aibd${EXE}" "dist/${name}"
+          echo "NAME=${name}" >> "$GITHUB_ENV"
+          ls -l dist
+      - name: smoke (--version, selfcheck)
+        shell: bash
+        run: |
+          bin="dist/${NAME}"
+          out=$("$bin" --version) || { echo "::error::$NAME --version failed"; exit 1; }
+          echo "--version: $out"
+          case "$out" in *"$VERSION"*) ;; *) echo "::error::--version does not mention $VERSION"; exit 1 ;; esac
+          if "$bin" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::$NAME selfcheck exited $rc"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [meta, build]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write          # create the release and upload files; nothing else
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: aibd-*
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          n=$(ls aibd-* | wc -l)
+          [ "$n" -eq 3 ] || { echo "::error::expected 3 files, got $n"; ls -l; exit 1; }
+          sha256sum aibd-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: create pre-release (refuses to touch an existing release)
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists — not overwriting it; delete it by hand first if a rebuild is really wanted"; exit 1
+          fi
+          notes=docs/aibd/RELEASE-NOTES-${VERSION}.md
+          [ -f "$notes" ] || { echo "::error::$notes is missing (release notes are reviewed by a human before tagging)"; exit 1; }
+          gh release create "$TAG" --prerelease --verify-tag --title "aibd $VERSION (preview)" --notes-file "$notes" \
+            dist/aibd-* dist/SHA256SUMS
+
+  verify:
+    needs: [meta, publish]
+    if: needs.meta.outputs.publish == 'true'
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-latest, target: aarch64-apple-darwin, exe: ""}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, exe: ""}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc, exe: ".exe"}
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      NAME: aibd-${{ needs.meta.outputs.version }}-${{ matrix.target }}${{ matrix.exe }}
+    steps:
+      - name: download from the release page and check SHA256SUMS
+        shell: bash
+        run: |
+          mkdir v && cd v
+          gh release download "$TAG" -p "$NAME" -p SHA256SUMS
+          grep " ${NAME}\$" SHA256SUMS > mine.sha
+          [ -s mine.sha ] || { echo "::error::$NAME is not in SHA256SUMS"; exit 1; }
+          if command -v sha256sum >/dev/null; then sha256sum -c mine.sha; else shasum -a 256 -c mine.sha; fi
+      - name: run what was published
+        shell: bash
+        run: |
+          cd v
+          chmod +x "$NAME" 2>/dev/null || true
+          out=$("./$NAME" --version) || { echo "::error::--version failed"; exit 1; }
+          echo "--version: $out"
+          case "$out" in *"$VERSION"*) ;; *) echo "::error::--version does not mention $VERSION"; exit 1 ;; esac
+          if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::published $NAME selfcheck exited $rc"; exit 1; fi
