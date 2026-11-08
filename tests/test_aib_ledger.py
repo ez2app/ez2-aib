@@ -597,6 +597,65 @@ class AibLedger(unittest.TestCase):
         self.assertIn("resubmitted at", self.ok("show", "B-re").stdout)
         self.ok("move", "B-re", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
 
+    def test_1109_r2_m1_verify_lists_earlier_red_at_this_head(self):
+        # ebb36 #541 M1:同頭碼先紅後綠,紅的不算、但 verify / 收件要看得到(只顯示、不擋)
+        _, sha = self.repo()
+        sha2 = "a1b2c3d4" * 5                           # 另一個頭碼(不帶 --repo,不查 commit)
+        self.roles()
+        self.ok("add", "B-red", "--batch", "b118", "--owner", "2240e", "--title", "red", "--by", "seat:f1fae")
+        self.ok("move", "B-red", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        old_head_red = self.receipt(sha=sha2, rc=1)     # 舊頭碼的紅收據:不屬這個頭碼,不列
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha2, "--evidence", old_head_red,
+                "--by", "seat:2240e")
+        self.ok("move", "B-red", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        red = self.receipt(sha=sha, rc=1)
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha, "--evidence", red,
+                "--by", "seat:2240e")
+        self.ok("move", "B-red", "--from", "review", "--to", "running", "--by", "seat:2240e")   # 負責席自己拉回
+        good = self.receipt(sha=sha)
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        v = self.ok("verify", "B-red").stdout
+        self.assertIn("EARLIER", v)
+        self.assertIn(Path(red).name, v)
+        self.assertIn("rc is 1, not 0", v)
+        self.assertNotIn(Path(old_head_red).name, v)
+        self.assertLess(v.index(Path(red).name), v.index("RESULT OK"), v)
+        vj = json.loads(self.ok("verify", "B-red", "--json").stdout)
+        self.assertTrue(vj["ok"])
+        self.assertEqual([r["path"] for r in vj["earlier_red"]], [str(Path(red).resolve())])
+        self.assertEqual((vj["earlier_red"][0]["why"], vj["earlier_red"][0]["by"]), ("resubmitted", "2240e"))
+        show = self.ok("show", "B-red").stdout
+        self.assertIn(str(Path(red).resolve()), show)
+        acc = self.ok("move", "B-red", "--from", "review", "--to", "accepted", "--by", "seat:f1fae").stdout
+        self.assertIn("did not pass", acc)
+
+    def test_1109_r2_l1_replay_before_format_check(self):
+        # ebb36 #541 L1:同 id 同內容 ⇒ 重播,就算收據檔事後不見了也不回 rc 2
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-rp", "--batch", "b118", "--owner", "2240e", "--title", "rp", "--by", "seat:f1fae")
+        self.ok("move", "B-rp", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        rec = self.receipt(sha=sha)
+        args = ("move", "B-rp", "--from", "running", "--to", "review", "--head", sha, "--evidence", rec,
+                "--event-id", "evE", "--by", "seat:2240e")
+        self.ok(*args)
+        Path(rec).unlink()
+        self.assertIn("(replayed)", self.ok(*args).stdout)
+
+    def test_1109_r2_l2_first_review_is_not_resubmitted(self):
+        # ebb36 #541 L2:第一次交 review 前別的 move 帶的收據,不標「resubmitted」
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-first", "--batch", "b118", "--owner", "2240e", "--title", "f", "--by", "seat:f1fae")
+        early = self.receipt(sha=sha)
+        self.ok("move", "B-first", "--from", "queued", "--to", "running", "--evidence", early, "--by", "seat:2240e")
+        self.ok("move", "B-first", "--from", "running", "--to", "review", "--head", sha,
+                "--evidence", self.receipt(sha=sha), "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-first", "--json").stdout)
+        self.assertEqual(it["superseded"][-1]["why"], "before first review")
+        self.assertNotIn("resubmitted", self.ok("show", "B-first").stdout)
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
