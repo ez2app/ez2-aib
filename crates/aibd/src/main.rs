@@ -11,7 +11,28 @@ fn init_tracing() {
         .init();
 }
 
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | --help]\n  (no argument: start the local server)";
+
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        [] => {}
+        ["--version"] | ["-V"] => {
+            println!("{}", aibd::selfcheck::version_line());
+            return ExitCode::SUCCESS;
+        }
+        ["--help"] | ["-h"] => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        ["selfcheck"] => return selfcheck(false),
+        ["selfcheck", "--json"] => return selfcheck(true),
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
     init_tracing();
     match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
@@ -52,4 +73,18 @@ async fn run() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Print what this build can do here; rc 1 only when a check failed.
+fn selfcheck(json: bool) -> ExitCode {
+    let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
+        .map_err(|e| e.to_string());
+    let lineage = aibd::lineage::Lineage::detect();
+    let rows = aibd::selfcheck::rows(cfg, &lineage, std::env::consts::OS);
+    if json {
+        println!("{}", aibd::selfcheck::render_json(&rows));
+    } else {
+        print!("{}", aibd::selfcheck::render_text(&rows));
+    }
+    ExitCode::from(aibd::selfcheck::exit_code(&rows))
 }

@@ -15,6 +15,7 @@ on:
       - "migrations/**"
       - "scripts/check-core-purity.sh"
       - "scripts/check-sys-deps.sh"
+      - "scripts/check-win-job-knives.sh"
       - ".github/workflows/aibd.yml"
   pull_request:
     paths:
@@ -27,6 +28,7 @@ on:
       - "migrations/**"
       - "scripts/check-core-purity.sh"
       - "scripts/check-sys-deps.sh"
+      - "scripts/check-win-job-knives.sh"
       - ".github/workflows/aibd.yml"
 permissions:
   contents: read
@@ -38,7 +40,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   rust:
-    timeout-minutes: 30
+    # 45: the Windows cell also runs the Job tests 5x and 7 knives
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +56,12 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
     steps:
+      - name: Windows version (what the Job tests ran on)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, BuildNumber, OSArchitecture
       - uses: actions/checkout@v4
       - name: Toolchain (pinned by rust-toolchain.toml)
         shell: bash
@@ -96,3 +105,17 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
+      # Five runs in one job; each must be green.
+      - name: aib-sys job (Windows) 5x
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "== run $i/5"
+            cargo test -q -p aib-sys --locked || exit 1
+          done
+      - name: aib-sys job knives (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/check-win-job-knives.sh

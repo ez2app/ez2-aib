@@ -3,8 +3,8 @@
 
     aib prepr [--repo DIR] [--base REF] [--run-tests] [--json]
 
-Each item prints pass / fail / not_run, with the reason, the scope, the tool version and the real exit code.
-"not_run" is never counted as green. Without --run-tests the test items are not run (they are long and need the
+Each item prints pass / fail / warn / not_run, with the reason, the scope, the tool version and the real exit code.
+"not_run" and "warn" are never counted as green; "warn" is not a failure either. Without --run-tests the test items are not run (they are long and need the
 machine lease); the items only a person can check (reruns, knives, formulas, PR text, dm, watchers) are listed as
 not_run with what to do. Exit code: 1 if any item failed, 2 on a usage error, else 0.
 
@@ -12,11 +12,14 @@ Nothing is installed: a missing tool or target is reported as not_run with the r
 Standard library only.
 """
 import argparse
+import ast
+import io
 import json
 import os
 import re
 import shutil
 import sys
+import tokenize
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "cockpit"))
 import proc_group  # noqa: E402  (DECISION-20 shared tool)
@@ -29,6 +32,17 @@ AIB_TEST_PER_TEST_TIMEOUT_S = 900   # `aib test --timeout`: per test
 # The whole `aib test` run: only a backstop, aib test stops a hung test itself. 3600 s stopped healthy big
 # batches (244 tests took about 3685 s; #494 L7).
 AIB_TEST_OUTER_TIMEOUT_S = 6 * 3600
+
+# Item 10 (DECISION-20, a63ab 11-08): a NEW subprocess call with its own timeout that does not go through
+# proc_group. Its timeout kills only the direct child; the tree it started stays (the 11-07 / 11-08 orphans).
+# Only lines this change adds are looked at, so the existing calls do not drown the report.
+# a63ab: the first week only warns. Turning it into a failure is a separate, reviewed PR (no date switch here).
+TIMEOUT_CALLS_STATUS = "warn"
+SUBPROCESS_FUNCS = ("run", "call", "check_call", "check_output")
+# a call written on purpose this way says why in a COMMENT on one of its lines; the reason is required
+TIMEOUT_EXEMPT = "proc-group: ok"
+_EXEMPT_RE = re.compile(r"#\s*proc-group:\s*ok\b(.*)$")
+TIMEOUT_SKIP = ("aib/src/cockpit/proc_group.py",)
 
 # (item number in DECISION-7 A, what to do) for the items a person checks
 MANUAL = (
@@ -273,6 +287,223 @@ def python_item(repo, base, run_tests, aib, runner=run):
     return item(2, name, "pass" if rc == 0 else "fail", rc=rc, cmd=cmd, out=o)
 
 
+def added_lines(repo, base, path, runner=run):
+    """Line numbers of the working copy of `path` that this change adds: one diff from the merge base with `base`
+    to the working tree (committed + uncommitted, numbered as the file is now). "all" = untracked (every line is
+    new); None = could not tell (the caller says so)."""
+    rc, _ = runner(["git", "ls-files", "--error-unmatch", "--", path], repo)
+    if rc is None:
+        return None
+    if rc != 0:
+        return "all"
+    rc, mb = runner(["git", "merge-base", base, "HEAD"], repo)
+    if rc != 0 or not mb.strip():
+        return None
+    rc, out = runner(["git", "diff", "-U0", "--no-color", "--no-ext-diff", mb.strip(), "--", path], repo)
+    if rc != 0:
+        return None
+    got = set()
+    for m in _HUNK.finditer(out):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        got.update(range(start, start + count))
+    return got
+
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def _dotted(node):
+    """'p' / 'self.proc' for a Name / Attribute chain, else None."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        return ".".join([node.id] + parts[::-1])
+    return None
+
+
+class _TimeoutScan(ast.NodeVisitor):
+    """Finds subprocess calls with their own timeout (043dd #518): import aliases, Popen objects, positional
+    timeouts of wait / communicate, asyncio.wait_for around them. What cannot be told (**kwargs, a .wait on
+    something not known to be a process in a file that starts processes) is reported as unclear, not dropped."""
+
+    PROCESS_MAKERS = ("Popen",)
+    ASYNC_MAKERS = ("create_subprocess_exec", "create_subprocess_shell")
+
+    def __init__(self, tree):
+        self.sub_mods, self.sub_funcs = {"subprocess"}, {}   # local name -> subprocess function
+        self.async_mods, self.wait_for = {"asyncio"}, set()
+        self.procs = set()           # dotted names bound to a process object
+        self.found = []
+        for node in ast.walk(tree):  # aliases first, wherever they are
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name == "subprocess":
+                        self.sub_mods.add(a.asname or a.name)
+                    elif a.name == "asyncio":
+                        self.async_mods.add(a.asname or a.name)
+            elif isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "asyncio"):
+                for a in node.names:
+                    if node.module == "subprocess":
+                        self.sub_funcs[a.asname or a.name] = a.name
+                    elif a.name == "wait_for":
+                        self.wait_for.add(a.asname or a.name)
+                    elif a.name in self.ASYNC_MAKERS:
+                        self.sub_funcs[a.asname or a.name] = a.name
+        for node in ast.walk(tree):  # then what is bound to a process
+            value, targets = None, []
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                value, targets = node.value, (node.targets if isinstance(node, ast.Assign) else [node.target])
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                value, targets = node.context_expr, [node.optional_vars]
+            elif isinstance(node, getattr(ast, "NamedExpr", ())):
+                value, targets = node.value, [node.target]
+            if value is not None and self._makes_process(value):
+                for t in targets:
+                    d = _dotted(t)
+                    if d:
+                        self.procs.add(d)
+        # a .wait(timeout) on an unknown receiver is a question only in a file that starts processes at all
+        makers = self.PROCESS_MAKERS + self.ASYNC_MAKERS
+        self.starts_processes_somewhere = any(
+            isinstance(n, ast.Call) and self._sub_func(n.func) in makers for n in ast.walk(tree))
+        self.visit(tree)
+
+    def _sub_func(self, func):
+        """'run' / 'Popen' / ... when `func` names a subprocess (or asyncio process) function, else None."""
+        if isinstance(func, ast.Name):
+            return self.sub_funcs.get(func.id)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in self.sub_mods:
+                return func.attr
+            if func.value.id in self.async_mods and func.attr in self.ASYNC_MAKERS:
+                return func.attr
+        return None
+
+    def _makes_process(self, value):
+        if isinstance(value, ast.Await):
+            value = value.value
+        return isinstance(value, ast.Call) and self._sub_func(value.func) in self.PROCESS_MAKERS + self.ASYNC_MAKERS
+
+    def _is_wait_for(self, func):
+        if isinstance(func, ast.Name):
+            return func.id in self.wait_for
+        return isinstance(func, ast.Attribute) and func.attr == "wait_for" and \
+            isinstance(func.value, ast.Name) and func.value.id in self.async_mods
+
+    def _add(self, node, label, kind="hit"):
+        self.found.append((node.lineno, getattr(node, "end_lineno", None) or node.lineno, label, kind))
+
+    def visit_Call(self, node):
+        name = self._sub_func(node.func)
+        kw = {k.arg for k in node.keywords}
+        if name in SUBPROCESS_FUNCS:
+            if "timeout" in kw:
+                self._add(node, "subprocess.%s(timeout=)" % name)
+            elif None in kw:
+                self._add(node, "subprocess.%s(**kwargs): timeout unknown" % name, "unclear")
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in ("wait", "communicate"):
+            self._method(node, node.func.attr, kw)
+        elif self._is_wait_for(node.func) and node.args:
+            inner = node.args[0]
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and \
+                    inner.func.attr in ("wait", "communicate") and self._process_receiver(inner.func.value):
+                self._add(node, "asyncio.wait_for(.%s())" % inner.func.attr)
+        self.generic_visit(node)
+
+    def _process_receiver(self, recv):
+        return _dotted(recv) in self.procs or (isinstance(recv, ast.Call) and self._makes_process(recv))
+
+    def _method(self, node, attr, kw):
+        pos = 0 if attr == "wait" else 1           # Popen.wait(timeout), Popen.communicate(input, timeout)
+        timed = "timeout" in kw or len(node.args) > pos
+        if not timed and None not in kw:
+            return
+        if self._process_receiver(node.func.value):
+            if timed:
+                self._add(node, ".%s(timeout)" % attr)
+            else:
+                self._add(node, ".%s(**kwargs): timeout unknown" % attr, "unclear")
+        elif self.starts_processes_somewhere and timed:
+            self._add(node, ".%s(timeout) on %s: not known to be a process" % (
+                attr, _dotted(node.func.value) or "an expression"), "unclear")
+
+
+def timeout_calls(text):
+    """[(first line, last line, label, "hit" | "unclear")]. Raises SyntaxError on code that does not parse."""
+    return sorted(_TimeoutScan(ast.parse(text)).found)
+
+
+def exemptions(text):
+    """{line: reason} for `# proc-group: ok <reason>` in real COMMENT tokens (a string with the same words is not
+    one). A marker without a reason maps to ""."""
+    got = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                m = _EXEMPT_RE.search(tok.string)
+                if m:
+                    got[tok.start[0]] = m.group(1).strip()
+    except (tokenize.TokenError, SyntaxError):
+        pass
+    return got
+
+
+def timeout_items(repo, base, files, runner=run):
+    name = "timeout without proc_group"
+    py = [f for f in files if f.endswith(".py") and f not in TIMEOUT_SKIP]
+    if not py:
+        return [item(10, name, "not_run", "not applicable: no Python change")]
+    hits, unknown = [], []
+    for f in py:
+        path = os.path.join(repo, f)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            continue   # deleted by this change
+        except (OSError, UnicodeDecodeError) as e:
+            unknown.append("%s (%s)" % (f, e.__class__.__name__))
+            continue
+        try:
+            calls = timeout_calls(text)
+        except SyntaxError:
+            unknown.append("%s (does not parse)" % f)
+            continue
+        if not calls:
+            continue
+        new = added_lines(repo, base, f, runner)
+        if new is None:
+            unknown.append("%s (git diff failed)" % f)
+            continue
+        marks = exemptions(text)
+        for first, last, label, kind in calls:
+            span = range(first, last + 1)
+            if new != "all" and not any(n in new for n in span):
+                continue
+            why = [marks[n] for n in span if n in marks]
+            if why and any(why):
+                continue                       # marked on purpose, with a reason
+            where = "%s:%d %s" % (f, first, label)
+            if why:
+                where += " (marked `# %s` without a reason)" % TIMEOUT_EXEMPT
+            (hits if kind == "hit" else unknown).append(where)
+    # a63ab #518: a hit and a "could not check" are two separate items, so that turning the hits into a failure
+    # later never hides files that were not checked (and an unchecked file never reads as a pass)
+    out = []
+    if hits:
+        out.append(item(10, name, TIMEOUT_CALLS_STATUS,
+                        "%d new call(s) with their own timeout: a timeout there kills only the direct child, not "
+                        "what it started. Use proc_group.run_group, or mark the call `# %s <why>`: %s"
+                        % (len(hits), TIMEOUT_EXEMPT, "; ".join(hits))))
+    if unknown:
+        out.append(item(10, name + ": could not check", "not_run", "could not check: %s" % "; ".join(unknown)))
+    if not out:
+        out.append(item(10, name, "pass", "no new timeout call outside proc_group in %d Python file(s)" % len(py)))
+    return out
+
+
 def collect(repo, base, run_tests, aib, runner=run):
     try:
         files = changed_files(repo, base, runner)
@@ -291,6 +522,7 @@ def collect(repo, base, run_tests, aib, runner=run):
         items.append(item(2, "docs", "not_run", "not applicable: docs only; run the doc's own check"))
     else:
         items.append(item(2, "aib test --changed", "not_run", "not applicable: no change outside Rust"))
+    items += timeout_items(repo, base, files, runner)
     for n, what in MANUAL:
         items.append(item(n, "manual", "not_run", "by hand: " + what))
     return files, items
@@ -325,7 +557,9 @@ def main(argv=None):
                     print("            %s: %s" % (key, i[key]))
             if i["tail"] and (i["status"] == "fail" or (i["status"] == "not_run" and i["rc"] is not None)):
                 print("            " + i["tail"].strip().replace("\n", "\n            "))
-        print("not_run is not green. %s" % ("FAILED" if failed else "no failures"))
+        warned = sum(i["status"] == "warn" for i in items)
+        print("not_run and warn are not green. %s%s" % ("FAILED" if failed else "no failures",
+                                                       ", %d warning(s)" % warned if warned else ""))
     return 1 if failed else 0
 
 

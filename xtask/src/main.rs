@@ -263,11 +263,13 @@ fn main() -> ExitCode {
                 eprintln!("deps: cargo metadata failed");
                 return ExitCode::FAILURE;
             };
-            let errs = deps::check(&meta);
+            let mut errs = deps::check(&meta);
+            errs.extend(deps::check_own(&meta));
             if errs.is_empty() {
                 println!(
-                    "aib-sys dependents: ok (only {})",
-                    deps::SYS_ALLOWED.join(", ")
+                    "aib-sys dependents: ok (only {}); aib-sys own deps: ok ({} on the list)",
+                    deps::SYS_ALLOWED.join(", "),
+                    deps::SYS_OWN_DEPS.len()
                 );
                 ExitCode::SUCCESS
             } else {
