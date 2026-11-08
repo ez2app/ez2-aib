@@ -31,7 +31,9 @@ Rules:
   Never restore with cp/mv: an old mtime makes cargo reuse the knifed build and every later run fails for the
   wrong reason. After restoring, the file must read back byte-identical, or the run stops.
 - DECISION-7 13b: CMD runs in its own process group (POSIX). When CMD returns, any process still in that group is
-  a leftover: the knife is UNDECIDED, the group is killed, and no further knife runs on a dirty machine.
+  a leftover: the knife is UNDECIDED, the group is killed, and no further knife runs on a dirty machine. The group
+  leader is a small sentinel that runs CMD and is reaped only after the last signal, so the pgid cannot have been
+  reused by anyone else when it is signalled (bb7dc #525). A process list that cannot be read is UNDECIDED too.
   Not covered: processes that left the group (setsid / daemonize: a tmux server or a daemon the test starts is
   not seen; #525 L2) and Windows, which has no process groups here;
   on Windows the run says "leftover check: unavailable".
@@ -70,44 +72,122 @@ def failed_names(out):
     return sorted(got)
 
 
-def _group_alive(pgid):
+# POSIX: the process-group leader is this sentinel, not CMD. It starts CMD in its own group, reports CMD's rc on
+# stdout, then stays until we close its stdin. So the leader is never reaped before we are done signalling the
+# group: while it is alive or a zombie its pid (= the pgid) cannot be reused, and a signal to that pgid can only
+# reach processes CMD left behind (bb7dc #525 High: reaping CMD first, then killpg(its pid), could hit a group
+# that reused the pid). The leader is reaped last, on every path.
+SENTINEL = r"""
+import json, subprocess, sys
+log, cmd, cwd = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+with open(log, "ab") as f:
     try:
-        os.killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:      # a member we cannot signal still exists
-        return True
+        rc = subprocess.call(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    except OSError as e:
+        f.write(("knife: cannot start %s: %s\n" % (cmd[0], e)).encode())
+        rc = 127
+sys.stdout.write("%d\n" % rc)
+sys.stdout.flush()
+sys.stdin.read()
+"""
+
+
+def group_members(pgid, exclude):
+    """pids in process group `pgid` other than `exclude` (POSIX, from ps); None if ps cannot be read."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid="], capture_output=True, text=True, timeout=10,
+                             stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    got = []
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) == 2 and f[1] == str(pgid) and f[0] != str(exclude):
+            got.append(int(f[0]))
+    return got
+
+
+def _read_rc(p, timeout):
+    """CMD's rc from the sentinel's stdout, or None on timeout / no answer."""
+    import selectors
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ)
+    try:
+        if not sel.select(timeout):
+            return None
+        line = p.stdout.readline()
+    finally:
+        sel.close()
+    try:
+        return int(line.strip())
+    except ValueError:
+        return None
 
 
 def run(cmd, cwd, timeout):
     """-> (rc or None on timeout, output, leftover: True / False / None when it cannot be checked).
     Output goes to a temp file, not a pipe: a leftover child inherits a pipe and holds it open, so reading the pipe
     would wait for the leftover instead of for CMD (Windows CI run 42436895264 hung 39 min that way)."""
-    kw = {"start_new_session": True} if POSIX else {}
-    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as log:
-        p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+    fd, log = tempfile.mkstemp(prefix="knife-", suffix=".log")
+    os.close(fd)
+    try:
+        if POSIX:
+            rc, leftover = _run_posix(cmd, cwd, timeout, log)
+        else:
+            rc, leftover = _run_plain(cmd, cwd, timeout, log), None
+        with open(log, encoding="utf-8", errors="replace") as f:
+            return rc, f.read(), leftover
+    finally:
+        os.unlink(log)
+
+
+def _run_plain(cmd, cwd, timeout, log):
+    with open(log, "ab") as f:
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()                 # Windows: our own handle
+        p.wait()
+        return None
+
+
+def _run_posix(cmd, cwd, timeout, log):
+    p = subprocess.Popen([sys.executable, "-I", "-c", SENTINEL, log, json.dumps(list(cmd)), cwd or "."],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    pgid = p.pid                 # start_new_session: the sentinel leads its own group
+    leftover = None
+    try:
+        rc = _read_rc(p, timeout)
+        if rc is None:
+            _kill_group(pgid)    # timeout: the leader is not reaped yet, so pgid is still ours
+            return None, None
+        leftover = True
+        for _ in range(20):      # give exiting members up to 2 s
+            members = group_members(pgid, exclude=pgid)
+            if members is None:
+                leftover = None  # cannot tell: say so, never guess clean
+                break
+            if not members:
+                leftover = False
+                break
+            time.sleep(0.1)
+        if leftover:
+            _kill_group(pgid)    # leader still unreaped: only CMD's leftovers (and the sentinel) are hit
+        return rc, leftover
+    finally:
+        # every path: signal first (above), reap the leader last
         try:
-            rc = p.wait(timeout=timeout)
+            p.stdin.close()
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            rc = None
-            if POSIX:
-                _kill_group(p.pid)
-            else:
-                p.kill()
+            _kill_group(pgid)    # still unreaped here, so still ours
             p.wait()
-        leftover = None
-        if rc is not None and POSIX:
-            leftover = True
-            for _ in range(20):      # give exiting members up to 2 s
-                if not _group_alive(p.pid):
-                    leftover = False
-                    break
-                time.sleep(0.1)
-            if leftover:
-                _kill_group(p.pid)
-        log.seek(0)
-        return rc, log.read(), leftover
+        p.stdout.close()
 
 
 def _kill_group(pgid):
@@ -157,6 +237,8 @@ def one_knife(k, repo, default_cmd, timeout):
         return "UNDECIDED", "timeout %s s" % k.get("timeout", timeout), True
     if leftover:
         return "UNDECIDED", "processes left in the process group after CMD returned (killed); stopping", True
+    if leftover is None and POSIX:
+        return "UNDECIDED", "could not read the process list for the leftover check; stopping", True
     outcome, detail = judge(rc, out, k["expect_fail"])
     if outcome != "BIT":
         detail += " | " + " / ".join(out.strip().splitlines()[-3:])[:300]
@@ -174,7 +256,7 @@ def noop_green(cmds, repo, timeout):
     """Run each distinct CMD once with no knife; False (and say so) if any is red or leaves processes behind."""
     for c in cmds:
         rc, out, leftover = run(c, repo, timeout)
-        ok = rc == 0 and not leftover
+        ok = rc == 0 and (leftover is False or (leftover is None and not POSIX))
         print("NOOP %s rc=%s leftover=%s cmd=%s" % ("GREEN" if ok else "RED", rc, leftover, " ".join(c)[:120]))
         if not ok:
             print("  " + " / ".join(out.strip().splitlines()[-3:])[:300])

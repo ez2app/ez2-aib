@@ -230,6 +230,78 @@ class SingleCli(Base):
         self.assertEqual(self.run_cli("--spec", str(bad)).returncode, 2)
 
 
+class NoSignalAfterReap(Base):
+    """bb7dc #525 High: the group leader must never be reaped before the last signal to its pgid, or that pgid
+    may already belong to someone else. Every killpg is checked at the moment it is sent."""
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.leaders = []
+        real_popen, real_killpg = knife.subprocess.Popen, knife.os.killpg
+        test = self
+
+        class Tracked(real_popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                if kw.get("start_new_session"):
+                    test.leaders.append(self)
+
+        def killpg(pgid, sig):
+            leader = [p for p in test.leaders if p.pid == pgid]
+            test.calls.append((sig, bool(leader) and leader[0].returncode is None))
+            return real_killpg(pgid, sig)
+
+        knife.subprocess.Popen, knife.os.killpg = Tracked, killpg
+        self.addCleanup(setattr, knife.subprocess, "Popen", real_popen)
+        self.addCleanup(setattr, knife.os, "killpg", real_killpg)
+
+    def check(self):
+        self.assertTrue(self.leaders, "no group leader was started")
+        for sig, unreaped in self.calls:
+            self.assertTrue(unreaped, "killpg(%s) sent after the leader was reaped: %s" % (sig, self.calls))
+        for p in self.leaders:
+            self.assertIsNotNone(p.returncode, "leader never reaped")
+
+    def test_leftover_path(self):
+        leftover_cmd = [sys.executable, "-c",
+                        "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])"]
+        rc, out, leftover = knife.run(leftover_cmd, str(self.d), 30)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(leftover)
+        self.assertTrue(any(sig == knife.signal.SIGKILL for sig, _ in self.calls), self.calls)
+        self.check()
+
+    def test_timeout_path(self):
+        rc, out, leftover = knife.run([sys.executable, "-c", "import time; time.sleep(30)"], str(self.d), 1)
+        self.assertIsNone(rc)
+        self.assertTrue(self.calls, "timeout sent nothing")
+        self.check()
+
+    def test_clean_path_sends_nothing(self):
+        rc, out, leftover = knife.run([sys.executable, "-c", "print('hi')"], str(self.d), 30)
+        self.assertEqual((rc, leftover), (0, False), out)
+        self.assertIn("hi", out)
+        self.assertEqual(self.calls, [])
+        self.check()
+
+    def test_rc_and_missing_program(self):
+        rc, out, _ = knife.run([sys.executable, "-c", "import sys; sys.exit(3)"], str(self.d), 30)
+        self.assertEqual(rc, 3)
+        rc, out, _ = knife.run(["/no/such/program-043dd"], str(self.d), 30)
+        self.assertEqual(rc, 127)
+        self.assertIn("cannot start", out)
+        self.check()
+
+    def test_unreadable_process_list_is_undecided(self):
+        real = knife.group_members
+        knife.group_members = lambda pgid, exclude: None
+        self.addCleanup(setattr, knife, "group_members", real)
+        rc, out = self.spec([self.k("plus-to-minus", "return a + b", "return a - b")])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("NOOP RED", out)
+
+
 class SingleCliReview525(Base):
     run_cli = SingleCli.run_cli  # borrowed, not inherited: SingleCli's tests run once
 
