@@ -361,7 +361,12 @@ fn cmd_gen(args: &[String]) -> ExitCode {
         }
     }
     if unlisted {
-        let _ = spawn_true();
+        // Lives 1 s, so the watcher always sees it: the knife is about
+        // counting it wrongly, not about missing it (a /usr/bin/true here
+        // was sometimes missed under load and the test went red, 11-08).
+        if let Some(mut c) = spawn_quiet(Command::new("/bin/sleep").arg("1")) {
+            let _ = c.wait();
+        }
     }
     for (p, c) in created {
         println!("C {p} {c}");
