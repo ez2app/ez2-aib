@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aib-core"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "serde",
  "thiserror",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "aib-fixture-tree"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "serde_json",
  "signal-hook",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aib-forkcount"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "aib-procwatch",
  "serde_json",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aib-procwatch"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "libproc",
  "nix",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aib-store"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "aib-core",
  "rusqlite",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "aib-sys"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "libc",
  "thiserror",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "aib-xtask"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "aibd"
-version = "0.0.1"
+version = "0.2.0-preview.1"
 dependencies = [
  "aib-core",
  "aib-store",
