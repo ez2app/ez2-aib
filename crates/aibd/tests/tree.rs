@@ -709,36 +709,13 @@ fn failing_start(
     }
 }
 
-/// No root-exit thread: the group is killed while the root is still our
-/// unreaped child, the root is reaped at once, and the rest is reported
-/// unconfirmed (never "nothing left").
-#[test]
-fn a_root_wait_failure_kills_the_group_and_reports_it_unconfirmed() {
-    use aibd::platform::tree::{Inject, Left};
-    let (f, t) = failing_start("s-fail-rootwait", Inject::RootWait);
-    let root = f.root();
-    assert!(matches!(f.left, Left::Unconfirmed(p) if p == root));
-    assert!(
-        t.elapsed() < Duration::from_secs(10),
-        "the root was not killed"
-    );
-    assert!(
-        still_running(&[root]).is_empty(),
-        "root {root} still running"
-    );
-    assert_eq!(group_members(root), "", "group {root} not empty");
-    let fail = aibd::platform::session_unix::settle_failed_start(f);
-    assert_eq!(fail.left_running, Some(root));
-}
-
-/// Under control (the handle exists): the failure stops the tree like a
-/// DELETE and reports `left_running` exactly when that stop does not
-/// release a slot.
+/// Under control (the handle exists, for every failure point): the failure
+/// stops the tree like a DELETE, every signal through the H1 checks, and
+/// reports `left_running` exactly when that stop does not release a slot.
+/// The root is reaped too (no zombie left behind).
 fn a_late_failure_is_stopped(session: &str, at: aibd::platform::tree::Inject) {
-    use aibd::platform::tree::Left;
     let (f, _) = failing_start(session, at);
     let root = f.root();
-    assert!(matches!(f.left, Left::Handle(_)));
     let t = std::time::Instant::now();
     let fail = aibd::platform::session_unix::settle_failed_start(f);
     assert!(t.elapsed() < Duration::from_secs(10), "not stopped");
@@ -747,10 +724,18 @@ fn a_late_failure_is_stopped(session: &str, at: aibd::platform::tree::Inject) {
         "root {root} still running"
     );
     assert_eq!(group_members(root), "", "group {root} not empty");
+    assert_eq!(ps_stat(root), "", "root {root} left as a zombie");
     assert!(
         fail.left_running.is_none() || fail.left_running == Some(root),
         "{fail:?}"
     );
+}
+
+/// No root-exit thread (bb7dc #544 c5603b91): still a handle, never a raw
+/// group kill; the handle reaps the root itself.
+#[test]
+fn a_root_wait_failure_is_stopped_through_the_handle() {
+    a_late_failure_is_stopped("s-fail-rootwait", aibd::platform::tree::Inject::RootWait);
 }
 
 #[test]

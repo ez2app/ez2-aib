@@ -622,14 +622,32 @@ impl Sessions {
                     me.finish(&id, stop, "shutdown");
                 });
         }
-        // trees of starts that failed and were not confirmed gone (bb7dc #544)
+        // Trees of starts that failed and were not confirmed gone (bb7dc
+        // #544). A POST spawning now settles its failure (and adds its
+        // leftover) before it gives its reservation back, so first wait for
+        // the reservations (within the cap), then sweep.
+        let mut g = lock(&self.inner);
+        while g.reserved > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            g = wait_timeout(&self.cv, g, left);
+        }
+        let reserved = g.reserved;
+        drop(g);
         let leftovers = crate::platform::stop_leftovers(SHORT_GRACE);
-        if leftovers > 0 {
-            tracing::warn!(leftovers, "trees of failed starts still not confirmed gone");
+        if leftovers > 0 || reserved > 0 {
+            tracing::warn!(
+                leftovers,
+                reserved,
+                "trees of failed starts not confirmed gone, or starts still in flight at the cap"
+            );
         }
         let mut g = lock(&self.inner);
         loop {
-            let busy = g.live.values().filter(|e| e.stopping).count() + g.reserved;
+            // reservations were waited for above (until the cap)
+            let busy = g.live.values().filter(|e| e.stopping).count() + reserved;
             let left = deadline.saturating_duration_since(Instant::now());
             if busy == 0 || left.is_zero() {
                 if busy > 0 {

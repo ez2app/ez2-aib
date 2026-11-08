@@ -82,28 +82,18 @@ fn injected(spec: &SpawnSpec, at: Inject) -> std::io::Result<()> {
 }
 
 /// [`start_tree`] failed after the program had started (bb7dc #544 High):
-/// something may still be running, so the caller must stop it and must not
-/// call it "not started" unless that stop was clean.
+/// something may still be running. The tree is always handed back under
+/// control (a [`TreeHandle`]: every later signal goes through the H1
+/// checks), so the caller can stop it and must not call it "not started"
+/// unless that stop releases a slot.
 pub struct StartFailed {
     pub err: std::io::Error,
-    pub left: Left,
-}
-
-pub enum Left {
-    /// Under control: stop it like any session (`TreeHandle::cleanup`).
-    Handle(Box<TreeHandle>),
-    /// Not even the root-exit thread started. The group was sent SIGKILL
-    /// while the root was still our unreaped child, then the root was
-    /// reaped; the rest of the tree cannot be confirmed gone.
-    Unconfirmed(u32),
+    pub handle: Box<TreeHandle>,
 }
 
 impl StartFailed {
     pub fn root(&self) -> u32 {
-        match &self.left {
-            Left::Handle(h) => h.root,
-            Left::Unconfirmed(p) => *p,
-        }
+        self.handle.root
     }
 }
 
@@ -259,6 +249,10 @@ pub struct TreeHandle {
     /// The root's `Child`, kept unreaped until the last signal is sent (H1;
     /// macOS). `None` once reaped, or where the wait thread owns it.
     child: Option<Child>,
+    /// No root-exit thread could be started (a failed start, bb7dc #544):
+    /// nobody sets [`RootExit`], so the handle reaps the root itself after
+    /// its last signal and on drop.
+    own_wait: bool,
     /// H1 latch: the root stopped being provably our unreaped child.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     root_lost: bool,
@@ -357,10 +351,8 @@ enum To {
 pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     start_tree(spec).map_err(|f| match f {
         StartFailedOr::NotStarted(e) => e,
-        StartFailedOr::Started(f) => {
-            if let Left::Handle(mut h) = f.left {
-                let _ = h.cleanup(Duration::from_secs(2));
-            }
+        StartFailedOr::Started(mut f) => {
+            let _ = f.handle.cleanup(Duration::from_secs(2));
             f.err
         }
     })
@@ -398,20 +390,12 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         Ok(()) => start_root_wait_owned(child, root, exit.clone()),
         Err(e) => Err((e, Some(child))),
     };
-    let child = match waited {
-        Ok(c) => c,
-        Err((err, child)) => {
-            // the root is our unreaped child (held here, or dropped without a
-            // wait): its pid, so the group number, is still ours to signal
-            imp::signal_group(root, imp::Sig::Kill);
-            if let Some(mut c) = child {
-                let _ = c.wait();
-            }
-            return Err(StartFailedOr::Started(StartFailed {
-                err,
-                left: Left::Unconfirmed(root),
-            }));
-        }
+    // bb7dc #544: no root-exit thread is no reason to drop the tree. macOS
+    // gets the `Child` back (still unreaped, so every H1 check works) and
+    // the handle reaps it itself after its last signal (`own_wait`).
+    let (child, wait_err) = match waited {
+        Ok(c) => (c, None),
+        Err((e, c)) => (c, Some(e)),
     };
     let mut h = TreeHandle {
         session_id: spec.session_id.clone(),
@@ -420,6 +404,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         exit,
         root,
         child,
+        own_wait: wait_err.is_some(),
         root_lost: false,
         known: BTreeMap::new(),
         found_by_marker: Vec::new(),
@@ -439,7 +424,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     let fail = |h: TreeHandle, err| {
         StartFailedOr::Started(StartFailed {
             err,
-            left: Left::Handle(Box::new(h)),
+            handle: Box::new(h),
         })
     };
     let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
@@ -475,6 +460,9 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = spec.watch_forks;
+    if let Some(e) = wait_err {
+        return Err(fail(h, e));
+    }
     Ok(h)
 }
 
@@ -552,14 +540,7 @@ fn start_root_wait_owned(
 
 #[cfg(not(target_os = "macos"))]
 fn root_end_of(st: &std::process::ExitStatus) -> RootEnd {
-    #[cfg(unix)]
-    let signal = std::os::unix::process::ExitStatusExt::signal(st);
-    #[cfg(not(unix))]
-    let signal = None;
-    RootEnd {
-        code: st.code(),
-        signal,
-    }
+    root_end_of_status(st)
 }
 
 /// Waits for the root's exit without holding the [`TreeHandle`] (so a cancel
@@ -1018,6 +999,10 @@ impl TreeHandle {
     /// Reap the root if it has exited. Called after the last signal of a
     /// stop; afterwards no group signal is sent from this handle.
     fn reap_root(&mut self) {
+        if self.own_wait {
+            self.reap_own();
+            return;
+        }
         if self.exit.get().is_none() {
             return; // still running: keep it (a later stop may still need it)
         }
@@ -1030,10 +1015,38 @@ impl TreeHandle {
     }
 }
 
+impl TreeHandle {
+    /// `own_wait`: reap the root if it has exited (never blocks), and record
+    /// its end the way the root-exit thread would have.
+    fn reap_own(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            match c.try_wait() {
+                Ok(Some(st)) => self.exit.set(root_end_of_status(&st)),
+                _ => self.child = Some(c),
+            }
+        }
+    }
+}
+
+fn root_end_of_status(st: &std::process::ExitStatus) -> RootEnd {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(st);
+    #[cfg(not(unix))]
+    let signal = None;
+    RootEnd {
+        code: st.code(),
+        signal,
+    }
+}
+
 impl Drop for TreeHandle {
     /// Never leave our exited root as a zombie for aibd's lifetime. A root
     /// still running is left alone (dropping a handle is not a stop).
     fn drop(&mut self) {
+        if self.own_wait {
+            self.reap_own();
+            return;
+        }
         if self.exit.get().is_some() {
             if let Some(c) = self.child.as_mut() {
                 let _ = c.try_wait();

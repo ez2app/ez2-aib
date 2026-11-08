@@ -4,7 +4,7 @@
 
 use super::session::{Exit, ExitWait, Running, SpawnFail, Spec, Stop, StopStatus};
 use super::tree::{
-    start_tree, Left, RootEnd, RootWatch, SpawnSpec, StartFailed, StartFailedOr, TreeHandle,
+    start_tree, RootEnd, RootWatch, SpawnSpec, StartFailed, StartFailedOr, TreeHandle,
 };
 use crate::lineage::Lineage;
 use std::ffi::OsString;
@@ -107,6 +107,15 @@ pub const SETTLE_GRACE: Duration = Duration::from_secs(2);
 /// ([`stop_leftovers`]).
 static LEFTOVERS: Mutex<Vec<UnixRunning>> = Mutex::new(Vec::new());
 
+static SWEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many leftover trees [`stop_leftovers`] has tried to stop so far
+/// (test hook).
+#[doc(hidden)]
+pub fn leftovers_swept() -> usize {
+    SWEPT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// bb7dc #544 High: the program started but a later step failed. Stop the
 /// tree like a DELETE does; only a stop that releases a slot
 /// ([`Stop::releases_slot`]) may say nothing is left (`left_running: None`).
@@ -116,15 +125,10 @@ static LEFTOVERS: Mutex<Vec<UnixRunning>> = Mutex::new(Vec::new());
 pub fn settle_failed_start(f: StartFailed) -> SpawnFail {
     let mut out = SpawnFail::from_io(&f.err);
     let root = f.root();
-    match f.left {
-        Left::Handle(h) => {
-            let mut r = UnixRunning { h: *h };
-            out.left_running = left_after(&r.stop(SETTLE_GRACE), root);
-            if out.left_running.is_some() {
-                LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
-            }
-        }
-        Left::Unconfirmed(_) => out.left_running = Some(root),
+    let mut r = UnixRunning { h: *f.handle };
+    out.left_running = left_after(&r.stop(SETTLE_GRACE), root);
+    if out.left_running.is_some() {
+        LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(r);
     }
     out
 }
@@ -145,6 +149,7 @@ pub fn stop_leftovers(grace: Duration) -> usize {
     let left = std::mem::take(&mut *LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()));
     let mut kept = Vec::new();
     for mut r in left {
+        SWEPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !r.stop(grace).releases_slot() {
             kept.push(r);
         }
