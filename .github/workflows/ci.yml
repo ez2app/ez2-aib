@@ -20,6 +20,12 @@ jobs:
     # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。
     #   macOS 整套 260 支約 40 分(最慢一支約 4 分)⇒ 上限 75 分,留將近一倍
     timeout-minutes: 75
+    # 11-08 DECISION-17:main 推送的 macOS 格同一格 1 跑 1 等 —— group = workflow + job + ref + 格子、不砍跑中;
+    #   新的一輪會頂掉還在等的舊輪(那個 commit 就沒有單獨的 macOS 結果,發版只認 workflow_run 那輪的 head_sha)。
+    #   ubuntu 格與 PR 一律用 run_id 自成一組(等於不限),PR 的取消照頂層 concurrency。
+    concurrency:
+      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && format('{0}-smoke-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-smoke-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -87,6 +93,12 @@ jobs:
   #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
   fresh-machine:
     timeout-minutes: 20
+    # 11-08 DECISION-17:main 推送的 macOS 格同一格 1 跑 1 等 —— group = workflow + job + ref + 格子、不砍跑中;
+    #   新的一輪會頂掉還在等的舊輪(那個 commit 就沒有單獨的 macOS 結果,發版只認 workflow_run 那輪的 head_sha)。
+    #   ubuntu 格與 PR 一律用 run_id 自成一組(等於不限),PR 的取消照頂層 concurrency。
+    concurrency:
+      group: ${{ github.event_name == 'push' && matrix.os == 'macos-latest' && format('{0}-fresh-machine-{1}-{2}-{3}', github.workflow, github.ref, matrix.os, matrix.python) || format('{0}-fresh-machine-run-{1}-{2}-{3}', github.workflow, github.run_id, matrix.os, matrix.python) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
