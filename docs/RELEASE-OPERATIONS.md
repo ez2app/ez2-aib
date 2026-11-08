@@ -64,3 +64,5 @@ Known failed stages return 1; unavailable evidence returns 3; valid pending
 progress returns 0 and remains explicitly pending in the payload.
 
 <!-- PROPOSAL-19 probe (1ced7, temporary; this draft PR is closed without merging) -->
+
+[probe broken link](does-not-exist-1ced7.md)
