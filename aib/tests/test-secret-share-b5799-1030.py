@@ -31,6 +31,7 @@ import sys
 import tempfile
 import time
 import unittest
+from aib_tmux_sandbox import Sandbox
 from pathlib import Path
 from unittest import mock
 
@@ -557,12 +558,13 @@ class P9RealTmux(Seat):
         self.sock = "aihub-t" + os.urandom(4).hex()
         tmpdir = Path(tempfile.mkdtemp(prefix="aibtm", dir="/tmp"))
         self.addCleanup(shutil.rmtree, tmpdir, True)
-        os.environ["TMUX_TMPDIR"] = str(tmpdir)
+        self.box = Sandbox(tmpdir, TMUX)
+        safe_tmux = self.box.make_shim(tmpdir / "tmux-safe", self.sock)
         self.scan = self.root / "ps-scan.txt"
         self.shim = self.root / "tmux-shim"
-        self.shim.write_text('#!/bin/sh\nps -axww >> "%s"\nexec "%s" "$@"\n' % (self.scan, TMUX))
+        self.shim.write_text('#!/bin/sh\nps -axww >> "%s"\nexec "%s" "$@"\n' % (self.scan, safe_tmux))
         self.shim.chmod(0o700)
-        base = [TMUX, "-L", self.sock, "-f", "/dev/null"]
+        base = [safe_tmux, "-S", str(self.box.sock), "-f", "/dev/null"]
         subprocess.run(base + ["new-session", "-d", "-x", "200", "-y", "20", "cat"], check=True, timeout=10,
                        stdin=subprocess.DEVNULL, capture_output=True)
         self.addCleanup(subprocess.run, base + ["kill-server"], capture_output=True, timeout=10)
@@ -597,7 +599,7 @@ class P9RealTmux(Seat):
         other = subprocess.run(self.base + ["display-message", "-p", "#{pane_id}"], capture_output=True, text=True, timeout=10).stdout.strip()
         self.assertNotEqual(other, self.pane, "另一格是作用中")
         res, _ = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="darwin", touchid=self.touch(),
-                             touchid_available=lambda: True)
+                             touchid_available=lambda: True, tmux=str(self.shim))
         self.assertEqual(res, {"ok": True})
         cap = lambda p: subprocess.run(self.base + ["capture-pane", "-p", "-t", p], capture_output=True, text=True, timeout=10).stdout
         for _ in range(20):

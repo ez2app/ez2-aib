@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+from aib_tmux_sandbox import Sandbox
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,28 +109,31 @@ class Leave(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="aib-hist-", dir=aib_tmp_root())
         self.sock = tempfile.mkdtemp(prefix="at.", dir="/tmp")
-        self.env = dict(os.environ, TMUX_TMPDIR=self.sock)
+        self.box = Sandbox(self.sock, TMUX)
+        self.shim = self.box.make_shim(os.path.join(self.sock, "tmux-shim"), "h")
+        self.env = dict(os.environ)
         self.env.pop("TMUX", None)
+        self.env.pop("TMUX_TMPDIR", None)
         self.env.pop("TMUX_PANE", None)
         self.log = os.path.join(self.tmp, "keys.log")
         self.fake = os.path.join(self.tmp, "fake_tui.py")
         Path(self.fake).write_text(FAKE, encoding="utf-8")
 
     def tearDown(self):
-        subprocess.run([TMUX, "-L", "h", "kill-server"], env=self.env, capture_output=True)
+        self.box.cleanup()
         shutil.rmtree(self.tmp, ignore_errors=True)
         shutil.rmtree(self.sock, ignore_errors=True)
 
     def start(self, need, mode="normal"):
         cmd = "%s %s %s %s %d %s %s" % (sys.executable, self.fake, FIX / "history-99-of-100-multiline.txt",
                                         FIX / "after-return-empty.txt", need, mode, self.log)
-        subprocess.run([TMUX, "-L", "h", "new-session", "-d", "-x", "120", "-y", "45", "-s", "s", cmd],
-                       env=self.env, check=True)
+        r = self.box.tm("new-session", "-d", "-x", "120", "-y", "45", "-s", "s", cmd)
+        self.assertEqual(r.returncode, 0, r.stderr)
         time.sleep(1.0)
 
     def leave(self, *extra):
         p = subprocess.run([sys.executable, str(HELPER), "leave", "--socket", "h", "--pane", "s:0.0",
-                            "--provider", "claude", "--tmux", TMUX, *extra],
+                            "--provider", "claude", "--tmux", self.shim, *extra],
                            env=self.env, capture_output=True, text=True, timeout=120)
         return p.returncode, p.stdout + p.stderr
 
