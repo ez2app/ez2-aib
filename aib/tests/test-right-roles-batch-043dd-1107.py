@@ -249,10 +249,22 @@ class Loop(Base):
     def old_script(self):
         # 比對用的「舊版」釘在 #482 之前的固定 commit。以前讀 origin/main:#482 合進去後 origin/main 就是新版自己,
         # push 到 main 的 CI(checkout 會建 origin/main)每輪 2 != 7 紅;PR CI 淺層沒有 origin/main 才跳過看似綠。
-        # 淺層 checkout 沒有這個 commit ⇒ 回 None(只驗呼叫數)。
+        # 淺層 clone 缺這個 commit ⇒ 回 None(只驗呼叫數);其他讀不到一律紅。
         r = subprocess.run(["git", "-C", str(ROOT), "show", OLD_REF], capture_output=True, text=True)
-        if r.returncode != 0 or "show-options -wqv" not in r.stdout:
-            return None
+        if r.returncode != 0:
+            # 只有「確實是淺層 clone、而且真的缺這個 commit」才跳過;其他 git 失敗一律紅(bb7dc #502 讀碼)
+            sha = OLD_REF.split(":")[0]
+            inside = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
+                                    capture_output=True, text=True).stdout.strip() == "true"
+            shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+                                     capture_output=True, text=True).stdout.strip() == "true"
+            have = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", sha + "^{commit}"],
+                                  capture_output=True).returncode == 0
+            if not inside or (shallow and not have):   # 刀複本沒有 .git / 淺層缺 commit
+                return None
+            raise AssertionError("讀不到舊版 %s(inside=%s shallow=%s have=%s):%s" % (OLD_REF, inside, shallow, have, r.stderr.strip()))
+        if "show-options -wqv" not in r.stdout:
+            raise AssertionError("OLD_REF 的舊版格式不對")
         if r.stdout == SCRIPT.read_text(encoding="utf-8"):
             raise AssertionError("舊版比對對象跟現行腳本一樣:OLD_REF 釘錯了")
         p = self.d / "old-pane-right-ai.sh"
