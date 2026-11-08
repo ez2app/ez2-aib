@@ -144,6 +144,14 @@ def done_ok(state, status, reason, survivors):
     return (not WINDOWS) and state == "stop_unconfirmed" and status == "unverified" and reason == "observed_clean"
 
 
+def tail(path, n=3):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [x.rstrip() for x in f.readlines()[-n:]]
+    except OSError:
+        return []
+
+
 def first_json_line(path, proc, deadline):
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -202,7 +210,11 @@ def smoke(exe, require, timeout):
             proc = subprocess.Popen([exe], stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
         info = first_json_line(out_path, proc, time.monotonic() + timeout)
         if not info:
+            # a start that never came is evidence, not a verdict: say how long we waited and what it said
             res["started"] = False
+            res["start_wait_s"] = timeout
+            res["alive_at_timeout"] = proc.poll() is None
+            res["err_tail"] = tail(err_path)
             return res, False
         res["started"] = True
         base = "http://" + str(info.get("listening"))

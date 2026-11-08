@@ -25,12 +25,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "aibd-sessions-smoke.py"
+# how long the smoke waits for the fake to print its start-up line; a busy CI runner (364 tests serial on
+# macos 3.12, #537 run 42533782542) needed more than 15 s. Wider wait, same verdict rules.
+START = os.environ.get("AIBD_SMOKE_TEST_TIMEOUT", "60")
 
 FAKE = textwrap.dedent('''\
     #!%(py)s
     import json, os, signal, subprocess, sys, threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     MODE = os.environ["FAKE_MODE"]
+    if MODE == "hang":
+        import time; sys.stderr.write("fake: still booting\\n"); sys.stderr.flush(); time.sleep(60)
     data = os.environ["AIBD_DATA_DIR"]; run = os.path.join(data, "run"); os.makedirs(run)
     tok = os.path.join(run, "token"); open(tok, "w").write("t0k")
     json.dump({"pid": os.getpid()}, open(os.path.join(run, "aibd.json"), "w"))
@@ -79,16 +84,23 @@ FAKE = textwrap.dedent('''\
 
 @unittest.skipUnless(os.name == "posix", "fake aibd uses process groups")
 class SessionsSmoke(unittest.TestCase):
-    def run_smoke(self, mode, *extra):
+    def run_smoke(self, mode, *extra, start=START):
         with tempfile.TemporaryDirectory() as d:
             fake = Path(d) / "aibd"
             fake.write_text(FAKE, encoding="utf-8")
             fake.chmod(0o755)
-            r = subprocess.run([sys.executable, "-I", str(SMOKE), str(fake), "--timeout", "15"] + list(extra),
-                               env=dict(os.environ, FAKE_MODE=mode), capture_output=True, text=True, timeout=90)
+            r = subprocess.run([sys.executable, "-I", str(SMOKE), str(fake), "--timeout", start] + list(extra),
+                               env=dict(os.environ, FAKE_MODE=mode), capture_output=True, text=True,
+                               timeout=2 * float(start) + 90)
         line = (r.stdout.strip().splitlines() or [""])[-1]
         res = json.loads(line[line.index("{"):]) if "{" in line else {}
         return r.returncode, res, r.stdout + r.stderr
+
+    def test_a_start_that_never_came_says_why(self):
+        rc, res, log = self.run_smoke("hang", start="1")
+        self.assertEqual((rc, res.get("started"), res.get("start_wait_s"), res.get("alive_at_timeout")),
+                         (1, False, 1.0, True), log)
+        self.assertIn("fake: still booting", res.get("err_tail") or [], log)
 
     def test_absent_is_a_named_skip(self):
         rc, res, log = self.run_smoke("absent")
