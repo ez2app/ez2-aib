@@ -113,6 +113,53 @@ class Noop(Base):
         self.assertNotIn("BIT ", out)
 
 
+class Review525(Base):
+    """1ced7's #525 review: three ways a knife that bit nothing still said BIT / rc 0."""
+
+    def test_h1_empty_expect_fail_is_a_usage_error(self):
+        rc, out = self.spec([self.k("sub", "return a - b", "return a + b", expect="")])
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("BIT ", out)
+        rc, out = self.spec([self.k("sub", "return a - b", "return a + b", expect=None)])
+        self.assertEqual(rc, 2, out)
+
+    def test_h1_empty_new_is_still_allowed(self):
+        rc, out = self.spec([self.k("del", "return a + b", "", )])
+        self.assertNotEqual(rc, 2, out)
+
+    def test_h2_prefix_name_does_not_match(self):
+        (self.d / "test_a.py").write_text(TEST_A + "\n    def test_add_many(self):\n"
+                                          "        self.assertEqual(a.add(a.sub(4, 2), 3), 5)\n", encoding="utf-8")
+        # knife breaks sub: test_sub and test_add_many go red, test_add stays green
+        rc, out = self.spec([self.k("sub", "return a - b", "return a + b", expect="test_add")])
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"SURVIVED\s+sub")
+
+    def test_h2_name_matching(self):
+        m = knife.name_matches
+        self.assertTrue(m("test_add", "test_add"))
+        self.assertTrue(m("job::tests::test_add", "test_add"))
+        self.assertTrue(m("test_a.T.test_add", "test_add"))
+        self.assertFalse(m("test_add_many", "test_add"))
+        self.assertFalse(m("job::tests::test_add_many", "test_add"))
+        self.assertFalse(m("anything", ""))
+
+    def test_h3_every_per_knife_cmd_gets_a_noop(self):
+        red = [sys.executable, "-B", "-c", "import sys; print('FAIL: test_add (x)'); sys.exit(1)"]
+        rc, out = self.spec([self.k("ok", "return a + b", "return a - b", cmd=CMD),
+                             self.k("red-before", "return a - b", "return a + b", cmd=red)], cmd=None)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("NOOP RED", out)
+        self.assertIn("no knife run", out)
+        self.assertNotIn("BIT ", out)
+
+    def test_h3_same_cmd_runs_noop_once(self):
+        rc, out = self.spec([self.k("a", "return a + b", "return a - b"),
+                             self.k("b", "return a - b", "return a + b", expect="test_sub")])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("NOOP GREEN"), 1, out)
+
+
 class Restore(Base):
     def test_file_is_restored_byte_identical_with_a_new_mtime(self):
         p = self.d / "a.py"
@@ -181,6 +228,26 @@ class SingleCli(Base):
         bad = self.d / "bad.json"
         bad.write_text("{", encoding="utf-8")
         self.assertEqual(self.run_cli("--spec", str(bad)).returncode, 2)
+
+
+class SingleCliReview525(Base):
+    run_cli = SingleCli.run_cli  # borrowed, not inherited: SingleCli's tests run once
+
+    def test_l1_red_baseline_is_not_bit(self):
+        (self.d / "a.py").write_text(A.replace("return a + b", "return 0"), encoding="utf-8")
+        r = self.run_cli("a.py", "return 0", "return 1", "--expect-fail", "test_add", "--", *CMD)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NOOP RED", r.stdout)
+        self.assertNotIn("BIT", r.stdout.replace("NOOP", ""))
+
+    def test_h1_empty_expect_fail_rc2(self):
+        r = self.run_cli("a.py", "return a - b", "return a + b", "--expect-fail", "", "--", *CMD)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_l3_old_reading_spec_stays_single_knife(self):
+        (self.d / "a.py").write_text(A + "X = '--spec'\n", encoding="utf-8")
+        r = self.run_cli("a.py", "--spec", "--specX", "--expect-fail", "test_add", "--", *CMD)
+        self.assertIn("KNIFE test_add:", r.stdout, r.stdout + r.stderr)
 
 
 class FailedNames(unittest.TestCase):

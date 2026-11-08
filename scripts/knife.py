@@ -14,6 +14,8 @@ Spec file (JSON), paths relative to --repo (default: the current directory):
 Every knife ends in exactly one outcome (DECISION-18 item 3, shared by every PR from now on):
 
     BIT             CMD failed and the output names EXPECT_FAIL as a failed test. The only good outcome.
+                    "Names" = the whole failed name, or its last `::` / `.` segment: test_add does not match
+                    test_add_many (1ced7 #525 H2).
     SURVIVED        CMD passed, or failed without naming EXPECT_FAIL ("everything went red" does not count).
     NOT-FALLEN      The knifed code did not build, so nothing was tested.
     ANCHOR-MISSING  OLD is not in FILE exactly once; nothing was changed. Red, not skipped: a knife whose anchor
@@ -21,14 +23,17 @@ Every knife ends in exactly one outcome (DECISION-18 item 3, shared by every PR 
     UNDECIDED       CMD timed out, or left processes behind in its process group.
 
 Rules:
-- Spec mode runs CMD once without any knife first ("noop"). It must pass, or no knife runs: a knife on a red
-  baseline cannot bite anything of its own. Positive and knife results are printed separately.
+- Spec mode runs every distinct CMD (top-level and per-knife) once without any knife first ("noop"). All must
+  pass, or no knife runs: a knife on a red baseline cannot bite anything of its own (1ced7 #525 H3). Positive
+  and knife results are printed separately. The single-knife CLI runs the same noop first (#525 L1).
+- name, file, old and expect_fail must be non-empty strings; only new may be "" (#525 H1).
 - The file is restored by writing the original text back, so its mtime is new and cargo / Python rebuild it.
   Never restore with cp/mv: an old mtime makes cargo reuse the knifed build and every later run fails for the
   wrong reason. After restoring, the file must read back byte-identical, or the run stops.
 - DECISION-7 13b: CMD runs in its own process group (POSIX). When CMD returns, any process still in that group is
   a leftover: the knife is UNDECIDED, the group is killed, and no further knife runs on a dirty machine.
-  Not covered: processes that left the group (setsid / daemonize) and Windows, which has no process groups here;
+  Not covered: processes that left the group (setsid / daemonize: a tmux server or a daemon the test starts is
+  not seen; #525 L2) and Windows, which has no process groups here;
   on Windows the run says "leftover check: unavailable".
 rc: 0 every knife BIT (and noop green) / 1 anything else / 2 usage error.
 """
@@ -106,11 +111,17 @@ def _kill_group(pgid):
         pass
 
 
+def name_matches(name, expect_fail):
+    # whole name, or the last `::` (cargo path) / `.` segment: never a substring (test_add vs test_add_many)
+    return bool(expect_fail) and (name == expect_fail or name.endswith("::" + expect_fail)
+                                  or name.endswith("." + expect_fail))
+
+
 def judge(rc, out, expect_fail):
     # the expected test named as failed means it ran: that is a bite even if the output also quotes a build error
     # (a test about build errors prints "could not compile" itself; found by knifing this tool, 043dd 11-08)
     names = failed_names(out)
-    if rc != 0 and any(expect_fail in n for n in names):
+    if rc != 0 and any(name_matches(n, expect_fail) for n in names):
         return "BIT", "rc=%s failed=%s" % (rc, names)
     m = BUILD_FAILED.search(out)
     if m:
@@ -146,25 +157,44 @@ def one_knife(k, repo, default_cmd, timeout):
     return outcome, detail, False
 
 
+def knife_fields_bad(k):
+    bad = [f for f in ("name", "file", "old", "expect_fail") if not isinstance(k.get(f), str) or not k.get(f)]
+    if not isinstance(k.get("new"), str):
+        bad.append("new")
+    return bad
+
+
+def noop_green(cmds, repo, timeout):
+    """Run each distinct CMD once with no knife; False (and say so) if any is red or leaves processes behind."""
+    for c in cmds:
+        rc, out, leftover = run(c, repo, timeout)
+        ok = rc == 0 and not leftover
+        print("NOOP %s rc=%s leftover=%s cmd=%s" % ("GREEN" if ok else "RED", rc, leftover, " ".join(c)[:120]))
+        if not ok:
+            print("  " + " / ".join(out.strip().splitlines()[-3:])[:300])
+            print("RESULT noop red: no knife run")
+            return False
+    return True
+
+
 def run_spec(spec, repo):
     cmd, timeout, knives = spec.get("cmd"), spec.get("timeout", 900), spec.get("knives") or []
     if not knives or not all(k.get("cmd") or cmd for k in knives):
         print("knife: spec needs knives, and a cmd for each (top-level or per knife)")
         return 2
     for k in knives:
-        missing = [f for f in ("name", "file", "old", "new", "expect_fail") if not k.get(f) and k.get(f) != ""]
-        if missing or not k.get("old"):
-            print("knife: knife %r is missing %s" % (k.get("name"), missing or ["old"]))
+        bad = knife_fields_bad(k)
+        if bad:
+            print("knife: knife %r has bad %s (must be non-empty strings; only new may be \"\")" % (k.get("name"), bad))
             return 2
     print("leftover check: %s" % ("process group" if POSIX else "unavailable (no process groups on this OS)"))
     if spec.get("noop", True):
-        base = cmd or knives[0]["cmd"]
-        rc, out, leftover = run(base, repo, timeout)
-        ok = rc == 0 and not leftover
-        print("NOOP %s rc=%s leftover=%s" % ("GREEN" if ok else "RED", rc, leftover))
-        if not ok:
-            print("  " + " / ".join(out.strip().splitlines()[-3:])[:300])
-            print("RESULT noop red: no knife run")
+        cmds = []
+        for k in knives:
+            c = k.get("cmd") or cmd
+            if c not in cmds:
+                cmds.append(c)
+        if not noop_green(cmds, repo, timeout):
             return 1
     counts = dict.fromkeys(OUTCOMES, 0)
     ran = 0
@@ -182,7 +212,9 @@ def run_spec(spec, repo):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv[:1] == ["--spec"] or "--spec" in argv[:3]:
+    # spec mode has no `-- CMD`; the single-knife CLI always does, so an OLD / NEW that reads "--spec" stays
+    # single-knife (#525 L3)
+    if "--" not in argv and any(x == "--spec" or x.startswith("--spec=") for x in argv):
         ap = argparse.ArgumentParser()
         ap.add_argument("--spec", required=True)
         ap.add_argument("--repo", default=".")
@@ -198,18 +230,26 @@ def main(argv=None):
         print("knife: missing `-- CMD...`")
         return 2
     cut = argv.index("--")
-    ap = argparse.ArgumentParser()
-    ap.add_argument("file")
-    ap.add_argument("old")
-    ap.add_argument("new")
+    ap = argparse.ArgumentParser(allow_abbrev=False, add_help=False, usage="knife.py FILE OLD NEW --expect-fail TEST_NAME [--timeout S] -- CMD...")
     ap.add_argument("--expect-fail", required=True)
     ap.add_argument("--timeout", type=float, default=900)
-    a = ap.parse_args(argv[:cut])
+    a, pos = ap.parse_known_args(argv[:cut])
+    # FILE OLD NEW are taken as-is, so an OLD / NEW starting with "-" (even "--spec") works (#525 L3)
+    if len(pos) != 3:
+        print("knife: want FILE OLD NEW before --, got %d value(s)" % len(pos))
+        return 2
+    a.file, a.old, a.new = pos
     cmd = argv[cut + 1:]
     if not cmd:
         print("knife: missing command after --")
         return 2
     k = {"name": a.expect_fail, "file": a.file, "old": a.old, "new": a.new, "expect_fail": a.expect_fail}
+    bad = knife_fields_bad(k)
+    if bad:
+        print("knife: bad %s (must be non-empty; only NEW may be \"\")" % bad)
+        return 2
+    if not noop_green([cmd], ".", a.timeout):
+        return 1
     outcome, detail, _ = one_knife(k, ".", cmd, a.timeout)
     print("KNIFE %s: %s %s" % (a.expect_fail, outcome, detail))
     return 0 if outcome == "BIT" else 1
