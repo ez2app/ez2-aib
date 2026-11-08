@@ -29,4 +29,4 @@ jobs:
       - name: rerun main's newest ci run if the queue cancelled it
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 aib/tools/release/ci_catchup.py --repo "$GITHUB_REPOSITORY" --branch main --max-reruns 2
+        run: python3 aib/tools/release/ci_catchup.py --repo "$GITHUB_REPOSITORY" --branch main --workflow-path .github/workflows/ci.yml --max-reruns 2

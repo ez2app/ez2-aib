@@ -49,14 +49,15 @@ class FakeGh:
         return [c[3] for c in self.calls if c[1:3] == ["run", "rerun"]]
 
 
-def run(rid, sha, status="completed", conclusion="cancelled", attempt=1, name="ci", created="2026-11-08T03:00:00Z"):
+def run(rid, sha, status="completed", conclusion="cancelled", attempt=1, path=".github/workflows/ci.yml",
+        created="2026-11-08T03:00:00Z", name="ci"):
     return {"id": rid, "head_sha": sha, "status": status, "conclusion": conclusion, "run_attempt": attempt,
-            "name": name, "created_at": created}
+            "path": path, "name": name, "created_at": created}
 
 
 def decide(fake, max_reruns=2):
     said = []
-    rc, act = cc.decide(REPO, "main", "ci", max_reruns, runner=fake, say=said.append)
+    rc, act = cc.decide(REPO, "main", ".github/workflows/ci.yml", max_reruns, runner=fake, say=said.append)
     return rc, act, "\n".join(said)
 
 
@@ -77,7 +78,8 @@ class Catchup(unittest.TestCase):
 
     def test_failure_queued_running_and_missing_are_left_alone(self):
         for r in (run(11, A, conclusion="failure"), run(11, A, status="queued", conclusion=None),
-                  run(11, A, status="in_progress", conclusion=None), run(11, A, name="aibd")):
+                  run(11, A, status="in_progress", conclusion=None), run(11, A, path=".github/workflows/aibd.yml"),
+                  run(11, A, path=".github/workflows/aibd.yml", name="ci")):   # 認路徑、不認顯示名稱
             with self.subTest(r=r):
                 f = FakeGh([A], {A: [r]}, {11: [r]})
                 rc, act, _ = decide(f)
@@ -119,6 +121,26 @@ class Catchup(unittest.TestCase):
                 self.assertEqual((rc, act), (1, "alert"))
                 self.assertIn("::error::", out)
                 self.assertIn("macos_unverified", out)
+
+    def test_attempt_three_non_cancelled_is_left_alone_not_alerted(self):
+        # a9136 #498 審:只在 cancelled 才看次數;failure / success 在 attempt 3 也是「不動」,不是假告警
+        for c in ("failure", "success"):
+            with self.subTest(c=c):
+                r = run(11, A, conclusion=c, attempt=3)
+                f = FakeGh([A], {A: [r]}, {11: [r]})
+                self.assertEqual(decide(f)[:2], (0, "nothing"))
+
+    def test_recheck_unreadable_alerts_instead_of_silent_nothing(self):
+        # a9136 #498 M1:重跑前第二次讀頭碼 / 那輪讀不到 ⇒ 告警,不是當成「變了」靜默 rc 0
+        r = run(11, A)
+        f = FakeGh([A, ""], {A: [r]}, {11: [r]})
+        rc, act, out = decide(f)
+        self.assertEqual((rc, act, f.reruns()), (1, "alert", []))
+        self.assertIn("cannot re-read the head", out)
+        f = FakeGh([A], {A: [r]}, {})          # run_state 讀不到
+        rc, act, out = decide(f)
+        self.assertEqual((rc, act, f.reruns()), (1, "alert", []))
+        self.assertIn("cannot re-read run 11", out)
 
     def test_cli_usage(self):
         self.assertEqual(cc.main(["--repo", "noslash"]), cc.RC_USAGE)

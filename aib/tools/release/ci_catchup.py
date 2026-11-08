@@ -10,8 +10,11 @@
 - 只看「頭碼那個 SHA、push 事件、ci 這個 workflow」的那輪,只重跑它;
 - 只在那輪 conclusion == cancelled 時重跑(failure 是真紅,不重跑;還在排 / 在跑就不動);
 - 每個 SHA 最多重跑 --max-reruns 次(看 run_attempt:第 1 次跑是 attempt 1,所以 attempt > max 就不再重跑);
-- 防重入:workflow 本身 concurrency 一組、不砍跑中;腳本在重跑前再讀一次狀態;
-- 讀不到 / 重跑失敗 / 次數用完 ⇒ 印 ::error:: 並 rc 1(告警,不靜默),摘要標 macos_unverified。
+- 防重入:workflow 本身 concurrency 一組、不砍跑中;腳本在重跑前再讀一次狀態(讀到但變了 ⇒ 不動;讀不到 ⇒ 告警);
+- 讀不到(任何一次)/ 重跑失敗 / 次數用完 ⇒ 印 ::error:: 並 rc 1(告警,不靜默),摘要標 macos_unverified。
+- 認 workflow 用檔案路徑(.github/workflows/ci.yml),不用顯示名稱(改名不會認錯)。
+- 預期行為:有人手動取消頭碼那輪,也一樣會被重跑(最多 2 次)—— 這裡分不出是排隊頂掉還是人按的;
+  真要停,就在重跑後再取消,次數用完會告警一次。
 
 只用標準函式庫 + gh CLI。gh 呼叫都走 `runner`,測試換成假的。
 """
@@ -40,7 +43,7 @@ def head_sha(repo, branch, runner=None):
     return sha if len(sha) == 40 else ""
 
 
-def tip_run(repo, sha, workflow, runner=None):
+def tip_run(repo, sha, workflow_path, runner=None):
     """頭碼那個 SHA 的 push 事件 ci 那一輪(最新建立的一輪);None = 沒有;"" = 讀不到。"""
     rc, out = gh(["api", "repos/%s/actions/runs?head_sha=%s&event=push&per_page=20" % (repo, sha)], runner)
     if rc != 0:
@@ -49,7 +52,7 @@ def tip_run(repo, sha, workflow, runner=None):
         runs = json.loads(out).get("workflow_runs", [])
     except ValueError:
         return ""
-    runs = [r for r in runs if r.get("name") == workflow and r.get("head_sha") == sha]
+    runs = [r for r in runs if r.get("path") == workflow_path and r.get("head_sha") == sha]
     if not runs:
         return None
     return max(runs, key=lambda r: (r.get("created_at") or "", r.get("id") or 0))
@@ -65,13 +68,14 @@ def run_state(repo, run_id, runner=None):
         return None
 
 
-def decide(repo, branch, workflow, max_reruns, runner=None, say=print):
+def decide(repo, branch, workflow_path, max_reruns, runner=None, say=print):
     """回 (rc, 動作)。動作:rerun / nothing / alert。"""
     sha = head_sha(repo, branch, runner)
     if not sha:
         say("::error::ci-catchup: cannot read the head of %s; macos_unverified for whatever is newest" % branch)
         return RC_ALERT, "alert"
-    run = tip_run(repo, sha, workflow, runner)
+    run = tip_run(repo, sha, workflow_path, runner)
+    workflow = workflow_path
     if run == "":
         say("::error::ci-catchup: cannot list the %s runs for %s; macos_unverified %s" % (workflow, sha, sha))
         return RC_ALERT, "alert"
@@ -90,11 +94,20 @@ def decide(repo, branch, workflow, max_reruns, runner=None, say=print):
             "macos_unverified %s" % (sha, run["id"], attempt - 1, sha))
         return RC_ALERT, "alert"
     # 防重入:重跑前再讀一次 —— 頭碼沒變、那輪仍是 cancelled、attempt 沒被別人加過
-    if head_sha(repo, branch, runner) != sha:
+    now = head_sha(repo, branch, runner)
+    if not now:
+        say("::error::ci-catchup: cannot re-read the head of %s before rerunning %s; not rerunning — "
+            "macos_unverified %s" % (branch, run["id"], sha))
+        return RC_ALERT, "alert"
+    if now != sha:
         say("ci-catchup: %s moved on while checking; the run for the new head decides" % branch)
         return RC_OK, "nothing"
     again = run_state(repo, run["id"], runner)
-    if not again or again.get("status") != "completed" or again.get("conclusion") != "cancelled" \
+    if again is None:
+        say("::error::ci-catchup: cannot re-read run %s before rerunning it; not rerunning — macos_unverified %s"
+            % (run["id"], sha))
+        return RC_ALERT, "alert"
+    if again.get("status") != "completed" or again.get("conclusion") != "cancelled" \
             or int(again.get("run_attempt") or 1) != attempt:
         say("ci-catchup: the run for %s (%s) changed while checking; leaving it" % (sha, run["id"]))
         return RC_OK, "nothing"
@@ -112,13 +125,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ci_catchup", description=__doc__.split("\n\n")[0])
     ap.add_argument("--repo", required=True)
     ap.add_argument("--branch", default="main")
-    ap.add_argument("--workflow", default="ci")
+    ap.add_argument("--workflow-path", default=".github/workflows/ci.yml")
     ap.add_argument("--max-reruns", type=int, default=2)
     a = ap.parse_args(argv)
     if a.max_reruns < 0 or "/" not in a.repo:
         print("ci_catchup: --repo OWNER/NAME and --max-reruns >= 0", file=sys.stderr)
         return RC_USAGE
-    rc, _ = decide(a.repo, a.branch, a.workflow, a.max_reruns)
+    rc, _ = decide(a.repo, a.branch, a.workflow_path, a.max_reruns)
     return rc
 
 
