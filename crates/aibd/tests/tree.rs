@@ -120,12 +120,25 @@ fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The fixture's first stdout line as JSON. A closed stdout with no line
+/// (a63ab 11-09: "JSON EOF", 1 in 5 under heavy load) is said as what it is,
+/// with how the fixture ended, instead of a bare serde EOF.
 fn first_line(h: &mut TreeHandle) -> serde_json::Value {
     let out = h.take_stdout().unwrap();
     let mut r = BufReader::new(out);
     let mut l = String::new();
-    r.read_line(&mut l).unwrap();
-    serde_json::from_str(&l).unwrap()
+    let n = r.read_line(&mut l);
+    if matches!(n, Ok(0)) {
+        let root = h.root_pid();
+        let exit = h.wait_root(Duration::from_secs(2));
+        panic!(
+            "fixture {root} closed stdout before its first line (killed or crashed); \
+             root exit within 2 s: {exit:?} (Some(-1) = by a signal)"
+        );
+    }
+    let l = l.trim_end();
+    serde_json::from_str(l)
+        .unwrap_or_else(|e| panic!("fixture's first line is not JSON ({e}): {l:?}"))
 }
 
 /// Independent check with ps(1): pids that are still running (not zombies).
