@@ -4,8 +4,11 @@
 //! that was not checked here, and nothing that only exists as library code is
 //! reported as working (a63ab PLAN-rust-preview, 2026-11-08):
 //!
-//! - process management: library present, **not wired** (no endpoint starts
-//!   processes in this version);
+//! - process management: really started and stopped once (contract §6):
+//!   `/bin/sh -c 'sleep 30 & wait'` → stop → the stop's own answer. macOS
+//!   can never prove a clean stop, so no survivor seen = `unverified`
+//!   (reason, e.g. `observed_clean`); a survivor = `failed:tree_not_clean`;
+//!   a platform without sessions in this build = `not_wired`;
 //! - Windows Job Object: checked on GitHub's Windows runner only, never on a
 //!   real machine ⇒ `unverified`;
 //! - macOS lineage (M1): even when its start-up check passes it only adds
@@ -16,7 +19,10 @@
 
 use crate::config::Config;
 use crate::lineage::Lineage;
+use crate::platform::session::{SpawnFail, SpawnFn, Spec, Stop, StopStatus};
 use crate::platform::ChildReaping;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// One capability's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,13 +81,93 @@ pub fn version_line() -> String {
     )
 }
 
+/// Start one small tree (a shell with a child) and stop it, the way a
+/// session is started and stopped. Blocks about 2 s + the stop's checks.
+pub fn check_process_management(
+    spawn: SpawnFn,
+    lineage: Option<Arc<Lineage>>,
+) -> Result<Stop, SpawnFail> {
+    let spec = Spec {
+        id: format!("selfcheck-{}", std::process::id()),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30 & wait".into()],
+        cwd: std::env::temp_dir(),
+        env: Vec::new(),
+    };
+    let mut run = spawn(&spec, lineage)?;
+    Ok(run.stop(Duration::from_secs(2)))
+}
+
+/// The `process_management` row from [`check_process_management`]'s answer.
+pub fn process_row(r: &Result<Stop, SpawnFail>) -> Row {
+    const N: &str = "process_management";
+    match r {
+        Err(f) if f.tag == "unsupported_platform" => Row::new(
+            N,
+            Status::NotWired,
+            "sessions are not available on this platform in this build",
+        ),
+        Err(f) => {
+            let mut row = Row::new(
+                N,
+                Status::Failed(if f.left_running.is_some() {
+                    "spawn_left_running".into()
+                } else {
+                    "spawn_failed".into()
+                }),
+                format!("could not start the check tree: {}", f.tag),
+            );
+            row.notes.push(("tag", f.tag.clone()));
+            row
+        }
+        Ok(stop) if !stop.survivors.is_empty() || stop.status == StopStatus::TreeNotClean => {
+            let mut row = Row::new(
+                N,
+                Status::Failed("tree_not_clean".into()),
+                format!(
+                    "started and stopped a tree of {}: {} still running",
+                    stop.tree_size,
+                    stop.survivors.len()
+                ),
+            );
+            row.notes
+                .push(("survivors", stop.survivors.len().to_string()));
+            row
+        }
+        Ok(stop) => match &stop.status {
+            StopStatus::Clean => Row::new(
+                N,
+                Status::Ok,
+                format!(
+                    "started and stopped a tree of {}: proven clean",
+                    stop.tree_size
+                ),
+            ),
+            StopStatus::Unverified(reason) => {
+                let mut row = Row::new(
+                    N,
+                    Status::Unverified,
+                    format!(
+                        "started and stopped a tree of {}: no survivor seen, not provable as clean ({reason})",
+                        stop.tree_size
+                    ),
+                );
+                row.notes.push(("reason", reason.clone()));
+                row
+            }
+            // handled above
+            StopStatus::TreeNotClean => Row::new(N, Status::Failed("tree_not_clean".into()), ""),
+        },
+    }
+}
+
 /// All rows, from what was looked up (injected so tests never touch the real
-/// environment or start a child).
+/// environment or start a child; `process` is [`process_row`]).
 pub fn rows(
     config: Result<Config, String>,
     lineage: &Lineage,
     reaping: &ChildReaping,
     os: &str,
+    process: Row,
 ) -> Vec<Row> {
     let mut out = vec![Row::new("version", Status::Ok, version_line())];
     out.push(match config {
@@ -98,11 +184,7 @@ pub fn rows(
     });
     out.push(lineage_row(lineage, os));
     out.push(reaping_row(reaping));
-    out.push(Row::new(
-        "process_management",
-        Status::NotWired,
-        "process tree and group stop are library code; no endpoint starts processes in this version",
-    ));
+    out.push(process);
     out.push(if os == "windows" {
         Row::new(
             "windows_job",
@@ -227,6 +309,10 @@ mod tests {
         Config::from_lookup(|_| None, Some(PathBuf::from("/tmp/aibd-x"))).map_err(|e| e.to_string())
     }
 
+    fn nw() -> Row {
+        process_row(&fail("unsupported_platform", None))
+    }
+
     fn status_of(rows: &[Row], name: &str) -> String {
         rows.iter()
             .find(|r| r.name == name)
@@ -240,7 +326,7 @@ mod tests {
             std::sync::Arc::new(aib_sys::fake::FakeProcessInfo::default()),
             Ok(()),
         );
-        let rows = rows(cfg(), &l, &K, "macos");
+        let rows = rows(cfg(), &l, &K, "macos", nw());
         assert_eq!(status_of(&rows, "lineage_m1"), "unverified");
         assert_eq!(exit_code(&rows), 0);
         assert!(render_text(&rows).contains("not a clean bill"));
@@ -249,32 +335,77 @@ mod tests {
     #[test]
     fn a_failed_lineage_check_is_failed_with_its_tag_and_exit_1() {
         let l = Lineage::disabled("failed:child_ppid");
-        let rows = rows(cfg(), &l, &K, "macos");
+        let rows = rows(cfg(), &l, &K, "macos", nw());
         assert_eq!(status_of(&rows, "lineage_m1"), "failed:child_ppid");
         assert_eq!(exit_code(&rows), 1);
     }
 
-    #[test]
-    fn process_management_is_never_reported_as_working() {
-        for os in ["macos", "windows", "linux"] {
-            let rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, os);
-            assert_eq!(status_of(&rows, "process_management"), "not_wired", "{os}");
+    fn stop(status: StopStatus, survivors: Vec<u32>) -> Stop {
+        Stop {
+            status,
+            survivors,
+            tree_size: 2,
+            signals: Vec::new(),
+            blind_spots: Vec::new(),
         }
+    }
+
+    fn fail(tag: &str, left: Option<u32>) -> Result<Stop, SpawnFail> {
+        Err(SpawnFail {
+            tag: tag.into(),
+            left_running: left,
+        })
+    }
+
+    /// contract §6: the row is the stop's own answer, never better.
+    #[test]
+    fn process_management_reports_the_real_stop_never_better() {
+        let un = |r: &str| StopStatus::Unverified(r.into());
+        let label = |r: Result<Stop, SpawnFail>| process_row(&r).status.label();
+        assert_eq!(label(Ok(stop(un("observed_clean"), vec![]))), "unverified");
+        assert_eq!(
+            process_row(&Ok(stop(un("observed_clean"), vec![]))).notes,
+            vec![("reason", "observed_clean".to_string())]
+        );
+        assert_eq!(
+            label(Ok(stop(un("candidates_unreadable"), vec![]))),
+            "unverified"
+        );
+        // a survivor fails the row whatever the status says
+        assert_eq!(
+            label(Ok(stop(un("observed_clean"), vec![7]))),
+            "failed:tree_not_clean"
+        );
+        assert_eq!(
+            label(Ok(stop(StopStatus::TreeNotClean, vec![]))),
+            "failed:tree_not_clean"
+        );
+        assert_eq!(label(Ok(stop(StopStatus::Clean, vec![]))), "ok");
+        assert_eq!(label(fail("unsupported_platform", None)), "not_wired");
+        assert_eq!(label(fail("enoent", None)), "failed:spawn_failed");
+        assert_eq!(label(fail("os_1", Some(9))), "failed:spawn_left_running");
+    }
+
+    #[test]
+    fn a_failed_process_check_makes_the_exit_code_1() {
+        let p = process_row(&Ok(stop(StopStatus::TreeNotClean, vec![3])));
+        let rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "macos", p);
+        assert_eq!(exit_code(&rows), 1);
     }
 
     #[test]
     fn windows_job_is_unverified_on_windows_and_unsupported_elsewhere() {
         let l = Lineage::disabled("unsupported");
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "windows"), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "windows", nw()), "windows_job"),
             "unverified"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "windows"), "lineage_m1"),
+            status_of(&rows(cfg(), &l, &K, "windows", nw()), "lineage_m1"),
             "unsupported"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "macos"), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "macos", nw()), "windows_job"),
             "unsupported"
         );
     }
@@ -286,14 +417,14 @@ mod tests {
             Some(PathBuf::from("/tmp/x")),
         )
         .map_err(|e| e.to_string());
-        let rows = rows(bad, &Lineage::disabled("unsupported"), &K, "linux");
+        let rows = rows(bad, &Lineage::disabled("unsupported"), &K, "linux", nw());
         assert_eq!(status_of(&rows, "config"), "failed:config");
         assert_eq!(exit_code(&rows), 1);
     }
 
     #[test]
     fn json_has_one_object_per_row_with_notes_flattened() {
-        let mut rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "linux");
+        let mut rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "linux", nw());
         rows[0].notes.push(("wait_mode", "poll".into()));
         let j = render_json(&rows);
         let a = j.as_array().expect("array");
@@ -307,7 +438,13 @@ mod tests {
     #[test]
     fn an_inherited_ignored_sigchld_is_unverified_and_an_unreadable_one_fails() {
         let l = Lineage::disabled("unsupported");
-        let auto = rows(cfg(), &l, &ChildReaping::AutoReaps("ignored"), "linux");
+        let auto = rows(
+            cfg(),
+            &l,
+            &ChildReaping::AutoReaps("ignored"),
+            "linux",
+            nw(),
+        );
         assert_eq!(status_of(&auto, "sigchld"), "unverified");
         assert_eq!(exit_code(&auto), 0);
         let j = render_json(&auto);
@@ -317,9 +454,18 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(row["disposition"], "ignored");
-        let bad = rows(cfg(), &l, &ChildReaping::Unreadable("os".into()), "linux");
+        let bad = rows(
+            cfg(),
+            &l,
+            &ChildReaping::Unreadable("os".into()),
+            "linux",
+            nw(),
+        );
         assert_eq!(status_of(&bad, "sigchld"), "failed:sigchld:os");
         assert_eq!(exit_code(&bad), 1);
-        assert_eq!(status_of(&rows(cfg(), &l, &K, "linux"), "sigchld"), "ok");
+        assert_eq!(
+            status_of(&rows(cfg(), &l, &K, "linux", nw()), "sigchld"),
+            "ok"
+        );
     }
 }

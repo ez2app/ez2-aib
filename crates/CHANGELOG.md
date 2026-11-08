@@ -20,6 +20,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   - Events: `session.started` (argv[0] file name + count only), `session.exited`, `session.killed`,
     `session.stop_unconfirmed`. env is never returned, logged or stored.
   - Windows: not wired yet (refused as `spawn_failed` / `unsupported_platform`).
+- `aibd selfcheck`: `process_management` now really starts and stops one small tree (a shell with a
+  child) and reports that stop's own answer. macOS: no survivor seen = `unverified` with the reason
+  (e.g. `observed_clean`), never `ok`; a survivor = `failed:tree_not_clean` (exit code 1). Windows:
+  `not_wired` until sessions are wired there.
 
 ## 0.2.0-preview.1 — unreleased
 
