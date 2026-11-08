@@ -4,6 +4,12 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.69
+
+- **Claude 席不會再不小心關掉真的 tmux 伺服器**:Bash 指令執行前先檢查，會關掉座艙畫面或 AI 席的那一行直接擋下 —— 沒帶 `-S` / `-L` 的 `tmux kill-server`(會打到 `TMUX` / `TMUX_TMPDIR` / 預設 socket;`TMUX_TMPDIR` 的夾不在時會默默退回真的預設伺服器)、`-L default` / `-L aihub-<艙號>`、`-S` 指到真 socket 夾裡的 `default` / `aihub-<艙號>`、`killall tmux` / `pkill tmux`。用 heredoc 寫進腳本的也算。擋下時顯示那一行、原因，以及安全寫法 `tmux -S <沙盒夾>/sock kill-server`。沙盒 socket、唯一的 `-L` 名、引號裡的字、註解都放行;檢查本身出錯就放行。這是防手滑，擋不住刻意繞過;Codex / Grok 席不在範圍內。
+- **第二道執行前檢查讀得到指令了**:原本工作樹位置那道先把輸入讀掉，後面的檢查拿到空指令;改成讀一次、共用。
+- CI:`(ubuntu-latest, 3.9)` 這格改跑 ubuntu-24.04(ubuntu-latest 換成 26.04,沒有 Python 3.9),必過清單的名字不變。newproj 開機測試不再讀到真的路由登記檔。
+
 ## 0.1.68
 
 - **一步開席可以直接接第二大腦**:`aib newproj --new-seat --project-uid … --persona-card …` 新收 `--folder`,可填路由代號、資料夾、`seat:<艙位碼>/<席碼>`(跟那一席用同一個大腦)或 `new`(在「專家進行中」底下照專案標題建新資料夾，路由代號 `proj.<專案 uid 前 12 碼>`,重跑不會重建)。所有檢查都在開席前做：對不到、AI 不可寫、專案卡已記別的大腦、標題建不了資料夾，都不開席。綁好後把路由補記進專案卡。
