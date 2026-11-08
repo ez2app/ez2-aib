@@ -14,14 +14,20 @@
 //! Not here: a graceful stop first (CTRL_BREAK needs a shared console; aibd
 //! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
 
-use crate::job::{reap_failed, Job, Member, Process, REAP_LIMIT};
+use crate::job::{Job, Member, Process};
 use crate::settle::{kill_tree, KillOps};
 use crate::SysError;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
+
+/// How long a spawn whose root handle could not be opened waits for its tree
+/// to be confirmed gone.
+const SPAWN_CONFIRM_LIMIT: Duration = Duration::from_secs(5);
 
 /// What to start. `env` is added to aibd's environment, or is the whole
 /// environment when `clear_env` is set (aibd passes its own environment minus
@@ -79,7 +85,7 @@ pub struct SessionTree {
 impl SessionTree {
     /// Start `spec` inside a new Job. stdin / stdout / stderr are null.
     pub fn spawn(spec: &Spec) -> Result<SessionTree, SpawnError> {
-        Self::spawn_with(spec, Process::open, |j| j.terminate(1), REAP_LIMIT)
+        Self::spawn_with(spec, Process::open, |j| j.terminate(1), SPAWN_CONFIRM_LIMIT)
     }
 
     /// [`spawn`](Self::spawn) with the root open and the Job terminate
@@ -87,7 +93,7 @@ impl SessionTree {
     pub(crate) fn spawn_with(
         spec: &Spec,
         open: impl FnOnce(u32) -> Result<Process, SysError>,
-        terminate: impl FnOnce(&Job) -> Result<(), SysError>,
+        terminate: impl FnMut(&Job) -> Result<(), SysError>,
         limit: Duration,
     ) -> Result<SessionTree, SpawnError> {
         let (program, args) = spec.argv.split_first().ok_or(SpawnError::NoProgram)?;
@@ -113,25 +119,28 @@ impl SessionTree {
         let root = match open(pid) {
             Ok(p) => Arc::new(p),
             Err(e) => {
-                // it already runs (resumed) and may have forked: kill the whole
-                // Job, then the root must be seen gone AND the Job empty, or this
-                // is NotReaped and keeps its slot (definition #11). One deadline
-                // for both waits.
-                let deadline = Instant::now() + limit;
-                let e = reap_failed(&mut child, e, limit, |_| {
-                    let _ = terminate(&job);
-                });
-                let e = match e {
-                    nr @ SysError::NotReaped { .. } => nr,
-                    cause => {
-                        match job.wait_empty(deadline.saturating_duration_since(Instant::now())) {
-                            Ok(true) => cause,
-                            Ok(false) | Err(_) => SysError::NotReaped {
-                                pid,
-                                cause: Box::new(cause),
-                            },
-                        }
-                    }
+                // it already runs (resumed) and may have forked: the same proof
+                // as a kill (#535) — open every member, terminate the Job, then
+                // one deadline for the Job to empty AND every handle to signal
+                // (the Job count drops before the handles do: 1ced7 #543 CI).
+                // Anything unconfirmed is NotReaped and keeps its slot
+                // (definition #11).
+                let mut term = terminate;
+                let k = kill_tree(
+                    &mut Ops {
+                        job: &job,
+                        child: &mut child,
+                        pid,
+                        term: Some(&mut term),
+                    },
+                    limit,
+                );
+                let e = match k {
+                    Ok(k) if k.all_gone() => e,
+                    _ => SysError::NotReaped {
+                        pid,
+                        cause: Box::new(e),
+                    },
                 };
                 drop(job); // only now; KILL_ON_JOB_CLOSE stays the backstop
                 return Err(SpawnError::Spawn(e));
@@ -181,6 +190,7 @@ impl SessionTree {
                 job: &self.job,
                 child: &mut self.child,
                 pid: self.pid,
+                term: None,
             },
             limit,
         )
@@ -191,10 +201,15 @@ impl SessionTree {
 // left, so a session can never outlive the struct that owns it.
 
 /// The Windows calls behind [`crate::settle::kill_tree`].
+/// Terminates a session Job (injectable in tests).
+type Terminate<'t> = dyn FnMut(&Job) -> Result<(), SysError> + 't;
+
 struct Ops<'a> {
     job: &'a Job,
     child: &'a mut Child,
     pid: u32,
+    /// `None` = `TerminateJobObject`; tests inject their own.
+    term: Option<&'a mut Terminate<'a>>,
 }
 
 impl KillOps for Ops<'_> {
@@ -231,6 +246,9 @@ impl KillOps for Ops<'_> {
     }
 
     fn terminate(&mut self) -> Result<(), SysError> {
+        if let Some(t) = self.term.as_mut() {
+            return t(self.job);
+        }
         self.job.terminate(1)
     }
 
