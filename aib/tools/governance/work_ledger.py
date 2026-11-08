@@ -27,7 +27,10 @@
   負責席能把 accepted / integrating 的件推到 blocked 再自己解回 running(把件從整合席手上拉回來;L2):這是刻意留的,
   返工要能發生;事件裡看得到。
 返工換頭碼(H1):running → review 帶了不同的 --head,舊頭碼的收據移到 superseded(連同舊頭碼記下),不再算數;
-  收件只看現在頭碼的收據。--repo DIR 帶了就用 git 查這個 commit 真的存在、記下它的 commit 時間(M4),
+  收件只看現在頭碼的收據。
+  同頭碼重交(退回 running 再交 review):以這次交的 --evidence 為準,上一次交的整批移到 superseded(11-09 f1fae 派)。
+  --evidence 帶的檔在 move 時就先看格式:要是 schema aib-receipt/1 的 JSON 物件,不是(.md、壞 JSON、別的 schema)⇒ rc 2,
+  什麼都不寫(說明文字放 --next)。格式對不代表收據過,收件時才驗內容。--repo DIR 帶了就用 git 查這個 commit 真的存在、記下它的 commit 時間(M4),
   收據的 started_at 不能早於它。事件 id 去重:--event-id 相同、內容相同 ⇒ 重送不重做(印原結果,rc 0);同 id 不同內容 ⇒ rc 6。
 收件門(→ accepted):帳上的頭碼 + 收據驗證器全過才放行(見 verify)。
 
@@ -520,6 +523,10 @@ def apply_move(item, a, request, by, roles):
             item["superseded"].append({"head": item["head"], "evidence": item["evidence"]})
             item["evidence"] = []
         item["head"], item["head_time"] = head, when
+    if a.to == "review" and item["evidence"]:
+        # 同頭碼重交:以這次交件為準,上一次的整批作廢(不然交錯的檔拿不掉,verify 永遠紅;11-09 f1fae)
+        item["superseded"].append({"head": item["head"], "evidence": item["evidence"], "why": "resubmitted"})
+        item["evidence"] = []
     if a.to == "review" and not item["head"]:
         raise Refused(RC_RULE, "moving to review needs --head")
     if a.to in SIDE and not (a.blocker or "").strip():
@@ -530,8 +537,24 @@ def apply_move(item, a, request, by, roles):
     return ((a.blocker or "").strip() if a.to in SIDE else ""), (item["next"] if a.next is None else a.next)
 
 
+def receipt_format_problem(path):
+    """--evidence 的檔在 move 時先看格式(只看是不是收據,不驗內容)。回 None = 格式對。"""
+    try:
+        r = json.loads(Path(path).read_bytes().decode("utf-8"))
+    except (OSError, ValueError) as e:
+        return "not readable as JSON (%s)" % (e.__class__.__name__,)
+    if not isinstance(r, dict) or r.get("schema") != RECEIPT_SCHEMA:
+        return "not a %s receipt" % RECEIPT_SCHEMA
+    return None
+
+
 def op_move(db, a, by, event_id):
     evidence = [str(Path(p).expanduser().resolve()) for p in (a.evidence or [])]
+    bad = [(p, receipt_format_problem(p)) for p in evidence]
+    bad = [(p, why) for p, why in bad if why]
+    if bad:
+        raise Refused(RC_USAGE, "--evidence takes receipts only (put notes in --next); nothing written: "
+                      + "; ".join("%s: %s" % (Path(p).name, why) for p, why in bad))
     request = {"id": a.id, "from": a.from_state, "to": a.to, "head": (a.head or "").lower(), "evidence": evidence,
                "next": a.next, "blocker": a.blocker, "by": by, "as": a.as_role,
                "repo": str(Path(a.repo).expanduser().resolve()) if getattr(a, "repo", None) else None}
@@ -614,7 +637,8 @@ def print_item(it, hist=None):
     for p in it["evidence"]:
         print("  evidence: %s" % p)
     for old in it.get("superseded") or []:
-        print("  superseded (old head %s): %d receipt(s)" % (old["head"][:12], len(old["evidence"])))
+        print("  superseded (%s %s): %d receipt(s)" % ("resubmitted at" if old.get("why") == "resubmitted" else "old head",
+                                                        old["head"][:12], len(old["evidence"])))
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))
     for h in hist or []:
         print("  - %s %s %s -> %s by %s%s (%s)" % (h["at"], h["op"], h["from_state"] or "", h["to_state"] or "",

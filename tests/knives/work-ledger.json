@@ -254,6 +254,20 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role}",
       "new": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role, \"cmd\": a.expect_cmd or \"\"}"
+    },
+    {
+      "name": "ev-format-skip",
+      "proves": "move refuses --evidence that is not an aib-receipt/1 JSON (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    bad = [(p, why) for p, why in bad if why]",
+      "new": "    bad = []"
+    },
+    {
+      "name": "ev-resubmit-append",
+      "proves": "resubmitting to review replaces the evidence of the last submission (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if a.to == \"review\" and item[\"evidence\"]:",
+      "new": "    if False:"
     }
   ]
 }

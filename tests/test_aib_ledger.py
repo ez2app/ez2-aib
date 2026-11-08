@@ -558,6 +558,45 @@ class AibLedger(unittest.TestCase):
         db.close()
         self.ok(*args)
 
+    def test_1109_review_refuses_non_receipt_evidence(self):
+        # f1fae 11-09(b117-fp-honewei-chips):交 review 時把 .md 放進 --evidence,move 照收、之後拿不掉
+        _, sha = self.repo()
+        self.review_at(sha, item="B-md")
+        self.ok("move", "B-md", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        note = self.td / "notes.md"
+        note.write_text("# 查因\n", encoding="utf-8")
+        other = self.td / "other.json"
+        other.write_text(json.dumps({"schema": "something/1"}), encoding="utf-8")
+        for bad in (note, other):
+            r = self.L("move", "B-md", "--from", "running", "--to", "review", "--head", sha,
+                       "--evidence", self.receipt(sha=sha), "--evidence", str(bad), "--by", "seat:2240e")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(bad.name, r.stderr)
+        show = self.ok("show", "B-md", "--json").stdout
+        it = json.loads(show)
+        self.assertEqual((it["state"], it["evidence"]), ("running", []), show)
+
+    def test_1109_resubmit_replaces_evidence(self):
+        # 退回 running 再交 review:以這次交的為準,上一次的整批作廢,verify 只看最新一次交件
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-re", "--batch", "b117", "--owner", "2240e", "--title", "re", "--by", "seat:f1fae")
+        self.ok("move", "B-re", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        wrong = self.receipt(sha=sha, rc=1)            # 格式對、內容不過的那張
+        self.ok("move", "B-re", "--from", "running", "--to", "review", "--head", sha, "--evidence", wrong,
+                "--by", "seat:2240e")
+        r = self.L("move", "B-re", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.ok("move", "B-re", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        good = self.receipt(sha=sha)
+        self.ok("move", "B-re", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-re", "--json").stdout)
+        self.assertEqual(it["evidence"], [str(Path(good).resolve())])
+        self.assertEqual(it["superseded"][-1]["evidence"], [str(Path(wrong).resolve())])
+        self.assertIn("resubmitted at", self.ok("show", "B-re").stdout)
+        self.ok("move", "B-re", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
