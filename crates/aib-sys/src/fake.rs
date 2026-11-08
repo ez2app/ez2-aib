@@ -26,6 +26,7 @@ struct Proc {
 struct State {
     procs: BTreeMap<u32, Proc>,
     fail: BTreeMap<(Call, u32), SysError>,
+    calls: BTreeMap<Call, usize>,
 }
 
 /// A process table you write yourself.
@@ -104,7 +105,13 @@ impl FakeProcessInfo {
         self.st().fail.remove(&(call, pid));
     }
 
+    /// How many times `call` was made (any pid).
+    pub fn calls(&self, call: Call) -> usize {
+        self.st().calls.get(&call).copied().unwrap_or(0)
+    }
+
     fn injected(&self, call: Call, pid: u32) -> Result<(), SysError> {
+        *self.st().calls.entry(call).or_insert(0) += 1;
         match self.st().fail.get(&(call, pid)) {
             Some(e) => Err(e.clone()),
             None => Ok(()),

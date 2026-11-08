@@ -33,7 +33,7 @@ use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::lineage::Lineage;
+use crate::lineage::{Lineage, M1Cache};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 pub const SESSION_ENV: &str = "AIBD_SESSION";
@@ -200,6 +200,8 @@ pub struct TreeHandle {
     lineage_incomplete: bool,
     /// Misses known to this handle (merged with the fork watcher's).
     gaps: BTreeSet<&'static str>,
+    /// M1 reads of processes that are not ours, between passes (M4).
+    m1_cache: M1Cache,
     #[cfg(target_os = "macos")]
     watch: Option<super::fork_watch::ForkWatch>,
 }
@@ -295,6 +297,7 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         uniques: BTreeMap::new(),
         lineage_incomplete: false,
         gaps: BTreeSet::new(),
+        m1_cache: M1Cache::default(),
         #[cfg(target_os = "macos")]
         watch: None,
     };
@@ -398,7 +401,12 @@ impl TreeHandle {
         let Some(l) = self.lineage.clone() else {
             return false;
         };
-        let a = l.adopt(&self.known, &mut self.uniques, std::process::id());
+        let a = l.adopt(
+            &self.known,
+            &mut self.uniques,
+            std::process::id(),
+            &mut self.m1_cache,
+        );
         if !a.complete {
             self.lineage_incomplete = true;
         }
@@ -439,6 +447,12 @@ impl TreeHandle {
 
     fn scan_with(&mut self, sys: &System) {
         self.absorb();
+        // start times from this refresh validate the M1 cache (M4)
+        self.m1_cache.starts = sys
+            .processes()
+            .iter()
+            .map(|(p, pr)| (p.as_u32(), pr.start_time()))
+            .collect();
         self.ppid_scan(sys);
         if self.lineage_pass() {
             self.ppid_scan(sys);

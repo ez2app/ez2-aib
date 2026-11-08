@@ -18,7 +18,7 @@
 //!   report `lineage_unavailable`, so it can never be `clean`.
 
 use aib_sys::selfcheck::Failure;
-use aib_sys::{ProcessInfo, SysError};
+use aib_sys::{ProcessInfo, SysError, UniqueIds};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -140,11 +140,14 @@ impl Lineage {
 
     /// The unique ids of `known` (cached in `uniques`), then every process
     /// whose creator is one of them, transitively. `me` is never adopted.
+    /// `cache` keeps the M1 read of every process that was not ours, so the
+    /// next pass of the same cancel reads only new ones (043dd #510 M4).
     pub fn adopt(
         &self,
         known: &BTreeMap<u32, u64>,
         uniques: &mut BTreeMap<u32, u64>,
         me: u32,
+        cache: &mut M1Cache,
     ) -> Adopt {
         let Some(info) = self.info.as_ref() else {
             return Adopt::default();
@@ -189,14 +192,35 @@ impl Lineage {
             if pid == me || known.contains_key(&pid) {
                 continue;
             }
-            match info.unique_ids(pid) {
-                Ok(u) => pending.push((pid, u.unique, u.parent_unique)),
-                // gone, or another account's process: not ours either way
-                Err(SysError::Gone | SysError::PermissionDenied) => {}
-                Err(_) => {
-                    self.fail();
-                    complete = false;
+            let seen_start = cache.starts.get(&pid).copied();
+            let hit = seen_start.and_then(|st| {
+                cache
+                    .m1
+                    .get(&pid)
+                    .filter(|(s, _)| *s == st)
+                    .map(|(_, r)| *r)
+            });
+            let ids = match hit {
+                Some(r) => r,
+                None => {
+                    let r = match info.unique_ids(pid) {
+                        Ok(u) => Some(u),
+                        // gone, or another account's process: not ours either way
+                        Err(SysError::Gone | SysError::PermissionDenied) => None,
+                        Err(_) => {
+                            self.fail();
+                            complete = false;
+                            continue; // never cached: read again next pass
+                        }
+                    };
+                    if let Some(st) = seen_start {
+                        cache.m1.insert(pid, (st, r));
+                    }
+                    r
                 }
+            };
+            if let Some(u) = ids {
+                pending.push((pid, u.unique, u.parent_unique));
             }
         }
         let mut found = Vec::new();
@@ -304,6 +328,17 @@ impl Lineage {
     }
 }
 
+/// M1 reads kept between passes of one cancel (043dd #510 M4). An entry is
+/// used only while the caller saw the same start time for that pid this pass
+/// (`starts`, from the caller's own process listing): a reused pid is read
+/// again. Without a start time nothing is cached.
+#[derive(Debug, Default)]
+pub struct M1Cache {
+    /// pid -> start time the caller saw in this pass
+    pub starts: BTreeMap<u32, u64>,
+    m1: BTreeMap<u32, (u64, Option<UniqueIds>)>,
+}
+
 /// Result of [`Lineage::late_exec_candidates`]. `Default` = incomplete.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Candidates {
@@ -395,7 +430,7 @@ mod tests {
         let (l, f) = on(f);
         let mut u = BTreeMap::new();
         let k = known(&[(ROOT, 50), (200, 50)]);
-        let a = l.adopt(&k, &mut u, ME);
+        let a = l.adopt(&k, &mut u, ME, &mut M1Cache::default());
         assert!(a.complete);
         let pids: Vec<u32> = a.found.iter().map(|x| x.pid).collect();
         assert_eq!(pids, vec![300, 301]);
@@ -411,15 +446,52 @@ mod tests {
         let (l, f) = on(f);
         let mut u = BTreeMap::from([(ROOT, 1000)]);
         f.remove(200);
-        let a = l.adopt(&known(&[(ROOT, 50), (200, 50)]), &mut u, ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50), (200, 50)]),
+            &mut u,
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(!a.complete, "{a:?}");
         // the same process with its unique id read while alive: complete, and its orphan found
         let f = table();
         let (l, _f) = on(f);
         let mut u = BTreeMap::from([(ROOT, 1000), (200, 2000)]);
-        let a = l.adopt(&known(&[(ROOT, 50), (200, 50)]), &mut u, ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50), (200, 50)]),
+            &mut u,
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(a.complete, "{a:?}");
         assert!(a.found.iter().any(|x| x.pid == 300), "{a:?}");
+    }
+
+    #[test]
+    fn a_second_pass_reads_m1_only_for_new_or_restarted_pids() {
+        // 043dd #510 M4: wait_gone runs a pass every 50 ms; strangers are read once
+        let f = table();
+        let starts: BTreeMap<u32, u64> =
+            [(ME, 1), (ROOT, 50), (300, 51), (301, 52), (400, 60)].into();
+        let (l, f) = on(f);
+        let mut cache = M1Cache {
+            starts: starts.clone(),
+            ..M1Cache::default()
+        };
+        let k = known(&[(ROOT, 50)]);
+        let mut u = BTreeMap::from([(ROOT, 1000)]);
+        l.adopt(&k, &mut u, ME, &mut cache);
+        let first = f.calls(Call::UniqueIds);
+        l.adopt(&k, &mut u, ME, &mut cache);
+        assert_eq!(
+            f.calls(Call::UniqueIds),
+            first,
+            "unchanged strangers were read again"
+        );
+        // pid 400 restarted (other start time): read again, and only it
+        cache.starts.insert(400, 61);
+        l.adopt(&k, &mut u, ME, &mut cache);
+        assert_eq!(f.calls(Call::UniqueIds), first + 1);
     }
 
     #[test]
@@ -429,7 +501,7 @@ mod tests {
         // not a false match.
         let (l, _f) = on(table());
         let mut u = BTreeMap::new();
-        let a = l.adopt(&known(&[(ROOT, 50)]), &mut u, ME);
+        let a = l.adopt(&known(&[(ROOT, 50)]), &mut u, ME, &mut M1Cache::default());
         assert!(a.found.is_empty(), "{a:?}");
         assert!(a.complete);
     }
@@ -441,7 +513,12 @@ mod tests {
         f.add(500, 1, 5000, 2000, 10); // claims mid as creator, but older than mid
         let (l, _f) = on(f);
         let mut u = BTreeMap::new();
-        let a = l.adopt(&known(&[(ROOT, 50), (200, 50)]), &mut u, ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50), (200, 50)]),
+            &mut u,
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(!a.found.iter().any(|x| x.pid == 500), "{a:?}");
     }
 
@@ -450,7 +527,12 @@ mod tests {
         let f = table();
         f.fail(Call::AllPids, 0, SysError::Incomplete);
         let (l, _f) = on(f);
-        let a = l.adopt(&known(&[(ROOT, 50)]), &mut BTreeMap::new(), ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50)]),
+            &mut BTreeMap::new(),
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(!a.complete);
         assert_eq!(l.failures(), 1);
 
@@ -461,7 +543,12 @@ mod tests {
             SysError::LengthMismatch { got: 48, want: 56 },
         );
         let (l, _f) = on(f);
-        let a = l.adopt(&known(&[(ROOT, 50)]), &mut BTreeMap::new(), ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50)]),
+            &mut BTreeMap::new(),
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(!a.complete);
         assert_eq!(l.failures(), 1);
     }
@@ -471,7 +558,12 @@ mod tests {
         let f = table();
         f.fail(Call::UniqueIds, 400, SysError::PermissionDenied);
         let (l, _f) = on(f);
-        let a = l.adopt(&known(&[(ROOT, 50)]), &mut BTreeMap::new(), ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50)]),
+            &mut BTreeMap::new(),
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(a.complete);
         assert_eq!(l.failures(), 0);
     }
@@ -481,7 +573,12 @@ mod tests {
         let l = Lineage::from_selfcheck(Arc::new(table()), Err(Failure::ChildParentUnique));
         assert!(!l.enabled());
         assert_eq!(l.status()["selfcheck"], "failed:child_parent_unique");
-        let a = l.adopt(&known(&[(ROOT, 50)]), &mut BTreeMap::new(), ME);
+        let a = l.adopt(
+            &known(&[(ROOT, 50)]),
+            &mut BTreeMap::new(),
+            ME,
+            &mut M1Cache::default(),
+        );
         assert_eq!(a, Adopt::default());
         assert!(!a.complete);
         assert!(!l.same_unique(ROOT, 1000));

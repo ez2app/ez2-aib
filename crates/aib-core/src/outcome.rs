@@ -62,6 +62,10 @@ pub fn decide(o: Observed) -> Outcome {
         (SessionState::Failed, dirty.then_some("tree_not_clean"))
     } else if dirty {
         (SessionState::Interrupted, Some("tree_not_clean"))
+    } else if (o.cancel_requested || o.timed_out) && matches!(o.tree, Tree::Unverified(_)) {
+        // a63ab #510: an unverified tree never becomes Cancelled / TimedOut;
+        // the sub-code stays in `tree_unverified`
+        (SessionState::Interrupted, Some("tree_unverified"))
     } else if o.cancel_requested {
         (SessionState::Cancelled, None)
     } else if o.timed_out {
@@ -155,9 +159,36 @@ mod tests {
             tree: Tree::Unverified("observed_clean"),
             ..Default::default()
         });
-        assert_eq!(o.state, SessionState::Cancelled);
+        assert_eq!(
+            o.state,
+            SessionState::Interrupted,
+            "unverified must not read as Cancelled"
+        );
+        assert_eq!(o.reason, Some("tree_unverified"));
         assert_eq!(o.tree_unverified, Some("observed_clean"));
         assert!(!o.seat_needs_recovery);
+        let t = decide(Observed {
+            timed_out: true,
+            tree: Tree::Unverified("lineage_unavailable"),
+            ..Default::default()
+        });
+        assert_eq!(t.state, SessionState::Interrupted, "nor as TimedOut");
+        // a completed answer stays completed, the tree status rides along
+        let c = decide(Observed {
+            completed_event: true,
+            tree: Tree::Unverified("observed_clean"),
+            ..Default::default()
+        });
+        assert_eq!(c.state, SessionState::Completed);
+        assert_eq!(c.tree_unverified, Some("observed_clean"));
+        // exit 0 without completion keeps its own reason; the tree rides along
+        let i = decide(Observed {
+            exit_code: Some(0),
+            tree: Tree::Unverified("observed_clean"),
+            ..Default::default()
+        });
+        assert_eq!(i.reason, Some("missing_completion_event"));
+        assert_eq!(i.tree_unverified, Some("observed_clean"));
         // nothing observed is never clean
         let d = decide(Observed {
             cancel_requested: true,
