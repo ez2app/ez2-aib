@@ -160,7 +160,7 @@ fn clear_env_passes_only_the_given_environment() {
         ("ONLY".into(), "1".into()),
         (
             "SystemRoot".into(),
-            std::env::var("SystemRoot").unwrap_or_default(),
+            std::env::var_os("SystemRoot").unwrap_or_default(),
         ),
     ];
     let s = SessionTree::spawn(&spec).unwrap();
@@ -174,6 +174,10 @@ fn clear_env_passes_only_the_given_environment() {
         root.exit_code().unwrap(),
         Some(0),
         "5 = parent env leaked, 4 = given env missing"
+    );
+}
+
+#[test]
 fn kill_returns_within_its_limit() {
     // bb7dc #535 cac62694: no step of kill may block past the limit
     let mut s = SessionTree::spawn(&cmd("ping -n 60 127.0.0.1 >nul")).unwrap();

@@ -17,6 +17,7 @@
 use crate::job::{Job, Member, Process};
 use crate::settle::{root_reap, still_running, RootReap};
 use crate::SysError;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 pub struct Spec {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(OsString, OsString)>,
     pub clear_env: bool,
 }
 

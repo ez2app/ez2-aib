@@ -16,6 +16,9 @@
 //!   the unwaited `Child` still pins its pid.
 //! - blind spots: none (the Job holds the whole tree; no breakaway).
 //!
+//! The child environment is the shared [`child_env`] (aibd's minus `AIBD_*`,
+//! any case; the request's; `AIBD_SESSION` last), passed with `clear_env`.
+//!
 //! UNVERIFIED on a real machine until the stage-0 laptop run (a63ab plan).
 
 use std::sync::Arc;
@@ -26,34 +29,21 @@ use aib_sys::session::{KillReport, SessionTree, SpawnError};
 use aib_sys::SysError;
 
 use super::session::{
-    Exit, ExitWait, Running, Signal, SpawnFail, Spec, Stop, StopStatus, JOB_ERROR_PREFIX,
+    child_env, Exit, ExitWait, Running, Signal, SpawnFail, Spec, Stop, StopStatus, JOB_ERROR_PREFIX,
 };
 use crate::lineage::Lineage;
 
 /// Extra time on top of `grace` for the Job to empty and the handles to signal.
 const KILL_SLACK: Duration = Duration::from_secs(2);
 
-/// The child's environment: aibd's own minus every `AIBD_*` key (Windows names
-/// ignore case: `aibd_token` goes too), then `spec.env`, then `AIBD_SESSION`.
-pub fn child_env(
-    spec: &Spec,
-    parent: impl IntoIterator<Item = (String, String)>,
-) -> Vec<(String, String)> {
-    let is_aibd = |k: &str| k.len() >= 5 && k[..5].eq_ignore_ascii_case("AIBD_");
-    let mut out: Vec<(String, String)> = parent.into_iter().filter(|(k, _)| !is_aibd(k)).collect();
-    for (k, v) in &spec.env {
-        if is_aibd(k) {
-            continue; // the API layer refuses these; never let one through here
-        }
-        out.retain(|(o, _)| !o.eq_ignore_ascii_case(k));
-        out.push((k.clone(), v.clone()));
-    }
-    out.push(("AIBD_SESSION".into(), spec.id.clone()));
-    out
-}
-
-/// aib-sys spawn failure → the API's `spawn_failed` tag (same codes as POSIX).
+/// aib-sys spawn failure → the API's `spawn_failed` (same tags as POSIX).
+/// `Spawn(NotReaped)` = started, not under a Job, not confirmed gone:
+/// `left_running` carries its pid so the API keeps the slot (#539 M2).
 pub fn spawn_fail(e: &SpawnError) -> SpawnFail {
+    let left_running = match e {
+        SpawnError::Spawn(SysError::NotReaped { pid, .. }) => Some(*pid),
+        _ => None,
+    };
     let tag = match e {
         SpawnError::NoProgram => "no_program".to_owned(),
         SpawnError::Job(err) => format!("{JOB_ERROR_PREFIX}{}", err.tag()),
@@ -64,7 +54,7 @@ pub fn spawn_fail(e: &SpawnError) -> SpawnFail {
             other => other.tag().to_owned(),
         },
     };
-    SpawnFail { tag }
+    SpawnFail { tag, left_running }
 }
 
 /// A kill result (or its error) → the shared `stop`.
@@ -145,7 +135,7 @@ pub fn spawn(spec: &Spec, _lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runn
     let sys = aib_sys::session::Spec {
         argv: spec.argv.clone(),
         cwd: Some(spec.cwd.clone()),
-        env: child_env(spec, std::env::vars()),
+        env: child_env(spec, std::env::vars_os()),
         clear_env: true,
     };
     SessionTree::spawn(&sys)
@@ -157,44 +147,6 @@ pub fn spawn(spec: &Spec, _lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runn
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use std::path::PathBuf;
-
-    fn spec(env: &[(&str, &str)]) -> Spec {
-        Spec {
-            id: "s_0123456789abcdef".into(),
-            argv: vec!["C:\\Windows\\System32\\cmd.exe".into()],
-            cwd: PathBuf::from("C:\\"),
-            env: env
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into()))
-                .collect(),
-        }
-    }
-
-    fn parent(kv: &[(&str, &str)]) -> Vec<(String, String)> {
-        kv.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
-    }
-
-    #[test]
-    fn aibd_keys_are_dropped_in_any_case_and_the_marker_is_last() {
-        let env = child_env(
-            &spec(&[("FOO", "1"), ("aibd_sneak", "x")]),
-            parent(&[
-                ("PATH", "p"),
-                ("AIBD_TOKEN", "t"),
-                ("aibd_data_dir", "d"),
-                ("foo", "old"),
-            ]),
-        );
-        assert_eq!(
-            env,
-            parent(&[
-                ("PATH", "p"),
-                ("FOO", "1"),
-                ("AIBD_SESSION", "s_0123456789abcdef")
-            ])
-        );
-    }
 
     fn report(members: &[u32], emptied: bool, survivors: &[u32]) -> Result<KillReport, SysError> {
         Ok(KillReport {
@@ -259,5 +211,18 @@ mod tests {
             spawn_fail(&SpawnError::Job(SysError::Unknown)).tag,
             "job_error:unknown"
         );
+        assert_eq!(
+            spawn_fail(&SpawnError::Spawn(SysError::Os(2))).left_running,
+            None
+        );
+    }
+
+    #[test]
+    fn a_spawn_not_confirmed_gone_keeps_its_pid() {
+        let f = spawn_fail(&SpawnError::Spawn(SysError::NotReaped {
+            pid: 4242,
+            cause: Box::new(SysError::Unknown),
+        }));
+        assert_eq!((f.tag.as_str(), f.left_running), ("not_reaped", Some(4242)));
     }
 }

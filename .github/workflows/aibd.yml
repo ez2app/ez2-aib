@@ -137,12 +137,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         # session_windows.rs maps aib-sys results to the shared stop: clean only
-        # when the Job emptied AND every handle signaled; AIBD_* dropped in any case.
+        # when the Job emptied AND every handle signaled; a not-reaped spawn keeps its pid.
         run: |
           set -eu
           k() { python3 -I scripts/knife.py crates/aibd/src/platform/session_windows.rs "$1" "$2" \
                   --expect-fail "$3" -- cargo test -p aibd --locked --lib platform::session_windows; }
           k '            let status = if k.all_gone() {' '            let status = if k.survivors.is_empty() {' \
             a_job_that_did_not_empty_is_never_clean
-          k 'k[..5].eq_ignore_ascii_case("AIBD_")' 'k.starts_with("AIBD_")' \
-            aibd_keys_are_dropped_in_any_case_and_the_marker_is_last
+          k '        SpawnError::Spawn(SysError::NotReaped { pid, .. }) => Some(*pid),' \
+            '        SpawnError::Spawn(SysError::NotReaped { .. }) => None,' \
+            a_spawn_not_confirmed_gone_keeps_its_pid
