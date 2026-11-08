@@ -114,6 +114,9 @@ pub struct Session {
     pub ended_at: Option<String>,
     /// `root_exit` | `api` | `shutdown`.
     pub ended_by: Option<&'static str>,
+    /// Still counts against the running limit: running, or a stop that could
+    /// not show the tree is gone (H2 whitelist). DELETE again to re-check.
+    pub holds_slot: bool,
     pub stop: Option<StopView>,
 }
 
@@ -212,6 +215,16 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
     }
     let mut env = Vec::with_capacity(env_in.len());
     for (k, v) in env_in {
+        // Windows names have no case: `TEMP` + `Temp` would both reach the
+        // child; refused on every platform (043dd #539 Low)
+        if env
+            .iter()
+            .any(|(e, _): &(String, String)| e.eq_ignore_ascii_case(&k))
+        {
+            return Err(bad(
+                "env has the same key twice (keys are compared without case)",
+            ));
+        }
         if !env_key_ok(&k) {
             return Err(bad("env key must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$"));
         }
@@ -387,6 +400,7 @@ impl Sessions {
             signal: None,
             ended_at: None,
             ended_by: None,
+            holds_slot: true,
             stop: None,
         };
         let exit_wait = run.exit_wait();
@@ -509,6 +523,7 @@ impl Sessions {
         e.rec.ended_at = Some(now_rfc3339());
         e.rec.ended_by = Some(by);
         e.rec.stop = Some(StopView::of(&stop));
+        e.rec.holds_slot = !stop.releases_slot();
         e.stopping = false;
         let rec = e.rec.clone();
         let (kind, payload) = match rec.state {
@@ -840,6 +855,12 @@ mod tests {
         assert!(!e.1.contains(secret), "{}", e.1);
         assert!(
             v(serde_json::json!({"argv": ["/bin/true"], "env": {"LANG": "C", "_X1": ""}})).is_ok()
+        );
+        assert_eq!(
+            v(serde_json::json!({"argv": ["/bin/true"], "env": {"TEMP": "a", "Temp": "b"}}))
+                .unwrap_err()
+                .0,
+            ErrorCode::InvalidRequest
         );
     }
 

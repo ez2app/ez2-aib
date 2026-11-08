@@ -253,13 +253,22 @@ async fn delete_stops_the_grandchild_and_reports_honestly() {
     assert!(!s["stop"]["blind_spots"].as_array().unwrap().is_empty());
     assert_eq!(s["stop"]["survivors"], serde_json::json!([]));
     assert!(s.get("env").is_none());
-    // the slot came back (no known survivor); a second DELETE returns the record
-    let (code, again) = blocking!(v, |v| v.d().call(
-        "DELETE",
-        &format!("/api/v1/sessions/{id}"),
-        None
-    ));
+    // the reason decides the slot (whitelist): observed_clean frees it, a
+    // "could not look" reason keeps it until a DELETE re-checks
+    assert_eq!(
+        s["holds_slot"],
+        s["stop"]["reason"] != "observed_clean",
+        "{s}"
+    );
+    // a second DELETE answers with the session again (re-checked or kept)
+    let path2 = format!("/api/v1/sessions/{id}?grace_ms=0");
+    let (code, again) = blocking!(v, |v| v.d().call("DELETE", &path2, None));
     assert_eq!((code, &again["id"]), (200, &s["id"]));
+    assert_eq!(
+        again["holds_slot"],
+        again["stop"]["reason"] != "observed_clean",
+        "{again}"
+    );
     d.shutdown().await;
 }
 
@@ -336,14 +345,16 @@ async fn limits_errors_and_the_guard_on_every_route() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 2).await;
     let v = view(&d);
-    let ids = blocking!(v, |v| {
+    blocking!(v, |v| {
         let d = v.d();
-        let mut ids = Vec::new();
-        for _ in 0..2 {
-            let (c, s) = d.post(&["/bin/sleep", "60"]);
-            assert_eq!(c, 201, "{s}");
-            ids.push(s["id"].as_str().unwrap().to_owned());
-        }
+        let (c, s) = d.post(&["/bin/sleep", "60"]);
+        assert_eq!(c, 201, "{s}");
+        // a failed start gives its reserved slot back: the second still fits
+        let (c, s) = d.post(&["/no/such/program"]);
+        assert_eq!((c, s["code"].as_str()), (422, Some("spawn_failed")), "{s}");
+        assert_eq!(s["message"], "could not start: enoent");
+        let (c, s) = d.post(&["/bin/sleep", "60"]);
+        assert_eq!(c, 201, "slot leaked by the failed spawn: {s}");
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(
             (c, s["code"].as_str()),
@@ -363,24 +374,6 @@ async fn limits_errors_and_the_guard_on_every_route() {
             (400, Some("invalid_request")),
             "{s}"
         );
-        ids
-    });
-    // free one slot for the spawn-failure check
-    let first = ids[0].clone();
-    let (c, _) = blocking!(v, |v| v.d().call(
-        "DELETE",
-        &format!("/api/v1/sessions/{first}?grace_ms=0"),
-        None
-    ));
-    assert_eq!(c, 200);
-    blocking!(v, |v| {
-        let d = v.d();
-        let (c, s) = d.post(&["/no/such/program"]);
-        assert_eq!((c, s["code"].as_str()), (422, Some("spawn_failed")), "{s}");
-        assert_eq!(s["message"], "could not start: enoent");
-        // the failed start gave its reserved slot back: one more still fits
-        let (c, s) = d.post(&["/bin/sleep", "60"]);
-        assert_eq!(c, 201, "slot leaked by the failed spawn: {s}");
         let (c, s) = d.raw(
             "POST",
             "/api/v1/sessions",
@@ -681,6 +674,7 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
     assert_eq!(first.stop.as_ref().unwrap().status, "tree_not_clean");
     assert_eq!(first.stop.as_ref().unwrap().survivors, vec![999_998]);
     assert_eq!(s.slots_in_use(), 1, "a survivor must keep the slot");
+    assert!(first.holds_slot, "{first:?}");
     assert_eq!(
         s.start(req()).unwrap_err().0,
         aib_core::ErrorCode::TooManySessions
@@ -700,6 +694,7 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
         Some("observed_clean")
     );
     assert_eq!(s.slots_in_use(), 0);
+    assert!(!second.holds_slot, "{second:?}");
     let kinds: Vec<String> = store
         .events_after(0, 100)
         .unwrap()
