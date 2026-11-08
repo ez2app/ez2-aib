@@ -212,36 +212,58 @@ KNIFE_CHILD = "AIB_MEMUID_KNIFE_CHILD"
 OLD_REF = "fa6f3a67aec81cb217656521eee802e6461d4907:aib/src/memory/aib_memory.py"   # aec72dd6 修正之前
 
 
+def read_old_blob(root, ref):
+    """讀 git show <ref>。回 (內容, None) 或 (None, 略過理由);其他情況丟 AssertionError 帶 stderr。
+    只有兩種能略過:這棵樹確實不是 git 樹(刀測複本)、或確實是淺層 clone 且缺那個 commit。
+    git 逾時 / 指令出錯 / 判斷不出來 ⇒ 一律紅(bb7dc #502 讀碼兩輪)。"""
+    def git(*a):
+        try:
+            return subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return None
+        except subprocess.TimeoutExpired:
+            raise AssertionError("git %s 逾時 30 秒" % " ".join(a))
+    r = git("show", ref)
+    if r is None:
+        return None, "沒有 git 執行檔"
+    if r.returncode == 0:
+        return r.stdout, None
+    sha = ref.split(":")[0]
+    ins = git("rev-parse", "--is-inside-work-tree")
+    if ins.returncode != 0:
+        if ins.returncode == 128 and "not a git repository" in ins.stderr:
+            return None, "不在 git 樹(刀測複本)"
+        raise AssertionError("判斷不出是不是 git 樹(rc=%s):%s;show:%s" % (ins.returncode, ins.stderr.strip(), r.stderr.strip()))
+    if ins.stdout.strip() != "true":
+        raise AssertionError("不在工作樹內(%r):%s" % (ins.stdout.strip(), r.stderr.strip()))
+    sh = git("rev-parse", "--is-shallow-repository")
+    if sh.returncode != 0 or sh.stdout.strip() not in ("true", "false"):
+        raise AssertionError("判斷不出是不是淺層(rc=%s):%s;show:%s" % (sh.returncode, sh.stderr.strip(), r.stderr.strip()))
+    have = git("cat-file", "-e", sha + "^{commit}")
+    if sh.stdout.strip() == "true" and have.returncode != 0:
+        return None, "淺層 clone 缺 %s" % sha[:8]
+    raise AssertionError("讀不到舊版 %s(shallow=%s have=%s):%s" % (ref, sh.stdout.strip(), have.returncode == 0, r.stderr.strip()))
+
+
 @unittest.skipIf(os.environ.get(KNIFE_CHILD), "子行程裡不再開刀")
 class K1KnifeOldCodeIsRed(unittest.TestCase):
     """main 上的舊 aib_memory 換進暫存副本,跑 M1 要紅(證明這支測試抓得到靜默變空)。"""
 
     def test_old_aib_memory_fails_m1(self):
+        # 舊版釘在修正(aec72dd6)之前的固定 commit。以前讀 origin/main:修正合進 main 後就永遠
+        # skipTest("main 已含本修正"),這把刀不再跑、也沒人發現(#501 同類,043dd 11-08 掃全倉)。
         try:
-            # 舊版釘在修正(aec72dd6)之前的固定 commit。以前讀 origin/main:修正合進 main 後就永遠
-            # skipTest("main 已含本修正"),這把刀不再跑、也沒人發現(#501 同類,043dd 11-08 掃全倉)。
-            old = subprocess.run(["git", "-C", str(ROOT), "show", OLD_REF],
-                                 capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            self.skipTest("沒有 git")
-        if old.returncode != 0:
-            # 只有「確實是淺層 clone、而且真的缺這個 commit」才跳過;其他 git 失敗一律紅(bb7dc #502 讀碼)
-            sha = OLD_REF.split(":")[0]
-            inside = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
-                                    capture_output=True, text=True).stdout.strip() == "true"
-            shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
-                                     capture_output=True, text=True, timeout=30).stdout.strip() == "true"
-            have = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", sha + "^{commit}"],
-                                  capture_output=True, timeout=30).returncode == 0
-            if not inside or (shallow and not have):   # 刀複本沒有 .git / 淺層缺 commit
-                self.skipTest("淺層 clone 沒有 %s" % sha[:8])
-            self.fail("讀不到舊版 %s(inside=%s shallow=%s have=%s):%s" % (OLD_REF, inside, shallow, have, old.stderr.strip()))
-        self.assertIn("def note_text", old.stdout, "OLD_REF 的舊版格式不對")
-        self.assertNotIn("def resolve_note_path", old.stdout, "OLD_REF 釘錯了:舊版已含本修正")
+            old, why = read_old_blob(ROOT, OLD_REF)
+        except AssertionError as ex:
+            self.fail(str(ex))
+        if old is None:
+            self.skipTest(why)
+        self.assertIn("def note_text", old, "OLD_REF 的舊版格式不對")
+        self.assertNotIn("def resolve_note_path", old, "OLD_REF 釘錯了:舊版已含本修正")
         with tempfile.TemporaryDirectory() as td:
             copy = Path(td) / "aib"
             shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            (copy / "src" / "memory" / "aib_memory.py").write_text(old.stdout, encoding="utf-8")
+            (copy / "src" / "memory" / "aib_memory.py").write_text(old, encoding="utf-8")
             env = dict(os.environ, **{KNIFE_CHILD: "1", "PYTHONDONTWRITEBYTECODE": "1"})
             r = run_guarded([sys.executable, str(copy / "tests" / Path(__file__).name), "M1LegacyOldLayout"],
                             cwd=str(copy), env=env, max_procs=50, timeout=120)
