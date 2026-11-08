@@ -168,7 +168,7 @@
       "name": "record-receipt-edit-ok",
       "proves": "a recorded receipt edited afterwards is refused",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "    if file_sha256(path) != row[\"receipt_sha256\"]:",
+      "old": "    if receipt_sha256 != row[\"receipt_sha256\"]:",
       "new": "    if False:"
     },
     {
@@ -205,6 +205,27 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "            return total - bad, total",
       "new": "            return total, total"
+    },
+    {
+      "name": "cmd-ignored",
+      "proves": "positive receipts must run the dispatched command",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if want and kind in (\"positive\", \"default\") and not rp and norm_cmd(info.get(\"cmd\")) != norm_cmd(want):",
+      "new": "        if False:"
+    },
+    {
+      "name": "record-untracked-ok",
+      "proves": "untracked files block record",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "\"--untracked-files=normal\"",
+      "new": "\"--untracked-files=no\""
+    },
+    {
+      "name": "count-any-slash",
+      "proves": "a bare N/M (a date) is not a pass count",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if re.search(r\"PASS|\\bOK\\b|綠|passed|通過\", line, re.I):",
+      "new": "        if True:"
     }
   ]
 }

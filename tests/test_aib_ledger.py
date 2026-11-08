@@ -453,6 +453,45 @@ class AibLedger(unittest.TestCase):
         finally:
             os.umask(old)
 
+    # ---------- ebb36 r2:派工記指令、沒追蹤的檔、日期不算支數 ----------
+    def test_r2_m1_receipt_must_run_the_dispatched_command(self):
+        d, sha = self.repo()
+        self.roles()
+        want = "%s -m unittest test_x" % sys.executable
+        for item in ("B-cmd", "B-fake"):
+            self.ok("add", item, "--batch", "b114", "--owner", "2240e", "--title", "c", "--cmd", want,
+                    "--by", "seat:f1fae")
+            self.ok("move", item, "--from", "queued", "--to", "running", "--by", "seat:2240e")
+            self.ok("move", item, "--from", "running", "--to", "review", "--head", sha, "--by", "seat:2240e")
+        r, real = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.L("move", "B-cmd", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", real)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r, fake = self.record(d, "sh", "-c", 'printf "Ran 400 tests in 0.1s\\n\\nOK\\n"')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(Path(fake).read_text(encoding="utf-8"))["passed"], 400)
+        r = self.L("move", "B-fake", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", fake)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("is not the dispatched command", r.stderr)
+        self.assertIn("cmd:", self.ok("show", "B-fake").stdout)
+        self.assertIn("cmd: %s -m unittest test_x" % sys.executable, self.ok("verify", "B-cmd").stdout)
+
+    def test_r2_l1_untracked_file_blocks_record(self):
+        d, sha = self.repo()
+        (d / "sitecustomize.py").write_text("import unittest\nunittest.TestCase.assertEqual = lambda *a: None\n",
+                                            encoding="utf-8")
+        r, path = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIsNone(path)
+
+    def test_r2_l3_a_date_is_not_a_pass_count(self):
+        d, sha = self.repo()
+        r, path = self.record(d, sys.executable, "-c", "print('built 11/08')")
+        self.assertEqual(json.loads(Path(path).read_text(encoding="utf-8"))["passed"], None)
+        r, path = self.record(d, sys.executable, "-c", "print('PASS 5/5 綠'); print('built 11/08')")
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertEqual((rec["passed"], rec["total"]), (5, 5))
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
