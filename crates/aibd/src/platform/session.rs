@@ -93,11 +93,15 @@ pub const UNVERIFIED_REASONS: &[&str] = &[
     "root_identity_lost",
     // the stop itself failed (an OS error while listing / signalling)
     "stop_failed",
+    // a report whose reason could not be named (not reached today)
+    "unclassified",
 ];
 
-/// Reasons after which nothing can say whether the tree is still there: the
-/// slot is kept (H2, 043dd #539 M1), whatever `survivors` says.
-pub const SLOT_HOLDING_REASONS: &[&str] = &["root_identity_lost", "stop_failed"];
+/// The only `unverified` reason that gives the slot back (a63ab 11-09 M1,
+/// whitelist): it LOOKED and saw nothing left. Every other reason is "could
+/// not look" (job errors, a lost root, unreadable candidates, a fork-watch
+/// miss, ...) and keeps the slot; so does any reason not classified here.
+pub const SLOT_RELEASING_REASONS: &[&str] = &["observed_clean"];
 
 /// The marker every session process inherits (`AIBD_SESSION=<id>`).
 pub const SESSION_ENV: &str = "AIBD_SESSION";
@@ -155,11 +159,12 @@ impl Stop {
     /// down, not that the tree is proven gone (bb7dc 11-09): blind spots stay
     /// in the record, and the limit is not a resource-isolation boundary.
     pub fn releases_slot(&self) -> bool {
-        let unknowable = self
-            .status
-            .reason()
-            .is_some_and(|r| r.starts_with(JOB_ERROR_PREFIX) || SLOT_HOLDING_REASONS.contains(&r));
-        self.survivors.is_empty() && self.status != StopStatus::TreeNotClean && !unknowable
+        let looked = match &self.status {
+            StopStatus::Clean => true,
+            StopStatus::Unverified(r) => SLOT_RELEASING_REASONS.contains(&r.as_str()),
+            StopStatus::TreeNotClean => false,
+        };
+        looked && self.survivors.is_empty()
     }
 
     /// The macOS / POSIX mapping of a tree [`super::tree::Report`].
@@ -167,7 +172,7 @@ impl Stop {
         let status = match r.clean_status() {
             "clean" => StopStatus::Clean,
             "tree_not_clean" => StopStatus::TreeNotClean,
-            _ => StopStatus::Unverified(r.unverified_reason().unwrap_or("unverified").to_owned()),
+            _ => StopStatus::Unverified(r.unverified_reason().unwrap_or("unclassified").to_owned()),
         };
         Stop {
             status,
@@ -317,6 +322,13 @@ mod tests {
         let left = stop(StopStatus::TreeNotClean, vec![42]);
         assert!(!left.confirmed());
         assert!(!left.releases_slot());
+        // whitelist (a63ab M1): every "could not look" reason keeps the slot,
+        // and so does a reason nobody classified
+        for r in UNVERIFIED_REASONS {
+            let s = stop(StopStatus::Unverified((*r).into()), vec![]);
+            assert_eq!(s.releases_slot(), *r == "observed_clean", "{r}");
+        }
+        assert!(!stop(StopStatus::Unverified("something_new".into()), vec![]).releases_slot());
         // nothing knowable: Windows job errors and the H1 latch keep the slot
         assert!(
             !stop(StopStatus::Unverified("job_error:terminate".into()), vec![]).releases_slot()
