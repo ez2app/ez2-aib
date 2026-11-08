@@ -123,12 +123,14 @@ jobs:
         run: |
           PY=$(command -v python3 || command -v python)
           if "$PY" -I scripts/aibd-api-smoke.py "dist/${NAME}"; then echo "API smoke pass"; else rc=$?; echo "::error::API smoke rc $rc"; exit 1; fi
-      - name: sessions smoke (open a program with a grandchild, DELETE, whole tree gone; required)
+      - name: sessions smoke (open a program with a grandchild, DELETE, whole tree gone; SKIP while the API is absent)
         shell: bash
         run: |
-          # 11-09 a63ab:sessions API 已合(#544)⇒ --require:沒有 sessions 端點就紅(定案 #19)
+          # sessions API 已合(#544):macOS 必過(--require,bb7dc #537);Windows 這版 default_spawn 未接上,
+          # 冒煙只認 422 unsupported_platform 為具名 SKIP,接上 session_windows 後連 Windows 一起加 --require
           PY=$(command -v python3 || command -v python)
-          if "$PY" -I scripts/aibd-sessions-smoke.py --require "dist/${NAME}"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::sessions smoke rc $rc"; exit 1; fi
+          REQ=""; [ "$RUNNER_OS" = "macOS" ] && REQ="--require"
+          if "$PY" -I scripts/aibd-sessions-smoke.py "dist/${NAME}" $REQ; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::sessions smoke rc $rc"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
@@ -245,8 +247,9 @@ jobs:
           if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::uploaded $NAME selfcheck exited $rc"; exit 1; fi
           PY=$(command -v python3 || command -v python)
           if "$PY" -I ../scripts/aibd-api-smoke.py "./$NAME"; then echo "API smoke pass"; else rc=$?; echo "::error::uploaded $NAME API smoke rc $rc"; exit 1; fi
-          # sessions:--require(定案 #19)— 端點不在就紅
-          if "$PY" -I ../scripts/aibd-sessions-smoke.py --require "./$NAME"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::uploaded $NAME sessions smoke rc $rc"; exit 1; fi
+          # sessions:macOS 必過(--require);Windows 這版只認 unsupported_platform 具名 SKIP(同 build)
+          REQ=""; [ "$RUNNER_OS" = "macOS" ] && REQ="--require"
+          if "$PY" -I ../scripts/aibd-sessions-smoke.py "./$NAME" $REQ; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::uploaded $NAME sessions smoke rc $rc"; exit 1; fi
 
   publish:
     needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private

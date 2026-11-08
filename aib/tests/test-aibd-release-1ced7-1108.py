@@ -15,7 +15,8 @@ R7 先 draft → verify 全綠 → 才 publish(PATCH draft=false、make_latest=f
 R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰一筆 id 傳下去;verify 用 asset API 下載、publish 用 id PATCH / 讀回),
    不靠 gh 用 tag 找 draft 的後備查找(a63ab 11-08 22:00:那條路沒實測)
    (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
-R9 build 與 verify 都跑 API 冒煙(scripts/aibd-api-smoke.py)與 sessions 冒煙(scripts/aibd-sessions-smoke.py,11-09 起 --require(定案 #19);
+R10 sessions 冒煙在 macOS 帶 --require(API 已合;Windows 只准 unsupported_platform 具名 SKIP)。
+R9 build 與 verify 都跑 API 冒煙(scripts/aibd-api-smoke.py)與 sessions 冒煙(scripts/aibd-sessions-smoke.py,--require 規則見 R10;
    verify 的冒煙在沒權杖的執行步、用 checkout 拿腳本,執行檔仍來自 draft)(a63ab 11-09 PLAN-preview2)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 / 下載失敗但留著上次的舊檔 ⇒ 沒裝、沒執行
@@ -154,18 +155,35 @@ class Static(unittest.TestCase):
     def test_r9_api_and_sessions_smoke_in_build_and_verify(self):
         b, v = job("build"), job("verify")
         self.assertIn('-I scripts/aibd-api-smoke.py "dist/${NAME}"', b)
-        self.assertIn('-I scripts/aibd-sessions-smoke.py --require "dist/${NAME}"', b)  # 定案 #19:API 合了 ⇒ 必過
+        self.assertIn('-I scripts/aibd-sessions-smoke.py "dist/${NAME}"', b)
         self.assertLess(b.index("selfcheck rc 0"), b.index("aibd-api-smoke.py"))
         self.assertLess(b.index("aibd-sessions-smoke.py"), b.index("upload-artifact"), "冒煙沒過不准上傳")
         dl, run = v.split("- name: run what was uploaded")
         self.assertIn('-I ../scripts/aibd-api-smoke.py "./$NAME"', run, "冒煙跑的是從 draft 下載的那份")
-        self.assertIn('-I ../scripts/aibd-sessions-smoke.py --require "./$NAME"', run)  # 定案 #19
+        self.assertIn('-I ../scripts/aibd-sessions-smoke.py "./$NAME"', run)
         self.assertNotIn("GH_TOKEN", run)
         self.assertLess(v.index("uses: actions/checkout@v4"), v.index("gh api"), "checkout 會清工作區:要在下載之前")
         self.assertIn('- "scripts/aibd-*-smoke.py"', T, "改冒煙腳本的 PR 也要跑這支 workflow")
         for script in ("aibd-api-smoke.py", "aibd-sessions-smoke.py"):
             with self.subTest(script=script):
                 self.assertTrue((ROOT / "scripts" / script).is_file(), "workflow 叫的腳本要在倉裡:%s" % script)
+
+    def test_r10_sessions_smoke_is_required_on_macos(self):
+        # 1ced7 11-08:sessions API(#544)合了 ⇒ macOS 必過(bb7dc #537);Windows 這版只准 unsupported_platform 具名 SKIP
+        line = 'REQ=""; [ "$RUNNER_OS" = "macOS" ] && REQ="--require"'
+        b, v = job("build"), job("verify")
+        run = v.split("- name: run what was uploaded")[1]
+        for name, text, call in (("build", b, '-I scripts/aibd-sessions-smoke.py "dist/${NAME}" $REQ;'),
+                                 ("verify", run, '-I ../scripts/aibd-sessions-smoke.py "./$NAME" $REQ;')):
+            with self.subTest(job=name):
+                self.assertIn(line, text)
+                self.assertIn(call, text)
+                self.assertLess(text.index(line), text.index(call))
+        for os_, want in (("macOS", "--require"), ("Windows", ""), ("Linux", "")):
+            with self.subTest(runner=os_):
+                r = subprocess.run(["bash", "-c", line + '; printf %s "$REQ"'], env={"RUNNER_OS": os_, "PATH": "/usr/bin:/bin"},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.stdout, want)
 
 
 @unittest.skipUnless(sys.version_info >= (3, 11), "meta uses tomllib (Python 3.11+, as on ubuntu-latest)")
