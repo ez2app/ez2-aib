@@ -10,6 +10,7 @@
     aib ledger show <id> [--json]
     aib ledger list [--state S] [--batch B] [--owner <seat>] [--json]
     aib ledger verify <id> [--json]
+    aib ledger record [--kind K] [--tree DIR] [--out DIR] [--count REGEX] -- <cmd …>
 
 為什麼:dm 只是通知、「已驗」只是一句話;帳才算數。每件工作一列(id、批、負責席、頭碼、證據路徑、下一步、阻塞原因),
 每次狀態轉移一筆事件。醒來先讀帳,不靠記憶。
@@ -30,6 +31,13 @@
   通過支數 ≥ 1(有 total 就要等於 total)、原始輸出檔存在且非空(有 output_sha256 就要對得上)。
   至少一張非 chrome 的收據;件標 --needs chrome ⇒ 還要一張同頭碼的 chrome 收據。
 
+收據產生器 record(11-08 f1fae 定「防假完成最有用的一刀」):包裝器自己跑指令,rc、起訖、機台、原始輸出檔、它的 sha256、
+  通過支數都由它寫,跑的人寫不了;頭碼取 --tree(預設現在資料夾)的 git HEAD,樹有沒提交的改動就不跑(收據證明不了那個頭碼)。
+  收據檔帶 producer = "aib ledger record",收據本身的 sha256 登記在帳本 receipts 表。verify 碰到自稱 record 產的收據就去對登記:
+  沒登記、或收據 / 原始輸出檔登記後被改過 ⇒ 不過。件標 --needs recorded ⇒ 每張收據都要是 record 產、登記過的。
+  通過支數:--count 的正規式(具名群組 passed / total,最後一個符合的算);沒給就認 unittest 的 Ran N tests、再認最後一個 N/M。
+  record 回傳指令自己的 rc(腳本照舊判),收據路徑印在最後一行 RECEIPT <path>。
+  一樣是防誤不防冒用:同帳號的 AI 改得到帳本檔本身。
 身分:--by 是自報的席碼(跟 aib dm-queue --by 一樣):**防誤派,不防冒用**。帳只保證「誰說了什麼、照規則有沒有放行」;
   同一個帳號的 AI 都改得到本機檔,所以這是分工約定,不是安全閘(11-08 f1fae 定)。
 同一席分角色(f1fae 定:派工 = f1fae、整合 = f1fae 正本,兩個 session):role set 可以把兩個角色設給同一席;
@@ -45,7 +53,10 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import socket
 import sqlite3
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -76,6 +87,8 @@ WRITERS = {
 ROLES = ("dispatch", "integrate")
 RECEIPT_SCHEMA = "aib-receipt/1"
 RECEIPT_KINDS = ("positive", "knife", "default", "chrome", "other")
+RECORD_PRODUCER = "aib ledger record"
+NEEDS = ("chrome", "recorded")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 FUTURE_SKEW = datetime.timedelta(minutes=5)
@@ -124,6 +137,9 @@ def connect(path):
         event_id TEXT PRIMARY KEY, item_id TEXT, op TEXT NOT NULL, from_state TEXT, to_state TEXT,
         by_seat TEXT NOT NULL, at TEXT NOT NULL, request TEXT NOT NULL, result TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_item ON events(item_id, at);
+      CREATE TABLE IF NOT EXISTS receipts(
+        path TEXT PRIMARY KEY, receipt_sha256 TEXT NOT NULL, output_sha256 TEXT NOT NULL, sha TEXT NOT NULL,
+        kind TEXT NOT NULL, rc INTEGER NOT NULL, recorded_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS roles(role TEXT PRIMARY KEY, seat TEXT NOT NULL, set_by TEXT NOT NULL, set_at TEXT NOT NULL);
     """)
     return db
@@ -177,16 +193,47 @@ def sha_match(a, b):
     return a.startswith(b) or b.startswith(a)
 
 
-def check_receipt(path, head, now=None):
-    """一張收據 → (kind, problems)。problems 空 = 這張過。"""
+def file_sha256(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def check_recorded(db, path, r):
+    """自稱 record 產的收據:對帳本登記。回 problems。"""
+    if db is None:
+        return ["cannot check the record registry"]
+    row = db.execute("SELECT receipt_sha256, output_sha256 FROM receipts WHERE path=?",
+                     (str(Path(path).resolve()),)).fetchone()
+    if row is None:
+        return ["producer says %s, but this receipt is not in the ledger's record registry" % RECORD_PRODUCER]
+    probs = []
+    if file_sha256(path) != row["receipt_sha256"]:
+        probs.append("receipt was changed after aib ledger record wrote it")
+    out = Path(str(r.get("output") or ""))
+    try:
+        if file_sha256(out) != row["output_sha256"]:
+            probs.append("raw output was changed after aib ledger record wrote it")
+    except OSError:
+        pass   # 檔不在由一般檢查報
+    return probs
+
+
+def check_receipt(path, head, now=None, db=None):
+    """一張收據 → (kind, problems, recorded)。problems 空 = 這張過。"""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     probs = []
     try:
         r = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        return None, ["receipt unreadable: %s" % (e,)]
+        return None, ["receipt unreadable: %s" % (e,)], False
     if not isinstance(r, dict):
-        return None, ["receipt is not a JSON object"]
+        return None, ["receipt is not a JSON object"], False
+    recorded = r.get("producer") == RECORD_PRODUCER
+    if recorded:
+        rp = check_recorded(db, path, r)
+        probs.extend(rp)
+        recorded = not rp
+    if r.get("dirty"):
+        probs.append("recorded on a tree with uncommitted changes")
     if r.get("schema") != RECEIPT_SCHEMA:
         probs.append("schema is not %s" % RECEIPT_SCHEMA)
     kind = r.get("kind")
@@ -228,10 +275,10 @@ def check_receipt(path, head, now=None):
             h = hashlib.sha256(p.read_bytes()).hexdigest()
             if h != str(r["output_sha256"]).lower():
                 probs.append("output_sha256 does not match the raw output file")
-    return kind, probs
+    return kind, probs, recorded
 
 
-def verify_item(item, now=None):
+def verify_item(item, now=None, db=None):
     """件 → {"ok": bool, "problems": [...], "receipts": [{path, kind, ok, problems}]}。"""
     probs, out = [], []
     head = item.get("head") or ""
@@ -241,9 +288,12 @@ def verify_item(item, now=None):
     if not ev:
         probs.append("no receipt attached (--evidence)")
     good_kinds = []
+    needs = item.get("needs") or []
     for p in ev:
-        kind, rp = check_receipt(p, head, now)
-        out.append({"path": p, "kind": kind, "ok": not rp, "problems": rp})
+        kind, rp, recorded = check_receipt(p, head, now, db)
+        if "recorded" in needs and not recorded and not rp:
+            rp = ["needs recorded: this receipt was not written by aib ledger record"]
+        out.append({"path": p, "kind": kind, "ok": not rp, "problems": rp, "recorded": recorded})
         if rp:
             probs.extend("%s: %s" % (Path(p).name, x) for x in rp)
         else:
@@ -384,7 +434,7 @@ def op_move(db, a, by, event_id):
                 item["evidence"].append(p)
         verdict = None
         if a.to == "accepted":
-            verdict = verify_item(item)
+            verdict = verify_item(item, db=db)
             if not verdict["ok"]:
                 raise Refused(RC_RECEIPT, "receipts do not prove %s at %s; not accepted" % (a.id, item["head"] or "-"),
                               verdict)
@@ -439,6 +489,79 @@ def print_item(it, hist=None):
                                                     h["event_id"]))
 
 
+def count_passed(text, rc, regex=None):
+    """輸出 → (passed, total)。認不出 ⇒ (None, None)(verify 會擋)。"""
+    if regex:
+        ms = list(re.finditer(regex, text, re.M))
+        if not ms:
+            return None, None
+        g = ms[-1].groupdict()
+        p = g.get("passed")
+        t = g.get("total")
+        return (int(p) if p is not None else None), (int(t) if t is not None else None)
+    ran = list(re.finditer(r"^Ran (\d+) tests? in ", text, re.M))
+    if ran:
+        total = int(ran[-1].group(1))
+        tail = text[ran[-1].end():]
+        bad = sum(int(x) for x in re.findall(r"(?:failures|errors)=(\d+)", tail))
+        if re.search(r"^OK\b", tail, re.M) or re.search(r"^FAILED\b", tail, re.M):
+            return total - bad, total
+        return None, total
+    ms = list(re.finditer(r"(\d+)\s*/\s*(\d+)", text))
+    if ms:
+        return int(ms[-1].group(1)), int(ms[-1].group(2))
+    return None, None
+
+
+def git_out(tree, *args):
+    p = subprocess.run(["git", "-C", str(tree)] + list(args), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if p.returncode != 0:
+        raise Refused(RC_USAGE, "git %s in %s failed: %s" % (" ".join(args), tree, (p.stderr or "").strip()[-200:]))
+    return p.stdout
+
+
+def cmd_record(db, a):
+    cmd = list(a.command)
+    if cmd[:1] == ["--"]:
+        cmd = cmd[1:]
+    if not cmd:
+        raise Refused(RC_USAGE, "usage: aib ledger record [--kind K] [--tree DIR] -- <command …>")
+    tree = Path(a.tree).expanduser().resolve()
+    sha = git_out(tree, "rev-parse", "HEAD").strip().lower()
+    if git_out(tree, "status", "--porcelain", "--untracked-files=no").strip():
+        raise Refused(RC_RULE, "%s has uncommitted changes; a receipt would not prove %s — commit first" % (tree, sha[:12]))
+    out_dir = Path(a.out).expanduser().resolve() if a.out else db_path().parent / "receipts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    raw = out_dir / ("%s-%s-%s.log" % (sha[:12], a.kind, stamp))
+    rec_path = out_dir / ("%s-%s-%s.json" % (sha[:12], a.kind, stamp))
+    started = now_iso()
+    with open(str(raw), "wb") as f:
+        try:
+            p = subprocess.Popen(cmd, cwd=str(tree), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL)
+        except OSError as e:
+            raise Refused(RC_USAGE, "cannot run %s: %s" % (cmd[0], e))
+        for chunk in iter(lambda: p.stdout.read(65536), b""):
+            f.write(chunk)
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.flush()
+        rc = p.wait()
+    ended = now_iso()
+    text = raw.read_text(encoding="utf-8", errors="replace")
+    passed, total = count_passed(text, rc, a.count)
+    rec = {"schema": RECEIPT_SCHEMA, "producer": RECORD_PRODUCER, "kind": a.kind, "sha": sha, "tree": str(tree),
+           "dirty": False, "cmd": shlex.join(cmd) if hasattr(shlex, "join") else " ".join(shlex.quote(c) for c in cmd),
+           "host": socket.gethostname(), "started_at": started, "ended_at": ended, "rc": rc, "passed": passed,
+           "total": total, "output": str(raw), "output_sha256": file_sha256(raw)}
+    rec_path.write_text(json.dumps(rec, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    tx(db, lambda: db.execute("INSERT INTO receipts(path, receipt_sha256, output_sha256, sha, kind, rc, recorded_at)"
+                              " VALUES (?,?,?,?,?,?,?)", (str(rec_path), file_sha256(rec_path), rec["output_sha256"],
+                                                          sha, a.kind, rc, ended)))
+    print("RECEIPT %s (rc %d, passed %s/%s, sha %s)" % (rec_path, rc, passed, total, sha[:12]))
+    return rc
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="aib ledger", description="Cabin work ledger: one row per piece of work, "
                                 "every state change in a transaction, acceptance only with receipts bound to the head. "
@@ -469,7 +592,7 @@ def build_parser():
     ad.add_argument("--owner", required=True)
     ad.add_argument("--title", required=True)
     ad.add_argument("--next")
-    ad.add_argument("--needs", action="append", choices=("chrome",))
+    ad.add_argument("--needs", action="append", choices=NEEDS)
     mut(ad)
 
     mv = sub.add_parser("move", help="change state (compare-and-set on --from)")
@@ -490,6 +613,13 @@ def build_parser():
     ls.add_argument("--batch")
     ls.add_argument("--owner")
     ls.add_argument("--json", action="store_true")
+    rc_ = sub.add_parser("record", help="run a command and write its receipt yourself: rc, times, host, raw output, "
+                         "sha256 and the passed count come from the wrapper, not from the person who ran it")
+    rc_.add_argument("--kind", default="positive", choices=RECEIPT_KINDS)
+    rc_.add_argument("--tree", default=".", help="git tree the command tests (its HEAD is the receipt's sha)")
+    rc_.add_argument("--out", help="folder for the receipt and raw output (default: next to the ledger)")
+    rc_.add_argument("--count", help="regex with named groups passed (and total); the last match counts")
+    rc_.add_argument("command", nargs=argparse.REMAINDER)
     vf = sub.add_parser("verify", help="check the item's receipts against its head (writes nothing)")
     vf.add_argument("id")
     vf.add_argument("--json", action="store_true")
@@ -524,6 +654,8 @@ def main(argv=None):
                 if not rows:
                     print("no roles set")
             return RC_OK
+        if a.cmd == "record":
+            return cmd_record(db, a)
         if a.cmd in ("show", "verify"):
             it = get_item(db, a.id)
             if it is None:
@@ -536,7 +668,7 @@ def main(argv=None):
                 else:
                     print_item(it, hist)
                 return RC_OK
-            v = verify_item(it)
+            v = verify_item(it, db=db)
             v["id"], v["head"] = it["id"], it["head"]
             if a.json:
                 print(json.dumps(v, ensure_ascii=False, sort_keys=True))

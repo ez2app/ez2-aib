@@ -72,6 +72,55 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "    if len(held & set(ROLES)) > 1:\n",
       "new": "    if False:\n"
+    },
+    {
+      "name": "record-registry-skip",
+      "proves": "a hand-written receipt cannot pass as one aib ledger record wrote",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if recorded:\n        rp = check_recorded(db, path, r)",
+      "new": "    if False:\n        rp = check_recorded(db, path, r)"
+    },
+    {
+      "name": "record-receipt-edit-ok",
+      "proves": "a recorded receipt edited afterwards is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if file_sha256(path) != row[\"receipt_sha256\"]:",
+      "new": "    if False:"
+    },
+    {
+      "name": "record-output-edit-ok",
+      "proves": "a recorded raw output edited afterwards is refused",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if file_sha256(out) != row[\"output_sha256\"]:",
+      "new": "        if False:"
+    },
+    {
+      "name": "needs-recorded-off",
+      "proves": "--needs recorded refuses hand-written receipts",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if \"recorded\" in needs and not recorded and not rp:",
+      "new": "        if False:"
+    },
+    {
+      "name": "record-dirty-ok",
+      "proves": "record refuses a tree with uncommitted changes",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if git_out(tree, \"status\", \"--porcelain\", \"--untracked-files=no\").strip():",
+      "new": "    if False:"
+    },
+    {
+      "name": "record-rc-zero",
+      "proves": "the receipt keeps the command's real rc",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "\"started_at\": started, \"ended_at\": ended, \"rc\": rc,",
+      "new": "\"started_at\": started, \"ended_at\": ended, \"rc\": 0,"
+    },
+    {
+      "name": "record-count-all",
+      "proves": "failures are not counted as passed",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            return total - bad, total",
+      "new": "            return total, total"
     }
   ]
 }
