@@ -716,3 +716,45 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
         "{kinds:?}"
     );
 }
+
+fn half_started(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Err(aibd::platform::session::SpawnFail {
+        tag: "not_reaped".into(),
+        left_running: Some(424_242),
+    })
+}
+
+/// 043dd #539 M2: a start that failed but may have left a process keeps its
+/// slot and says so (422 with the pid, a `session.spawn_failed` event).
+#[test]
+fn a_start_that_may_have_left_a_process_keeps_its_slot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        half_started,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let req = aibd::sessions::Request {
+        argv: vec!["/bin/true".into()],
+        cwd: None,
+        env: vec![],
+    };
+    let e = s.start(req.clone()).unwrap_err();
+    assert_eq!(e.0, aib_core::ErrorCode::SpawnFailed);
+    assert!(e.1.contains("pid 424242"), "{}", e.1);
+    assert_eq!(s.slots_in_use(), 1);
+    assert_eq!(
+        s.start(req).unwrap_err().0,
+        aib_core::ErrorCode::TooManySessions
+    );
+    let evs = store.events_after(0, 10).unwrap();
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert_eq!(evs[0].event_type, "session.spawn_failed");
+    assert_eq!(evs[0].payload["left_running"], 424_242);
+}

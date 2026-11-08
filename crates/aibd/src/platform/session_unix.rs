@@ -66,35 +66,24 @@ impl Running for UnixRunning {
     }
 }
 
-/// The child's environment: aibd's own minus every `AIBD_*` key, plus the
-/// request's `env`; `tree.rs` sets `AIBD_SESSION` last.
+/// The child's environment is `session::child_env` (aibd's own minus every
+/// `AIBD_*`, the request's `env`, `AIBD_SESSION` last), from an empty one.
 pub fn spawn(spec: &Spec, lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Running>, SpawnFail> {
     let (program, args) = match spec.argv.split_first() {
         Some((p, a)) => (p.into(), a.iter().map(OsString::from).collect()),
         None => {
             return Err(SpawnFail {
                 tag: "empty_argv".into(),
+                left_running: None,
             })
         }
     };
-    let env_remove = std::env::vars_os()
-        .map(|(k, _)| k)
-        .filter(|k| {
-            k.to_string_lossy()
-                .to_ascii_uppercase()
-                .starts_with("AIBD_")
-        })
-        .collect();
     let s = SpawnSpec {
         program,
         args,
         cwd: Some(spec.cwd.clone()),
-        env: spec
-            .env
-            .iter()
-            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
-            .collect(),
-        env_remove,
+        env: super::session::child_env(spec, std::env::vars_os()),
+        env_clear: true,
         session_id: spec.id.clone(),
         watch_forks: true,
         discard_output: true,

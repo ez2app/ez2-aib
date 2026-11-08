@@ -246,6 +246,9 @@ struct Inner {
     ended: VecDeque<(u64, Session)>,
     /// Slots taken by POSTs that are spawning right now (H3).
     reserved: usize,
+    /// Starts that failed but may have left a process nobody controls
+    /// (`SpawnFail::left_running`): their slots stay taken (H2, 043dd #539).
+    held_unknown: usize,
     shutting: bool,
     next_order: u64,
 }
@@ -310,7 +313,7 @@ impl Sessions {
     /// Running slots in use (live + reserved), for tests and metrics.
     pub fn slots_in_use(&self) -> usize {
         let g = lock(&self.inner);
-        g.live.len() + g.reserved
+        g.live.len() + g.reserved + g.held_unknown
     }
 
     /// POST. Blocking (spawn, event store).
@@ -324,7 +327,7 @@ impl Sessions {
                     "aibd is shutting down",
                 ));
             }
-            if g.live.len() + g.reserved >= self.max {
+            if g.live.len() + g.reserved + g.held_unknown >= self.max {
                 return Err(ApiError::new(
                     ErrorCode::TooManySessions,
                     format!("{} sessions already running", self.max),
@@ -346,10 +349,29 @@ impl Sessions {
         let run = match res {
             Ok(r) => r,
             Err(f) => {
+                let Some(pid) = f.left_running else {
+                    return Err(ApiError::new(
+                        ErrorCode::SpawnFailed,
+                        format!("could not start: {}", f.tag),
+                    ));
+                };
+                // started but neither under control nor confirmed gone: the
+                // slot stays taken and the event says so (never "not started")
+                g.held_unknown += 1;
+                self.append(
+                    &id,
+                    1,
+                    "session.spawn_failed",
+                    serde_json::json!({"id": id, "tag": f.tag, "left_running": pid}),
+                );
+                tracing::warn!(session = %id, pid, tag = %f.tag, "start failed, a process may be left running");
                 return Err(ApiError::new(
                     ErrorCode::SpawnFailed,
-                    format!("could not start: {}", f.tag),
-                ))
+                    format!(
+                        "could not start: {} (a process may be left running: pid {pid})",
+                        f.tag
+                    ),
+                ));
             }
         };
         let order = g.next_order;
@@ -605,6 +627,10 @@ impl Sessions {
         };
         let seq = e.seq;
         e.seq += 1;
+        self.append(id, seq, kind, payload);
+    }
+
+    fn append(&self, id: &str, seq: i64, kind: &str, payload: serde_json::Value) {
         let ev = NewEvent {
             event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
             aggregate_type: "session".into(),

@@ -73,7 +73,7 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         args: vec![mode.into()],
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
-        env_remove: vec![],
+        env_clear: false,
         session_id: session.to_string(),
         watch_forks,
         discard_output: false, // these tests read the fixture's stdout

@@ -46,8 +46,9 @@ pub struct SpawnSpec {
     /// Extra environment. The caller decides what is inherited; aibd adds
     /// only `AIBD_SESSION`.
     pub env: Vec<(OsString, OsString)>,
-    /// Inherited variables to drop before `env` is applied (sessions: `AIBD_*`).
-    pub env_remove: Vec<OsString>,
+    /// Start from an empty environment: `env` is then the whole of it
+    /// (sessions: `session::child_env`, one rule for every platform).
+    pub env_clear: bool,
     pub session_id: String,
     /// Layer 2 on macOS: watch forks with kqueue (ADR 0004 update). Always
     /// true in aibd; tests turn it off to check the other layers alone.
@@ -242,6 +243,19 @@ fn refresh(sys: &mut System, with_env: bool) {
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
 }
 
+/// [`running`] from a fresh read of `pid` alone.
+fn running_now(pid: u32, start: u64) -> bool {
+    let Ok(mut one) = new_system() else {
+        return false; // cannot check: do not send
+    };
+    one.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    running(&one, pid, start)
+}
+
 fn running(sys: &System, pid: u32, start: u64) -> bool {
     match sys.process(Pid::from_u32(pid)) {
         Some(p) => {
@@ -285,8 +299,18 @@ impl RootExit {
     }
 }
 
+/// Where a signal goes: the root's group, or one recorded `(pid, start)`.
+#[derive(Clone, Copy)]
+enum To {
+    Group,
+    Pid(u32, u64),
+}
+
 pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     let mut c = Command::new(&spec.program);
+    if spec.env_clear {
+        c.env_clear();
+    }
     c.args(&spec.args)
         .env(SESSION_ENV, &spec.session_id)
         .stdin(Stdio::null());
@@ -294,9 +318,6 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         c.stdout(Stdio::null()).stderr(Stdio::null());
     } else {
         c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    }
-    for k in &spec.env_remove {
-        c.env_remove(k);
     }
     for (k, v) in &spec.env {
         c.env(k, v);
@@ -345,9 +366,7 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
                 Err(e) => {
                     // 043dd #510 M2: do not leave the CLI running with nobody
                     // holding it; only while the group is provably ours
-                    if h.group_is_ours(&sys, &[]) {
-                        imp::signal_group(root, imp::Sig::Kill);
-                    }
+                    h.signal_checked(&sys, &[], To::Group, imp::Sig::Kill);
                     return Err(e);
                 }
             }
@@ -498,6 +517,38 @@ impl TreeHandle {
         if let Some(u) = self.lineage.as_ref().and_then(|l| l.unique_of(pid)) {
             self.uniques.entry(pid).or_insert(u);
         }
+    }
+
+    /// The one place this handle sends a signal (a63ab 11-09: every path
+    /// goes through the same identity check, right before the send). A group
+    /// signal only while the group number is provably ours
+    /// ([`Self::group_is_ours`]); a single pid only while it still runs with
+    /// its recorded start time and unique id. Returns whether it was sent.
+    fn signal_checked(
+        &mut self,
+        sys: &System,
+        alive: &[(u32, u64)],
+        to: To,
+        sig: imp::Sig,
+    ) -> bool {
+        match to {
+            To::Group => {
+                if !self.group_is_ours(sys, alive) {
+                    return false;
+                }
+                imp::signal_group(self.root, sig);
+            }
+            To::Pid(pid, start) => {
+                // read this one pid again now, not from the pass's snapshot
+                // (`alive` came from it already): the gap to the send is
+                // this read, not the whole pass
+                if !(running_now(pid, start) && self.unique_ok(pid)) {
+                    return false;
+                }
+                imp::signal_pid(pid, sig);
+            }
+        }
+        true
     }
 
     /// May `killpg(root)` be sent? Only while the group number is provably
@@ -698,8 +749,7 @@ impl TreeHandle {
         if !alive.is_empty() {
             let mut sys = new_system()?;
             refresh(&mut sys, false);
-            if self.group_is_ours(&sys, &alive) {
-                imp::signal_group(self.root, imp::Sig::Interrupt);
+            if self.signal_checked(&sys, &alive, To::Group, imp::Sig::Interrupt) {
                 steps.push(Step {
                     signal: "SIGINT(group)",
                     targets: vec![self.root],
@@ -725,18 +775,15 @@ impl TreeHandle {
             }
             let mut sys = new_system()?;
             refresh(&mut sys, false);
-            if self.group_is_ours(&sys, &alive) {
-                imp::signal_group(self.root, sig);
+            if self.signal_checked(&sys, &alive, To::Group, sig) {
                 steps.push(Step {
                     signal: sig.group_name(),
                     targets: vec![self.root],
                 });
             }
             let mut targets = Vec::new();
-            for (pid, start) in alive {
-                // re-check the identity right before signalling
-                if running(&sys, pid, start) && self.unique_ok(pid) {
-                    imp::signal_pid(pid, sig);
+            for &(pid, start) in &alive {
+                if self.signal_checked(&sys, &alive, To::Pid(pid, start), sig) {
                     targets.push(pid);
                 }
             }
