@@ -139,7 +139,7 @@ class TipGate(unittest.TestCase):
         for job in ("smoke", "fresh-machine"):
             with self.subTest(job=job):
                 t = job_text("ci.yml", job)
-                self.assertRegex(t, r"(?m)^    needs: tip$")
+                self.assertRegex(t, r"(?m)^    needs: \[tip, docs\]$")   # 11-08 PROPOSAL-19 起多 needs docs
                 runs_on = re.search(r"(?m)^    runs-on: (.*)$", t).group(1)
                 run_cell = re.search(r"(?m)^      RUN_CELL: (.*)$", t).group(1)
                 for expr in (runs_on, run_cell):
