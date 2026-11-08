@@ -12,4 +12,20 @@
 //! The Python PoC (`aib/tools/cloud-host/robot.py`, #528) is the acceptance
 //! baseline: every rule it tests (R1–R10) has a matching test in [`robot`].
 
+//! A [`robot::Plan`] cannot be forged or edited from outside (#532 M1); both
+//! of these fail to compile:
+//!
+//! ```compile_fail
+//! use aib_cloud::robot::{Action, Mutation, Plan, ServerNumber};
+//! let _forged = Plan { action: Action::Rescue, server: ServerNumber::parse("1").unwrap(),
+//!     fingerprints: vec![], method: "POST", path: "/x".into(), form: vec![],
+//!     mutation: Mutation::ReadOnly, recovery: "" };
+//! ```
+//!
+//! ```compile_fail
+//! use aib_cloud::robot::{Plan, ResetType, ServerNumber};
+//! let mut p = Plan::reset(ServerNumber::parse("1234567").unwrap(), ResetType::Hw);
+//! p.path = "/reset/7654321".to_owned();
+//! ```
+
 pub mod robot;
