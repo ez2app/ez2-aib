@@ -71,6 +71,61 @@ class Units(unittest.TestCase):
         self.assertIn("daemon (libsqlite3-sys)", w["scope"])
         self.assertIn(["-p", "core"], [c[2:4] for c in f.calls if c[:2] == ["cargo", "clippy"]])
 
+    def test_members_that_build_c_get_a_fakecc_windows_clippy_that_only_claims_check(self):
+        envs = []
+
+        class Rec(Fake):
+            def __call__(self, cmd, cwd, env=None, timeout=0):
+                envs.append((cmd, env))
+                return Fake.__call__(self, cmd, cwd, env, timeout)
+
+        f = Rec(rust_ok())
+        w = by_name(prepr.rust_items(str(ROOT), False, f))["rust clippy (x86_64-pc-windows-msvc, fakecc)"]
+        self.assertEqual(w["status"], "pass")
+        self.assertIn("only daemon, store", w["scope"])
+        self.assertIn("tests still need CI Windows", w["scope"])
+        cmd, env = [e for e in envs if e[0][:2] == ["cargo", "clippy"] and "daemon" in e[0]][0]
+        self.assertEqual(env["CC_x86_64_pc_windows_msvc"], str(ROOT / "scripts" / "dev" / "fakecc-msvc.sh"))
+        self.assertEqual(env["AR_x86_64_pc_windows_msvc"], env["CC_x86_64_pc_windows_msvc"])
+        self.assertTrue(env["CARGO_TARGET_DIR"].endswith("target-wincheck.noindex"))
+        self.assertNotIn("core", cmd)
+        f = Fake(rust_ok({("cargo", "clippy", "-p", "daemon"): (101, "error[E0063]: missing field")}))
+        w = by_name(prepr.rust_items(str(ROOT), False, f))["rust clippy (x86_64-pc-windows-msvc, fakecc)"]
+        self.assertEqual((w["status"], w["rc"]), ("fail", 101))
+        with tempfile.TemporaryDirectory() as d:
+            w = by_name(prepr.rust_items(d, False, Fake(rust_ok())))["rust clippy (x86_64-pc-windows-msvc, fakecc)"]
+            self.assertEqual(w["status"], "not_run")
+            self.assertIn("fakecc-msvc.sh missing", w["reason"])
+
+    def test_wincheck_without_the_target_says_not_verified_never_green(self):
+        sh = str(ROOT / "scripts" / "dev" / "wincheck.sh")
+        with tempfile.TemporaryDirectory() as d:
+            for tool, body in (("cargo", "exit 0"), ("rustup", "echo aarch64-apple-darwin")):
+                Path(d, tool).write_text("#!/bin/sh\n%s\n" % body)
+                Path(d, tool).chmod(0o755)
+            env = dict(os.environ, PATH=d + os.pathsep + "/usr/bin:/bin")
+            r = subprocess.run(["/bin/sh", sh], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("沒驗", r.stderr)
+            self.assertIn("rustup target add x86_64-pc-windows-msvc", r.stderr)
+            self.assertNotIn("綠", r.stdout + r.stderr)
+            # cargo answering rc 0 must not be reported green when the target is present but clippy fails
+            Path(d, "rustup").write_text("#!/bin/sh\necho x86_64-pc-windows-msvc\n")
+            Path(d, "cargo").write_text("#!/bin/sh\nexit 101\n")
+            r = subprocess.run(["/bin/sh", sh], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertNotIn("綠", r.stdout + r.stderr)
+
+    def test_wincheck_changed_skips_when_no_windows_code_changed(self):
+        sh = str(ROOT / "scripts" / "dev" / "wincheck.sh")
+        r = subprocess.run(["/bin/sh", sh, "--changed", "HEAD"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("skip", r.stdout)
+        r = subprocess.run(["/bin/sh", sh, "--changed", "no-such-ref-043dd"], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("沒驗", r.stderr)
+
     def test_a_missing_tool_or_target_is_not_run_and_nothing_is_installed(self):
         f = Fake({("cargo", "--version"): (None, "not found: cargo")})
         items = prepr.rust_items("/r", True, f)

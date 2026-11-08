@@ -26,3 +26,18 @@ origins, default none), `AIBD_LOG` (tracing filter, default `info`).
 
 Exit codes: 0 stopped cleanly, 2 bad config (e.g. `0.0.0.0`), 3 another aibd holds the
 data directory, 1 other start failure.
+
+## Windows clippy on a Mac (check only)
+
+`aibd` and `aib-store` pull bundled SQLite, whose build script needs a C compiler for the MSVC target.
+`scripts/dev/fakecc-msvc.sh` is a fake one (writes empty outputs, compiles nothing), enough for check / clippy:
+
+```
+rustup target add x86_64-pc-windows-msvc        # once
+scripts/dev/wincheck.sh                          # clippy -p aibd --target x86_64-pc-windows-msvc, -D warnings
+scripts/dev/wincheck.sh --changed origin/main    # only when Windows code changed; prints "skip" otherwise
+```
+
+`aib prepr` runs the same for the members that build C (item `rust clippy (x86_64-pc-windows-msvc, fakecc)`).
+Target dir `target-wincheck.noindex/`. Exit 0 green or skipped, 1 red, 2 not verified (target missing).
+It is a type check only: say "Windows clippy (fakecc) green; tests still need CI", never "Windows green".
