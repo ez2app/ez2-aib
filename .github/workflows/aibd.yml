@@ -119,3 +119,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: ./scripts/check-win-job-knives.sh
+      - name: aib-sys session knives (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # preview.2 sessions: killing a session must take the whole tree. Two
+        # knives, each must turn killing_a_session_takes_the_whole_tree red:
+        # no terminate at all, and "only the root is killed" (ping survives).
+        # No -q: this knife.py reads "test x ... FAILED" lines.
+        run: |
+          set -eu
+          k() { python3 -I scripts/knife.py crates/aib-sys/src/session.rs "$1" "$2" \
+                  --expect-fail killing_a_session_takes_the_whole_tree \
+                  -- cargo test -p aib-sys --locked --test session_win; }
+          k '        self.job.terminate(1)?;' '        let _ = 1; // knife: no terminate'
+          k '        self.job.terminate(1)?;' '        let _ = self.child.kill(); // knife: root only'
