@@ -5014,6 +5014,7 @@
   "aib.secret.why.too_long": "太長了",
   "aib.secret.why.newline": "裡面有換行",
   "aib.secret.why.bad_prefix": "應該是 {prefix} 開頭",
+  "aib.secret.why.bad_shape": "格式應該是 {shape}",
   "aib.secret.touchid_reason": "aib:把金鑰 {name} 存到 {dest}",
   "aib.secret.dest_local": "這台 Mac 的金鑰櫃",
   "aib.secret.btn_ok": "儲存",

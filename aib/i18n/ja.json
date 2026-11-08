@@ -5014,6 +5014,7 @@
   "aib.secret.why.too_long": "長すぎます",
   "aib.secret.why.newline": "改行が含まれています",
   "aib.secret.why.bad_prefix": "{prefix} で始まるはずです",
+  "aib.secret.why.bad_shape": "{shape} の形式のはずです",
   "aib.secret.touchid_reason": "aib:キー {name} を {dest} に保存",
   "aib.secret.dest_local": "この Mac のキー保管庫",
   "aib.secret.btn_ok": "保存",

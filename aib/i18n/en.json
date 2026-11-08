@@ -5014,6 +5014,7 @@
   "aib.secret.why.too_long": "it is too long",
   "aib.secret.why.newline": "it contains a line break",
   "aib.secret.why.bad_prefix": "it should start with {prefix}",
+  "aib.secret.why.bad_shape": "it should look like {shape}",
   "aib.secret.touchid_reason": "aib: save the key {name} to {dest}",
   "aib.secret.dest_local": "this Mac's key store",
   "aib.secret.btn_ok": "Save",
