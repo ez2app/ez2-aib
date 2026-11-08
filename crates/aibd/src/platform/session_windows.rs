@@ -45,7 +45,7 @@ pub fn spawn_fail(e: &SpawnError) -> SpawnFail {
         _ => None,
     };
     let tag = match e {
-        SpawnError::NoProgram => "no_program".to_owned(),
+        SpawnError::NoProgram => "empty_argv".to_owned(), // same tag as POSIX
         SpawnError::Job(err) => format!("{JOB_ERROR_PREFIX}{}", err.tag()),
         SpawnError::Spawn(err) => match err {
             SysError::Os(2) | SysError::Os(3) => "enoent".to_owned(), // FILE / PATH_NOT_FOUND
@@ -229,7 +229,7 @@ mod tests {
             spawn_fail(&SpawnError::Spawn(SysError::PermissionDenied)).tag,
             "eacces"
         );
-        assert_eq!(spawn_fail(&SpawnError::NoProgram).tag, "no_program");
+        assert_eq!(spawn_fail(&SpawnError::NoProgram).tag, "empty_argv");
         assert_eq!(
             spawn_fail(&SpawnError::Job(SysError::Unknown)).tag,
             "job_error:unknown"
