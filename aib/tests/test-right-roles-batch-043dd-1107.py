@@ -35,6 +35,39 @@ ROOT = Path(__file__).resolve().parents[1]
 THIS = Path(__file__).name
 SCRIPT = ROOT / "src" / "cockpit" / "pane-right-ai.sh"
 OLD_REF = "6e07e50d31590f33c003f1f78333849b2f31f129:aib/src/cockpit/pane-right-ai.sh"   # #482 之前(右欄每輪 tmux 1+N)
+
+
+def read_old_blob(root, ref):
+    """讀 git show <ref>。回 (內容, None) 或 (None, 略過理由);其他情況丟 AssertionError 帶 stderr。
+    只有兩種能略過:這棵樹確實不是 git 樹(刀測複本)、或確實是淺層 clone 且缺那個 commit。
+    git 逾時 / 指令出錯 / 判斷不出來 ⇒ 一律紅(bb7dc #502 讀碼兩輪)。"""
+    def git(*a):
+        try:
+            return subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return None
+        except subprocess.TimeoutExpired:
+            raise AssertionError("git %s 逾時 30 秒" % " ".join(a))
+    r = git("show", ref)
+    if r is None:
+        return None, "沒有 git 執行檔"
+    if r.returncode == 0:
+        return r.stdout, None
+    sha = ref.split(":")[0]
+    ins = git("rev-parse", "--is-inside-work-tree")
+    if ins.returncode != 0:
+        if ins.returncode == 128 and "not a git repository" in ins.stderr:
+            return None, "不在 git 樹(刀測複本)"
+        raise AssertionError("判斷不出是不是 git 樹(rc=%s):%s;show:%s" % (ins.returncode, ins.stderr.strip(), r.stderr.strip()))
+    if ins.stdout.strip() != "true":
+        raise AssertionError("不在工作樹內(%r):%s" % (ins.stdout.strip(), r.stderr.strip()))
+    sh = git("rev-parse", "--is-shallow-repository")
+    if sh.returncode != 0 or sh.stdout.strip() not in ("true", "false"):
+        raise AssertionError("判斷不出是不是淺層(rc=%s):%s;show:%s" % (sh.returncode, sh.stderr.strip(), r.stderr.strip()))
+    have = git("cat-file", "-e", sha + "^{commit}")
+    if sh.stdout.strip() == "true" and have.returncode != 0:
+        return None, "淺層 clone 缺 %s" % sha[:8]
+    raise AssertionError("讀不到舊版 %s(shallow=%s have=%s):%s" % (ref, sh.stdout.strip(), have.returncode == 0, r.stderr.strip()))
 TMUX = shutil.which("tmux")
 BASH = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
 SGR = re.compile(r"\x1b\[[0-9;]*m")
@@ -249,26 +282,17 @@ class Loop(Base):
     def old_script(self):
         # 比對用的「舊版」釘在 #482 之前的固定 commit。以前讀 origin/main:#482 合進去後 origin/main 就是新版自己,
         # push 到 main 的 CI(checkout 會建 origin/main)每輪 2 != 7 紅;PR CI 淺層沒有 origin/main 才跳過看似綠。
-        # 淺層 clone 缺這個 commit ⇒ 回 None(只驗呼叫數);其他讀不到一律紅。
-        r = subprocess.run(["git", "-C", str(ROOT), "show", OLD_REF], capture_output=True, text=True)
-        if r.returncode != 0:
-            # 只有「確實是淺層 clone、而且真的缺這個 commit」才跳過;其他 git 失敗一律紅(bb7dc #502 讀碼)
-            sha = OLD_REF.split(":")[0]
-            inside = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
-                                    capture_output=True, text=True).stdout.strip() == "true"
-            shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
-                                     capture_output=True, text=True).stdout.strip() == "true"
-            have = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", sha + "^{commit}"],
-                                  capture_output=True).returncode == 0
-            if not inside or (shallow and not have):   # 刀複本沒有 .git / 淺層缺 commit
-                return None
-            raise AssertionError("讀不到舊版 %s(inside=%s shallow=%s have=%s):%s" % (OLD_REF, inside, shallow, have, r.stderr.strip()))
-        if "show-options -wqv" not in r.stdout:
+        # 非 git 複本 / 淺層缺這個 commit ⇒ 這支 skipTest 寫明「舊版比對沒跑」(1ced7 #501:不准靜默 return 看似綠);
+        # 其他讀不到一律紅。呼叫數另在 test_r7 / test_r8 驗，不靠舊版。
+        old, why = read_old_blob(ROOT, OLD_REF)
+        if old is None:
+            self.skipTest("沒有 %s(%s),舊版畫面比對沒跑" % (OLD_REF.split(":")[0][:8], why))
+        if "show-options -wqv" not in old:
             raise AssertionError("OLD_REF 的舊版格式不對")
-        if r.stdout == SCRIPT.read_text(encoding="utf-8"):
+        if old == SCRIPT.read_text(encoding="utf-8"):
             raise AssertionError("舊版比對對象跟現行腳本一樣:OLD_REF 釘錯了")
         p = self.d / "old-pane-right-ai.sh"
-        p.write_text(r.stdout, encoding="utf-8")
+        p.write_text(old, encoding="utf-8")
         return p
 
     def test_r7_calls_and_same_screen(self):
@@ -279,9 +303,13 @@ class Loop(Base):
         hub = [c for c in calls if c.startswith("-L aihub-zz")]
         self.assertEqual(len(hub), 2, "\n".join(hub))
         self.assertEqual(sum(1 for c in hub if "show-options" in c), 1)
-        old = self.old_script()
-        if old is None:
-            return  # 刀複本沒有 .git:只驗呼叫數
+
+    def test_r7b_old_version_same_screen(self):
+        self.set_role(self.ids[0], "dev")
+        self.set_role(self.ids[3], "sys.menu")
+        old = self.old_script()   # 抓不到 ⇒ skipTest 寫明
+        r, _ = self.run_once(SCRIPT)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
         r0, calls0 = self.run_once(old)
         self.assertEqual(len([c for c in calls0 if c.startswith("-L aihub-zz")]), 7)
         self.assertEqual(SGR.sub("", r.stdout), SGR.sub("", r0.stdout))
@@ -291,10 +319,14 @@ class Loop(Base):
         r, _ = self.run_once(SCRIPT)
         rej = sorted(re.findall(r"window (@\d+) role rejected", r.stderr))
         self.assertEqual(rej, [self.ids[2]])
-        old = self.old_script()
-        if old is not None:
-            r0, _ = self.run_once(old)
-            self.assertEqual(sorted(re.findall(r"window (@\d+) role rejected", r0.stderr)), rej)
+
+    def test_r8b_old_version_same_rejects(self):
+        self.set_role(self.ids[2], "dev\n@9|qa")
+        old = self.old_script()   # 抓不到 ⇒ skipTest 寫明
+        r, _ = self.run_once(SCRIPT)
+        rej = sorted(re.findall(r"window (@\d+) role rejected", r.stderr))
+        r0, _ = self.run_once(old)
+        self.assertEqual(sorted(re.findall(r"window (@\d+) role rejected", r0.stderr)), rej)
 
 
 KNIVES = [
