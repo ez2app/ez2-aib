@@ -73,7 +73,11 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         args: vec![mode.into()],
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
-        session_id: session.to_string(),
+        // the marker sweep matches `AIBD_SESSION=<id>` across every same-user
+        // process: a fixed id let another test run on this machine (a full
+        // suite next to a single test, or parallel copies) find and stop this
+        // run's fixture before its first line (a63ab 11-09 "JSON EOF")
+        session_id: format!("{session}-{}", std::process::id()),
         watch_forks,
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
