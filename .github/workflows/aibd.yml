@@ -138,8 +138,8 @@ jobs:
           # "not started" only once the root is gone AND the Job is empty
           k2() { python3 -I scripts/knife.py crates/aib-sys/src/session.rs "$1" "$2" \
                    --expect-fail "$3" -- cargo test -p aib-sys --locked --lib session::; }
-          k2 '                        term: Some(&mut term),' \
-            '                        term: Some(&mut |_: &Job| Ok::<(), SysError>(())), // knife: no kill' \
+          k2 '                let mut term = terminate;' \
+            '                let mut term = |_: &Job| Ok::<(), SysError>(()); let _ = terminate; // knife: no kill' \
             a_failed_root_open_kills_and_confirms_the_whole_tree
           k2 '                    Ok(k) if k.all_gone() => e,' '                    Ok(_) => e, // knife: trust any report' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
