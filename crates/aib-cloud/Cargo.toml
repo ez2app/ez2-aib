@@ -1,0 +1,17 @@
+[package]
+name = "aib-cloud"
+description = "Ez2 Managed Cloud command surface: plan / apply / verify / recovery contracts for host operations (M-R1: pure planning logic, no I/O)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# M-R1 (ADR draft aib-cloud, 4542e 11-09): no network, no secrets, no process API.
+# serde_json is already a workspace dependency (aibd, aib-fixture-tree); it is only
+# used to mask API replies before anything prints them.
+[dependencies]
+serde_json = "1.0.154"
