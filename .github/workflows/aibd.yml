@@ -157,6 +157,9 @@ jobs:
           k '        SpawnError::Spawn(SysError::NotReaped { pid, .. }) => Some(*pid),' \
             '        SpawnError::Spawn(SysError::NotReaped { .. }) => None,' \
             a_spawn_not_confirmed_gone_keeps_its_pid
-          k '            Ok(true) => self.0.exit_code().ok().flatten().map(code),' \
-            '            Ok(true) => Some(self.0.exit_code().ok().flatten().map_or(Exit::Code(0), code)),' \
+          k '                _ => idle(timeout),' '                _ => Some(Exit::Code(0)), // knife: unreadable is an exit' \
             a_root_wait_or_exit_code_error_is_never_an_exit
+          k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    let _ = timeout.min(IDLE_MAX); // knife: no pause' \
+            an_unanswered_root_wait_pauses_before_none_and_is_bounded
+          k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    std::thread::sleep(timeout.max(IDLE_MAX)); // knife: unbounded' \
+            an_unanswered_root_wait_pauses_before_none_and_is_bounded
