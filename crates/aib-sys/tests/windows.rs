@@ -3,7 +3,10 @@
 //! Helper processes are this test binary run again with `helper --exact`
 //! and `AIB_SYS_HELPER=<mode>`; every other test then does nothing in them.
 #![cfg(windows)]
-#![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+// test code: a panic is the failure report; helpers park in sleep and tests
+// pace their polls (ADR 0005 covers aibd's loops, not test helpers; same as
+// aib-fixture-tree)
+#![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
 use aib_sys::job::{Job, Member, Process, WaitMode, BREAKAWAY_FLAGS, LIMIT_FLAGS};
 use aib_sys::SysError;

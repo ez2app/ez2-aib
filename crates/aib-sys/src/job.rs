@@ -622,7 +622,15 @@ impl Job {
                 return Ok(false);
             }
             match &self.port {
-                None => std::thread::sleep(left.min(POLL_STEP)),
+                None => {
+                    // WaitMode::Poll only: the completion port could not be
+                    // attached. aib-sys cannot use aibd::timers (aibd depends
+                    // on aib-sys), the wait is bounded by the caller's
+                    // timeout, and the report says "poll" (ADR 0005 exception,
+                    // same as platform/tree.rs).
+                    #[allow(clippy::disallowed_methods)]
+                    std::thread::sleep(left.min(POLL_STEP));
+                }
                 Some(port) => {
                     // an ACTIVE_PROCESS_ZERO or a timeout both end in the
                     // re-check at the top of the loop
