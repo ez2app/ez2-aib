@@ -2,7 +2,7 @@
 """`aib ledger`: one cabin work ledger — states move in transactions, roles do not overlap, acceptance needs receipts
 bound to the head (auto-advance v2 item B, 11-08).
 
-Guards (each has a knife in tests/knives/aib-ledger-knives.json):
+Guards (each has a knife in tests/knives/work-ledger.json):
   dispatching the same item twice is refused; accepted without a receipt is refused; a receipt for another SHA is
   refused; plus: stale --from, wrong role, red rc, missing raw output, chrome receipt for another head, event-id replay.
 Standard library only.
@@ -27,7 +27,7 @@ class AibLedger(unittest.TestCase):
     def setUp(self):
         self.td = Path(tempfile.mkdtemp(prefix="aib-ledger-"))
         self.env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.td), "EZ2_AIB_LOCALE": "en",
-                    "AIB_LEDGER_DB": str(self.td / "ledger.sqlite")}
+                    "AIB_LEDGER_DB": str(self.td / "ledger.sqlite"), "EZ2_AIB_STATE_ROOT": str(self.td / "state")}
         self.n = 0
 
     def tearDown(self):
@@ -42,15 +42,16 @@ class AibLedger(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r
 
-    def receipt(self, sha=HEAD, kind="positive", rc=0, passed=95, total=95, output=True, **extra):
+    def receipt(self, sha=HEAD, kind="positive", rc=0, passed=95, total=95, make_output=True, text=None, **extra):
         self.n += 1
         out = self.td / ("raw-%d.log" % self.n)
-        if output:
-            out.write_text("足跡預設回歸:%d/%d 綠\n" % (passed, total or passed), encoding="utf-8")
+        if make_output:
+            out.write_text(text if text is not None else "head %s\n足跡預設回歸:%d/%d 綠\n" % (sha[:9], passed, total or passed),
+                           encoding="utf-8")
         rec = {"schema": "aib-receipt/1", "kind": kind, "sha": sha, "cmd": "node tools/footprint-default-tests.js",
                "host": "andymini", "started_at": "2026-11-08T21:27:39+08:00", "ended_at": "2026-11-08T21:39:13+08:00",
                "rc": rc, "passed": passed, "total": total, "output": str(out)}
-        if output:
+        if make_output:
             rec["output_sha256"] = hashlib.sha256(out.read_bytes()).hexdigest()
         rec.update(extra)
         p = self.td / ("receipt-%d.json" % self.n)
@@ -203,10 +204,12 @@ class AibLedger(unittest.TestCase):
         self.to_review()
         cases = {"rc is 1": self.receipt(rc=1),
                  "passed 94 != total 95": self.receipt(passed=94, total=95),
-                 "raw output file missing": self.receipt(output=False),
+                 "raw output file missing": self.receipt(make_output=False),
                  "output_sha256 does not match": self.receipt(output_sha256="0" * 64),
                  "ended_at is before started_at": self.receipt(ended_at="2026-11-08T20:00:00+08:00"),
-                 "host missing": self.receipt(host="")}
+                 "host missing": self.receipt(host=""),
+                 "output_sha256 missing": self.receipt(output_sha256=""),
+                 "total missing": self.receipt(total=None)}
         for want, path in cases.items():
             r = self.accept(path)
             self.assertEqual(r.returncode, 5, want + ": " + r.stdout + r.stderr)
@@ -332,6 +335,123 @@ class AibLedger(unittest.TestCase):
         self.assertIsNone(path)
         self.assertIn("uncommitted changes", r.stderr)
         self.assertFalse((self.td / "rcpt").exists() and any((self.td / "rcpt").iterdir()))
+
+    # ---------- ebb36 review of #527 ----------
+    def test_h1_rework_with_a_new_head_can_still_be_accepted(self):
+        self.to_review()
+        self.ok("move", "B-ledger", "--from", "review", "--to", "running", "--by", "seat:f1fae",
+                "--evidence", self.receipt())
+        self.ok("move", "B-ledger", "--from", "running", "--to", "review", "--head", OTHER, "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-ledger", "--json").stdout)
+        self.assertEqual((it["head"], it["evidence"]), (OTHER, []))
+        self.assertEqual([x["head"] for x in it["superseded"]], [HEAD])
+        r = self.accept(self.receipt(sha=OTHER))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("superseded (old head", self.ok("show", "B-ledger").stdout)
+
+    def test_h2_owner_cannot_release_blocked_human(self):
+        self.to_review()
+        self.ok("move", "B-ledger", "--from", "review", "--to", "blocked-human", "--by", "seat:f1fae",
+                "--blocker", "waits for Andy")
+        for to in ("running", "queued"):
+            r = self.L("move", "B-ledger", "--from", "blocked-human", "--to", to, "--by", "seat:2240e")
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(self.state(), "blocked-human")
+        self.ok("move", "B-ledger", "--from", "blocked-human", "--to", "running", "--by", "seat:f1fae")
+
+    def test_h3_any_file_as_raw_output_is_refused(self):
+        self.to_review()
+        hosts = self.td / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+        h = hashlib.sha256(hosts.read_bytes()).hexdigest()
+        cases = {"raw output does not mention the head": self.receipt(make_output=False, output=str(hosts), output_sha256=h),
+                 "no result line matching 95/95": self.receipt(text="head %s\nall fine\n" % HEAD[:9]),
+                 "no result line matching 1/1": self.receipt(passed=1, total=1, text="head %s\n95/95\n" % HEAD[:9])}
+        for want, path in cases.items():
+            r = self.accept(path)
+            self.assertEqual(r.returncode, 5, want + ": " + r.stdout + r.stderr)
+            self.assertIn(want, r.stderr)
+        r = self.accept(self.receipt(text="head %s\nRan 7 tests in 0.1s\n\nOK\n" % HEAD[:9], passed=7, total=7))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_m1_owner_cannot_accept_own_work(self):
+        self.ok("role", "set", "dispatch", "f1fae", "--by", "seat:f1fae")
+        self.ok("add", "B-self", "--batch", "b114", "--owner", "f1fae", "--title", "own", "--by", "seat:f1fae")
+        self.ok("move", "B-self", "--from", "queued", "--to", "running", "--by", "seat:f1fae")
+        self.ok("move", "B-self", "--from", "running", "--to", "review", "--head", HEAD, "--by", "seat:f1fae")
+        r = self.accept(self.receipt(), item="B-self")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("cannot accept its own work", r.stderr)
+
+    def test_m2_dispatch_must_be_set_first(self):
+        r = self.L("role", "set", "integrate", "x9", "--by", "seat:x9")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("dispatch seat first", r.stderr)
+        self.assertIn("no roles set", self.ok("role", "list").stdout)
+
+    def test_m3_acceptance_keeps_receipt_hashes(self):
+        self.to_review()
+        rp = self.receipt()
+        self.ok("move", "B-ledger", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", rp)
+        hist = json.loads(self.ok("show", "B-ledger", "--json").stdout)["history"]
+        v = [h for h in hist if h["to_state"] == "accepted"][0]["verified"][0]
+        rec = json.loads(Path(rp).read_text(encoding="utf-8"))
+        self.assertEqual((v["receipt_sha256"], v["output_sha256"]),
+                         (hashlib.sha256(Path(rp).read_bytes()).hexdigest(), rec["output_sha256"]))
+
+    def test_m4_head_checked_against_git_and_commit_time(self):
+        d = self.td / "repo"
+        d.mkdir()
+        g = ["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        (d / "f").write_text("x\n", encoding="utf-8")
+        for c in (["init", "-q"], ["add", "f"], ["commit", "-q", "-m", "x"]):
+            subprocess.run(g + c, check=True, capture_output=True, env=self.env)
+        sha = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True,
+                             env=self.env).stdout.strip()
+        self.roles()
+        self.ok("add", "B-git", "--batch", "b114", "--owner", "2240e", "--title", "g", "--by", "seat:f1fae")
+        self.ok("move", "B-git", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        r = self.L("move", "B-git", "--from", "running", "--to", "review", "--head", OTHER, "--repo", str(d),
+                   "--by", "seat:2240e")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.ok("move", "B-git", "--from", "running", "--to", "review", "--head", sha[:9], "--repo", str(d),
+                "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-git", "--json").stdout)
+        self.assertEqual(it["head"], sha)
+        self.assertTrue(it["head_time"])
+        r = self.accept(self.receipt(sha=sha, started_at="2020-01-01T00:00:00+00:00"), item="B-git")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("started_at is before the head commit", r.stderr)
+
+    def test_l1_knife_receipt_alone_is_not_enough(self):
+        self.to_review()
+        r = self.accept(self.receipt(kind="knife", passed=8, total=8))
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("no passing positive or default receipt", r.stderr)
+
+    def test_l6_ledger_files_are_private(self):
+        # -wal / -shm 只在連線開著時存在(關乾淨會刪)⇒ 同一個行程裡開著看;SQLite 照主檔權限建它們
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("work_ledger_t", str(ROOT / "aib" / "tools" / "governance" /
+                                                                          "work_ledger.py"))
+        wl = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wl)
+        old = os.umask(0o022)
+        try:
+            f = self.td / "priv.sqlite"
+            a = wl.connect(f)
+            a.execute("INSERT INTO roles(role, seat, set_by, set_at) VALUES ('dispatch', 'x', 'x', 'x')")
+            b = wl.connect(f)
+            try:
+                for side in ("", "-wal", "-shm"):
+                    g = Path(str(f) + side)
+                    self.assertTrue(g.exists(), side)
+                    self.assertEqual(oct(g.stat().st_mode & 0o777), "0o600", side)
+            finally:
+                b.close()
+                a.close()
+        finally:
+            os.umask(old)
 
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)

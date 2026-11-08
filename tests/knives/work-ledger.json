@@ -28,8 +28,8 @@
       "name": "any-role-writes",
       "proves": "roles do not overlap",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "def _may_write(roles, by, target, owner, as_role=None):\n",
-      "new": "def _may_write(roles, by, target, owner, as_role=None):\n    return True\n"
+      "old": "    if not worn & set(WRITERS[a.to]):\n",
+      "new": "    if False:\n"
     },
     {
       "name": "red-rc-ok",
@@ -72,6 +72,90 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "    if len(held & set(ROLES)) > 1:\n",
       "new": "    if False:\n"
+    },
+    {
+      "name": "h1-keep-old-evidence",
+      "proves": "rework with a new head moves old receipts aside",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            item[\"evidence\"] = []\n",
+      "new": "            pass\n"
+    },
+    {
+      "name": "h2-owner-releases-human",
+      "proves": "only the dispatch seat releases blocked-human",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if a.from_state == \"blocked-human\" and \"dispatch\" not in worn:",
+      "new": "    if False:"
+    },
+    {
+      "name": "h3-sha256-optional",
+      "proves": "output_sha256 is required",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        elif not r.get(\"output_sha256\"):\n            probs.append(\"output_sha256 missing\")\n        else:",
+      "new": "        elif False:\n            probs.append(\"output_sha256 missing\")\n        else:"
+    },
+    {
+      "name": "h3-no-head-in-output",
+      "proves": "the raw output must mention the head",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "                if head and head[:7].lower() not in text.lower():",
+      "new": "                if False:"
+    },
+    {
+      "name": "h3-no-result-line",
+      "proves": "the raw output must have a result line matching passed/total",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "                if counts_ok and not result_line_ok(text, passed, total):",
+      "new": "                if False:"
+    },
+    {
+      "name": "m1-self-accept",
+      "proves": "the owner cannot accept its own work",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if a.to == \"accepted\" and by == item[\"owner\"]:",
+      "new": "    if False:"
+    },
+    {
+      "name": "m2-integrate-first",
+      "proves": "the dispatch seat is set first",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if not roles.get(\"dispatch\") and role != \"dispatch\":",
+      "new": "        if False:"
+    },
+    {
+      "name": "m3-no-hashes",
+      "proves": "acceptance keeps receipt and output hashes",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "                r[\"receipt_sha256\"] = hashlib.sha256(Path(r[\"path\"]).read_bytes()).hexdigest()",
+      "new": "                pass"
+    },
+    {
+      "name": "m4-no-git-check",
+      "proves": "--repo checks the head is a commit",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if p.returncode != 0 or not p.stdout.strip():\n        raise Refused(RC_RULE, \"%s is not a commit in %s\" % (sha, repo))\n",
+      "new": "    if p.returncode != 0 or not p.stdout.strip():\n        return sha, \"\"\n"
+    },
+    {
+      "name": "m4-no-time-check",
+      "proves": "receipts cannot start before the head commit",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if head_time and t0 < _parse_time(head_time) - FUTURE_SKEW:",
+      "new": "        if False:"
+    },
+    {
+      "name": "l1-knife-counts",
+      "proves": "a knife receipt alone does not accept",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if ev and not any(k in (\"positive\", \"default\") for k in good_kinds):",
+      "new": "    if ev and not any(k != \"chrome\" for k in good_kinds):"
+    },
+    {
+      "name": "l6-no-chmod",
+      "proves": "the ledger (and so its -wal / -shm) is 0600",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            os.chmod(str(path), 0o600)\n",
+      "new": "            pass\n"
     },
     {
       "name": "record-registry-skip",

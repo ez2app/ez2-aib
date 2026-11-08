@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """aib ledger —— 艙級工作帳(自動推進 v2 B 項,11-08 f1fae 派;三家深審一致第一名「一本帳 + 權責不重疊 + 收據綁頭碼」)。
 
-    aib ledger role set dispatch|integrate <seat> --by <seat> [--as dispatch]   誰是派工席 / 整合席(第一次誰都能設,之後只有派工席能改)
+    aib ledger role set dispatch|integrate <seat> --by <seat> [--as dispatch]   誰是派工席 / 整合席
+                    (帳是空的時只能先設派工席,誰都能設;之後只有派工席能改)
     aib ledger role list
     aib ledger add <id> --batch B --owner <seat> --title T [--next N] [--needs chrome] [--event-id E] --by <seat>
-    aib ledger move <id> --from S --to S [--head SHA] [--evidence RECEIPT.json …] [--next N] [--blocker WHY]
-                    [--event-id E] --by <seat>
+    aib ledger move <id> --from S --to S [--head SHA [--repo DIR]] [--evidence RECEIPT.json …] [--next N]
+                    [--blocker WHY] [--event-id E] --by <seat>
     aib ledger show <id> [--json]
     aib ledger list [--state S] [--batch B] [--owner <seat>] [--json]
     aib ledger verify <id> [--json]
@@ -20,16 +21,26 @@
 誰能寫哪個狀態(權責不重疊):
   queued、accepted、blocked-human = 派工席;integrating、deployed = 整合席;running、review = 負責席
   (running 派工席也能寫);blocked = 負責席 / 派工席 / 整合席。
-事件 id 去重:--event-id 相同、內容相同 ⇒ 重送不重做(印原結果,rc 0);同 id 不同內容 ⇒ rc 6。
+  另外(ebb36 審 #527):離開 blocked-human 只有派工席能寫(負責席不能自己解開等真人,H2);
+  負責席不能收自己的件(review → accepted 時 by = owner 就擋,M1);派工和整合同一席是 f1fae 定的設計,照 --as 分帽子。
+  負責席能把 accepted / integrating 的件推到 blocked 再自己解回 running(把件從整合席手上拉回來;L2):這是刻意留的,
+  返工要能發生;事件裡看得到。
+返工換頭碼(H1):running → review 帶了不同的 --head,舊頭碼的收據移到 superseded(連同舊頭碼記下),不再算數;
+  收件只看現在頭碼的收據。--repo DIR 帶了就用 git 查這個 commit 真的存在、記下它的 commit 時間(M4),
+  收據的 started_at 不能早於它。事件 id 去重:--event-id 相同、內容相同 ⇒ 重送不重做(印原結果,rc 0);同 id 不同內容 ⇒ rc 6。
 收件門(→ accepted):帳上的頭碼 + 收據驗證器全過才放行(見 verify)。
 
 收據(--evidence 帶的 JSON 檔,schema "aib-receipt/1"):
   {"schema": "aib-receipt/1", "kind": "positive|knife|default|chrome|other", "sha": "<頭碼>", "cmd": "<跑的指令>",
    "host": "<機台>", "started_at": "<ISO 8601>", "ended_at": "<ISO 8601>", "rc": 0, "passed": 95, "total": 95,
-   "output": "<原始輸出檔絕對路徑>", "output_sha256": "<選填>"}
-  verify 逐張查:同一個 SHA(前綴相容、至少 7 碼)、指令 / 機台非空、起訖時間能讀且 起 ≤ 訖 ≤ 現在 + 5 分、真實 rc = 0、
-  通過支數 ≥ 1(有 total 就要等於 total)、原始輸出檔存在且非空(有 output_sha256 就要對得上)。
-  至少一張非 chrome 的收據;件標 --needs chrome ⇒ 還要一張同頭碼的 chrome 收據。
+   "output": "<原始輸出檔絕對路徑>", "output_sha256": "<必填>"}
+  verify 逐張查:同一個 SHA(前綴相容、至少 7 碼)、指令 / 機台非空、起訖時間能讀且 起 ≤ 訖 ≤ 現在 + 5 分
+  (知道 commit 時間時,起 ≥ commit 時間 − 5 分)、真實 rc = 0、通過支數 ≥ 1 且 = total、原始輸出檔存在且非空、
+  output_sha256 對得上;原始輸出裡要出現頭碼前 7 碼,以及跟 passed / total 吻合的結果行(「P/T」或 unittest
+  「Ran T tests」+ OK)(H3)。
+  至少一張 positive 或 default 的收據(只有刀 / chrome 不算,L1);件標 --needs chrome ⇒ 還要一張同頭碼的 chrome 收據。
+  **手寫收據只證明格式和輸出對得上,不證明真的跑過**:同帳號的 AI 照樣寫得出一份對得上的。真跑證明要靠包裝器產收據。
+  收件那筆事件記下每張收據檔與原始輸出檔的 sha256(M3),事後檔被換掉查得到。
 
 收據產生器 record(11-08 f1fae 定「防假完成最有用的一刀」):包裝器自己跑指令,rc、起訖、機台、原始輸出檔、它的 sha256、
   通過支數都由它寫,跑的人寫不了;頭碼取 --tree(預設現在資料夾)的 git HEAD,樹有沒提交的改動就不跑(收據證明不了那個頭碼)。
@@ -119,7 +130,7 @@ def connect(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh = not path.exists()
     db = sqlite3.connect(str(path), timeout=10, isolation_level=None)
-    if fresh:
+    if fresh:   # -wal / -shm 由 SQLite 照主檔權限建,主檔 600 它們就是 600(ebb36 L6;umask 022 實測)
         try:
             os.chmod(str(path), 0o600)
         except OSError:
@@ -142,6 +153,10 @@ def connect(path):
         kind TEXT NOT NULL, rc INTEGER NOT NULL, recorded_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS roles(role TEXT PRIMARY KEY, seat TEXT NOT NULL, set_by TEXT NOT NULL, set_at TEXT NOT NULL);
     """)
+    cols = {r["name"] for r in db.execute("PRAGMA table_info(items)")}
+    for col in ("superseded TEXT NOT NULL DEFAULT '[]'", "head_time TEXT NOT NULL DEFAULT ''"):
+        if col.split()[0] not in cols:
+            db.execute("ALTER TABLE items ADD COLUMN " + col)
     return db
 
 
@@ -165,6 +180,7 @@ def item_dict(row):
     d = dict(row)
     d["evidence"] = json.loads(d["evidence"])
     d["needs"] = json.loads(d["needs"])
+    d["superseded"] = json.loads(d.get("superseded") or "[]")
     return d
 
 
@@ -217,7 +233,16 @@ def check_recorded(db, path, r):
     return probs
 
 
-def check_receipt(path, head, now=None, db=None):
+def result_line_ok(text, passed, total):
+    """原始輸出裡有沒有跟 passed / total 吻合的結果行(H3)。"""
+    if re.search(r"(?<!\d)%d\s*/\s*%d(?!\d)" % (passed, total), text):
+        return True
+    ran = list(re.finditer(r"^Ran (\d+) tests? in ", text, re.M))
+    return bool(ran) and int(ran[-1].group(1)) == total and passed == total and \
+        re.search(r"^OK\b", text[ran[-1].end():], re.M) is not None
+
+
+def check_receipt(path, head, now=None, head_time=None, db=None):
     """一張收據 → (kind, problems, recorded)。problems 空 = 這張過。"""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     probs = []
@@ -250,6 +275,8 @@ def check_receipt(path, head, now=None, db=None):
             probs.append("ended_at is before started_at")
         if t1 > now + FUTURE_SKEW:
             probs.append("ended_at is in the future")
+        if head_time and t0 < _parse_time(head_time) - FUTURE_SKEW:
+            probs.append("started_at is before the head commit (%s)" % head_time)
     except (ValueError, TypeError) as e:
         probs.append("started_at / ended_at unreadable (%s)" % (e,))
     rc = r.get("rc")
@@ -258,10 +285,15 @@ def check_receipt(path, head, now=None, db=None):
     elif rc != 0:
         probs.append("rc is %d, not 0" % rc)
     passed, total = r.get("passed"), r.get("total")
+    counts_ok = False
     if not isinstance(passed, int) or isinstance(passed, bool) or passed < 1:
         probs.append("passed missing or < 1")
-    elif total is not None and (not isinstance(total, int) or isinstance(total, bool) or passed != total):
+    elif not isinstance(total, int) or isinstance(total, bool):
+        probs.append("total missing")
+    elif passed != total:
         probs.append("passed %r != total %r" % (passed, total))
+    else:
+        counts_ok = True
     out = r.get("output")
     if not isinstance(out, str) or not out.strip():
         probs.append("output missing")
@@ -271,10 +303,18 @@ def check_receipt(path, head, now=None, db=None):
             p = Path(path).resolve().parent / p
         if not p.is_file() or p.stat().st_size == 0:
             probs.append("raw output file missing or empty: %s" % p)
-        elif r.get("output_sha256"):
-            h = hashlib.sha256(p.read_bytes()).hexdigest()
-            if h != str(r["output_sha256"]).lower():
+        elif not r.get("output_sha256"):
+            probs.append("output_sha256 missing")
+        else:
+            raw = p.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != str(r["output_sha256"]).lower():
                 probs.append("output_sha256 does not match the raw output file")
+            else:
+                text = raw.decode("utf-8", errors="replace")
+                if head and head[:7].lower() not in text.lower():
+                    probs.append("raw output does not mention the head %s" % head[:7])
+                if counts_ok and not result_line_ok(text, passed, total):
+                    probs.append("raw output has no result line matching %d/%d" % (passed, total))
     return kind, probs, recorded
 
 
@@ -290,7 +330,7 @@ def verify_item(item, now=None, db=None):
     good_kinds = []
     needs = item.get("needs") or []
     for p in ev:
-        kind, rp, recorded = check_receipt(p, head, now, db)
+        kind, rp, recorded = check_receipt(p, head, now, item.get("head_time") or None, db)
         if "recorded" in needs and not recorded and not rp:
             rp = ["needs recorded: this receipt was not written by aib ledger record"]
         out.append({"path": p, "kind": kind, "ok": not rp, "problems": rp, "recorded": recorded})
@@ -298,10 +338,18 @@ def verify_item(item, now=None, db=None):
             probs.extend("%s: %s" % (Path(p).name, x) for x in rp)
         else:
             good_kinds.append(kind)
-    if ev and not any(k != "chrome" for k in good_kinds):
-        probs.append("no passing non-chrome receipt")
+    if ev and not any(k in ("positive", "default") for k in good_kinds):
+        probs.append("no passing positive or default receipt (knife / chrome alone do not count)")
     if "chrome" in (item.get("needs") or []) and "chrome" not in good_kinds:
         probs.append("needs chrome: no passing chrome receipt for this head")
+    for r in out:   # 收件時記下當時看到的內容(M3)
+        if r["ok"]:
+            try:
+                rec = json.loads(Path(r["path"]).read_text(encoding="utf-8"))
+                r["receipt_sha256"] = hashlib.sha256(Path(r["path"]).read_bytes()).hexdigest()
+                r["output_sha256"] = rec.get("output_sha256")
+            except (OSError, ValueError):
+                pass
     return {"ok": not probs, "problems": probs, "receipts": out}
 
 
@@ -362,6 +410,8 @@ def op_role_set(db, role, seat, by, event_id, as_role=None):
         if rep is not None:
             return rep
         roles = roles_of(db)
+        if not roles.get("dispatch") and role != "dispatch":
+            raise Refused(RC_RULE, "set the dispatch seat first (aib ledger role set dispatch <seat>)")
         if roles.get("dispatch") and "dispatch" not in hats(roles, by, None, as_role):
             raise Refused(RC_RULE, "only the dispatch seat (%s) can change roles" % roles["dispatch"])
         db.execute("INSERT INTO roles(role, seat, set_by, set_at) VALUES (?,?,?,?) "
@@ -400,10 +450,70 @@ def op_add(db, a, by, event_id):
     return tx(db, run)
 
 
+def git_commit(repo, sha):
+    """(完整 sha, commit 時間 ISO)— 查不到就擋(M4)。"""
+    import subprocess
+    p = subprocess.run(["git", "-C", str(Path(repo).expanduser()), "show", "-s", "--format=%H %cI", sha + "^{commit}"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if p.returncode != 0 or not p.stdout.strip():
+        raise Refused(RC_RULE, "%s is not a commit in %s" % (sha, repo))
+    full, when = p.stdout.split()[:2]
+    return full.lower(), when
+
+
+def apply_move(item, a, request, by, roles):
+    """規則全在這裡(交易內外共用);改 item、回 (blocker, next)。"""
+    if item["state"] != a.from_state:
+        raise Refused(RC_STALE, "%s is %s now, not %s; nothing written" % (a.id, item["state"], a.from_state))
+    if a.to not in TRANSITIONS[a.from_state]:
+        raise Refused(RC_RULE, "%s -> %s is not an allowed move" % (a.from_state, a.to))
+    worn = hats(roles, by, item["owner"], a.as_role)
+    if not worn & set(WRITERS[a.to]):
+        raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
+    if a.from_state == "blocked-human" and "dispatch" not in worn:
+        raise Refused(RC_RULE, "only the dispatch seat can release blocked-human (it waits for a human)")
+    if a.to == "accepted" and by == item["owner"]:
+        raise Refused(RC_RULE, "%s owns %s and cannot accept its own work" % (by, a.id))
+    if request["head"]:
+        if not SHA_RE.match(request["head"]):
+            raise Refused(RC_USAGE, "--head must be a hex commit sha (7+ chars)")
+        if a.to != "review":
+            raise Refused(RC_RULE, "the head is set only when moving to review")
+        head, when = request["head"], ""
+        if request.get("repo"):
+            head, when = request["git"]
+        if item["head"] and not sha_match(head, item["head"]):
+            item["superseded"].append({"head": item["head"], "evidence": item["evidence"]})
+            item["evidence"] = []
+        item["head"], item["head_time"] = head, when
+    if a.to == "review" and not item["head"]:
+        raise Refused(RC_RULE, "moving to review needs --head")
+    if a.to in SIDE and not (a.blocker or "").strip():
+        raise Refused(RC_USAGE, "moving to %s needs --blocker" % a.to)
+    for p in request["evidence"]:
+        if p not in item["evidence"]:
+            item["evidence"].append(p)
+    return ((a.blocker or "").strip() if a.to in SIDE else ""), (item["next"] if a.next is None else a.next)
+
+
 def op_move(db, a, by, event_id):
     evidence = [str(Path(p).expanduser().resolve()) for p in (a.evidence or [])]
     request = {"id": a.id, "from": a.from_state, "to": a.to, "head": (a.head or "").lower(), "evidence": evidence,
-               "next": a.next, "blocker": a.blocker, "by": by, "as": a.as_role}
+               "next": a.next, "blocker": a.blocker, "by": by, "as": a.as_role,
+               "repo": str(Path(a.repo).expanduser().resolve()) if getattr(a, "repo", None) else None}
+    if request["repo"] and request["head"] and SHA_RE.match(request["head"]):
+        request["git"] = list(git_commit(request["repo"], request["head"]))
+    # 收件要讀檔、算雜湊:先在交易外驗一次(L5);交易內只確認件沒被別人改過(rev 一樣),不在寫鎖裡讀大檔
+    pre = None
+    if a.to == "accepted":
+        snap = item_dict(db.execute("SELECT * FROM items WHERE id=?", (a.id,)).fetchone())
+        if snap is not None and snap["state"] == a.from_state:
+            try:
+                apply_move(snap, a, request, by, roles_of(db))
+            except Refused:
+                snap = None
+            if snap is not None:
+                pre = (snap["rev"], verify_item(snap, db=db))
 
     def run():
         rep = _replay_or_claim(db, event_id, "move", a.id, request)
@@ -412,44 +522,26 @@ def op_move(db, a, by, event_id):
         item = item_dict(db.execute("SELECT * FROM items WHERE id=?", (a.id,)).fetchone())
         if item is None:
             raise Refused(RC_RULE, "no such item: %s" % a.id)
-        if item["state"] != a.from_state:
-            raise Refused(RC_STALE, "%s is %s now, not %s; nothing written" % (a.id, item["state"], a.from_state))
-        if a.to not in TRANSITIONS[a.from_state]:
-            raise Refused(RC_RULE, "%s -> %s is not an allowed move" % (a.from_state, a.to))
-        roles = roles_of(db)
-        if not _may_write(roles, by, a.to, item["owner"], a.as_role):
-            raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
-        if request["head"]:
-            if not SHA_RE.match(request["head"]):
-                raise Refused(RC_USAGE, "--head must be a hex commit sha (7+ chars)")
-            if a.to != "review":
-                raise Refused(RC_RULE, "the head is set only when moving to review")
-            item["head"] = request["head"]
-        if a.to == "review" and not item["head"]:
-            raise Refused(RC_RULE, "moving to review needs --head")
-        if a.to in SIDE and not (a.blocker or "").strip():
-            raise Refused(RC_USAGE, "moving to %s needs --blocker" % a.to)
-        for p in evidence:
-            if p not in item["evidence"]:
-                item["evidence"].append(p)
+        blocker, nxt = apply_move(item, a, request, by, roles_of(db))
         verdict = None
         if a.to == "accepted":
-            verdict = verify_item(item, db=db)
+            if pre is None or pre[0] != item["rev"]:
+                raise Refused(RC_STALE, "%s changed while its receipts were checked; nothing written" % a.id)
+            verdict = pre[1]
             if not verdict["ok"]:
                 raise Refused(RC_RECEIPT, "receipts do not prove %s at %s; not accepted" % (a.id, item["head"] or "-"),
                               verdict)
-        blocker = (a.blocker or "").strip() if a.to in SIDE else ""
-        nxt = item["next"] if a.next is None else a.next
         rev = item["rev"] + 1
-        db.execute("UPDATE items SET state=?, head=?, evidence=?, next=?, blocker=?, rev=?, updated_at=?, updated_by=?"
-                   " WHERE id=? AND state=? AND rev=?",
-                   (a.to, item["head"], json.dumps(item["evidence"]), nxt, blocker, rev, now_iso(), by,
-                    a.id, a.from_state, item["rev"]))
+        db.execute("UPDATE items SET state=?, head=?, head_time=?, evidence=?, superseded=?, next=?, blocker=?, rev=?,"
+                   " updated_at=?, updated_by=? WHERE id=? AND state=? AND rev=?",
+                   (a.to, item["head"], item.get("head_time") or "", json.dumps(item["evidence"]),
+                    json.dumps(item["superseded"]), nxt, blocker, rev, now_iso(), by, a.id, a.from_state, item["rev"]))
         if db.execute("SELECT changes()").fetchone()[0] != 1:
             raise Refused(RC_STALE, "%s changed underneath; nothing written" % a.id)
         res = {"ok": True, "id": a.id, "from": a.from_state, "state": a.to, "rev": rev, "head": item["head"]}
         if verdict is not None:
-            res["verified"] = [r["path"] for r in verdict["receipts"] if r["ok"]]
+            res["verified"] = [{"path": r["path"], "receipt_sha256": r.get("receipt_sha256"),
+                                "output_sha256": r.get("output_sha256")} for r in verdict["receipts"] if r["ok"]]
         _record(db, event_id, "move", a.id, a.from_state, a.to, by, request, res)
         return res
     return tx(db, run)
@@ -463,10 +555,13 @@ def get_item(db, item_id):
 
 def history(db, item_id):
     out = []
-    for r in db.execute("SELECT event_id, op, from_state, to_state, by_seat, at, request FROM events "
+    for r in db.execute("SELECT event_id, op, from_state, to_state, by_seat, at, request, result FROM events "
                         "WHERE item_id=? ORDER BY rowid", (item_id,)):
         d = dict(r)
         d["as"] = json.loads(d.pop("request")).get("as")
+        res = json.loads(d.pop("result"))
+        if res.get("verified"):
+            d["verified"] = res["verified"]
         out.append(d)
     return out
 
@@ -482,6 +577,8 @@ def print_item(it, hist=None):
         print("  needs:    %s" % ", ".join(it["needs"]))
     for p in it["evidence"]:
         print("  evidence: %s" % p)
+    for old in it.get("superseded") or []:
+        print("  superseded (old head %s): %d receipt(s)" % (old["head"][:12], len(old["evidence"])))
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))
     for h in hist or []:
         print("  - %s %s %s -> %s by %s%s (%s)" % (h["at"], h["op"], h["from_state"] or "", h["to_state"] or "",
@@ -550,6 +647,9 @@ def cmd_record(db, a):
     ended = now_iso()
     text = raw.read_text(encoding="utf-8", errors="replace")
     passed, total = count_passed(text, rc, a.count)
+    # 包裝器自己的結尾行:頭碼 + 結果(verify 要原始輸出看得到頭碼和 passed/total;算完支數才加,不影響計數)
+    with open(str(raw), "a", encoding="utf-8") as f:
+        f.write("\n[aib ledger record] sha %s rc %d result %s/%s\n" % (sha, rc, passed, total))
     rec = {"schema": RECEIPT_SCHEMA, "producer": RECORD_PRODUCER, "kind": a.kind, "sha": sha, "tree": str(tree),
            "dirty": False, "cmd": shlex.join(cmd) if hasattr(shlex, "join") else " ".join(shlex.quote(c) for c in cmd),
            "host": socket.gethostname(), "started_at": started, "ended_at": ended, "rc": rc, "passed": passed,
@@ -600,6 +700,7 @@ def build_parser():
     mv.add_argument("--from", dest="from_state", required=True, choices=STATES)
     mv.add_argument("--to", required=True, choices=STATES)
     mv.add_argument("--head")
+    mv.add_argument("--repo", help="git tree to check --head against (records its commit time)")
     mv.add_argument("--evidence", action="append", help="receipt JSON (schema aib-receipt/1); repeatable")
     mv.add_argument("--next")
     mv.add_argument("--blocker")
