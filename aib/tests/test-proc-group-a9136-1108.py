@@ -170,10 +170,41 @@ class LeaderStateWithoutOsWaitid(unittest.TestCase):
                 time.sleep(0.05)
                 st = pg._leader_state(p.pid, has_os_waitid=False)
             self.assertEqual(st, "zombie")
-            self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "zombie")  # looking does not reap
+            self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "zombie")  # looking twice is fine
+            # WNOWAIT really left it unreaped: the one real wait still gets it
+            got, status = os.waitpid(p.pid, 0)
+            self.assertEqual(got, p.pid)
+            self.assertTrue(os.WIFEXITED(status), status)
+            p.returncode = os.WEXITSTATUS(status)
         finally:
-            p.wait()
+            if p.returncode is None:
+                p.wait()
         self.assertEqual(pg._leader_state(p.pid, has_os_waitid=False), "reaped")
+
+    def _with_fake_libc(self, si_pid, rc=0, err=0):
+        import ctypes
+
+        def fake(idtype, pid, si, options):
+            self.assertEqual((idtype, options), (1, 0x4 | 0x1 | 0x20))
+            si[12:16] = int(si_pid).to_bytes(4, sys.byteorder, signed=True)
+            ctypes.set_errno(err)
+            return rc
+
+        saved = pg._libc_waitid
+        pg._libc_waitid = (ctypes, fake)
+        try:
+            return pg._darwin_waitid_state(4242)
+        finally:
+            pg._libc_waitid = saved
+
+    def test_the_libc_result_counts_only_when_si_pid_is_the_target(self):
+        import errno
+        self.assertEqual(self._with_fake_libc(0), "running")
+        self.assertEqual(self._with_fake_libc(4242), "zombie")
+        self.assertEqual(self._with_fake_libc(4243), "unknown")  # wrong layout / garbage: unproven
+        self.assertEqual(self._with_fake_libc(-1), "unknown")
+        self.assertEqual(self._with_fake_libc(0, rc=-1, err=errno.ECHILD), "reaped")
+        self.assertEqual(self._with_fake_libc(0, rc=-1, err=errno.EINVAL), "unknown")
 
     def test_without_any_waitid_the_state_is_unknown(self):
         self.assertEqual(pg._leader_state(os.getpid(), has_os_waitid=False, platform="linux"), "unknown")
