@@ -1174,8 +1174,7 @@ fi
 #   乙 人工入口——不帶身份旗標時從既有席位檔讀 provider/mode/role/cwd/model。
 # 兩者的 session_uuid 由 seat_launch_evidence.py 從 pane 行程樹的指令列現讀,量不到就寫 pending
 # (HANDOFF 未結案 3b:窗號重用會給格式正確的錯答案)。唯一例外(11-08 P2-9):量不到、但 pane 行程
-# 就是席位檔記的那一個(pid 相同、還活著),或 pane 被 respawn 且 AIB_RESUME_SESSION_UUID = 舊 uuid、舊行程已不在
-# ⇒ 沿用舊 uuid,見 _rereg_keep_uuid。
+# 就是席位檔記的那一個(pid 相同、還活著)⇒ 同一個行程不會換窗,沿用舊 uuid,見 _rereg_keep_uuid。
 # ★ 為什麼這段擺在這裡而不是子指令那格:下面的三參驗證要 POS 是真值,而 HUB/T_PY3
 #   到這裡才在手上;把 POS 填成佔位符讓驗證過關,失效形狀是佔位符被寫進席位檔。
 if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
@@ -1981,22 +1980,15 @@ PYSEAT
 # 登記死 pid 只是把今天的洞再挖一次)、量 session uuid 證據、寫後讀回核 pid。
 # 11-08 P2-9(大綱 r2):Codex 的 session uuid 不在指令列(seat-detect 事後從 rollout 檔量)⇒ 原地 re-register
 #   一律量不到(rc 3)⇒ 以前會把好好的 uuid 退成 previous、標 pending,席位檔的退出欄也留著(handoff 第 8 項判 gone)。
-#   沿用的前提:舊 uuid 格式正確、帶了 --session-uuid 就要相同,再加下面兩條證據之一:
-#   (a) 同一個 pane 行程:舊 pid 非空、= 現在的 pane_pid(呼叫端已驗活著);
-#   (b) pane 被 respawn 重跑整條 LAUNCH_CMD(a63ab 11-08 查 bb7dc 實例):pid 換了,但環境的
-#       AIB_RESUME_SESSION_UUID 跟舊 uuid 相同(CLI 是 --resume 接回同一段),而且舊 pid 已不在(活著就是兩個行程搶同碼,不猜)。
-#   印出要沿用的 uuid;任一條不成立回 1(照舊寫 pending,不猜)。
+#   只在「同一個 pane 行程」時沿用:舊 pid 非空、= 現在的 pane_pid(呼叫端已驗活著)、舊 uuid 格式正確、
+#   帶了 --session-uuid 就要相同。印出要沿用的 uuid;任一條不成立回 1(照舊寫 pending,不猜)。
 #   沿用之後 write_seat_record 的 _archive_same_uuid_exit 會把退出欄搬進 prior_exits(同 uuid、pid 活著)。
 _rereg_keep_uuid() {
-  local old_pid="$1" pane_pid="$2" old_uuid="$3" expect="$4" resume="${5:-}"
+  local old_pid="$1" pane_pid="$2" old_uuid="$3" expect="$4"
+  [ -n "$old_pid" ] && [ "$old_pid" = "$pane_pid" ] || return 1
   [[ "$old_uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
   [ -z "$expect" ] || [ "$expect" = "$old_uuid" ] || return 1
-  if [ -n "$old_pid" ] && [ "$old_pid" = "$pane_pid" ]; then
-    printf '%s' "$old_uuid"; return 0                                   # (a) 同一個 pane 行程
-  fi
-  [ -n "$resume" ] && [ "$resume" = "$old_uuid" ] || return 1
-  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then return 1; fi  # 舊行程還在 ⇒ 不沿用
-  printf '%s' "$old_uuid"                                               # (b) respawn + --resume 同一段
+  printf '%s' "$old_uuid"
 }
 
 seat_reregister() {
@@ -2016,8 +2008,8 @@ seat_reregister() {
   ev="$("$T_PY3" "$HERE/seat_launch_evidence.py" --pane-pid "$pane_pid" ${REREG_UUID:+--expect "$REREG_UUID"})" || ev_rc=$?
   case "$ev_rc" in
     0) SEAT_SESSION_UUID="$ev"; RESET_SESSION_IDENTITY=0 ;;
-    3) if kept="$(_rereg_keep_uuid "$old_pid" "$pane_pid" "$old_uuid" "$REREG_UUID" "${AIB_RESUME_SESSION_UUID:-}")"; then
-         SEAT_SESSION_UUID="$kept"; RESET_SESSION_IDENTITY=0      # 同 pane 行程 / respawn 接回同一段 ⇒ 沿用(P2-9)
+    3) if kept="$(_rereg_keep_uuid "$old_pid" "$pane_pid" "$old_uuid" "$REREG_UUID")"; then
+         SEAT_SESSION_UUID="$kept"; RESET_SESSION_IDENTITY=0      # 同一個 pane 行程 ⇒ 沿用(P2-9)
        else
          kept=""; SEAT_SESSION_UUID=""; RESET_SESSION_IDENTITY=1  # 量不到 ⇒ 舊值退 previous、標 pending,不沿用
        fi ;;
@@ -2030,7 +2022,7 @@ seat_reregister() {
   if [ "${AIB_QUIET:-0}" != "1" ]; then
     printf 'aib: re-registered %s pid %s→%s session_uuid=%s%s seats=%s\n' \
       "$wid" "${old_pid:-∅}" "$pane_pid" "${SEAT_SESSION_UUID:-pending}" \
-      "${kept:+ (kept: same pane pid or resumed same session, not measured)}" "$seats_file" >&2
+      "${kept:+ (kept: same pane pid, not measured)}" "$seats_file" >&2
   fi
 }
 if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
