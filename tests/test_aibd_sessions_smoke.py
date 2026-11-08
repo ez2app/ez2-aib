@@ -45,6 +45,11 @@ FAKE = textwrap.dedent('''\
             return self.headers.get("Authorization") == "Bearer t0k"
         def do_POST(self):
             if MODE == "absent": return self.send(404, {"error": "not_found"})
+            if MODE == "unsupported":
+                return self.send(422, {"code": "spawn_failed", "message": "could not start: unsupported_platform",
+                                       "request_id": "r1"})
+            if MODE == "spawnfail":
+                return self.send(422, {"code": "spawn_failed", "message": "could not start: enoent", "request_id": "r2"})
             if not self.authed(): return self.send(401)
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             p = subprocess.Popen(body["argv"], cwd=body.get("cwd"), start_new_session=True)
@@ -94,6 +99,22 @@ class SessionsSmoke(unittest.TestCase):
         rc, res, log = self.run_smoke("absent")
         self.assertEqual((rc, res.get("sessions"), res.get("skipped")), (0, "absent", True), log)
         self.assertIn("SKIP", log)
+
+    def test_unsupported_platform_is_its_own_named_skip(self):
+        # preview.2 Windows (1ced7 11-08 19:4x): API present, default_spawn refuses ⇒ skip, not pass, not red
+        rc, res, log = self.run_smoke("unsupported")
+        self.assertEqual((rc, res.get("sessions"), res.get("skipped")), (0, "unsupported_platform", True), log)
+        self.assertIn("SKIP sessions not on this platform", log)
+        self.assertNotIn("SKIP sessions API absent", log)
+
+    def test_unsupported_platform_with_require_is_red(self):
+        rc, res, log = self.run_smoke("unsupported", "--require")
+        self.assertEqual((rc, res.get("sessions"), res.get("skipped")), (1, "unsupported_platform", False), log)
+
+    def test_any_other_spawn_failure_is_red(self):
+        # only the exact unsupported_platform answer skips; a real start failure is a failure
+        rc, res, log = self.run_smoke("spawnfail")
+        self.assertEqual((rc, res.get("post"), res.get("skipped")), (1, 422, None), log)
 
     def test_absent_with_require_is_red(self):
         rc, res, log = self.run_smoke("absent", "--require")

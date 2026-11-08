@@ -10,6 +10,8 @@ a63ab PLAN-preview2-usable-today (1ced7, 11-09). Same script on macOS and Window
 2. POST /api/v1/sessions {"argv": [python, helper, marker, stopfile], "cwd": tmp} must answer 201 with an id and a pid.
    The helper starts one grandchild, writes "<child pid> <grandchild pid>" to the marker file, then both wait.
    - 404 / 405 on POST = this aibd has no sessions API ⇒ SKIP (rc 0), unless --require (then rc 1).
+   - 422 spawn_failed "could not start: unsupported_platform" = API present, this OS cannot start
+     sessions in this build (preview.2 Windows) ⇒ SKIP "not on this platform" (rc 0), unless --require.
 3. GET /api/v1/sessions/{id} must answer 200 with state "running".
 4. DELETE /api/v1/sessions/{id} must answer 2xx with a stop result the contract allows as "done"
    (a9136 CONTRACT-sessions-preview2 + a63ab 11-09 ruling on #539 M2 = B):
@@ -189,6 +191,10 @@ def wait_for(pred, seconds, step=0.1):
     return pred()
 
 
+# aibd sessions.rs: ApiError(SpawnFailed, "could not start: {tag}") with tag from platform::unsupported_spawn
+UNSUPPORTED = "could not start: unsupported_platform"
+
+
 def smoke(exe, require, timeout):
     res = {"exe": os.path.basename(exe)}
     work = tempfile.mkdtemp(prefix="aibd-sessions-smoke-")
@@ -221,6 +227,14 @@ def smoke(exe, require, timeout):
         res["post"] = code
         if code in (404, 405):
             res["sessions"] = "absent"
+            res["skipped"] = not require
+            return res, not require
+        if code == 422 and isinstance(body, dict) and body.get("code") == "spawn_failed" \
+                and body.get("message") == UNSUPPORTED:
+            # the API is there but this build cannot start sessions on this OS (preview.2 Windows:
+            # default_spawn = unsupported_spawn until session_windows is wired) ⇒ a named skip,
+            # never a pass; with --require red. Only this exact answer: any other 422 is a failure.
+            res["sessions"] = "unsupported_platform"
             res["skipped"] = not require
             return res, not require
         res["sessions"] = "present"
@@ -307,7 +321,8 @@ def main(argv=None):
         return 2
     res, ok = smoke(exe, require, timeout)
     res["pass"] = bool(ok)
-    print(("SKIP sessions API absent " if res.get("skipped") else "") + json.dumps(res, ensure_ascii=False))
+    skip = {"absent": "SKIP sessions API absent ", "unsupported_platform": "SKIP sessions not on this platform "}
+    print((skip[res["sessions"]] if res.get("skipped") else "") + json.dumps(res, ensure_ascii=False))
     return 0 if ok else 1
 
 
