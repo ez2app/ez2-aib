@@ -106,8 +106,23 @@ pub fn check_process_management(
     spawn: SpawnFn,
     lineage: Option<Arc<Lineage>>,
 ) -> Result<Checked, SpawnFail> {
+    if !cfg!(unix) {
+        // The check tree is a POSIX shell (`/bin/sh`). Once Windows sessions
+        // are wired, starting it there would fail as `enoent` and turn the
+        // row (and selfcheck's exit code) red for a missing check, not a
+        // broken process manager. Not started at all: `not_wired` until a
+        // Windows check tree exists (a9136, review of the #543 wiring).
+        let _ = (spawn, lineage);
+        return Err(SpawnFail {
+            tag: NO_CHECK_TREE.into(),
+            left_running: None,
+        });
+    }
     check_tree(spawn, lineage, CHECK_SCRIPT, CHILD_WAIT)
 }
+
+/// [`check_process_management`]'s tag on a platform with no check tree yet.
+pub const NO_CHECK_TREE: &str = "no_check_tree";
 
 /// [`check_process_management`] with the script and the wait given (tests:
 /// a script whose child never starts).
@@ -167,6 +182,11 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
             N,
             Status::NotWired,
             "sessions are not available on this platform in this build",
+        ),
+        Err(f) if f.tag == NO_CHECK_TREE => Row::new(
+            N,
+            Status::NotWired,
+            "this build has no check tree for this platform yet: the process manager was not exercised",
         ),
         Err(f) => {
             let mut row = Row::new(
@@ -468,8 +488,28 @@ mod tests {
         );
         assert_eq!(label(Ok(stop(StopStatus::Clean, vec![]))), "ok");
         assert_eq!(label(fail("unsupported_platform", None)), "not_wired");
+        assert_eq!(label(fail(NO_CHECK_TREE, None)), "not_wired");
         assert_eq!(label(fail("enoent", None)), "failed:spawn_failed");
         assert_eq!(label(fail("os_1", Some(9))), "failed:spawn_left_running");
+    }
+
+    /// Without a check tree for the platform the spawn is never called (a
+    /// wired Windows spawn would get `/bin/sh` and fail as `enoent`).
+    #[cfg(not(unix))]
+    #[test]
+    fn no_check_tree_is_not_wired_and_never_spawns() {
+        fn must_not_spawn(
+            _: &Spec,
+            _: Option<Arc<Lineage>>,
+        ) -> Result<Box<dyn crate::platform::session::Running>, SpawnFail> {
+            panic!("the check tree was started on a platform without one")
+        }
+        let r = check_process_management(must_not_spawn, None);
+        assert_eq!(
+            r.as_ref().map_err(|f| f.tag.as_str()).err(),
+            Some(NO_CHECK_TREE)
+        );
+        assert_eq!(process_row(&r).status.label(), "not_wired");
     }
 
     /// bb7dc #549 3bacd239: a stop that only met the root (the child never
