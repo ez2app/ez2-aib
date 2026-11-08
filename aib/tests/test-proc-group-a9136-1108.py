@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -240,6 +241,8 @@ CFG = {
     "int-term": dict(trap=True, pokes=[("INT", 0.5), ("TERM", 1.0)]),                  # cell 8
     "timeout-int": dict(trap=True, timeout=0.5, pokes=[("INT", 1.0)]),                 # cell 9
     "leftover-int": dict(leftover=True, pokes=[("INT", 1.0)]),                         # cell 10
+    "timeout-stuck": dict(trap=True, stuck=True, timeout=0.3, pokes=[("INT", 0.5)]),   # cell 9: W3 stop stuck
+    "leftover-stuck": dict(leftover=True, stuck=True, pokes=[("INT", 1.0)]),           # cell 10: W4 stuck
     "burst": dict(pokes=[("INT", 0.5), ("INT", 0.5), ("INT", 0.5)]),                   # cell 12
     "twice": dict(trap=True, pokes=[("INT", 0.5), ("INT", 1.0), ("INT", 1.2)]),        # cell 13
     "count": dict(term=True, trap=True, count_int=True, pokes=[("TERM", 0.5), ("INT", 1.0)]),  # cell 15
@@ -432,6 +435,27 @@ class Interrupted(_Interrupt):
         self.assertEqual(got["exc"], "KeyboardInterrupt", got)
         self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
 
+    def test_one_ctrl_c_during_a_stuck_timeout_stop_gets_out_within_the_limit(self):
+        """cell 9 (bb7dc / a63ab #520 W3): the timeout stop is stuck (`ps` hangs); one real Ctrl-C during it.
+        Out with KeyboardInterrupt within the limit of that press, no second press, never a quiet timeout."""
+        got, _ = self.drive("timeout-stuck")
+        self.assertEqual((got["exc"], got["status"]), ("KeyboardInterrupt", "unverified"), got)
+        self.assertIn("stop_cut_short_at_limit", got["why"])
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived (KILL never sent?)" % self.gc)
+        # no new limit after the stuck stop: out by that stop's own deadline, not a second one after it
+        self.assertLess(got["since_first"], got["limit"] + 0.3, got)
+        self.within_limit(got)
+        self.assertTrue(got["restored"], got)
+
+    def test_one_ctrl_c_during_a_stuck_leftovers_stop_gets_out_within_the_limit(self):
+        """cell 10 (W4): the leader exits, the leftovers listing / stop is stuck; one real Ctrl-C during it."""
+        got, _ = self.drive("leftover-stuck")
+        self.assertEqual((got["exc"], got["status"]), ("KeyboardInterrupt", "unverified"), got)
+        self.assertIn("stop_cut_short_at_limit", got["why"])
+        self.assertLess(got["since_first"], got["limit"] + 0.3, got)
+        self.within_limit(got)
+        self.assertTrue(got["restored"], got)
+
     def test_ctrl_c_presses_at_the_same_instant_cannot_skip_the_stop(self):
         """cell 12 (a63ab G2): handlers only record, so no press can land between `except` and the stop."""
         got, _ = self.drive("burst")
@@ -531,11 +555,11 @@ class InterruptedInProcess(_Interrupt):
         boom = Boom()
 
         class P(subprocess.Popen):
-            def wait(self, timeout=None):
-                if timeout is None and not getattr(self, "_boomed", False):
+            def poll(self):   # run_group's only poll() on POSIX is the final reap
+                if not getattr(self, "_boomed", False):
                     self._boomed = True
                     raise boom
-                return super().wait(timeout=timeout)
+                return super().poll()
 
         with self.assertRaises(Boom) as cm:
             pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s" % self.pidfile], timeout=30, grace=0.5,
@@ -647,6 +671,130 @@ class InterruptedInProcess(_Interrupt):
         self.assertEqual((boom.proc_group_stop.status, boom.proc_group_stop.why),
                          ("unverified", "stop_cut_short_at_limit"))
         self.gc = int(Path(self.pidfile).read_text().strip())
+
+    def test_the_final_reap_is_polled_and_a_ctrl_c_there_acts_at_once(self):
+        """a63ab #520 condition 2: the reap after a normal exit is polled with check(), never a bare wait().
+        The leader's reap is made to hang (poll keeps answering "running"); a Ctrl-C recorded meanwhile must
+        raise KeyboardInterrupt within a few polls, and the group is still stopped."""
+        class P(subprocess.Popen):
+            def poll(self):
+                if not getattr(self, "_real", False):
+                    if not getattr(self, "_sent", False):
+                        self._sent = True
+                        os.kill(os.getpid(), signal.SIGINT)
+                    return None
+                return super().poll()
+
+        holder = {}
+
+        def popen(*a, **k):
+            holder["p"] = P(*a, **k)
+            return holder["p"]
+
+        old = signal.signal(signal.SIGINT, signal.default_int_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, old)
+        t0 = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt) as cm:
+            pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s" % self.pidfile], timeout=30, grace=0.5,
+                         leftovers="keep", popen=popen)
+        self.assertLess(time.monotonic() - t0, 1.5)
+        self.assertEqual(cm.exception.proc_group_stop.status, "stopped", cm.exception.proc_group_stop)
+        holder["p"]._real = True
+        holder["p"].wait(timeout=5)
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        self.assertTrue(gone_within(self.gc))
+
+    def test_a_normal_exit_whose_reap_never_finishes_is_bounded_and_said(self):
+        """condition 2: bounded even without an interrupt; never reported as an exit code."""
+        class P(subprocess.Popen):
+            def poll(self):
+                return None if not getattr(self, "_real", False) else super().poll()
+
+        holder = {}
+
+        def popen(*a, **k):
+            holder["p"] = P(*a, **k)
+            return holder["p"]
+
+        kw = pg.KILL_WAIT_S
+        pg.KILL_WAIT_S = 0.3
+        self.addCleanup(setattr, pg, "KILL_WAIT_S", kw)
+        out = {}
+
+        def run():   # in a daemon thread, so an unbounded reap fails the test instead of hanging the suite
+            out["r"] = pg.run_group(["/bin/sh", "-c", "exit 0"], timeout=30, grace=0.5, leftovers="keep",
+                                    popen=popen)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "the reap after a normal exit is not bounded")
+        r = out["r"]
+        self.assertIsNone(r.rc)
+        self.assertIn("not reaped", r.error)
+        holder["p"]._real = True
+        holder["p"].wait(timeout=5)
+        self.gc = None
+
+    def test_an_install_that_breaks_half_way_still_restores_what_it_changed(self):
+        """bb7dc #520: install swaps SIGINT, then SIGTERM; an exception between the two must not leave the
+        recorder on SIGINT."""
+        class Boom(BaseException):
+            pass
+
+        real = signal.signal
+        n = {"c": 0}
+
+        def flaky(sig, h):
+            if getattr(h, "__func__", None) is pg._Interrupts._record:
+                n["c"] += 1
+                if n["c"] == 2:
+                    raise Boom()
+            return real(sig, h)
+
+        before = signal.getsignal(signal.SIGINT)
+        pg.signal.signal = flaky
+        try:
+            with self.assertRaises(Boom):
+                pg.run_group(["/bin/sh", "-c", "exit 0"], timeout=10, grace=0.5)
+        finally:
+            pg.signal.signal = real
+        self.assertEqual(n["c"], 2)
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+        self.assertIsNone(pg._ACTIVE)
+
+    def test_nested_run_group_outermost_installs_inner_reuses(self):
+        """a63ab #520 condition 5: the caller's SIGTERM handler runs another run_group (a cleanup command) while
+        the outer one is active. The inner one must not install its own recorder (it would pass a Ctrl-C to the
+        outer recorder and keep waiting): one Ctrl-C stops the inner group at once, then the outer one, raises
+        KeyboardInterrupt once, and the caller's handlers are back afterwards."""
+        inner_pid = os.path.join(self.td, "inner.pid")
+        seen = {}
+
+        def on_term(sig, frame):
+            seen["during"] = signal.getsignal(signal.SIGINT)
+            threading.Timer(0.4, os.kill, (os.getpid(), signal.SIGINT)).start()
+            pg.run_group(["/bin/sh", "-c", "sleep 60 & echo $! > %s; wait" % inner_pid], timeout=20, grace=0.5)
+
+        old_int = signal.signal(signal.SIGINT, signal.default_int_handler)
+        old_term = signal.signal(signal.SIGTERM, on_term)
+        self.addCleanup(signal.signal, signal.SIGINT, old_int)
+        self.addCleanup(signal.signal, signal.SIGTERM, old_term)
+        threading.Timer(0.4, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        t0 = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt) as cm:
+            pg.run_group(self.cmd(), timeout=30, grace=0.5)
+        elapsed = time.monotonic() - t0
+        self.gc = int(Path(self.pidfile).read_text().strip())
+        igc = int(Path(inner_pid).read_text().strip())
+        self.assertLess(elapsed, 4.0, "the inner run kept waiting after the Ctrl-C")
+        self.assertEqual(cm.exception.proc_group_stop.status, "stopped", cm.exception.proc_group_stop)
+        self.assertTrue(gone_within(igc), "inner grandchild %s survived" % igc)
+        self.assertTrue(gone_within(self.gc), "outer grandchild %s survived" % self.gc)
+        self.assertIsNot(seen["during"], signal.default_int_handler)   # the outer recorder was active
+        self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+        self.assertIs(signal.getsignal(signal.SIGTERM), on_term)
+        self.assertIsNone(pg._ACTIVE)
 
     def test_inherit_with_a_timeout_still_stops_the_grandchild(self):
         """bb7dc #520: output="inherit" takes the same stop path; a timeout stops the group, out is ""."""

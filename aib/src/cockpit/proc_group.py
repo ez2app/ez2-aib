@@ -33,6 +33,14 @@ Rules (DECISION-20 + ADR 0007):
   and the stop, and nothing is delivered twice (a63ab #520 G2 / G3). Signals that arrive during the stop are
   delivered afterwards, each once; a held Ctrl-C is dropped only when the exception leaving already is a
   KeyboardInterrupt (after a SystemExit it still interrupts, bb7dc #520).
+  Behaviour change (#520): a Ctrl-C no longer raises synchronously inside run_group; it acts at the next fixed
+  point, at most POLL_S (0.05 s) later while waiting. Every wait from the start to the reap is a bounded poll
+  with a check, the final reap included (no bare wait()). Handlers are per process: the outermost run_group on
+  the main thread installs, a run_group started inside it (e.g. from a caller's handler) reuses that record and
+  decides with the caller's real handlers, so one Ctrl-C stops the inner group, then the outer one. Off the main
+  thread nothing is installed and the caller's handlers act as usual (signals land on the main thread).
+  If SIGCHLD is ignored (SIG_IGN / SA_NOCLDWAIT, inherited across exec) the kernel reaps the leader at once:
+  the identity check then sees `leader_reaped_elsewhere` and nothing is sent (safe, but always unverified).
   The stop has a hard deadline counted from the interrupt: `defer_limit_s(grace)` = grace + 2 x KILL_WAIT_S
   (5 + 2 + 2 = 9 s by default). Every wait in it, the external `ps` included, is cut there and the report says
   `stop_cut_short_at_limit` / `leader_not_reaped`: a stuck stop never keeps the user from getting out, with one
@@ -302,8 +310,8 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
         raise ValueError("output must be 'capture' or 'inherit'")
     out_fh = tempfile.TemporaryFile() if output == "capture" else None
     ints = _Interrupts()
-    ints.install()
     try:
+        ints.install()   # inside the try: an exception between two signal.signal calls still restores (bb7dc #520)
         io = {"stdout": out_fh, "stderr": subprocess.STDOUT} if out_fh is not None else {}
         p = g = None
         timed_out, stop = False, None
@@ -323,20 +331,30 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
                     break
                 time.sleep(POLL_S)
             ints.check()
+            # Every stop has the same hard deadline, counted from when it starts (bb7dc / a63ab #520 W3 / W4): a
+            # Ctrl-C recorded during it acts right after it, so the user is out within the limit of the first press.
             if timed_out:
-                stop = g.stop(grace)
+                stop = g.stop(grace, deadline=time.monotonic() + defer_limit_s(grace))
             elif leftovers == "stop" and POSIX:
-                rows = g.members(g.pgid)
+                g.deadline = time.monotonic() + defer_limit_s(grace)
+                rows = g._list()   # the leftovers listing is bounded by the same deadline
                 if rows is None or [pid for pid in _live(rows) if pid != g.pgid]:
-                    stop = g.stop(grace)
+                    stop = g.stop(grace, deadline=g.deadline)
             elif leftovers == "stop":
                 # Windows: no process group to list, so leftovers are not checked at all — say so, never imply clean
                 stop = StopReport("unverified", "windows_leftovers_not_checked")
             ints.check()
-            try:  # the first and only reap, after every signal has been sent
-                p.wait(timeout=KILL_WAIT_S if timed_out else None)
-            except subprocess.TimeoutExpired:
-                pass
+            # the first and only reap, after every signal has been sent. Polled, never a bare wait(): an interrupt
+            # here still acts at the next check, and the wait is bounded (a63ab #520 condition 2). The leader has
+            # exited by now (or was KILLed), so this normally ends at the first poll.
+            reap_end = time.monotonic() + KILL_WAIT_S
+            while p.poll() is None:
+                ints.check()
+                if time.monotonic() >= reap_end:
+                    break
+                time.sleep(POLL_S)
+            if p.returncode is None and not timed_out:
+                return Result(None, "", error="exited but not reaped within %ss" % KILL_WAIT_S, stop=stop)
         except BaseException as e:
             if p is None:
                 # popen itself raised something other than OSError / ValueError. A child may already exist
@@ -366,6 +384,7 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
 # SIGINT / SIGTERM while run_group runs on the main thread. Only the main thread can swap handlers;
 # elsewhere nothing is recorded and the caller's handlers act as usual.
 _DEFERRED = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM") if hasattr(signal, n))
+_ACTIVE = None   # the outermost _Interrupts installed on the main thread, if any
 
 
 class _Fatal(BaseException):
@@ -384,9 +403,21 @@ class _Interrupts:
 
     def __init__(self):
         self.saved, self.held, self.pending = {}, {}, []
+        self.outer = None
 
     def install(self):
+        """Outermost installs, inner reuses (a63ab #520 condition 5). Handlers are per process, so a run_group
+        started while another one is active on the main thread (e.g. from a caller's handler that check() called)
+        does NOT install its own: it shares the outer record and decides with the caller's real handlers, so a
+        Ctrl-C still stops the inner group at once, then the outer one. Signals left over go to the outermost,
+        which delivers them. Off the main thread nothing is installed (only the main thread can swap handlers,
+        and signals are delivered there)."""
+        global _ACTIVE
         if threading.current_thread() is not threading.main_thread():
+            return
+        if _ACTIVE is not None:
+            self.outer = _ACTIVE
+            self.held = _ACTIVE.held
             return
         for sig in _DEFERRED:
             try:
@@ -394,17 +425,22 @@ class _Interrupts:
             except (ValueError, OSError):
                 pass
         self.held = dict(self.saved)
+        _ACTIVE = self
 
     def _record(self, sig, frame):
         self.pending.append(sig)
+
+    def _queue(self):
+        return self.outer.pending if self.outer is not None else self.pending
 
     def check(self):
         """Act on a recorded signal as the caller's handler would have, at this fixed point: Python's default
         Ctrl-C raises KeyboardInterrupt, SIG_DFL raises _Fatal, a callable is called (what it raises is the
         interrupt; if it returns, the run goes on), SIG_IGN does nothing."""
-        while self.pending:
-            sig = self.pending.pop(0)
-            h = self.saved.get(sig)
+        q = self._queue()
+        while q:
+            sig = q.pop(0)
+            h = self.held.get(sig)
             if h is signal.default_int_handler:
                 raise KeyboardInterrupt
             if h is signal.SIG_DFL or h is None:
@@ -413,11 +449,16 @@ class _Interrupts:
                 h(sig, None)
 
     def take_pending(self):
+        """What is left to deliver. An inner run records nothing of its own (the outer recorder is the one
+        installed), so this is empty there and whatever is left stays for the outermost."""
         out, self.pending = self.pending, []
         return out
 
     def restore(self):
-        """Put the caller's handlers back; returns them. Idempotent."""
+        """Put the caller's handlers back (outermost only); returns them. Idempotent."""
+        global _ACTIVE
+        if _ACTIVE is self:
+            _ACTIVE = None
         while self.saved:
             sig, h = self.saved.popitem()
             try:
@@ -447,7 +488,12 @@ def _deliver(sig, h):
 
 
 def _stop_then_reraise(p, g, grace, exc, ints, clock=time.monotonic):
+    """Stop, reap, report, then hand on what was held and raise. The deadline is now + limit, or the deadline of
+    a stop that was already running when the signal came (W3 / W4), whichever is earlier: no new 9 s.
+    Everywhere else a recorded signal acts within POLL_S, so "now" is the press, give or take one poll."""
     deadline = clock() + defer_limit_s(grace)
+    if g is not None and g.deadline is not None:
+        deadline = min(deadline, g.deadline)
     try:
         rep = (g if g is not None else _Group(p)).stop(grace, deadline=deadline)
     except Exception as e:  # noqa: BLE001  the stop itself broke: say so, the original exception still wins
