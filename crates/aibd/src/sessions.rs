@@ -785,6 +785,19 @@ pub async fn method_not_allowed() -> Response {
 mod tests {
     use super::*;
 
+    // absolute on the platform the test runs on (validation only, nothing
+    // is started): "/bin/true" is not absolute on Windows
+    const TRUE_ABS: &str = if cfg!(windows) {
+        r"C:\Windows\System32\whoami.exe"
+    } else {
+        "/bin/true"
+    };
+    const ECHO_ABS: &str = if cfg!(windows) {
+        r"C:\Windows\System32\cmd.exe"
+    } else {
+        "/bin/echo"
+    };
+
     fn v(j: serde_json::Value) -> Result<Request, ApiError> {
         validate(j.to_string().as_bytes())
     }
@@ -798,20 +811,20 @@ mod tests {
 
     #[test]
     fn argv_rules() {
-        assert!(v(serde_json::json!({"argv": ["/bin/true"]})).is_ok());
+        assert!(v(serde_json::json!({"argv": [TRUE_ABS]})).is_ok());
         for bad_argv in [
             serde_json::json!([]),
             serde_json::json!(["true"]),
             serde_json::json!(["./x"]),
-            serde_json::json!(["/bin/echo", ""]),
-            serde_json::json!(["/bin/echo", "a\u{0}b"]),
-            serde_json::json!(vec!["/bin/echo"; 65]),
-            serde_json::json!(["/bin/echo", "x".repeat(4097)]),
+            serde_json::json!([ECHO_ABS, ""]),
+            serde_json::json!([ECHO_ABS, "a\u{0}b"]),
+            serde_json::json!(vec![ECHO_ABS; 65]),
+            serde_json::json!([ECHO_ABS, "x".repeat(4097)]),
         ] {
             let e = v(serde_json::json!({ "argv": bad_argv })).unwrap_err();
             assert_eq!(e.0, ErrorCode::InvalidRequest, "{bad_argv}");
         }
-        let many: Vec<String> = std::iter::once("/bin/echo".to_owned())
+        let many: Vec<String> = std::iter::once(ECHO_ABS.to_owned())
             .chain(std::iter::repeat_n("y".repeat(4000), 9))
             .collect();
         assert_eq!(
@@ -831,38 +844,42 @@ mod tests {
             "PATH",
             "path",
         ] {
-            let e = v(serde_json::json!({"argv": ["/bin/true"], "env": {k: secret}})).unwrap_err();
+            let e = v(serde_json::json!({"argv": [TRUE_ABS], "env": {k: secret}})).unwrap_err();
             assert_eq!(e.0, ErrorCode::EnvNotAllowed, "{k}");
             assert!(!e.1.contains(secret));
         }
         for k in ["1A", "A-B", "", &"K".repeat(65)] {
-            let e = v(serde_json::json!({"argv": ["/bin/true"], "env": {k: "v"}})).unwrap_err();
+            let e = v(serde_json::json!({"argv": [TRUE_ABS], "env": {k: "v"}})).unwrap_err();
             assert_eq!(e.0, ErrorCode::InvalidRequest, "{k}");
         }
-        let e = v(serde_json::json!({"argv": ["/bin/true"], "env": {"A": "x".repeat(4097)}}))
-            .unwrap_err();
+        let e =
+            v(serde_json::json!({"argv": [TRUE_ABS], "env": {"A": "x".repeat(4097)}})).unwrap_err();
         assert_eq!(e.0, ErrorCode::InvalidRequest);
         let mut m = serde_json::Map::new();
         for i in 0..33 {
             m.insert(format!("K{i}"), "v".into());
         }
         assert_eq!(
-            v(serde_json::json!({"argv": ["/bin/true"], "env": m}))
+            v(serde_json::json!({"argv": [TRUE_ABS], "env": m}))
                 .unwrap_err()
                 .0,
             ErrorCode::InvalidRequest
         );
         // a type error quoting the value is not echoed either
         let e = validate(
-            format!(r#"{{"argv": ["/bin/true"], "env": {{"A": {{"x": "{secret}"}}}}}}"#).as_bytes(),
+            format!(
+                r#"{{"argv": [{abs}], "env": {{"A": {{"x": "{secret}"}}}}}}"#,
+                abs = serde_json::to_string(TRUE_ABS).unwrap()
+            )
+            .as_bytes(),
         )
         .unwrap_err();
         assert!(!e.1.contains(secret), "{}", e.1);
         assert!(
-            v(serde_json::json!({"argv": ["/bin/true"], "env": {"LANG": "C", "_X1": ""}})).is_ok()
+            v(serde_json::json!({"argv": [TRUE_ABS], "env": {"LANG": "C", "_X1": ""}})).is_ok()
         );
         assert_eq!(
-            v(serde_json::json!({"argv": ["/bin/true"], "env": {"TEMP": "a", "Temp": "b"}}))
+            v(serde_json::json!({"argv": [TRUE_ABS], "env": {"TEMP": "a", "Temp": "b"}}))
                 .unwrap_err()
                 .0,
             ErrorCode::InvalidRequest
@@ -872,21 +889,21 @@ mod tests {
     #[test]
     fn cwd_and_shape_rules() {
         assert_eq!(
-            v(serde_json::json!({"argv": ["/bin/true"], "cwd": "rel"}))
+            v(serde_json::json!({"argv": [TRUE_ABS], "cwd": "rel"}))
                 .unwrap_err()
                 .0,
             ErrorCode::InvalidRequest
         );
         assert_eq!(
-            v(serde_json::json!({"argv": ["/bin/true"], "cwd": "/no/such/dir/x"}))
+            v(serde_json::json!({"argv": [TRUE_ABS], "cwd": std::env::temp_dir().join("no-such-dir-a9136").join("x")}))
                 .unwrap_err()
                 .0,
             ErrorCode::InvalidRequest
         );
         let d = std::env::temp_dir();
-        assert!(v(serde_json::json!({"argv": ["/bin/true"], "cwd": d})).is_ok());
+        assert!(v(serde_json::json!({"argv": [TRUE_ABS], "cwd": d})).is_ok());
         assert_eq!(
-            v(serde_json::json!({"argv": ["/bin/true"], "extra": 1}))
+            v(serde_json::json!({"argv": [TRUE_ABS], "extra": 1}))
                 .unwrap_err()
                 .0,
             ErrorCode::InvalidRequest
