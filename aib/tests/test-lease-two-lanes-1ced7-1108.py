@@ -332,6 +332,72 @@ class Lanes(unittest.TestCase):
                            text=True, cwd=str(self.tree_b), stdin=subprocess.DEVNULL, timeout=60)
         self.assertIn("SHORT=False", r.stdout, r.stdout + r.stderr)
 
+    def _wait_short(self):
+        sp = Path(str(self.lease) + ".short.json")
+        t0 = time.time()
+        while not sp.exists() and time.time() - t0 < 15:
+            time.sleep(0.1)
+        self.assertTrue(sp.exists())
+        return sp
+
+    def test_same_run_id_from_another_process_cannot_take_or_release(self):
+        # 11-08 bb7dc 審 3:兩個行程指定同一 run_id ⇒ 後來的被拒,而且它結束時不會刪掉前面那份
+        p = subprocess.Popen([sys.executable, "-B", str(TOOL), "run-short", "--owner", "t", "--what", "first",
+                              "--run-id", "dup", "--est-s", "30", "--no-browser", "--no-fixed-port", "--",
+                              "sleep", "20"], env=self.env, cwd=str(self.tree_b), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        self.procs.append(p)
+        sp = self._wait_short()
+        r = self.short(["true"], extra=("--run-id", "dup"))
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("short lane held by t", r.stdout)
+        cur = json.loads(sp.read_text())
+        self.assertEqual((cur["what"], cur["pid"]), ("first", p.pid))
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=30)
+        self.assertFalse(sp.exists())
+
+    def test_exclusive_and_short_never_both_granted_when_racing(self):
+        # 11-08 bb7dc 審 1:兩個行程同時要(一個 acquire --exclusive、一個 run-short),同一把鎖 ⇒ 最多一個拿到
+        for i in range(5):
+            with self.subTest(round=i):
+                for f in (self.lease, Path(str(self.lease) + ".short.json")):
+                    if f.exists():
+                        f.unlink()
+                go = self.td / ("go-%d" % i)
+                wrap = ("import os,sys,time,subprocess\n"
+                        "while not os.path.exists(sys.argv[1]): time.sleep(0.005)\n"
+                        "sys.exit(subprocess.call(sys.argv[2:]))\n")
+                ex = subprocess.Popen([sys.executable, "-c", wrap, str(go), sys.executable, "-B", str(TOOL), "acquire",
+                                       "--owner", "f457", "--what", "timing", "--run-id", "LX%d" % i, "--pid",
+                                       str(os.getpid()), "--ttl", "600", "--exclusive"], env=self.env,
+                                      cwd=str(self.tree_a), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                sh = subprocess.Popen([sys.executable, "-c", wrap, str(go), sys.executable, "-B", str(TOOL),
+                                       "run-short", "--owner", "t", "--what", "racer", "--est-s", "30",
+                                       "--no-browser", "--no-fixed-port", "--", "sleep", "2"], env=self.env,
+                                      cwd=str(self.tree_b), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.procs += [ex, sh]
+                go.write_text("go")
+                ex_rc = ex.wait(timeout=60)
+                sh_rc = sh.wait(timeout=60)
+                ex.stdout.close(); ex.stderr.close(); sh.stdout.close(); sh.stderr.close()
+                self.assertFalse(ex_rc == 0 and sh_rc == 0, "exclusive 跟 short 同時拿到了")
+                self.assertTrue(ex_rc == 0 or sh_rc == 0, (ex_rc, sh_rc))
+                if ex_rc == 0:
+                    self.run_(["release", "--run-id", "LX%d" % i], cwd=self.tree_a)
+
+    def test_big_batch_refused_under_run_short_even_when_long_holder_is_ancestor(self):
+        # 11-08 bb7dc 審 4:long 持有者是祖先(inherited)也不能讓大批從 run-short 底下繞過
+        for n in range(31):
+            (self.tree_b / ("test_t%02d.py" % n)).write_text("import unittest\n")
+        self.hold_long(cwd=self.tree_a)          # --pid = 這支測試 ⇒ 是下面子行程的祖先
+        env = dict(self.env, AIB_LEASE_SHORT_RUN_ID="fake-short")
+        r = subprocess.run([sys.executable, "-B", str(TEST_ENTRY_DIR / "test_entry.py"), "--repo", str(self.tree_b)]
+                           + ["test_t%02d.py" % n for n in range(31)], env=env, capture_output=True, text=True,
+                           cwd=str(self.tree_b), stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("short lane is for a few named tests", r.stdout + r.stderr)
+
 
 class GateInProcess(unittest.TestCase):
     """load1 / Chrome 上限:行程內換掉量測與常數。"""

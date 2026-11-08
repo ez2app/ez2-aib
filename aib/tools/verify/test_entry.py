@@ -1997,6 +1997,11 @@ def main(argv=None):
     skip_mem = nested or inherited or _ci_or_fixture_home()
     big = len(names) > _env_int("AIB_TEST_BIG_BATCH", BIG_BATCH)
     mem = {"waited": 0, "gave_up": False, "free": None} if skip_mem else wait_for_memory(say, big=big)
+    if big and not nested and (os.environ.get("AIB_LEASE_SHORT_RUN_ID") or "").strip():
+        # 11-08 bb7dc 審 4:在 run-short 底下(帶了 short 的 run id)大批一律拒 —— 不管 long 持有者是不是祖先(inherited),
+        #   先於 inherited 判斷;只有測試裡面又叫 aib test(nested,外層已經算過)例外。環境變數是假的也是拒(安全方向)。
+        say(T("short_big_refused", {"n": len(names)}))
+        return RC_EXCLUSIVE
     if nested:
         lease = {"run_id": None, "waited": 0, "why": "nested"}
     elif inherited:

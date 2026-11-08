@@ -948,7 +948,10 @@ def _short_take(a, now, path, ledger, state_root):
     cur, rwhy = read_lease(sp, SHORT_SCHEMA)
     if rwhy:
         print(rwhy); return RC_UNREADABLE, None
-    if cur is not None and cur.get("run_id") != a.run_id and not is_expired(cur, now):
+    # 11-08 bb7dc 審 3:同 run_id 也要是同一個行程才算自己的(兩個行程指定同一 run_id ⇒ 後來的不准蓋掉前面的)
+    mine = (cur is not None and cur.get("run_id") == a.run_id and cur.get("pid") == os.getpid()
+            and cur.get("pid_start") == proc_start(os.getpid()))
+    if cur is not None and not mine and not is_expired(cur, now):
         log_event(ledger, "denied", now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id, why="short_busy",
                   holder=cur.get("owner"), holder_what=cur.get("what"))
         print(T("aib.lease.short_busy", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
@@ -967,7 +970,7 @@ def _short_take(a, now, path, ledger, state_root):
            "expiry_epoch": int(now + a.est_s + SHORT_GRACE_S), "expiry_at": iso(now + a.est_s + SHORT_GRACE_S)}
     event = "acquire"
     fields = {}
-    if cur is not None and cur.get("run_id") != a.run_id:
+    if cur is not None and not mine:
         event = "takeover"
         fields = {"prev_owner": cur.get("owner"), "prev_run_id": cur.get("run_id"), "why": takeover_why(cur, now)}
     write_lease(sp, new)
@@ -980,8 +983,9 @@ def _short_take(a, now, path, ledger, state_root):
 def _short_release(a, now, path, ledger, held_s, rc, overrun):
     sp = short_path(path)
     cur, why = read_lease(sp, SHORT_SCHEMA)
-    if why or cur is None or cur.get("run_id") != a.run_id:
-        return              # 被接管 / 讀不到:不動別人的
+    if why or cur is None or cur.get("run_id") != a.run_id or cur.get("pid") != os.getpid() \
+            or cur.get("pid_start") != proc_start(os.getpid()):
+        return              # 被接管 / 讀不到 / 同 run_id 但不是這個行程拿的:不動別人的
     try:
         sp.unlink()
     except OSError:
