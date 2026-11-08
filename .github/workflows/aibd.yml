@@ -134,6 +134,14 @@ jobs:
           k '        self.job.terminate(1)' '        Ok(()) // knife: no terminate'
           k '        self.job.terminate(1)' \
             '        self.child.kill().map_err(|_| SysError::Unknown) // knife: root only'
+          # 1ced7 #543 High: a root whose handle cannot be opened after the spawn is
+          # "not started" only once the root is gone AND the Job is empty
+          k2() { python3 -I scripts/knife.py crates/aib-sys/src/session.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-sys --locked --lib session::; }
+          k2 '                    let _ = terminate(&job);' '                    // knife: no kill' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
+          k2 '                        Ok(true) => cause,' '                        _ => cause,' \
+            a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
       - name: aibd Windows session adapter knives (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -148,3 +156,6 @@ jobs:
           k '        SpawnError::Spawn(SysError::NotReaped { pid, .. }) => Some(*pid),' \
             '        SpawnError::Spawn(SysError::NotReaped { .. }) => None,' \
             a_spawn_not_confirmed_gone_keeps_its_pid
+          k '            Ok(true) => self.0.exit_code().ok().flatten().map(code),' \
+            '            Ok(true) => Some(self.0.exit_code().ok().flatten().map_or(Exit::Code(0), code)),' \
+            a_root_wait_or_exit_code_error_is_never_an_exit

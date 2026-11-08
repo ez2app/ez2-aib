@@ -721,13 +721,13 @@ fn spawn_inner(
 }
 
 /// How long a failed spawn waits for its child to be gone.
-const REAP_LIMIT: Duration = Duration::from_secs(5);
+pub(crate) const REAP_LIMIT: Duration = Duration::from_secs(5);
 
 /// Terminate the child of a failed spawn and confirm, within `limit`, that it
 /// is gone. The result of `kill` is not trusted (it can fail, or report Ok
 /// for a process that is still there); only the wait decides. Not confirmed
 /// gone ⇒ [`SysError::NotReaped`], never `cause` alone.
-fn reap_failed(
+pub(crate) fn reap_failed(
     child: &mut Child,
     cause: SysError,
     limit: Duration,

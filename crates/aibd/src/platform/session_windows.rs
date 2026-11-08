@@ -69,7 +69,7 @@ pub fn stop_from(r: Result<KillReport, SysError>) -> Stop {
                 // nothing is known to survive, but something went unanswered
                 // (list / open / wait failed, root exit not confirmed, Job not
                 // empty): say which, never clean
-                let why = k.unconfirmed().unwrap_or("unconfirmed");
+                let why = k.unconfirmed().unwrap_or("unconfirmed"); // unreachable: !all_gone && no survivors
                 StopStatus::Unverified(format!("{JOB_ERROR_PREFIX}{why}"))
             };
             Stop {
@@ -93,9 +93,29 @@ pub fn stop_from(r: Result<KillReport, SysError>) -> Stop {
     }
 }
 
-struct RootWait(Arc<Process>);
+/// The two reads [`RootWait`] makes on the root's handle (a trait so a failing
+/// handle can be tested).
+trait RootHandle: Send + Sync {
+    fn wait(&self, timeout: Duration) -> Result<bool, SysError>;
+    fn exit_code(&self) -> Result<Option<u32>, SysError>;
+}
 
-impl ExitWait for RootWait {
+impl RootHandle for Process {
+    fn wait(&self, timeout: Duration) -> Result<bool, SysError> {
+        Process::wait(self, timeout)
+    }
+    fn exit_code(&self) -> Result<Option<u32>, SysError> {
+        Process::exit_code(self)
+    }
+}
+
+/// An exit is only reported when the handle signaled **and** the code was read.
+/// A failed wait or an unreadable code is never an exit (so never a clean end):
+/// it reads as "not yet" until the three-state ExitWait (a9136, after preview.2;
+/// a63ab ruling on 1ced7 #543 Medium 1).
+struct RootWait<P: RootHandle>(Arc<P>);
+
+impl<P: RootHandle> ExitWait for RootWait<P> {
     fn wait(&self, timeout: Duration) -> Option<Exit> {
         match self.0.wait(timeout) {
             Ok(true) => self.0.exit_code().ok().flatten().map(code),
@@ -216,6 +236,41 @@ mod tests {
         assert_eq!(
             s.status,
             StopStatus::Unverified("job_error:permission_denied".into())
+        );
+    }
+
+    struct FakeRoot {
+        wait: Result<bool, SysError>,
+        code: Result<Option<u32>, SysError>,
+    }
+
+    impl RootHandle for FakeRoot {
+        fn wait(&self, _: Duration) -> Result<bool, SysError> {
+            self.wait.clone()
+        }
+        fn exit_code(&self) -> Result<Option<u32>, SysError> {
+            self.code.clone()
+        }
+    }
+
+    fn root_wait(
+        wait: Result<bool, SysError>,
+        code: Result<Option<u32>, SysError>,
+    ) -> Option<Exit> {
+        RootWait(Arc::new(FakeRoot { wait, code })).wait(Duration::ZERO)
+    }
+
+    /// 1ced7 #543 / a63ab 06:2x: a root wait or exit-code error is never an exit.
+    #[test]
+    fn a_root_wait_or_exit_code_error_is_never_an_exit() {
+        assert_eq!(root_wait(Err(SysError::Os(6)), Ok(Some(0))), None);
+        assert_eq!(root_wait(Ok(true), Err(SysError::Os(5))), None);
+        assert_eq!(root_wait(Ok(true), Ok(None)), None);
+        assert_eq!(root_wait(Ok(false), Ok(Some(0))), None);
+        assert_eq!(root_wait(Ok(true), Ok(Some(7))), Some(Exit::Code(7)));
+        assert_eq!(
+            root_wait(Ok(true), Ok(Some(0xC000_0005))),
+            Some(Exit::Code(0xC000_0005_u32 as i32))
         );
     }
 

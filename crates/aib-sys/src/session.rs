@@ -14,14 +14,14 @@
 //! Not here: a graceful stop first (CTRL_BREAK needs a shared console; aibd
 //! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
 
-use crate::job::{Job, Member, Process};
+use crate::job::{reap_failed, Job, Member, Process, REAP_LIMIT};
 use crate::settle::{kill_tree, KillOps};
 use crate::SysError;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// What to start. `env` is added to aibd's environment, or is the whole
 /// environment when `clear_env` is set (aibd passes its own environment minus
@@ -79,6 +79,17 @@ pub struct SessionTree {
 impl SessionTree {
     /// Start `spec` inside a new Job. stdin / stdout / stderr are null.
     pub fn spawn(spec: &Spec) -> Result<SessionTree, SpawnError> {
+        Self::spawn_with(spec, Process::open, |j| j.terminate(1), REAP_LIMIT)
+    }
+
+    /// [`spawn`](Self::spawn) with the root open and the Job terminate
+    /// injectable (tests) and the confirm limit.
+    pub(crate) fn spawn_with(
+        spec: &Spec,
+        open: impl FnOnce(u32) -> Result<Process, SysError>,
+        terminate: impl FnOnce(&Job) -> Result<(), SysError>,
+        limit: Duration,
+    ) -> Result<SessionTree, SpawnError> {
         let (program, args) = spec.argv.split_first().ok_or(SpawnError::NoProgram)?;
         let job = Job::new().map_err(SpawnError::Job)?;
         let mut cmd = Command::new(program);
@@ -99,11 +110,30 @@ impl SessionTree {
         let pid = child.id();
         // the unwaited `child` pins the pid, so this handle is the root's;
         // it stays valid (and readable) after the root exits
-        let root = match Process::open(pid) {
+        let root = match open(pid) {
             Ok(p) => Arc::new(p),
             Err(e) => {
-                drop(job); // KILL_ON_JOB_CLOSE
-                let _ = child.try_wait();
+                // it already runs (resumed) and may have forked: kill the whole
+                // Job, then the root must be seen gone AND the Job empty, or this
+                // is NotReaped and keeps its slot (definition #11). One deadline
+                // for both waits.
+                let deadline = Instant::now() + limit;
+                let e = reap_failed(&mut child, e, limit, |_| {
+                    let _ = terminate(&job);
+                });
+                let e = match e {
+                    nr @ SysError::NotReaped { .. } => nr,
+                    cause => {
+                        match job.wait_empty(deadline.saturating_duration_since(Instant::now())) {
+                            Ok(true) => cause,
+                            Ok(false) | Err(_) => SysError::NotReaped {
+                                pid,
+                                cause: Box::new(cause),
+                            },
+                        }
+                    }
+                };
+                drop(job); // only now; KILL_ON_JOB_CLOSE stays the backstop
                 return Err(SpawnError::Spawn(e));
             }
         };
@@ -220,5 +250,129 @@ impl KillOps for Ops<'_> {
         };
         r.map(|s| s.is_some())
             .map_err(|e| e.raw_os_error().map_or(SysError::Unknown, SysError::Os))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Definition #11 for a root whose own handle cannot be opened after the
+    //! spawn (1ced7 #543 review High): it already runs and may have forked, so
+    //! "not started" is only said once the root is seen gone **and** the Job is
+    //! empty; otherwise `NotReaped` (the slot stays taken).
+    use super::*;
+    use std::cell::RefCell;
+
+    /// `cmd` (root) that starts `ping` (a grandchild) and stays.
+    fn tree_spec() -> Spec {
+        Spec {
+            argv: ["cmd", "/C", "ping -n 60 127.0.0.1 >NUL"]
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
+            ..Spec::default()
+        }
+    }
+
+    /// Wait until the Job holds the root and its child, then hold a
+    /// terminable handle on every member (so the test can see them go).
+    fn hold_members(job: &Job, held: &RefCell<Vec<Process>>) {
+        let t = Instant::now();
+        while job.active_processes().unwrap_or(0) < 2 {
+            assert!(t.elapsed() < Duration::from_secs(10), "child never started");
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for m in job.members().expect("members") {
+            if let Ok(p) = Process::open_terminable(m.pid) {
+                held.borrow_mut().push(p);
+            }
+        }
+    }
+
+    fn cleanup(held: &RefCell<Vec<Process>>) {
+        for p in held.borrow().iter() {
+            let _ = p.terminate(1);
+            let _ = p.wait(Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn a_failed_root_open_kills_and_confirms_the_whole_tree() {
+        let held = RefCell::new(Vec::new());
+        let r = SessionTree::spawn_with(
+            &tree_spec(),
+            |_| Err(SysError::Os(8)),
+            |j| {
+                hold_members(j, &held);
+                j.terminate(1)
+            },
+            Duration::from_secs(5),
+        );
+        let gone: Vec<bool> = held
+            .borrow()
+            .iter()
+            .map(|p| p.wait(Duration::ZERO) == Ok(true))
+            .collect();
+        cleanup(&held);
+        match r {
+            Err(SpawnError::Spawn(SysError::Os(8))) => {}
+            other => panic!("expected Spawn(Os(8)), got {:?}", other.err()),
+        }
+        assert!(gone.len() >= 2, "root and child were not both seen");
+        assert!(
+            gone.iter().all(|g| *g),
+            "returned 'not started' while a member still ran: {gone:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_root_open_whose_child_outlives_the_root_is_not_reaped() {
+        let held = RefCell::new(Vec::new());
+        let root_pid = RefCell::new(0u32);
+        let r = SessionTree::spawn_with(
+            &tree_spec(),
+            |pid| {
+                *root_pid.borrow_mut() = pid;
+                Err(SysError::Os(8))
+            },
+            |j| {
+                hold_members(j, &held);
+                // only the root goes: the Job never empties
+                let root = Process::open_terminable(*root_pid.borrow())?;
+                root.terminate(1)
+            },
+            Duration::from_millis(800),
+        );
+        cleanup(&held);
+        let Err(e) = r else { panic!("must not start") };
+        assert!(e.may_have_left_running(), "slot released: {e:?}");
+        match e {
+            SpawnError::Spawn(SysError::NotReaped { pid, .. }) => {
+                assert_eq!(pid, *root_pid.borrow())
+            }
+            other => panic!("expected NotReaped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_root_open_that_cannot_kill_is_not_reaped_within_its_limit() {
+        let held = RefCell::new(Vec::new());
+        let t = Instant::now();
+        let r = SessionTree::spawn_with(
+            &tree_spec(),
+            |_| Err(SysError::Os(8)),
+            |j| {
+                hold_members(j, &held);
+                Ok(()) // a terminate that does nothing
+            },
+            Duration::from_millis(300),
+        );
+        let waited = t.elapsed();
+        cleanup(&held);
+        let Err(e) = r else { panic!("must not start") };
+        assert!(e.may_have_left_running(), "slot released: {e:?}");
+        // hold_members may take a moment for the child to appear; the limit
+        // itself is 300 ms
+        assert!(waited < Duration::from_secs(8), "not bounded: {waited:?}");
     }
 }
