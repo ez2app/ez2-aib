@@ -294,7 +294,9 @@ class Workflow(unittest.TestCase):
             with self.subTest(job=job):
                 t = job_text(job)
                 self.assertRegex(t, r"(?m)^    needs: \[tip, docs\]$")
-                self.assertRegex(t, r"(?m)^    if: \$\{\{ !cancelled\(\) \}\}$", "docs 紅時也要跑到判紅那步")
+                # 11-08 DECISION-24(#512):後面可再接「只改標題的 edited 不跑」那句,開頭仍要是 !cancelled()
+                self.assertRegex(t, r"(?m)^    if: \$\{\{ !cancelled\(\) (?:&& [^\n]*)?\}\}$", "docs 紅時也要跑到判紅那步")
+                self.assertNotRegex(t, r"(?m)^    if: [^\n]*(?:always\(\)|\|\|)", "if 只能再加 && 條件,不能用 || / always() 把 !cancelled() 蓋掉")
                 self.assertIn("if: needs.tip.result != 'success' || needs.docs.result != 'success'", t)
                 self.assertIn("exit 1", t)
                 runs_on = re.search(r"(?m)^    runs-on: (.*)$", t).group(1)
