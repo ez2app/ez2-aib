@@ -143,6 +143,10 @@ The macOS side is the small half, and it has to integrate with the shim anyway.
      left the group or the session, the result is `tree_not_clean` / UNVERIFIED.
    - The final word is start-up reconciliation (DECISION-11) and CRASH-TEST-SPEC v0.3
      assertion 1. A result collected by the shim is never reported as `clean`.
+   - On macOS, `killpg` returns `EPERM`, not `ESRCH`, when the group has only zombies
+     left (found in #494). The shim and aibd treat `EPERM` from a group signal as "to be
+     checked": they list the processes again and decide from that. It is neither a
+     failure nor proof that the group is gone.
    - Knife: treat a delivered SIGHUP as proof of cleanup (report `clean` once the hang-up
      was sent) → the test where the fixture ignores SIGHUP must go red, because its
      process is still alive but would be reported `clean`.
@@ -168,6 +172,9 @@ Also required, from the review:
 
 ## Tests
 
+- Placeholders: `crates/aib-sys/tests/pty_invariants.rs` has one `#[ignore]` test per
+  invariant, named by its number (DECISION-14 item 3). Each body panics until the
+  implementation PR replaces it, so `--ignored` is red, never a false green.
 - Fixture: the Rust test double of CRASH-TEST-SPEC v0.3, with a `--tty` mode. That mode
   reports `isatty(0/1)`, the window size and the termios mode, and can switch to raw mode.
 - On both platforms:
