@@ -7,18 +7,25 @@ a63ab PLAN-preview2-usable-today (1ced7, 11-09). Same script on macOS and Window
 
 1. Starts aibd the same way as scripts/aibd-api-smoke.py: AIBD_BIND=127.0.0.1:0, AIBD_DATA_DIR in a fresh temp dir,
    reads the start-up line {"listening", "token_file"}.
-2. POST /api/v1/sessions {"argv": [python, helper, marker], "cwd": tmp}. The helper starts one grandchild
-   (python sleeping), writes "<child pid> <grandchild pid>" to the marker file, then sleeps.
+2. POST /api/v1/sessions {"argv": [python, helper, marker, stopfile], "cwd": tmp} must answer 201 with an id and a pid.
+   The helper starts one grandchild, writes "<child pid> <grandchild pid>" to the marker file, then both wait.
    - 404 / 405 on POST = this aibd has no sessions API ⇒ SKIP (rc 0), unless --require (then rc 1).
-3. GET /api/v1/sessions/{id} must answer 200 while it runs.
-4. DELETE /api/v1/sessions/{id} must answer 2xx and must not itself report a survivor (state stop_unconfirmed,
-   stop.status tree_not_clean or stop.survivors non-empty; a9136 CONTRACT-sessions-preview2 §1 + bb7dc H2); then every pid (session pid, child, grandchild) must be gone
-   within the grace window. A survivor is a FAIL: the script kills it itself (only pids it learned from its own
-   session) so nothing is left behind, and says so.
-5. Stops the aibd it started (by handle), removes the temp dir.
+3. GET /api/v1/sessions/{id} must answer 200 with state "running".
+4. DELETE /api/v1/sessions/{id} must answer 2xx with a stop result the contract allows as "done"
+   (a9136 CONTRACT-sessions-preview2 + a63ab 11-09 ruling on #539 M2 = B):
+   - Windows: state "killed" and stop.status "clean";
+   - macOS / POSIX: that, or state "stop_unconfirmed" with stop.status "unverified" and reason "observed_clean";
+   - always: stop.survivors empty, and every pid (session pid, child, grandchild) gone from outside within 10 s.
+   Anything else is a FAIL (tree_not_clean, a survivor, another unverified reason, "killed" without "clean").
+5. Clean-up never sends a signal to a pid (bb7dc #537 High 1: a bare pid may have been reused). The helper and the
+   grandchild poll a stop file and exit by themselves once it exists (and after 600 s at the latest); the script
+   creates it, waits for them, and reports any that are still there as `leftovers_running`.
+6. "Gone" needs proof (bb7dc #537 High 2): alive() answers alive / gone / unknown; unknown is never counted as gone.
+7. Stops the aibd it started (by its handle), removes the temp dir.
 
 Prints one JSON line. rc: 0 pass or skipped / 1 a check failed (or absent with --require) / 2 usage.
 Not checked: env whitelist, argv limits, many sessions at once, session restart, PTY.
+UNVERIFIED: the Windows branches of alive() and of the rule in 4 have not run on Windows yet.
 """
 import json
 import os
@@ -34,13 +41,18 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 WINDOWS = os.name == "nt"
 
 HELPER = r'''
-import subprocess, sys, time
-g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-with open(sys.argv[1] + ".tmp", "w") as f:
-    f.write("%d %d" % (__import__("os").getpid(), g.pid))
-__import__("os").replace(sys.argv[1] + ".tmp", sys.argv[1])
-time.sleep(300)
+import os, subprocess, sys, time
+marker, stop = sys.argv[1], sys.argv[2]
+WAIT = "import os,sys,time\nt=time.time()\nwhile not os.path.exists(sys.argv[1]) and time.time()-t<600: time.sleep(0.2)"
+g = subprocess.Popen([sys.executable, "-c", WAIT, stop])
+with open(marker + ".tmp", "w") as f:
+    f.write("%d %d" % (os.getpid(), g.pid))
+os.replace(marker + ".tmp", marker)
+t = time.time()
+while not os.path.exists(stop) and time.time() - t < 600:
+    time.sleep(0.2)
 '''
+
 
 
 def call(method, url, token=None, body=None, timeout=10.0):
@@ -65,43 +77,71 @@ def call(method, url, token=None, body=None, timeout=10.0):
         return code, None
 
 
+ALIVE, GONE, UNKNOWN = "alive", "gone", "unknown"
+
+
+def _alive_windows(pid):
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE          # pointer width: a c_int default truncates the handle on x64
+    k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k.GetExitCodeProcess.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    h = k.OpenProcess(0x1000, False, int(pid))       # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        err = ctypes.get_last_error()
+        if err == 87:                                # ERROR_INVALID_PARAMETER: no such process
+            return GONE
+        if err == 5:                                 # ERROR_ACCESS_DENIED: it exists
+            return ALIVE
+        return UNKNOWN
+    try:
+        code = wintypes.DWORD()
+        if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+            return UNKNOWN
+        return ALIVE if code.value == 259 else GONE  # STILL_ACTIVE
+    finally:
+        k.CloseHandle(h)
+
+
 def alive(pid):
-    if not pid or pid <= 0:
-        return False
+    """alive / gone / unknown. Only clear evidence is "gone"; a failed check is "unknown", never "gone"."""
+    if not isinstance(pid, int) or pid <= 0:
+        return UNKNOWN
     if WINDOWS:
-        import ctypes
-        k = ctypes.windll.kernel32
-        h = k.OpenProcess(0x1000, False, int(pid))          # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            return False
         try:
-            code = ctypes.c_ulong()
-            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
-        finally:
-            k.CloseHandle(h)
+            return _alive_windows(pid)
+        except (OSError, AttributeError, ValueError):
+            return UNKNOWN
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        return GONE
     except PermissionError:
-        return True
-    # a zombie still answers kill(0): treat "exited, not reaped yet" as gone
+        return ALIVE                                 # exists, owned by someone else
+    except OSError:
+        return UNKNOWN
+    # kill(0) succeeded: it exists, unless it is a zombie (exited, not reaped yet) — only ps can say so
     try:
-        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
-        return bool(out.strip()) and not out.strip().startswith("Z")
+        p = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
-        return True
+        return ALIVE
+    st = p.stdout.strip()
+    if p.returncode == 0 and st.startswith("Z"):
+        return GONE
+    return ALIVE                                     # ps failed / empty / not a zombie: kill(0) said it exists
 
 
-def kill_pid(pid):
-    try:
-        if WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
-        else:
-            import signal
-            os.kill(pid, signal.SIGKILL)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+def done_ok(state, status, reason, survivors):
+    """Does the DELETE answer say "done" the way the contract allows on this OS? (see 4. above)"""
+    if survivors:
+        return False
+    if state == "killed" and status == "clean":
+        return True
+    return (not WINDOWS) and state == "stop_unconfirmed" and status == "unverified" and reason == "observed_clean"
 
 
 def first_json_line(path, proc, deadline):
@@ -156,6 +196,7 @@ def smoke(exe, require, timeout):
     env = dict(os.environ, AIBD_BIND="127.0.0.1:0", AIBD_DATA_DIR=os.path.join(work, "data"))
     env.pop("AIBD_ALLOWED_ORIGINS", None)
     proc, ok, pids = None, False, []
+    stopfile = os.path.join(work, "stop")
     try:
         with open(out_path, "w") as out, open(err_path, "w") as err:
             proc = subprocess.Popen([exe], stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
@@ -176,7 +217,7 @@ def smoke(exe, require, timeout):
             f.write(HELPER)
         marker = os.path.join(work, "pids.txt")
         code, body = call("POST", base + "/api/v1/sessions", token,
-                          {"argv": [os.path.abspath(sys.executable), helper, marker], "cwd": work})
+                          {"argv": [os.path.abspath(sys.executable), helper, marker, stopfile], "cwd": work})
         res["post"] = code
         if code in (404, 405):
             res["sessions"] = "absent"
@@ -186,7 +227,7 @@ def smoke(exe, require, timeout):
         sid = (body or {}).get("id")
         spid = (body or {}).get("pid")
         res["session_id"], res["session_pid"] = sid, spid
-        if code not in (200, 201) or not sid:
+        if code != 201 or not isinstance(sid, str) or not sid or not isinstance(spid, int):
             return res, False
         res["marker"] = wait_for(lambda: os.path.exists(marker), timeout)
         if res["marker"]:
@@ -198,36 +239,44 @@ def smoke(exe, require, timeout):
         for p in (spid, child, grand):
             if isinstance(p, int) and p > 0 and p not in pids:
                 pids.append(p)
-        res["grandchild_pid"] = grand
         res["alive_before"] = {str(p): alive(p) for p in pids}
+        res["grandchild_pid"] = grand
         code, body = call("GET", base + "/api/v1/sessions/%s" % sid, token)
         res["get_running"] = code
         res["state_running"] = (body or {}).get("state") or (body or {}).get("status")
         code, body = call("DELETE", base + "/api/v1/sessions/%s" % sid, token, timeout=30.0)
         res["delete"] = code
-        # contract (a9136 CONTRACT-sessions-preview2 §1, bb7dc H2): DELETE answers after the kill with the
-        # Session; state stop_unconfirmed or stop.status tree_not_clean = aibd itself says something survived
+        # contract §1 + #539 M2 = B: DELETE answers after the kill with the Session and its stop result
         res["delete_state"] = (body or {}).get("state")
         stop_info = (body or {}).get("stop") if isinstance((body or {}).get("stop"), dict) else {}
         res["stop_status"] = stop_info.get("status")
+        res["stop_reason"] = stop_info.get("reason")
         res["stop_survivors"] = stop_info.get("survivors")
-        aibd_says_left = res["delete_state"] == "stop_unconfirmed" or res["stop_status"] == "tree_not_clean" \
-            or bool(res["stop_survivors"])
-        gone = wait_for(lambda: not any(alive(p) for p in pids), 10.0)
-        res["survivors"] = [p for p in pids if alive(p)]
+        res["done_ok"] = done_ok(res["delete_state"], res["stop_status"], res["stop_reason"],
+                                 res["stop_survivors"] if isinstance(res["stop_survivors"], list) else ["?"])
+        gone = wait_for(lambda: all(alive(p) == GONE for p in pids), 10.0)
+        after = {p: alive(p) for p in pids}
+        res["survivors"] = [p for p, a in after.items() if a == ALIVE]
+        res["unknown_after"] = [p for p, a in after.items() if a == UNKNOWN]
         code, body = call("GET", base + "/api/v1/sessions/%s" % sid, token)
         res["get_after"] = code
         res["state_after"] = (body or {}).get("state") or (body or {}).get("status")
-        ok = (res["token_read"] and res["marker"] and grand > 0 and grand != child and all(res["alive_before"].values()) and res["get_running"] == 200
-              and 200 <= res["delete"] < 300 and gone
-              and not aibd_says_left)
+        ok = (res["token_read"] and res["marker"] and grand > 0 and grand != child
+              and all(a == ALIVE for a in res["alive_before"].values())
+              and res["get_running"] == 200 and res["state_running"] == "running"
+              and 200 <= res["delete"] < 300 and res["done_ok"] and gone)
         return res, ok
     finally:
-        left = [p for p in pids if alive(p)]
-        for p in left:                       # only pids learned from our own session
-            kill_pid(p)
-        if left:
-            res["killed_leftovers"] = left
+        # never signal a bare pid (it may be someone else's by now): the helper and grandchild exit on the stop file
+        try:
+            open(stopfile, "w").close()
+        except OSError:
+            pass
+        if pids:
+            wait_for(lambda: all(alive(p) == GONE for p in pids), 5.0)
+            left = [p for p in pids if alive(p) != GONE]
+            if left:
+                res["leftovers_running"] = left
         if proc is not None:
             try:
                 res["stopped"] = stop(proc)
