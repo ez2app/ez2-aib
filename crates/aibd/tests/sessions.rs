@@ -967,3 +967,86 @@ async fn measure_stop_reasons() {
     );
     d.shutdown().await;
 }
+
+/// bb7dc #546 a76df098 (1): the shutdown starts while a background re-check
+/// is stopping the session (so `stopping` is set and the shutdown skips it);
+/// that pass then finds a survivor. The shutdown must not end as if nothing
+/// was there: the session gets its shutdown stop on record.
+struct Gated;
+
+static GATED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static GATE_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static GATE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl aibd::platform::session::Running for Gated {
+    fn pid(&self) -> u32 {
+        999_996
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(None)
+    }
+    fn exit_wait(&self) -> std::sync::Arc<dyn aibd::platform::session::ExitWait> {
+        std::sync::Arc::new(NeverExits)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{Stop, StopStatus};
+        use std::sync::atomic::Ordering::SeqCst;
+        let n = GATED_CALLS.fetch_add(1, SeqCst);
+        let survivors = if n == 1 {
+            // the re-check's pass: hold it until the test has begun the shutdown
+            GATE_IN.store(true, SeqCst);
+            while !GATE_OPEN.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            vec![4242]
+        } else {
+            vec![]
+        };
+        Stop {
+            status: StopStatus::Unverified("candidates_unreadable".into()),
+            survivors,
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec!["env_cleared"],
+        }
+    }
+}
+
+fn gated_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Gated))
+}
+
+#[test]
+fn a_shutdown_during_a_recheck_still_records_the_shutdown_stop() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(store.clone(), None, gated_spawn, 1, tmp.path().to_path_buf());
+    let rec = s.start(one_req()).unwrap();
+    assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
+    assert!(wait_until(Duration::from_secs(8), || GATE_IN.load(SeqCst)), "no re-check pass");
+    let sd = {
+        let s = s.clone();
+        std::thread::spawn(move || s.shutdown_all())
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    GATE_OPEN.store(true, SeqCst);
+    let busy = sd.join().unwrap();
+    let evs = store.events_after(0, 100).unwrap();
+    let by_shutdown = evs.iter().any(|e| {
+        e.aggregate_id == rec.id
+            && e.event_type == "session.stop_unconfirmed"
+            && e.payload["ended_by"] == "shutdown"
+    });
+    assert!(
+        by_shutdown || busy > 0,
+        "shutdown returned {busy} with no shutdown stop on record: {:?}",
+        evs.iter().map(|e| (&e.event_type, &e.payload)).collect::<Vec<_>>()
+    );
+    let got = s.get(&rec.id).unwrap();
+    assert_eq!(got.ended_by, Some("shutdown"), "{got:?}");
+    assert_eq!(got.stop.as_ref().unwrap().survivors, vec![4242], "{got:?}");
+}
