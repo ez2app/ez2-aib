@@ -12,7 +12,11 @@ Rules (DECISION-20 + ADR 0007):
 - Timeout: TERM to the group, wait `grace`, then KILL, then verify.
 - Identity: the leader is NOT reaped until the stop is finished (os.waitid WNOWAIT only looks), so its pid — and
   with it the group number — cannot be reused by anyone else while we signal. Before each signal the leader's
-  (pid, start time) is compared with what was recorded at start; a mismatch means "not ours", nothing is sent.
+  identity is proven again; when it cannot be proven NOTHING is sent and the report is `unverified`:
+    start time not recorded at start           -> leader_start_unknown
+    leader already reaped by someone else      -> leader_reaped_elsewhere (its pid may belong to anyone now)
+    running, start time unreadable or changed  -> leader_identity_changed
+  A leader that exited but is not reaped (zombie) is still ours: nobody can reuse its pid.
 - macOS answers killpg with EPERM (not ESRCH) when only zombies are left in a group. EPERM is "to be checked",
   never "done" and never "failed": the group's members are listed again; only zombies left = stopped, a live
   member or a listing that fails = unverified (with the pids).
@@ -82,39 +86,48 @@ def _live(rows):
     return [pid for pid, stat in rows if not stat.startswith("Z")]
 
 
-def _exited(pid):
-    """True once the leader has exited — without reaping it (its pid and group number stay ours)."""
+def _leader_state(pid):
+    """Look at our child `pid` without reaping it:
+    'running' | 'zombie' (exited, not reaped: the pid is still ours) | 'reaped' (someone already waited on it:
+    the pid may be reused by anyone) | 'unknown' (no waitid here)."""
     if not hasattr(os, "waitid"):
-        return False
+        return "unknown"
     try:
-        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        return "running" if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None else "zombie"
     except ChildProcessError:
-        return True
+        return "reaped"
 
 
 class _Group:
     """The group led by `p` (started with start_new_session=True), with the leader's identity recorded."""
 
     def __init__(self, p, start=None, *, killpg=None, members=_ps_group, start_of=memguard.start_of,
-                 sleep=time.sleep, clock=time.monotonic):
+                 leader_state=_leader_state, sleep=time.sleep, clock=time.monotonic):
         self.p, self.pgid = p, p.pid
-        self.start_of = start_of
+        self.start_of, self.leader_state = start_of, leader_state
         self.start = start_of(p.pid) if start is None else start
         self.killpg = killpg or (os.killpg if POSIX else None)
         self.members, self.sleep, self.clock = members, sleep, clock
         self.signals = []
+        self.why = None
 
-    def same_leader(self):
-        """The leader is still the process we started (not reaped by us, so its pid cannot be someone else's;
-        the start time is checked as well). A leader that is already a zombie has no readable start: fine."""
+    def identity_problem(self):
+        """None when the leader is provably the process we started; otherwise why not (nothing may be sent)."""
         if self.start is None:
-            return True
-        now = self.start_of(self.pgid)
-        return now is None or now == self.start
+            return "leader_start_unknown"
+        state = self.leader_state(self.pgid)
+        if state == "reaped":
+            return "leader_reaped_elsewhere"
+        if state == "zombie":
+            return None  # exited, not reaped by anyone: its pid (= the group number) cannot be reused
+        if self.start_of(self.pgid) != self.start:  # unreadable (None) counts as unproven, never as "fine"
+            return "leader_identity_changed"
+        return None
 
     def send(self, sig):
-        """'sent' | 'gone' (ESRCH) | 'check' (EPERM: verify by listing) | 'not_ours'."""
-        if not self.same_leader():
+        """'sent' | 'gone' (ESRCH) | 'check' (EPERM: verify by listing) | 'not_ours' (self.why says why)."""
+        self.why = self.identity_problem()
+        if self.why:
             return "not_ours"
         try:
             self.killpg(self.pgid, sig)
@@ -131,7 +144,7 @@ class _Group:
         rows = self.members(self.pgid)
         if rows is None:
             return StopReport("unverified", "group_listing_failed", signals=self.signals)
-        live = [pid for pid in _live(rows) if pid != self.pgid or not _exited(self.pgid)]
+        live = [pid for pid in _live(rows) if pid != self.pgid or self.leader_state(self.pgid) != "zombie"]
         if live:
             return StopReport("unverified", "members_still_running", live, self.signals)
         return StopReport("stopped", "", signals=self.signals)
@@ -146,7 +159,8 @@ class _Group:
             if r in ("check", "not_ours"):
                 return self.verify().status == "stopped"
             rows = self.members(self.pgid)
-            if rows is not None and not [pid for pid in _live(rows) if pid != self.pgid or not _exited(self.pgid)]:
+            if rows is not None and not [pid for pid in _live(rows)
+                                         if pid != self.pgid or self.leader_state(self.pgid) != "zombie"]:
                 return True
             if self.clock() >= end:
                 return False
@@ -162,7 +176,7 @@ class _Group:
         for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, KILL_WAIT_S)):
             r = self.send(sig)
             if r == "not_ours":
-                return StopReport("unverified", "leader_identity_changed", signals=self.signals)
+                return StopReport("unverified", self.why, signals=self.signals)
             if r == "gone":
                 return StopReport("stopped", "", signals=self.signals)
             if r == "check":
@@ -223,5 +237,5 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
 def _exited_or_poll(p):
     """Leader exited? On POSIX look without reaping (waitid WNOWAIT); elsewhere poll()."""
     if POSIX and hasattr(os, "waitid"):
-        return _exited(p.pid)
+        return _leader_state(p.pid) != "running"
     return p.poll() is not None

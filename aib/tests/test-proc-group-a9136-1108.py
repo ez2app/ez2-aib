@@ -101,6 +101,21 @@ class RealGroups(unittest.TestCase):
         self.assertEqual(r.rc, 7)
         self.assertFalse(r.timed_out)
 
+    def test_stop_group_on_a_child_already_reaped_elsewhere_sends_nothing(self):
+        # bb7dc #509: the public stop_group cannot assume nobody waited on p
+        import tempfile
+        with tempfile.TemporaryFile() as fh:
+            p = subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 60 & echo gc $!"], stdout=fh,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+            start = pg.memguard.start_of(p.pid)
+            p.wait()
+            fh.seek(0)
+            gc = self.own.take(fh.read().decode())
+        rep = pg.stop_group(p, grace=0.2, start=start)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"), rep)
+        self.assertEqual(rep.signals, [])
+        self.assertTrue(alive(gc), "signalled a group whose leader we could no longer prove")
+
     def test_a_command_that_cannot_start_says_so(self):
         r = pg.run_group(["/no/such/command"], timeout=1)
         self.assertIsNone(r.rc)
@@ -121,16 +136,20 @@ class FakeP:
 class Fakes(unittest.TestCase):
     """EPERM, identity and Windows paths without touching real processes (pid 424242 is never signalled)."""
 
-    def group(self, killpg, rows, start_now=100):
+    def group(self, killpg, rows, start_now=100, start=100, state="running"):
         calls = []
 
         def kp(pgid, sig):
             calls.append(sig)
             return killpg(pgid, sig)
 
-        g = pg._Group(FakeP(), start=100, killpg=kp, members=lambda pgid: rows,
-                      start_of=lambda pid: start_now, sleep=lambda s: None)
+        g = pg._Group(FakeP(), start=start, killpg=kp, members=lambda pgid: rows,
+                      start_of=lambda pid: start_now, leader_state=lambda pid: state, sleep=lambda s: None)
         return g, calls
+
+    @staticmethod
+    def ok(pgid, sig):
+        return None
 
     @staticmethod
     def eperm(pgid, sig):
@@ -159,6 +178,34 @@ class Fakes(unittest.TestCase):
         rep = g.stop(grace=0.01)
         self.assertEqual((rep.status, rep.why), ("unverified", "leader_identity_changed"))
         self.assertEqual(calls, [], "signalled a group whose leader is not the process we started")
+
+    def test_no_recorded_start_time_means_nothing_is_sent(self):
+        # bb7dc #509: start_of() unreadable when the group was created -> identity never recorded, never proven
+        g, calls = self.group(self.ok, [(424242, "S")], start=None, start_now=None)
+        self.assertIsNone(g.start)
+        rep = g.stop(grace=0.01)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_start_unknown"))
+        self.assertEqual(calls, [])
+
+    def test_an_unreadable_start_time_of_a_running_leader_means_nothing_is_sent(self):
+        g, calls = self.group(self.ok, [(424242, "S")], start_now=None)
+        rep = g.stop(grace=0.01)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_identity_changed"))
+        self.assertEqual(calls, [])
+
+    def test_a_leader_reaped_elsewhere_is_never_signalled(self):
+        # its pid (= the group number) may already be someone else's
+        g, calls = self.group(self.ok, [(424242, "S")], start_now=100, state="reaped")
+        rep = g.stop(grace=0.01)
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_reaped_elsewhere"))
+        self.assertEqual(calls, [])
+
+    def test_an_unreaped_zombie_leader_is_still_ours(self):
+        # normal exit, leftovers in the group: the zombie keeps the pid ours even though its start is unreadable
+        g, calls = self.group(lambda pgid, sig: None, [(424242, "Z")], start_now=None, state="zombie")
+        rep = g.stop(grace=0.01)
+        self.assertEqual(rep.status, "stopped", rep)
+        self.assertEqual(calls[:1], [signal.SIGTERM])
 
     def test_esrch_means_stopped(self):
         def esrch(pgid, sig):
