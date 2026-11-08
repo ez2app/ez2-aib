@@ -994,7 +994,7 @@
   "aib.lease.free": "기계 비어 있음(임대 없음)",
   "aib.lease.expired": "임대 만료: {name}({what})는 {at} 에 만료. 인수 가능",
   "aib.lease.queued": "대기: 최근 30분간 {n}회 거부, 최근 {name}({what}, {at})",
-  "aib.lease.cli_desc": "기기별 실행 임대(제 24항): 누가 무엇을 실행 중인지. 못 얻으면 대기, 만료 시 기록과 함께 인수",
+  "aib.lease.cli_desc": "기기별 실행 임대(제 24항): 누가 무엇을 실행 중인지. 못 얻으면 대기, 만료 시 기록과 함께 인수. rc 0 획득 / 4 다른 사람이 보유 / 3 읽기 불가 / 2 사용법 오류. rc를 판단할 때는 파이프로 잇지 마세요(… | tail 이면 tail의 0이 됨). 이어야 한다면 먼저 set -o pipefail",
   "aib.lease.cli_now": "'지금'을 특정 epoch 에 고정(치구용)",
   "aib.lease.err_ttl": "host_lease: --ttl 은 양의 초 단위 정수",
   "aib.taskzone.lease_queue": "임대: {what}. 대기: {text}",

@@ -994,7 +994,7 @@
   "aib.lease.free": "マシン空き(リースなし)",
   "aib.lease.expired": "リース期限切れ:{name}({what})は {at} に失効。引継ぎ可",
   "aib.lease.queued": "待機:直近 30 分で {n} 回拒否、最新 {name}({what}、{at})",
-  "aib.lease.cli_desc": "マシン毎の実行リース(第 24 項):誰が何を実行中か。取れなければ待機、期限切れは記録付きで引継ぎ",
+  "aib.lease.cli_desc": "マシン毎の実行リース(第 24 項):誰が何を実行中か。取れなければ待機、期限切れは記録付きで引継ぎ。rc 0 取得 / 4 他者が保持 / 3 読めない / 2 使い方の誤り。rc を判定するときはパイプに繋がない(… | tail だと tail の 0 になる)。繋ぐなら先に set -o pipefail",
   "aib.lease.cli_now": "「今」を epoch に固定(治具用)",
   "aib.lease.err_ttl": "host_lease:--ttl は正の秒数",
   "aib.taskzone.lease_queue": "リース:{what}。待機:{text}",

@@ -994,7 +994,7 @@
   "aib.lease.free": "機器空(沒有租約)",
   "aib.lease.expired": "租約已過期:{name}({what})到期 {at};可接管",
   "aib.lease.queued": "排隊:最近 30 分鐘被拒 {n} 次,最近一次 {name}({what},{at})",
-  "aib.lease.cli_desc": "每機執行租約鎖(第 24 項):誰在這台機器上跑哪一支;拿不到就排隊,過期可接管並留痕",
+  "aib.lease.cli_desc": "每機執行租約鎖(第 24 項):誰在這台機器上跑哪一支;拿不到就排隊,過期可接管並留痕;rc 0 拿到 / 4 被佔 / 3 讀不到 / 2 用法錯。判斷 rc 時別接管線(… | tail 會變成 tail 的 0);要接就先 set -o pipefail",
   "aib.lease.cli_now": "把「現在」釘在某個 epoch(治具用)",
   "aib.lease.err_ttl": "host_lease:--ttl 要是正整數秒",
   "aib.taskzone.lease_queue": "租約:{what};排隊:{text}",

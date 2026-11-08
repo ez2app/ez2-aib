@@ -994,7 +994,7 @@
   "aib.lease.free": "machine free (no lease)",
   "aib.lease.expired": "lease expired: {name} ({what}) expired at {at}; can be taken over",
   "aib.lease.queued": "queue: {n} denied in the last 30 min, latest {name} ({what}, {at})",
-  "aib.lease.cli_desc": "per-machine execution lease (item 24): who is running what on this machine; queue if held, take over when expired with a ledger row",
+  "aib.lease.cli_desc": "per-machine execution lease (item 24): who is running what on this machine; queue if held, take over when expired with a ledger row; rc 0 acquired / 4 held by someone else / 3 unreadable / 2 usage. When you check the rc, do not pipe it (… | tail returns tail's 0); if you must pipe, set -o pipefail first",
   "aib.lease.cli_now": "pin 'now' to an epoch (fixtures)",
   "aib.lease.err_ttl": "host_lease: --ttl must be a positive number of seconds",
   "aib.taskzone.lease_queue": "lease: {what}; queue: {text}",
