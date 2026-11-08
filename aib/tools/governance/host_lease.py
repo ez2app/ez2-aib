@@ -777,10 +777,20 @@ SHORT_SCHEMA = "aib-host-lease-short/v1"
 SHORT_MAX_S = 300           # 宣告上限 5 分鐘
 SHORT_GRACE_S = 60          # 租約到期 = 宣告 + 這麼多(收組 / 放鎖的時間);持有者活著本來就不會被接管
 SHORT_NICE = 10
-import heat_limits  # noqa: E402  (src/cockpit 已在 sys.path;門檻單一來源,cooldown 同一組)
-SHORT_LOAD1_MAX = heat_limits.SHORT_LOAD1_MAX         # > 這個不發
-SHORT_THROTTLE_MAX = heat_limits.THROTTLE_HOT_PCT     # 熱節流 % ≥ 這個不發(= cooldown 的 hot)
-SHORT_CPU_CRIT_C = heat_limits.CPU_CRIT_C             # = cooldown.CPU_CRIT_C
+# 門檻單一來源 heat_limits(src/cockpit,cooldown 同一組)。
+# ★ 只複製 host_lease.py + i18n_lib.py 的治具(test_entry 的 lease_status 走子行程)找不到 heat_limits ⇒
+#   整支 import 失敗、status 讀不到、租約提醒整行消失(11-08 245 支實踩:test-aib-test-entry c1 紅)。
+#   找不到就用下面這組同值常數;test-cooldown-throttle-warm 對這組跟 heat_limits 逐一比,改一邊沒改另一邊會紅。
+_HEAT_FALLBACK = {"SHORT_LOAD1_MAX": 12.0, "THROTTLE_HOT_PCT": 40.0, "CPU_CRIT_C": 90.0}
+try:
+    import heat_limits as _hl  # noqa: E402
+    _HEAT = {k: getattr(_hl, k) for k in _HEAT_FALLBACK}
+    HEAT_SOURCE = "heat_limits"
+except ImportError:
+    _HEAT, HEAT_SOURCE = dict(_HEAT_FALLBACK), "fallback"
+SHORT_LOAD1_MAX = _HEAT["SHORT_LOAD1_MAX"]           # > 這個不發
+SHORT_THROTTLE_MAX = _HEAT["THROTTLE_HOT_PCT"]       # 熱節流 % ≥ 這個不發(= cooldown 的 hot)
+SHORT_CPU_CRIT_C = _HEAT["CPU_CRIT_C"]               # = cooldown.CPU_CRIT_C
 SHORT_RECOVER_S = 300       # 因熱被拒後要涼滿這麼久才再發
 SHORT_SAMPLE_GAP_MAX_S = 120   # 11-08 bb7dc 審:涼的計時要連續取樣;兩次取樣隔超過這麼久 ⇒ 中間不知道 ⇒ 涼的計時從頭算
 SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(定案 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)

@@ -96,6 +96,32 @@ class ThrottleWarm(unittest.TestCase):
         self.assertEqual(hl.SHORT_THROTTLE_MAX, self.H.THROTTLE_HOT_PCT)
         self.assertEqual(hl.SHORT_CPU_CRIT_C, self.H.CPU_CRIT_C)
         self.assertEqual(hl.SHORT_LOAD1_MAX, self.H.SHORT_LOAD1_MAX)
+        self.assertEqual(hl.HEAT_SOURCE, "heat_limits", "完整樹裡要讀到 heat_limits,不是退回常數")
+        for k, v in hl._HEAT_FALLBACK.items():   # 退回常數跟單一來源同值:改一邊沒改另一邊就紅
+            self.assertEqual(v, getattr(self.H, k), k)
+
+    def test_lease_status_works_without_heat_limits(self):
+        # 11-08 245 支實踩:test_entry 的治具只複製 host_lease.py + i18n_lib.py;import heat_limits 失敗 ⇒
+        # status 子行程掛、租約提醒整行消失(test-aib-test-entry c1 紅)。只複製這兩支也要讀得到租約。
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            fx = Path(t)
+            (fx / "tools" / "governance").mkdir(parents=True)
+            (fx / "src" / "cockpit").mkdir(parents=True)
+            shutil.copy2(ROOT / "aib" / "tools" / "governance" / "host_lease.py", fx / "tools" / "governance")
+            shutil.copy2(ROOT / "aib" / "src" / "cockpit" / "i18n_lib.py", fx / "src" / "cockpit")
+            shutil.copytree(ROOT / "aib" / "i18n", fx / "i18n")
+            home = fx / "home"
+            home.mkdir()
+            env = dict(os.environ, HOME=str(home), AIB_HOST_LEASE_FILE=str(fx / "lease.json"))
+            env.pop("PYTHONPATH", None)
+            p = subprocess.run([sys.executable, "-B", str(fx / "tools" / "governance" / "host_lease.py"),
+                                "status", "--json"], env=env, capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr[-1500:])
+            self.assertEqual(json.loads(p.stdout)["state"], "free")
 
     def test_seat_open_blocks_only_at_hot(self):
         import room_heat
