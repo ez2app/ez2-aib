@@ -195,7 +195,12 @@ fn waitid_nowait(pid: u32, extra: c_int) -> Result<ExitState, SysError> {
         )
     };
     if rc != 0 {
-        return Err(SysError::from_errno(errno()));
+        let e = SysError::from_errno(errno());
+        // say why when it is our own setting (043dd / a63ab #522 M1)
+        if e == SysError::NotChild && matches!(sigchld(), Ok(s) if !s.keeps_zombies()) {
+            return Err(SysError::ChildrenAutoReaped);
+        }
+        return Err(e);
     }
     // SAFETY: `si` started all-zero (a valid `siginfo_t`: integers, padding
     // and a null pointer) and the kernel only wrote a valid one over it.

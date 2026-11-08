@@ -111,6 +111,12 @@ pub enum SysError {
     /// Not "gone": whoever reaped it may be about to reuse the pid.
     #[error("not a child of this process, or already reaped")]
     NotChild,
+    /// `ECHILD` from M5 while `SIGCHLD` is ignored / `SA_NOCLDWAIT`: the
+    /// kernel reaps our children at once, so M5 can never see them (ADR 0008
+    /// rule 3 premise). Like `NotChild`, nothing may be signalled; unlike it,
+    /// the cause is ours to fix (`sigchld_keep_zombies`).
+    #[error("SIGCHLD is ignored: the kernel reaped the child (ADR 0008 rule 3)")]
+    ChildrenAutoReaped,
     /// A spawn failed with `cause` after the process existed, and the
     /// process could not be confirmed gone within the bound. It may still
     /// exist: the caller must report it, never treat it as cleaned up.
@@ -142,6 +148,7 @@ impl SysError {
             SysError::Unsupported => "unsupported",
             SysError::BadPid => "bad_pid",
             SysError::NotChild => "not_child",
+            SysError::ChildrenAutoReaped => "children_auto_reaped",
             SysError::NotReaped { .. } => "not_reaped",
         }
     }

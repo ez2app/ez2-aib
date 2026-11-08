@@ -54,8 +54,8 @@ fn an_ignored_sigchld_auto_reaps_and_m5_says_not_child_until_it_is_reset() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         settle(pid),
-        Err(SysError::NotChild),
-        "SIG_IGN: the kernel reaped it"
+        Err(SysError::ChildrenAutoReaped),
+        "SIG_IGN: the kernel reaped it, and M5 says why"
     );
 
     set(libc::SIG_DFL, libc::SA_NOCLDWAIT);
@@ -64,9 +64,12 @@ fn an_ignored_sigchld_auto_reaps_and_m5_says_not_child_until_it_is_reset() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         settle(pid),
-        Err(SysError::NotChild),
-        "SA_NOCLDWAIT: the kernel reaped it"
+        Err(SysError::ChildrenAutoReaped),
+        "SA_NOCLDWAIT: the kernel reaped it, and M5 says why"
     );
+    // M5 cannot tell "not ours" from "reaped by the kernel" while auto-reap is on, so every ECHILD then
+    // carries the cause; both mean: send nothing.
+    assert_eq!(Macos.peek(1), Err(SysError::ChildrenAutoReaped));
 
     assert_eq!(sigchld_keep_zombies().unwrap(), Sigchld::NoChildWait);
     assert_eq!(sigchld().unwrap(), Sigchld::Default);
@@ -75,6 +78,11 @@ fn an_ignored_sigchld_auto_reaps_and_m5_says_not_child_until_it_is_reset() {
         settle(pid),
         Ok(ExitState::Exited(7)),
         "default again: a zombie M5 can read"
+    );
+    assert_eq!(
+        Macos.peek(1),
+        Err(SysError::NotChild),
+        "default again: not ours is NotChild"
     );
     // reap it ourselves: no zombie left behind by the test
     assert_eq!(Macos.wait_exit(pid), Ok(ExitState::Exited(7)));

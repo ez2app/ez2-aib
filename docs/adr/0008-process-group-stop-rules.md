@@ -51,6 +51,9 @@ kernel reaps every exited child at once: `WNOWAIT` has nothing to look at and th
 immediately (measured on macOS by 043dd, #522 M1). Both are inherited across `exec`, so a
 launcher that ignores `SIGCHLD` hands it to aibd without aibd doing anything. Therefore:
 
+- M5 says so: an `ECHILD` while `SIGCHLD` does not keep zombies is
+  `SysError::ChildrenAutoReaped` (tag `children_auto_reaped`), not a bare `NotChild`; both mean
+  "send nothing", the first also names the cause;
 - `aibd` sets `SIGCHLD` back to `SIG_DFL` when the server starts if it does not keep zombies, and
   logs `SIGCHLD reset to default` with what it was (`aib_sys::sigchld_keep_zombies`);
 - `aibd selfcheck` shows a `sigchld` row: `ok` when zombies are kept, `unverified` (with
