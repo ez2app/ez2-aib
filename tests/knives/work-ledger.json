@@ -126,8 +126,8 @@
       "name": "m3-no-hashes",
       "proves": "acceptance keeps receipt and output hashes",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "                r[\"receipt_sha256\"] = hashlib.sha256(Path(r[\"path\"]).read_bytes()).hexdigest()",
-      "new": "                pass"
+      "old": "    info = {\"receipt_sha256\": hashlib.sha256(data).hexdigest(), \"output_sha256\": r.get(\"output_sha256\"),",
+      "new": "    info = {\"receipt_sha256\": None, \"output_sha256\": None,"
     },
     {
       "name": "m4-no-git-check",
@@ -161,8 +161,8 @@
       "name": "record-registry-skip",
       "proves": "a hand-written receipt cannot pass as one aib ledger record wrote",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "    if recorded:\n        rp = check_recorded(db, path, r)",
-      "new": "    if False:\n        rp = check_recorded(db, path, r)"
+      "old": "    if recorded:\n        rp = check_recorded(db, path, r, info[\"receipt_sha256\"])",
+      "new": "    if False:\n        rp = check_recorded(db, path, r, info[\"receipt_sha256\"])"
     },
     {
       "name": "record-receipt-edit-ok",
@@ -189,7 +189,7 @@
       "name": "record-dirty-ok",
       "proves": "record refuses a tree with uncommitted changes",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "    if git_out(tree, \"status\", \"--porcelain\", \"--untracked-files=no\").strip():",
+      "old": "    if git_out(tree, \"status\", \"--porcelain\", \"--untracked-files=normal\").strip():",
       "new": "    if False:"
     },
     {
