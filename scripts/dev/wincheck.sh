@@ -7,7 +7,8 @@
 # real and no Windows test runs. Windows tests still need Windows CI or a Windows machine.
 #
 # usage: scripts/dev/wincheck.sh [--changed <base>] [-p <crate>]... [-- <extra cargo args>]
-#   --changed <base>  only run when `git diff <base>...HEAD` touches Windows code; otherwise print
+#   --changed <base>  only run when `git diff <base>...HEAD` touches a source / manifest of aibd or the
+#                     crates it builds on (aib-sys, aib-core, aib-store) or a workspace build file; otherwise print
 #                     "skip" and exit 0 (meant for an optional, warn-only pre-push step)
 #   -p <crate>        crate to check (repeatable; default aibd, which also covers aib-sys)
 # exit: 0 green or skipped, 1 clippy red, 2 not verified (target missing / setup failed)
@@ -32,13 +33,11 @@ done
 if [ -n "$base" ]; then
   files=$(git -C "$root" diff --name-only "$base"...HEAD 2>/dev/null) || {
     echo "wincheck: 沒驗 — git diff $base...HEAD failed" >&2; exit 2; }
-  hit=$(printf '%s\n' "$files" | grep -E '(_windows\.rs$|/windows[^/]*\.rs$|/platform/windows|/job\.rs$|/session\.rs$|/settle\.rs$|^crates/aib-sys/|^crates/aibd/Cargo\.toml$|^Cargo\.lock$)' || true)
-  if [ -z "$hit" ]; then
-    for f in $(printf '%s\n' "$files" | grep -E '\.rs$' || true); do
-      [ -f "$root/$f" ] && grep -q 'cfg(windows)\|target_os = "windows"' "$root/$f" && { hit=$f; break; }
-    done
-  fi
-  [ -n "$hit" ] || { echo "wincheck: skip — no Windows code changed since $base"; exit 0; }
+  # Shared code is compiled for Windows too, so a file name or a grep for cfg(windows) is not enough
+  # (a9136 #547: a change to crates/aibd/src/main.rs alone was red on Windows). Skip only when the diff
+  # touches no source or manifest of aibd and the crates it builds on, and no workspace-wide build input.
+  hit=$(printf '%s\n' "$files" | grep -E '^crates/(aibd|aib-sys|aib-core|aib-store)/(.*\.rs|Cargo\.toml|build\.rs)$|^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|\.cargo/.*)$' || true)
+  [ -n "$hit" ] || { echo "wincheck: skip — nothing aibd builds from changed since $base"; exit 0; }
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then

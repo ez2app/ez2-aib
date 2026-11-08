@@ -35,7 +35,7 @@ data directory, 1 other start failure.
 ```
 rustup target add x86_64-pc-windows-msvc        # once
 scripts/dev/wincheck.sh                          # clippy -p aibd --target x86_64-pc-windows-msvc, -D warnings
-scripts/dev/wincheck.sh --changed origin/main    # only when Windows code changed; prints "skip" otherwise
+scripts/dev/wincheck.sh --changed origin/main    # runs unless nothing aibd builds from changed ("skip")
 ```
 
 `aib prepr` runs the same for the members that build C (item `rust clippy (x86_64-pc-windows-msvc, fakecc)`).

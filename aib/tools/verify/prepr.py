@@ -272,7 +272,7 @@ def rust_items(repo, run_tests, runner=run):
         else:
             scope = "only " + ", ".join(ok)
             if excluded:
-                scope += "; excluded (C build, see CI Windows): " + ", ".join(
+                scope += "; members that build C are covered by the fakecc item: " + ", ".join(
                     "%s (%s)" % (k, "+".join(v)) for k, v in sorted(excluded.items()))
             cmd = ["cargo", "clippy"]
             for m in ok:

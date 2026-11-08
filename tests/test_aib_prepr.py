@@ -69,6 +69,7 @@ class Units(unittest.TestCase):
         self.assertEqual(w["status"], "pass")
         self.assertIn("only core", w["scope"])
         self.assertIn("daemon (libsqlite3-sys)", w["scope"])
+        self.assertIn("covered by the fakecc item", w["scope"])
         self.assertIn(["-p", "core"], [c[2:4] for c in f.calls if c[:2] == ["cargo", "clippy"]])
 
     def test_members_that_build_c_get_a_fakecc_windows_clippy_that_only_claims_check(self):
@@ -115,6 +116,50 @@ class Units(unittest.TestCase):
             r = subprocess.run(["/bin/sh", sh], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertNotIn("綠", r.stdout + r.stderr)
+
+    def test_wincheck_changed_runs_for_shared_code_and_skips_only_outside_what_aibd_builds(self):
+        """a9136 #547 Medium: a change to crates/aibd/src/main.rs alone (no 'windows' in it) must run."""
+        with tempfile.TemporaryDirectory() as d:
+            repo, binr = Path(d, "repo"), Path(d, "bin")
+            (repo / "scripts" / "dev").mkdir(parents=True)
+            binr.mkdir()
+            for n in ("wincheck.sh", "fakecc-msvc.sh"):
+                shutil.copy2(ROOT / "scripts" / "dev" / n, repo / "scripts" / "dev" / n)
+            src = repo / "crates" / "aibd" / "src"
+            src.mkdir(parents=True)
+            (src / "main.rs").write_text("fn main() {}\n")
+            (repo / "docs").mkdir()
+            (repo / "docs" / "a.md").write_text("a\n")
+            for tool, body in (("cargo", "echo CARGO-RAN; exit 0"), ("rustup", "echo x86_64-pc-windows-msvc")):
+                (binr / tool).write_text("#!/bin/sh\n%s\n" % body)
+                (binr / tool).chmod(0o755)
+            env = dict(os.environ, PATH=str(binr) + os.pathsep + os.environ.get("PATH", ""),
+                       GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+            git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], env=env, check=True,  # noqa: E731
+                                            capture_output=True, text=True, timeout=60).stdout.strip()
+            git("init", "-q")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            sh = str(repo / "scripts" / "dev" / "wincheck.sh")
+
+            def run():
+                return subprocess.run(["/bin/sh", sh, "--changed", base], env=env, capture_output=True, text=True,
+                                      timeout=60)
+
+            (repo / "docs" / "a.md").write_text("b\n")
+            git("commit", "-q", "-am", "docs only")
+            r = run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("skip", r.stdout)
+            self.assertNotIn("CARGO-RAN", r.stdout)
+            (src / "main.rs").write_text("fn main() { let _ = 1; }\n")
+            git("commit", "-q", "-am", "shared code")
+            r = run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("skip", r.stdout)
+            self.assertIn("CARGO-RAN", r.stdout)
+            self.assertIn("Windows clippy(fakecc)綠", r.stdout)
 
     def test_wincheck_changed_skips_when_no_windows_code_changed(self):
         sh = str(ROOT / "scripts" / "dev" / "wincheck.sh")
