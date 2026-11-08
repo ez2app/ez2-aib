@@ -1,0 +1,12 @@
+# 1ced7 探針(DECISION-24 第 3 項):改 base 會不會觸發 pull_request edited、changes.base 有沒有值。不合。
+name: probe-retarget
+on:
+  pull_request:
+    types: [opened, edited, ready_for_review]
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "action=${{ github.event.action }} base_ref=${{ github.base_ref }} draft=${{ github.event.pull_request.draft }}"
+          echo "changes_base_from=${{ github.event.changes.base.ref.from }} changes_title_from=${{ github.event.changes.title.from }}"
