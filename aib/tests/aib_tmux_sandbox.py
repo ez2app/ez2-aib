@@ -11,6 +11,31 @@ class SandboxRefused(AssertionError):
     pass
 
 
+def reject_global_selector(args):
+    """Reject socket selectors only among tmux's global options, before its command."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return
+        if not arg.startswith("-") or arg == "-":
+            return
+        options = arg[1:]
+        while options:
+            flag, options = options[0], options[1:]
+            if flag in "LS":
+                raise SandboxRefused("不允許覆寫沙盒 socket")
+            if flag in "cfT":
+                if not options:
+                    i += 1
+                    if i >= len(args):
+                        raise SandboxRefused("tmux 全域選項缺少參數")
+                break
+            if flag not in "2CDlNuvV":
+                raise SandboxRefused("不認識 tmux 全域選項:%s" % flag)
+        i += 1
+
+
 class Sandbox:
     """只准打本測試暫存夾內的 socket。每次呼叫前驗:夾還在、socket 在夾內、不是任何預設 socket。"""
 
@@ -35,15 +60,13 @@ class Sandbox:
 
     def tm(self, *a, **kw):
         self.check()
-        if any(x in ("-L", "-S") or x.startswith(("-L", "-S")) for x in a):
-            raise SandboxRefused("不允許覆寫沙盒 socket")
+        reject_global_selector(a)
         return subprocess.run([self.tmux_bin, "-S", str(self.sock)] + list(a), env=self.env(),
                               capture_output=True, text=True, timeout=10, **kw)
 
     def popen(self, *a):
         self.check()
-        if any(x in ("-L", "-S") or x.startswith(("-L", "-S")) for x in a):
-            raise SandboxRefused("不允許覆寫沙盒 socket")
+        reject_global_selector(a)
         return subprocess.Popen([self.tmux_bin, "-S", str(self.sock)] + list(a), env=self.env(),
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -51,8 +74,8 @@ class Sandbox:
         # 清理也走守門:夾已經不在 / 路徑不對就什麼都不做(絕不退回預設 socket 去 kill-server)
         try:
             self.tm("kill-server")
-        except SandboxRefused:
-            pass
+        except SandboxRefused as exc:
+            print("tmux 沙盒清理被拒絕: %s" % exc, file=sys.stderr)
 
 
     def make_shim(self, path, alias):
@@ -76,8 +99,7 @@ def _shim_main(argv):
                              (args[0] == "-S" and os.path.realpath(args[1]) == os.path.realpath(sock))):
         raise SandboxRefused("shim 只接受本測試的 socket")
     args = args[2:]
-    if any(x in ("-L", "-S") or x.startswith(("-L", "-S")) for x in args):
-        raise SandboxRefused("不允許覆寫沙盒 socket")
+    reject_global_selector(args)
     env = box.env()
     os.execve(tmux, [tmux, "-S", sock, *args], env)
 
