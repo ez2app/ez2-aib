@@ -129,12 +129,17 @@ fn m1_parent_unique_survives_reparenting() {
         .arg(grandchild.to_string())
         .status();
 
+    // Say what was seen when it fails: a one-in-a-hundred red without its values cannot be traced.
+    let info = info.unwrap_or_else(|e| panic!("bsd_info({grandchild}) failed: {e:?}"));
     assert_eq!(
-        info.unwrap().ppid,
-        1,
-        "not re-parented to launchd within 2 s"
+        info.ppid, 1,
+        "not re-parented to launchd within 2 s: {info:?}"
     );
-    assert_eq!(ids.unwrap().parent_unique, sh_ids.unique);
+    let ids = ids.unwrap_or_else(|e| panic!("unique_ids({grandchild}) failed: {e:?}"));
+    assert_eq!(
+        ids.parent_unique, sh_ids.unique,
+        "creator id lost after re-parenting: {ids:?} vs sh {sh_ids:?}"
+    );
 }
 
 #[test]
