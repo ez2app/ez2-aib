@@ -5018,6 +5018,8 @@
   "aib.secret.why.newline": "줄바꿈이 들어 있습니다",
   "aib.secret.why.bad_prefix": "{prefix}(으)로 시작해야 합니다",
   "aib.secret.why.bad_shape": "{shape} 형식이어야 합니다",
+  "aib.secret.why.edge_space": "앞이나 끝에 공백이 있습니다. 사이트 비밀번호는 그대로 저장되므로 공백을 빼거나 다른 비밀번호를 쓰세요",
+  "aib.secret.why.root_token": "root 토큰이라 호스트 전체 권한이 있습니다. aib@pve 권한 분리 토큰을 만드세요",
   "aib.secret.touchid_reason": "aib: 키 {name}을(를) {dest}에 저장",
   "aib.secret.dest_local": "이 Mac의 키 보관함",
   "aib.secret.btn_ok": "저장",

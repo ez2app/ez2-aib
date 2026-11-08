@@ -5018,6 +5018,8 @@
   "aib.secret.why.newline": "改行が含まれています",
   "aib.secret.why.bad_prefix": "{prefix} で始まるはずです",
   "aib.secret.why.bad_shape": "{shape} の形式のはずです",
+  "aib.secret.why.edge_space": "先頭か末尾に空白があります。サイトのパスワードはそのまま保存されるので、空白を取るか別のパスワードにしてください",
+  "aib.secret.why.root_token": "これは root のトークンで、ホスト全体を操作できます。aib@pve の権限分離トークンを作ってください",
   "aib.secret.touchid_reason": "aib:キー {name} を {dest} に保存",
   "aib.secret.dest_local": "この Mac のキー保管庫",
   "aib.secret.btn_ok": "保存",
