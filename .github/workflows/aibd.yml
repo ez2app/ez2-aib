@@ -85,4 +85,14 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
+        if: runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # The forkcount capture-completeness tests need kqueue to see every
+      # short-lived child; shared GitHub macOS runners miss some (main
+      # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
+      # and a warning is shown; they still run on our own Macs (#503).
+      - name: test (macOS; two forkcount calibration tests skipped by name)
+        if: runner.os == 'macOS'
+        run: |
+          echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
+          cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
