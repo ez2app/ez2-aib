@@ -492,6 +492,72 @@ class AibLedger(unittest.TestCase):
         rec = json.loads(Path(path).read_text(encoding="utf-8"))
         self.assertEqual((rec["passed"], rec["total"]), (5, 5))
 
+    def _dispatch_cmd(self, item, sha, want):
+        self.ok("add", item, "--batch", "b114", "--owner", "2240e", "--title", "c", "--cmd", want, "--by", "seat:f1fae")
+        self.ok("move", item, "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        self.ok("move", item, "--from", "running", "--to", "review", "--head", sha, "--by", "seat:2240e")
+
+    def test_531_m1_quote_boundary_is_a_different_command(self):
+        # ebb36 #531 M1:派 sh -c './run.sh --all',實跑 sh -c ./run.sh --all(--all 變成 $0)不能收件
+        d, _ = self.repo()
+        (d / "run.sh").write_text('if [ "$1" = --all ]; then printf "Ran 2 tests in 0.0s\\n\\nOK\\n";'
+                                  ' else printf "Ran 1 test in 0.0s\\n\\nOK\\n"; fi\n', encoding="utf-8")
+        g = ["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for c in (["add", "run.sh"], ["commit", "-q", "-m", "run"]):
+            subprocess.run(g + c, check=True, capture_output=True, env=self.env)
+        sha = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True,
+                             env=self.env).stdout.strip()
+        self.roles()
+        want = "sh -c 'sh ./run.sh --all'"
+        for item in ("B-q-ok", "B-q-bad"):
+            self._dispatch_cmd(item, sha, want)
+        r, good = self.record(d, "sh", "-c", "sh ./run.sh --all")
+        self.assertEqual(json.loads(Path(good).read_text(encoding="utf-8"))["passed"], 2)
+        r = self.L("move", "B-q-ok", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", good)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r, bad = self.record(d, "sh", "-c", "sh ./run.sh", "--all")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(Path(bad).read_text(encoding="utf-8"))["passed"], 1)
+        r = self.L("move", "B-q-bad", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", bad)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("is not the dispatched command", r.stderr)
+        r = self.L("add", "B-q-unclosed", "--batch", "b114", "--owner", "2240e", "--title", "c",
+                   "--cmd", "sh -c 'oops", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_531_m2_cmd_implies_recorded(self):
+        # f1fae 定:帶 --cmd ⇒ 只收 record 產的收據;手寫收據把 cmd 欄抄成派工那句也要擋
+        _, sha = self.repo()
+        self.roles()
+        want = "node tools/footprint-default-tests.js"
+        self._dispatch_cmd("B-hand", sha, want)
+        self.assertIn("recorded", self.ok("show", "B-hand").stdout)
+        hand = self.receipt(sha=sha, cmd=want)
+        r = self.L("move", "B-hand", "--from", "review", "--to", "accepted", "--by", "seat:f1fae", "--evidence", hand)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertIn("needs recorded", r.stderr)
+        # 不帶 --cmd 維持原狀:同一張手寫收據照收
+        self.review_at(sha, item="B-plain")
+        r = self.L("move", "B-plain", "--from", "review", "--to", "accepted", "--by", "seat:f1fae",
+                   "--evidence", self.receipt(sha=sha))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_531_l1_pre_upgrade_event_id_still_replays(self):
+        # #527 版的 add 事件 request 沒有 cmd 鍵;升級後原樣重送要 replay(rc 0),不是 rc 6
+        import sqlite3
+        self.roles()
+        args = ("add", "B-old", "--batch", "b114", "--owner", "2240e", "--title", "o", "--event-id", "evA",
+                "--by", "seat:f1fae")
+        self.ok(*args)
+        db = sqlite3.connect(self.env["AIB_LEDGER_DB"])
+        req = json.loads(db.execute("SELECT request FROM events WHERE event_id='evA'").fetchone()[0])
+        req.pop("cmd", None)   # 造出升級前的樣子
+        db.execute("UPDATE events SET request=? WHERE event_id='evA'",
+                   (json.dumps(req, sort_keys=True, ensure_ascii=False, separators=(",", ":")),))
+        db.commit()
+        db.close()
+        self.ok(*args)
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)

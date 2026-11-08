@@ -51,8 +51,15 @@
   record 回傳指令自己的 rc(腳本照舊判),收據路徑印在最後一行 RECEIPT <path>。
   一樣是防誤不防冒用:同帳號的 AI 改得到帳本檔本身。
   record 只證明「這個指令在這個頭碼上 rc 0」;包一個假指令(sh -c 'printf "Ran 400 tests…OK"')也拿得到收據。
-  所以派工時用 add --cmd 記下要跑的指令,positive / default 收據的 cmd(shlex 拆開再比)要一樣才收件(ebb36 r2 M1);
-  刀 / chrome 收據不比(它們本來就跑別的指令)。show / verify 印每張收據的 cmd。
+  所以派工時用 add --cmd 記下要跑的指令,positive / default 收據的 cmd 要一樣才收件(ebb36 r2 M1):
+  shlex 拆成參數清單逐個比,引號邊界不同就算不同(#531 M1);拆不開的 --cmd 在 add 時就退(rc 2)。
+  帶 --cmd ⇒ 自動加 --needs recorded(#531 M2,f1fae 定):每張收據都要是 record 產、登記過的,
+  手寫收據把 cmd 欄抄成派工那句也不算。不帶 --cmd 維持原狀(手寫收據照舊可以,只證明格式對)。
+  刀 / chrome 收據不比 cmd(它們本來就跑別的指令),但一樣要是 record 產的。show / verify 印每張收據的 cmd。
+  自己印結果、又不是 N/M 的腳本要帶 --count(具名群組 passed、total 都要有),不然算不出支數、verify 擋下
+  (假紅,不是假綠;#531 L3)。例:輸出「== 232 項,通過 232」⇒
+    aib ledger record --count '== (?P<total>\\d+) 項,通過 (?P<passed>\\d+)' -- bash tests/e2e.sh
+  只印「PASS N / FAIL M」、沒有總數的格式現在收不了件(通過數要 = total),要收就讓腳本多印一行 N/M。
   樹乾不乾淨也算沒追蹤的檔(忽略清單裡的照舊不算;r2 L1)。
 身分:--by 是自報的席碼(跟 aib dm-queue --by 一樣):**防誤派,不防冒用**。帳只保證「誰說了什麼、照規則有沒有放行」;
   同一個帳號的 AI 都改得到本機檔,所以這是分工約定,不是安全閘(11-08 f1fae 定)。
@@ -329,11 +336,18 @@ def check_receipt(path, head, now=None, head_time=None, db=None):
 
 
 def norm_cmd(c):
-    """指令比對用:shlex 拆開再接回(多餘空白、引號寫法不同算同一個指令)。"""
+    """指令比對用:shlex 拆成參數清單再比(多餘空白、引號寫法不同算同一個指令)。
+    ★ 比清單、不比接回的字串(ebb36 #531 M1):sh -c './run.sh --all' 與 sh -c ./run.sh --all 接回去一樣,
+      參數卻不同(後者 --all 變成 $0)。拆不開(引號沒收)回 None,當成對不上,不退回只比空白。"""
     try:
-        return " ".join(shlex.split(c or ""))
+        return shlex.split(c or "")
     except ValueError:
-        return " ".join((c or "").split())
+        return None
+
+
+def same_cmd(a, b):
+    na, nb = norm_cmd(a), norm_cmd(b)
+    return na is not None and nb is not None and na == nb
 
 
 def verify_item(item, now=None, db=None):
@@ -349,10 +363,10 @@ def verify_item(item, now=None, db=None):
     needs = item.get("needs") or []
     for p in ev:
         kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
-        if "recorded" in needs and not recorded and not rp:
-            rp = ["needs recorded: this receipt was not written by aib ledger record"]
         want = item.get("expect_cmd") or ""
-        if want and kind in ("positive", "default") and not rp and norm_cmd(info.get("cmd")) != norm_cmd(want):
+        if "recorded" in needs and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
+            rp = ["needs recorded: this receipt was not written by aib ledger record"]
+        if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
             rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
         out.append(dict(info, path=p, kind=kind, ok=not rp, problems=rp, recorded=recorded))
         if rp:
@@ -437,8 +451,15 @@ def op_role_set(db, role, seat, by, event_id, as_role=None):
 
 
 def op_add(db, a, by, event_id):
+    if a.expect_cmd is not None and not norm_cmd(a.expect_cmd):
+        raise Refused(RC_USAGE, "--cmd %r cannot be split into arguments (unclosed quote?) or is empty" % a.expect_cmd)
+    needs = set(a.needs or [])
+    if a.expect_cmd:
+        needs.add("recorded")   # 帶 --cmd ⇒ 只收 record 產的收據:手寫收據的 cmd 欄是自己填的(#531 M2,f1fae 定)
     request = {"id": a.id, "batch": a.batch, "owner": seat_of(a.owner), "title": a.title, "next": a.next or "",
-               "needs": sorted(set(a.needs or [])), "by": by, "as": a.as_role, "cmd": a.expect_cmd or ""}
+               "needs": sorted(needs), "by": by, "as": a.as_role}
+    if a.expect_cmd:
+        request["cmd"] = a.expect_cmd   # 沒帶就不放這個鍵:升級前用過的 event id 原樣重送仍是 replay(#531 L1)
 
     def run():
         rep = _replay_or_claim(db, event_id, "add", a.id, request)
@@ -456,7 +477,7 @@ def op_add(db, a, by, event_id):
         db.execute("INSERT INTO items(id, batch, title, owner, state, next, needs, expect_cmd, rev, created_at, updated_at,"
                    " updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (a.id, a.batch, a.title, request["owner"], "queued", request["next"], json.dumps(request["needs"]),
-                    request["cmd"], 1, t, t, by))
+                    request.get("cmd", ""), 1, t, t, by))
         res = {"ok": True, "id": a.id, "state": "queued", "rev": 1}
         _record(db, event_id, "add", a.id, None, "queued", by, request, res)
         return res
@@ -713,7 +734,8 @@ def build_parser():
     ad.add_argument("--title", required=True)
     ad.add_argument("--next")
     ad.add_argument("--needs", action="append", choices=NEEDS)
-    ad.add_argument("--cmd", dest="expect_cmd", help="the command positive / default receipts must have run (checked at acceptance)")
+    ad.add_argument("--cmd", dest="expect_cmd", help="the command positive / default receipts must have run (argument list compared at acceptance); "
+                    "implies --needs recorded: only receipts written by aib ledger record count")
     mut(ad)
 
     mv = sub.add_parser("move", help="change state (compare-and-set on --from)")

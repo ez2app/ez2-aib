@@ -210,7 +210,7 @@
       "name": "cmd-ignored",
       "proves": "positive receipts must run the dispatched command",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "        if want and kind in (\"positive\", \"default\") and not rp and norm_cmd(info.get(\"cmd\")) != norm_cmd(want):",
+      "old": "        if want and kind in (\"positive\", \"default\") and not rp and not same_cmd(info.get(\"cmd\"), want):",
       "new": "        if False:"
     },
     {
@@ -226,6 +226,34 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "        if re.search(r\"PASS|\\bOK\\b|綠|passed|通過\", line, re.I):",
       "new": "        if True:"
+    },
+    {
+      "name": "cmd-joined",
+      "proves": "commands are compared as argument lists; a quote boundary is a different command (#531 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        return shlex.split(c or \"\")",
+      "new": "        return \" \".join(shlex.split(c or \"\"))"
+    },
+    {
+      "name": "cmd-unclosed-ok",
+      "proves": "a --cmd that cannot be split is refused at add (#531 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if a.expect_cmd is not None and not norm_cmd(a.expect_cmd):",
+      "new": "    if False:"
+    },
+    {
+      "name": "cmd-no-recorded",
+      "proves": "--cmd implies --needs recorded; a hand-written receipt copying the cmd is refused (#531 M2)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        needs.add(\"recorded\")",
+      "new": "        pass"
+    },
+    {
+      "name": "cmd-key-always",
+      "proves": "an add without --cmd keeps the pre-upgrade request shape, so an old event id replays (#531 L1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role}",
+      "new": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role, \"cmd\": a.expect_cmd or \"\"}"
     }
   ]
 }
