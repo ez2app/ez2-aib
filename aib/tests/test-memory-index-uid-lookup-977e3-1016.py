@@ -209,6 +209,7 @@ class M6PersonaCardFollowsLiveVault(Base):
 
 
 KNIFE_CHILD = "AIB_MEMUID_KNIFE_CHILD"
+OLD_REF = "fa6f3a67aec81cb217656521eee802e6461d4907:aib/src/memory/aib_memory.py"   # aec72dd6 修正之前
 
 
 @unittest.skipIf(os.environ.get(KNIFE_CHILD), "子行程裡不再開刀")
@@ -217,14 +218,15 @@ class K1KnifeOldCodeIsRed(unittest.TestCase):
 
     def test_old_aib_memory_fails_m1(self):
         try:
-            old = subprocess.run(["git", "-C", str(ROOT), "show", "origin/main:aib/src/memory/aib_memory.py"],
+            # 舊版釘在修正(aec72dd6)之前的固定 commit。以前讀 origin/main:修正合進 main 後就永遠
+            # skipTest("main 已含本修正"),這把刀不再跑、也沒人發現(#501 同類,043dd 11-08 掃全倉)。
+            old = subprocess.run(["git", "-C", str(ROOT), "show", OLD_REF],
                                  capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired):
             self.skipTest("沒有 git")
         if old.returncode != 0 or "def note_text" not in old.stdout:
-            self.skipTest("拿不到 origin/main 的舊版")
-        if "def resolve_note_path" in old.stdout:
-            self.skipTest("main 已含本修正")
+            self.skipTest("淺層 checkout 沒有 %s" % OLD_REF.split(":")[0][:8])
+        self.assertNotIn("def resolve_note_path", old.stdout, "OLD_REF 釘錯了:舊版已含本修正")
         with tempfile.TemporaryDirectory() as td:
             copy = Path(td) / "aib"
             shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
