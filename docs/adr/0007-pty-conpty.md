@@ -30,10 +30,14 @@
 ### A. `portable-pty` — rejected
 
 Checked against portable-pty **0.9.0**, the latest stable release (2025-02-11, MIT, crate
-sha256 `b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e`). The source
-was read only: nothing was built, its build script was not run, and nothing was vendored.
+sha256 `b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e`,
+<https://static.crates.io/crates/portable-pty/portable-pty-0.9.0.crate>). The source
+was read only. This is code evidence, not a run on Windows: nothing was built, its
+build script was not run, and nothing was vendored.
 
-- **The child is not born in our Job, and this cannot be changed.**
+- **The API cannot make a child born in a Job the caller chooses.** Unless something
+  else already places the calling process itself in the target Job (aibd is not run that
+  way), the child starts outside our Job, and the crate offers no way to change that.
   - `src/win/psuedocon.rs` L127–128: the attribute list has capacity 1 and holds only
     the pseudo-console, so there is no room for `JOB_LIST`.
   - L145: the creation flags are fixed to
@@ -139,6 +143,13 @@ The macOS side is the small half, and it has to integrate with the shim anyway.
      left the group or the session, the result is `tree_not_clean` / UNVERIFIED.
    - The final word is start-up reconciliation (DECISION-11) and CRASH-TEST-SPEC v0.3
      assertion 1. A result collected by the shim is never reported as `clean`.
+   - Knife: treat a delivered SIGHUP as proof of cleanup (report `clean` once the hang-up
+     was sent) → the test where the fixture ignores SIGHUP must go red, because its
+     process is still alive but would be reported `clean`.
+   - Knife: SIGKILL the shim before the lifeline closes, with a grandchild that did
+     `setsid`. If the result claims everything was collected, or start-up reconciliation
+     is skipped, the test must go red: the grandchild is still alive and the result must
+     say `tree_not_clean` / UNVERIFIED until reconciliation finds it.
 5. **Graceful stop does not rely on `\x03` alone.**
    - In raw mode (`ISIG` off) `\x03` is just a byte, and ConPTY's translation depends on
      the console mode and the CLI. aibd writes `\x03`, waits the grace period, and then
