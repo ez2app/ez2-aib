@@ -356,6 +356,18 @@ def same_cmd(a, b):
     return na is not None and nb is not None and na == nb
 
 
+def judge_receipt(p, item, head, now=None, db=None):
+    """一張收據在這個件上紅不紅 → (kind, problems, recorded, info)。check_receipt 之外再套件的規則
+    (needs recorded、--cmd)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1)。"""
+    kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+    want = item.get("expect_cmd") or ""
+    if "recorded" in (item.get("needs") or []) and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
+        rp = ["needs recorded: this receipt was not written by aib ledger record"]
+    if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
+        rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
+    return kind, rp, recorded, info
+
+
 def verify_item(item, now=None, db=None):
     """件 → {"ok": bool, "problems": [...], "receipts": [{path, kind, ok, problems}]}。"""
     probs, out = [], []
@@ -366,14 +378,8 @@ def verify_item(item, now=None, db=None):
     if not ev:
         probs.append("no receipt attached (--evidence)")
     good_kinds = []
-    needs = item.get("needs") or []
     for p in ev:
-        kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
-        want = item.get("expect_cmd") or ""
-        if "recorded" in needs and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
-            rp = ["needs recorded: this receipt was not written by aib ledger record"]
-        if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
-            rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
+        kind, rp, recorded, info = judge_receipt(p, item, head, now, db)
         out.append(dict(info, path=p, kind=kind, ok=not rp, problems=rp, recorded=recorded))
         if rp:
             probs.extend("%s: %s" % (Path(p).name, x) for x in rp)
@@ -397,7 +403,7 @@ def earlier_red(item, now=None, db=None):
         if not sha_match(old.get("head") or "", head):
             continue
         for p in old.get("evidence") or []:
-            kind, rp, _recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)
             if rp:
                 out.append({"path": p, "kind": kind, "problems": rp, "why": old.get("why") or "",
                             "at": old.get("at") or "", "by": old.get("by") or "", "cmd": info.get("cmd")})
@@ -885,7 +891,7 @@ def main(argv=None):
                     print("EARLIER this head was also submitted with receipts that did not pass (not counted; RESULT is "
                           "this submission):")
                     for r in v["earlier_red"]:
-                        print("  RED  %-8s %s  (%s)%s" % (r["kind"] or "?", r["path"], "; ".join(r["problems"]),
+                        print("  RED  %-8s %s  (%s)%s" % (r["kind"] or "unreadable", r["path"], "; ".join(r["problems"]),
                                                           (" — %s %s by %s" % (r["why"], r["at"], r["by"]))
                                                           if r["at"] else ""))
                 print("RESULT %s %s at %s%s" % ("OK" if v["ok"] else "FAIL", it["id"], it["head"] or "-",

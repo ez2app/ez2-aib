@@ -630,6 +630,46 @@ class AibLedger(unittest.TestCase):
         acc = self.ok("move", "B-red", "--from", "review", "--to", "accepted", "--by", "seat:f1fae").stdout
         self.assertIn("did not pass", acc)
 
+    def test_1109_r3_m1_earlier_red_uses_the_item_rules(self):
+        # ebb36 #541 r2 M1:earlier_red 要套 verify 的件規則(--cmd 不符、needs recorded),不然換掉就看不到
+        import shlex
+        d, sha = self.repo()
+        self.roles()
+        want = shlex.join([sys.executable, "-m", "unittest", "test_x"])
+        self.ok("add", "B-cmd", "--batch", "b118", "--owner", "2240e", "--title", "c", "--cmd", want,
+                "--by", "seat:f1fae")
+        self.ok("move", "B-cmd", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        _, wrong = self.record(d, sys.executable, "-m", "unittest", "-v", "test_x")   # 綠、record 產,但不是派工那句
+        self.ok("move", "B-cmd", "--from", "running", "--to", "review", "--head", sha, "--evidence", wrong,
+                "--by", "seat:2240e")
+        r = self.L("move", "B-cmd", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.ok("move", "B-cmd", "--from", "review", "--to", "running", "--by", "seat:2240e")
+        _, good = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.ok("move", "B-cmd", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        vj = json.loads(self.ok("verify", "B-cmd", "--json").stdout)
+        self.assertTrue(vj["ok"], vj)
+        self.assertEqual([r["path"] for r in vj["earlier_red"]], [str(Path(wrong).resolve())])
+        self.assertIn("is not the dispatched command", " ".join(vj["earlier_red"][0]["problems"]))
+        self.assertIn("did not pass", self.ok("move", "B-cmd", "--from", "review", "--to", "accepted",
+                                              "--by", "seat:f1fae").stdout)
+        # needs recorded:先交別的工具產的收據(不冒稱 record,check_receipt 本身會過),再交 record 的
+        self.ok("add", "B-nr", "--batch", "b118", "--owner", "2240e", "--title", "n", "--needs", "recorded",
+                "--by", "seat:f1fae")
+        self.ok("move", "B-nr", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        other = self.receipt(sha=sha)
+        self.ok("move", "B-nr", "--from", "running", "--to", "review", "--head", sha, "--evidence", other,
+                "--by", "seat:2240e")
+        self.ok("move", "B-nr", "--from", "review", "--to", "running", "--by", "seat:2240e")
+        _, rec = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.ok("move", "B-nr", "--from", "running", "--to", "review", "--head", sha, "--evidence", rec,
+                "--by", "seat:2240e")
+        v = self.ok("verify", "B-nr").stdout
+        self.assertIn(Path(other).name, v)
+        self.assertIn("needs recorded", v)
+        self.assertIn("RESULT OK", v)
+
     def test_1109_r2_l1_replay_before_format_check(self):
         # ebb36 #541 L1:同 id 同內容 ⇒ 重播,就算收據檔事後不見了也不回 rc 2
         _, sha = self.repo()
