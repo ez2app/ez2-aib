@@ -331,6 +331,34 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "            if a.expect_cmd:   # ebb36 #531 r2 L1",
       "new": "            if False:   # ebb36 #531 r2 L1"
+    },
+    {
+      "name": "reopen-owner-ok",
+      "proves": "only the dispatch seat sends accepted work back to running (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if \"dispatch\" not in worn:\n            raise Refused(RC_RULE, \"only the dispatch seat can send accepted",
+      "new": "        if False:\n            raise Refused(RC_RULE, \"only the dispatch seat can send accepted"
+    },
+    {
+      "name": "reopen-no-next-ok",
+      "proves": "reopening accepted work needs --next (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if not (a.next or \"\").strip():\n            raise Refused(RC_USAGE, \"sending accepted",
+      "new": "        if False:\n            raise Refused(RC_USAGE, \"sending accepted"
+    },
+    {
+      "name": "reopen-keeps-evidence",
+      "proves": "reopening moves the accepted receipts to superseded (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            item[\"superseded\"].append({\"head\": item[\"head\"], \"evidence\": item[\"evidence\"], \"why\": \"reopened\"})\n            item[\"evidence\"] = []",
+      "new": "            pass"
+    },
+    {
+      "name": "reopen-from-integrating",
+      "proves": "integrating cannot go back to running (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    \"integrating\": (\"deployed\", \"accepted\") + SIDE,",
+      "new": "    \"integrating\": (\"deployed\", \"accepted\", \"running\") + SIDE,"
     }
   ]
 }

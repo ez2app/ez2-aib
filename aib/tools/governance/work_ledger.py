@@ -28,6 +28,9 @@
   返工要能發生;事件裡看得到。
 返工換頭碼(H1):running → review 帶了不同的 --head,舊頭碼的收據移到 superseded(連同舊頭碼記下),不再算數;
   收件只看現在頭碼的收據。
+  收件後又改(作者在 accepted 之後推了新 commit):派工席 move --from accepted --to running --next <原因>,這次收件的收據
+  整批移到 superseded(why reopened),之後照一般流程重交 review、重新收件;只有派工席能退、一定要 --next。
+  integrating 之後不開這條路(11-09 f1fae)。
   同頭碼重交(退回 running 再交 review):以這次交的 --evidence 為準,上一次交的整批移到 superseded(11-09 f1fae 派)。
   被換掉的收據不算,但看得到:verify 對現在頭碼 superseded 的收據逐張重驗,沒過的在 RESULT 前列出(路徑 + 哪條不符,
   --json 帶 earlier_red),收件成功也多印一行提醒;只顯示、不擋(ebb36 #541 M1,11-09 f1fae 定)。superseded 每格記 why / at / by。
@@ -96,7 +99,7 @@ TRANSITIONS = {
     "queued": ("running",) + SIDE,
     "running": ("review", "queued") + SIDE,
     "review": ("accepted", "queued", "running") + SIDE,
-    "accepted": ("integrating", "queued") + SIDE,
+    "accepted": ("integrating", "queued", "running") + SIDE,   # → running 只給派工席、要 --next(收件後又改,11-09 f1fae)
     "integrating": ("deployed", "accepted") + SIDE,
     "deployed": (),
     "blocked": ("queued", "running"),
@@ -537,6 +540,17 @@ def apply_move(item, a, request, by, roles):
         raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
     if a.from_state == "blocked-human" and "dispatch" not in worn:
         raise Refused(RC_RULE, "only the dispatch seat can release blocked-human (it waits for a human)")
+    if a.from_state == "accepted" and a.to == "running":
+        # 收件後作者又推了 commit(例:修 Low):派工席把件退回 running 重做,原因寫在 --next;這次收件的收據作廢。
+        # integrating 之後不開這條路(已交給整合席)。11-09 f1fae
+        if "dispatch" not in worn:
+            raise Refused(RC_RULE, "only the dispatch seat can send accepted work back to running")
+        if not (a.next or "").strip():
+            raise Refused(RC_USAGE, "sending accepted work back to running needs --next (why it is reopened)")
+        if item["evidence"]:
+            item["superseded"].append({"head": item["head"], "evidence": item["evidence"], "why": "reopened",
+                                       "at": now_iso(), "by": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)
+            item["evidence"] = []
     if a.to == "accepted" and by == item["owner"]:
         raise Refused(RC_RULE, "%s owns %s and cannot accept its own work" % (by, a.id))
     if request["head"]:
@@ -675,7 +689,7 @@ def print_item(it, hist=None):
     for old in it.get("superseded") or []:
         why = old.get("why") or "old head"
         print("  superseded (%s %s%s): %d receipt(s)" % (
-            ("resubmitted at" if why == "resubmitted" else why), old["head"][:12],
+            {"resubmitted": "resubmitted at", "reopened": "reopened at"}.get(why, why), old["head"][:12],
             "".join(", %s" % x for x in (old.get("at"), old.get("by") and "by " + old["by"]) if x),
             len(old["evidence"])))
         for p in old["evidence"]:

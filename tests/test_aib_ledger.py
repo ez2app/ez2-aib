@@ -713,6 +713,35 @@ class AibLedger(unittest.TestCase):
                                "--by", "seat:f1fae", "--json").stdout)
         self.assertEqual(j["needs"], ["recorded"])
 
+    def test_1109_dispatch_reopens_accepted_work(self):
+        # f1fae 11-09(#542):收件後作者又推了 commit ⇒ 派工席把 accepted 退回 running(要 --next),收據作廢;integrating 之後不准退
+        _, sha = self.repo()
+        self.review_at(sha, item="B-reo")
+        first = self.receipt(sha=sha)
+        self.ok("move", "B-reo", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", first,
+                "--by", "seat:2240e")
+        self.ok("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        r = self.L("move", "B-reo", "--from", "accepted", "--to", "running", "--next", "作者自己退", "--by", "seat:2240e")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        r = self.L("move", "B-reo", "--from", "accepted", "--to", "running", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.ok("move", "B-reo", "--from", "accepted", "--to", "running", "--next", "作者又推了修 Low 的 commit",
+                "--by", "seat:f1fae")
+        it = json.loads(self.ok("show", "B-reo", "--json").stdout)
+        self.assertEqual((it["state"], it["evidence"]), ("running", []))
+        self.assertEqual((it["superseded"][-1]["why"], it["superseded"][-1]["evidence"]),
+                         ("reopened", [str(Path(first).resolve())]))
+        self.assertIn("reopened at", self.ok("show", "B-reo").stdout)
+        self.assertEqual(it["superseded"][-1]["by"], "f1fae")
+        self.assertTrue(it["superseded"][-1]["at"])
+        self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", self.receipt(sha=sha),
+                "--by", "seat:2240e")
+        self.ok("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.ok("move", "B-reo", "--from", "accepted", "--to", "integrating", "--by", "seat:a0f9b")
+        r = self.L("move", "B-reo", "--from", "integrating", "--to", "running", "--next", "x", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
