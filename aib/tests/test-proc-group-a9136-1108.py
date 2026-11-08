@@ -228,6 +228,10 @@ import proc_group as pg
 mode, pidfile = sys.argv[2], sys.argv[3]
 if mode == "term":
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(143))
+if mode == "stuck":
+    # a stop that never finishes; the limit is grace 0.5 + 2 x 0.2 = 0.9 s
+    pg.KILL_WAIT_S = 0.2
+    pg._Group.stop = lambda self, grace: time.sleep(30) or pg.StopReport("stopped")
 def poke(sig, at):
     def go():
         time.sleep(at)
@@ -239,16 +243,21 @@ cmd = ["/bin/sh", "-c", trap + "sleep 60 & echo $! > " + pidfile + "; wait"]
 if mode == "twice":
     poke(signal.SIGINT, 0.5)
     poke(signal.SIGINT, 1.0)   # during the 1.5 s grace of the stop the first one started
+elif mode == "stuck":
+    poke(signal.SIGINT, 0.5)
+    poke(signal.SIGINT, 2.5)   # well past the 0.9 s limit: must go through at once
 else:
     poke(signal.SIGTERM if mode == "term" else signal.SIGINT, 0.5)
 got = {"exc": None}
+t0 = time.monotonic()
 try:
-    pg.run_group(cmd, timeout=30, grace=1.5)
+    pg.run_group(cmd, timeout=30, grace=0.5 if mode == "stuck" else 1.5)
 except BaseException as e:
     rep = getattr(e, "proc_group_stop", None)
     got = {"exc": e.__class__.__name__, "code": getattr(e, "code", None),
            "status": rep.status if rep else None, "why": rep.why if rep else None,
-           "sigint_restored": signal.getsignal(signal.SIGINT) is signal.default_int_handler}
+           "sigint_restored": signal.getsignal(signal.SIGINT) is signal.default_int_handler,
+           "elapsed": time.monotonic() - t0, "limit": pg.defer_limit_s(0.5 if mode == "stuck" else 1.5)}
 print(json.dumps(got))
 """
 
@@ -305,6 +314,18 @@ class Interrupted(unittest.TestCase):
         self.assertEqual(got["status"], "stopped", got)   # TERM ignored: only the KILL after the grace stops it
         self.assertTrue(gone_within(self.gc), "grandchild %s survived the second Ctrl-C" % self.gc)
         self.assertTrue(got["sigint_restored"], got)
+
+    def test_a_stuck_stop_holds_ctrl_c_only_up_to_the_limit(self):
+        """a63ab 11-08: held for at most grace + 2 x KILL_WAIT_S; after that Ctrl-C goes through at once."""
+        got, _ = self.drive("stuck")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertAlmostEqual(got["limit"], 0.9, places=6)
+        self.assertLess(got["elapsed"], 6.0, "the second Ctrl-C was held past the limit: %s" % got)
+        self.assertTrue(got["sigint_restored"], got)
+
+    def test_the_default_limit_is_grace_plus_two_kill_waits(self):
+        self.assertEqual((pg.DEFAULT_GRACE_S, pg.KILL_WAIT_S), (5.0, 2.0))
+        self.assertEqual(pg.defer_limit_s(pg.DEFAULT_GRACE_S), 9.0)
 
     def test_any_base_exception_is_raised_again_as_the_same_object(self):
         class Boom(BaseException):

@@ -27,7 +27,9 @@ Rules (DECISION-20 + ADR 0007):
 - Interrupted while waiting (Ctrl-C, a SIGTERM handler that raises, any BaseException): the group is stopped and
   the leader reaped first, then the SAME exception is raised again with the StopReport as `exc.proc_group_stop`
   and one line on stderr. SIGINT / SIGTERM arriving during that stop are held (main thread only) and delivered
-  to the previous handler afterwards, so a second Ctrl-C cannot cut the stop short (1ced7 / a63ab, 11-08).
+  to the previous handler afterwards, so a second Ctrl-C cannot cut the stop short (1ced7 / a63ab, 11-08) —
+  but only for `defer_limit_s(grace)` = grace + 2 x KILL_WAIT_S (5 + 2 + 2 = 9 s by default): after that a
+  signal goes through at once, so a stuck stop can never make the program impossible to interrupt.
 - Output goes to a temporary file, not a pipe: a grandchild that inherited stdout cannot make a finished command
   look like a timeout (the "false timeout" in 043dd's scan). `output="inherit"` sends it straight to the caller's
   stdout / stderr instead (live; still no pipe).
@@ -318,15 +320,52 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
 _DEFERRED = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM") if hasattr(signal, n))
 
 
-def _stop_then_reraise(p, g, grace, exc):
+def defer_limit_s(grace):
+    """How long signals are held while an interrupted run stops its group: TERM + `grace`, KILL + KILL_WAIT_S for
+    the group to empty, then KILL_WAIT_S to reap the leader. Default 5 + 2 + 2 = 9 s. After that a signal is
+    delivered at once even if the stop is still stuck, so the user can always get out (a63ab 11-08)."""
+    return grace + 2 * KILL_WAIT_S
+
+
+def _deliver(sig, h):
+    """Hand `sig` to the handler `h` that was in place before the stop."""
+    if h is signal.SIG_DFL:
+        signal.raise_signal(sig)       # e.g. a plain SIGTERM: the process ends, as it would have
+    elif h is signal.default_int_handler:
+        raise KeyboardInterrupt
+    elif callable(h):
+        h(sig, None)                   # the caller's own handler (it may raise)
+    # SIG_IGN: nothing
+
+
+def _stop_then_reraise(p, g, grace, exc, clock=time.monotonic):
     pending = []
     saved = {}
+    deadline = clock() + defer_limit_s(grace)
+
+    def restore():
+        while saved:
+            sig, h = saved.popitem()
+            try:
+                signal.signal(sig, h)
+            except (ValueError, OSError):
+                pass
+
+    def hold(sig, frame):
+        if clock() < deadline:
+            pending.append(sig)
+            return
+        h = saved.get(sig)            # past the limit: the stop is stuck, the user's signal goes through now
+        restore()
+        _deliver(sig, h)
+
     if threading.current_thread() is threading.main_thread():
         for sig in _DEFERRED:
             try:
-                saved[sig] = signal.signal(sig, lambda s, f: pending.append(s))
+                saved[sig] = signal.signal(sig, hold)
             except (ValueError, OSError):
                 pass
+    held = dict(saved)
     try:
         try:
             rep = (g if g is not None else _Group(p)).stop(grace)
@@ -347,19 +386,13 @@ def _stop_then_reraise(p, g, grace, exc):
         except Exception:  # noqa: BLE001  a closed stderr must not hide the original exception
             pass
     finally:
-        for sig, h in saved.items():
-            try:
-                signal.signal(sig, h)
-            except (ValueError, OSError):
-                pass
-    # A signal that came in during the stop is delivered now, to the handler that was in place before.
+        restore()
+    # A signal held during the stop goes now to the handler that was in place before; Python's default Ctrl-C
+    # handler is skipped, the exception raised below already is that interrupt.
     for sig in pending:
-        h = saved.get(sig)
-        if h is signal.SIG_DFL:
-            signal.raise_signal(sig)       # e.g. a plain SIGTERM: the process ends, as it would have
-        elif callable(h) and h is not signal.default_int_handler:
-            h(sig, None)                   # the caller's own handler (it may raise; the original is its context)
-        # SIG_IGN, or Python's default Ctrl-C handler: the exception raised below already is that interrupt
+        h = held.get(sig)
+        if h is not signal.default_int_handler:
+            _deliver(sig, h)
     raise exc
 
 
