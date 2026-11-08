@@ -1,7 +1,7 @@
 //! aib-sys — the one crate allowed to call OS process APIs directly.
 //!
-//! Scope of this first version (API list v0.2, DECISION-4 A, 2026-11-07):
-//! macOS M1–M4 only.
+//! Scope (API list v0.2, DECISION-4 A, 2026-11-07): macOS M1–M4; plus the
+//! Windows Job Object in [`job`] (DECISION-8 item 2, DECISION-11, 2026-11-08).
 //!
 //! | # | call | grade |
 //! |---|---|---|
@@ -37,6 +37,8 @@
 //! Only `aibd` may depend on this crate (checked by `aib-xtask deps`).
 
 pub mod fake;
+#[cfg(windows)]
+pub mod job;
 pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;

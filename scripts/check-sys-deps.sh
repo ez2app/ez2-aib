@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Only aibd may depend on aib-sys (API list v0.2, section 9). The check is
-# `aib-xtask deps` over `cargo metadata` (every dependency kind and target,
-# renamed keys, and chains through other workspace crates).
+# Only aibd may depend on aib-sys (API list v0.2, section 9), and aib-sys
+# may depend only on its allow-list (xtask SYS_OWN_DEPS: exact version,
+# target and features; DECISION-11 A). The check is `aib-xtask deps` over
+# `cargo metadata` (every dependency kind and target, renamed keys, and
+# chains through other workspace crates).
 #
 #   scripts/check-sys-deps.sh             check the real workspace
 #   scripts/check-sys-deps.sh --self-test  add aib-sys to a copy in each
@@ -48,5 +50,12 @@ case_run store-build fail '`aib-store` depends on aib-sys' aib-store "[target.'c
 aib-sys = $sys"
 case_run aibd-allowed ok '' aibd "[target.'cfg(all())'.dependencies]
 aib-sys = $sys"
+# aib-sys's own dependencies (allow-list)
+case_run sys-new-crate fail 'not on the allow-list: rand' aib-sys "[target.'cfg(unix)'.dependencies]
+rand = \"0.9\""
+case_run sys-feature-table fail 'has a [features] table' aib-sys "[features]
+net = [\"windows-sys/Win32_Networking_WinSock\"]"
+case_run sys-dev-dep fail 'has a dev dependency' aib-sys "[dev-dependencies]
+libc = \"0.2.191\""
 echo "aib-sys deps self-test: $pass passed, $fail failed"
 [ $fail -eq 0 ]
