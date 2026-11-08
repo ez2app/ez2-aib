@@ -31,13 +31,19 @@ import subprocess
 import sys
 import time
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:      # 有人用檔案路徑載入本檔時,同資料夾的 heat_limits 也要找得到
+    sys.path.insert(0, _HERE)
+import heat_limits  # noqa: E402  門檻單一來源(11-08)
+
 # ── 門檻單源:渲染端與判斷端都讀這裡,不得各寫一份 ──────────────────────────
 THRESHOLDS = {
     "load1_hot": 15.0,        # >= 不要起瀏覽器臂(艦長 09-04 01:3x 令)
     "load1_warn": 8.0,
     "mem_free_warn": 20.0,    # 剩餘記憶體百分比,低於算警告
     "swap_used_warn": 1.0,    # MB;非零就值得看
-    "kernel_task_hot": 20.0,  # >= 代表正在降頻吸熱
+    "kernel_task_hot": heat_limits.THROTTLE_HOT_PCT,    # >= 算 hot(11-08 從 20 提到 40,單一來源 heat_limits)
+    "kernel_task_warm": heat_limits.THROTTLE_WARM_PCT,  # >= 算 warn(只上色、只記,不擋)
     "battery_temp_warn": 40.0,
 }
 
@@ -289,7 +295,8 @@ def kernel_task_cpu(runner=run):
     # ★ v == 0.0 是**合法讀數**,狀態 ok、字樣是「0.0%」——不是 READ_FAILED。
     _LAST_GOOD["kernel_task"] = ("%.1f%%" % v, time.monotonic())
     return _cell("kernel_task", "熱節流", v, "%.1f%%" % v,
-                 "hot" if v >= THRESHOLDS["kernel_task_hot"] else "ok")
+                 "hot" if v >= THRESHOLDS["kernel_task_hot"]
+                 else "warn" if v >= THRESHOLDS["kernel_task_warm"] else "ok")
 
 
 def battery_temp_c(runner=run):

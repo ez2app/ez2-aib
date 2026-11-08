@@ -5985,5 +5985,6 @@
   "aib.lease.cli_run_short": "short 隊:≤5 分鐘的指定測試 / 刀,可跟 long 並跑(nice 10、宣告不開瀏覽器 / 不用固定埠 / 暫存狀態根)",
   "aib.test.short_big_refused": "沒跑:short 隊只給指定幾支 / 刀測,這批 {n} 支算大批;請排 long 隊(不帶 run-short 直接 aib test)。",
   "aib.lease.short_heat": "當下讀數:熱節流 {throttle}%(≥40 停)、load1 {load1}(>12 停)、CPU {cpu}°C(≥90 停);來源 {source}",
-  "aib.lease.exclusive_short_running": "要獨佔機器,但 short 隊 {name} 正在跑({what},最晚 {at} 放掉)—— 等它跑完再拿"
+  "aib.lease.exclusive_short_running": "要獨佔機器,但 short 隊 {name} 正在跑({what},最晚 {at} 放掉)—— 等它跑完再拿",
+  "aib.cool.reason.throttle_warm": "熱節流 {value} ≥ {limit}(warm:只記、不擋)"
 }

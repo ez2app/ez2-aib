@@ -5985,5 +5985,6 @@
   "aib.lease.cli_run_short": "short レーン:5 分以内の指定テスト / ナイフ、long と並走可(nice 10、ブラウザなし / 固定ポートなし / 一時状態ルートを申告)",
   "aib.test.short_big_refused": "未実行:short レーンは指定した数本 / ナイフ専用。この {n} 本は大バッチ扱い。long レーンへ(run-short なしで aib test)。",
   "aib.lease.short_heat": "現在の値:熱スロットリング {throttle}%(≥40 で停止)、load1 {load1}(>12 で停止)、CPU {cpu}°C(≥90 で停止)。取得元 {source}",
-  "aib.lease.exclusive_short_running": "マシンの独占を求めましたが、short レーンを {name} が使用中です({what}、遅くとも {at} に解放)—— 終わるまで待ってください"
+  "aib.lease.exclusive_short_running": "マシンの独占を求めましたが、short レーンを {name} が使用中です({what}、遅くとも {at} に解放)—— 終わるまで待ってください",
+  "aib.cool.reason.throttle_warm": "熱スロットリング {value} ≥ {limit}(warm:記録のみ、ブロックなし)"
 }

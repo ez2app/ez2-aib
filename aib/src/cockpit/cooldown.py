@@ -43,6 +43,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import machine_status as ms  # noqa: E402
+import heat_limits  # noqa: E402
 import flap_guard  # noqa: E402
 
 
@@ -72,7 +73,7 @@ CPU_TEMP_MEASURED_STATES = frozenset((OK,))
 # CPU 晶粒溫度門檻(machine_status.THRESHOLDS 只有電池的;這裡補,不去改它的表)
 CPU_WARN_C = 75.0
 CPU_HOT_C = 85.0
-CPU_CRIT_C = 90.0
+CPU_CRIT_C = heat_limits.CPU_CRIT_C   # 單一來源(heat_limits);reap 只看這一條,11-08 門檻重校不放寬
 LOAD_CRIT = 25.0
 
 # 面板輪詢秒數:熱了就放慢。★ warn 不放太慢——盯艦隊時反應變鈍會被當成面板壞了。
@@ -130,6 +131,38 @@ def log(event):
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def throttle_warm_value(cells):
+    """熱節流落在 warm 區間(≥ WARM 且 < HOT)⇒ 那個值;否則 None。"""
+    by = {c.get("key") or c.get("label"): c for c in cells if isinstance(c, dict)}
+    kt = _first_number(by, "kernel_task", "熱節流")
+    if kt is not None and heat_limits.THROTTLE_WARM_PCT <= kt < heat_limits.THROTTLE_HOT_PCT:
+        return kt
+    return None
+
+
+def log_throttle_warm(cells, flag, now=None):
+    """warm 只記不擋:cooldown.log 一列 throttle_warm,每艙 WARM_LOG_EVERY_S 最多一列(戳記在旗標旁)。
+    回 True = 這一輪有寫。給一週後看「20–39 到底多常出現」用。"""
+    kt = throttle_warm_value(cells)
+    if kt is None or not flag:
+        return False
+    now = time.time() if now is None else now
+    stamp = flag + ".warm-logged"
+    try:
+        if now - os.stat(stamp).st_mtime < heat_limits.WARM_LOG_EVERY_S:
+            return False
+    except OSError:
+        pass
+    log({"action": "throttle_warm", "value": round(kt, 1), "warm": heat_limits.THROTTLE_WARM_PCT,
+         "hot": heat_limits.THROTTLE_HOT_PCT, "state_dir": os.path.dirname(flag)})
+    try:
+        with open(stamp, "w", encoding="utf-8") as fh:
+            fh.write("%d\n" % int(now))
+    except OSError:
+        pass
+    return True
 
 
 def _num(cell):
@@ -239,6 +272,10 @@ def level_of(cells):
     if kt is not None and kt >= ms.THRESHOLDS["kernel_task_hot"]:
         bump(HOT, _ui("aib.cool.reason.throttle", {"value": "%.1f%%" % kt,
                                                    "limit": "%.0f" % ms.THRESHOLDS["kernel_task_hot"]}))
+    elif kt is not None and kt >= heat_limits.THROTTLE_WARM_PCT:
+        # 11-08:20–39 是 warm —— 理由照記(通知檔看得到),等級不升(不寫 nogo、不擋開席、不叫艦長)
+        reasons.append(_ui("aib.cool.reason.throttle_warm", {"value": "%.1f%%" % kt,
+                                                             "limit": "%.0f" % heat_limits.THROTTLE_WARM_PCT}))
 
     return lv, reasons
 
@@ -711,6 +748,7 @@ def apply(cells, dry_run=None):
         out["label"] = _ui("aib.cool.label_no_state", {"label": LABEL[lv]})
         return out
     out["flag"] = set_nogo_flag(path, ORDER[lv] >= ORDER[HOT], "%s %s\n" % (lv, "; ".join(reasons)))
+    out["warm_logged"] = log_throttle_warm(cells, path)
     if thermal_lv == CRIT:
         out["reap"] = reap(dry_run=dry)
     did, need, fyi = plan(lv, reasons, out["reap"])

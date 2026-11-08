@@ -777,9 +777,10 @@ SHORT_SCHEMA = "aib-host-lease-short/v1"
 SHORT_MAX_S = 300           # 宣告上限 5 分鐘
 SHORT_GRACE_S = 60          # 租約到期 = 宣告 + 這麼多(收組 / 放鎖的時間);持有者活著本來就不會被接管
 SHORT_NICE = 10
-SHORT_LOAD1_MAX = 12.0      # > 這個不發
-SHORT_THROTTLE_MAX = 40.0   # 熱節流 % ≥ 這個不發(定案 C;cooldown 的 hot 是 20,那條在推送時幾乎一直亮)
-SHORT_CPU_CRIT_C = 90.0     # 同 cooldown.CPU_CRIT_C(測試對這兩個數)
+import heat_limits  # noqa: E402  (src/cockpit 已在 sys.path;門檻單一來源,cooldown 同一組)
+SHORT_LOAD1_MAX = heat_limits.SHORT_LOAD1_MAX         # > 這個不發
+SHORT_THROTTLE_MAX = heat_limits.THROTTLE_HOT_PCT     # 熱節流 % ≥ 這個不發(= cooldown 的 hot)
+SHORT_CPU_CRIT_C = heat_limits.CPU_CRIT_C             # = cooldown.CPU_CRIT_C
 SHORT_RECOVER_S = 300       # 因熱被拒後要涼滿這麼久才再發
 SHORT_SAMPLE_GAP_MAX_S = 120   # 11-08 bb7dc 審:涼的計時要連續取樣;兩次取樣隔超過這麼久 ⇒ 中間不知道 ⇒ 涼的計時從頭算
 SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(定案 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)
