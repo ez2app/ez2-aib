@@ -158,7 +158,10 @@ impl Lineage {
                 Ok(u) => {
                     uniques.insert(*pid, u.unique);
                 }
-                Err(SysError::Gone) => {}
+                // 043dd #510 H2: a recorded process gone before its unique id
+                // was read — whatever it re-parented can never be linked back,
+                // so this pass cannot claim to be complete
+                Err(SysError::Gone) => complete = false,
                 Err(_) => {
                     self.fail();
                     complete = false;
@@ -398,6 +401,25 @@ mod tests {
         assert_eq!(pids, vec![300, 301]);
         f.remove(200);
         assert_eq!(l.failures(), 0);
+    }
+
+    #[test]
+    fn a_recorded_process_gone_before_its_unique_id_was_read_makes_the_pass_incomplete() {
+        // 043dd #510 H2: recorded by a scan (no unique id), exited before the pass
+        let f = table();
+        f.add(200, ROOT, 2000, 1000, 50);
+        let (l, f) = on(f);
+        let mut u = BTreeMap::from([(ROOT, 1000)]);
+        f.remove(200);
+        let a = l.adopt(&known(&[(ROOT, 50), (200, 50)]), &mut u, ME);
+        assert!(!a.complete, "{a:?}");
+        // the same process with its unique id read while alive: complete, and its orphan found
+        let f = table();
+        let (l, _f) = on(f);
+        let mut u = BTreeMap::from([(ROOT, 1000), (200, 2000)]);
+        let a = l.adopt(&known(&[(ROOT, 50), (200, 50)]), &mut u, ME);
+        assert!(a.complete, "{a:?}");
+        assert!(a.found.iter().any(|x| x.pid == 300), "{a:?}");
     }
 
     #[test]

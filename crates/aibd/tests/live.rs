@@ -48,6 +48,7 @@ async fn start(
         )
         .await
     });
+    #[allow(clippy::disallowed_methods)] // test deadline only, not a daemon timer
     let started = tokio::time::timeout(Duration::from_secs(10), st_rx)
         .await
         .unwrap()

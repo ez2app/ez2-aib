@@ -9,7 +9,15 @@
 //!    processes finds ones the scans missed (double forks, re-parenting).
 //!
 //! Signals only ever go to a pid whose start time still matches the record,
-//! so a reused pid is never hit.
+//! so a reused pid is never hit. A group signal (`killpg(root)`) goes out only
+//! while the group number is provably still ours: the root itself still runs
+//! with its recorded start time, or a recorded member whose identity was just
+//! checked is in that group (a group number cannot be reused while any member
+//! exists). Otherwise only the checked single pids are signalled (043dd #510 H3).
+//!
+//! Misses that some layer KNOWS about (the fork watcher could not watch or
+//! list, the root was never recorded) are collected as `known_gaps`; a cancel
+//! with any of them is `unverified` with that code, never `observed_clean`.
 //!
 //! macOS lineage (M1, `crate::lineage`): processes re-parented to launchd
 //! are linked back through their creator's unique id and added as
@@ -18,7 +26,7 @@
 //! macOS, or an incomplete pass) a cancel report is never `clean`: it is
 //! `unverified` at best.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
@@ -83,8 +91,15 @@ pub struct Report {
     pub candidates_unreadable: Vec<u32>,
     /// The candidate list itself was read in full.
     pub candidates_complete: bool,
+    /// Misses a layer knows about (codes, sorted): `root_unrecorded` and the
+    /// fork watcher's `fork_watch_*`. Any of them = never `observed_clean`.
+    pub known_gaps: Vec<&'static str>,
     pub exit_code: Option<i32>,
 }
+
+/// The root was gone before its start time could be recorded: nothing it
+/// started can be followed.
+pub const GAP_ROOT_UNRECORDED: &str = "root_unrecorded";
 
 /// Blind spot named in every report without lineage.
 pub const BLIND_SPOT_REPARENTED: &str = "reparented_after_intermediate_exit";
@@ -100,10 +115,20 @@ pub const BLIND_SPOTS_UNCONTAINED: [&str; 4] = [
 ];
 
 impl Report {
-    /// No recorded process is still running. Not the same as "clean":
-    /// see [`Report::clean_status`].
-    pub fn tree_clean(&self) -> bool {
+    /// No recorded process is still running. NOT "clean" (043dd #510 M3):
+    /// see [`Report::clean_status`] / [`Report::tree_status`].
+    pub fn no_recorded_survivors(&self) -> bool {
         self.survivors.is_empty()
+    }
+
+    /// The three-way result for `aib_core::outcome::Observed::tree`.
+    pub fn tree_status(&self) -> aib_core::outcome::Tree {
+        use aib_core::outcome::Tree;
+        match self.clean_status() {
+            "clean" => Tree::Clean,
+            "tree_not_clean" => Tree::NotClean,
+            _ => Tree::Unverified(self.unverified_reason().unwrap_or("unverified")),
+        }
     }
 
     /// What a cancel may claim (DECISION-23): `tree_not_clean` (a recorded
@@ -127,6 +152,8 @@ impl Report {
             None
         } else if self.lineage_unavailable {
             Some("lineage_unavailable")
+        } else if let Some(g) = self.known_gaps.first() {
+            Some(*g)
         } else if !self.candidates_complete {
             Some("candidates_incomplete")
         } else if !self.candidates_unreadable.is_empty() {
@@ -171,6 +198,8 @@ pub struct TreeHandle {
     /// unique ids read while each process was alive (lineage on only)
     uniques: BTreeMap<u32, u64>,
     lineage_incomplete: bool,
+    /// Misses known to this handle (merged with the fork watcher's).
+    gaps: BTreeSet<&'static str>,
     #[cfg(target_os = "macos")]
     watch: Option<super::fork_watch::ForkWatch>,
 }
@@ -210,6 +239,9 @@ impl RootExit {
         *self.status.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    // Waits for the root's exit event, bounded by the caller's timeout: one
+    // wake-up on the event (or at the deadline), not a periodic timer (ADR 0005).
+    #[allow(clippy::disallowed_methods)]
     fn wait(&self, timeout: Duration) -> Option<ExitStatus> {
         let g = self.status.lock().unwrap_or_else(|e| e.into_inner());
         let (g, _) = self
@@ -262,6 +294,7 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         lineage: spec.lineage.clone().filter(|l| l.enabled()),
         uniques: BTreeMap::new(),
         lineage_incomplete: false,
+        gaps: BTreeSet::new(),
         #[cfg(target_os = "macos")]
         watch: None,
     };
@@ -274,12 +307,21 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         h.known.insert(root, p.start_time());
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
-            h.watch = Some(super::fork_watch::ForkWatch::start(
-                root,
-                p.start_time(),
-                h.lineage.clone(),
-            )?);
+            match super::fork_watch::ForkWatch::start(root, p.start_time(), h.lineage.clone()) {
+                Ok(w) => h.watch = Some(w),
+                Err(e) => {
+                    // 043dd #510 M2: do not leave the CLI running with nobody
+                    // holding it; only while the group is provably ours
+                    if h.group_is_ours(&sys, &[]) {
+                        imp::signal_group(root, imp::Sig::Kill);
+                    }
+                    return Err(e);
+                }
+            }
         }
+    } else {
+        // 043dd #510 M1: gone before it could be recorded (a CLI that exits at once)
+        h.gaps.insert(GAP_ROOT_UNRECORDED);
     }
     #[cfg(not(target_os = "macos"))]
     let _ = spec.watch_forks;
@@ -319,7 +361,36 @@ impl TreeHandle {
             for (pid, u) in w.uniques() {
                 self.uniques.entry(pid).or_insert(u);
             }
+            self.gaps.extend(w.gaps());
         }
+    }
+
+    /// Read `pid`'s unique id the moment it is recorded, while it is alive
+    /// (043dd #510 H2: a scan used to leave this to the next lineage pass,
+    /// by which time the process could be gone).
+    fn note_unique(&mut self, pid: u32) {
+        if let Some(u) = self.lineage.as_ref().and_then(|l| l.unique_of(pid)) {
+            self.uniques.entry(pid).or_insert(u);
+        }
+    }
+
+    /// May `killpg(root)` be sent? Only while the group number is provably
+    /// still this session's (see the module comment). `alive` = recorded
+    /// processes believed alive.
+    fn group_is_ours(&self, sys: &System, alive: &[(u32, u64)]) -> bool {
+        if self
+            .known
+            .get(&self.root)
+            .is_some_and(|s| running(sys, self.root, *s))
+        {
+            return true;
+        }
+        alive.iter().any(|(pid, start)| {
+            *pid != self.root
+                && running(sys, *pid, *start)
+                && self.unique_ok(*pid)
+                && imp::pgid_of(*pid) == Some(self.root)
+        })
     }
 
     /// M1 pass: add processes whose creator is recorded. True if any.
@@ -389,6 +460,7 @@ impl TreeHandle {
                         // an older one means the parent pid was reused.
                         if p.start_time() >= pstart {
                             self.known.insert(pid, p.start_time());
+                            self.note_unique(pid);
                             added = true;
                         }
                     }
@@ -422,6 +494,7 @@ impl TreeHandle {
                 .any(|e| e.to_str() == Some(want.as_str()))
             {
                 self.known.insert(pid, p.start_time());
+                self.note_unique(pid);
                 self.found_by_marker.push(pid);
             }
         }
@@ -456,11 +529,15 @@ impl TreeHandle {
         let mut steps = Vec::new();
         let alive = self.wait_gone(Duration::ZERO)?;
         if !alive.is_empty() {
-            imp::signal_group(self.root, imp::Sig::Interrupt);
-            steps.push(Step {
-                signal: "SIGINT(group)",
-                targets: vec![self.root],
-            });
+            let mut sys = new_system()?;
+            refresh(&mut sys, false);
+            if self.group_is_ours(&sys, &alive) {
+                imp::signal_group(self.root, imp::Sig::Interrupt);
+                steps.push(Step {
+                    signal: "SIGINT(group)",
+                    targets: vec![self.root],
+                });
+            }
             self.wait_gone(grace)?;
         }
         self.cleanup_into(grace, steps)
@@ -479,9 +556,15 @@ impl TreeHandle {
             if alive.is_empty() {
                 break;
             }
-            imp::signal_group(self.root, sig);
             let mut sys = new_system()?;
             refresh(&mut sys, false);
+            if self.group_is_ours(&sys, &alive) {
+                imp::signal_group(self.root, sig);
+                steps.push(Step {
+                    signal: sig.group_name(),
+                    targets: vec![self.root],
+                });
+            }
             let mut targets = Vec::new();
             for (pid, start) in alive {
                 // re-check the identity right before signalling
@@ -522,6 +605,7 @@ impl TreeHandle {
             candidates: check.count,
             candidates_unreadable: check.unreadable,
             candidates_complete: check.complete,
+            known_gaps: self.gaps.iter().copied().collect(),
             exit_code,
         })
     }
@@ -603,10 +687,25 @@ mod imp {
                 Sig::Kill => "SIGKILL",
             }
         }
+        pub fn group_name(self) -> &'static str {
+            match self {
+                Sig::Interrupt => "SIGINT(group)",
+                Sig::Terminate => "SIGTERM(group)",
+                Sig::Kill => "SIGKILL(group)",
+            }
+        }
     }
 
     pub fn new_group(c: &mut std::process::Command) {
         c.process_group(0);
+    }
+
+    /// Process group of `pid`, `None` if it cannot be read.
+    pub fn pgid_of(pid: u32) -> Option<u32> {
+        let p = i32::try_from(pid).ok()?;
+        nix::unistd::getpgid(Some(Pid::from_raw(p)))
+            .ok()
+            .and_then(|g| u32::try_from(g.as_raw()).ok())
     }
 
     pub fn signal_group(leader: u32, s: Sig) {
@@ -643,9 +742,15 @@ mod imp {
                 Sig::Kill => "TERMINATE_JOB(unimplemented)",
             }
         }
+        pub fn group_name(self) -> &'static str {
+            self.name()
+        }
     }
 
     pub fn new_group(_c: &mut std::process::Command) {}
+    pub fn pgid_of(_pid: u32) -> Option<u32> {
+        None
+    }
     pub fn signal_group(_leader: u32, _s: Sig) {}
     pub fn signal_pid(_pid: u32, _s: Sig) {}
 }
@@ -663,6 +768,37 @@ mod tests {
 
     /// DECISION-23: without proven containment the best a cancel can say is
     /// `unverified` / `observed_clean`; survivors win over everything.
+    #[test]
+    fn a_known_gap_is_never_observed_clean_and_comes_after_lineage() {
+        // 043dd #510 H1 / M1: a miss some layer knows about names itself
+        let r = Report {
+            known_gaps: vec!["fork_watch_stopped", GAP_ROOT_UNRECORDED],
+            ..rep()
+        };
+        assert_eq!(r.clean_status(), "unverified");
+        assert_eq!(r.unverified_reason(), Some("fork_watch_stopped"));
+        assert_eq!(
+            r.tree_status(),
+            aib_core::outcome::Tree::Unverified("fork_watch_stopped")
+        );
+        let r = Report {
+            known_gaps: vec![GAP_ROOT_UNRECORDED],
+            lineage_unavailable: true,
+            ..rep()
+        };
+        assert_eq!(r.unverified_reason(), Some("lineage_unavailable"));
+        let r = Report {
+            known_gaps: vec![GAP_ROOT_UNRECORDED],
+            survivors: vec![7],
+            ..rep()
+        };
+        assert_eq!(r.tree_status(), aib_core::outcome::Tree::NotClean);
+        assert_eq!(
+            rep().tree_status(),
+            aib_core::outcome::Tree::Unverified("observed_clean")
+        );
+    }
+
     #[test]
     fn decision_23_status_reason_and_blind_spots() {
         let r = rep();

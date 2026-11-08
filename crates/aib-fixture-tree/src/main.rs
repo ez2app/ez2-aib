@@ -10,6 +10,8 @@
 //!                   escapee  own process group (like Codex's detached tool child)
 //!                   orphan   own group, its parent exits at once (re-parented)
 //!                 then prints {"type":"ready","pids":{...}} and sleeps.
+//!   tree-stable   as `tree` without the orphan: no intermediate that exits at
+//!                 once, so whether lineage is complete does not depend on load
 //!   tree-platform main ignores SIGINT/SIGTERM; a short-lived parent starts
 //!                 the system `/bin/sleep` in its own group and exits at once
 //!                 (the shape real Claude Code's Bash tool leaked, ADR 0004
@@ -96,18 +98,25 @@ fn main() {
             emit(serde_json::json!({"type": "completed"}));
         }
         "no-complete" => emit(serde_json::json!({"type": "started"})),
-        "tree" => {
+        "tree" | "tree-stable" => {
             ignore(&[signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]);
             let piddir = std::env::temp_dir().join(format!("aib-fixture-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&piddir);
             spawn_role("child", false, &piddir);
             spawn_role("escapee", true, &piddir);
-            spawn_role("orphan-parent", false, &piddir);
-            let roles = ["child", "escapee", "orphan"];
+            let stable = mode == "tree-stable";
+            if !stable {
+                spawn_role("orphan-parent", false, &piddir);
+            }
+            let roles: &[&str] = if stable {
+                &["child", "escapee"]
+            } else {
+                &["child", "escapee", "orphan"]
+            };
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut pids = serde_json::Map::new();
             while Instant::now() < deadline && pids.len() < roles.len() {
-                for r in roles {
+                for r in roles.iter().copied() {
                     if let Ok(s) = std::fs::read_to_string(piddir.join(r)) {
                         if let Ok(n) = s.trim().parse::<u32>() {
                             pids.insert(r.into(), n.into());

@@ -138,7 +138,7 @@ fn completed_event_means_completed() {
     let o = decide(Observed {
         completed_event: evs.iter().any(|e| e["type"] == "completed"),
         exit_code: code,
-        tree_clean: rep.tree_clean(),
+        tree: rep.tree_status(),
         ..Default::default()
     });
     assert_eq!(code, Some(0));
@@ -154,7 +154,7 @@ fn exit_zero_without_completion_is_interrupted() {
     let o = decide(Observed {
         completed_event: evs.iter().any(|e| e["type"] == "completed"),
         exit_code: code,
-        tree_clean: rep.tree_clean(),
+        tree: rep.tree_status(),
         ..Default::default()
     });
     assert_eq!(code, Some(0));
@@ -182,12 +182,18 @@ fn cancel_clears_child_escapee_and_orphan() {
     );
     let rep = h.cancel(Duration::from_millis(500)).unwrap();
     assert!(
-        rep.tree_clean(),
+        rep.no_recorded_survivors(),
         "survivors: {:?} steps: {:?}",
         rep.survivors,
         rep.steps
     );
     assert!(rep.tree_size >= 4, "{rep:?}");
+    // the root still ran with its recorded identity: the group signal was allowed
+    assert!(
+        rep.steps.iter().any(|s| s.signal == "SIGINT(group)"),
+        "{:?}",
+        rep.steps
+    );
     // main ignores SIGINT and SIGTERM, so the sequence must reach SIGKILL
     assert!(
         rep.steps.iter().any(|s| s.signal == "SIGKILL"),
@@ -210,7 +216,7 @@ fn marker_sweep_finds_the_reparented_orphan_without_any_scan() {
     assert_eq!(h.known(), vec![h.root_pid()]);
     let rep = h.cancel(Duration::from_millis(500)).unwrap();
     assert!(rep.found_by_marker.contains(&orphan), "{rep:?}");
-    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert_eq!(still_running(&pids), Vec::<u32>::new());
 }
 
@@ -234,13 +240,52 @@ fn reused_pid_with_other_start_time_is_never_signalled() {
     bystander.wait().unwrap();
 }
 
+/// 043dd #510 H3: when nothing proves the root's group number is still ours
+/// (root recorded with another start time = "its pid is someone else's now",
+/// no checked member left in that group), no group signal goes out; the
+/// checked single pids are still stopped.
+#[test]
+fn no_group_signal_when_the_group_number_is_not_provably_ours() {
+    let mut h = spawn_tree(&spec_watch("tree", "s-tree-h3", false)).unwrap();
+    let v = first_line(&mut h);
+    let pids = ready_pids(&v);
+    let main = v["pids"]["main"].as_u64().unwrap() as u32;
+    let child = v["pids"]["child"].as_u64().unwrap() as u32;
+    let escapee = v["pids"]["escapee"].as_u64().unwrap() as u32;
+    let orphan = v["pids"]["orphan"].as_u64().unwrap() as u32;
+    // the only other member of the root's group goes first (ours: the fixture printed it)
+    let _ = Command::new("kill")
+        .args(["-9", &child.to_string()])
+        .status();
+    h.record_for_test(main, 1);
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    // collect what is ours whatever the assertions say
+    let _ = Command::new("kill")
+        .args(["-9", &main.to_string()])
+        .status();
+    assert!(
+        rep.steps.iter().all(|s| !s.signal.ends_with("(group)")),
+        "a group signal went to a group number nothing proved ours: {:?}",
+        rep.steps
+    );
+    assert_eq!(
+        still_running(&[escapee, orphan]),
+        Vec::<u32>::new(),
+        "{rep:?}"
+    );
+    let _ = pids;
+}
+
 #[test]
 fn second_cancel_is_a_clean_no_op() {
     let mut h = spawn_tree(&spec("tree", "s-tree-twice")).unwrap();
     let _ = ready_pids(&first_line(&mut h));
-    assert!(h.cancel(Duration::from_millis(300)).unwrap().tree_clean());
+    assert!(h
+        .cancel(Duration::from_millis(300))
+        .unwrap()
+        .no_recorded_survivors());
     let again = h.cancel(Duration::from_millis(300)).unwrap();
-    assert!(again.tree_clean());
+    assert!(again.no_recorded_survivors());
     assert!(again.steps.is_empty(), "{:?}", again.steps);
 }
 
@@ -275,7 +320,7 @@ fn fork_watcher_catches_reparented_platform_binary() {
         "marker layer saw it: {rep:?}"
     );
     assert!(rep.forks_seen >= 1, "{rep:?}");
-    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
     // DECISION-23: no proven containment on macOS, so never `clean`
     assert_eq!(rep.clean_status(), "unverified", "{rep:?}");
     assert!(
@@ -295,7 +340,7 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
     let mut h = spawn_tree(&spec("tree", "s-tree-nolineage")).unwrap();
     let _ = ready_pids(&first_line(&mut h));
     let rep = h.cancel(Duration::from_millis(300)).unwrap();
-    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
     assert_eq!(rep.unverified_reason(), Some("lineage_unavailable"));
@@ -307,11 +352,15 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
 /// DECISION-23: with lineage on and nothing left, macOS still does not say
 /// `clean` (no proven containment): `unverified` with `observed_clean`, or
 /// `candidates_unreadable` if launchd started a same-user agent meanwhile.
+/// `tree-stable` has no intermediate that exits at once: with one, lineage is
+/// honestly incomplete whenever it exits before its unique id is read (H2),
+/// which under a parallel test run is most of the time.
 #[cfg(target_os = "macos")]
 #[test]
 fn with_lineage_a_clean_looking_cancel_is_observed_clean_never_clean() {
-    let mut h = spawn_tree(&spec_lineage("tree", "s-tree-lineage")).unwrap();
-    let _ = ready_pids(&first_line(&mut h));
+    let mut h = spawn_tree(&spec_lineage("tree-stable", "s-tree-lineage")).unwrap();
+    let v = first_line(&mut h);
+    assert_eq!(v["type"], "ready", "{v}");
     let rep = h.cancel(Duration::from_millis(300)).unwrap();
     assert!(!rep.lineage_unavailable, "{rep:?}");
     assert!(rep.candidates_complete, "{rep:?}");
@@ -410,7 +459,7 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     .unwrap();
     let _ = ready_pids(&first_line(&mut h));
     let rep = h.cancel(Duration::from_millis(300)).unwrap();
-    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
 }

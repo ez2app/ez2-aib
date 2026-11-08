@@ -15,15 +15,23 @@
 //!
 //! Level: VERIFIED-mac for the shapes in `tests/tree.rs`. Whether every
 //! short-lived descendant and every `posix_spawn` is seen is **pending
-//! measurement**; until then this is a proxy, not a guarantee, and a miss is
-//! reported as `tree_not_clean` by the caller.
+//! measurement**; until then this is a proxy, not a guarantee.
+//!
+//! A miss the watcher KNOWS about is never swallowed (043dd #510 H1): it is
+//! recorded as a gap ([`ForkWatch::gaps`]), the tree handle copies it into
+//! `Report::known_gaps`, and the cancel is then `unverified` with that code,
+//! never `observed_clean`:
+//!   - `fork_watch_stopped`          kevent failed, the thread ended: later forks unseen
+//!   - `fork_watch_unwatched`        a process could not be watched (it may fork unseen)
+//!   - `fork_watch_list_failed`      a parent's children could not be listed
+//!   - `fork_watch_child_unreadable` a listed child's start time could not be read
 
 use libproc::libproc::bsd_info::BSDInfo;
 use libproc::libproc::proc_pid::pidinfo;
 use libproc::processes::{pids_by_type, ProcFilter};
 use nix::errno::Errno;
 use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -33,9 +41,19 @@ use crate::lineage::Lineage;
 const STOP_IDENT: usize = 1;
 
 type Seen = Mutex<BTreeMap<u32, u64>>;
+type Gaps = Mutex<BTreeSet<&'static str>>;
+
+pub const GAP_STOPPED: &str = "fork_watch_stopped";
+pub const GAP_UNWATCHED: &str = "fork_watch_unwatched";
+pub const GAP_LIST_FAILED: &str = "fork_watch_list_failed";
+pub const GAP_CHILD_UNREADABLE: &str = "fork_watch_child_unreadable";
 
 fn lock(m: &Seen) -> MutexGuard<'_, BTreeMap<u32, u64>> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn gap(g: &Gaps, code: &'static str) {
+    g.lock().unwrap_or_else(|e| e.into_inner()).insert(code);
 }
 
 /// Start time in seconds, the same source sysinfo uses on macOS
@@ -57,54 +75,102 @@ fn watch(kq: &Kqueue, pid: u32) -> bool {
     kq.kevent(&[ev], &mut [], None).is_ok()
 }
 
+/// The OS calls `adopt` makes, behind a trait so tests can make each one fail.
+trait Probe {
+    fn kids(&self, parent: u32) -> Option<Vec<u32>>;
+    fn start(&self, pid: u32) -> Option<u64>;
+    /// Register the kqueue watch; false = not watched.
+    fn watch(&self, pid: u32) -> bool;
+    /// Read and keep the unique id now (lineage on); false = not read.
+    fn note_unique(&self, pid: u32) -> bool;
+    /// Lineage is on: a missed watch is then covered by the lineage pass (the
+    /// unique id read here, or an incomplete pass when it could not be read).
+    fn lineage_on(&self) -> bool;
+}
+
 /// What the watcher thread shares with the handle.
 struct Ctx {
     kq: Arc<Kqueue>,
     seen: Arc<Seen>,
     uniques: Arc<Seen>,
+    gaps: Arc<Gaps>,
     lineage: Option<Arc<Lineage>>,
 }
 
-impl Ctx {
-    /// Read and keep `pid`'s unique id now, while it is alive.
-    fn note_unique(&self, pid: u32) {
-        if let Some(u) = self.lineage.as_ref().and_then(|l| l.unique_of(pid)) {
-            lock(&self.uniques).insert(pid, u);
+impl Probe for Ctx {
+    fn kids(&self, parent: u32) -> Option<Vec<u32>> {
+        pids_by_type(ProcFilter::ByParentProcess { ppid: parent }).ok()
+    }
+    fn start(&self, pid: u32) -> Option<u64> {
+        start_time(pid)
+    }
+    fn watch(&self, pid: u32) -> bool {
+        watch(&self.kq, pid)
+    }
+    fn note_unique(&self, pid: u32) -> bool {
+        match self.lineage.as_ref().and_then(|l| l.unique_of(pid)) {
+            Some(u) => {
+                lock(&self.uniques).insert(pid, u);
+                true
+            }
+            None => false,
         }
+    }
+    fn lineage_on(&self) -> bool {
+        self.lineage.is_some()
+    }
+}
+
+/// Watch `pid` and read its unique id; a watch that failed with no lineage
+/// to fall back on is a known gap.
+fn watch_one(pr: &impl Probe, gaps: &Gaps, pid: u32) {
+    let watched = pr.watch(pid);
+    pr.note_unique(pid);
+    if !watched && !pr.lineage_on() {
+        gap(gaps, GAP_UNWATCHED);
     }
 }
 
 /// Record and watch every not-yet-known descendant of `parent`.
-fn adopt(cx: &Ctx, parent: u32) {
-    let (kq, seen) = (&*cx.kq, &*cx.seen);
+fn adopt(pr: &impl Probe, seen: &Seen, gaps: &Gaps, parent: u32) {
     let mut stack = vec![parent];
     while let Some(p) = stack.pop() {
         let pstart = lock(seen).get(&p).copied();
-        let Ok(kids) = pids_by_type(ProcFilter::ByParentProcess { ppid: p }) else {
+        let Some(kids) = pr.kids(p) else {
+            gap(gaps, GAP_LIST_FAILED);
             continue;
         };
         for k in kids {
             if k == 0 || lock(seen).contains_key(&k) {
                 continue;
             }
-            let Some(ks) = start_time(k) else { continue };
+            let Some(ks) = pr.start(k) else {
+                // listed, then unreadable: it may have started children we will never see
+                gap(gaps, GAP_CHILD_UNREADABLE);
+                continue;
+            };
             // A child cannot be older than its recorded parent; an older one
             // means the parent pid was reused.
             if pstart.is_some_and(|ps| ks < ps) {
                 continue;
             }
             lock(seen).insert(k, ks);
-            watch(kq, k);
-            cx.note_unique(k);
+            watch_one(pr, gaps, k);
             stack.push(k);
         }
     }
+}
+
+/// A kevent error other than EINTR ends the watcher: every later fork is unseen.
+fn kevent_gap(e: Errno) -> Option<&'static str> {
+    (e != Errno::EINTR).then_some(GAP_STOPPED)
 }
 
 pub struct ForkWatch {
     kq: Arc<Kqueue>,
     seen: Arc<Seen>,
     uniques: Arc<Seen>,
+    gaps: Arc<Gaps>,
     forks: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
@@ -129,16 +195,17 @@ impl ForkWatch {
         let seen: Arc<Seen> = Arc::new(Mutex::new(BTreeMap::from([(root, root_start)])));
         let forks = Arc::new(AtomicU64::new(0));
         let uniques: Arc<Seen> = Arc::new(Mutex::new(BTreeMap::new()));
+        let gaps: Arc<Gaps> = Arc::new(Mutex::new(BTreeSet::new()));
         let cx = Ctx {
             kq: kq.clone(),
             seen: seen.clone(),
             uniques: uniques.clone(),
+            gaps: gaps.clone(),
             lineage,
         };
-        watch(&kq, root);
-        cx.note_unique(root);
+        watch_one(&cx, &gaps, root);
         // The root may have forked before the watch was registered.
-        adopt(&cx, root);
+        adopt(&cx, &seen, &gaps, root);
         let thread = {
             let forks = forks.clone();
             std::thread::Builder::new()
@@ -149,6 +216,7 @@ impl ForkWatch {
             kq,
             seen,
             uniques,
+            gaps,
             forks,
             thread: Some(thread),
         })
@@ -162,6 +230,16 @@ impl ForkWatch {
     /// Unique ids read when each process was recorded (lineage on only).
     pub fn uniques(&self) -> Vec<(u32, u64)> {
         lock(&self.uniques).iter().map(|(p, u)| (*p, *u)).collect()
+    }
+
+    /// Misses the watcher knows about (see the module comment).
+    pub fn gaps(&self) -> Vec<&'static str> {
+        self.gaps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect()
     }
 
     /// Fork events seen under this tree (input for the B1 descendant count;
@@ -185,8 +263,13 @@ fn run(cx: &Ctx, forks: &AtomicU64) {
     loop {
         let n = match kq.kevent(&[], &mut buf, None) {
             Ok(n) => n,
-            Err(Errno::EINTR) => continue,
-            Err(_) => return,
+            Err(e) => match kevent_gap(e) {
+                None => continue,
+                Some(code) => {
+                    gap(&cx.gaps, code);
+                    return;
+                }
+            },
         };
         for ev in &buf[..n] {
             match ev.filter() {
@@ -194,7 +277,7 @@ fn run(cx: &Ctx, forks: &AtomicU64) {
                 Ok(EventFilter::EVFILT_PROC) if ev.fflags().contains(FilterFlag::NOTE_FORK) => {
                     forks.fetch_add(1, Ordering::Relaxed);
                     if let Ok(pid) = u32::try_from(ev.ident()) {
-                        adopt(cx, pid);
+                        adopt(cx, &cx.seen, &cx.gaps, pid);
                     }
                 }
                 _ => {}
@@ -218,5 +301,98 @@ impl Drop for ForkWatch {
                 let _ = t.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Tree of fake processes: parent -> kids, with what each call returns.
+    #[derive(Default)]
+    struct Fake {
+        kids: BTreeMap<u32, Option<Vec<u32>>>,
+        starts: BTreeMap<u32, u64>,
+        unwatchable: BTreeSet<u32>,
+        lineage: bool,
+        watched: RefCell<Vec<u32>>,
+    }
+
+    impl Probe for Fake {
+        fn kids(&self, parent: u32) -> Option<Vec<u32>> {
+            self.kids.get(&parent).cloned().unwrap_or(Some(Vec::new()))
+        }
+        fn start(&self, pid: u32) -> Option<u64> {
+            self.starts.get(&pid).copied()
+        }
+        fn watch(&self, pid: u32) -> bool {
+            self.watched.borrow_mut().push(pid);
+            !self.unwatchable.contains(&pid)
+        }
+        fn note_unique(&self, _pid: u32) -> bool {
+            self.lineage
+        }
+        fn lineage_on(&self) -> bool {
+            self.lineage
+        }
+    }
+
+    fn run_adopt(f: &Fake) -> (Vec<u32>, Vec<&'static str>) {
+        let seen: Seen = Mutex::new(BTreeMap::from([(10, 100)]));
+        let gaps: Gaps = Mutex::new(BTreeSet::new());
+        adopt(f, &seen, &gaps, 10);
+        let s = lock(&seen).keys().copied().collect();
+        let g = gaps.lock().unwrap().iter().copied().collect();
+        (s, g)
+    }
+
+    #[test]
+    fn a_clean_adopt_records_every_child_and_reports_no_gap() {
+        let f = Fake {
+            kids: BTreeMap::from([(10, Some(vec![11])), (11, Some(vec![12]))]),
+            starts: BTreeMap::from([(11, 101), (12, 102)]),
+            ..Fake::default()
+        };
+        assert_eq!(run_adopt(&f), (vec![10, 11, 12], vec![]));
+    }
+
+    #[test]
+    fn a_failed_child_listing_is_a_known_gap() {
+        let f = Fake {
+            kids: BTreeMap::from([(10, None)]),
+            ..Fake::default()
+        };
+        assert_eq!(run_adopt(&f).1, vec![GAP_LIST_FAILED]);
+    }
+
+    #[test]
+    fn an_unreadable_child_is_a_known_gap() {
+        let f = Fake {
+            kids: BTreeMap::from([(10, Some(vec![11]))]),
+            ..Fake::default()
+        };
+        assert_eq!(run_adopt(&f), (vec![10], vec![GAP_CHILD_UNREADABLE]));
+    }
+
+    #[test]
+    fn an_unwatched_child_is_a_gap_without_lineage_only() {
+        let mut f = Fake {
+            kids: BTreeMap::from([(10, Some(vec![11]))]),
+            starts: BTreeMap::from([(11, 101)]),
+            unwatchable: BTreeSet::from([11]),
+            ..Fake::default()
+        };
+        assert_eq!(run_adopt(&f).1, vec![GAP_UNWATCHED]);
+        // with lineage the pass after covers it (its unique id, or an incomplete pass)
+        f.lineage = true;
+        assert_eq!(run_adopt(&f).1, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_kevent_error_other_than_eintr_ends_the_watch_as_a_gap() {
+        assert_eq!(kevent_gap(Errno::EINTR), None);
+        assert_eq!(kevent_gap(Errno::EBADF), Some(GAP_STOPPED));
+        assert_eq!(kevent_gap(Errno::ENOMEM), Some(GAP_STOPPED));
     }
 }

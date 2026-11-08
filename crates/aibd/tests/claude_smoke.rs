@@ -69,6 +69,7 @@ fn running(pid: u32) -> bool {
 }
 
 /// Reads events until `stop(event)` is true or the stream ends.
+#[allow(clippy::disallowed_methods)] // recv_timeout: test deadline only, not a daemon timer
 fn read_until(
     out: std::process::ChildStdout,
     deadline: Duration,
@@ -127,7 +128,7 @@ fn cancel_after_tool_spawned_a_detached_child() {
     assert!(running(sleep));
     let rep = h.cancel(Duration::from_secs(3)).unwrap();
     eprintln!("cancel report: {rep:?}");
-    assert!(rep.tree_clean(), "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(!running(sleep), "detached sleep {sleep} survived");
 }
 
@@ -153,7 +154,7 @@ fn natural_finish_is_completed_and_leftovers_are_cleaned() {
     let o = decide(Observed {
         completed_event: completed,
         exit_code: code,
-        tree_clean: rep.tree_clean(),
+        tree: rep.tree_status(),
         ..Default::default()
     });
     assert_eq!(o.state, SessionState::Completed, "{o:?}");
