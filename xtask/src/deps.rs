@@ -3,12 +3,103 @@
 //! leak into aib-core, aib-store or any other crate, directly, through a
 //! dev / build / target-specific dependency, under a renamed key, or through
 //! another workspace crate.
+//!
+//! [`check_own`] is the other direction: what aib-sys itself may depend on.
+//! Every dependency of aib-sys must be on [`SYS_OWN_DEPS`] with the same
+//! kind, target, version requirement and feature list (DECISION-11 A: an
+//! exact windows-sys version, only the features `job` uses). Adding a crate
+//! or a feature means changing this list in the same PR, where review sees it.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SYS_CRATE: &str = "aib-sys";
 pub const SYS_ALLOWED: &[&str] = &["aibd"];
+
+/// One allowed dependency of aib-sys: `(name, target, version req, features)`.
+/// Kind is always normal (no dev / build dependencies); `features` sorted.
+pub type OwnDep = (
+    &'static str,
+    Option<&'static str>,
+    &'static str,
+    &'static [&'static str],
+);
+
+pub const SYS_OWN_DEPS: &[OwnDep] = &[
+    ("thiserror", None, "^2.0.21", &[]),
+    ("libc", Some("cfg(target_os = \"macos\")"), "^0.2.191", &[]),
+    (
+        "windows-sys",
+        Some("cfg(windows)"),
+        "=0.61.2",
+        &[
+            "Win32_Foundation",
+            "Win32_Security",
+            "Win32_System_Console",
+            "Win32_System_Diagnostics_ToolHelp",
+            "Win32_System_IO",
+            "Win32_System_JobObjects",
+            "Win32_System_Threading",
+        ],
+    ),
+];
+
+/// Every dependency of aib-sys that is not exactly on [`SYS_OWN_DEPS`].
+pub fn check_own(meta: &Value) -> Vec<String> {
+    let mut errs = Vec::new();
+    let Some(sys) = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"].as_str() == Some(SYS_CRATE))
+    else {
+        return vec![format!("{SYS_CRATE} not found in cargo metadata")];
+    };
+    // a crate feature can switch on dependency features without touching the
+    // dependency entry, so aib-sys has none
+    if sys["features"].as_object().is_some_and(|f| !f.is_empty()) {
+        errs.push(format!(
+            "{SYS_CRATE} has a [features] table ({}); dependency features must be listed on the dependency",
+            sys["features"]
+        ));
+    }
+    for d in sys["dependencies"].as_array().into_iter().flatten() {
+        let name = d["name"].as_str().unwrap_or("?");
+        let target = d["target"].as_str();
+        let req = d["req"].as_str().unwrap_or("");
+        let kind = d["kind"].as_str();
+        let mut feats: Vec<&str> = d["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        feats.sort_unstable();
+        let what = format!("{name} {req} target={target:?} kind={kind:?} features={feats:?}");
+        if kind.is_some() {
+            errs.push(format!(
+                "{SYS_CRATE} has a {} dependency: {what}",
+                kind.unwrap_or("?")
+            ));
+            continue;
+        }
+        if d["optional"].as_bool() == Some(true) || d["rename"].is_string() {
+            errs.push(format!(
+                "{SYS_CRATE} dependency is optional or renamed: {what}"
+            ));
+            continue;
+        }
+        let ok = SYS_OWN_DEPS
+            .iter()
+            .any(|(n, t, r, f)| *n == name && *t == target && *r == req && *f == feats.as_slice());
+        if !ok {
+            errs.push(format!(
+                "{SYS_CRATE} dependency not on the allow-list: {what}"
+            ));
+        }
+    }
+    errs
+}
 
 /// Workspace package name -> names of the packages it depends on (every
 /// kind, every target; `name` is the package name even when renamed).
@@ -139,5 +230,91 @@ mod tests {
             {"name": "aib-sys", "dependencies": []}
         ]});
         assert_eq!(check(&m).len(), 1);
+    }
+
+    fn sys_with(deps: Value) -> Value {
+        json!({"packages": [{"name": "aib-sys", "dependencies": deps}]})
+    }
+
+    fn dep(name: &str, target: Option<&str>, req: &str, feats: &[&str]) -> Value {
+        json!({"name": name, "target": target, "req": req, "kind": null,
+               "features": feats, "optional": false, "rename": null})
+    }
+
+    fn allowed() -> Vec<Value> {
+        SYS_OWN_DEPS
+            .iter()
+            .map(|(n, t, r, f)| dep(n, *t, r, f))
+            .collect()
+    }
+
+    #[test]
+    fn own_deps_on_the_list_pass() {
+        assert!(check_own(&sys_with(json!(allowed()))).is_empty());
+    }
+
+    #[test]
+    fn own_dep_list_is_sorted_so_order_cannot_hide_a_change() {
+        for (n, _, _, f) in SYS_OWN_DEPS {
+            let mut s = f.to_vec();
+            s.sort_unstable();
+            assert_eq!(&s, f, "{n} features not sorted");
+        }
+    }
+
+    #[test]
+    fn a_new_own_dependency_is_refused() {
+        let mut d = allowed();
+        d.push(dep("rand", None, "^0.9", &[]));
+        let e = check_own(&sys_with(json!(d)));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("not on the allow-list: rand"), "{e:?}");
+    }
+
+    #[test]
+    fn an_extra_windows_feature_is_refused() {
+        let mut d = allowed();
+        d[2] = dep(
+            "windows-sys",
+            Some("cfg(windows)"),
+            "=0.61.2",
+            &["Win32_Foundation", "Win32_Networking_WinSock"],
+        );
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+    }
+
+    #[test]
+    fn a_loose_version_or_other_target_is_refused() {
+        let mut d = allowed();
+        let (_, _, _, f) = SYS_OWN_DEPS[2];
+        d[2] = dep("windows-sys", Some("cfg(windows)"), "^0.61", f);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[2] = dep("windows-sys", None, "=0.61.2", f);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[2] = dep("libc", None, "^0.2.191", &[]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+    }
+
+    #[test]
+    fn a_feature_table_is_refused() {
+        let mut m = sys_with(json!(allowed()));
+        m["packages"][0]["features"] = json!({"net": ["windows-sys/Win32_Networking_WinSock"]});
+        let e = check_own(&m);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("[features] table"), "{e:?}");
+    }
+
+    #[test]
+    fn a_dev_build_optional_or_renamed_own_dependency_is_refused() {
+        for (k, v) in [
+            ("kind", json!("dev")),
+            ("kind", json!("build")),
+            ("optional", json!(true)),
+            ("rename", json!("w")),
+        ] {
+            let mut d = allowed();
+            d[0][k] = v.clone();
+            assert_eq!(check_own(&sys_with(json!(d))).len(), 1, "{k}={v}");
+        }
     }
 }
