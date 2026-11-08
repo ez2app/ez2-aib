@@ -9,7 +9,7 @@ Python `aib`, it does not replace it, and it is not on PyPI.
 |---|---|
 | Mac with Apple Silicon (M1 or later) | `aibd-<version>-aarch64-apple-darwin` |
 | Mac with an Intel processor | not in this preview yet (no Intel machine to verify it on) |
-| Windows 10 / 11 (64-bit) | `aibd-<version>-x86_64-pc-windows-msvc.exe` |
+| Windows x64 (tested on GitHub's Windows machines; real-PC acceptance in progress) | `aibd-<version>-x86_64-pc-windows-msvc.exe` |
 
 All files and `SHA256SUMS` are on the release page:
 `https://github.com/ez2app/ez2-aib/releases/tag/aibd-v<version>`
@@ -57,8 +57,8 @@ checksum above said OK.
 ## What `selfcheck` tells you
 
 It prints your platform, what aibd can do there, and every part that is **not verified** on that platform
-(for example, on Windows the process-tree handling has been checked on GitHub's Windows machines, not on a
-desktop PC). Exit code 0 means the check itself ran; read the "not verified" lines before relying on a feature.
+(for example, starting and managing AI seat processes through aibd is not wired up yet; the code is
+written). Exit code 0 means the check itself ran; read the "not verified" lines before relying on a feature.
 
 ## Removing it
 

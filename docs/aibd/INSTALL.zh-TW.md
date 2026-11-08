@@ -8,7 +8,7 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 |---|---|
 | Apple 晶片的 Mac(M1 以後) | `aibd-<版本>-aarch64-apple-darwin` |
 | Intel 處理器的 Mac | 這個預覽版還沒有(沒有 Intel 機器可以驗) |
-| Windows 10 / 11(64 位元) | `aibd-<版本>-x86_64-pc-windows-msvc.exe` |
+| Windows x64(GitHub Windows 機器實測;實體電腦驗收中) | `aibd-<版本>-x86_64-pc-windows-msvc.exe` |
 
 所有檔案和 `SHA256SUMS` 都在發版頁:`https://github.com/ez2app/ez2-aib/releases/tag/aibd-v<版本>`
 
@@ -53,8 +53,8 @@ if ($want -ne $got) { Remove-Item "$D\aibd.exe"; throw "核對不符 —— 檔�
 
 ## selfcheck 在說什麼
 
-它會列出你的平台、aibd 在這個平台能做什麼,以及每一個**還沒驗證**的部分(例如 Windows 的程序樹處理
-只在 GitHub 的 Windows 機器上驗過,還沒在一般桌機上驗)。結束碼 0 代表檢查本身有跑完;要依賴某個功能前,
+它會列出你的平台、aibd 在這個平台能做什麼,以及每一個**還沒驗證**的部分(例如
+用 aibd 開 / 管 AI 席位的程序還沒接上(程式已寫好))。結束碼 0 代表檢查本身有跑完;要依賴某個功能前,
 先看「還沒驗證」那幾行。
 
 ## 移除
