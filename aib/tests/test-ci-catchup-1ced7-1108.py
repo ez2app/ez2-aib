@@ -162,6 +162,7 @@ class Workflow(unittest.TestCase):
                       "head_repository.full_name == github.repository"):
             self.assertIn(guard, t)
         self.assertIn("--max-reruns 2", t)
+        self.assertIn("--workflow-path .github/workflows/ci.yml", t)   # 明寫,不靠預設值剛好一樣
         # 跑的是預設分支上的判斷腳本,不是觸發那輪(可能是 PR 改過的)的
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", t)
 
