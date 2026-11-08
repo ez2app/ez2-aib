@@ -877,7 +877,7 @@ fn a_slot_that_stays_unreadable_stays_held_with_the_reason() {
         1,
         tmp.path().to_path_buf(),
     );
-    s.set_rescan_window_for_test(Duration::from_secs(3));
+    s.set_rescan_window_for_test(Duration::from_secs(3), Duration::from_millis(500));
     let rec = s.start(one_req()).unwrap();
     assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
     let held = wait_until(Duration::from_secs(8), || {
@@ -1024,10 +1024,19 @@ fn a_shutdown_during_a_recheck_still_records_the_shutdown_stop() {
     use std::sync::atomic::Ordering::SeqCst;
     let tmp = tempfile::tempdir().unwrap();
     let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
-    let s = aibd::sessions::Sessions::new(store.clone(), None, gated_spawn, 1, tmp.path().to_path_buf());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        gated_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
     let rec = s.start(one_req()).unwrap();
     assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
-    assert!(wait_until(Duration::from_secs(8), || GATE_IN.load(SeqCst)), "no re-check pass");
+    assert!(
+        wait_until(Duration::from_secs(8), || GATE_IN.load(SeqCst)),
+        "no re-check pass"
+    );
     let sd = {
         let s = s.clone();
         std::thread::spawn(move || s.shutdown_all())
@@ -1044,9 +1053,116 @@ fn a_shutdown_during_a_recheck_still_records_the_shutdown_stop() {
     assert!(
         by_shutdown || busy > 0,
         "shutdown returned {busy} with no shutdown stop on record: {:?}",
-        evs.iter().map(|e| (&e.event_type, &e.payload)).collect::<Vec<_>>()
+        evs.iter()
+            .map(|e| (&e.event_type, &e.payload))
+            .collect::<Vec<_>>()
     );
     let got = s.get(&rec.id).unwrap();
     assert_eq!(got.ended_by, Some("shutdown"), "{got:?}");
     assert_eq!(got.stop.as_ref().unwrap().survivors, vec![4242], "{got:?}");
+}
+
+/// A stop that takes `.1` ms and always ends with reason `.0`, no survivor.
+struct Slow(&'static str, u64);
+
+impl aibd::platform::session::Running for Slow {
+    fn pid(&self) -> u32 {
+        999_995
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(None)
+    }
+    fn exit_wait(&self) -> std::sync::Arc<dyn aibd::platform::session::ExitWait> {
+        std::sync::Arc::new(NeverExits)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{Stop, StopStatus};
+        std::thread::sleep(Duration::from_millis(self.1));
+        Stop {
+            status: StopStatus::Unverified(self.0.into()),
+            survivors: vec![],
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec![],
+        }
+    }
+}
+
+fn slow_unreadable_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Slow("candidates_unreadable", 900)))
+}
+
+fn lineage_off_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(Slow("lineage_unavailable", 0)))
+}
+
+fn rescan_events(store: &aib_store::Store, id: &str) -> Vec<(String, serde_json::Value)> {
+    store
+        .events_after(0, 100)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.aggregate_id == id && e.event_type.starts_with("session.slot_"))
+        .map(|e| (e.event_type, e.payload))
+        .collect()
+}
+
+/// bb7dc #546 (2): no pass starts unless it fits in the window, so the
+/// whole re-check (slow passes included) ends within it.
+#[test]
+fn a_recheck_with_slow_passes_still_ends_within_its_window() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        slow_unreadable_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let window = Duration::from_secs(3);
+    s.set_rescan_window_for_test(window, Duration::from_secs(1));
+    let rec = s.start(one_req()).unwrap();
+    assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
+    let t = Instant::now(); // the re-check starts as the DELETE answers
+    assert!(wait_until(Duration::from_secs(10), || !rescan_events(
+        &store, &rec.id
+    )
+    .is_empty()));
+    let took = t.elapsed();
+    assert!(
+        took <= window + Duration::from_millis(400),
+        "re-check took {took:?}, window {window:?}"
+    );
+    let evs = rescan_events(&store, &rec.id);
+    assert_eq!(evs[0].0, "session.slot_held", "{evs:?}");
+}
+
+/// bb7dc #546 (3) / DECIDED #9: only candidates_unreadable is re-checked; a
+/// reason another pass cannot change keeps the slot without a re-check.
+#[test]
+fn a_reason_another_pass_cannot_change_is_not_rechecked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        lineage_off_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    s.set_rescan_window_for_test(Duration::from_secs(3), Duration::from_millis(500));
+    let rec = s.start(one_req()).unwrap();
+    assert!(s.stop(&rec.id, Duration::ZERO).unwrap().holds_slot);
+    // past the whole window: no re-check ever ran
+    assert!(!wait_until(Duration::from_secs(4), || !rescan_events(
+        &store, &rec.id
+    )
+    .is_empty()));
+    assert!(s.get(&rec.id).unwrap().holds_slot);
 }

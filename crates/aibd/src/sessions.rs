@@ -56,6 +56,23 @@ pub const SHUTDOWN_CAP: Duration = Duration::from_secs(10);
 /// Background slot re-check (a63ab 11-09): every 2 s (the
 /// `session.slot_rescan` timer), at most this long.
 pub const RESCAN_WINDOW: Duration = Duration::from_secs(30);
+/// The longest one re-check pass may take (a stop: grace + KILL + checks).
+/// No pass starts unless it fits in what is left of [`RESCAN_WINDOW`], so
+/// the whole re-check ends within the window (bb7dc #546 (2)).
+pub const RESCAN_PASS_MAX: Duration = Duration::from_secs(6);
+/// The only stop reasons worth re-checking (a63ab 05:42, DECIDED #9): what
+/// another pass can change. `lineage_unavailable`, `root_identity_lost`,
+/// `job_error:*`… come out the same every time (bb7dc #546 (3)).
+pub const RESCAN_REASONS: &[&str] = &["candidates_unreadable"];
+
+fn worth_rescanning(stop: &Stop) -> bool {
+    stop.survivors.is_empty()
+        && stop
+            .status
+            .reason()
+            .is_some_and(|r| RESCAN_REASONS.contains(&r))
+}
+
 /// How long a DELETE waits for a stop already running on the same session.
 const BUSY_WAIT: Duration = Duration::from_secs(40);
 
@@ -280,7 +297,8 @@ pub struct Sessions {
     max: usize,
     default_cwd: PathBuf,
     /// How long the background slot re-check runs (a63ab: 30 s; tests shorten it).
-    rescan_window: Mutex<Duration>,
+    /// (window, longest pass): test hook only changes them.
+    rescan_window: Mutex<(Duration, Duration)>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -305,15 +323,16 @@ impl Sessions {
             spawn,
             max,
             default_cwd,
-            rescan_window: Mutex::new(RESCAN_WINDOW),
+            rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MAX)),
             me: me.clone(),
         })
     }
 
-    /// Test hook: a shorter background re-check window.
+    /// Test hook: a shorter background re-check window (and, since test
+    /// stops return at once, a shorter longest pass).
     #[doc(hidden)]
-    pub fn set_rescan_window_for_test(&self, d: Duration) {
-        *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner()) = d;
+    pub fn set_rescan_window_for_test(&self, window: Duration, pass_max: Duration) {
+        *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner()) = (window, pass_max);
     }
 
     /// Newest first: running and stop_unconfirmed, then the recent ended.
@@ -571,9 +590,9 @@ impl Sessions {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
-        } else if stop.survivors.is_empty() && !g.shutting {
+        } else if worth_rescanning(&stop) && !g.shutting {
             // nothing known alive, but the stop could not look everywhere
-            // (e.g. candidates_unreadable): re-check in the background
+            // (candidates_unreadable): re-check in the background
             self.start_rescan(&mut g, id);
         }
         self.cv.notify_all();
@@ -610,11 +629,15 @@ impl Sessions {
     /// `session.slot_held` with the last reason. Gives way to a DELETE or the
     /// shutdown (neither waits long: one pass is short).
     fn rescan(&self, id: &str) {
-        let window = *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner());
-        let op = crate::timers::SESSION_SLOT_RESCAN.begin(Some(Instant::now() + window));
+        let (window, pass_max) = *self.rescan_window.lock().unwrap_or_else(|e| e.into_inner());
+        let end = Instant::now() + window;
+        let op = crate::timers::SESSION_SLOT_RESCAN.begin(Some(end));
         let mut tries = 0u32;
         let mut last: Option<String> = None;
         while op.tick() {
+            if Instant::now() + pass_max > end {
+                break; // a pass would run past the window
+            }
             let run = {
                 let mut g = lock(&self.inner);
                 if g.shutting {
@@ -640,18 +663,31 @@ impl Sessions {
                 .unwrap_or_else(|e| e.into_inner())
                 .stop(SHORT_GRACE);
             let mut g = lock(&self.inner);
+            let shutting = g.shutting;
             let Some(e) = g.live.get_mut(id) else {
                 return;
             };
-            e.stopping = false;
             last = stop.status.reason().map(str::to_owned);
             if stop.releases_slot() {
+                e.stopping = false;
                 return self.end_rescan(&mut g, id, Some(stop), tries, last);
             }
+            if shutting {
+                // bb7dc #546 (1): the shutdown skipped this session because
+                // this pass was stopping it. Hand the pass over as the
+                // shutdown's stop (still `stopping`, so the shutdown waits
+                // for this record), never a silent end.
+                e.rescanning = false;
+                drop(g);
+                self.finish(id, stop, "shutdown");
+                return;
+            }
+            e.stopping = false;
             e.rec.stop = Some(StopView::of(&stop));
             self.cv.notify_all();
-            if !stop.survivors.is_empty() {
-                // something it can see again: no longer this re-check's case
+            if !worth_rescanning(&stop) {
+                // a survivor (H2: DELETE again), or a reason another pass
+                // cannot change: no longer this re-check's case
                 e.rec.holds_slot = true;
                 return self.end_rescan(&mut g, id, None, tries, last);
             }
