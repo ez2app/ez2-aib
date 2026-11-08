@@ -88,21 +88,33 @@ jobs:
       #   只改文件時這裡逐支直接跑同一支,不自己重寫那些檢查(約 20 秒)
       - name: tests main runs over .md files
         if: steps.d.outputs.docs_only == 'true'
+        # bb7dc #538 High:清單先取出來、驗 rc 與非空、每支檔案要在;任何一項不對就紅(不能零支跑完當綠)
         run: |
-          rc=0
-          for t in $(python3 aib/tools/release/docs_only.py md-tests); do
+          list=$(python3 aib/tools/release/docs_only.py md-tests) || { echo "::error::docs_only.py md-tests failed (rc $?)"; exit 1; }
+          [ -n "$list" ] || { echo "::error::docs_only.py md-tests printed no test: refusing to pass with nothing run"; exit 1; }
+          rc=0; n=0
+          for t in $list; do
+            [ -f "$t" ] || { echo "::error::$t is listed but missing"; rc=1; continue; }
             echo "::group::$t"; python3 "$t" || { echo "::error::$t failed"; rc=1; }; echo "::endgroup::"
+            n=$((n + 1))
           done
+          echo "ran $n test file(s)"
           exit $rc
       # a63ab 11-09:只改 Rust 時,讀 crates/ / Cargo.* 的 Python 測試(清單在 docs_only.py RUST_READ_TESTS,守門測試管名單)
       #   + 掃 .md 的那份,逐支直接跑同一支
       - name: Python tests that read crates/ or Cargo.* (only when the change is Rust-only)
         if: steps.d.outputs.rust_only == 'true'
+        # bb7dc #538 High:清單先取出來、驗 rc 與非空、每支檔案要在;任何一項不對就紅(不能零支跑完當綠)
         run: |
-          rc=0
-          for t in $(python3 aib/tools/release/docs_only.py rust-tests); do
+          list=$(python3 aib/tools/release/docs_only.py rust-tests) || { echo "::error::docs_only.py rust-tests failed (rc $?)"; exit 1; }
+          [ -n "$list" ] || { echo "::error::docs_only.py rust-tests printed no test: refusing to pass with nothing run"; exit 1; }
+          rc=0; n=0
+          for t in $list; do
+            [ -f "$t" ] || { echo "::error::$t is listed but missing"; rc=1; continue; }
             echo "::group::$t"; python3 "$t" || { echo "::error::$t failed"; rc=1; }; echo "::endgroup::"
+            n=$((n + 1))
           done
+          echo "ran $n test file(s)"
           exit $rc
       - name: not docs-only nor Rust-only
         if: steps.d.outputs.light != 'true'

@@ -418,6 +418,75 @@ def job_text(name):
     return m.group(1)
 
 
+def step_script(job, marker):
+    """job 裡含 marker 那一步的 run: | 內容(去掉縮排)。"""
+    t = job_text(job)
+    i = t.index(marker)
+    j = t.index("run: |\n", i) + len("run: |\n")
+    lines = []
+    for ln in t[j:].splitlines():
+        if ln.strip() and not ln.startswith("          "):
+            break
+        lines.append(ln[10:])
+    return "\n".join(lines) + "\n"
+
+
+FAKE_PY = """#!/bin/sh
+# fake python3: `docs_only.py <list>` acts per $LIST_MODE; any other call is a test run (logged, exit $TEST_RC)
+case "$1" in
+  *docs_only.py)
+    case "$LIST_MODE" in
+      fail) echo boom >&2; exit 1 ;;
+      empty) exit 0 ;;
+      missing) echo "no/such/test.py" ;;
+      partial) echo "$T1"; exit 1 ;;
+      *) echo "$T1"; echo "$T2" ;;
+    esac ;;
+  *) echo "$1" >> "$RAN"; exit "${TEST_RC:-0}" ;;
+esac
+"""
+
+
+class ListStepsRun(unittest.TestCase):
+    """bb7dc #538 High:列清單的指令失敗 / 空 / 列了不存在的檔 ⇒ 那一步紅;實跑 docs job 的兩個步驟。"""
+
+    def run_step(self, marker, mode, test_rc=0, shell=("bash", "-e")):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            fb = td / "bin"
+            fb.mkdir()
+            (fb / "python3").write_text(FAKE_PY, encoding="utf-8")
+            (fb / "python3").chmod(0o755)
+            (td / "aib" / "tools" / "release").mkdir(parents=True)
+            (td / "aib" / "tools" / "release" / "docs_only.py").write_text("", encoding="utf-8")
+            for n in ("t1.py", "t2.py"):
+                (td / n).write_text("", encoding="utf-8")
+            ran = td / "ran.log"
+            env = dict(os.environ, PATH="%s:%s" % (fb, os.environ.get("PATH", "")), LIST_MODE=mode,
+                       TEST_RC=str(test_rc), RAN=str(ran), T1="t1.py", T2="t2.py")
+            p = subprocess.run(list(shell) + ["-c", step_script("docs", marker)], cwd=str(td), env=env,
+                               capture_output=True, text=True, timeout=30)
+            got = ran.read_text(encoding="utf-8").split() if ran.exists() else []
+            return p.returncode, got, p.stdout + p.stderr
+
+    def test_both_steps(self):
+        for marker in ("name: tests main runs over .md files", "name: Python tests that read crates/ or Cargo.*"):
+            with self.subTest(step=marker, case="ok"):
+                rc, got, log = self.run_step(marker, "ok")
+                self.assertEqual((rc, got), (0, ["t1.py", "t2.py"]), log)
+            with self.subTest(step=marker, case="a test fails"):
+                rc, got, log = self.run_step(marker, "ok", test_rc=1)
+                self.assertNotEqual(rc, 0, log)
+                self.assertEqual(got, ["t1.py", "t2.py"], "一支紅也要跑完其他支")
+            # GitHub 的預設是 bash -e;不靠 -e 也要紅(之後有人改 shell / 加 set +e 不會變假綠)
+            for shell in (("bash", "-e"), ("bash",)):
+                for mode in ("fail", "empty", "missing", "partial"):
+                    with self.subTest(step=marker, case=mode, shell=" ".join(shell)):
+                        rc, got, log = self.run_step(marker, mode, shell=shell)
+                        self.assertNotEqual(rc, 0, "清單 %s ⇒ 要紅,不能零支跑完當綠\n%s" % (mode, log))
+                        self.assertEqual(got, [], log)
+
+
 class Workflow(unittest.TestCase):
     def test_docs_job(self):
         t = job_text("docs")
