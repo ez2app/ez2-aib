@@ -38,12 +38,13 @@ $B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
 $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
 Invoke-WebRequest "$B/aibd-$V-x86_64-pc-windows-msvc.exe" -OutFile "$D\aibd.exe"
 Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
-(Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
-Select-String "x86_64-pc-windows-msvc" "$D\SHA256SUMS"
+$want = ((Select-String "x86_64-pc-windows-msvc" "$D\SHA256SUMS").Line -split " ")[0]
+$got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
+if ($want -ne $got) { Remove-Item "$D\aibd.exe"; throw "檢查碼不一致，已刪除下載檔" }
 & "$D\aibd.exe" --version
 & "$D\aibd.exe" selfcheck
 ```
-上面兩行數字要一樣才繼續用。
+檢查碼不一致時會直接停下並刪掉下載的檔案，不會執行。
 
 ## 請先知道
 - **預覽版**:功能還少，介面之後可能會變。
