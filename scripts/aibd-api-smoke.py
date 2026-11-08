@@ -13,7 +13,10 @@ scripts in pending/aib2-a63ab-1107/d1/). What it does:
 3. Checks, each on its own:
      health  no token -> 200          metrics / events  no token -> 401
      metrics / events  token -> 200   metrics  wrong token -> 401
-     health  Host: evil.example -> refused (not 200; DNS rebinding guard)
+     health  Host: evil.example -> 403 + code host_not_allowed (DNS rebinding guard)
+   Each check wants an exact status AND the JSON field the guard contract gives (aib-core ErrorCode: 401 =
+   "unauthorized", 403 = "host_not_allowed"; health = {"status": "ok"}). Any other answer - 500, 404, 421, an
+   error body with another code, no body - fails; nothing answering at all is recorded as a network error.
 4. Stops the process it started, by its handle (never by name or by a pid read later), waits for it, removes
    the temp dir.
 
@@ -33,30 +36,58 @@ import urllib.request
 # never through a proxy: CI images can set http_proxy, and loopback must be asked directly
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+UNAUTHORIZED = ("code", "unauthorized")
+# (key, path, token, Host header, status wanted, (JSON field, value wanted) or None)
 EXPECT = [
-    ("health_noauth", "/api/v1/health", None, None, 200),
-    ("metrics_noauth", "/api/v1/metrics", None, None, 401),
-    ("events_noauth", "/api/v1/events", None, None, 401),
-    ("metrics_auth", "/api/v1/metrics", "TOKEN", None, 200),
-    ("events_auth", "/api/v1/events", "TOKEN", None, 200),
-    ("metrics_wrong_token", "/api/v1/metrics", "smoke-wrong-token", None, 401),
+    ("health_noauth", "/api/v1/health", None, None, 200, ("status", "ok")),
+    ("metrics_noauth", "/api/v1/metrics", None, None, 401, UNAUTHORIZED),
+    ("events_noauth", "/api/v1/events", None, None, 401, UNAUTHORIZED),
+    ("metrics_auth", "/api/v1/metrics", "TOKEN", None, 200, None),
+    ("events_auth", "/api/v1/events", "TOKEN", None, 200, None),
+    ("metrics_wrong_token", "/api/v1/metrics", "smoke-wrong-token", None, 401, UNAUTHORIZED),
+    ("health_bad_host", "/api/v1/health", None, "evil.example", 403, ("code", "host_not_allowed")),
 ]
+BODY_MAX = 64 * 1024
 
 
-def http_code(url, token=None, host=None, timeout=5.0):
-    """Status code, or 0 when nothing answered (refused, timeout)."""
+def http_call(url, token=None, host=None, timeout=5.0):
+    """(status, parsed JSON body or None, network error name or None). status 0 = nothing answered."""
     req = urllib.request.Request(url)
     if token:
         req.add_header("Authorization", "Bearer " + token)
     if host:
         req.add_header("Host", host)
     try:
-        with OPENER.open(req, timeout=timeout) as r:
-            return r.status
+        r = OPENER.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        return e.code
-    except (urllib.error.URLError, OSError):
-        return 0
+        r = e
+    except (urllib.error.URLError, OSError) as e:
+        return 0, None, type(getattr(e, "reason", e)).__name__
+    try:
+        status = r.status if hasattr(r, "status") else r.code
+        raw = r.read(BODY_MAX + 1)
+    except OSError as e:
+        return 0, None, type(e).__name__
+    finally:
+        r.close()
+    try:
+        body = json.loads(raw.decode("utf-8")) if len(raw) <= BODY_MAX else None
+    except ValueError:
+        body = None
+    return status, body, None
+
+
+def check(got, body, want, want_field):
+    """None when the answer is exactly what the guard contract says, else why not."""
+    if got != want:
+        return "status %s, want %s" % (got, want)
+    if want_field is None:
+        return None
+    name, value = want_field
+    have = body.get(name) if isinstance(body, dict) else None
+    if have != value:
+        return "%s %r, want %r" % (name, have, value)
+    return None
 
 
 def first_json_line(path, proc, deadline):
@@ -142,14 +173,16 @@ def smoke(exe, timeout):
             res["run_info_pid_is_ours"] = False
         base = "http://" + listening
         passed = res["loopback"] and res["token_read"] and res["run_info_pid_is_ours"]
-        for key, path, tok, host, want in EXPECT:
-            got = http_code(base + path, token if tok == "TOKEN" else tok, host)
+        failed = {}
+        for key, path, tok, host, want, want_field in EXPECT:
+            got, body, net = http_call(base + path, token if tok == "TOKEN" else tok, host)
             res[key] = got
-            passed = passed and got == want
-        bad_host = http_code(base + "/api/v1/health", host="evil.example")
-        res["health_bad_host"] = bad_host
-        passed = passed and bad_host not in (0, 200)
-        ok = passed
+            why = ("network error " + net) if net else check(got, body, want, want_field)
+            if why:
+                failed[key] = why
+        if failed:
+            res["failed"] = failed
+        ok = passed and not failed
         return res, ok
     finally:
         if proc is not None:
