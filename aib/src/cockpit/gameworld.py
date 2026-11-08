@@ -14,8 +14,10 @@
 只有 ok 且 result 是成功三種且 cabin == 目標,才算「已切到」;其他一律不這樣說。
 **未知**(11-08,#369 bb7dc 修法意見 4):外掛回 post_unconfirmed:true(送過 POST 但沒讀回確認)、核心 12 秒硬逾時、
 JSON 壞(外掛可能已 POST)⇒ result=unknown:不報成功、不開窗、不當普通失敗;寫 <鍵>.unknown,同鍵**不自動重試**
-(之後同鍵 ⇒ unknown_kept);人再打一次指令是新請求 ID、新鍵,照常做。<鍵>.unknown 只按時間 24 小時後收(不按筆數)。
-請求 ID 帶產生時間,超過 12 小時就拒絕(result=stale)⇒ 標記收掉之後同鍵請求必定已過期,不會被自動再做(#491 bb7dc 讀碼 1)。
+(之後同鍵 ⇒ unknown_kept);人再打一次指令是新請求 ID、新鍵,照常做。
+<鍵>.done / <鍵>.unknown 永遠不自動刪(DECISION-22):同鍵不重做不靠時鐘。目前沒有安全的清理介面,標記一直保留;
+之後另開「只追加帳本 + aib gameworld unknown list / ack」(ack 追加人已確認的終態、不刪,同鍵仍擋)。
+請求 ID 帶產生時間,超過 12 小時就拒絕(result=stale),當第一層。
 網址進紀錄 / 提示前只留 scheme://host:port/(將來網址帶配對資料也不會被寫出去)。
 
 去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個鎖檔 <鍵>.lock:
@@ -48,9 +50,8 @@ CLEAR_WHY = ("spawn",)   # 外掛根本沒起來 ⇒ 確定沒副作用 ⇒ 可�
 # 外掛自己說失敗(why=plugin)只有明說 "sent": false(沒 POST、沒冷啟伺服器)才清;沒帶 / 帶 true 一律留標記。
 # 對外動作規則 v0.2 第 2 條 (a):「確定沒執行」由接收端自己列出,籠統失敗不算(#491 bb7dc 讀碼 2)。
 PLUGIN_TIMEOUT_S = 12   # 核心這端的硬逾時(外掛自己 10 秒)
-KEEP_S = 24 * 3600
-KEEP_N = 32
-REQ_MAX_AGE_S = KEEP_S // 2   # 請求 ID 帶產生時間;超過就拒絕 ⇒ 標記被收之前,同鍵請求一定已過期
+LOCK_KEEP_S = 24 * 3600        # 只用在崩潰留下的舊鎖檔;.done / .unknown 不自動刪(DECISION-22)
+REQ_MAX_AGE_S = 12 * 3600      # 請求 ID 帶產生時間;超過就拒絕(第一層;去重靠標記永久保留)
 REQ_SKEW_S = 300
 REQ_RE = re.compile(r"^([0-9]{10})-[0-9A-Za-z-]{1,64}$")
 
@@ -184,35 +185,22 @@ def _bump(d, name):
 
 
 def _gc(d, now):
+    """只收崩潰留下、沒人拿著、超過 LOCK_KEEP_S 的舊鎖檔。<鍵>.done / <鍵>.unknown 永遠不自動刪
+    (DECISION-22:依時間刪才會有的時鐘回撥 / 往前跳 / 去重證據邊角全部消掉;清理要走另開的 ack 帳本)。"""
     try:
         names = sorted(os.listdir(str(d)))
     except OSError:
         return
-    olds = []
     for n in names:
-        if n.endswith(".unknown"):
-            _gc_unknown(d, n, now)                        # 未知標記另外收:不計入筆數上限、持鎖中不動
-            continue
-        if not (n.endswith(".done") or n.endswith(".lock")):
-            continue
-        try:
-            m = os.stat(os.path.join(str(d), n)).st_mtime
-        except OSError:
-            continue
-        olds.append((m, n))
-    olds.sort()
-    extra = max(0, len(olds) - KEEP_N)
-    for i, (m, n) in enumerate(olds):
-        if not (i < extra or now - m > KEEP_S):
+        if not n.endswith(".lock"):
             continue
         p = os.path.join(str(d), n)
-        if n.endswith(".done"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        try:
+            if now - os.stat(p).st_mtime <= LOCK_KEEP_S:
+                continue
+        except OSError:
             continue
-        # 舊鎖檔:自己拿到鎖才刪(有人拿著 = 正在做,不動);拿鎖的人之後會比對 inode,刪掉的舊檔不算數
+        # 自己拿到鎖才刪(有人拿著 = 正在做,不動);拿鎖的人之後會比對 inode,刪掉的舊檔不算數
         try:
             fd = os.open(p, os.O_RDWR)
         except OSError:
@@ -223,32 +211,6 @@ def _gc(d, now):
         except OSError:
             pass
         finally:
-            os.close(fd)
-
-
-def _gc_unknown(d, n, now):
-    """<鍵>.unknown 只按時間收(超過 KEEP_S),不按筆數(筆數多就刪 = 又可自動重試);
-    同鍵有人拿著鎖(正在做、已 write-ahead)⇒ 不動。拿得到鎖才刪,刪完放鎖。"""
-    p = os.path.join(str(d), n)
-    try:
-        if now - os.stat(p).st_mtime <= KEEP_S:
-            return
-    except OSError:
-        return
-    lk = os.path.join(str(d), n[:-len(".unknown")] + ".lock")
-    fd = None
-    try:
-        fd = os.open(lk, os.O_RDWR)
-    except OSError:
-        fd = None                                         # 沒鎖檔 = 沒人在做
-    try:
-        if fd is not None and not _try_lock(fd):
-            return                                        # 有人拿著:正在做,不動它的標記
-        os.unlink(p)
-    except OSError:
-        pass
-    finally:
-        if fd is not None:
             os.close(fd)
 
 
@@ -427,7 +389,7 @@ def notify(session, msg, env=None, run=subprocess.run):
 
 def req_fresh(req, now):
     """請求 ID = <產生時的 epoch 秒>-<亂數>。只有 REQ_MAX_AGE_S 以內(容許 REQ_SKEW_S 時鐘誤差)才算數。
-    標記 / .done 最快 KEEP_S 後才按時間收,REQ_MAX_AGE_S < KEEP_S ⇒ 收掉之後同鍵請求必定已過期,不會被自動再做。"""
+    這是第一層;同鍵不重做靠的是 .done / .unknown 永久保留(DECISION-22),跟時鐘無關。"""
     m = REQ_RE.match(req or "")
     if not m:
         return False

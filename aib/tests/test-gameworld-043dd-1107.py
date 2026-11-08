@@ -40,7 +40,7 @@
 刀(複本):KG1 3 個字也剝 ⇒ G3 紅;KG2 拿掉 cabin == 目標 ⇒ U3 紅;KG3 拿鎖後不再看 .done ⇒ U7b 紅;
   KG8 鎖換成永遠拿得到 ⇒ U8b 紅;KG9 不比 inode ⇒ U8d 紅;KG10 鎖換成永遠拿得到 ⇒ U8c 紅;
   KG11 不看 post_unconfirmed ⇒ U14 紅;KG12 未知當普通失敗(不寫 .unknown)⇒ U14 紅;KG13 領取不看 .unknown ⇒ U14 紅;
-  KG14 核心逾時當普通逾時 ⇒ U14 紅;KG18 _gc 不看鎖 / KG19 .unknown 計入筆數上限 / KG20 mismatch 也清標記 / KG21 舊外掛也補未知 ⇒ U16 紅;
+  KG14 核心逾時當普通逾時 ⇒ U14 紅;KG18 / KG19 _gc 刪到 .unknown / .done ⇒ U19 紅(DECISION-22);KG20 mismatch 也清標記 / KG21 舊外掛也補未知 ⇒ U16 紅;
   KG15 標記寫不進去照叫外掛 / KG16 例外時清標記 / KG17 .done 寫失敗也清標記 ⇒ U15 紅;
   KG4 輸出完整網址 ⇒ U4 紅;KG5 快取身份不看 mtime / 大小 ⇒ U5 紅;KG6 批次不 unset ⇒ U12 紅;KG7 代開也檢查 ⇒ U13 紅
 """
@@ -370,12 +370,12 @@ class Dedup(Base):
 
     def test_u16_gc_and_clear_rules(self):
         d = self.home / "cockpit" / "gameworld-req"
-        old = time.time() - G.KEEP_S - 100
+        old = time.time() - 400 * 24 * 3600
 
         def fill(n):
             for i in range(n):
                 (d / ("zz%02d.done" % i)).write_text("")
-        # a) 擁有者拿著鎖、已 write-ahead,標記超過 24 小時 + 超過筆數 ⇒ _gc 不動;放鎖後才按時間收
+        # a) 標記很舊、筆數很多、有沒有人拿著鎖 ⇒ _gc 一律不動(DECISION-22:.done / .unknown 不自動刪)
         cl = G.claim(d, "own", "9320")
         self.assertIsNotNone(cl)
         self.assertTrue(G.arm(cl))
@@ -385,15 +385,9 @@ class Dedup(Base):
         G._gc(d, time.time())
         self.assertTrue(mark.exists(), "持鎖中的標記不得被收")
         G.finish(cl, False, unknown=True)
-        self.assertTrue(mark.exists())
         G._gc(d, time.time())
-        self.assertFalse(mark.exists(), "沒人拿著、超過 24 小時 ⇒ 照時間收")
-        # b) 年輕的 .unknown 不因筆數上限被收
-        young = d / (G._key("young", "9320") + ".unknown")
-        young.write_text("")
-        fill(40)
-        G._gc(d, time.time())
-        self.assertTrue(young.exists(), ".unknown 不計入 32 筆上限")
+        self.assertTrue(mark.exists(), "放鎖後也不收")
+        self.assertEqual(len(list(d.glob("zz*.done"))), 40, ".done 不按筆數收")
         # c) 外掛說成功但艙不對 / 網址不對 ⇒ 標記留著 ⇒ 同鍵不自動重試
         ok_url = "http://127.0.0.1:8771/"
         for i, res in enumerate(({"ok": True, "result": "switched", "cabin": "abcd", "url": ok_url},
@@ -429,7 +423,7 @@ class Dedup(Base):
         self.assertEqual(self.lobby(again, req="u17-f")[0], "switched", "明說沒送 ⇒ 同鍵可重試")
 
     def test_u18_stale_request_never_calls_plugin(self):
-        """#491 bb7dc 讀碼 1:標記 24 小時後被收;請求 ID 超過 12 小時就拒絕 ⇒ 收掉之後同鍵也不會被自動再做。"""
+        """請求 ID 超過 12 小時 / 格式不對 / 太未來 ⇒ stale、不叫外掛(第一層;同鍵去重本身見 u19)。"""
         d = self.home / "cockpit" / "gameworld-req"
         t0 = int(time.time())
         req = "%d-u18" % (t0 - 3600)
@@ -437,21 +431,41 @@ class Dedup(Base):
         out = __import__("io").StringIO()
         r = G.open_lobby("9320", req, str(self.home), "", out=out, env=self.env, run=unk, find=self.find)
         self.assertEqual(r, "unknown")
-        mark = d / (G._key(req, "9320") + ".unknown")
-        old = time.time() - G.KEEP_S - 100
-        os.utime(str(mark), (old, old))
-        G._gc(d, time.time())
-        self.assertFalse(mark.exists(), "前提:標記照時間被收")
-        later = t0 + G.KEEP_S                             # 標記被收的那一刻,同一個 ID 再來
+        later = t0 + G.REQ_MAX_AGE_S                      # 同一個 ID 過了期限再來
         again = self.ok()
         r = G.open_lobby("9320", req, str(self.home), "", out=out, env=self.env, run=again, find=self.find,
                          now=lambda: later)
-        self.assertEqual((r, again.opens()), ("stale", []), "GC 之後同鍵不准再叫外掛")
+        self.assertEqual((r, again.opens()), ("stale", []), "過期的 ID 不准再叫外掛")
         for bad in ("", "r1", "abc-def", "%d-" % t0, "%d-x y" % t0, "%d-ok" % (t0 + 3600)):
             f = self.ok()
             self.assertEqual((self.lobby_raw(f, bad), f.opens()), ("stale", []), bad)
         f = self.ok()
         self.assertEqual(self.lobby_raw(f, "%d-%s" % (t0 - G.REQ_MAX_AGE_S + 60, "edge")), "switched", "還在期限內照做")
+
+    def test_u19_markers_survive_any_clock(self):
+        """DECISION-22:時鐘往前跳很遠再跳回來,中間跑過 GC ⇒ .unknown / .done 都還在,同鍵仍是 unknown_kept / dedup。"""
+        d = self.home / "cockpit" / "gameworld-req"
+        t0 = int(time.time())
+        ru, rd = "%d-u19u" % t0, "%d-u19d" % t0
+        out = __import__("io").StringIO()
+        unk = Fake(result={"ok": False, "result": "timeout", "post_unconfirmed": True}, rc=1)
+        self.assertEqual(G.open_lobby("9320", ru, str(self.home), "", out=out, env=self.env, run=unk,
+                                      find=self.find), "unknown")
+        self.assertEqual(G.open_lobby("9320", rd, str(self.home), "", out=out, env=self.env, run=self.ok(),
+                                      find=self.find), "switched")
+        far = t0 + 10 * 365 * 24 * 3600
+        for stamp in (far, t0 - 10 * 365 * 24 * 3600):
+            for n in d.iterdir():
+                os.utime(str(n), (stamp, stamp))
+            G._gc(d, far)                                 # 往前跳 10 年時的 GC
+            G._gc(d, t0 + 60)                             # 跳回來之後的 GC
+        self.assertTrue((d / (G._key(ru, "9320") + ".unknown")).exists())
+        self.assertTrue((d / (G._key(rd, "9320") + ".done")).exists())
+        for req, want in ((ru, "unknown_kept"), (rd, "dedup")):
+            f = self.ok()
+            r = G.open_lobby("9320", req, str(self.home), "", out=out, env=self.env, run=f, find=self.find,
+                             now=lambda: t0 + 60)
+            self.assertEqual((r, f.opens()), (want, []), req)
 
     def _race(self, n, prep=None):
         d = self.home / "cockpit" / "gameworld-req"
@@ -690,10 +704,10 @@ KNIVES = [
      '        finish(cl, False)', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
     ('KG17', '            try:\n                _touch(cl.done)\n                clear = cl.armed\n',
      '            clear = cl.armed\n            try:\n                _touch(cl.done)\n', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
-    ('KG18', '        if fd is not None and not _try_lock(fd):\n            return',
-     '        if False:\n            return', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
-    ('KG19', '        if n.endswith(".unknown"):\n            _gc_unknown(d, n, now)                        # 未知標記另外收:不計入筆數上限、持鎖中不動\n            continue\n        if not (n.endswith(".done") or n.endswith(".lock")):',
-     '        if not (n.endswith(".done") or n.endswith(".lock") or n.endswith(".unknown")):', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
+    ('KG18', '        if not n.endswith(".lock"):\n',
+     '        if not n.endswith((".lock", ".unknown")):\n', "src/cockpit/gameworld.py", "Dedup.test_u19_markers_survive_any_clock"),
+    ('KG19', '        if not n.endswith(".lock"):\n',
+     '        if not n.endswith((".lock", ".done")):\n', "src/cockpit/gameworld.py", "Dedup.test_u19_markers_survive_any_clock"),
     ('KG20', 'CLEAR_WHY = ("spawn",)',
      'CLEAR_WHY = ("spawn", "cabin-mismatch", "bad-url")', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
     ('KG22', 'CLEAR_WHY = ("spawn",)',
