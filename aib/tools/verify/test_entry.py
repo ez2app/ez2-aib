@@ -18,7 +18,10 @@ Line 1 of the output is always exactly one of three (design §3 table; the words
   short     shadow resume claimed on, but M ran and only K rows were left — failed
 
 Exit codes: 0 all green · 1 at least one red (line 1 still names a row shortfall) · 2 usage ·
-            3 all green but rows missing (the run is not trusted: next time these tests cannot be reused).
+            3 all green but rows missing (the run is not trusted: next time these tests cannot be reused) ·
+            5 not run (someone holds the machine exclusively / queue cap reached) ·
+            6 not run: the tree is in the middle of a rebase / merge / cherry-pick / revert or has unmerged
+              paths (b117); `--allow-mid-rebase` runs anyway (e.g. inside `git rebase --exec`).
 
 What is deliberately NOT here (first package): the host lease is not taken (same as a seat running one test
 directly today; a batch prints that on line 2); the Claude-seat hook that blocks direct `python3 tests/…`;
@@ -1359,6 +1362,40 @@ def _lease_now(env=None, with_ship=False):
 
 LEASE_TTL_FALLBACK_S = 3 * 3600
 RC_EXCLUSIVE = 5    # 沒跑:別人在獨佔量耗時(rc 4 已經是「全部跳過 = 沒驗」,不能共用 —— 審查 L6)
+RC_MID_GIT_OP = 6   # 沒跑:樹在 rebase / merge / cherry-pick / revert 半路或有沒解完的衝突(b117)
+
+# (git-path 名稱, 操作)。用 `git rev-parse --git-path` 解路徑:工作樹各有自己的 rebase-merge / MERGE_HEAD。
+# bisect 不算:`git bisect run aib test …` 本來就是在 bisect 半路跑測試。
+_GIT_OP_MARKERS = (("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HEAD", "merge"),
+                   ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("sequencer", "cherry-pick"))
+
+
+def mid_git_op(repo):
+    """樹在 git 操作半路 ⇒ (操作, 證據路徑或 None);沒有 ⇒ None。
+    操作 = rebase / merge / cherry-pick / revert;只剩沒解完的衝突(stash pop、checkout -m 之後)⇒ "conflict"。
+    量不到(不是 git 倉、git 叫不起來)⇒ None:照跑,不因為量不到就擋人(b117)。"""
+    names = [n for n, _ in _GIT_OP_MARKERS]
+    args = []
+    for n in names:
+        args += ["--git-path", n]
+    try:
+        rc, out = _git_out(repo, "rev-parse", *args)
+        if rc != 0:
+            return None
+        paths = out.splitlines()
+        if len(paths) == len(names):
+            urc, unmerged = _git_out(repo, "ls-files", "--unmerged")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if len(paths) != len(names):
+        return None
+    for (_, op), rel in zip(_GIT_OP_MARKERS, paths):
+        p = Path(rel) if os.path.isabs(rel) else Path(repo) / rel
+        if p.exists():
+            return op, str(p)
+    if urc == 0 and unmerged.strip():
+        return "conflict", None
+    return None
 
 
 def lease_ttl(repo, names):
@@ -1886,6 +1923,7 @@ def main(argv=None):
     ap.add_argument("--changed", action="store_true")    # 10-13(取代 aib deliver):依改動挑測試,挑法同推包 select_changed
     ap.add_argument("--base", default="")                # --changed 的比較基準(預設 HEAD 與遠端 main 的分岔點)
     ap.add_argument("--dry", action="store_true")        # 只列出要跑哪些、幾支、估計幾秒,不跑
+    ap.add_argument("--allow-mid-rebase", action="store_true")   # b117:樹在 rebase / 合併半路也照跑(git rebase --exec 用)
     a = ap.parse_args(argv)
     if a.estimate:
         return _estimate(a.repo or os.getcwd(), a.json)
@@ -1956,6 +1994,14 @@ def main(argv=None):
         else:
             _print_explain(entries)
         return 0
+    if not a.shard_out and not a.allow_mid_rebase:
+        # b117:半套的樹跑出來的綠 / 紅都不代表任何一個提交,還會寫進沿用紀錄 ⇒ 不跑,回明確的 rc 跟下一步
+        mid = mid_git_op(repo)
+        if mid is not None:
+            op, where = mid
+            key = "mid_git_conflict" if op == "conflict" else "mid_git_op"
+            print(T(key, {"what": op, "path": where or str(repo)}), file=sys.stderr)
+            return RC_MID_GIT_OP
     for var, val in RETIRED_SWITCHES:
         if os.environ.get(var) == val:
             print(T("switch_ignored", {"what": "%s=%s" % (var, val)}), file=sys.stderr)

@@ -1,0 +1,63 @@
+{
+  "tests": [
+    "aib/tests/test-aib-test-mid-rebase-ebb36-1109.py"
+  ],
+  "knives": [
+    {
+      "name": "no-gate",
+      "proves": "main runs a mid-rebase tree (gate removed)",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "    if not a.shard_out and not a.allow_mid_rebase:\n",
+      "new": "    if False:\n"
+    },
+    {
+      "name": "allow-ignored",
+      "proves": "--allow-mid-rebase is honoured",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "    if not a.shard_out and not a.allow_mid_rebase:\n",
+      "new": "    if not a.shard_out:\n"
+    },
+    {
+      "name": "rc-red",
+      "proves": "mid-rebase returns its own rc 6, not plain red",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "            return RC_MID_GIT_OP\n",
+      "new": "            return 1\n"
+    },
+    {
+      "name": "dot-git-path",
+      "proves": "paths come from git rev-parse --git-path (worktrees, subdirectories)",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "        p = Path(rel) if os.path.isabs(rel) else Path(repo) / rel\n",
+      "new": "        p = Path(repo) / \".git\" / Path(rel).name\n"
+    },
+    {
+      "name": "no-unmerged",
+      "proves": "unmerged paths without an op marker still block",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "    if urc == 0 and unmerged.strip():\n",
+      "new": "    if False:\n"
+    },
+    {
+      "name": "bisect-blocks",
+      "proves": "bisect is not an operation that blocks",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "(\"sequencer\", \"cherry-pick\"))\n",
+      "new": "(\"sequencer\", \"cherry-pick\"), (\"BISECT_LOG\", \"bisect\"))\n"
+    },
+    {
+      "name": "unmeasured-blocks",
+      "proves": "cannot measure ⇒ run (do not block)",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "            urc, unmerged = _git_out(repo, \"ls-files\", \"--unmerged\")\n    except (OSError, subprocess.SubprocessError):\n        return None\n",
+      "new": "            urc, unmerged = _git_out(repo, \"ls-files\", \"--unmerged\")\n    except (OSError, subprocess.SubprocessError):\n        return \"rebase\", None\n"
+    },
+    {
+      "name": "clean-blocks",
+      "proves": "a clean tree is not blocked",
+      "file": "aib/tools/verify/test_entry.py",
+      "old": "    for (_, op), rel in zip(_GIT_OP_MARKERS, paths):\n        p = ",
+      "new": "    for (_, op), rel in zip(_GIT_OP_MARKERS, paths):\n        rel = \".\"\n        p = "
+    }
+  ]
+}
