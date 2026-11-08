@@ -42,8 +42,8 @@ for _d in ("bootstrap", "cockpit"):
 API = "https://robot-ws.your-server.de"          # 寫死;不讀環境變數
 MASK_KEYS = ("password", "pass", "passwd")
 NAMES = ("HETZNER_ROBOT_USER", "HETZNER_ROBOT_PASS")
-SERVER_RE = re.compile(r"\d{1,10}")
-FP_RE = re.compile(r"(?:[0-9a-f]{2}:){15}[0-9a-f]{2}")
+SERVER_RE = re.compile(r"[0-9]{1,10}")   # 不用 \d:會收全形 / 阿拉伯數字,彈窗看是 3109421、網址卻是 %EF%BC%93…(r3 Low)
+FP_RE = re.compile(r"(?:[0-9a-f]{2}:){15}[0-9a-f]{2}", re.ASCII)
 RESET_TYPES = ("sw", "hw", "power", "power_long", "man")
 NO_ROLLBACK = "不支援回滾:Rescue 只排下一次開機(60 分鐘內要重開、只供一次);reset 一送就送了。恢復路徑 = 再排一次 / 再重開。"
 

@@ -14,7 +14,8 @@ R8 真的 approve() 走 approve_gate:site cloud_robot.apply 有登記在 tools/c
 R9 參數格式(r2 H2):server 帶 `/`、`..`、`?`、非數字 ⇒ argparse 拒(rc 2),沒讀金鑰、沒過閘、沒打 API;fingerprint 不是 16 組十六進位拒;--type 白名單外拒
 R10 彈窗 = 網址:approve 收到的 server / fp 跟實際 POST 的網址 / 表單一致(R2 斷言完整值);API 主機寫死 https://robot-ws.your-server.de,環境變數改不了
 刀:K1 拿掉 mask ⇒ R5 紅;K2 apply 不過閘 ⇒ R3 紅;K3 plan 也打 API ⇒ R1 紅;K4 沒 fingerprint 也放行 ⇒ R7 紅;
-   K5 拿掉 server 格式檢查 ⇒ R9 紅(路徑穿越 `1234567/../../../reset/9999999?` 打出去);K6 彈窗的 server 被截 ⇒ R10 紅
+   K5 拿掉 server 格式檢查 ⇒ R9 紅(路徑穿越 `1234567/../../../reset/9999999?` 打出去);K6 彈窗的 server 被截 ⇒ R10 紅;
+   K7 API 改回讀環境變數 ⇒ R10 紅(帳密被導去 http://127.0.0.1);K8 server 正則改回 \d ⇒ R9 紅(全形數字過關)
 """
 import contextlib
 import io
@@ -154,7 +155,8 @@ class Robot(unittest.TestCase):
 
 
     def test_r9_argument_formats(self):
-        bad_servers = ("1234567/../../../reset/9999999?", "1234567xxxxxxxxxxxxxxxxx", "12345678901", "abc", "", "1234567 ")
+        bad_servers = ("1234567/../../../reset/9999999?", "1234567xxxxxxxxxxxxxxxxx", "12345678901", "abc", "", "1234567 ",
+                       "\uff13\uff11\uff10\uff19\uff14\uff12\uff11", "\u0663\u0661\u0660\u0669\u0664\u0662\u0661")   # 全形 / 阿拉伯數字(r3 Low)
         for sv in bad_servers:
             for argv in (["rescue", sv, "--fingerprint", "aa:" * 15 + "bb", "--apply"], ["status", sv], ["reset", sv, "--apply"]):
                 f = Fake()
@@ -233,6 +235,20 @@ class Knives(unittest.TestCase):
             rc, out, f = self._run_in(tree, ["reset", "1234567/../../../reset/9999999?", "--apply"])
             self.assertEqual(len(f.calls), 1)   # 刀下去就打出去了(編碼過,但 R9 會紅)
             self.assertIn("1234567%2F..%2F", f.calls[0][1])
+
+    def test_k7_api_from_env(self):
+        with knife_copy(REPO, "tools/cloud-host/robot.py",
+                        'API = "https://robot-ws.your-server.de"          # 寫死;不讀環境變數',
+                        'API = os.environ.get("HETZNER_ROBOT_API", "https://robot-ws.your-server.de")') as tree:
+            with unittest.mock.patch.dict(os.environ, {"HETZNER_ROBOT_API": "http://127.0.0.1:1"}):
+                rc, out, f = self._run_in(tree, ["reset", "1234567", "--type", "sw", "--apply"])
+            self.assertTrue(f.calls[0][1].startswith("http://127.0.0.1:1/"))   # 帳密被導走 ⇒ R10 會紅
+
+    def test_k8_server_regex_unicode_digits(self):
+        with knife_copy(REPO, "tools/cloud-host/robot.py", 'SERVER_RE = re.compile(r"[0-9]{1,10}")', 'SERVER_RE = re.compile(r"\\d{1,10}")') as tree:
+            rc, out, f = self._run_in(tree, ["reset", "\uff13\uff11\uff10\uff19\uff14\uff12\uff11", "--apply"])
+            self.assertEqual(len(f.calls), 1)   # 全形數字過關、網址變 %EF%BC%93… ⇒ R9 會紅
+            self.assertIn("%EF%BC%93", f.calls[0][1])
 
     def test_k6_popup_server_truncated(self):
         with knife_copy(REPO, "tools/cloud-host/robot.py",
