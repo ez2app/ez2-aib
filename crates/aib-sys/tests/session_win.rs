@@ -174,5 +174,15 @@ fn clear_env_passes_only_the_given_environment() {
         root.exit_code().unwrap(),
         Some(0),
         "5 = parent env leaked, 4 = given env missing"
+fn kill_returns_within_its_limit() {
+    // bb7dc #535 cac62694: no step of kill may block past the limit
+    let mut s = SessionTree::spawn(&cmd("ping -n 60 127.0.0.1 >nul")).unwrap();
+    let _ours = tree_of(&s, 2);
+    let t0 = Instant::now();
+    let _ = s.kill(Duration::from_millis(500)).unwrap();
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "kill took {:?}",
+        t0.elapsed()
     );
 }
