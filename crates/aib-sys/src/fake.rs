@@ -78,6 +78,13 @@ impl FakeProcessInfo {
         }
     }
 
+    /// Another account's process (`uid` other than the default 501).
+    pub fn set_uid(&self, pid: u32, uid: u32) {
+        if let Some(p) = self.st().procs.get_mut(&pid) {
+            p.info.uid = uid;
+        }
+    }
+
     /// Change what M1 reports for `pid` (e.g. a zero or wrong id).
     pub fn set_unique(&self, pid: u32, unique: u64, parent_unique: u64) {
         if let Some(p) = self.st().procs.get_mut(&pid) {

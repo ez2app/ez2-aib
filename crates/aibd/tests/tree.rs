@@ -296,16 +296,74 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
     );
 }
 
-/// With lineage on and nothing left, the same cancel may say `clean`.
+/// DECISION-23: with lineage on and nothing left, macOS still does not say
+/// `clean` (no proven containment): `unverified` with `observed_clean`, or
+/// `candidates_unreadable` if launchd started a same-user agent meanwhile.
 #[cfg(target_os = "macos")]
 #[test]
-fn with_lineage_a_clean_cancel_is_clean() {
+fn with_lineage_a_clean_looking_cancel_is_observed_clean_never_clean() {
     let mut h = spawn_tree(&spec_lineage("tree", "s-tree-lineage")).unwrap();
     let _ = ready_pids(&first_line(&mut h));
     let rep = h.cancel(Duration::from_millis(300)).unwrap();
     assert!(!rep.lineage_unavailable, "{rep:?}");
-    assert_eq!(rep.clean_status(), "clean", "{rep:?}");
-    assert!(rep.blind_spots().is_empty());
+    assert!(rep.candidates_complete, "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified", "{rep:?}");
+    let why = rep.unverified_reason();
+    assert!(
+        matches!(why, Some("observed_clean" | "candidates_unreadable")),
+        "{why:?} {rep:?}"
+    );
+    assert!(rep.blind_spots().contains(&"exec_after_creator_exit"));
+}
+
+/// The hole DECISION-23 is about, on the real OS: a child that clears its
+/// environment, outlives its creator and exec's afterwards is invisible to
+/// lineage and to the marker sweep. The cancel must not look clean: it is a
+/// candidate whose environment cannot be read. It is never signalled; this
+/// test stops it itself, by the pid it printed.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
+    let mut h = spawn_tree(&SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec![
+            "-c".into(),
+            "env -i /bin/sh -c '(/bin/sleep 0.5; exec /bin/sleep 30) >/dev/null 2>&1 & echo $!'"
+                .into(),
+        ],
+        lineage: Some(lineage()),
+        watch_forks: false,
+        ..spec("complete", "s-env-cleared")
+    })
+    .unwrap();
+    let mut line = String::new();
+    BufReader::new(h.take_stdout().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let pid: u32 = line.trim().parse().unwrap();
+    h.wait_root(Duration::from_secs(10)).unwrap();
+    // wait until it has exec'd /bin/sleep (it is no longer anyone's child)
+    let mut execd = false;
+    for _ in 0..100 {
+        if ps_field(pid, "comm").ends_with("sleep") {
+            execd = true;
+            break;
+        }
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    let left = still_running(&[pid]);
+    let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+    assert!(execd, "{pid} never exec'd");
+    assert_eq!(left, vec![pid], "it is not ours to stop: {rep:?}");
+    assert!(
+        rep.steps.iter().all(|s| !s.targets.contains(&pid)),
+        "{rep:?}"
+    );
+    assert!(rep.candidates_unreadable.contains(&pid), "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+    assert_eq!(rep.unverified_reason(), Some("candidates_unreadable"));
 }
 
 /// A process older than the recorded process it claims as parent is a reused

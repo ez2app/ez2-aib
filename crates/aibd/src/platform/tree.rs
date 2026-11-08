@@ -71,11 +71,27 @@ pub struct Report {
     /// Lineage was off or a pass was incomplete: a missing survivor cannot
     /// be ruled out, so the result is never `clean`.
     pub lineage_unavailable: bool,
+    /// The platform can prove containment (Windows J0 + session Job). Never
+    /// on macOS / Linux today, so a cancel there is at best `unverified`
+    /// with reason `observed_clean` (DECISION-23).
+    pub containment_proven: bool,
+    /// DECISION-23 (c)/(d): same-uid processes with the "re-parented, then
+    /// exec'd" signature that lineage cannot place.
+    pub candidates: usize,
+    /// Candidates whose environment could not be read (or was empty): they
+    /// might be ours, so the cancel cannot be `observed_clean`. Never signalled.
+    pub candidates_unreadable: Vec<u32>,
+    /// The candidate list itself was read in full.
+    pub candidates_complete: bool,
     pub exit_code: Option<i32>,
 }
 
 /// Blind spot named in every report without lineage.
 pub const BLIND_SPOT_REPARENTED: &str = "reparented_after_intermediate_exit";
+/// DECISION-23: what no layer on macOS can rule out, named in every report
+/// without proven containment.
+pub const BLIND_SPOTS_UNCONTAINED: [&str; 3] =
+    ["exec_after_creator_exit", "env_cleared", "fork_watch_miss"];
 
 impl Report {
     /// No recorded process is still running. Not the same as "clean":
@@ -84,25 +100,54 @@ impl Report {
         self.survivors.is_empty()
     }
 
-    /// What a cancel may claim: `tree_not_clean` (survivors), `unverified`
-    /// (no survivors seen, but lineage unavailable), or `clean`.
+    /// What a cancel may claim (DECISION-23): `tree_not_clean` (a recorded
+    /// or marked process still runs), `clean` only with proven containment
+    /// and complete lineage, otherwise `unverified` (see
+    /// [`Report::unverified_reason`]).
     pub fn clean_status(&self) -> &'static str {
         if !self.survivors.is_empty() {
             "tree_not_clean"
-        } else if self.lineage_unavailable {
-            "unverified"
-        } else {
+        } else if self.containment_proven && !self.lineage_unavailable {
             "clean"
+        } else {
+            "unverified"
+        }
+    }
+
+    /// Why a cancel is `unverified` (a code, not user text): `observed_clean`
+    /// = (a)-(d) all hold, nothing left within what can be seen.
+    pub fn unverified_reason(&self) -> Option<&'static str> {
+        if self.clean_status() != "unverified" {
+            None
+        } else if self.lineage_unavailable {
+            Some("lineage_unavailable")
+        } else if !self.candidates_complete {
+            Some("candidates_incomplete")
+        } else if !self.candidates_unreadable.is_empty() {
+            Some("candidates_unreadable")
+        } else {
+            Some("observed_clean")
         }
     }
 
     pub fn blind_spots(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
         if self.lineage_unavailable {
-            vec![BLIND_SPOT_REPARENTED]
-        } else {
-            Vec::new()
+            v.push(BLIND_SPOT_REPARENTED);
         }
+        if !self.containment_proven {
+            v.extend(BLIND_SPOTS_UNCONTAINED);
+        }
+        v
     }
+}
+
+#[derive(Default)]
+struct CandidateCheck {
+    count: usize,
+    complete: bool,
+    unreadable: Vec<u32>,
+    marked_alive: Vec<u32>,
 }
 
 pub struct TreeHandle {
@@ -450,11 +495,14 @@ impl TreeHandle {
             })?;
         }
         let exit_code = self.exit.get().and_then(|s| s.code());
-        let survivors = self
+        let _ = self.sweep_marker();
+        let mut survivors: Vec<u32> = self
             .wait_gone(Duration::ZERO)?
             .into_iter()
             .map(|(p, _)| p)
             .collect();
+        let check = self.check_candidates();
+        survivors.extend(&check.marked_alive);
         Ok(Report {
             steps,
             survivors,
@@ -464,8 +512,55 @@ impl TreeHandle {
             forks_seen: self.forks_seen(),
             found_by_lineage: self.found_by_lineage.clone(),
             lineage_unavailable: self.lineage.is_none() || self.lineage_incomplete,
+            containment_proven: false,
+            candidates: check.count,
+            candidates_unreadable: check.unreadable,
+            candidates_complete: check.complete,
             exit_code,
         })
+    }
+
+    /// DECISION-23 (c)/(d), run only at the end of a cancel / cleanup (never in
+    /// the idle loop): read each candidate's environment once. Our marker on a
+    /// live one = ours and still running; an unreadable or empty environment =
+    /// cannot be ruled out. Nothing here is ever signalled.
+    fn check_candidates(&mut self) -> CandidateCheck {
+        let (Some(l), Some(&root_unique)) = (self.lineage.clone(), self.uniques.get(&self.root))
+        else {
+            return CandidateCheck::default();
+        };
+        let c = l.late_exec_candidates(root_unique, std::process::id(), &self.known);
+        let mut out = CandidateCheck {
+            count: c.pids.len(),
+            complete: c.complete,
+            ..CandidateCheck::default()
+        };
+        if c.pids.is_empty() {
+            return out;
+        }
+        let Ok(mut sys) = new_system() else {
+            out.complete = false;
+            return out;
+        };
+        refresh(&mut sys, true);
+        let want = format!("{SESSION_ENV}={}", self.session_id);
+        for pid in c.pids {
+            match sys.process(Pid::from_u32(pid)) {
+                None => {} // gone since the list was read
+                Some(p) if p.environ().is_empty() => out.unreadable.push(pid),
+                Some(p)
+                    if p.environ()
+                        .iter()
+                        .any(|e| e.to_str() == Some(want.as_str())) =>
+                {
+                    self.known.insert(pid, p.start_time());
+                    self.found_by_marker.push(pid);
+                    out.marked_alive.push(pid);
+                }
+                Some(_) => {} // readable, no marker: not this session's
+            }
+        }
+        out
     }
 
     /// Wait for the CLI itself to exit (it may leave descendants running).
@@ -547,4 +642,65 @@ mod imp {
     pub fn new_group(_c: &mut std::process::Command) {}
     pub fn signal_group(_leader: u32, _s: Sig) {}
     pub fn signal_pid(_pid: u32, _s: Sig) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rep() -> Report {
+        Report {
+            candidates_complete: true,
+            ..Report::default()
+        }
+    }
+
+    /// DECISION-23: without proven containment the best a cancel can say is
+    /// `unverified` / `observed_clean`; survivors win over everything.
+    #[test]
+    fn decision_23_status_reason_and_blind_spots() {
+        let r = rep();
+        assert_eq!(r.clean_status(), "unverified");
+        assert_eq!(r.unverified_reason(), Some("observed_clean"));
+        assert_eq!(r.blind_spots(), BLIND_SPOTS_UNCONTAINED.to_vec());
+
+        let r = Report {
+            candidates_unreadable: vec![9],
+            ..rep()
+        };
+        assert_eq!(r.unverified_reason(), Some("candidates_unreadable"));
+        let r = Report {
+            candidates_complete: false,
+            ..rep()
+        };
+        assert_eq!(r.unverified_reason(), Some("candidates_incomplete"));
+        let r = Report {
+            lineage_unavailable: true,
+            ..rep()
+        };
+        assert_eq!(r.unverified_reason(), Some("lineage_unavailable"));
+        assert_eq!(r.blind_spots()[0], BLIND_SPOT_REPARENTED);
+
+        let r = Report {
+            survivors: vec![7],
+            containment_proven: true,
+            ..rep()
+        };
+        assert_eq!(r.clean_status(), "tree_not_clean");
+        assert_eq!(r.unverified_reason(), None);
+
+        // only proven containment with complete lineage may say clean
+        let r = Report {
+            containment_proven: true,
+            ..rep()
+        };
+        assert_eq!(r.clean_status(), "clean");
+        assert!(r.blind_spots().is_empty());
+        let r = Report {
+            containment_proven: true,
+            lineage_unavailable: true,
+            ..rep()
+        };
+        assert_eq!(r.clean_status(), "unverified");
+    }
 }

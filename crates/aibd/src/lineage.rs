@@ -236,6 +236,76 @@ impl Lineage {
         }
         Adopt { found, complete }
     }
+
+    /// DECISION-23 (c)/(d): processes that look like "re-parented, then
+    /// exec'd" and so may belong to the session without lineage seeing them:
+    /// same uid, `ppid` 1, `parent_unique` 1 (launchd), and created after the
+    /// session root (`unique` > `root_unique`). Pids in `skip` (already known)
+    /// and `me` are left out. Never signals anything; the caller only checks
+    /// their environment. `complete` is false when any read failed.
+    pub fn late_exec_candidates(
+        &self,
+        root_unique: u64,
+        me: u32,
+        skip: &BTreeMap<u32, u64>,
+    ) -> Candidates {
+        let Some(info) = self.info.as_ref() else {
+            return Candidates::default();
+        };
+        // our own uid: a session's processes keep it
+        let uid = match info.bsd_info(me) {
+            Ok(b) => b.uid,
+            Err(_) => {
+                self.fail();
+                return Candidates::default();
+            }
+        };
+        let all = match info.all_pids() {
+            Ok(a) => a,
+            Err(_) => {
+                self.fail();
+                return Candidates::default();
+            }
+        };
+        let mut c = Candidates {
+            pids: Vec::new(),
+            complete: true,
+        };
+        for pid in all {
+            if pid == me || skip.contains_key(&pid) {
+                continue;
+            }
+            let b = match info.bsd_info(pid) {
+                Ok(b) => b,
+                // gone, or another account's process (a child keeps our uid)
+                Err(SysError::Gone | SysError::PermissionDenied) => continue,
+                Err(_) => {
+                    self.fail();
+                    c.complete = false;
+                    continue;
+                }
+            };
+            if b.ppid != 1 || b.uid != uid {
+                continue;
+            }
+            match info.unique_ids(pid) {
+                Ok(u) if u.parent_unique == 1 && u.unique > root_unique => c.pids.push(pid),
+                Ok(_) | Err(SysError::Gone) => {}
+                Err(_) => {
+                    self.fail();
+                    c.complete = false;
+                }
+            }
+        }
+        c
+    }
+}
+
+/// Result of [`Lineage::late_exec_candidates`]. `Default` = incomplete.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Candidates {
+    pub pids: Vec<u32>,
+    pub complete: bool,
 }
 
 #[cfg(test)]
@@ -266,6 +336,53 @@ mod tests {
 
     fn known(v: &[(u32, u64)]) -> BTreeMap<u32, u64> {
         v.iter().copied().collect()
+    }
+
+    /// DECISION-23 (c)/(d): only same-uid, ppid 1, parent_unique 1 and newer
+    /// than the root count; known ones and `me` are left out.
+    #[test]
+    fn late_exec_candidates_are_new_same_uid_launchd_children_only() {
+        let f = table();
+        f.add(500, 1, 5000, 1, 70); // re-parented then exec'd: candidate
+        f.add(501, 1, 900, 1, 40); // launchd child older than the root: no
+        f.add(502, 1, 5020, 1, 71); // other account: no
+        f.set_uid(502, 0);
+        f.add(503, 7, 5030, 1, 72); // ppid not 1: no
+        f.add(504, 1, 5040, 7777, 73); // creator recorded (lineage's job): no
+        f.add(505, 1, 5050, 1, 74); // already known: no
+        let (l, _f) = on(f);
+        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50), (505, 74)]));
+        assert_eq!(
+            c,
+            Candidates {
+                pids: vec![500],
+                complete: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_read_makes_the_candidate_list_incomplete() {
+        let f = table();
+        f.add(500, 1, 5000, 1, 70);
+        f.fail(Call::UniqueIds, 500, SysError::Incomplete);
+        let (l, _f) = on(f);
+        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50)]));
+        assert!(!c.complete, "{c:?}");
+
+        let f = table();
+        f.fail(Call::BsdInfo, 400, SysError::Incomplete);
+        let (l, _f) = on(f);
+        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
+
+        let f = table();
+        f.fail(Call::AllPids, 0, SysError::Incomplete);
+        let (l, _f) = on(f);
+        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
+
+        // lineage off: never complete
+        let l = Lineage::disabled("test");
+        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
     }
 
     #[test]
