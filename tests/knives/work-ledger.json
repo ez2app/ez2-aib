@@ -182,8 +182,8 @@
       "name": "needs-recorded-off",
       "proves": "--needs recorded refuses hand-written receipts",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "        if \"recorded\" in needs and not recorded and not rp:",
-      "new": "        if False:"
+      "old": "    if \"recorded\" in (item.get(\"needs\") or []) and not recorded and not rp:",
+      "new": "    if False:"
     },
     {
       "name": "record-dirty-ok",
@@ -210,8 +210,8 @@
       "name": "cmd-ignored",
       "proves": "positive receipts must run the dispatched command",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "        if want and kind in (\"positive\", \"default\") and not rp and not same_cmd(info.get(\"cmd\"), want):",
-      "new": "        if False:"
+      "old": "    if want and kind in (\"positive\", \"default\") and not rp and not same_cmd(info.get(\"cmd\"), want):",
+      "new": "    if False:"
     },
     {
       "name": "record-untracked-ok",
@@ -320,7 +320,7 @@
     },
     {
       "name": "earlier-red-check-only",
-      "proves": "earlier_red applies the item rules (--cmd, needs recorded), not check_receipt alone (ebb36 #541 r2 M1)",
+      "proves": "earlier_red applies the item rules (--cmd mismatch, needs recorded), not check_receipt alone (ebb36 #541 r2 M1; bites both earlier-red-cmd and earlier-red-needs-recorded tests)",
       "file": "aib/tools/governance/work_ledger.py",
       "old": "            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)",
       "new": "            kind, rp, _recorded, info = check_receipt(p, head, now, item.get(\"head_time\") or None, db)"

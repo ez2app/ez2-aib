@@ -630,8 +630,8 @@ class AibLedger(unittest.TestCase):
         acc = self.ok("move", "B-red", "--from", "review", "--to", "accepted", "--by", "seat:f1fae").stdout
         self.assertIn("did not pass", acc)
 
-    def test_1109_r3_m1_earlier_red_uses_the_item_rules(self):
-        # ebb36 #541 r2 M1:earlier_red 要套 verify 的件規則(--cmd 不符、needs recorded),不然換掉就看不到
+    def test_1109_r3_m1_earlier_red_cmd(self):
+        # ebb36 #541 r2 M1(earlier-red-cmd):帶 --cmd 的件先交跑錯指令的 record 收據,同頭碼換掉後 verify 要列
         import shlex
         d, sha = self.repo()
         self.roles()
@@ -654,7 +654,12 @@ class AibLedger(unittest.TestCase):
         self.assertIn("is not the dispatched command", " ".join(vj["earlier_red"][0]["problems"]))
         self.assertIn("did not pass", self.ok("move", "B-cmd", "--from", "review", "--to", "accepted",
                                               "--by", "seat:f1fae").stdout)
-        # needs recorded:先交別的工具產的收據(不冒稱 record,check_receipt 本身會過),再交 record 的
+
+    def test_1109_r3_m1_earlier_red_needs_recorded(self):
+        # ebb36 #541 r2 M1(earlier-red-needs-recorded):件標 needs recorded,先交別的工具產的收據
+        # (不冒稱 record,check_receipt 本身會過),同頭碼換成 record 的之後 verify 要列
+        d, sha = self.repo()
+        self.roles()
         self.ok("add", "B-nr", "--batch", "b118", "--owner", "2240e", "--title", "n", "--needs", "recorded",
                 "--by", "seat:f1fae")
         self.ok("move", "B-nr", "--from", "queued", "--to", "running", "--by", "seat:2240e")
