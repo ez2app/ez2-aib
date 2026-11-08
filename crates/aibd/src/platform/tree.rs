@@ -89,9 +89,15 @@ pub struct Report {
 /// Blind spot named in every report without lineage.
 pub const BLIND_SPOT_REPARENTED: &str = "reparented_after_intermediate_exit";
 /// DECISION-23: what no layer on macOS can rule out, named in every report
-/// without proven containment.
-pub const BLIND_SPOTS_UNCONTAINED: [&str; 3] =
-    ["exec_after_creator_exit", "env_cleared", "fork_watch_miss"];
+/// without proven containment. `env_cleared` covers `env -i` dropping the
+/// marker; `uid_changed` a child that switched account (sudo / setuid): the
+/// candidate check only looks at our own uid (1ced7, 11-08).
+pub const BLIND_SPOTS_UNCONTAINED: [&str; 4] = [
+    "exec_after_creator_exit",
+    "env_cleared",
+    "fork_watch_miss",
+    "uid_changed",
+];
 
 impl Report {
     /// No recorded process is still running. Not the same as "clean":
