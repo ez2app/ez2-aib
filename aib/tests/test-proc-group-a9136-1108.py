@@ -250,13 +250,18 @@ CFG = {
     "ign-stuck": dict(term=True, count_int=True, stuck=True, pokes=[("TERM", 0.5), ("INT", 0.8)]),  # cell 19
     "plain-term": dict(trap=False, pokes=[("TERM", 0.5)]),                            # SIG_DFL TERM while waiting
     "inherited-ign": dict(ign_int=True, timeout=1.0, pokes=[("INT", 0.3)]),           # SIGINT ignored by the caller
+    # bb7dc #520 79f64bff: the Popen itself blocks (start_block s) and ONE Ctrl-C comes while it does
+    "start-slow": dict(start_block=1.0, trap=True, pokes=[("INT", 0.3)]),             # comes back within the limit
+    "start-slow-stuck": dict(start_block=1.0, stuck=True, pokes=[("INT", 0.3)]),      # ... then the stop is stuck
+    "start-blocked": dict(start_block=3.0, small=True, linger=4.0, pokes=[("INT", 0.3)]),  # still blocked at the limit
 }[mode]
 # Precondition: the caller has Python's default Ctrl-C. A shell's background job (`cmd &`, nohup) starts
 # with SIGINT ignored and Python then keeps SIG_IGN (andymini 11-08: 13 cells red for that reason alone).
 signal.signal(signal.SIGINT, signal.SIG_IGN if CFG.get("ign_int") else signal.default_int_handler)
-grace = 0.5 if CFG.get("stuck") else 1.5
-if CFG.get("stuck"):
+grace = 0.5 if CFG.get("stuck") or CFG.get("small") else 1.5
+if CFG.get("stuck") or CFG.get("small"):
     pg.KILL_WAIT_S = 0.2          # limit = 0.5 + 2 x 0.2 = 0.9 s
+if CFG.get("stuck"):
     with open(os.path.join(tmp, "ps"), "w") as f:
         f.write("#!/bin/sh\nexec sleep 30\n")
     os.chmod(os.path.join(tmp, "ps"), 0o755)
@@ -296,10 +301,20 @@ else:
     cmd = ["/bin/sh", "-c", trap + "sleep 60 & echo $! > " + pidfile + "; wait"]
 for sig, at in CFG["pokes"]:
     poke(sig, at)
+kw = {}
+if "start_block" in CFG:
+    real_popen = pg.subprocess.Popen
+    def slow_popen(*a, **k):      # a start that blocks (slow exec / cwd), then really starts
+        time.sleep(CFG["start_block"])
+        p = real_popen(*a, **k)
+        with open(os.path.join(tmp, "leader"), "w") as f:
+            f.write(str(p.pid))
+        return p
+    kw["popen"] = slow_popen
 t0 = time.monotonic()
 got = {"exc": None}
 try:
-    pg.run_group(cmd, timeout=CFG.get("timeout", 30), grace=grace)
+    pg.run_group(cmd, timeout=CFG.get("timeout", 30), grace=grace, **kw)
 except BaseException as e:
     t1 = time.monotonic()
     rep = getattr(e, "proc_group_stop", None)
@@ -310,7 +325,7 @@ except BaseException as e:
            "context_code": getattr(e.__context__, "code", None),
            "elapsed": t1 - t0, "since_first": t1 - first.get("t", t0), "limit": pg.defer_limit_s(grace)}
 got["restored"] = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
-time.sleep(0.5 if CFG.get("count_int") else 0)   # a late second delivery would show up here (cell 15)
+time.sleep(0.5 if CFG.get("count_int") else CFG.get("linger", 0))   # cell 15: a late second delivery shows here
 got["int_calls"] = len(calls)
 print(json.dumps(got))
 """
@@ -426,6 +441,41 @@ class Interrupted(_Interrupt):
         self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
         self.assertIn("stop result for group", err)
         self.assertIn("held during the stop: SIGTERM", err)
+
+    def test_one_ctrl_c_while_the_start_blocks_stops_the_group_by_the_press_deadline(self):
+        """bb7dc #520 79f64bff: Popen blocks 1 s, one Ctrl-C at 0.3 s; the start comes back within the limit, its
+        group (ignoring TERM) is stopped and the interrupt leaves within the limit counted from the press."""
+        got, _ = self.drive("start-slow")
+        self.assertEqual((got["exc"], got["status"]), ("KeyboardInterrupt", "stopped"), got)
+        self.assertTrue(gone_within(self.gc), "grandchild %s survived" % self.gc)
+        self.within_limit(got)
+        self.assertTrue(got["restored"], got)
+
+    def test_the_stop_after_a_blocked_start_keeps_the_deadline_from_the_press(self):
+        """Popen blocks 1 s, Ctrl-C at 0.3 s, then `ps` hangs: the stop ends at press + limit (0.9 s), not at
+        start-return + limit (1.6 s). Tighter than within_limit on purpose: that is the difference."""
+        got, _ = self.drive("start-slow-stuck")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.assertEqual((got["status"], got["why"]), ("unverified", "stop_cut_short_at_limit"), got)
+        self.assertLess(got["since_first"], got["limit"] + 0.4, got)
+
+    def test_one_ctrl_c_while_the_start_stays_blocked_leaves_at_the_limit_unverified(self):
+        """Popen blocks 3 s, limit 0.9 s: the interrupt leaves at the limit with `start_blocked_past_limit`
+        (the child is unknown then, never claimed stopped), and the group is stopped once the start comes back."""
+        got, err = self.drive("start-blocked")
+        self.assertEqual(got["exc"], "KeyboardInterrupt", got)
+        self.within_limit(got)
+        self.assertLess(got["since_first"], 2.0, got)   # far before the 2.7 s the blocked start still takes
+        self.assertEqual((got["status"], got["why"]), ("unverified", "start_blocked_past_limit"), got)
+        self.assertIn("unverified start_blocked_past_limit", err)
+        # the late stop can come before sh wrote its grandchild's pid, so the leader is what is checked; the group
+        # was started with start_new_session, so a stopped + reaped leader with no member left is the claim
+        leader = int(Path(self.td, "leader").read_text())
+        self.assertIn("late stop of group %d after a blocked start: stopped" % leader, err)
+        self.assertTrue(gone_within(leader), "leader %s of the late start survived" % leader)
+        if self.gc:
+            self.assertTrue(gone_within(self.gc), "grandchild %s of the late start survived" % self.gc)
+        self.assertTrue(got["restored"], got)
 
     def test_a_plain_sigterm_while_waiting_stops_the_group_then_ends_the_process(self):
         """SIGTERM with no handler (SIG_DFL) arrives while waiting, not during a stop: run_group stops the group

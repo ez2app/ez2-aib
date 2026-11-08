@@ -45,6 +45,11 @@ Rules (DECISION-20 + ADR 0007):
   (5 + 2 + 2 = 9 s by default). Every wait in it, the external `ps` included, is cut there and the report says
   `stop_cut_short_at_limit` / `leader_not_reaped`: a stuck stop never keeps the user from getting out, with one
   press (a63ab #520 G1).
+  The start counts too (bb7dc #520 79f64bff): Popen runs on a helper thread while the main thread waits in POLL_S
+  steps with a check, so a Ctrl-C while the exec blocks (slow executable / cwd) acts at once and the limit is
+  counted from the press. Back within the limit: the group is stopped by that deadline. Still blocked at the
+  limit: the interrupt leaves `unverified` / `start_blocked_past_limit` (the child is unknown then) and the group
+  is stopped when the start comes back, on that thread — best effort, if the process has not ended by then.
 - Output goes to a temporary file, not a pipe: a grandchild that inherited stdout cannot make a finished command
   look like a timeout (the "false timeout" in 043dd's scan). `output="inherit"` sends it straight to the caller's
   stdout / stderr instead (live; still no pipe).
@@ -310,6 +315,7 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
         raise ValueError("output must be 'capture' or 'inherit'")
     out_fh = tempfile.TemporaryFile() if output == "capture" else None
     ints = _Interrupts()
+    starter = _Start(popen, ints, grace)
     try:
         ints.install()   # inside the try: an exception between two signal.signal calls still restores (bb7dc #520)
         io = {"stdout": out_fh, "stderr": subprocess.STDOUT} if out_fh is not None else {}
@@ -317,11 +323,11 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
         timed_out, stop = False, None
         try:  # everything from the start to the reap: an interrupt anywhere here still stops the group (bb7dc #520)
             try:
-                p = popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin is None else stdin,
-                          start_new_session=True, **io)
+                p = starter.run(argv, dict(cwd=cwd, env=env, stdin=subprocess.DEVNULL if stdin is None else stdin,
+                                           start_new_session=True, **io))
             except (OSError, ValueError) as e:
                 return Result(None, "", error="could not start %s: %s" % (argv[0] if argv else "?", e))
-            ints.check()   # a Ctrl-C while starting was only recorded: it acts now, with the child known
+            ints.check()   # a Ctrl-C right as the start returned: it acts now, with the child known
             g = _Group(p)
             deadline = None if timeout is None else time.monotonic() + timeout
             while not _exited_or_poll(p):
@@ -356,13 +362,18 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
             if p.returncode is None and not timed_out:
                 return Result(None, "", error="exited but not reaped within %ss" % KILL_WAIT_S, stop=stop)
         except BaseException as e:
+            if p is None and starter.p is not None:
+                # interrupted while starting, and the start came back within the limit: stop it, by the same
+                # deadline counted from the press (bb7dc #520 79f64bff)
+                p, g = starter.p, _Group(starter.p)
+                g.deadline = starter.deadline
             if p is None:
-                # popen itself raised something other than OSError / ValueError. A child may already exist
-                # (fork done, object not handed back): its pid is unknown here, so nothing can be stopped or
-                # proven — say so, never "nothing was started" (bb7dc #520 cell 18).
-                _report(e, None, StopReport("unverified", "start_interrupted_child_unknown"),
-                        [signal.Signals(s).name for s in ints.take_pending()])
-                raise
+                # No child to stop here: popen raised something other than OSError / ValueError (a child may
+                # exist, fork done, object not handed back: bb7dc #520 cell 18), or the start was still blocked
+                # at the limit (it is stopped later, when it comes back). Either way unknown, never "nothing
+                # was started"; held signals are still delivered once.
+                _stop_then_reraise(None, None, grace, e, ints,
+                                   rep=starter.report or StopReport("unverified", "start_interrupted_child_unknown"))
             _stop_then_reraise(p, g, grace, e, ints)
         out = ""
         if out_fh is not None:
@@ -373,7 +384,7 @@ def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, lefto
         return Result(p.returncode, out, stop=stop)
     finally:
         held = ints.restore()
-        if out_fh is not None:
+        if out_fh is not None and not starter.abandoned:   # a start still blocked owns it now (`_Start._go`)
             out_fh.close()
         # a signal recorded after the last check (the run had finished, or could not start): it still reaches
         # the caller's handler, once, now that the handler is back. An interrupted stop took its own already.
@@ -487,22 +498,24 @@ def _deliver(sig, h):
     # SIG_IGN: nothing
 
 
-def _stop_then_reraise(p, g, grace, exc, ints, clock=time.monotonic):
+def _stop_then_reraise(p, g, grace, exc, ints, clock=time.monotonic, rep=None):
     """Stop, reap, report, then hand on what was held and raise. The deadline is now + limit, or the deadline of
-    a stop that was already running when the signal came (W3 / W4), whichever is earlier: no new 9 s.
-    Everywhere else a recorded signal acts within POLL_S, so "now" is the press, give or take one poll."""
+    a stop that was already running when the signal came (W3 / W4, or the start: `_Start`), whichever is earlier:
+    no new 9 s. Everywhere a recorded signal acts within POLL_S, so "now" is the press, give or take one poll.
+    `p` None: there is no child to stop (`rep` says why); only the report and the held signals."""
     deadline = clock() + defer_limit_s(grace)
     if g is not None and g.deadline is not None:
         deadline = min(deadline, g.deadline)
-    try:
-        rep = (g if g is not None else _Group(p)).stop(grace, deadline=deadline)
-    except Exception as e:  # noqa: BLE001  the stop itself broke: say so, the original exception still wins
-        rep = StopReport("unverified", "stop_failed_after_interrupt: %s" % e.__class__.__name__)
-    try:
-        p.wait(timeout=max(0.0, deadline - clock()))
-        reaped = True
-    except subprocess.TimeoutExpired:
-        reaped = False
+    reaped = True
+    if p is not None:
+        try:
+            rep = (g if g is not None else _Group(p)).stop(grace, deadline=deadline)
+        except Exception as e:  # noqa: BLE001  the stop itself broke: say so, the original exception still wins
+            rep = StopReport("unverified", "stop_failed_after_interrupt: %s" % e.__class__.__name__)
+        try:
+            p.wait(timeout=max(0.0, deadline - clock()))
+        except subprocess.TimeoutExpired:
+            reaped = False
     if not reaped:  # bb7dc #520 cell 20: never claim the leader was reaped when the wait ran out
         rep.why = (rep.why + "; " if rep.why else "") + "leader_not_reaped"
         if rep.status == "stopped":
@@ -526,6 +539,82 @@ def _stop_then_reraise(p, g, grace, exc, ints, clock=time.monotonic):
             _report(e2, p, rep, names, quiet=True)
             raise
     raise exc
+
+
+class _Start:
+    """Popen off the main thread (bb7dc #520 79f64bff). A Popen can block (the exec of a slow executable or
+    cwd); the signal handlers only record, so on the main thread a Ctrl-C would wait for it to come back, with no
+    bound. Here the main thread waits in POLL_S steps with a check, as everywhere else: a Ctrl-C acts at once and
+    the limit is counted from the press. If the start comes back within the limit, its group is stopped by that
+    same deadline; if it is still blocked at the limit, the interrupt leaves `unverified` /
+    `start_blocked_past_limit` and the group is stopped when the start comes back (this thread, best effort: if
+    the process ends first, nothing is left to do it; the report never claims more)."""
+
+    def __init__(self, popen, ints, grace, clock=time.monotonic):
+        self.popen, self.ints, self.grace, self.clock = popen, ints, grace, clock
+        self.box, self.done, self.lock = {}, threading.Event(), threading.Lock()
+        self.abandoned = False
+        self.p = None          # set when interrupted and the child is known
+        self.deadline = None   # the stop deadline counted from the press
+        self.report = None     # set when interrupted and there is no child to stop here
+
+    def _go(self, argv, kw):
+        try:
+            p = self.popen(argv, **kw)
+        except BaseException as e:  # noqa: BLE001  handed to the main thread as is
+            with self.lock:
+                self.box["e"] = e
+                self.done.set()
+                late = self.abandoned
+            out = kw.get("stdout")
+            if late and out is not None and hasattr(out, "close"):
+                out.close()
+            return
+        with self.lock:
+            self.box["p"] = p
+            self.done.set()
+            late = self.abandoned
+        if late:
+            _late_stop(p, self.grace, self.clock)
+            out = kw.get("stdout")
+            if out is not None and hasattr(out, "close"):
+                out.close()
+
+    def run(self, argv, kw):
+        threading.Thread(target=self._go, args=(argv, kw), name="proc_group-start", daemon=True).start()
+        while not self.done.wait(POLL_S):
+            try:
+                self.ints.check()
+            except BaseException:
+                self.deadline = self.clock() + defer_limit_s(self.grace)
+                self.done.wait(max(0.0, self.deadline - self.clock()))
+                with self.lock:
+                    if not self.done.is_set():
+                        self.abandoned = True
+                if self.abandoned:
+                    self.report = StopReport("unverified", "start_blocked_past_limit")
+                elif "p" in self.box:
+                    self.p = self.box["p"]
+                else:
+                    self.report = StopReport("unverified", "start_failed_after_interrupt")
+                raise
+        if "e" in self.box:
+            raise self.box["e"]
+        return self.box["p"]
+
+
+def _late_stop(p, grace, clock):
+    """A start that came back after the interrupt had left: stop its group and reap it, on this thread."""
+    try:
+        rep = _Group(p).stop(grace, deadline=clock() + defer_limit_s(grace))
+        try:
+            p.wait(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pass
+        sys.stderr.write("[proc_group] late stop of group %s after a blocked start: %s %s\n" % (
+            p.pid, rep.status, rep.why or ""))
+    except Exception:  # noqa: BLE001  best effort, after the caller was told `start_blocked_past_limit`
+        pass
 
 
 def _report(exc, p, rep, held, quiet=False):
