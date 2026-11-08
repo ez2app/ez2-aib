@@ -66,9 +66,11 @@ pub fn stop_from(r: Result<KillReport, SysError>) -> Stop {
             } else if !k.survivors.is_empty() {
                 StopStatus::TreeNotClean
             } else {
-                // the Job did not report empty, yet every handle we opened says
-                // exited: something we did not open may still be in the Job
-                StopStatus::Unverified(format!("{JOB_ERROR_PREFIX}not_emptied"))
+                // nothing is known to survive, but something went unanswered
+                // (list / open / wait failed, root exit not confirmed, Job not
+                // empty): say which, never clean
+                let why = k.unconfirmed().unwrap_or("unconfirmed");
+                StopStatus::Unverified(format!("{JOB_ERROR_PREFIX}{why}"))
             };
             Stop {
                 status,
@@ -150,9 +152,11 @@ mod tests {
 
     fn report(members: &[u32], emptied: bool, survivors: &[u32]) -> Result<KillReport, SysError> {
         Ok(KillReport {
+            listed: true,
             members: members.to_vec(),
             emptied,
             survivors: survivors.to_vec(),
+            unknown: vec![],
         })
     }
 
@@ -185,6 +189,25 @@ mod tests {
             StopStatus::Unverified("job_error:not_emptied".into())
         );
         assert!(!s.confirmed());
+    }
+
+    #[test]
+    fn an_unanswered_member_or_list_is_unverified_with_its_code() {
+        let mut k = report(&[10, 11], true, &[]).unwrap();
+        k.unknown = vec![10];
+        let s = stop_from(Ok(k.clone()));
+        assert_eq!(
+            s.status,
+            StopStatus::Unverified("job_error:exit_unconfirmed".into())
+        );
+        assert!(!s.releases_slot());
+        k.unknown.clear();
+        k.listed = false;
+        let s = stop_from(Ok(k));
+        assert_eq!(
+            s.status,
+            StopStatus::Unverified("job_error:members_unlisted".into())
+        );
     }
 
     #[test]
