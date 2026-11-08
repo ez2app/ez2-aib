@@ -63,7 +63,7 @@ pub fn start_time(pid: u32) -> Option<u64> {
     Some(info.pbi_start_tvsec)
 }
 
-fn watch(kq: &Kqueue, pid: u32) -> bool {
+fn watch(kq: &Kqueue, pid: u32) -> Result<(), Errno> {
     let ev = KEvent::new(
         pid as usize,
         EventFilter::EVFILT_PROC,
@@ -72,19 +72,20 @@ fn watch(kq: &Kqueue, pid: u32) -> bool {
         0,
         0,
     );
-    kq.kevent(&[ev], &mut [], None).is_ok()
+    kq.kevent(&[ev], &mut [], None).map(|_| ())
 }
 
 /// The OS calls `adopt` makes, behind a trait so tests can make each one fail.
 trait Probe {
     fn kids(&self, parent: u32) -> Option<Vec<u32>>;
     fn start(&self, pid: u32) -> Option<u64>;
-    /// Register the kqueue watch; false = not watched.
-    fn watch(&self, pid: u32) -> bool;
+    /// Register the kqueue watch.
+    fn watch(&self, pid: u32) -> Result<(), Errno>;
     /// Read and keep the unique id now (lineage on); false = not read.
     fn note_unique(&self, pid: u32) -> bool;
-    /// Lineage is on: a missed watch is then covered by the lineage pass (the
-    /// unique id read here, or an incomplete pass when it could not be read).
+    /// Lineage is on: a watch that failed because the process is already gone
+    /// is then covered by the lineage pass (its unique id read here, or an
+    /// incomplete pass when it could not be read).
     fn lineage_on(&self) -> bool;
 }
 
@@ -104,7 +105,7 @@ impl Probe for Ctx {
     fn start(&self, pid: u32) -> Option<u64> {
         start_time(pid)
     }
-    fn watch(&self, pid: u32) -> bool {
+    fn watch(&self, pid: u32) -> Result<(), Errno> {
         watch(&self.kq, pid)
     }
     fn note_unique(&self, pid: u32) -> bool {
@@ -121,13 +122,23 @@ impl Probe for Ctx {
     }
 }
 
-/// Watch `pid` and read its unique id; a watch that failed with no lineage
-/// to fall back on is a known gap.
+/// Watch `pid` and read its unique id. A failed watch is a known gap, except
+/// ESRCH with lineage on: the process is gone, and the lineage pass covers it
+/// (043dd #510 N1: a live process that could not be watched, e.g. ENOMEM,
+/// may fork unseen whatever lineage does).
 fn watch_one(pr: &impl Probe, gaps: &Gaps, pid: u32) {
-    let watched = pr.watch(pid);
+    let res = pr.watch(pid);
     pr.note_unique(pid);
-    if !watched && !pr.lineage_on() {
-        gap(gaps, GAP_UNWATCHED);
+    if let Some(code) = watch_gap(res, pr.lineage_on()) {
+        gap(gaps, code);
+    }
+}
+
+fn watch_gap(res: Result<(), Errno>, lineage_on: bool) -> Option<&'static str> {
+    match res {
+        Ok(()) => None,
+        Err(Errno::ESRCH) if lineage_on => None,
+        Err(_) => Some(GAP_UNWATCHED),
     }
 }
 
@@ -314,7 +325,7 @@ mod tests {
     struct Fake {
         kids: BTreeMap<u32, Option<Vec<u32>>>,
         starts: BTreeMap<u32, u64>,
-        unwatchable: BTreeSet<u32>,
+        unwatchable: BTreeMap<u32, Errno>,
         lineage: bool,
         watched: RefCell<Vec<u32>>,
     }
@@ -326,9 +337,12 @@ mod tests {
         fn start(&self, pid: u32) -> Option<u64> {
             self.starts.get(&pid).copied()
         }
-        fn watch(&self, pid: u32) -> bool {
+        fn watch(&self, pid: u32) -> Result<(), Errno> {
             self.watched.borrow_mut().push(pid);
-            !self.unwatchable.contains(&pid)
+            match self.unwatchable.get(&pid) {
+                Some(e) => Err(*e),
+                None => Ok(()),
+            }
         }
         fn note_unique(&self, _pid: u32) -> bool {
             self.lineage
@@ -376,17 +390,20 @@ mod tests {
     }
 
     #[test]
-    fn an_unwatched_child_is_a_gap_without_lineage_only() {
+    fn an_unwatched_child_is_a_gap_unless_it_is_gone_and_lineage_covers_it() {
         let mut f = Fake {
             kids: BTreeMap::from([(10, Some(vec![11]))]),
             starts: BTreeMap::from([(11, 101)]),
-            unwatchable: BTreeSet::from([11]),
+            unwatchable: BTreeMap::from([(11, Errno::ESRCH)]),
             ..Fake::default()
         };
         assert_eq!(run_adopt(&f).1, vec![GAP_UNWATCHED]);
-        // with lineage the pass after covers it (its unique id, or an incomplete pass)
+        // gone (ESRCH) with lineage: the pass after covers it (its unique id, or an incomplete pass)
         f.lineage = true;
         assert_eq!(run_adopt(&f).1, Vec::<&str>::new());
+        // 043dd N1: alive but not watchable (e.g. ENOMEM): a gap with lineage too
+        f.unwatchable.insert(11, Errno::ENOMEM);
+        assert_eq!(run_adopt(&f).1, vec![GAP_UNWATCHED]);
     }
 
     #[test]
