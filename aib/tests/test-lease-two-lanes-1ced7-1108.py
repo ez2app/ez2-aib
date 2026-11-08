@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """11-08 PROPOSAL-12:機器租約分 long / short 兩隊(host_lease.py run-short)。
 
-全部在暫存 HOME / 租約落點跑(AIB_HOST_LEASE_FILE、AIB_HOST_LEASE_NOGO_GLOB 只搬落點),不碰真租約。
-load1 與 Chrome 上限用行程內載入模組再換掉 _load1 / 常數(CLI 沒有開行為旗標的入口,刻意的)。
+全部在暫存 HOME / 租約落點跑(AIB_HOST_LEASE_FILE 只搬落點),不碰真租約。
+熱讀數用 AIB_HOST_LEASE_HEAT_SAMPLE(治具讀數檔,租約 / 留痕會標 source=fixture),不讀這台機器現在多熱 ——
+不然測試結果跟著機器溫度變。Chrome 上限用行程內載入模組再換常數。
 """
 import importlib.util
 import json
@@ -42,10 +43,11 @@ class Lanes(unittest.TestCase):
         self.state = self.td / "state-root"
         self.state.mkdir()
         self.lease = self.td / "lease.json"
-        self.nogo_dir = self.td / "instances"
+        self.heat = self.td / "heat.json"
+        self.set_heat(throttle=5.0, load1=2.0, cpu_c=50.0)
         self.env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "EZ2_AIB_LOCALE": "en",
                     "AIB_HOST_LEASE_FILE": str(self.lease),
-                    "AIB_HOST_LEASE_NOGO_GLOB": str(self.nogo_dir / "*" / "heavy-work-nogo"),
+                    "AIB_HOST_LEASE_HEAT_SAMPLE": str(self.heat),
                     "EZ2_AIB_STATE_ROOT": str(self.state)}
         self.procs = []
         self.tree_a = self.td / "tree-a"
@@ -53,6 +55,9 @@ class Lanes(unittest.TestCase):
         for t in (self.tree_a, self.tree_b):
             t.mkdir()
             subprocess.run(["git", "init", "-q", str(t)], check=True, env=dict(self.env, GIT_CONFIG_GLOBAL="/dev/null"))
+
+    def set_heat(self, **kw):
+        self.heat.write_text(json.dumps(kw))
 
     def tearDown(self):
         for p in self.procs:        # 只收自己起的
@@ -157,20 +162,56 @@ class Lanes(unittest.TestCase):
         self.assertIn("short_overrun", ev)
         self.assertFalse(Path(str(self.lease) + ".short.json").exists())
 
-    # ── 熱保護:cooldown 剛寫的 no-go 旗標擋;收掉的艙留下的舊旗標不擋 ──
-    def test_fresh_nogo_blocks_stale_does_not(self):
-        f = self.nogo_dir / "cabin-x" / "heavy-work-nogo"
-        f.parent.mkdir(parents=True)
-        f.write_text("hot 熱節流 23% >= 20\n")
-        old = time.time() - 3600
-        os.utime(f, (old, old))
+    # ── 熱保護(定案 C + bb7dc 兩條)──
+    def denied_why(self, r):
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        return [x for x in self.ledger() if x["event"] == "denied" and x.get("lane") == "short"][-1]["why"]
+
+    def test_throttle_threshold_is_40(self):
+        self.set_heat(throttle=39.9, load1=2.0, cpu_c=50.0)
+        r = self.short(["true"], extra=("--run-id", "a"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("39.9", r.stdout)              # 拿到時印當下節流 %
+        acq = [x for x in self.ledger() if x.get("lane") == "short" and x["event"] == "acquire"][-1]
+        self.assertEqual(acq["heat"]["throttle"], 39.9)
+        self.assertEqual(acq["heat"]["source"], "fixture")
+        self.set_heat(throttle=40.0, load1=2.0, cpu_c=50.0)
+        r = self.short(["true"])
+        self.assertEqual(self.denied_why(r), "throttle")
+        self.assertIn("40.0", r.stdout)
+
+    def test_unmeasured_throttle_or_load_refuses(self):
+        self.set_heat(load1=2.0, cpu_c=50.0)             # 沒有 throttle
+        self.assertEqual(self.denied_why(self.short(["true"])), "throttle_unmeasured")
+        self.set_heat(throttle=5.0, cpu_c=50.0)          # 沒有 load1
+        self.assertEqual(self.denied_why(self.short(["true"])), "load1_unmeasured")
+        self.heat.write_text("{broken")
+        self.assertEqual(self.denied_why(self.short(["true"])), "load1_unmeasured")
+
+    def test_cpu_critical_and_load1_refuse(self):
+        self.set_heat(throttle=5.0, load1=2.0, cpu_c=90.0)
+        self.assertEqual(self.denied_why(self.short(["true"])), "cpu_critical")
+        self.set_heat(throttle=5.0, load1=12.5, cpu_c=50.0)
+        self.assertEqual(self.denied_why(self.short(["true"])), "load1")
+
+    def test_cpu_temp_unmeasured_does_not_block(self):
+        self.set_heat(throttle=5.0, load1=2.0)           # 沒有 cpu_c:只記、不擋(定案沒列)
         r = self.short(["true"])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        os.utime(f, None)
-        r = self.short(["true"])
-        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
-        self.assertIn("cooldown_hot", r.stdout)
-        self.assertTrue(any(x.get("why") == "cooldown_hot" for x in self.ledger() if x["event"] == "denied"))
+
+    def test_recovery_needs_five_cool_minutes(self):
+        t0 = 2_000_000_000
+        self.set_heat(throttle=55.0, load1=2.0, cpu_c=50.0)
+        r = self.run_(["--now", str(t0), "run-short", "--owner", "t", "--what", "k", "--no-browser",
+                       "--no-fixed-port", "--", "true"])
+        self.assertEqual(self.denied_why(r), "throttle")
+        self.set_heat(throttle=5.0, load1=2.0, cpu_c=50.0)
+        for dt, want in ((60, 4), (299, 4), (300, 0)):
+            r = self.run_(["--now", str(t0 + dt), "run-short", "--owner", "t", "--what", "k", "--no-browser",
+                           "--no-fixed-port", "--", "true"])
+            self.assertEqual(r.returncode, want, (dt, r.stdout + r.stderr))
+            if want == 4:
+                self.assertIn("cooling_down", r.stdout)
 
     # ── 宣告:三件少一件就 rc 2,不拿租約 ──
     def test_declarations_required(self):
@@ -237,28 +278,36 @@ class GateInProcess(unittest.TestCase):
         self.td = Path(tempfile.mkdtemp(prefix="aib-lanes-ip-"))
         self._env = dict(os.environ)
         os.environ.update({"AIB_HOST_LEASE_FILE": str(self.td / "lease.json"), "EZ2_AIB_LOCALE": "en",
-                           "AIB_HOST_LEASE_NOGO_GLOB": str(self.td / "none" / "*"),
+                           "AIB_HOST_LEASE_HEAT_SAMPLE": str(self.td / "heat.json"),
                            "EZ2_AIB_STATE_ROOT": str(self.td / "state")})
         spec = importlib.util.spec_from_file_location("host_lease_lanes_t", TOOL)
         self.hl = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.hl)
         self.path = self.td / "lease.json"
+        (self.td / "heat.json").write_text(json.dumps({"throttle": 5.0, "load1": 1.0, "cpu_c": 50.0}))
 
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self._env)
         shutil.rmtree(self.td, ignore_errors=True)
 
-    def test_load1_over_limit_blocks(self):
-        self.hl._load1 = lambda: 12.5
-        why, extra = self.hl.short_gate(self.path, time.time(), str(self.td))
-        self.assertEqual(why, "load1")
-        self.hl._load1 = lambda: 12.0      # 剛好 12 不擋(> 12 才擋)
-        why, _ = self.hl.short_gate(self.path, time.time(), str(self.td))
-        self.assertIsNone(why)
+    def test_cpu_crit_matches_cooldown(self):
+        sys.path.insert(0, str(ROOT / "aib" / "src" / "cockpit"))
+        try:
+            import cooldown
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(self.hl.SHORT_CPU_CRIT_C, cooldown.CPU_CRIT_C)
+
+    def test_live_measure_shape(self):
+        """不用治具時現量一次:欄位都在、來源 live;讀不到就是 None(不猜)。值本身不斷言(跟機器溫度走)。"""
+        env = {k: v for k, v in os.environ.items() if k != "AIB_HOST_LEASE_HEAT_SAMPLE"}
+        h = self.hl.measure_heat(env)
+        self.assertEqual(h["source"], "live")
+        self.assertEqual(set(h), {"load1", "throttle", "cpu_c", "throttle_why", "source"})
+        self.assertTrue(h["throttle"] is not None or h["throttle_why"])
 
     def test_long_chrome_cap(self):
-        self.hl._load1 = lambda: 1.0
         now = time.time()
         self.path.write_text(json.dumps({"schema": self.hl.SCHEMA, "owner": "f457", "what": "push", "run_id": "L",
                                          "pid": os.getpid(), "pid_start": self.hl.proc_start(os.getpid()),

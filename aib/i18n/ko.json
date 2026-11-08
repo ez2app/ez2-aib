@@ -5971,7 +5971,7 @@
   "aib.gameworld.open_failed": "로비 창을 열 수 없습니다. 직접 여세요: {url}",
   "aib.gameworld.start_failed": "로비를 시작할 수 없습니다(함장실 플러그인이 올바른 결과를 주지 않음). 좌석에는 영향이 없습니다.",
   "aib.gameworld.not_switched": "로비가 {target}(으)로 전환되지 않았습니다. 현재 {actual}입니다. 좌석에는 영향이 없습니다.",
-  "aib.lease.short_denied": "short 레인 거부({why}): {what} 실행 안 함. load1 / cooldown 과열 ⇒ 식을 때까지 대기; 같은 트리에서 push 중이거나 long 보유 ⇒ 다른 트리 사용 또는 해제 대기; long 이 Chrome 실행 중 ⇒ 끝날 때까지 대기",
+  "aib.lease.short_denied": "short 레인 거부({why}): {what} 실행 안 함. 과열 / 측정 불가 / 방금 과열 ⇒ 식을 때까지 대기(5분간 정상이면 재개); 같은 트리에서 push 중이거나 long 보유 ⇒ 다른 트리 사용 또는 해제 대기",
   "aib.lease.short_busy": "short 레인은 {name} 이(가) 사용 중({what}, 만료 {at}). 한 번에 1개, 끝나면 다시 시도",
   "aib.lease.short_acquired": "short 임대 획득: {what}(nice 10, 늦어도 {at} 에 중지)",
   "aib.lease.short_concurrent": "병행: long 레인에서 {name}({what}) 실행 중. 이번 실패는 진짜 실패로 종결하지 말고 단독 또는 long 레인에서 다시 실행",
@@ -5983,5 +5983,6 @@
   "aib.lease.short_holder": "short 레인: {name}({what}, 늦어도 {at} 까지)",
   "aib.lease.cli_chrome": "이 long 레인 실행은 실제 Chrome 을 연다(short 레인 상한이 내려감)",
   "aib.lease.cli_run_short": "short 레인: 5분 이내 지정 테스트 / 나이프, long 과 병행 가능(nice 10, 브라우저 없음 / 고정 포트 없음 / 임시 상태 루트 신고)",
-  "aib.test.short_big_refused": "실행 안 함: short 레인은 지정한 몇 개 / 나이프 전용. 이 {n}개는 큰 배치. long 레인에 줄 서기(run-short 없이 aib test)."
+  "aib.test.short_big_refused": "실행 안 함: short 레인은 지정한 몇 개 / 나이프 전용. 이 {n}개는 큰 배치. long 레인에 줄 서기(run-short 없이 aib test).",
+  "aib.lease.short_heat": "현재 측정값: 열 스로틀 {throttle}%(≥40 중지), load1 {load1}(>12 중지), CPU {cpu}°C(≥90 중지); 출처 {source}"
 }

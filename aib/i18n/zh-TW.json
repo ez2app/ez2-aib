@@ -5971,7 +5971,7 @@
   "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
   "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
-  "aib.lease.short_denied": "short 隊不發({why}):{what} 沒跑。load1 / cooldown 熱 ⇒ 等降溫;同一棵樹在推送或持 long ⇒ 換棵樹或等它放;long 開 Chrome ⇒ 等它跑完",
+  "aib.lease.short_denied": "short 隊不發({why}):{what} 沒跑。熱 / 讀不到 / 剛熱過 ⇒ 等降溫(涼滿 5 分鐘才再發);同一棵樹在推送或持 long ⇒ 換棵樹或等它放",
   "aib.lease.short_busy": "short 隊被 {name} 佔用({what},到期 {at}),一次 1 份;等它跑完再試",
   "aib.lease.short_acquired": "short 租約已取得:{what}(nice 10,最晚 {at} 收掉)",
   "aib.lease.short_concurrent": "併跑:long 隊同時有 {name}({what})在跑;這一輪的紅燈不得當真紅結案,先單跑或排 long 重跑",
@@ -5983,5 +5983,6 @@
   "aib.lease.short_holder": "short 隊:{name}({what},最晚 {at})",
   "aib.lease.cli_chrome": "long 隊這一份會開真 Chrome(short 隊上限跟著降)",
   "aib.lease.cli_run_short": "short 隊:≤5 分鐘的指定測試 / 刀,可跟 long 並跑(nice 10、宣告不開瀏覽器 / 不用固定埠 / 暫存狀態根)",
-  "aib.test.short_big_refused": "沒跑:short 隊只給指定幾支 / 刀測,這批 {n} 支算大批;請排 long 隊(不帶 run-short 直接 aib test)。"
+  "aib.test.short_big_refused": "沒跑:short 隊只給指定幾支 / 刀測,這批 {n} 支算大批;請排 long 隊(不帶 run-short 直接 aib test)。",
+  "aib.lease.short_heat": "當下讀數:熱節流 {throttle}%(≥40 停)、load1 {load1}(>12 停)、CPU {cpu}°C(≥90 停);來源 {source}"
 }

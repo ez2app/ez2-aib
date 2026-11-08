@@ -5971,7 +5971,7 @@
   "aib.gameworld.open_failed": "ロビーのウィンドウを開けませんでした。手動で開いてください:{url}",
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
-  "aib.lease.short_denied": "short レーン不可({why}):{what} は未実行。load1 / cooldown 高温 ⇒ 冷却待ち;同じツリーで push 中か long 保持中 ⇒ 別ツリーか解放待ち;long が Chrome 実行中 ⇒ 終了待ち",
+  "aib.lease.short_denied": "short レーン不可({why}):{what} は未実行。高温 / 計測不可 / 直前に高温 ⇒ 冷却待ち(5 分間低温で再開);同じツリーで push 中か long 保持中 ⇒ 別ツリーか解放待ち",
   "aib.lease.short_busy": "short レーンは {name} が使用中({what}、期限 {at})。1 件ずつ、終了後に再試行",
   "aib.lease.short_acquired": "short リース取得:{what}(nice 10、遅くとも {at} に停止)",
   "aib.lease.short_concurrent": "並走:long レーンで {name}({what})が実行中。この回の赤は本物の失敗として閉じず、単独か long レーンで再実行",
@@ -5983,5 +5983,6 @@
   "aib.lease.short_holder": "short レーン:{name}({what}、遅くとも {at} まで)",
   "aib.lease.cli_chrome": "この long レーン実行は本物の Chrome を開く(short レーン上限が下がる)",
   "aib.lease.cli_run_short": "short レーン:5 分以内の指定テスト / ナイフ、long と並走可(nice 10、ブラウザなし / 固定ポートなし / 一時状態ルートを申告)",
-  "aib.test.short_big_refused": "未実行:short レーンは指定した数本 / ナイフ専用。この {n} 本は大バッチ扱い。long レーンへ(run-short なしで aib test)。"
+  "aib.test.short_big_refused": "未実行:short レーンは指定した数本 / ナイフ専用。この {n} 本は大バッチ扱い。long レーンへ(run-short なしで aib test)。",
+  "aib.lease.short_heat": "現在の値:熱スロットリング {throttle}%(≥40 で停止)、load1 {load1}(>12 で停止)、CPU {cpu}°C(≥90 で停止)。取得元 {source}"
 }

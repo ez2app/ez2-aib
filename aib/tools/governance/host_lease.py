@@ -748,8 +748,14 @@ def cmd_status(a, now, path, ledger):
 #        (不能在真 ~/.ez2-aib 底下);宣告寫進 short 租約與留痕。不管 long 是誰都要 —— long 是不是
 #        ez2-ai 推送量不準(ez2-ai 那邊拿租約的寫法這張不改),量不準就照最嚴的那條。
 #        其中「不開瀏覽器」「不用固定埠」只是宣告,本檔查不到;EZ2_AIB_STATE_ROOT 本檔有查。
-#     2. 熱保護(條件 3):load1 > SHORT_LOAD1_MAX、或任一艙 cooldown 剛寫過 heavy-work-nogo(NOGO_FRESH_S 內)。
-#     3. long 標了 --chrome ⇒ short 上限 SHORT_CAP_WHEN_CHROME。
+#     2. 熱保護(條件 3,11-08 定案 C + bb7dc 兩條):每次要發都現量一次 ——
+#        load1 > SHORT_LOAD1_MAX、CPU 溫度 ≥ SHORT_CPU_CRIT_C(cooldown 的 critical)、
+#        熱節流(kernel_task %CPU,machine_status 同一支)≥ SHORT_THROTTLE_MAX ⇒ 不發;
+#        熱節流 / load1 **讀不到** ⇒ 也不發並說出原因(不把量不到當涼);CPU 溫度讀不到只記下、不擋(定案沒列)。
+#        恢復要穩:上一次因熱被拒後 SHORT_RECOVER_S 內再量到涼也不發(cooling_down),免得一直開開關關。
+#        ★ 「連續 N 分鐘涼」是用「最後一次熱的時刻」近似:只有有人來要 short 時才量,中間沒人要就沒有讀數。
+#        當下讀數(節流 %、load1、CPU 溫度)寫進 short 租約、留痕,拿到時也印出來。
+#     3. long 標了 --chrome ⇒ short 上限 SHORT_CAP_WHEN_CHROME(定案 1)。
 #     4. 同一棵樹:這棵樹有活的推包、或 long 租約就是這棵樹 ⇒ 不發(推送中不併跑測試的老規矩)。
 #     5. short 位子有人(活著)⇒ 不發;持有者死了 / 過期 ⇒ 接管並留痕,同 long。
 #   跑:子行程自成一組、nice SHORT_NICE;超過宣告秒數 ⇒ 降級:留痕 short_overrun,對**自己那一組** TERM → KILL,
@@ -761,9 +767,11 @@ SHORT_SCHEMA = "aib-host-lease-short/v1"
 SHORT_MAX_S = 300           # 宣告上限 5 分鐘
 SHORT_GRACE_S = 60          # 租約到期 = 宣告 + 這麼多(收組 / 放鎖的時間);持有者活著本來就不會被接管
 SHORT_NICE = 10
-SHORT_LOAD1_MAX = 12.0
-SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(提案寫 0 或 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)
-NOGO_FRESH_S = 600          # cooldown 每輪重寫旗標;10 分鐘沒動的是收掉的艙留下的,不算
+SHORT_LOAD1_MAX = 12.0      # > 這個不發
+SHORT_THROTTLE_MAX = 40.0   # 熱節流 % ≥ 這個不發(定案 C;cooldown 的 hot 是 20,那條在推送時幾乎一直亮)
+SHORT_CPU_CRIT_C = 90.0     # 同 cooldown.CPU_CRIT_C(測試對這兩個數)
+SHORT_RECOVER_S = 300       # 因熱被拒後要涼滿這麼久才再發
+SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(定案 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)
 SHORT_KILL_WAIT_S = 10
 RC_OVERRUN = 6
 
@@ -772,31 +780,64 @@ def short_path(path):
     return pathlib.Path(str(path) + ".short.json")
 
 
-def nogo_glob(env=None):
-    """cooldown 的 heavy-work-nogo 落點(每艙一份)。AIB_HOST_LEASE_NOGO_GLOB 只搬落點(治具用)。"""
+def heat_state_path(path):
+    return pathlib.Path(str(path) + ".short-heat.json")
+
+
+def measure_heat(env=None):
+    """現量 {"load1", "throttle", "cpu_c", "throttle_why", "source"};讀不到的欄是 None。
+    AIB_HOST_LEASE_HEAT_SAMPLE = 一份 JSON 的路徑 ⇒ 改讀它(**只給治具**,讀到的會在租約 / 留痕標 source=fixture,
+    看得出來不是現量);檔壞掉 ⇒ 全部當讀不到(照讀不到的規則不發)。"""
     env = os.environ if env is None else env
-    g = (env.get("AIB_HOST_LEASE_NOGO_GLOB") or "").strip()
-    return g or str(pathlib.Path.home() / ".ez2-aib" / "instances" / "*" / "cockpit" / "heavy-work-nogo")
-
-
-def _load1():
-    try:
-        return os.getloadavg()[0]
-    except OSError:
-        return None
-
-
-def fresh_nogo(now, env=None):
-    """NOGO_FRESH_S 內寫過的 heavy-work-nogo 路徑清單。"""
-    import glob
-    out = []
-    for f in sorted(glob.glob(nogo_glob(env))):
+    fx = (env.get("AIB_HOST_LEASE_HEAT_SAMPLE") or "").strip()
+    if fx:
         try:
-            if float(now) - os.stat(f).st_mtime <= NOGO_FRESH_S:
-                out.append(f)
-        except OSError:
-            continue
+            d = json.loads(pathlib.Path(fx).read_text(encoding="utf-8"))
+            num = lambda k: (float(d[k]) if isinstance(d.get(k), (int, float)) else None)
+            return {"load1": num("load1"), "throttle": num("throttle"), "cpu_c": num("cpu_c"),
+                    "throttle_why": None if num("throttle") is not None else "fixture_missing", "source": "fixture"}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return {"load1": None, "throttle": None, "cpu_c": None, "throttle_why": "fixture_unreadable",
+                    "source": "fixture"}
+    out = {"load1": None, "throttle": None, "cpu_c": None, "throttle_why": None, "source": "live"}
+    try:
+        out["load1"] = round(os.getloadavg()[0], 2)
+    except OSError:
+        pass
+    try:
+        import machine_status as ms
+        kt = ms.kernel_task_cpu()
+        if kt.get("state") != "unmeasured" and isinstance(kt.get("value"), (int, float)):
+            out["throttle"] = float(kt["value"])
+        else:
+            out["throttle_why"] = str(kt.get("detail") or kt.get("text") or "unmeasured")
+        ct = ms.cpu_temp()
+        if ct.get("state") != "unmeasured" and isinstance(ct.get("value"), (int, float)):
+            out["cpu_c"] = float(ct["value"])
+    except Exception as e:      # 量測模組壞了 = 讀不到(照規則不發),不讓租約工具當掉
+        out["throttle_why"] = out["throttle_why"] or "machine_status: %s" % e
     return out
+
+
+def heat_line(h):
+    q = lambda v: "?" if v is None else v
+    return T("aib.lease.short_heat", {"throttle": q(h.get("throttle")), "load1": q(h.get("load1")),
+                                      "cpu": q(h.get("cpu_c")), "source": h.get("source", "?")})
+
+
+def heat_verdict(heat):
+    """熱的話回原因,涼回 None。讀不到 load1 / 熱節流也算(不發)。"""
+    if heat.get("load1") is None:
+        return "load1_unmeasured"
+    if heat["load1"] > SHORT_LOAD1_MAX:
+        return "load1"
+    if heat.get("cpu_c") is not None and heat["cpu_c"] >= SHORT_CPU_CRIT_C:
+        return "cpu_critical"
+    if heat.get("throttle") is None:
+        return "throttle_unmeasured"
+    if heat["throttle"] >= SHORT_THROTTLE_MAX:
+        return "throttle"
+    return None
 
 
 def _toplevel(d):
@@ -827,16 +868,27 @@ def check_state_root(env=None):
 
 
 def short_gate(path, now, cwd, env=None):
-    """發不發 short:(None, extra) 可以發;(why, extra) 不發。只讀,不寫。extra 給留痕與訊息用。"""
-    load = _load1()
-    if load is not None and load > SHORT_LOAD1_MAX:
-        return "load1", {"load1": round(load, 2)}
-    hot = fresh_nogo(now, env)
+    """發不發 short:(None, extra) 可以發;(why, extra) 不發。在鎖裡呼叫;只寫熱狀態檔(恢復計時)。
+    extra["heat"] 是這次現量的讀數(進租約與留痕)。"""
+    heat = measure_heat(env)
+    hp = heat_state_path(path)
+    hot = heat_verdict(heat)
     if hot:
-        return "cooldown_hot", {"nogo": hot[:3]}
+        try:
+            write_lease(hp, {"last_hot_epoch": int(now), "why": hot, "heat": heat})
+        except OSError:
+            pass
+        return hot, {"heat": heat}
+    try:
+        last = json.loads(hp.read_text(encoding="utf-8"))
+        since = float(now) - float(last.get("last_hot_epoch"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        since = None
+    if since is not None and 0 <= since < SHORT_RECOVER_S:
+        return "cooling_down", {"heat": heat, "cool_s": int(since)}
     long_cur, why = read_lease(path)
     if why:
-        return "long_unreadable", {"err": why}
+        return "long_unreadable", {"err": why, "heat": heat}
     long_live = long_cur if long_cur and not is_expired(long_cur, now) else None
     if long_live and long_live.get("chrome") and SHORT_CAP_WHEN_CHROME < 1:
         return "long_chrome", {"long": long_live.get("run_id")}
@@ -846,7 +898,7 @@ def short_gate(path, now, cwd, env=None):
         mine, theirs = _toplevel(cwd), _toplevel(long_live.get("cwd"))
         if mine and mine == theirs:
             return "same_tree_long", {"cwd": mine, "long": long_live.get("run_id")}
-    return None, {"long": long_live}
+    return None, {"long": long_live, "heat": heat}
 
 
 def _short_take(a, now, path, ledger, state_root):
@@ -857,7 +909,9 @@ def _short_take(a, now, path, ledger, state_root):
     if why:
         log_event(ledger, "denied", now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id, why=why,
                   **{k: v for k, v in extra.items() if k != "long" or isinstance(v, str)})
+        h = extra.get("heat") or {}
         print(T("aib.lease.short_denied", {"why": why, "what": a.what}))
+        print(heat_line(h))
         return RC_HELD, None
     cur, rwhy = read_lease(sp, SHORT_SCHEMA)
     if rwhy:
@@ -873,7 +927,7 @@ def _short_take(a, now, path, ledger, state_root):
     new = {"schema": SHORT_SCHEMA, "lane": "short", "owner": a.owner, "what": a.what, "run_id": a.run_id,
            "pid": pid, "pid_start": proc_start(pid), "host": socket.gethostname(), "cwd": cwd,
            "declared": {"no_browser": True, "no_fixed_port": True, "state_root": state_root, "est_s": a.est_s},
-           "nice": SHORT_NICE,
+           "nice": SHORT_NICE, "heat": extra.get("heat"),
            "concurrent_with": ({"run_id": long_live.get("run_id"), "owner": long_live.get("owner"),
                                 "what": long_live.get("what"), "chrome": bool(long_live.get("chrome"))}
                                if long_live else None),
@@ -886,7 +940,8 @@ def _short_take(a, now, path, ledger, state_root):
         fields = {"prev_owner": cur.get("owner"), "prev_run_id": cur.get("run_id"), "why": takeover_why(cur, now)}
     write_lease(sp, new)
     log_event(ledger, event, now, lane="short", owner=a.owner, what=a.what, run_id=a.run_id,
-              expiry=new["expiry_at"], declared=new["declared"], concurrent_with=new["concurrent_with"], **fields)
+              expiry=new["expiry_at"], declared=new["declared"], concurrent_with=new["concurrent_with"],
+              heat=new["heat"], **fields)
     return RC_OK, new
 
 
@@ -950,6 +1005,8 @@ def cmd_run_short(a, now, path, ledger):
         return rc
     cw = lease.get("concurrent_with")
     print(T("aib.lease.short_acquired", {"what": a.what, "at": lease["expiry_at"]}))
+    h = lease.get("heat") or {}
+    print(heat_line(h))
     if cw:
         print(T("aib.lease.short_concurrent", {"name": cw.get("owner", "?"), "what": cw.get("what", "?")}))
     env = dict(os.environ, AIB_LEASE_SHORT_RUN_ID=a.run_id)
