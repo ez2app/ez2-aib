@@ -62,3 +62,5 @@ The command needs the existing `gh` login to read GitHub and contacts the public
 PyPI index. It does not request additional scopes or approve environments.
 Known failed stages return 1; unavailable evidence returns 3; valid pending
 progress returns 0 and remains explicitly pending in the payload.
+
+<!-- probe 3 (1ced7, temporary) -->
