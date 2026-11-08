@@ -5971,5 +5971,6 @@
   "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
   "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
-  "aib.gameworld.switch_unknown": "大廳切到 {target} 沒收到確認,可能切過去了也可能沒有(實際艙未知);這次不開視窗、不自動重試。要再試請重打一次指令;開席不受影響。"
+  "aib.gameworld.switch_unknown": "大廳切到 {target} 沒收到確認,可能切過去了也可能沒有(實際艙未知);這次不開視窗、不自動重試。要再試請重打一次指令;開席不受影響。",
+  "aib.gameworld.state_unwritable": "沒辦法記錄這次切換(本機狀態檔寫不進去),所以這次沒有切換。請檢查磁碟空間或權限後再試一次;開席不受影響。"
 }

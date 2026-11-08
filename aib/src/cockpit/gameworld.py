@@ -450,7 +450,7 @@ def _with_claim(cl, target, switch, session, out, e, env, run, popen):
     if switch and not arm(cl):                            # 標記寫不進去就不切(切了之後可能留不下「未知」)
         finish(cl, False)
         out.write("AIB_GAMEWORLD result=error cabin=%s actual=unknown how=- url=- why=state-unwritable\n" % (target or "-"))
-        notify(session, T("start_failed"), env, run)
+        notify(session, T("state_unwritable"), env, run)
         return "error"
     r = call_plugin(target, switch, run)
     o = origin_only(r.get("url"))

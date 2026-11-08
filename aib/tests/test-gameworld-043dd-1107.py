@@ -319,6 +319,9 @@ class Dedup(Base):
             r, out = self.lobby(f, req="u15a")
         self.assertEqual((r, f.opens()), ("error", []), out)
         self.assertIn("why=state-unwritable", out)
+        self.assertEqual(len(f.notes()), 1, f.calls)
+        self.assertIn("沒辦法記錄這次切換", f.notes()[0], "專用提示,不借 start_failed")
+        self.assertIn("所以這次沒有切換", f.notes()[0])
         self.assertFalse((d / (G._key("u15a", "9320") + ".unknown")).exists())
         f2 = self.ok()
         self.assertEqual(self.lobby(f2, req="u15a")[0], "switched", "什麼都沒發生 ⇒ 可重試")
@@ -564,7 +567,7 @@ class Misc(Base):
 
     def test_u11_dict(self):
         keys = ("missing", "too_old", "no_switch", "no_attach", "unknown_cabin", "legacy_opened", "open_failed",
-                "start_failed", "not_switched", "switch_unknown")
+                "start_failed", "not_switched", "switch_unknown", "state_unwritable")
         for loc in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             for k in keys:

@@ -5971,5 +5971,6 @@
   "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
-  "aib.gameworld.switch_unknown": "The lobby may have switched to {target}, but it wasn't confirmed (actual cabin unknown); no window this time and no automatic retry. Run the command again to retry; the seat is unaffected."
+  "aib.gameworld.switch_unknown": "The lobby may have switched to {target}, but it wasn't confirmed (actual cabin unknown); no window this time and no automatic retry. Run the command again to retry; the seat is unaffected.",
+  "aib.gameworld.state_unwritable": "Couldn't record this switch (the local state file can't be written), so nothing was switched this time. Check disk space or permissions and try again; the seat is unaffected."
 }
