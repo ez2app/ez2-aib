@@ -43,6 +43,9 @@ pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod selfcheck;
+#[cfg(windows)]
+pub mod session;
+pub mod settle;
 
 #[cfg(target_os = "macos")]
 pub use macos::Macos;
