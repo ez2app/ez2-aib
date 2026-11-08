@@ -28,6 +28,8 @@
   U9 12 個程序同時搶一個崩潰留下的鎖檔 ⇒ 只有一個拿到
   U14 未知(11-08):外掛 post_unconfirmed / 核心 12 秒硬逾時 / JSON 壞 ⇒ result=unknown、不開窗、提示是「沒收到確認」、
       寫 .unknown 不寫 .done;同鍵再來 ⇒ unknown_kept、外掛不再叫;新請求照叫;舊外掛(沒 --switch)逾時仍是普通 timeout
+  U15 寫標記失敗(write-ahead,#491 bb7dc 初看):叫外掛前先寫 .unknown,寫不進去 ⇒ 不叫外掛、error/state-unwritable、之後可重試;
+      成功但 .done 寫不進去 / 確定失敗但標記刪不掉 / 叫外掛時出例外 ⇒ 標記留著 ⇒ 同鍵 unknown_kept、外掛不再叫
 其他
   U10 check:沒裝 / 太舊 ⇒ rc 3 + 對的那句;沒 --switch ⇒ rc 0 + 提示
   U11 四語字典鍵齊、用法有 [gameworld]
@@ -36,7 +38,7 @@
 刀(複本):KG1 3 個字也剝 ⇒ G3 紅;KG2 拿掉 cabin == 目標 ⇒ U3 紅;KG3 拿鎖後不再看 .done ⇒ U7b 紅;
   KG8 鎖換成永遠拿得到 ⇒ U8b 紅;KG9 不比 inode ⇒ U8d 紅;KG10 鎖換成永遠拿得到 ⇒ U8c 紅;
   KG11 不看 post_unconfirmed ⇒ U14 紅;KG12 未知當普通失敗(不寫 .unknown)⇒ U14 紅;KG13 領取不看 .unknown ⇒ U14 紅;
-  KG14 核心逾時當普通逾時 ⇒ U14 紅;
+  KG14 核心逾時當普通逾時 ⇒ U14 紅;KG15 標記寫不進去照叫外掛 / KG16 例外時清標記 / KG17 .done 寫失敗也清標記 ⇒ U15 紅;
   KG4 輸出完整網址 ⇒ U4 紅;KG5 快取身份不看 mtime / 大小 ⇒ U5 紅;KG6 批次不 unset ⇒ U12 紅;KG7 代開也檢查 ⇒ U13 紅
 """
 import json
@@ -297,6 +299,58 @@ class Dedup(Base):
         old = Fake(help_text=HELP_OLD, result=subprocess.TimeoutExpired(["aib"], 12))
         self.assertEqual(self.lobby(old, req="u14-old")[0], "timeout")
 
+    def test_u15_marker_write_fails(self):
+        from unittest import mock
+        d = self.home / "cockpit" / "gameworld-req"
+        real_touch, real_unlink = G._touch, os.unlink
+
+        def touch_fails(suffix):
+            def t(path):
+                if str(path).endswith(suffix):
+                    raise OSError(28, "No space left on device")
+                return real_touch(path)
+            return t
+        # a) write-ahead 寫不進去 ⇒ 不叫外掛;沒有標記;之後同鍵可重試
+        f = self.ok()
+        with mock.patch.object(G, "_touch", touch_fails(".unknown")):
+            r, out = self.lobby(f, req="u15a")
+        self.assertEqual((r, f.opens()), ("error", []), out)
+        self.assertIn("why=state-unwritable", out)
+        self.assertFalse((d / (G._key("u15a", "9320") + ".unknown")).exists())
+        f2 = self.ok()
+        self.assertEqual(self.lobby(f2, req="u15a")[0], "switched", "什麼都沒發生 ⇒ 可重試")
+        # b) 成功但 .done 寫不進去 ⇒ 標記留著 ⇒ 同鍵不重開
+        f = self.ok()
+        with mock.patch.object(G, "_touch", touch_fails(".done")):
+            self.assertEqual(self.lobby(f, req="u15b")[0], "switched")
+        self.assertTrue((d / (G._key("u15b", "9320") + ".unknown")).exists())
+        again = self.ok()
+        self.assertEqual((self.lobby(again, req="u15b")[0], again.opens()), ("unknown_kept", []))
+        # c) 確定失敗但標記刪不掉 ⇒ 留著 = 未知(安全的方向)
+        bad = Fake(result={"ok": False, "result": "not_live", "cabin": "1111", "url": "http://127.0.0.1:8771/"}, rc=1)
+
+        def unlink_fails(path, *a, **k):
+            if str(path).endswith(".unknown"):
+                raise OSError(13, "Permission denied")
+            return real_unlink(path, *a, **k)
+        with mock.patch.object(G.os, "unlink", unlink_fails):
+            self.assertEqual(self.lobby(bad, req="u15c")[0], "not_live")
+        again = self.ok()
+        self.assertEqual((self.lobby(again, req="u15c")[0], again.opens()), ("unknown_kept", []))
+        # d) 叫外掛時出例外(程序被打斷)⇒ 標記留著
+        boom = Fake(result=KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self.lobby(boom, req="u15d")
+        self.assertTrue((d / (G._key("u15d", "9320") + ".unknown")).exists())
+        again = self.ok()
+        self.assertEqual((self.lobby(again, req="u15d")[0], again.opens()), ("unknown_kept", []))
+        # e) 確定失敗且刪得掉 ⇒ 標記清掉,同鍵可重試(原行為)
+        bad = Fake(result={"ok": False, "result": "not_live", "cabin": "1111", "url": "http://127.0.0.1:8771/"}, rc=1)
+        self.assertEqual(self.lobby(bad, req="u15e")[0], "not_live")
+        self.assertFalse((d / (G._key("u15e", "9320") + ".unknown")).exists())
+        again = self.ok()
+        self.assertEqual(self.lobby(again, req="u15e")[0], "switched")
+
     def _race(self, n, prep=None):
         d = self.home / "cockpit" / "gameworld-req"
         d.mkdir(parents=True, exist_ok=True)
@@ -507,7 +561,7 @@ KNIVES = [
     ("KG1", 'while [ "${#POS[@]}" -ge 4 ]; do\n    case "${POS[${#POS[@]}-1]}" in',
      'while [ "${#POS[@]}" -ge 3 ]; do\n    case "${POS[${#POS[@]}-1]}" in', "src/cockpit/aib", "Args.test_g3_three_words_not_stripped"),
     ("KG2", "    if got != cabin:\n", "    if False:\n", "src/cockpit/gameworld.py", "Interface.test_u3_no_false_success"),
-    ("KG3", "        if _settled(done):\n            os.close(fd)\n            return None                                   # 空檔裡前一位做完了(或留下未知)\n",
+    ("KG3", "        if _settled(done):\n            os.close(fd)\n            why.append(\"done\" if done.exists() else \"unknown\")\n            return None                                   # 空檔裡前一位做完了(或留下未知)\n",
      "", "src/cockpit/gameworld.py", "Dedup.test_u7b_gap_between_check_and_lock"),
     ("KG4", '(r["result"], target or "-", r["cabin"] or "unknown", how or "-", o or "-"))',
      '(r["result"], target or "-", r["cabin"] or "unknown", how or "-", r.get("url") or "-"))',
@@ -522,12 +576,18 @@ KNIVES = [
      "src/cockpit/gameworld.py", "Dedup.test_u8c_owner_inside_plugin_call"),
     ('KG11', '    if (r.returncode != 0 or d.get("ok") is not True or res not in OK_RESULTS) and d.get("post_unconfirmed") is True:\n',
      '    if False:\n', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
-    ('KG12', '        elif unknown:\n            os.close(os.open(str(_unknown(cl.done)), os.O_CREAT | os.O_WRONLY, 0o600))\n',
-     '', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
+    ('KG12', '        finish(cl, False, unknown=True)\n',
+     '        finish(cl, False)\n', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
     ('KG13', '    return done.exists() or _unknown(done).exists()\n',
      '    return done.exists()\n', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
     ('KG14', '"result": "unknown" if switch else "timeout", "cabin": None, "url": None, "why": "core-timeout"}',
      '"result": "timeout", "cabin": None, "url": None, "why": "core-timeout"}', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
+    ('KG15', '    if switch and not arm(cl):',
+     '    if switch and not (arm(cl) or True):', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
+    ('KG16', '        finish(cl, False, unknown=cl.armed)',
+     '        finish(cl, False)', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
+    ('KG17', '            try:\n                _touch(cl.done)\n                clear = cl.armed\n',
+     '            clear = cl.armed\n            try:\n                _touch(cl.done)\n', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
     ("KG6", "\nunset AIB_SITS_GAMEWORLD_REQ\n", "\n", "src/cockpit/seats_batch.sh", "Misc.test_u12_wiring"),
     ("KG7", '  if [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"',
      '  if false; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"', "src/cockpit/aib", "Misc.test_u13_no_attach"),

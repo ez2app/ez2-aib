@@ -158,6 +158,7 @@ class Claim:
 
     def __init__(self, lock, done, fd):
         self.lock, self.done, self.fd = lock, done, fd
+        self.armed = False                                # 已先寫好 .unknown(write-ahead),之後才叫外掛
 
     def __fspath__(self):
         return str(self.lock)
@@ -215,7 +216,7 @@ def _gc(d, now):
             os.close(fd)
 
 
-def claim(d, req, cabin, now=time.time, pause=None):
+def claim(d, req, cabin, now=time.time, pause=None, why=None):
     """回 Claim(拿到了,做完要 finish)或 None(已成功過 / 別人正拿著)。
 
     每鍵一個鎖檔 <鍵>.lock:open(O_CREAT) + flock(LOCK_EX|LOCK_NB),一路拿到 finish。
@@ -223,14 +224,18 @@ def claim(d, req, cabin, now=time.time, pause=None):
     - 拿到鎖後再看一次 .done:檢查 → 拿鎖之間前一位做完了,就不再做(#486 審查 P1 的空檔)。
     - 拿到鎖後比對 inode:拿到的是已被刪掉 / 換掉的舊檔就重來,不會兩人各拿一個檔。
     - 鎖檔裡留著上一位的 pid:有內容 = 上一位沒走到 finish(崩潰)⇒ gameworld.stat.reclaimed +1。
-    pause(stage):測試用障礙,stage = "checked"(看過 .done、還沒開鎖檔)/ "opened"(開了鎖檔、還沒拿鎖)/ "held"(拿到鎖、還沒叫外掛)。"""
+    pause(stage):測試用障礙,stage = "checked"(看過 .done、還沒開鎖檔)/ "opened"(開了鎖檔、還沒拿鎖)/ "held"(拿到鎖、還沒叫外掛)。
+    why(list):回 None 時附上原因 "done" / "busy"(有人拿著)/ "unknown"(上次未知,沒人拿著)。
+    .unknown 只在拿到鎖之後看:擁有者做到一半時(已 write-ahead)別人看到的是 busy,不是 unknown。"""
+    why = [] if why is None else why
     d = Path(d)
     d.mkdir(parents=True, exist_ok=True)
     k = _key(req, cabin)
     done, lk = d / (k + ".done"), d / (k + ".lock")
     _gc(d, now())
     for _ in range(5):
-        if _settled(done):
+        if done.exists():
+            why.append("done")
             return None
         if pause:
             pause("checked")
@@ -242,6 +247,7 @@ def claim(d, req, cabin, now=time.time, pause=None):
             pause("opened")
         if not _try_lock(fd):
             os.close(fd)
+            why.append("busy")
             return None                                   # 有人拿著:活著就不接手,不管多久
         try:
             same = os.fstat(fd).st_ino == os.stat(str(lk)).st_ino
@@ -252,6 +258,7 @@ def claim(d, req, cabin, now=time.time, pause=None):
             continue                                      # 拿到的是舊檔(已被收尾刪掉):重來
         if _settled(done):
             os.close(fd)
+            why.append("done" if done.exists() else "unknown")
             return None                                   # 空檔裡前一位做完了(或留下未知)
         try:
             prev = os.read(fd, 256)
@@ -277,17 +284,50 @@ def _settled(done):
     return done.exists() or _unknown(done).exists()
 
 
+def _touch(path):
+    os.close(os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o600))
+
+
+def arm(cl):
+    """切艙前先寫 <鍵>.unknown(write-ahead):寫不進去 ⇒ 回 False,呼叫端不叫外掛(什麼都還沒發生,之後可重試)。
+    寫進去之後,任何一步失敗(寫 .done / 刪標記 / 例外 / 崩潰)都只會留下標記 ⇒ 同鍵不自動重試(安全的方向)。"""
+    try:
+        _touch(_unknown(cl.done))
+    except OSError:
+        return False
+    cl.armed = True
+    return True
+
+
 def finish(cl, ok, unknown=False):
     """成功:先寫 .done 再放鎖(放鎖前寫好,後來的人拿到鎖一定看得到);失敗:不寫 .done,同請求可重試。
-    unknown:寫 <鍵>.unknown(不寫 .done)⇒ 同鍵不再自動重試,也不算成功。
+    unknown:留 <鍵>.unknown(不寫 .done)⇒ 同鍵不再自動重試,也不算成功。
+    armed(先寫過標記):成功 ⇒ 寫 .done 再刪標記;確定失敗 ⇒ 刪標記;未知 ⇒ 留著。寫 / 刪失敗 ⇒ 標記留著(不重試)。
     鎖檔在放鎖前刪掉(Windows 刪不掉就留著,_gc 之後收);刪掉後還拿著舊 fd 的人會在 inode 比對時重來。"""
     if cl is None or cl.fd is None:
         return                                            # 已收過(例外路徑再叫一次也安全)
     try:
+        mark = _unknown(cl.done)
+        clear = False
         if ok:
-            os.close(os.open(str(cl.done), os.O_CREAT | os.O_WRONLY, 0o600))
+            try:
+                _touch(cl.done)
+                clear = cl.armed
+            except OSError:
+                pass                                      # .done 寫不進去:armed 的標記留著 ⇒ 同鍵不重開
         elif unknown:
-            os.close(os.open(str(_unknown(cl.done)), os.O_CREAT | os.O_WRONLY, 0o600))
+            if not cl.armed:
+                try:
+                    _touch(mark)
+                except OSError:
+                    pass
+        else:
+            clear = cl.armed
+        if clear:
+            try:
+                os.unlink(str(mark))
+            except OSError:
+                pass                                      # 刪不掉:留著 = 當未知,不自動重試
         try:
             os.unlink(str(cl.lock))
         except OSError:
@@ -360,9 +400,10 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
         return "unavailable"
     target = cabin if CODE4.match(cabin or "") else ""
     switch = bool(caps["switch"] and target)
-    cl = claim(Path(home) / "cockpit" / "gameworld-req", req, target or "-", pause=pause)
+    why = []
+    cl = claim(Path(home) / "cockpit" / "gameworld-req", req, target or "-", pause=pause, why=why)
     if cl is None:
-        if _unknown(Path(home) / "cockpit" / "gameworld-req" / (_key(req, target or "-") + ".done")).exists():
+        if why[-1:] == ["unknown"]:
             out.write("AIB_GAMEWORLD result=unknown_kept cabin=%s\n" % (target or "-"))
             return "unknown_kept"                         # 同鍵上次結果未知:不自動重試(要再試 = 人重打指令 = 新鍵)
         out.write("AIB_GAMEWORLD result=dedup cabin=%s\n" % (target or "-"))
@@ -370,12 +411,17 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
     try:
         return _with_claim(cl, target, switch, session, out, e, env, run, popen)
     except BaseException:
-        finish(cl, False)
+        finish(cl, False, unknown=cl.armed)              # 叫外掛之後才出事 ⇒ 結果未知,標記留著
         raise
 
 
 def _with_claim(cl, target, switch, session, out, e, env, run, popen):
     """拿著鎖做外部副作用(叫外掛、開窗);鎖由作業系統持有到 finish,中間不用再驗。"""
+    if switch and not arm(cl):                            # 標記寫不進去就不切(切了之後可能留不下「未知」)
+        finish(cl, False)
+        out.write("AIB_GAMEWORLD result=error cabin=%s actual=unknown how=- url=- why=state-unwritable\n" % (target or "-"))
+        notify(session, T("start_failed"), env, run)
+        return "error"
     r = call_plugin(target, switch, run)
     o = origin_only(r.get("url"))
     actual = r["cabin"] or T("unknown_cabin")
