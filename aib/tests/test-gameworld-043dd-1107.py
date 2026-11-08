@@ -30,6 +30,8 @@
       寫 .unknown 不寫 .done;同鍵再來 ⇒ unknown_kept、外掛不再叫;新請求照叫;舊外掛(沒 --switch)逾時仍是普通 timeout
   U15 寫標記失敗(write-ahead,#491 bb7dc 初看):叫外掛前先寫 .unknown,寫不進去 ⇒ 不叫外掛、error/state-unwritable、之後可重試;
       成功但 .done 寫不進去 / 確定失敗但標記刪不掉 / 叫外掛時出例外 ⇒ 標記留著 ⇒ 同鍵 unknown_kept、外掛不再叫
+  U16 收尾(#491 bb7dc 初看 2):_gc 不刪持鎖中的 .unknown(就算超過 24 小時)、.unknown 不計入 32 筆上限;
+      外掛說成功但艙不對 / 網址不對 ⇒ 證明不了沒副作用 ⇒ 標記留著;舊外掛(沒 write-ahead)失敗不會被補成未知
 其他
   U10 check:沒裝 / 太舊 ⇒ rc 3 + 對的那句;沒 --switch ⇒ rc 0 + 提示
   U11 四語字典鍵齊、用法有 [gameworld]
@@ -38,7 +40,8 @@
 刀(複本):KG1 3 個字也剝 ⇒ G3 紅;KG2 拿掉 cabin == 目標 ⇒ U3 紅;KG3 拿鎖後不再看 .done ⇒ U7b 紅;
   KG8 鎖換成永遠拿得到 ⇒ U8b 紅;KG9 不比 inode ⇒ U8d 紅;KG10 鎖換成永遠拿得到 ⇒ U8c 紅;
   KG11 不看 post_unconfirmed ⇒ U14 紅;KG12 未知當普通失敗(不寫 .unknown)⇒ U14 紅;KG13 領取不看 .unknown ⇒ U14 紅;
-  KG14 核心逾時當普通逾時 ⇒ U14 紅;KG15 標記寫不進去照叫外掛 / KG16 例外時清標記 / KG17 .done 寫失敗也清標記 ⇒ U15 紅;
+  KG14 核心逾時當普通逾時 ⇒ U14 紅;KG18 _gc 不看鎖 / KG19 .unknown 計入筆數上限 / KG20 mismatch 也清標記 / KG21 舊外掛也補未知 ⇒ U16 紅;
+  KG15 標記寫不進去照叫外掛 / KG16 例外時清標記 / KG17 .done 寫失敗也清標記 ⇒ U15 紅;
   KG4 輸出完整網址 ⇒ U4 紅;KG5 快取身份不看 mtime / 大小 ⇒ U5 紅;KG6 批次不 unset ⇒ U12 紅;KG7 代開也檢查 ⇒ U13 紅
 """
 import json
@@ -351,6 +354,49 @@ class Dedup(Base):
         again = self.ok()
         self.assertEqual(self.lobby(again, req="u15e")[0], "switched")
 
+    def test_u16_gc_and_clear_rules(self):
+        d = self.home / "cockpit" / "gameworld-req"
+        old = time.time() - G.KEEP_S - 100
+
+        def fill(n):
+            for i in range(n):
+                (d / ("zz%02d.done" % i)).write_text("")
+        # a) 擁有者拿著鎖、已 write-ahead,標記超過 24 小時 + 超過筆數 ⇒ _gc 不動;放鎖後才按時間收
+        cl = G.claim(d, "own", "9320")
+        self.assertIsNotNone(cl)
+        self.assertTrue(G.arm(cl))
+        mark = d / (G._key("own", "9320") + ".unknown")
+        os.utime(str(mark), (old, old))
+        fill(40)
+        G._gc(d, time.time())
+        self.assertTrue(mark.exists(), "持鎖中的標記不得被收")
+        G.finish(cl, False, unknown=True)
+        self.assertTrue(mark.exists())
+        G._gc(d, time.time())
+        self.assertFalse(mark.exists(), "沒人拿著、超過 24 小時 ⇒ 照時間收")
+        # b) 年輕的 .unknown 不因筆數上限被收
+        young = d / (G._key("young", "9320") + ".unknown")
+        young.write_text("")
+        fill(40)
+        G._gc(d, time.time())
+        self.assertTrue(young.exists(), ".unknown 不計入 32 筆上限")
+        # c) 外掛說成功但艙不對 / 網址不對 ⇒ 標記留著 ⇒ 同鍵不自動重試
+        ok_url = "http://127.0.0.1:8771/"
+        for i, res in enumerate(({"ok": True, "result": "switched", "cabin": "abcd", "url": ok_url},
+                                 {"ok": True, "result": "switched", "cabin": "9320", "url": "http://evil.example/"})):
+            req = "u16c-%d" % i
+            self.assertNotIn(self.lobby(Fake(result=res), req=req)[0], G.OK_RESULTS)
+            self.assertTrue((d / (G._key(req, "9320") + ".unknown")).exists(), res)
+            again = self.ok()
+            self.assertEqual((self.lobby(again, req=req)[0], again.opens()), ("unknown_kept", []))
+        # d) 舊外掛(沒 --switch、沒 write-ahead)失敗 ⇒ 不補成未知,同鍵可重試
+        (self.plug / "plugin.json").write_text(json.dumps({"version": "0.1.78"}))
+        bad = Fake(help_text=HELP_OLD, result={"ok": False}, rc=1)
+        self.lobby(bad, req="u16d")
+        self.assertFalse((d / (G._key("u16d", "9320") + ".unknown")).exists())
+        good = Fake(help_text=HELP_OLD, result={"ok": True, "url": ok_url})
+        self.assertEqual(self.lobby(good, req="u16d")[0], "legacy", "舊外掛失敗後同鍵照常重試")
+
     def _race(self, n, prep=None):
         d = self.home / "cockpit" / "gameworld-req"
         d.mkdir(parents=True, exist_ok=True)
@@ -588,6 +634,14 @@ KNIVES = [
      '        finish(cl, False)', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
     ('KG17', '            try:\n                _touch(cl.done)\n                clear = cl.armed\n',
      '            clear = cl.armed\n            try:\n                _touch(cl.done)\n', "src/cockpit/gameworld.py", "Dedup.test_u15_marker_write_fails"),
+    ('KG18', '        if fd is not None and not _try_lock(fd):\n            return',
+     '        if False:\n            return', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
+    ('KG19', '        if n.endswith(".unknown"):\n            _gc_unknown(d, n, now)                        # 未知標記另外收:不計入筆數上限、持鎖中不動\n            continue\n        if not (n.endswith(".done") or n.endswith(".lock")):',
+     '        if not (n.endswith(".done") or n.endswith(".lock") or n.endswith(".unknown")):', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
+    ('KG20', 'CLEAR_WHY = ("plugin", "spawn")',
+     'CLEAR_WHY = ("plugin", "spawn", "cabin-mismatch", "bad-url")', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
+    ('KG21', 'unknown=cl.armed and not r["ok"]',
+     'unknown=not r["ok"]', "src/cockpit/gameworld.py", "Dedup.test_u16_gc_and_clear_rules"),
     ("KG6", "\nunset AIB_SITS_GAMEWORLD_REQ\n", "\n", "src/cockpit/seats_batch.sh", "Misc.test_u12_wiring"),
     ("KG7", '  if [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"',
      '  if false; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"', "src/cockpit/aib", "Misc.test_u13_no_attach"),

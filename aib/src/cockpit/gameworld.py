@@ -43,6 +43,7 @@ import aib_ui  # noqa: E402
 
 CODE4 = re.compile(r"^[0-9a-f]{4}$")
 OK_RESULTS = ("started", "already", "switched")
+CLEAR_WHY = ("plugin", "spawn")   # 這兩種失敗確定沒留下沒確認的 POST ⇒ 可清標記、同鍵可重試
 PLUGIN_TIMEOUT_S = 12   # 核心這端的硬逾時(外掛自己 10 秒)
 KEEP_S = 24 * 3600
 KEEP_N = 32
@@ -183,7 +184,10 @@ def _gc(d, now):
         return
     olds = []
     for n in names:
-        if not (n.endswith(".done") or n.endswith(".lock") or n.endswith(".unknown")):
+        if n.endswith(".unknown"):
+            _gc_unknown(d, n, now)                        # 未知標記另外收:不計入筆數上限、持鎖中不動
+            continue
+        if not (n.endswith(".done") or n.endswith(".lock")):
             continue
         try:
             m = os.stat(os.path.join(str(d), n)).st_mtime
@@ -196,7 +200,7 @@ def _gc(d, now):
         if not (i < extra or now - m > KEEP_S):
             continue
         p = os.path.join(str(d), n)
-        if n.endswith(".done") or n.endswith(".unknown"):
+        if n.endswith(".done"):
             try:
                 os.unlink(p)
             except OSError:
@@ -213,6 +217,32 @@ def _gc(d, now):
         except OSError:
             pass
         finally:
+            os.close(fd)
+
+
+def _gc_unknown(d, n, now):
+    """<鍵>.unknown 只按時間收(超過 KEEP_S),不按筆數(筆數多就刪 = 又可自動重試);
+    同鍵有人拿著鎖(正在做、已 write-ahead)⇒ 不動。拿得到鎖才刪,刪完放鎖。"""
+    p = os.path.join(str(d), n)
+    try:
+        if now - os.stat(p).st_mtime <= KEEP_S:
+            return
+    except OSError:
+        return
+    lk = os.path.join(str(d), n[:-len(".unknown")] + ".lock")
+    fd = None
+    try:
+        fd = os.open(lk, os.O_RDWR)
+    except OSError:
+        fd = None                                         # 沒鎖檔 = 沒人在做
+    try:
+        if fd is not None and not _try_lock(fd):
+            return                                        # 有人拿著:正在做,不動它的標記
+        os.unlink(p)
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
             os.close(fd)
 
 
@@ -438,7 +468,9 @@ def _with_claim(cl, target, switch, session, out, e, env, run, popen):
         else:
             how, _ = aib_ui.open_app_window(r["url"], env, popen=popen, run=run)
     opened = how in ("app", "browser", "skipped")
-    finish(cl, opened)
+    # 只有「確定沒送出 / 確定切好」才清 write-ahead 標記:外掛自己說失敗且沒帶 post_unconfirmed(why=plugin)、
+    # 外掛根本沒起來(spawn)、或切好了(r ok,窗開不開都一樣)。外掛說成功但艙不對 / 網址不對 ⇒ 證明不了沒副作用 ⇒ 留著。
+    finish(cl, opened, unknown=cl.armed and not r["ok"] and r["why"] not in CLEAR_WHY)
     out.write("AIB_GAMEWORLD result=%s cabin=%s actual=%s how=%s url=%s\n"
               % (r["result"], target or "-", r["cabin"] or "unknown", how or "-", o or "-"))
     if r["ok"] and opened:
