@@ -264,8 +264,24 @@ class Lanes(unittest.TestCase):
         r = self.short([sys.executable, "-B", "-c", probe, str(TEST_ENTRY_DIR)])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("SHORT=True", r.stdout)
-        # 同一個 run id 自己設、不在 run-short 底下 ⇒ 不算
-        env = dict(self.env, AIB_LEASE_SHORT_RUN_ID="short-fake")
+        # short 租約活著、run id 也抄對了,但呼叫者不在 run-short 底下(不是它的子孫)⇒ 不算
+        p = subprocess.Popen([sys.executable, "-B", str(TOOL), "run-short", "--owner", "t", "--what", "holder",
+                              "--run-id", "short-held", "--est-s", "30", "--no-browser", "--no-fixed-port", "--",
+                              "sleep", "20"], env=self.env, cwd=str(self.tree_b), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        self.procs.append(p)
+        sp = Path(str(self.lease) + ".short.json")
+        t0 = time.time()
+        while not sp.exists() and time.time() - t0 < 15:
+            time.sleep(0.1)
+        self.assertTrue(sp.exists())
+        env = dict(self.env, AIB_LEASE_SHORT_RUN_ID="short-held")
+        r = subprocess.run([sys.executable, "-B", "-c", probe, str(TEST_ENTRY_DIR)], env=env, capture_output=True,
+                           text=True, cwd=str(self.tree_b), stdin=subprocess.DEVNULL, timeout=60)
+        self.assertIn("SHORT=False", r.stdout, r.stdout + r.stderr)
+        # 沒有 short 租約時也不算
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=30)
         r = subprocess.run([sys.executable, "-B", "-c", probe, str(TEST_ENTRY_DIR)], env=env, capture_output=True,
                            text=True, cwd=str(self.tree_b), stdin=subprocess.DEVNULL, timeout=60)
         self.assertIn("SHORT=False", r.stdout, r.stdout + r.stderr)
