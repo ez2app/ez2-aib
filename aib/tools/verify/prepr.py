@@ -15,13 +15,16 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 TAIL = 600   # characters of output kept per item
 AIB_TEST_RC_ALL_SKIPPED = 4   # test_entry.py: every selected test skipped
 AIB_TEST_RC_EXCLUSIVE = 5     # test_entry.py RC_EXCLUSIVE: did not run, someone holds the machine exclusively
+AIB_TEST_PER_TEST_TIMEOUT_S = 900   # `aib test --timeout`: per test
 
 # (item number in DECISION-7 A, what to do) for the items a person checks
 MANUAL = (
@@ -38,16 +41,47 @@ MANUAL = (
 )
 
 
+def stop_group(p, grace=5.0):
+    """Stop everything `p` started: its own process group only (it was started in a new session), TERM, then KILL
+    after `grace`. Never signals anything outside that group. Windows: no process groups here, kill the child."""
+    if not hasattr(os, "killpg"):
+        p.kill()
+        return
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            return
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            p.poll()
+            try:
+                os.killpg(p.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+
+
 def run(cmd, cwd, env=None, timeout=3600):
-    """(rc, combined output). rc None = could not start or timed out (the reason is the output)."""
+    """(rc, combined output). rc None = could not start or timed out (the reason is the output).
+
+    The command runs in a new session, so on a timeout its whole tree is stopped (grandchildren too), not just the
+    direct child: a timed-out `aib test` / `cargo test` must not stay behind holding the machine."""
     try:
-        p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                           timeout=timeout)
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, text=True, start_new_session=True)
     except FileNotFoundError:
         return None, "not found: %s" % cmd[0]
+    try:
+        out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return None, "timed out after %ds" % timeout
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
+        stop_group(p)
+        try:
+            out, _ = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out = ""
+        return None, "timed out after %ds (its process group was stopped)\n%s" % (timeout, out or "")
+    return p.returncode, out or ""
 
 
 def item(n, name, status, reason="", scope="", version="", rc=None, cmd=None, out=""):
@@ -162,7 +196,8 @@ def python_item(repo, base, run_tests, aib, runner=run):
     name = "aib test --changed"
     if not run_tests:
         return item(2, name, "not_run", "needs --run-tests (take the lease first)")
-    cmd = aib + ["test", "--repo", repo, "--changed", "--base", base]
+    # aib test stops a hung test itself (per test); run()'s own timeout + group stop is the backstop
+    cmd = aib + ["test", "--repo", repo, "--changed", "--base", base, "--timeout", str(AIB_TEST_PER_TEST_TIMEOUT_S)]
     env = dict(os.environ, EZ2_AIB_LOCALE="en")
     rc, o = runner(cmd, repo, env)
     if rc is None:

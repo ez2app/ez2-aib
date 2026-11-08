@@ -6,6 +6,8 @@ not installed; the Windows cross clippy names the members it leaves out (C build
 """
 import json
 import os
+import re
+import time
 import shutil
 import subprocess
 import sys
@@ -98,6 +100,7 @@ class Units(unittest.TestCase):
         self.assertEqual((i["status"], i["rc"]), ("not_run", 0))
         f = Fake({("aib",): (0, "4 passed")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "pass")
+        self.assertIn("--timeout", f.calls[-1])
         f = Fake({("aib",): (1, "1 failed")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "fail")
 
@@ -123,6 +126,38 @@ class Units(unittest.TestCase):
         f = Fake({("aib",): (None, "not found: aib")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "not_run")
 
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX")
+    def test_a_timeout_stops_the_whole_tree_not_just_the_child(self):
+        td = Path(tempfile.mkdtemp(prefix="aib-prepr-tree-"))
+        try:
+            pidfile = td / "grandchild.pid"
+            child = ("import subprocess, sys, time; g = subprocess.Popen([sys.executable, '-c', "
+                     "'import time; time.sleep(60)']); open(sys.argv[1], 'w').write(str(g.pid)); time.sleep(60)")
+            rc, out = prepr.run([sys.executable, "-c", child, str(pidfile)], str(td), timeout=2)
+            self.assertIsNone(rc)
+            self.assertIn("timed out", out)
+            gpid = int(pidfile.read_text())
+            gone = False
+            for _ in range(60):
+                try:
+                    os.kill(gpid, 0)
+                except ProcessLookupError:
+                    gone = True
+                    break
+                time.sleep(0.05)
+            if not gone:
+                os.kill(gpid, 9)  # only the pid this test started itself
+            self.assertTrue(gone, "grandchild %d outlived the timeout" % gpid)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+    def test_aib_test_exit_codes_match_test_entry(self):
+        src = (ROOT / "aib" / "tools" / "verify" / "test_entry.py").read_text()
+        m = re.search(r"^RC_EXCLUSIVE = (\d+)", src, re.M)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), prepr.AIB_TEST_RC_EXCLUSIVE)
+        self.assertRegex(src, r"整批 rc %d" % prepr.AIB_TEST_RC_ALL_SKIPPED)
+
     def test_files_that_aibd_ci_treats_as_rust_trigger_the_rust_checks(self):
         for f in ("migrations/0002_x.sql", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
                   "crates/aibd/README.md", "xtask/Cargo.toml", ".github/workflows/aibd.yml"):
@@ -131,7 +166,17 @@ class Units(unittest.TestCase):
         # the list stays in step with the aibd workflow's own path filter
         wf = ROOT / ".github" / "workflows" / "aibd.yml"
         self.assertTrue(wf.exists(), wf)
-        paths = {ln.strip()[3:-1] for ln in wf.read_text().splitlines() if ln.strip().startswith('- "')}
+        item_re = re.compile(r"""^\s*-\s*["']?([^"'\s#]+)["']?\s*(#.*)?$""")
+        paths, inside = set(), False
+        for ln in wf.read_text().splitlines():
+            if re.match(r"^\s*paths:\s*$", ln):
+                inside = True
+                continue
+            m = item_re.match(ln) if inside else None
+            if m:
+                paths.add(m.group(1))
+            elif inside and ln.strip():
+                inside = False
         self.assertTrue(paths)
         for p in paths:
             self.assertTrue(prepr.is_rust(p.replace("**", "x.sql")), p)
