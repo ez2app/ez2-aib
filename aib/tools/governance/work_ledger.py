@@ -5,7 +5,8 @@
     aib ledger role set dispatch|integrate <seat> --by <seat> [--as dispatch]   誰是派工席 / 整合席
                     (帳是空的時只能先設派工席,誰都能設;之後只有派工席能改)
     aib ledger role list
-    aib ledger add <id> --batch B --owner <seat> --title T [--next N] [--needs chrome] [--event-id E] --by <seat>
+    aib ledger add <id> --batch B --owner <seat> --title T [--next N] [--needs chrome|recorded] [--cmd CMD]
+                    [--event-id E] --by <seat>
     aib ledger move <id> --from S --to S [--head SHA [--repo DIR]] [--evidence RECEIPT.json …] [--next N]
                     [--blocker WHY] [--event-id E] --by <seat>
     aib ledger show <id> [--json]
@@ -49,6 +50,17 @@
   通過支數:--count 的正規式(具名群組 passed / total,最後一個符合的算);沒給就認 unittest 的 Ran N tests、再認最後一個 N/M。
   record 回傳指令自己的 rc(腳本照舊判),收據路徑印在最後一行 RECEIPT <path>。
   一樣是防誤不防冒用:同帳號的 AI 改得到帳本檔本身。
+  record 只證明「這個指令在這個頭碼上 rc 0」;包一個假指令(sh -c 'printf "Ran 400 tests…OK"')也拿得到收據。
+  所以派工時用 add --cmd 記下要跑的指令,positive / default 收據的 cmd 要一樣才收件(ebb36 r2 M1):
+  shlex 拆成參數清單逐個比,引號邊界不同就算不同(#531 M1);拆不開的 --cmd 在 add 時就退(rc 2)。
+  帶 --cmd ⇒ 自動加 --needs recorded(#531 M2,f1fae 定):每張收據都要是 record 產、登記過的,
+  手寫收據把 cmd 欄抄成派工那句也不算。不帶 --cmd 維持原狀(手寫收據照舊可以,只證明格式對)。
+  刀 / chrome 收據不比 cmd(它們本來就跑別的指令),但一樣要是 record 產的。show / verify 印每張收據的 cmd。
+  自己印結果、又不是 N/M 的腳本要帶 --count(具名群組 passed、total 都要有),不然算不出支數、verify 擋下
+  (假紅,不是假綠;#531 L3)。例:輸出「== 232 項,通過 232」⇒
+    aib ledger record --count '== (?P<total>\\d+) 項,通過 (?P<passed>\\d+)' -- bash tests/e2e.sh
+  只印「PASS N / FAIL M」、沒有總數的格式現在收不了件(通過數要 = total),要收就讓腳本多印一行 N/M。
+  樹乾不乾淨也算沒追蹤的檔(忽略清單裡的照舊不算;r2 L1)。
 身分:--by 是自報的席碼(跟 aib dm-queue --by 一樣):**防誤派,不防冒用**。帳只保證「誰說了什麼、照規則有沒有放行」;
   同一個帳號的 AI 都改得到本機檔,所以這是分工約定,不是安全閘(11-08 f1fae 定)。
 同一席分角色(f1fae 定:派工 = f1fae、整合 = f1fae 正本,兩個 session):role set 可以把兩個角色設給同一席;
@@ -154,7 +166,8 @@ def connect(path):
       CREATE TABLE IF NOT EXISTS roles(role TEXT PRIMARY KEY, seat TEXT NOT NULL, set_by TEXT NOT NULL, set_at TEXT NOT NULL);
     """)
     cols = {r["name"] for r in db.execute("PRAGMA table_info(items)")}
-    for col in ("superseded TEXT NOT NULL DEFAULT '[]'", "head_time TEXT NOT NULL DEFAULT ''"):
+    for col in ("superseded TEXT NOT NULL DEFAULT '[]'", "head_time TEXT NOT NULL DEFAULT ''",
+                "expect_cmd TEXT NOT NULL DEFAULT ''"):
         if col.split()[0] not in cols:
             db.execute("ALTER TABLE items ADD COLUMN " + col)
     return db
@@ -213,7 +226,7 @@ def file_sha256(p):
     return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
-def check_recorded(db, path, r):
+def check_recorded(db, path, r, receipt_sha256):
     """自稱 record 產的收據:對帳本登記。回 problems。"""
     if db is None:
         return ["cannot check the record registry"]
@@ -222,7 +235,7 @@ def check_recorded(db, path, r):
     if row is None:
         return ["producer says %s, but this receipt is not in the ledger's record registry" % RECORD_PRODUCER]
     probs = []
-    if file_sha256(path) != row["receipt_sha256"]:
+    if receipt_sha256 != row["receipt_sha256"]:
         probs.append("receipt was changed after aib ledger record wrote it")
     out = Path(str(r.get("output") or ""))
     try:
@@ -243,18 +256,22 @@ def result_line_ok(text, passed, total):
 
 
 def check_receipt(path, head, now=None, head_time=None, db=None):
-    """一張收據 → (kind, problems, recorded)。problems 空 = 這張過。"""
+    """一張收據 → (kind, problems, recorded, info)。problems 空 = 這張過。
+    收據檔只讀一次:驗的內容跟記進事件的雜湊是同一份 bytes(ebb36 r2 L2)。"""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     probs = []
     try:
-        r = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = Path(path).read_bytes()
+        r = json.loads(data.decode("utf-8"))
     except (OSError, ValueError) as e:
-        return None, ["receipt unreadable: %s" % (e,)], False
+        return None, ["receipt unreadable: %s" % (e,)], False, {}
     if not isinstance(r, dict):
-        return None, ["receipt is not a JSON object"], False
+        return None, ["receipt is not a JSON object"], False, {}
+    info = {"receipt_sha256": hashlib.sha256(data).hexdigest(), "output_sha256": r.get("output_sha256"),
+            "cmd": r.get("cmd")}
     recorded = r.get("producer") == RECORD_PRODUCER
     if recorded:
-        rp = check_recorded(db, path, r)
+        rp = check_recorded(db, path, r, info["receipt_sha256"])
         probs.extend(rp)
         recorded = not rp
     if r.get("dirty"):
@@ -315,7 +332,22 @@ def check_receipt(path, head, now=None, head_time=None, db=None):
                     probs.append("raw output does not mention the head %s" % head[:7])
                 if counts_ok and not result_line_ok(text, passed, total):
                     probs.append("raw output has no result line matching %d/%d" % (passed, total))
-    return kind, probs, recorded
+    return kind, probs, recorded, info
+
+
+def norm_cmd(c):
+    """指令比對用:shlex 拆成參數清單再比(多餘空白、引號寫法不同算同一個指令)。
+    ★ 比清單、不比接回的字串(ebb36 #531 M1):sh -c './run.sh --all' 與 sh -c ./run.sh --all 接回去一樣,
+      參數卻不同(後者 --all 變成 $0)。拆不開(引號沒收)回 None,當成對不上,不退回只比空白。"""
+    try:
+        return shlex.split(c or "")
+    except ValueError:
+        return None
+
+
+def same_cmd(a, b):
+    na, nb = norm_cmd(a), norm_cmd(b)
+    return na is not None and nb is not None and na == nb
 
 
 def verify_item(item, now=None, db=None):
@@ -330,10 +362,13 @@ def verify_item(item, now=None, db=None):
     good_kinds = []
     needs = item.get("needs") or []
     for p in ev:
-        kind, rp, recorded = check_receipt(p, head, now, item.get("head_time") or None, db)
-        if "recorded" in needs and not recorded and not rp:
+        kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+        want = item.get("expect_cmd") or ""
+        if "recorded" in needs and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
             rp = ["needs recorded: this receipt was not written by aib ledger record"]
-        out.append({"path": p, "kind": kind, "ok": not rp, "problems": rp, "recorded": recorded})
+        if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
+            rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
+        out.append(dict(info, path=p, kind=kind, ok=not rp, problems=rp, recorded=recorded))
         if rp:
             probs.extend("%s: %s" % (Path(p).name, x) for x in rp)
         else:
@@ -342,14 +377,6 @@ def verify_item(item, now=None, db=None):
         probs.append("no passing positive or default receipt (knife / chrome alone do not count)")
     if "chrome" in (item.get("needs") or []) and "chrome" not in good_kinds:
         probs.append("needs chrome: no passing chrome receipt for this head")
-    for r in out:   # 收件時記下當時看到的內容(M3)
-        if r["ok"]:
-            try:
-                rec = json.loads(Path(r["path"]).read_text(encoding="utf-8"))
-                r["receipt_sha256"] = hashlib.sha256(Path(r["path"]).read_bytes()).hexdigest()
-                r["output_sha256"] = rec.get("output_sha256")
-            except (OSError, ValueError):
-                pass
     return {"ok": not probs, "problems": probs, "receipts": out}
 
 
@@ -424,8 +451,15 @@ def op_role_set(db, role, seat, by, event_id, as_role=None):
 
 
 def op_add(db, a, by, event_id):
+    if a.expect_cmd is not None and not norm_cmd(a.expect_cmd):
+        raise Refused(RC_USAGE, "--cmd %r cannot be split into arguments (unclosed quote?) or is empty" % a.expect_cmd)
+    needs = set(a.needs or [])
+    if a.expect_cmd:
+        needs.add("recorded")   # 帶 --cmd ⇒ 只收 record 產的收據:手寫收據的 cmd 欄是自己填的(#531 M2,f1fae 定)
     request = {"id": a.id, "batch": a.batch, "owner": seat_of(a.owner), "title": a.title, "next": a.next or "",
-               "needs": sorted(set(a.needs or [])), "by": by, "as": a.as_role}
+               "needs": sorted(needs), "by": by, "as": a.as_role}
+    if a.expect_cmd:
+        request["cmd"] = a.expect_cmd   # 沒帶就不放這個鍵:升級前用過的 event id 原樣重送仍是 replay(#531 L1)
 
     def run():
         rep = _replay_or_claim(db, event_id, "add", a.id, request)
@@ -440,10 +474,10 @@ def op_add(db, a, by, event_id):
         if old is not None:
             raise Refused(RC_RULE, "%s is already dispatched (state %s); not queued twice" % (a.id, old["state"]))
         t = now_iso()
-        db.execute("INSERT INTO items(id, batch, title, owner, state, next, needs, rev, created_at, updated_at, updated_by)"
-                   " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO items(id, batch, title, owner, state, next, needs, expect_cmd, rev, created_at, updated_at,"
+                   " updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (a.id, a.batch, a.title, request["owner"], "queued", request["next"], json.dumps(request["needs"]),
-                    1, t, t, by))
+                    request.get("cmd", ""), 1, t, t, by))
         res = {"ok": True, "id": a.id, "state": "queued", "rev": 1}
         _record(db, event_id, "add", a.id, None, "queued", by, request, res)
         return res
@@ -575,6 +609,8 @@ def print_item(it, hist=None):
         print("  blocker:  %s" % it["blocker"])
     if it["needs"]:
         print("  needs:    %s" % ", ".join(it["needs"]))
+    if it.get("expect_cmd"):
+        print("  cmd:      %s" % it["expect_cmd"])
     for p in it["evidence"]:
         print("  evidence: %s" % p)
     for old in it.get("superseded") or []:
@@ -604,9 +640,14 @@ def count_passed(text, rc, regex=None):
         if re.search(r"^OK\b", tail, re.M) or re.search(r"^FAILED\b", tail, re.M):
             return total - bad, total
         return None, total
-    ms = list(re.finditer(r"(\d+)\s*/\s*(\d+)", text))
-    if ms:
-        return int(ms[-1].group(1)), int(ms[-1].group(2))
+    # 退回:只認同一行有 PASS / OK / 綠 / passed / 通過 的 N/M(日期 11/08 不算;r2 L3)
+    last = None
+    for line in text.splitlines():
+        if re.search(r"PASS|\bOK\b|綠|passed|通過", line, re.I):
+            for m in re.finditer(r"(\d+)\s*/\s*(\d+)", line):
+                last = m
+    if last:
+        return int(last.group(1)), int(last.group(2))
     return None, None
 
 
@@ -625,7 +666,7 @@ def cmd_record(db, a):
         raise Refused(RC_USAGE, "usage: aib ledger record [--kind K] [--tree DIR] -- <command …>")
     tree = Path(a.tree).expanduser().resolve()
     sha = git_out(tree, "rev-parse", "HEAD").strip().lower()
-    if git_out(tree, "status", "--porcelain", "--untracked-files=no").strip():
+    if git_out(tree, "status", "--porcelain", "--untracked-files=normal").strip():   # 沒追蹤的檔也會改結果(r2 L1)
         raise Refused(RC_RULE, "%s has uncommitted changes; a receipt would not prove %s — commit first" % (tree, sha[:12]))
     out_dir = Path(a.out).expanduser().resolve() if a.out else db_path().parent / "receipts"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -693,6 +734,8 @@ def build_parser():
     ad.add_argument("--title", required=True)
     ad.add_argument("--next")
     ad.add_argument("--needs", action="append", choices=NEEDS)
+    ad.add_argument("--cmd", dest="expect_cmd", help="the command positive / default receipts must have run (argument list compared at acceptance); "
+                    "implies --needs recorded: only receipts written by aib ledger record count")
     mut(ad)
 
     mv = sub.add_parser("move", help="change state (compare-and-set on --from)")
@@ -777,6 +820,8 @@ def main(argv=None):
                 for r in v["receipts"]:
                     print("%s %-8s %s%s" % ("OK  " if r["ok"] else "FAIL", r["kind"] or "?", r["path"],
                                             "" if r["ok"] else "  (" + "; ".join(r["problems"]) + ")"))
+                    if r.get("cmd"):
+                        print("     cmd: %s" % r["cmd"])
                 print("RESULT %s %s at %s%s" % ("OK" if v["ok"] else "FAIL", it["id"], it["head"] or "-",
                                                  "" if v["ok"] else ": " + "; ".join(v["problems"])))
             return RC_OK if v["ok"] else RC_RECEIPT
