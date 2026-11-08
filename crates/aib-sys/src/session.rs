@@ -15,11 +15,11 @@
 //! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
 
 use crate::job::{Job, Member, Process};
-use crate::settle::{root_reap, still_running, RootReap};
+use crate::settle::{kill_tree, KillOps};
 use crate::SysError;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// What to start. `env` is added to (not replacing) aibd's environment; the
 /// API layer decides which keys are allowed.
@@ -60,25 +60,7 @@ impl SpawnError {
     }
 }
 
-/// What a kill actually did (the session API's `stop`: `tree_size` = `members.len()`,
-/// `survivors` = the pids below; clean only when [`KillReport::all_gone`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KillReport {
-    /// Pids in the Job just before the terminate (root + descendants).
-    pub members: Vec<u32>,
-    /// The Job reported empty within the limit.
-    pub emptied: bool,
-    /// Members whose own handle still said "running" afterwards (empty = all gone).
-    pub survivors: Vec<u32>,
-}
-
-impl KillReport {
-    /// The Job is empty and every member we opened says exited: on Windows this is
-    /// a proof (the Job contains the whole tree), so the API may report `clean`.
-    pub fn all_gone(&self) -> bool {
-        self.emptied && self.survivors.is_empty()
-    }
-}
+pub use crate::settle::KillReport;
 
 /// One running session: its Job and its root child.
 #[derive(Debug)]
@@ -129,51 +111,84 @@ impl SessionTree {
         self.job.active_processes()
     }
 
-    /// Kill the whole tree and prove it. `limit` is one hard deadline for both
-    /// the Job to empty and every member's handle to signal (they can lag the
-    /// Job count: see [`crate::settle`]). Safe to call when the tree already
-    /// exited (members = 0).
+    /// Kill the whole tree and report what was seen ([`crate::settle`]).
+    /// `limit` is one hard deadline for the Job to empty and every member to
+    /// signal; every unanswered question makes the report not clean. Only a
+    /// failed terminate is an `Err`. Safe when the tree already exited.
     pub fn kill(&mut self, limit: Duration) -> Result<KillReport, SysError> {
-        let deadline = Instant::now() + limit;
-        let members = self.job.members()?;
-        // open each member before the terminate: our handle pins the pid, so
-        // the answer below is about this process, not a reused pid
-        let mut handles = Vec::with_capacity(members.len());
-        for m in &members {
-            match Process::open(m.pid) {
-                Ok(p) => {
-                    if p.created_100ns()? == m.created_100ns {
-                        handles.push(p);
-                    }
-                }
-                Err(SysError::Gone) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        self.job.terminate(1)?;
-        let emptied = self
-            .job
-            .wait_empty(deadline.saturating_duration_since(Instant::now()))?;
-        let left = still_running(&handles, deadline, |p, left| p.wait(left))?;
-        // collect the root only once its own handle said exited: "Job empty"
-        // comes before the handle signals, so it is no reason to block
-        let root = handles.iter().position(|p| p.pid() == self.pid);
-        match root_reap(root, &left) {
-            RootReap::Wait => {
-                let _ = self.child.wait();
-            }
-            RootReap::TryOnly => {
-                let _ = self.child.try_wait();
-            }
-        }
-        let survivors = left.into_iter().map(|i| handles[i].pid()).collect();
-        Ok(KillReport {
-            members: members.iter().map(|m| m.pid).collect(),
-            emptied,
-            survivors,
-        })
+        kill_tree(
+            &mut Ops {
+                job: &self.job,
+                child: &mut self.child,
+                pid: self.pid,
+            },
+            limit,
+        )
     }
 }
 
 // Dropping a SessionTree drops its Job: KILL_ON_JOB_CLOSE kills whatever is
 // left, so a session can never outlive the struct that owns it.
+
+/// The Windows calls behind [`crate::settle::kill_tree`].
+struct Ops<'a> {
+    job: &'a Job,
+    child: &'a mut Child,
+    pid: u32,
+}
+
+impl KillOps for Ops<'_> {
+    type Handle = Process;
+    type Error = SysError;
+
+    fn root_pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn members(&mut self) -> Result<Vec<(u32, u64)>, SysError> {
+        Ok(self
+            .job
+            .members()?
+            .into_iter()
+            .map(|m| (m.pid, m.created_100ns))
+            .collect())
+    }
+
+    fn open(&mut self, pid: u32) -> Result<Option<Process>, SysError> {
+        match Process::open(pid) {
+            Ok(p) => Ok(Some(p)),
+            Err(SysError::Gone) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn pid_of(&self, h: &Process) -> u32 {
+        h.pid()
+    }
+
+    fn created(&mut self, h: &Process) -> Result<u64, SysError> {
+        h.created_100ns()
+    }
+
+    fn terminate(&mut self) -> Result<(), SysError> {
+        self.job.terminate(1)
+    }
+
+    fn wait_empty(&mut self, left: Duration) -> Result<bool, SysError> {
+        self.job.wait_empty(left)
+    }
+
+    fn wait(&mut self, h: &Process, left: Duration) -> Result<bool, SysError> {
+        h.wait(left)
+    }
+
+    fn reap_root(&mut self, block: bool) -> Result<bool, SysError> {
+        let r = if block {
+            self.child.wait().map(Some)
+        } else {
+            self.child.try_wait()
+        };
+        r.map(|s| s.is_some())
+            .map_err(|e| e.raw_os_error().map_or(SysError::Unknown, SysError::Os))
+    }
+}
