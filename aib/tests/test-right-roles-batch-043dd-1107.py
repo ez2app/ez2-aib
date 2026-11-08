@@ -34,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 THIS = Path(__file__).name
 SCRIPT = ROOT / "src" / "cockpit" / "pane-right-ai.sh"
+OLD_REF = "6e07e50d31590f33c003f1f78333849b2f31f129:aib/src/cockpit/pane-right-ai.sh"   # #482 之前(右欄每輪 tmux 1+N)
 TMUX = shutil.which("tmux")
 BASH = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
 SGR = re.compile(r"\x1b\[[0-9;]*m")
@@ -246,10 +247,14 @@ class Loop(Base):
         return r, calls
 
     def old_script(self):
-        r = subprocess.run(["git", "-C", str(ROOT), "show", "origin/main:aib/src/cockpit/pane-right-ai.sh"],
-                           capture_output=True, text=True)
+        # 比對用的「舊版」釘在 #482 之前的固定 commit。以前讀 origin/main:#482 合進去後 origin/main 就是新版自己,
+        # push 到 main 的 CI(checkout 會建 origin/main)每輪 2 != 7 紅;PR CI 淺層沒有 origin/main 才跳過看似綠。
+        # 淺層 checkout 沒有這個 commit ⇒ 回 None(只驗呼叫數)。
+        r = subprocess.run(["git", "-C", str(ROOT), "show", OLD_REF], capture_output=True, text=True)
         if r.returncode != 0 or "show-options -wqv" not in r.stdout:
             return None
+        if r.stdout == SCRIPT.read_text(encoding="utf-8"):
+            raise AssertionError("舊版比對對象跟現行腳本一樣:OLD_REF 釘錯了")
         p = self.d / "old-pane-right-ai.sh"
         p.write_text(r.stdout, encoding="utf-8")
         return p
