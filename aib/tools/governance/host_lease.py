@@ -361,6 +361,16 @@ def _cmd_acquire(a, now, path, ledger):
         new["chrome"] = True        # 11-08 PROPOSAL-12:long 在開真 Chrome ⇒ short 上限降到 SHORT_CAP_WHEN_CHROME
     if getattr(a, "exclusive", False):
         new["exclusive"] = True     # 10-13:持有者在量耗時(推包、耗時對照)⇒ 小批 aib test 不准並跑(test_entry 看這一欄)
+    if getattr(a, "exclusive", False):
+        # 11-08 bb7dc 審(PROPOSAL-12 反向):要獨佔,但 short 隊有人在跑 / 讀不到 ⇒ 不給(等它放掉;short 最長 est+寬限)
+        s_cur, s_why = read_lease(short_path(path), SHORT_SCHEMA)
+        if s_why or (s_cur is not None and not is_expired(s_cur, now)):
+            log_event(ledger, "denied", now, owner=a.owner, what=a.what, run_id=a.run_id, why="short_running",
+                      short_holder=(s_cur or {}).get("owner"), short_run_id=(s_cur or {}).get("run_id"), err=s_why)
+            print(T("aib.lease.exclusive_short_running", {"name": (s_cur or {}).get("owner", "?"),
+                                                           "what": (s_cur or {}).get("what", "?"),
+                                                           "at": (s_cur or {}).get("expiry_at", "?")}))
+            return RC_HELD
     free_now = cur is None or (cur.get("run_id") != a.run_id and is_expired(cur, now))
     if free_now and not getattr(a, "priority", False):
         ahead = queue_ahead(path, a.run_id, now)
@@ -771,6 +781,7 @@ SHORT_LOAD1_MAX = 12.0      # > 這個不發
 SHORT_THROTTLE_MAX = 40.0   # 熱節流 % ≥ 這個不發(定案 C;cooldown 的 hot 是 20,那條在推送時幾乎一直亮)
 SHORT_CPU_CRIT_C = 90.0     # 同 cooldown.CPU_CRIT_C(測試對這兩個數)
 SHORT_RECOVER_S = 300       # 因熱被拒後要涼滿這麼久才再發
+SHORT_SAMPLE_GAP_MAX_S = 120   # 11-08 bb7dc 審:涼的計時要連續取樣;兩次取樣隔超過這麼久 ⇒ 中間不知道 ⇒ 涼的計時從頭算
 SHORT_CAP_WHEN_CHROME = 1   # long 開 Chrome 時 short 最多幾份(定案 1;short 本來就一次 1 份,0 = 開 Chrome 期間全停)
 SHORT_KILL_WAIT_S = 10
 RC_OVERRUN = 6
@@ -872,24 +883,45 @@ def short_gate(path, now, cwd, env=None):
     extra["heat"] 是這次現量的讀數(進租約與留痕)。"""
     heat = measure_heat(env)
     hp = heat_state_path(path)
-    hot = heat_verdict(heat)
-    if hot:
+    # 11-08 bb7dc 審:熱狀態檔「沒有」= 從沒熱過;「有但讀不懂 / 讀不到」⇒ 不知道上次熱是何時 ⇒ 不發(不當成沒紀錄放行)
+    last = None
+    if hp.exists():
         try:
-            write_lease(hp, {"last_hot_epoch": int(now), "why": hot, "heat": heat})
-        except OSError:
-            pass
+            last = json.loads(hp.read_text(encoding="utf-8"))
+            if not isinstance(last, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as e:
+            return "heat_state_unreadable", {"heat": heat, "err": str(e)}
+    hot = heat_verdict(heat)
+    n = int(now)
+    if hot:
+        state = {"last_hot_epoch": n, "why": hot, "cool_since": None, "last_sample_epoch": n, "heat": heat}
+    elif last is None:
+        state = None                                  # 從沒熱過:不用恢復計時
+    else:
+        # 涼的計時要連續:上一次取樣是熱 / 讀不到,或兩次取樣隔太久 ⇒ 從這一次重新起算
+        prev = last.get("last_sample_epoch")
+        gap_ok = isinstance(prev, (int, float)) and 0 <= n - prev <= SHORT_SAMPLE_GAP_MAX_S
+        cool_since = last.get("cool_since") if gap_ok and isinstance(last.get("cool_since"), (int, float)) else n
+        state = dict(last, cool_since=cool_since, last_sample_epoch=n, heat=heat)
+    if state is not None:
+        try:
+            write_lease(hp, state)
+        except OSError as e:
+            return "heat_state_unwritable", {"heat": heat, "err": str(e)}   # 記不下恢復計時 ⇒ 不發
+    if hot:
         return hot, {"heat": heat}
-    try:
-        last = json.loads(hp.read_text(encoding="utf-8"))
-        since = float(now) - float(last.get("last_hot_epoch"))
-    except (OSError, ValueError, TypeError, AttributeError):
-        since = None
-    if since is not None and 0 <= since < SHORT_RECOVER_S:
-        return "cooling_down", {"heat": heat, "cool_s": int(since)}
+    if state is not None:
+        cool_s = n - state["cool_since"]
+        if cool_s < SHORT_RECOVER_S:
+            return "cooling_down", {"heat": heat, "cool_s": int(cool_s)}
     long_cur, why = read_lease(path)
     if why:
         return "long_unreadable", {"err": why, "heat": heat}
     long_live = long_cur if long_cur and not is_expired(long_cur, now) else None
+    if long_live and long_live.get("exclusive"):
+        # 11-08 bb7dc 審:long 明定獨佔(在量耗時)⇒ short 也不准併跑
+        return "long_exclusive", {"long": long_live.get("run_id"), "heat": heat}
     if long_live and long_live.get("chrome") and SHORT_CAP_WHEN_CHROME < 1:
         return "long_chrome", {"long": long_live.get("run_id")}
     if live_ships(cwd):

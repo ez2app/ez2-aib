@@ -5984,5 +5984,6 @@
   "aib.lease.cli_chrome": "this long-lane run opens a real Chrome (the short lane cap drops)",
   "aib.lease.cli_run_short": "short lane: named tests / knives up to 5 minutes, may run alongside long (nice 10, declares no browser / no fixed port / temporary state root)",
   "aib.test.short_big_refused": "not run: the short lane is for a few named tests / knives; this batch of {n} counts as big. Queue on the long lane (plain aib test, without run-short).",
-  "aib.lease.short_heat": "readings now: throttle {throttle}% (stop at ≥40), load1 {load1} (stop at >12), CPU {cpu}°C (stop at ≥90); source {source}"
+  "aib.lease.short_heat": "readings now: throttle {throttle}% (stop at ≥40), load1 {load1} (stop at >12), CPU {cpu}°C (stop at ≥90); source {source}",
+  "aib.lease.exclusive_short_running": "You asked for the machine exclusively, but the short lane is in use by {name} ({what}, released by {at} at the latest) — wait for it to finish"
 }

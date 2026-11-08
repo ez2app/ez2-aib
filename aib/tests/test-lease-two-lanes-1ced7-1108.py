@@ -206,12 +206,58 @@ class Lanes(unittest.TestCase):
                        "--no-fixed-port", "--", "true"])
         self.assertEqual(self.denied_why(r), "throttle")
         self.set_heat(throttle=5.0, load1=2.0, cpu_c=50.0)
-        for dt, want in ((60, 4), (299, 4), (300, 0)):
+        # 11-08 bb7dc 審:涼的計時從熱之後第一次量到涼起算,而且要連續取樣(間隔 ≤ 120 秒)
+        #   t0+60 第一次涼 ⇒ 起算;每 60 秒量一次;t0+360 才滿 300 秒
+        for dt, want in ((60, 4), (120, 4), (180, 4), (240, 4), (300, 4), (359, 4), (360, 0)):
             r = self.run_(["--now", str(t0 + dt), "run-short", "--owner", "t", "--what", "k", "--no-browser",
                            "--no-fixed-port", "--", "true"])
             self.assertEqual(r.returncode, want, (dt, r.stdout + r.stderr))
             if want == 4:
                 self.assertIn("cooling_down", r.stdout)
+
+    def test_cool_timer_restarts_after_a_sampling_gap(self):
+        # 中間沒取樣就不能說「連續涼」:熱 → 涼(+60)→ 隔 200 秒才再量(+260)⇒ 從 +260 重算,+500 還不行、+560 才行
+        t0 = 2_000_000_000
+        go = lambda dt: self.run_(["--now", str(t0 + dt), "run-short", "--owner", "t", "--what", "k", "--no-browser",
+                                   "--no-fixed-port", "--", "true"])
+        self.set_heat(throttle=55.0, load1=2.0, cpu_c=50.0)
+        self.assertEqual(self.denied_why(go(0)), "throttle")
+        self.set_heat(throttle=5.0, load1=2.0, cpu_c=50.0)
+        for dt, want in ((60, 4), (260, 4), (380, 4), (500, 4), (560, 0)):
+            r = go(dt)
+            self.assertEqual(r.returncode, want, (dt, r.stdout + r.stderr))
+
+    def test_unreadable_heat_state_refuses(self):
+        hp = Path(str(self.lease) + ".short-heat.json")
+        hp.write_text("{not json")
+        r = self.short(["true"])
+        self.assertEqual(self.denied_why(r), "heat_state_unreadable")
+
+    def test_long_exclusive_refuses_short(self):
+        r = self.run_(["acquire", "--owner", "f457", "--what", "timing", "--run-id", "LX", "--pid", str(os.getpid()),
+                       "--ttl", "600", "--exclusive"], cwd=self.tree_a)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.denied_why(self.short(["true"])), "long_exclusive")
+
+    def test_exclusive_long_refused_while_short_runs(self):
+        p = subprocess.Popen([sys.executable, "-B", str(TOOL), "run-short", "--owner", "t", "--what", "sleeper",
+                              "--est-s", "30", "--no-browser", "--no-fixed-port", "--", "sleep", "20"],
+                             env=self.env, cwd=str(self.tree_b), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL)
+        self.procs.append(p)
+        sp = Path(str(self.lease) + ".short.json")
+        t0 = time.time()
+        while not sp.exists() and time.time() - t0 < 15:
+            time.sleep(0.1)
+        self.assertTrue(sp.exists())
+        r = self.run_(["acquire", "--owner", "f457", "--what", "timing", "--run-id", "LX", "--pid", str(os.getpid()),
+                       "--ttl", "600", "--exclusive"], cwd=self.tree_a)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("short lane is in use by t", r.stdout)
+        self.assertTrue(any(x.get("why") == "short_running" for x in self.ledger() if x["event"] == "denied"))
+        self.hold_long()                     # 不獨佔的 long 照樣拿得到(兩隊並存是設計)
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=30)
 
     # ── 宣告:三件少一件就 rc 2,不拿租約 ──
     def test_declarations_required(self):
@@ -322,6 +368,19 @@ class GateInProcess(unittest.TestCase):
         self.assertEqual(h["source"], "live")
         self.assertEqual(set(h), {"load1", "throttle", "cpu_c", "throttle_why", "source"})
         self.assertTrue(h["throttle"] is not None or h["throttle_why"])
+
+    def test_unwritable_heat_state_refuses(self):
+        # 記不下恢復計時 ⇒ 不發(不當成沒紀錄放行)
+        real = self.hl.write_lease
+
+        def boom(path, data):
+            if str(path).endswith(".short-heat.json"):
+                raise OSError("disk full")
+            return real(path, data)
+        self.hl.write_lease = boom
+        (self.td / "heat.json").write_text(json.dumps({"throttle": 55.0, "load1": 1.0, "cpu_c": 50.0}))
+        why, _ = self.hl.short_gate(self.path, time.time(), str(self.td))
+        self.assertEqual(why, "heat_state_unwritable")
 
     def test_long_chrome_cap(self):
         now = time.time()

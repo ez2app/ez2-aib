@@ -5984,5 +5984,6 @@
   "aib.lease.cli_chrome": "이 long 레인 실행은 실제 Chrome 을 연다(short 레인 상한이 내려감)",
   "aib.lease.cli_run_short": "short 레인: 5분 이내 지정 테스트 / 나이프, long 과 병행 가능(nice 10, 브라우저 없음 / 고정 포트 없음 / 임시 상태 루트 신고)",
   "aib.test.short_big_refused": "실행 안 함: short 레인은 지정한 몇 개 / 나이프 전용. 이 {n}개는 큰 배치. long 레인에 줄 서기(run-short 없이 aib test).",
-  "aib.lease.short_heat": "현재 측정값: 열 스로틀 {throttle}%(≥40 중지), load1 {load1}(>12 중지), CPU {cpu}°C(≥90 중지); 출처 {source}"
+  "aib.lease.short_heat": "현재 측정값: 열 스로틀 {throttle}%(≥40 중지), load1 {load1}(>12 중지), CPU {cpu}°C(≥90 중지); 출처 {source}",
+  "aib.lease.exclusive_short_running": "머신을 독점하려 했지만 short 레인을 {name} 이(가) 사용 중입니다({what}, 늦어도 {at} 에 해제) —— 끝날 때까지 기다리세요"
 }
