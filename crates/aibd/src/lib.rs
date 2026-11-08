@@ -10,6 +10,7 @@ pub mod guard;
 pub mod lineage;
 pub mod platform;
 pub mod runtime;
+pub mod selfcheck;
 pub mod server;
 pub mod timers;
 pub mod token;
