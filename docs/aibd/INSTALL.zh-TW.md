@@ -18,8 +18,8 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 ## macOS
 
 ```sh
-V=0.2.0-preview.1                                   # 要裝的版本
-F=aibd-$V-aarch64-apple-darwin                      # 這個預覽版只有 Apple 晶片
+V=0.2.0-preview.1
+F=aibd-$V-aarch64-apple-darwin
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads \
   && curl -fLO "$B/$F" && curl -fLO "$B/SHA256SUMS" \

@@ -18,6 +18,8 @@ R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰�
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 / 下載失敗但留著上次的舊檔 ⇒ 沒裝、沒執行
    (bb7dc 11-08 High:舊稿分行寫,sha 失敗仍 chmod / mv / 執行)
+D4 三份 macOS 區塊沒有 `#` 註解:macOS Terminal 是互動式 zsh,interactivecomments 預設關 ⇒ `V=… # 註解` 會把 V 變空(11-08 1ced7 實測)
+D5 實跑:互動式 zsh(-f,明確 unsetopt interactivecomments)貼上三份 macOS 區塊的設定行 ⇒ V / F 不得為空、不准 command not found(a63ab 11-08 23:20)
 D3 Windows 指令順序:ErrorActionPreference Stop 在最前;找不到行 ⇒ 刪檔停;比對過才 Unblock-File / 執行
 """
 import hashlib
@@ -264,6 +266,37 @@ class InstallRuns(unittest.TestCase):
         self.assertFalse(inst, log)
         self.assertEqual(ran, [], log)
 
+
+
+class InstallZshPaste(unittest.TestCase):
+    def test_d4_no_comments_in_sh_blocks(self):
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+            with self.subTest(f=f):
+                for n, ln in enumerate(block(f, "sh").splitlines(), 1):
+                    code = re.sub(r'"[^"]*"', '""', ln)       # 引號裡的 # 不算(例:網址片段)
+                    self.assertNotIn("#", code, "%s 第 %d 行有 # 註解:互動式 zsh 貼上會壞(V 變空)" % (f, n))
+
+    @unittest.skipUnless(shutil.which("zsh"), "needs zsh (macOS Terminal's default shell)")
+    def test_d5_interactive_zsh_paste_sets_v_and_f(self):
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+            with self.subTest(f=f):
+                lines = block(f, "sh").splitlines()
+                setup = []                                   # 開頭的設定行(NAME=...),到第一個指令為止
+                for ln in lines:
+                    if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", ln):
+                        break
+                    setup.append(ln)
+                self.assertTrue(any(ln.startswith("V=") for ln in setup) and any(ln.startswith("F=") for ln in setup), lines)
+                paste = "unsetopt interactivecomments\nPS1=''\n" + "\n".join(setup) + '\nprint -r -- "@@V=[$V] F=[$F]"\nexit\n'
+                with tempfile.TemporaryDirectory() as home:
+                    r = subprocess.run(["zsh", "-f", "-i"], input=paste, capture_output=True, text=True, timeout=30,
+                                       env=dict(os.environ, HOME=home, ZDOTDIR=home))
+                out = r.stdout + r.stderr
+                got = re.search(r"@@V=\[(.*?)\] F=\[(.*?)\]", out)
+                self.assertIsNotNone(got, out)
+                self.assertEqual(got.group(1), "0.2.0-preview.1", "V 變空 = 互動 zsh 把 # 當指令\n" + out)
+                self.assertEqual(got.group(2), "aibd-0.2.0-preview.1-aarch64-apple-darwin", out)
+                self.assertNotIn("command not found", out)
 
 class InstallWindowsOrder(unittest.TestCase):
     def test_d3(self):

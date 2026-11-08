@@ -20,8 +20,8 @@ you; the steps below check the file against `SHA256SUMS` before you run it.
 ## macOS
 
 ```sh
-V=0.2.0-preview.1                                   # the version you want
-F=aibd-$V-aarch64-apple-darwin                      # Apple Silicon only in this preview
+V=0.2.0-preview.1
+F=aibd-$V-aarch64-apple-darwin
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads \
   && curl -fLO "$B/$F" && curl -fLO "$B/SHA256SUMS" \
