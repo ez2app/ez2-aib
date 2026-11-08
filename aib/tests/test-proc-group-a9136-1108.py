@@ -248,7 +248,11 @@ CFG = {
     "count": dict(term=True, trap=True, count_int=True, pokes=[("TERM", 0.5), ("INT", 1.0)]),  # cell 15
     "custom": dict(custom=True, pokes=[("INT", 0.5)]),                                 # cell 17
     "ign-stuck": dict(term=True, count_int=True, stuck=True, pokes=[("TERM", 0.5), ("INT", 0.8)]),  # cell 19
+    "inherited-ign": dict(ign_int=True, timeout=1.0, pokes=[("INT", 0.3)]),           # SIGINT ignored by the caller
 }[mode]
+# Precondition: the caller has Python's default Ctrl-C. A shell's background job (`cmd &`, nohup) starts
+# with SIGINT ignored and Python then keeps SIG_IGN (andymini 11-08: 13 cells red for that reason alone).
+signal.signal(signal.SIGINT, signal.SIG_IGN if CFG.get("ign_int") else signal.default_int_handler)
 grace = 0.5 if CFG.get("stuck") else 1.5
 if CFG.get("stuck"):
     pg.KILL_WAIT_S = 0.2          # limit = 0.5 + 2 x 0.2 = 0.9 s
@@ -490,6 +494,13 @@ class Interrupted(_Interrupt):
         self.assertEqual((got["exc"], got["code"]), ("SystemExit", 143), got)
         self.within_limit(got)
         self.assertEqual(got["int_calls"], 1, got)
+
+    def test_a_caller_that_ignores_sigint_is_not_interrupted(self):
+        """SIGINT inherited as ignored (a background job): run_group honours it, the run ends by its own
+        timeout, and the caller's SIG_IGN is back afterwards."""
+        got, _ = self.drive("inherited-ign")
+        self.assertIsNone(got["exc"], got)
+        self.assertTrue(got["restored"], got)
 
     def test_the_default_limit_is_grace_plus_two_kill_waits(self):
         self.assertEqual((pg.DEFAULT_GRACE_S, pg.KILL_WAIT_S), (5.0, 2.0))
