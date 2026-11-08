@@ -116,6 +116,16 @@ class RealGroups(unittest.TestCase):
         self.assertEqual(rep.signals, [])
         self.assertTrue(alive(gc), "signalled a group whose leader we could no longer prove")
 
+    def test_stop_group_needs_the_recorded_start_and_none_sends_nothing(self):
+        # a63ab #509: the public stop_group takes (pid, start) and compares itself; it never reads start late
+        with self.assertRaises(TypeError):
+            pg.stop_group(FakeP())
+        calls = []
+        rep = pg.stop_group(FakeP(), start=None, killpg=lambda g, s: calls.append(s),
+                            start_of=lambda pid: 100, leader_state=lambda pid: "running", members=lambda g: [])
+        self.assertEqual((rep.status, rep.why), ("unverified", "leader_start_unknown"))
+        self.assertEqual(calls, [])
+
     def test_a_command_that_cannot_start_says_so(self):
         r = pg.run_group(["/no/such/command"], timeout=1)
         self.assertIsNone(r.rc)

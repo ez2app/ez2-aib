@@ -189,10 +189,17 @@ class _Group:
         return self.verify()
 
 
-def stop_group(p, grace=DEFAULT_GRACE_S, start=None, **kw):
+def stop_group(p, *, start, grace=DEFAULT_GRACE_S, **kw):
     """Stop the group of `p` (started with start_new_session=True). Returns a StopReport. Never signals
-    anything outside that group; never reaps `p` (the caller does, afterwards)."""
-    return _Group(p, start, **kw).stop(grace)
+    anything outside that group; never reaps `p` (the caller does, afterwards).
+
+    `start` is REQUIRED: the leader's start time as the caller recorded it right after starting it
+    (memguard.start_of(p.pid)). The tool compares it itself before every signal; None (never recorded)
+    means nothing is sent (unverified, leader_start_unknown). It is not read here, because by now the
+    caller may already have reaped `p` and its pid may belong to someone else."""
+    g = _Group(p, start=0, **kw)
+    g.start = start
+    return g.stop(grace)
 
 
 def run_group(argv, *, timeout, cwd=None, env=None, grace=DEFAULT_GRACE_S, leftovers="stop", stdin=None,
