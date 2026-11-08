@@ -30,7 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
-from aib_tmux_sandbox import Sandbox
+from aib_tmux_sandbox import Sandbox, SHORT_TMP
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -216,7 +216,7 @@ class Window(Base):
     def setUp(self):
         super().setUp()
         self.sock = "aihub-chattest%d" % os.getpid()
-        root = Path(tempfile.mkdtemp(prefix="aibchat-", dir="/private/tmp"))
+        root = Path(tempfile.mkdtemp(prefix="aibchat-", dir=SHORT_TMP))
         self.addCleanup(shutil.rmtree, root, True)
         self.box = Sandbox(root, shutil.which("tmux"))
         self.box.make_shim(root / "tmux", self.sock)

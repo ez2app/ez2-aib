@@ -6,6 +6,8 @@ import shlex
 import sys
 from pathlib import Path
 
+SHORT_TMP = "/private/tmp" if os.path.isdir("/private/tmp") else "/tmp"
+
 
 class SandboxRefused(AssertionError):
     pass

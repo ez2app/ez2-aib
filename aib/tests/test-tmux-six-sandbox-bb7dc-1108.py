@@ -11,7 +11,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from aib_knife_copy import knife_copy
-from aib_tmux_sandbox import Sandbox, SandboxRefused, _shim_main, reject_global_selector
+from aib_tmux_sandbox import Sandbox, SandboxRefused, SHORT_TMP, _shim_main, reject_global_selector
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test-ctx-triggers-unify-abb89-1015.py'
@@ -29,7 +29,7 @@ class Guard(unittest.TestCase):
                 reject_global_selector(args)
 
     def test_shim_rejects_alias_and_rewrites_selector(self):
-        with tempfile.TemporaryDirectory(prefix='aibguard-', dir='/private/tmp') as d:
+        with tempfile.TemporaryDirectory(prefix='aibguard-', dir=SHORT_TMP) as d:
             box = Sandbox(d, '/usr/bin/tmux')
             prefix = [d, str(box.sock), box.tmux_bin, 'expected']
             with patch('aib_tmux_sandbox.os.execve') as execute:
@@ -42,7 +42,7 @@ class Guard(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('tmux'), 'needs tmux')
     def test_shim_capture_accepts_command_option(self):
-        with tempfile.TemporaryDirectory(prefix='aibguard-', dir='/private/tmp') as d:
+        with tempfile.TemporaryDirectory(prefix='aibguard-', dir=SHORT_TMP) as d:
             box = Sandbox(d, shutil.which('tmux'))
             shim = box.make_shim(Path(d) / 'tmux', 'expected')
             try:
@@ -60,7 +60,7 @@ class Guard(unittest.TestCase):
                 box.cleanup()
 
     def test_reject_selector(self):
-        with tempfile.TemporaryDirectory(prefix='aibguard-', dir='/private/tmp') as d:
+        with tempfile.TemporaryDirectory(prefix='aibguard-', dir=SHORT_TMP) as d:
             box = Sandbox(d, shutil.which('tmux') or '/usr/bin/tmux')
             with self.assertRaises(SandboxRefused):
                 box.tm('-L', 'wrong', 'kill-server')

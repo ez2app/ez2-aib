@@ -31,7 +31,7 @@ import tempfile
 import time
 import types
 import unittest
-from aib_tmux_sandbox import Sandbox, SandboxRefused
+from aib_tmux_sandbox import Sandbox, SandboxRefused, SHORT_TMP
 from pathlib import Path
 from unittest import mock
 
@@ -497,7 +497,7 @@ class Install(Base):
         """開席是 tmux respawn-pane 起的:窗格的 stdin 是 pty ⇒ [ -t 0 ] 成立 ⇒ 會裝(不是今天沒觸發的原因)。"""
         conf = self.tmp / "conf-b"
         done = self.tmp / "done"
-        sockdir = tempfile.mkdtemp(prefix="aibctx-", dir="/private/tmp")
+        sockdir = tempfile.mkdtemp(prefix="aibctx-", dir=SHORT_TMP)
         self.addCleanup(shutil.rmtree, sockdir, True)
         box = Sandbox(sockdir, shutil.which("tmux"))
         cmd = "bash %s; echo $? > %s" % (self._script(conf), done)
