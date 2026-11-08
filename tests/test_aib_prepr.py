@@ -101,6 +101,41 @@ class Units(unittest.TestCase):
         f = Fake({("aib",): (1, "1 failed")})
         self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "fail")
 
+    def test_aib_test_did_not_run_codes_are_not_run_not_fail(self):
+        f = Fake({("aib",): (5, "machine held exclusively by bb7dc")})
+        i = prepr.python_item("/r", "origin/main", True, ["aib"], f)
+        self.assertEqual((i["status"], i["rc"]), ("not_run", 5))
+        self.assertIn("exclusively", i["reason"])
+        self.assertIn("bb7dc", i["tail"])
+        f = Fake({("aib",): (4, "3 skipped")})
+        i = prepr.python_item("/r", "origin/main", True, ["aib"], f)
+        self.assertEqual((i["status"], i["rc"]), ("not_run", 4))
+        self.assertIn("skipped", i["reason"])
+
+    def test_a_command_that_times_out_or_cannot_start_is_not_run(self):
+        rc, out = prepr.run([sys.executable, "-c", "import time; time.sleep(5)"], ".", timeout=1)
+        self.assertEqual(rc, None)
+        self.assertIn("timed out", out)
+        f = Fake(rust_ok({("cargo", "fmt"): (None, "timed out after 1s")}))
+        fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
+        self.assertEqual(fmt["status"], "not_run")
+        self.assertIn("timed out", fmt["reason"])
+        f = Fake({("aib",): (None, "not found: aib")})
+        self.assertEqual(prepr.python_item("/r", "origin/main", True, ["aib"], f)["status"], "not_run")
+
+    def test_files_that_aibd_ci_treats_as_rust_trigger_the_rust_checks(self):
+        for f in ("migrations/0002_x.sql", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
+                  "crates/aibd/README.md", "xtask/Cargo.toml", ".github/workflows/aibd.yml"):
+            self.assertTrue(prepr.kinds([f])["rust"], f)
+            self.assertFalse(prepr.kinds([f])["python"], f)
+        # the list stays in step with the aibd workflow's own path filter
+        wf = ROOT / ".github" / "workflows" / "aibd.yml"
+        self.assertTrue(wf.exists(), wf)
+        paths = {ln.strip()[3:-1] for ln in wf.read_text().splitlines() if ln.strip().startswith('- "')}
+        self.assertTrue(paths)
+        for p in paths:
+            self.assertTrue(prepr.is_rust(p.replace("**", "x.sql")), p)
+
     def test_which_checks_apply(self):
         self.assertEqual(prepr.kinds(["a/b.rs"]), {"rust": True, "python": False, "docs_only": False})
         self.assertEqual(prepr.kinds(["x.py", "Cargo.lock"]), {"rust": True, "python": True, "docs_only": False})
@@ -135,6 +170,13 @@ class Cli(unittest.TestCase):
         self.assertEqual(v["files"], ["a.md"])
         self.assertEqual({i["status"] for i in v["items"]}, {"not_run"})
         self.assertEqual(sorted({i["item"] for i in v["items"]}), list(range(1, 10)))
+
+    def test_a_new_file_not_yet_added_counts_as_changed(self):
+        (self.td / "r" / "new.md").write_text("z\n")
+        p = subprocess.run(AIB + ["prepr", "--repo", str(self.td / "r"), "--base", "HEAD", "--json"], env=self.env,
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(json.loads(p.stdout)["files"], ["a.md", "new.md"])
 
     def test_a_bad_base_fails(self):
         p = subprocess.run(AIB + ["prepr", "--repo", str(self.td / "r"), "--base", "no-such-ref"], env=self.env,

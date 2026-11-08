@@ -20,6 +20,8 @@ import sys
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 TAIL = 600   # characters of output kept per item
+AIB_TEST_RC_ALL_SKIPPED = 4   # test_entry.py: every selected test skipped
+AIB_TEST_RC_EXCLUSIVE = 5     # test_entry.py RC_EXCLUSIVE: did not run, someone holds the machine exclusively
 
 # (item number in DECISION-7 A, what to do) for the items a person checks
 MANUAL = (
@@ -65,10 +67,21 @@ def changed_files(repo, base, runner=run):
     return sorted(files)
 
 
+# Paths that make the Rust checks apply: the same list as `.github/workflows/aibd.yml` `paths`
+# (a test keeps the two in step), plus any `.rs` file.
+RUST_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
+              ".github/workflows/aibd.yml")
+RUST_DIRS = ("crates/", "xtask/", "migrations/")
+
+
+def is_rust(f):
+    return f.endswith(".rs") or f in RUST_FILES or f.startswith(RUST_DIRS) or f.endswith(("/Cargo.toml",))
+
+
 def kinds(files):
     """Which checks apply: rust, python (code that `aib test` covers), docs-only."""
-    rust = any(f.endswith((".rs", "Cargo.toml", "Cargo.lock")) for f in files)
-    code = any(not f.endswith((".md", ".rs", "Cargo.toml", "Cargo.lock")) for f in files)
+    rust = any(is_rust(f) for f in files)
+    code = any(not is_rust(f) and not f.endswith(".md") for f in files)
     return {"rust": rust, "python": code, "docs_only": bool(files) and not rust and not code}
 
 
@@ -156,6 +169,13 @@ def python_item(repo, base, run_tests, aib, runner=run):
         return item(2, name, "not_run", o, cmd=cmd)
     if rc == 0 and "Nothing was run" in o:
         return item(2, name, "not_run", "the changes select no tests (not green)", rc=rc, cmd=cmd, out=o)
+    # aib test's own "did not run" codes (test_entry.py): not a failure of the change, not green either
+    if rc == AIB_TEST_RC_EXCLUSIVE:
+        return item(2, name, "not_run", "machine held exclusively by someone else (aib test rc 5); run again later",
+                    rc=rc, cmd=cmd, out=o)
+    if rc == AIB_TEST_RC_ALL_SKIPPED:
+        return item(2, name, "not_run", "every selected test was skipped (aib test rc 4): nothing verified",
+                    rc=rc, cmd=cmd, out=o)
     return item(2, name, "pass" if rc == 0 else "fail", rc=rc, cmd=cmd, out=o)
 
 
@@ -208,7 +228,7 @@ def main(argv=None):
             for key in ("scope", "version", "cmd"):
                 if i[key]:
                     print("            %s: %s" % (key, i[key]))
-            if i["status"] == "fail" and i["tail"]:
+            if i["tail"] and (i["status"] == "fail" or (i["status"] == "not_run" and i["rc"] is not None)):
                 print("            " + i["tail"].strip().replace("\n", "\n            "))
         print("not_run is not green. %s" % ("FAILED" if failed else "no failures"))
     return 1 if failed else 0
