@@ -43,7 +43,8 @@ def read_old_blob(root, ref):
     git 逾時 / 指令出錯 / 判斷不出來 ⇒ 一律紅(bb7dc #502 讀碼兩輪)。"""
     def git(*a):
         try:
-            return subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True, text=True, timeout=30)
+            return subprocess.run(["git", "-C", str(root)] + list(a), capture_output=True, text=True, timeout=30,
+                                  env=dict(os.environ, LC_ALL="C", LANGUAGE="C"))   # 訊息固定英文才比得到
         except FileNotFoundError:
             return None
         except subprocess.TimeoutExpired:
@@ -65,9 +66,12 @@ def read_old_blob(root, ref):
     if sh.returncode != 0 or sh.stdout.strip() not in ("true", "false"):
         raise AssertionError("判斷不出是不是淺層(rc=%s):%s;show:%s" % (sh.returncode, sh.stderr.strip(), r.stderr.strip()))
     have = git("cat-file", "-e", sha + "^{commit}")
-    if sh.stdout.strip() == "true" and have.returncode != 0:
+    # 「確實缺件」只認 rc 128 + Not a valid object name;權限 / 物件庫 I/O 等其他錯誤一律紅(bb7dc #502 第三輪)
+    missing = have.returncode == 128 and have.stderr.strip().startswith("fatal: Not a valid object name")
+    if sh.stdout.strip() == "true" and missing:
         return None, "淺層 clone 缺 %s" % sha[:8]
-    raise AssertionError("讀不到舊版 %s(shallow=%s have=%s):%s" % (ref, sh.stdout.strip(), have.returncode == 0, r.stderr.strip()))
+    raise AssertionError("讀不到舊版 %s(shallow=%s cat-file rc=%s:%s):%s" % (
+        ref, sh.stdout.strip(), have.returncode, have.stderr.strip(), r.stderr.strip()))
 TMUX = shutil.which("tmux")
 BASH = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
 SGR = re.compile(r"\x1b\[[0-9;]*m")
