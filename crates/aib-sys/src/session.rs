@@ -85,14 +85,19 @@ pub struct SessionTree {
 impl SessionTree {
     /// Start `spec` inside a new Job. stdin / stdout / stderr are null.
     pub fn spawn(spec: &Spec) -> Result<SessionTree, SpawnError> {
-        Self::spawn_with(spec, Process::open, |j| j.terminate(1), SPAWN_CONFIRM_LIMIT)
+        Self::spawn_with(
+            spec,
+            |pid, _| Process::open(pid),
+            |j| j.terminate(1),
+            SPAWN_CONFIRM_LIMIT,
+        )
     }
 
     /// [`spawn`](Self::spawn) with the root open and the Job terminate
     /// injectable (tests) and the confirm limit.
     pub(crate) fn spawn_with(
         spec: &Spec,
-        open: impl FnOnce(u32) -> Result<Process, SysError>,
+        open: impl FnOnce(u32, &Job) -> Result<Process, SysError>,
         terminate: impl FnMut(&Job) -> Result<(), SysError>,
         limit: Duration,
     ) -> Result<SessionTree, SpawnError> {
@@ -116,7 +121,7 @@ impl SessionTree {
         let pid = child.id();
         // the unwaited `child` pins the pid, so this handle is the root's;
         // it stays valid (and readable) after the root exits
-        let root = match open(pid) {
+        let root = match open(pid, &job) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 // it already runs (resumed) and may have forked: the same proof
@@ -293,6 +298,9 @@ mod tests {
 
     /// Wait until the Job holds the root and its child, then hold a
     /// terminable handle on every member (so the test can see them go).
+    /// Called from the injected open, i.e. before the failure path lists the
+    /// members: a member born between that list and the terminate is only
+    /// covered by the Job count (the same gap as `kill`, #535).
     fn hold_members(job: &Job, held: &RefCell<Vec<Process>>) {
         let t = Instant::now();
         while job.active_processes().unwrap_or(0) < 2 {
@@ -319,11 +327,11 @@ mod tests {
         let held = RefCell::new(Vec::new());
         let r = SessionTree::spawn_with(
             &tree_spec(),
-            |_| Err(SysError::Os(8)),
-            |j| {
+            |_, j| {
                 hold_members(j, &held);
-                j.terminate(1)
+                Err(SysError::Os(8))
             },
+            |j| j.terminate(1),
             Duration::from_secs(5),
         );
         let gone: Vec<bool> = held
@@ -349,12 +357,12 @@ mod tests {
         let root_pid = RefCell::new(0u32);
         let r = SessionTree::spawn_with(
             &tree_spec(),
-            |pid| {
+            |pid, j| {
                 *root_pid.borrow_mut() = pid;
+                hold_members(j, &held);
                 Err(SysError::Os(8))
             },
-            |j| {
-                hold_members(j, &held);
+            |_| {
                 // only the root goes: the Job never empties
                 let root = Process::open_terminable(*root_pid.borrow())?;
                 root.terminate(1)
@@ -378,11 +386,11 @@ mod tests {
         let t = Instant::now();
         let r = SessionTree::spawn_with(
             &tree_spec(),
-            |_| Err(SysError::Os(8)),
-            |j| {
+            |_, j| {
                 hold_members(j, &held);
-                Ok(()) // a terminate that does nothing
+                Err(SysError::Os(8))
             },
+            |_| Ok(()), // a terminate that does nothing
             Duration::from_millis(300),
         );
         let waited = t.elapsed();
