@@ -141,6 +141,18 @@ class Units(unittest.TestCase):
         self.assertIn("unverified", out)
         self.assertIn("4242", out)
         self.assertIn("rc 0", out)
+        # red first: a real failure stays a failure, with the leftover reason in the kept tail
+        proc_group.run_group = lambda *a, **k: proc_group.Result(7, "x" * 5000 + "boom\n", stop=rep)
+        try:
+            rc7, out7 = prepr.run(["cargo", "test"], ".")
+        finally:
+            proc_group.run_group = real
+        self.assertEqual(rc7, 7)
+        f = Fake(rust_ok({("cargo", "fmt"): (rc7, out7)}))
+        fmt = by_name(prepr.rust_items("/r", False, f))["rust fmt"]
+        self.assertEqual((fmt["status"], fmt["rc"]), ("fail", 7))
+        self.assertIn("4242", fmt["tail"])
+        self.assertIn("members_still_running", fmt["tail"])
         proc_group.run_group = lambda *a, **k: proc_group.Result(
             None, "", timed_out=True, stop=proc_group.StopReport("unverified", "members_still_running", [4343]))
         try:

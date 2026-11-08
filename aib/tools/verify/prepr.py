@@ -59,10 +59,13 @@ def run(cmd, cwd, env=None, timeout=3600):
     if r.rc is None:
         return None, "not found: %s (%s)" % (cmd[0], r.error)
     if r.stop is not None and r.stop.status != "stopped":
-        # bb7dc #509: the command finished, but what it left running could not be shown stopped. Never green:
-        # not_run with the reason and the survivors (the exit code is kept in the text, not as a pass).
-        return None, "finished with rc %s, but its leftovers are unverified (%s, still running: %s)\n%s" % (
-            r.rc, r.stop.why, r.stop.survivors or "unknown", r.out)
+        # bb7dc / a63ab #509: what the command left running could not be shown stopped. Red first: a non-zero
+        # exit stays a failure with its real code, the leftover reason appended at the END (the item keeps the
+        # tail). Only rc 0 + unverified is lowered to not_run — never green.
+        note = "leftovers unverified (%s, still running: %s)" % (r.stop.why, r.stop.survivors or "unknown")
+        if r.rc != 0:
+            return r.rc, "%s\n[prepr] rc %s; %s\n" % (r.out.rstrip("\n"), r.rc, note)
+        return None, "finished with rc 0, but its %s\n%s" % (note, r.out)
     return r.rc, r.out
 
 
