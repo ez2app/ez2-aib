@@ -8,7 +8,7 @@ use aibd::platform::tree::{spawn_tree, SpawnSpec};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const N: usize = 4;
+const N: usize = 8;
 
 /// A tree whose shell and child both ignore SIGTERM (inherited across exec),
 /// so each stop waits its whole grace before SIGKILL.
@@ -46,7 +46,8 @@ fn many_stubborn_leftovers_are_stopped_within_one_deadline() {
         roots.push(h.root_pid());
         aibd::platform::session_unix::keep_as_leftover_for_test(h);
     }
-    // one at a time this is N x (2 s grace + KILL) ~ 8 s or more
+    // the grace is cut to 1 s here: one at a time this is N x (1 s + KILL)
+    // ~ 8 s or more; together it is about 1 s
     let cap = Duration::from_secs(4);
     let t = Instant::now();
     let left = aibd::platform::session_unix::stop_leftovers(t + cap);
