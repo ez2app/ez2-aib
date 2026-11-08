@@ -5,6 +5,10 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+pub mod fork_watch;
+pub mod tree;
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]

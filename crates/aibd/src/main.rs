@@ -11,9 +11,18 @@ fn init_tracing() {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     init_tracing();
+    match aibd::runtime::build() {
+        Ok(rt) => rt.block_on(run()),
+        Err(e) => {
+            tracing::error!(error = %e, "runtime");
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn run() -> ExitCode {
     let cfg = match Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir()) {
         Ok(c) => c,
         Err(e) => {

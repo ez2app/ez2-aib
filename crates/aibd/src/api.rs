@@ -1,6 +1,7 @@
-//! `/api/v1` routes. Phase 0: health (public) and a read-only event cursor (authenticated).
+//! `/api/v1` routes: health (public); event cursor and metrics (authenticated).
 
 use crate::guard::{self, error_response, GuardConfig};
+use crate::lineage::Lineage;
 use aib_core::ErrorCode;
 use aib_store::Store;
 use axum::extract::{Query, State};
@@ -15,12 +16,15 @@ pub const API_VERSION: &str = "v1";
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    /// M1 lineage, decided once at start-up by the self-check.
+    pub lineage: Arc<Lineage>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/events", get(events))
+        .route("/api/v1/metrics", get(metrics))
         .fallback(not_found)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -31,6 +35,13 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok", "api_version": API_VERSION}))
+}
+
+/// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
+/// `unsupported`; `lineage.failures` counts M1 reads that failed after
+/// start-up (a process being gone is not a failure).
+async fn metrics(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"lineage": st.lineage.status()}))
 }
 
 async fn not_found() -> Response {

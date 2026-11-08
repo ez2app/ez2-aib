@@ -27,6 +27,7 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
         router(
             AppState {
                 store: Arc::new(store),
+                lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
             },
             Arc::new(cfg),
         ),
@@ -268,4 +269,24 @@ async fn encoded_token_value_in_query_or_path_is_refused() {
         assert_eq!(s, StatusCode::BAD_REQUEST, "{u}");
         assert_eq!(j["code"], "token_in_url", "{u}");
     }
+}
+
+#[tokio::test]
+async fn metrics_needs_the_token_and_reports_lineage() {
+    let (a, _d) = app(&[]);
+    let (s, j, _) = send(a, req("/api/v1/metrics").body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{j}");
+    assert!(j.get("lineage").is_none(), "{j}");
+
+    let (a, _d) = app(&[]);
+    let r = req("/api/v1/metrics")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, j, _) = send(a, r).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        j,
+        serde_json::json!({"lineage": {"enabled": false, "selfcheck": "test", "failures": 0}})
+    );
 }

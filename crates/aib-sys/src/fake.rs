@@ -26,6 +26,7 @@ struct Proc {
 struct State {
     procs: BTreeMap<u32, Proc>,
     fail: BTreeMap<(Call, u32), SysError>,
+    calls: BTreeMap<Call, usize>,
 }
 
 /// A process table you write yourself.
@@ -78,6 +79,13 @@ impl FakeProcessInfo {
         }
     }
 
+    /// Another account's process (`uid` other than the default 501).
+    pub fn set_uid(&self, pid: u32, uid: u32) {
+        if let Some(p) = self.st().procs.get_mut(&pid) {
+            p.info.uid = uid;
+        }
+    }
+
     /// Change what M1 reports for `pid` (e.g. a zero or wrong id).
     pub fn set_unique(&self, pid: u32, unique: u64, parent_unique: u64) {
         if let Some(p) = self.st().procs.get_mut(&pid) {
@@ -97,7 +105,13 @@ impl FakeProcessInfo {
         self.st().fail.remove(&(call, pid));
     }
 
+    /// How many times `call` was made (any pid).
+    pub fn calls(&self, call: Call) -> usize {
+        self.st().calls.get(&call).copied().unwrap_or(0)
+    }
+
     fn injected(&self, call: Call, pid: u32) -> Result<(), SysError> {
+        *self.st().calls.entry(call).or_insert(0) += 1;
         match self.st().fail.get(&(call, pid)) {
             Some(e) => Err(e.clone()),
             None => Ok(()),

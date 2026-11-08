@@ -94,26 +94,61 @@ fn an_out_of_range_pid_is_refused() {
     assert_eq!(Macos.bsd_info(u32::MAX), Err(SysError::BadPid));
 }
 
+/// Command name of `pid` as `ps` shows it ("" once it is gone).
+fn comm(pid: u32) -> String {
+    let o = Command::new("/bin/ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// Poll `f` every 20 ms for up to 2 s; true once it holds.
+fn within_2s(mut f: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if f() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// The property M1 is here for: after the intermediate process exits and
-/// its child is re-parented to launchd, `parent_unique` still names the
-/// intermediate process.
+/// its (already exec'd) child is re-parented to launchd, `parent_unique`
+/// still names the intermediate process.
+///
+/// The child must have exec'd BEFORE the intermediate exits: an exec after
+/// it resets `parent_unique` to launchd (pinned by the next test). Without
+/// that ordering this test raced and went red about 1 run in 7 (11-08).
 #[test]
 fn m1_parent_unique_survives_reparenting() {
     let mut sh = Command::new("/bin/sh")
-        .args(["-c", "read go; /bin/sleep 30 >/dev/null 2>&1 & echo $!"])
+        .args([
+            "-c",
+            "read go; /bin/sleep 30 >/dev/null 2>&1 & echo $!; read done",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     let sh_ids = Macos.unique_ids(sh.id()).unwrap();
-    sh.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut stdin = sh.stdin.take().unwrap();
+    stdin.write_all(b"go\n").unwrap();
     let mut line = String::new();
     BufReader::new(sh.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
     let grandchild: u32 = line.trim().parse().unwrap();
+    let execd = within_2s(|| comm(grandchild).ends_with("sleep"));
+    stdin.write_all(b"done\n").unwrap();
     sh.wait().unwrap();
 
+    let reparented = within_2s(|| matches!(Macos.bsd_info(grandchild), Ok(i) if i.ppid == 1));
     let info = Macos.bsd_info(grandchild);
     let ids = Macos.unique_ids(grandchild);
     // only the pid we were told about, which our own child started
@@ -121,8 +156,54 @@ fn m1_parent_unique_survives_reparenting() {
         .arg(grandchild.to_string())
         .status();
 
-    assert_eq!(info.unwrap().ppid, 1, "not re-parented to launchd");
-    assert_eq!(ids.unwrap().parent_unique, sh_ids.unique);
+    assert!(execd, "grandchild {grandchild} never exec'd /bin/sleep");
+    assert!(
+        reparented,
+        "not re-parented to launchd within 2 s: {info:?}"
+    );
+    let ids = ids.unwrap_or_else(|e| panic!("unique_ids({grandchild}) failed: {e:?}"));
+    assert_eq!(
+        ids.parent_unique, sh_ids.unique,
+        "creator id lost after re-parenting: {ids:?} vs sh {sh_ids:?}"
+    );
+}
+
+/// Kernel behaviour M1 cannot see past (11-08): a process re-parented to
+/// launchd that exec's AFTERWARDS gets `parent_unique` = launchd's (1); its
+/// own `unique` stays. If macOS ever changes this, this test goes red and
+/// the `exec_after_creator_exit` blind spot is to be reviewed.
+#[test]
+fn m1_an_exec_after_the_creator_exited_resets_parent_unique_to_launchd() {
+    let mut sh = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "(/bin/sleep 0.3; exec /bin/sleep 30) >/dev/null 2>&1 & echo $!",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let sh_ids = Macos.unique_ids(sh.id()).unwrap();
+    let mut line = String::new();
+    BufReader::new(sh.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let pid: u32 = line.trim().parse().unwrap();
+    let before = Macos.unique_ids(pid);
+    sh.wait().unwrap();
+    // the subshell outlives sh, then exec's /bin/sleep 30 about 0.3 s later
+    let execd = within_2s(|| comm(pid).ends_with("sleep"));
+    let after = Macos.unique_ids(pid);
+    let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+
+    let before = before.unwrap_or_else(|e| panic!("unique_ids({pid}) before: {e:?}"));
+    assert_eq!(
+        before.parent_unique, sh_ids.unique,
+        "{before:?} vs sh {sh_ids:?}"
+    );
+    assert!(execd, "{pid} never exec'd /bin/sleep");
+    let after = after.unwrap_or_else(|e| panic!("unique_ids({pid}) after: {e:?}"));
+    assert_eq!(after.unique, before.unique, "exec changed the unique id");
+    assert_eq!(after.parent_unique, 1, "exec after re-parenting: {after:?}");
 }
 
 #[test]

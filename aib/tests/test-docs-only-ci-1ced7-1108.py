@@ -245,7 +245,23 @@ class Guard(unittest.TestCase):
             for n in mentions(text, names):
                 if (f, n) not in SCAN_ALLOW:
                     hits.append("%s mentions %s" % (f, n))
-        self.assertEqual(hits, [], "這些檔被程式 / 測試提到:移出 docs_only 白名單,或確認只是註解後加進 SCAN_ALLOW(寫原因)")
+        self.assertEqual(hits, [], "這些檔被程式 / 測試提到:程式真的讀它 ⇒ 加進 docs_only.py 的 DOC_EXCLUDE(寫誰讀);"
+                                   "只有註解提到 ⇒ 加進這裡的 SCAN_ALLOW(寫原因)")
+
+    def test_a_doc_that_code_reads_is_excluded_and_the_exclusion_is_still_read(self):
+        """a63ab #510:docs/perf/timers.md 被 timers.rs 的測試讀 ⇒ 不算純文件;排除名單每一條都要真的還有人提到。"""
+        self.assertFalse(do.is_doc("docs/perf/timers.md"))
+        self.assertEqual(do.docs_only("pull_request", ["docs/perf/timers.md"])[0], False)
+        self.assertTrue(do.is_doc("docs/perf/other.md"))
+        files = git(ROOT, "ls-files").splitlines()
+        for ex in do.DOC_EXCLUDE:
+            with self.subTest(ex=ex):
+                self.assertIn(ex, files, "排除名單裡的檔不在倉裡:拿掉這一條")
+                name = os.path.basename(ex)
+                readers = [f for f in files if f.startswith(SCAN_ROOTS) and not f.endswith(".md")
+                           and f not in SCAN_SKIP and name in mentions((ROOT / f).read_text(encoding="utf-8",
+                                                                                         errors="replace"), {name})]
+                self.assertTrue(readers, "沒有程式再讀 %s:移回白名單" % ex)
 
     def test_allow_list_entries_still_exist(self):
         for (f, n), why in SCAN_ALLOW.items():
