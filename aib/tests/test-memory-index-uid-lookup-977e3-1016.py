@@ -224,8 +224,19 @@ class K1KnifeOldCodeIsRed(unittest.TestCase):
                                  capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired):
             self.skipTest("沒有 git")
-        if old.returncode != 0 or "def note_text" not in old.stdout:
-            self.skipTest("淺層 checkout 沒有 %s" % OLD_REF.split(":")[0][:8])
+        if old.returncode != 0:
+            # 只有「確實是淺層 clone、而且真的缺這個 commit」才跳過;其他 git 失敗一律紅(bb7dc #502 讀碼)
+            sha = OLD_REF.split(":")[0]
+            inside = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
+                                    capture_output=True, text=True).stdout.strip() == "true"
+            shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+                                     capture_output=True, text=True, timeout=30).stdout.strip() == "true"
+            have = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", sha + "^{commit}"],
+                                  capture_output=True, timeout=30).returncode == 0
+            if not inside or (shallow and not have):   # 刀複本沒有 .git / 淺層缺 commit
+                self.skipTest("淺層 clone 沒有 %s" % sha[:8])
+            self.fail("讀不到舊版 %s(inside=%s shallow=%s have=%s):%s" % (OLD_REF, inside, shallow, have, old.stderr.strip()))
+        self.assertIn("def note_text", old.stdout, "OLD_REF 的舊版格式不對")
         self.assertNotIn("def resolve_note_path", old.stdout, "OLD_REF 釘錯了:舊版已含本修正")
         with tempfile.TemporaryDirectory() as td:
             copy = Path(td) / "aib"
