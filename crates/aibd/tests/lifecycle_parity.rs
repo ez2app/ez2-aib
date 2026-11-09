@@ -86,6 +86,22 @@ mod macos {
         assert!(!matches!(r, ChildReaping::Unsupported), "{r:?}");
     }
 
+    /// The gap is named, not hidden: no kill-on-exit on macOS until the
+    /// lifeline shim (DECISION-11 C). Change this test when it lands.
+    pub fn kill_on_exit_is_a_named_gap() {
+        assert!(matches!(
+            <Current as Lifecycle>::kill_on_exit(),
+            Step::Unsupported {
+                step: StepId::KillOnExit,
+                ..
+            }
+        ));
+    }
+
+    pub fn lineage_is_read_on_macos() {
+        assert!(matches!(<Current as Lifecycle>::lineage(), Step::Done(_)));
+    }
+
     pub fn keep_child_zombies_is_done() {
         assert!(matches!(
             <Current as Lifecycle>::keep_child_zombies(),
@@ -105,6 +121,8 @@ register! {
     CheckTree => the_check_tree_is_the_posix_script,
     ChildReaping => child_reaping_is_read,
     KeepChildZombies => keep_child_zombies_is_done,
+    KillOnExit => kill_on_exit_is_a_named_gap,
+    Lineage => lineage_is_read_on_macos,
 }
 
 #[cfg(windows)]
@@ -150,6 +168,25 @@ mod windows {
         ));
     }
 
+    /// J0 is adopted. This test process is now in a KILL_ON_JOB_CLOSE Job:
+    /// dropping the guard would close it and kill the test runner itself, so
+    /// it is held until the process exits (as `main` does).
+    pub fn kill_on_exit_is_j0() {
+        let g = <Current as Lifecycle>::kill_on_exit();
+        assert!(matches!(g, Step::Done(Ok(_))), "J0 not adopted");
+        std::mem::forget(g);
+    }
+
+    pub fn lineage_does_not_apply() {
+        assert!(matches!(
+            <Current as Lifecycle>::lineage(),
+            Step::NotApplicable {
+                step: StepId::Lineage,
+                ..
+            }
+        ));
+    }
+
     pub fn keep_child_zombies_does_not_apply() {
         assert!(matches!(
             <Current as Lifecycle>::keep_child_zombies(),
@@ -172,6 +209,8 @@ register! {
     CheckTree => the_check_tree_is_unsupported_not_a_posix_shell,
     ChildReaping => child_reaping_does_not_apply,
     KeepChildZombies => keep_child_zombies_does_not_apply,
+    KillOnExit => kill_on_exit_is_j0,
+    Lineage => lineage_does_not_apply,
 }
 
 // A target aibd does not ship for: nothing registered, so the parity test

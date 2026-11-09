@@ -51,6 +51,10 @@ lifecycle_steps! {
     ChildReaping,
     /// At start: keep exited children lookable until we reap them.
     KeepChildZombies,
+    /// aibd's death ends every tree it started (Windows J0, macOS shim).
+    KillOnExit,
+    /// Process lineage (M1), after its self-check on this process.
+    Lineage,
 }
 
 /// The outcome of one step on this platform.
@@ -112,6 +116,10 @@ pub struct Shutdown {
     pub not_heard: &'static [&'static str],
 }
 
+/// Holds what makes the OS end aibd's trees when aibd ends (Windows: J0).
+/// Dropping it gives that up: keep it until `main` returns.
+pub struct KillOnExit(#[allow(dead_code)] Box<dyn std::any::Any>);
+
 /// Every lifecycle step, one required method each (no default bodies).
 pub trait Lifecycle {
     /// The platform's name in logs and test messages.
@@ -124,6 +132,12 @@ pub trait Lifecycle {
     fn child_reaping() -> Step<ChildReaping>;
     /// `Done(Some(was))` when an inherited setting had to be changed.
     fn keep_child_zombies() -> Step<Option<&'static str>>;
+    /// Held for aibd's whole life: when aibd dies for any reason, the OS
+    /// ends every tree it started (DECISION-11 B). `Done(Err(tag))` = refuse
+    /// to start.
+    fn kill_on_exit() -> Step<Result<KillOnExit, &'static str>>;
+    /// Process lineage (M1), self-checked on this process.
+    fn lineage() -> Step<crate::lineage::Lineage>;
 }
 
 #[cfg(target_os = "macos")]
@@ -165,6 +179,19 @@ impl Lifecycle for MacOs {
             Ok(was) if !was.keeps_zombies() => Some(was.as_str()),
             _ => None,
         })
+    }
+
+    fn kill_on_exit() -> Step<Result<KillOnExit, &'static str>> {
+        Step::Unsupported {
+            step: StepId::KillOnExit,
+            why: "the macOS lifeline shim (DECISION-11 C) is not built yet: a crashed aibd can leave session trees running",
+        }
+    }
+
+    fn lineage() -> Step<crate::lineage::Lineage> {
+        let info: std::sync::Arc<dyn aib_sys::ProcessInfo> = std::sync::Arc::new(aib_sys::Macos);
+        let check = aib_sys::selfcheck::run(info.as_ref());
+        Step::Done(crate::lineage::Lineage::from_selfcheck(info, check))
     }
 }
 
@@ -213,6 +240,23 @@ impl Lifecycle for Windows {
         Step::NotApplicable {
             step: StepId::KeepChildZombies,
             why: "Windows keeps a process HANDLE, not a zombie",
+        }
+    }
+
+    fn kill_on_exit() -> Step<Result<KillOnExit, &'static str>> {
+        // DECISION-21 J0: aibd in its own KILL_ON_JOB_CLOSE Job, held until
+        // it exits; every session Job is nested in it
+        Step::Done(
+            aib_sys::job::Job::adopt_current()
+                .map(|j| KillOnExit(Box::new(j)))
+                .map_err(|e| e.tag()),
+        )
+    }
+
+    fn lineage() -> Step<crate::lineage::Lineage> {
+        Step::NotApplicable {
+            step: StepId::Lineage,
+            why: "Windows proves membership with the Job, not with process lineage (M1)",
         }
     }
 }
@@ -294,6 +338,20 @@ impl Lifecycle for Unlisted {
         Step::Unsupported {
             step: StepId::KeepChildZombies,
             why: "set only on macOS (M5)",
+        }
+    }
+
+    fn kill_on_exit() -> Step<Result<KillOnExit, &'static str>> {
+        Step::Unsupported {
+            step: StepId::KillOnExit,
+            why: "not on this platform",
+        }
+    }
+
+    fn lineage() -> Step<crate::lineage::Lineage> {
+        Step::Unsupported {
+            step: StepId::Lineage,
+            why: "process lineage is read only on macOS (M1)",
         }
     }
 }
