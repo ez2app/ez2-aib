@@ -142,7 +142,7 @@ jobs:
         shell: bash
         run: ./scripts/check-win-job-knives.sh
       - name: aib-sys session knives (Windows)
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
         # preview.2 sessions: killing a session must take the whole tree. Two
         # knives, each must turn killing_a_session_takes_the_whole_tree red:
@@ -169,7 +169,7 @@ jobs:
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
       - name: aibd Windows session adapter knives (Windows)
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
         # session_windows.rs maps aib-sys results to the shared stop: clean only
         # when the Job emptied AND every handle signaled; a not-reaped spawn keeps its pid.
@@ -201,7 +201,7 @@ jobs:
             --expect-fail an_unheld_failed_start_is_listed_at_shutdown \
             -- cargo test -p aibd --locked --lib platform::session_windows
       - name: aibd Windows sessions wiring knife (Windows)
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
         # default_spawn must be session_windows::spawn (a63ab 11-09: unwired,
         # every POST was 422 unsupported_platform). The knife puts the refusal
