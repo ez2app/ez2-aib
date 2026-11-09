@@ -75,13 +75,48 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
         env_clear: false,
-        session_id: session.to_string(),
+        // the marker sweep matches `AIBD_SESSION=<id>` across every same-user
+        // process: a fixed id let another test run on this machine (a full
+        // suite next to a single test, or parallel copies) find and stop this
+        // run's fixture before its first line (a63ab 11-09 "JSON EOF")
+        session_id: format!("{session}-{}", std::process::id()),
         watch_forks,
         discard_output: false, // these tests read the fixture's stdout
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
         inject: None,
     }
+}
+
+/// `tree-platform` / `tree-plain` fork once the go file exists. Started this
+/// way, the fork happens after `spawn_tree` returned, so the fork watcher is
+/// already on the root: under load the fork could otherwise come before the
+/// watch (forks_seen 0, the exiting parent unreadable). The returned guard
+/// gives the go and removes the file.
+struct Go(std::path::PathBuf);
+
+impl Go {
+    fn give(&self) {
+        std::fs::write(&self.0, b"go").unwrap();
+    }
+}
+
+impl Drop for Go {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn spawn_after_watch(mode: &str, session: &str) -> (TreeHandle, Go) {
+    let go =
+        Go(std::env::temp_dir().join(format!("aib-fixture-go-{}-{session}", std::process::id())));
+    let _ = std::fs::remove_file(&go.0);
+    let mut s = spec_lineage(mode, session);
+    s.env
+        .push(("AIB_FIXTURE_GO".into(), go.0.clone().into_os_string()));
+    let h = spawn_tree(&s).unwrap();
+    go.give();
+    (h, go)
 }
 
 fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
@@ -93,12 +128,25 @@ fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The fixture's first stdout line as JSON. A closed stdout with no line
+/// (a63ab 11-09: "JSON EOF", 1 in 5 under heavy load) is said as what it is,
+/// with how the fixture ended, instead of a bare serde EOF.
 fn first_line(h: &mut TreeHandle) -> serde_json::Value {
     let out = h.take_stdout().unwrap();
     let mut r = BufReader::new(out);
     let mut l = String::new();
-    r.read_line(&mut l).unwrap();
-    serde_json::from_str(&l).unwrap()
+    let n = r.read_line(&mut l);
+    if matches!(n, Ok(0)) {
+        let root = h.root_pid();
+        let exit = h.wait_root(Duration::from_secs(2));
+        panic!(
+            "fixture {root} closed stdout before its first line (killed or crashed); \
+             root exit within 2 s: {exit:?} (Some(-1) = by a signal)"
+        );
+    }
+    let l = l.trim_end();
+    serde_json::from_str(l)
+        .unwrap_or_else(|e| panic!("fixture's first line is not JSON ({e}): {l:?}"))
 }
 
 /// Independent check with ps(1): pids that are still running (not zombies).
@@ -441,7 +489,7 @@ fn second_cancel_is_a_clean_no_op() {
 #[test]
 fn fork_watcher_catches_reparented_platform_binary() {
     assert!(lineage().enabled(), "self-check failed: {:?}", lineage());
-    let mut h = spawn_tree(&spec_lineage("tree-platform", "s-tree-platform")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-platform", "s-tree-platform");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -492,7 +540,7 @@ fn fork_watcher_catches_reparented_platform_binary() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_watched_process_with_a_readable_marker_stays_found_by_watch() {
-    let mut h = spawn_tree(&spec_lineage("tree-plain", "s-tree-plain")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-plain", "s-tree-plain");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;

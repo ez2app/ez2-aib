@@ -241,6 +241,26 @@ def windows_split(metadata):
     return sorted(ok), excluded
 
 
+def windows_fakecc_item(repo, members, ver, runner=run):
+    """Clippy for the Windows target of the members that build C, with the fake MSVC compiler
+    (scripts/dev/fakecc-msvc.sh: writes empty outputs, compiles nothing). Check only: nothing is linked or run, so
+    a pass says "Windows clippy (fakecc) green; tests still need CI" and never more. A missing fake is not_run."""
+    name = "rust clippy (%s, fakecc)" % WINDOWS_TARGET
+    fake = os.path.join(repo, "scripts", "dev", "fakecc-msvc.sh")
+    if not os.access(fake, os.X_OK):
+        return item(1, name, "not_run", "%s missing or not executable" % fake, version=ver)
+    cmd = ["cargo", "clippy"]
+    for m in members:
+        cmd += ["-p", m]
+    cmd += ["--target", WINDOWS_TARGET, "--all-targets", "--locked", "--", "-D", "warnings"]
+    env = dict(os.environ, CC_x86_64_pc_windows_msvc=fake, AR_x86_64_pc_windows_msvc=fake,
+               CARGO_TARGET_DIR=os.path.join(repo, "target-wincheck.noindex"))
+    rc, o = runner(cmd, repo, env)
+    st = "pass" if rc == 0 else "fail" if rc is not None else "not_run"
+    scope = "only " + ", ".join(members) + "; type check + clippy with a fake C compiler, tests still need CI Windows"
+    return item(1, name, st, "" if rc is not None else o, scope, ver, rc, cmd, o)
+
+
 def rust_items(repo, run_tests, runner=run):
     out = []
     rc, ver = runner(["cargo", "--version"], repo)
@@ -277,12 +297,14 @@ def rust_items(repo, run_tests, runner=run):
         else:
             scope = "only " + ", ".join(ok)
             if excluded:
-                scope += "; excluded (C build, see CI Windows): " + ", ".join(
+                scope += "; members that build C are covered by the fakecc item: " + ", ".join(
                     "%s (%s)" % (k, "+".join(v)) for k, v in sorted(excluded.items()))
             cmd = ["cargo", "clippy"]
             for m in ok:
                 cmd += ["-p", m]
             one(name, cmd + ["--target", WINDOWS_TARGET, "--all-targets", "--locked", "--", "-D", "warnings"], scope)
+            if excluded:
+                out.append(windows_fakecc_item(repo, sorted(excluded), ver, runner))
     if run_tests:
         one("cargo test", ["cargo", "test", "--workspace", "--locked", "--no-fail-fast"], "workspace")
     else:
