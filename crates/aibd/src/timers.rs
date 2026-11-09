@@ -181,11 +181,19 @@ pub static SELFCHECK_LEAF_LIFE: Timer = Timer::operation(
     "the self-exec check tree's child stays for the stop to meet, then ends by itself (one wake-up; a9136 11-09)",
 );
 
+pub static SESSION_ROOT_WATCH_BACKOFF: Timer = Timer::operation(
+    "session.root_watch_backoff",
+    secs(30),
+    secs(30),
+    "pause the root-exit watcher when its wait answers far sooner than asked (a failed wait), doubling from 100 ms up to 30 s, so it never spins (1ced7 #543 Medium 2)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SELFCHECK_LEAF_LIFE,
+    &SESSION_ROOT_WATCH_BACKOFF,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

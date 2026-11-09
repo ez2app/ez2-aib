@@ -25,7 +25,7 @@
 use crate::api::AppState;
 use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
-use crate::platform::session::{Running, SpawnFn, Spec, Stop};
+use crate::platform::session::{Running, SpawnFn, Spec, Stop, Waited};
 use aib_core::ErrorCode;
 use aib_store::{NewEvent, Store};
 use axum::body::Body;
@@ -518,11 +518,28 @@ impl Sessions {
     /// Root-exit watcher: woken by the exit, not by polling (the timeout is
     /// only a bound on one wait).
     fn watch_root(&self, id: &str, w: Arc<dyn crate::platform::session::ExitWait>) {
+        let mut pause = Duration::ZERO;
+        let mut said: Option<&'static str> = None;
         loop {
-            if w.wait(Duration::from_secs(3600)).is_some() {
-                break;
-            }
-            if !lock(&self.inner).live.contains_key(id) {
+            let asked = Instant::now();
+            let fast = match w.wait(ROOT_WAIT) {
+                Waited::Exited(_) => break,
+                // an answer far sooner than asked: the wait is not blocking
+                Waited::TimedOut => asked.elapsed() < ROOT_WAIT / 2,
+                Waited::Failed(code) => {
+                    if said != Some(code) {
+                        tracing::warn!(session = %id, code, "root-exit wait cannot look; the session ends by DELETE or shutdown until it can");
+                        said = Some(code);
+                    }
+                    true
+                }
+            };
+            pause = if fast {
+                next_pause(pause)
+            } else {
+                Duration::ZERO
+            };
+            if !self.pause_while_live(id, pause) {
                 return;
             }
         }
@@ -533,6 +550,27 @@ impl Sessions {
                 .unwrap_or_else(|e| e.into_inner())
                 .stop(SHORT_GRACE);
             self.finish(id, stop, "root_exit");
+        }
+    }
+
+    /// Wait `d` (0 = not at all) unless the session leaves `live` first.
+    /// `false` = it is gone: the watcher ends. Woken by any state change
+    /// (the sessions condvar), so an ended session does not keep a paused
+    /// watcher around; each wake-up counts on `session.root_watch_backoff`.
+    fn pause_while_live(&self, id: &str, d: Duration) -> bool {
+        let op = crate::timers::SESSION_ROOT_WATCH_BACKOFF.begin(Some(Instant::now() + d));
+        let mut g = lock(&self.inner);
+        loop {
+            if !g.live.contains_key(id) {
+                return false;
+            }
+            match op.remaining() {
+                Some(left) if !left.is_zero() => {
+                    g = wait_timeout(&self.cv, g, left);
+                    op.woke();
+                }
+                _ => return true,
+            }
         }
     }
 
@@ -967,6 +1005,19 @@ fn wait_timeout<'a>(cv: &Condvar, g: MutexGuard<'a, Inner>, d: Duration) -> Mute
     cv.wait_timeout(g, d)
         .map(|(g, _)| g)
         .unwrap_or_else(|e| e.into_inner().0)
+}
+
+/// How long one root-exit wait is asked to block (it wakes on the exit).
+const ROOT_WAIT: Duration = Duration::from_secs(3600);
+
+/// The watcher's pause after an answer that came far too soon: 100 ms,
+/// doubling, at most the backoff timer's period (30 s).
+fn next_pause(p: Duration) -> Duration {
+    if p.is_zero() {
+        Duration::from_millis(100)
+    } else {
+        (p * 2).min(crate::timers::SESSION_ROOT_WATCH_BACKOFF.period)
+    }
 }
 
 fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
