@@ -331,7 +331,7 @@ class Docs(unittest.TestCase):
 CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
 # 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
 # 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
-NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md")
+NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md")
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
 
 
