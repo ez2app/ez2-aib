@@ -4,7 +4,9 @@
 //! acceptance evidence for 4.4.1 §5 / M0 item 4. Run with `-- --nocapture` and
 //! `AIB_CLOUD_PRINT_PLAN=1` to print the probe plan for the host-side runner.
 
-use aib_cloud::isolation::{judge, matrix, plan_fingerprint, probe_plan, Ct, InternetTargets, Ip, Ip6, Topology};
+use aib_cloud::isolation::{
+    judge, matrix, plan_fingerprint, probe_plan, Ct, InternetTargets, Ip, Ip6, Topology,
+};
 use std::fs;
 use std::path::Path;
 
@@ -19,7 +21,10 @@ fn eu02() -> Topology {
         tailnet: Some(Ip::parse("100.120.222.46").expect("ip")),
         peer_host: Some(Ip::parse("136.243.105.110").expect("ip")), // EU01
         edge: Ct::new(101, "10.77.0.2").expect("ct"),
-        sites: vec![Ct::new(110, "10.77.0.10").expect("ct"), Ct::new(112, "10.77.0.12").expect("ct")],
+        sites: vec![
+            Ct::new(110, "10.77.0.10").expect("ct"),
+            Ct::new(112, "10.77.0.12").expect("ct"),
+        ],
         internet: InternetTargets {
             dns: Ip::parse("1.1.1.1").expect("ip"),
             http: Ip::parse("151.101.2.132").expect("ip"), // deb.debian.org
@@ -31,7 +36,9 @@ fn eu02() -> Topology {
 }
 
 fn fixture(name: &str) -> Option<serde_json::Value> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
     let text = fs::read_to_string(p).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -41,7 +48,10 @@ fn eu02_plan_prints_when_asked() {
     let cells = matrix(&eu02()).expect("matrix");
     let plan = probe_plan(&cells);
     if std::env::var("AIB_CLOUD_PRINT_PLAN").is_ok() {
-        println!("PLAN_BEGIN\n{}\nPLAN_END", serde_json::to_string_pretty(&plan).expect("json"));
+        println!(
+            "PLAN_BEGIN\n{}\nPLAN_END",
+            serde_json::to_string_pretty(&plan).expect("json")
+        );
         println!("PLAN_FNV {}", plan_fingerprint(&plan));
     }
     let n = plan.as_array().expect("array").len();
@@ -61,17 +71,28 @@ fn eu02_recorded_report_passes() {
     let cells = matrix(&eu02()).expect("matrix");
     // external cells were measured from EU01 and merged in, so they are required here
     let rc = judge(&cells, HOST_PUBLIC, &report, true).expect("judge");
-    assert!(rc.ok(), "EU02 isolation receipt not clean: fail={:?} missing={:?}", rc.fail, rc.missing);
+    assert!(
+        rc.ok(),
+        "EU02 isolation receipt not clean: fail={:?} missing={:?}",
+        rc.fail,
+        rc.missing
+    );
     assert!(rc.missing.is_empty(), "missing={:?}", rc.missing);
     assert_eq!(rc.pass.len(), cells.len(), "every cell must have passed");
     if let Ok(path) = std::env::var("AIB_CLOUD_WRITE_RECEIPT") {
-        fs::write(path, serde_json::to_string_pretty(&rc.to_json()).expect("json")).expect("write receipt");
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&rc.to_json()).expect("json"),
+        )
+        .expect("write receipt");
     }
 }
 
 #[test]
 fn eu02_report_for_another_plan_is_refused() {
-    let Some(mut report) = fixture("isolation-eu02-1109.json") else { return };
+    let Some(mut report) = fixture("isolation-eu02-1109.json") else {
+        return;
+    };
     // a report recorded against a topology with one site fewer must not judge this matrix
     report["plan_fnv"] = serde_json::Value::String("0000000000000000".to_owned());
     let cells = matrix(&eu02()).expect("matrix");
