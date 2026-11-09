@@ -139,6 +139,65 @@ fn runs(src: &dyn Source, repo: &str, sha: &str, event: &str) -> Result<Vec<Run>
 
 /// Gather everything `judge` needs. Logs and tested trees that cannot be read stay None
 /// (judge turns that into a reason); list reads that fail make the whole thing an error.
+/// The expected cell list: required status check names of every active branch ruleset that
+/// covers main (the same source release-go-p2.sh reads). Anything unreadable = error (fail closed).
+pub fn required_checks(src: &dyn Source, repo: &str) -> Result<Vec<String>, String> {
+    let list = json(src, &format!("repos/{repo}/rulesets?per_page=100"))?;
+    let list = list.as_array().ok_or("rulesets: not a list")?;
+    if list.len() >= 100 {
+        return Err("rulesets: 100 or more, paging not supported".into());
+    }
+    let mut out = vec![];
+    for r in list {
+        let id = r
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or("rulesets: no id")?;
+        let active = r.get("enforcement").and_then(Value::as_str) == Some("active");
+        let branch = r.get("target").and_then(Value::as_str).unwrap_or("branch") == "branch";
+        if !active || !branch {
+            continue;
+        }
+        let d = json(src, &format!("repos/{repo}/rulesets/{id}"))?;
+        let include = d
+            .pointer("/conditions/ref_name/include")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("ruleset {id}: no conditions.ref_name.include"))?;
+        let covers_main = include.iter().any(|x| {
+            matches!(
+                x.as_str(),
+                Some("~DEFAULT_BRANCH" | "~ALL" | "refs/heads/main")
+            )
+        });
+        if !covers_main {
+            continue;
+        }
+        let rules = d
+            .get("rules")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("ruleset {id}: no rules"))?;
+        for rule in rules
+            .iter()
+            .filter(|x| x.get("type").and_then(Value::as_str) == Some("required_status_checks"))
+        {
+            let checks = rule
+                .pointer("/parameters/required_status_checks")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("ruleset {id}: unreadable required_status_checks"))?;
+            for c in checks {
+                let ctx = c
+                    .get("context")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("ruleset {id}: a required check has no context"))?;
+                out.push(ctx.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
     let c = json(src, &format!("repos/{repo}/commits/{sha}"))?;
     let main_sha = c
@@ -168,6 +227,7 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
         main_runs: runs(src, repo, &main_sha, "push")?,
         cand_runs: vec![],
         tested_trees: BTreeMap::new(),
+        required: required_checks(src, repo)?,
     };
     if parents.len() != 2 {
         return Ok(f);

@@ -37,6 +37,7 @@ fn job(id: u64, name: &str, start: i64, secs: i64, image: &str, tested: Option<&
         started_at: Some(start),
         completed_at: Some(start + secs),
         steps: steps(true),
+        steps_known: true,
         image: Some(image.into()),
         tested_sha: tested.map(str::to_string),
     }
@@ -98,6 +99,7 @@ fn base() -> Facts {
             )],
         )],
         tested_trees: BTreeMap::from([(TESTED.to_string(), TREE.to_string())]),
+        required: vec!["smoke (ubuntu-latest, 3.12)".into()],
     }
 }
 
@@ -449,7 +451,20 @@ fn facts_end_to_end_from_api_shapes() {
         format!("repos/{REPO}/git/commits/{TESTED}"),
         format!(r#"{{"tree":{{"sha":"{TREE}"}}}}"#),
     );
+    put(
+        format!("repos/{REPO}/rulesets?per_page=100"),
+        r#"[{"id":7,"enforcement":"active","target":"branch"},{"id":8,"enforcement":"active","target":"tag"},{"id":9,"enforcement":"disabled","target":"branch"}]"#.into(),
+    );
+    put(
+        format!("repos/{REPO}/rulesets/7"),
+        r#"{"id":7,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"pull_request"},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"smoke (ubuntu-latest, 3.12)"}]}}]}"#.into(),
+    );
     let f = facts(&Fake(m.clone()), REPO, MAIN).unwrap();
+    assert_eq!(f.required, vec!["smoke (ubuntu-latest, 3.12)".to_string()]);
+    // the ruleset list cannot be read => no facts at all (fail closed, verdict unknown upstream)
+    let mut broken = m.clone();
+    broken.remove(&format!("repos/{REPO}/rulesets/7"));
+    assert!(facts(&Fake(broken), REPO, MAIN).is_err());
     let v = judge(&f);
     assert_eq!(v.state, "reusable", "{}", reasons(&v));
     assert_eq!(v.observed_main_wall_minutes, Some(30.7));
@@ -561,8 +576,11 @@ fn r1_empty_main_jobs_and_duplicate_main_job_are_not_reuse() {
     let dup = f.main_runs[0].jobs[0].clone();
     f.main_runs[0].jobs.push(Job { id: 12, ..dup });
     let v = judge(&f);
-    assert_eq!(v.state, "not_reusable", "{:?}", names(&v));
+    // the required check is now two jobs on main's side => unknown, and each cell says why
+    assert_eq!(v.state, "unknown", "{:?}", names(&v));
+    assert!(v.note.contains("main 2"), "{}", v.note);
     assert!(reasons(&v).contains("ambiguous_main_job"));
+    assert!(v.cells.iter().all(|c| !c.reusable));
 }
 
 #[test]
@@ -642,4 +660,75 @@ fn r4_rerun_attempt_uses_its_own_start_and_records_the_candidate_attempt() {
     let v = judge(&f);
     assert_eq!(v.cells[0].cand_run_attempt, Some(3));
     assert_eq!(verdict_json(&v)["cells"][0]["cand_run_attempt"], 3);
+}
+
+// ---------- bb7dc #575 re-review (af9fe60d): what both sides lack, and missing steps ----------
+
+#[test]
+fn r1b_both_sides_lack_a_required_matrix_cell_is_unknown() {
+    let mut f = base();
+    f.required.push("smoke (macos-latest, 3.9)".into());
+    let v = judge(&f);
+    assert_eq!(v.state, "unknown", "{:?}", names(&v));
+    assert!(
+        v.note.contains("smoke (macos-latest, 3.9) (PR 0, main 0)"),
+        "{}",
+        v.note
+    );
+}
+
+#[test]
+fn r1b_both_sides_lack_a_required_workflow_is_unknown() {
+    let mut f = base();
+    f.required.push("rust (macos-latest)".into()); // an aibd.yml job; neither side ran aibd.yml
+    let v = judge(&f);
+    assert_eq!(v.state, "unknown", "{:?}", names(&v));
+    assert!(
+        v.note.contains("rust (macos-latest) (PR 0, main 0)"),
+        "{}",
+        v.note
+    );
+}
+
+#[test]
+fn r1b_empty_required_list_is_unknown() {
+    let mut f = base();
+    f.required.clear();
+    let v = judge(&f);
+    assert_eq!(v.state, "unknown");
+    assert!(v.note.starts_with("required_list_empty"), "{}", v.note);
+}
+
+#[test]
+fn r1b_missing_steps_are_never_equal() {
+    for (pr, main, side) in [
+        (false, false, "both sides"),
+        (false, true, "the PR side"),
+        (true, false, "main's side"),
+    ] {
+        let mut f = base();
+        let cj = &mut f.cand_runs[0].jobs[0];
+        cj.steps_known = pr;
+        if !pr {
+            cj.steps.clear();
+        }
+        let mj = &mut f.main_runs[0].jobs[0];
+        mj.steps_known = main;
+        if !main {
+            mj.steps.clear();
+        }
+        let v = judge(&f);
+        assert_eq!(v.state, "not_reusable", "{side}: {}", reasons(&v));
+        assert!(
+            reasons(&v).contains(&format!("steps_unknown: step list missing on {side}")),
+            "{}",
+            reasons(&v)
+        );
+    }
+    // the API shape: no "steps" key / an empty list => steps_known false
+    let j =
+        job_from_json(&serde_json::json!({"id": 1, "name": "x", "status": "completed"})).unwrap();
+    assert!(!j.steps_known);
+    let j = job_from_json(&serde_json::json!({"id": 1, "name": "x", "steps": []})).unwrap();
+    assert!(!j.steps_known);
 }

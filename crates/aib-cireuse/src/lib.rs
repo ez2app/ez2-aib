@@ -19,6 +19,11 @@
 //! The whole push counts as "reusable" only when the cell list is also complete: every workflow
 //! file the PR ran has a main run, every job name either side ran exists on both sides exactly
 //! once, and no main run came back with an empty job list. Missing or unreadable = not complete.
+//! What "should be there" comes from an independent source, the required status checks of the
+//! active branch rulesets: each required check must be a job exactly once on the PR side and on
+//! main's side, or the verdict is unknown (so a cell both sides lack is never "reusable"). An
+//! unreadable or empty required list is unknown too. A job whose step list is missing or empty is
+//! not compared as equal: steps_unknown.
 //!
 //! Shadow false green is only counted over cells it could be compared on (main's own run of the
 //! cell ended success or failure). With nothing comparable it is unknown, not 0.
@@ -41,6 +46,8 @@ pub struct Job {
     pub completed_at: Option<i64>,
     /// (step name, conclusion)
     pub steps: Vec<(String, Option<String>)>,
+    /// false = the API gave no step list (or an empty one): never compared as equal
+    pub steps_known: bool,
     /// "image-name version", from the job log
     pub image: Option<String>,
     /// the commit actions/checkout fetched, from the job log (PR runs only)
@@ -81,6 +88,8 @@ pub struct Facts {
     pub cand_runs: Vec<Run>,
     /// tested merge sha -> its tree (absent = unreadable)
     pub tested_trees: BTreeMap<String, String>,
+    /// required status check names of the active branch rulesets on main (the expected cell list)
+    pub required: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,9 +228,26 @@ pub fn judge(f: &Facts) -> Verdict {
         }
     }
     v.shadow_false_green = (v.compared_cells > 0).then_some(false_green);
+    let missing: Vec<String> = f
+        .required
+        .iter()
+        .filter_map(|name| {
+            let (pr, mn) = (jobs_named(&cands, name), jobs_named(&mains, name));
+            (pr != 1 || mn != 1).then(|| format!("{name} (PR {pr}, main {mn})"))
+        })
+        .collect();
     let all = !cells.is_empty() && cells.iter().all(|c| c.reusable);
     let any = cells.iter().any(|c| c.reusable);
-    v.state = if all {
+    v.state = if f.required.is_empty() {
+        v.note = "required_list_empty: no required status checks read, completeness unknown".into();
+        "unknown"
+    } else if !missing.is_empty() {
+        v.note = format!(
+            "required_check_missing: each required check must be one job on both sides: {}",
+            missing.join("; ")
+        );
+        "unknown"
+    } else if all {
         "reusable"
     } else if any {
         "partial"
@@ -242,6 +268,13 @@ pub fn judge(f: &Facts) -> Verdict {
     }
     v.cells = cells;
     v
+}
+
+fn jobs_named(runs: &BTreeMap<String, &Run>, name: &str) -> usize {
+    runs.values()
+        .flat_map(|r| r.jobs.iter())
+        .filter(|j| j.name == name)
+        .count()
 }
 
 fn missing_cell(path: &str, job: &str, why: &str) -> Cell {
@@ -356,7 +389,16 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
             .reasons
             .push("image_unknown: runner image unreadable in a log".into()),
     }
-    if cj.steps != mj.steps {
+    if !cj.steps_known || !mj.steps_known {
+        c.reasons.push(format!(
+            "steps_unknown: step list missing on {}",
+            match (cj.steps_known, mj.steps_known) {
+                (false, false) => "both sides",
+                (false, true) => "the PR side",
+                _ => "main's side",
+            }
+        ));
+    } else if cj.steps != mj.steps {
         c.reasons.push(format!(
             "steps_differ: {}",
             first_step_diff(&cj.steps, &mj.steps)
@@ -482,7 +524,7 @@ pub fn run_from_json(v: &Value) -> Option<Run> {
 }
 
 pub fn job_from_json(v: &Value) -> Option<Job> {
-    let steps = v
+    let steps: Vec<(String, Option<String>)> = v
         .get("steps")
         .and_then(Value::as_array)
         .map(|a| {
@@ -491,6 +533,7 @@ pub fn job_from_json(v: &Value) -> Option<Job> {
                 .collect()
         })
         .unwrap_or_default();
+    let steps_known = !steps.is_empty();
     Some(Job {
         id: v.get("id")?.as_u64()?,
         name: s(v, "name"),
@@ -499,6 +542,7 @@ pub fn job_from_json(v: &Value) -> Option<Job> {
         started_at: t(v, "started_at"),
         completed_at: t(v, "completed_at"),
         steps,
+        steps_known,
         image: None,
         tested_sha: None,
     })
