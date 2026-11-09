@@ -259,10 +259,10 @@ def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, genera
             if generate and ask is None:  # --generate:三顆鈕的視窗;不動下一行(33e28 刀測 K6c 以它當錨)
                 ask = lambda p, t: dialog(p, t, raw=keeps_exact(name), generate=True)  # noqa: E731
             res = (ask or (lambda p, t: dialog(p, t, raw=keeps_exact(name))))(prompt, title)
-            if state is not None and "generated" in res:
-                # 1ced7 #610 M1:只有視窗真的回來(帶旗標)才算 returned;逾時 / osascript 死 / 讀不懂沒有旗標,
-                # 不算,留給 settle_clipboard 走保守清。L1:cleared 以「最後一次有按產生的那輪」為準,沒按產生的那輪不動它。
-                state["returned"] = True
+            if state is not None:
+                # 1ced7 #610 M1 / M1b:returned 由「最後一輪」決定 —— 帶旗標 = 視窗真的回來;沒旗標(逾時 / osascript 死 /
+                # 讀不懂)= 不算,就算前面幾輪有旗標也一樣(第 2 輪才逾時仍要保守清)。L1:cleared 以最後一次有按產生的那輪為準。
+                state["returned"] = "generated" in res
                 if res.get("generated") is True:
                     state["generated"] = True
                     state["cleared"] = res.get("cleared") is True

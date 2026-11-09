@@ -174,6 +174,16 @@ class HostRoot(unittest.TestCase):
                     {"ok": False, "why": "cancel", "generated": False, "cleared": False}])
         rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq))
         self.assertEqual((res["why"], res["clipboard"], cleared), ("cancel", "cleared", []))
+        # 1ced7 #610 M1b:round 1 bad format WITH flags, round 2 the window never comes back (timeout,
+        # no flags) → the last round decides: conservative clear, not "not_generated"
+        seq_m1b = iter([{"ok": True, "why": "ok", "value": "short", "generated": False, "cleared": False},
+                        {"ok": False, "why": "timeout"}])
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq_m1b))
+        self.assertEqual((res["why"], res["clipboard"], cleared), ("timeout", "cleared", [None]))
+        seq_m1c = iter([{"ok": True, "why": "ok", "value": "short", "generated": True, "cleared": True},
+                        {"ok": False, "why": "osascript_failed"}])
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq_m1c))
+        self.assertEqual((res["clipboard"], cleared), ("cleared", [None]))
         seq2 = iter([{"ok": True, "why": "ok", "value": "short", "generated": True, "cleared": True},
                      {"ok": False, "why": "cancel", "generated": True, "cleared": False}])
         rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq2))
