@@ -137,7 +137,11 @@ class P0(unittest.TestCase):
                          "INVALID_ARGUMENT")
         self.assertEqual(self.err("muse", "aib_list_messages", {"mailbox": "outbox", "cursor": cur})["code"],
                          "INVALID_ARGUMENT")
-        self.assertEqual(self.err("muse", "aib_list_messages", {"mailbox": "inbox", "cursor": cur[:-2] + "AA"})
+        # 竄改簽章中間一字(043dd 11-09):以前是 cur[:-2] + "AA",簽好的游標尾巴本來就是 "AA" 時等於沒改(約 1/256,
+        #   macOS 3.12 job 129040451409 紅過);最後一字也不能用(base64 尾字的低位元會被丟掉,換了可能解出同一串)
+        tampered = cur[:-5] + ("B" if cur[-5] == "A" else "A") + cur[-4:]
+        self.assertNotEqual(tampered, cur)
+        self.assertEqual(self.err("muse", "aib_list_messages", {"mailbox": "inbox", "cursor": tampered})
                          ["code"], "INVALID_ARGUMENT")
         self.assertEqual(self.ok("muse", "aib_list_messages", {"mailbox": "inbox", "cursor": cur})["messages"], [])
 
