@@ -40,7 +40,7 @@ First install on a host (one line each, as root; the file is checked against `SH
 it is run):
 
 ```sh
-V=0.2.0-preview.3; F=aib-cloud-host-$V-x86_64-unknown-linux-musl
+V=0.2.0-preview.4; F=aib-cloud-host-$V-x86_64-unknown-linux-musl
 B=https://github.com/ez2app/ez2-aib/releases/download/cloud-host-v$V
 cd /root && curl -fsSL --proto '=https' --tlsv1.2 -O "$B/$F" && curl -fsSL --proto '=https' --tlsv1.2 -O "$B/SHA256SUMS" \
   && grep " $F\$" SHA256SUMS | sha256sum -c - && install -m 0755 "$F" /usr/local/sbin/aib-cloud-host \
