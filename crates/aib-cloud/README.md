@@ -32,6 +32,10 @@ report bound to this exact plan (`plan_fnv`) and host, checks every result's
 from / kind / ip / port against its cell, and returns a pass / fail / missing receipt.
 `tests/fixtures/isolation-eu02-*.json` is EU02's recorded run (sites CT 110 + 112, the
 3 public cells measured from EU01).
+Every receipt also lists `not_covered`: optional topology parts that were absent and
+`egress-25` — Hetzner blocks outbound 25 for us, so no cell can tell our DROP from theirs;
+before port 25 is ever opened for this host the egress-25 cells must come back (control from
+an External source to the same MX:25).
 
 ## `aib_cloud::r2token` (M-R1b, 11-09)
 
