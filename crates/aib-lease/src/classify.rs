@@ -156,9 +156,14 @@ fn is_commit_id(w: &str) -> bool {
 }
 
 fn is_temp_path(w: &str) -> bool {
-    ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"]
-        .iter()
-        .any(|p| w.starts_with(p))
+    [
+        "/tmp/",
+        "/private/tmp/",
+        "/var/folders/",
+        "/private/var/folders/",
+    ]
+    .iter()
+    .any(|p| w.starts_with(p))
 }
 
 /// One step, normalised: masked like the history, commit ids, `--rev` values and temp paths
@@ -222,16 +227,20 @@ fn always_long(w: &[String]) -> Option<&'static str> {
     if lw.iter().any(|x| x == "--workspace") {
         return Some("whole workspace");
     }
-    if lw.iter().any(|x| x == "--ignored" || x == "--include-ignored") {
+    if lw
+        .iter()
+        .any(|x| x == "--ignored" || x == "--include-ignored")
+    {
         return Some("ignored tests");
     }
     if lw.iter().any(|x| x.ends_with("tools/test.js")) {
         return Some("whole suite (tools/test.js)");
     }
-    if lw
-        .iter()
-        .any(|x| ["chrome", "cdp", "e2e", "playwright", "puppeteer"].iter().any(|k| x.contains(k)))
-    {
+    if lw.iter().any(|x| {
+        ["chrome", "cdp", "e2e", "playwright", "puppeteer"]
+            .iter()
+            .any(|k| x.contains(k))
+    }) {
         return Some("opens a browser");
     }
     None
@@ -244,7 +253,10 @@ fn content_estimate(w: &[String]) -> i64 {
         .skip_while(|x| x.contains('='))
         .map(String::as_str)
         .collect();
-    let p0 = prog.first().map(|x| x.rsplit('/').next().unwrap_or(x)).unwrap_or("");
+    let p0 = prog
+        .first()
+        .map(|x| x.rsplit('/').next().unwrap_or(x))
+        .unwrap_or("");
     let sub = prog
         .iter()
         .skip(1)
@@ -325,9 +337,7 @@ pub fn classify(
         });
         let ended = v["end_epoch"].as_i64().unwrap_or(0);
         let recent = now - ended <= BAN_SECS;
-        if recent
-            && (v["outcome"] == "short_overrun" || secs.is_some_and(|s| s > OVERRUN_SECS))
-        {
+        if recent && (v["outcome"] == "short_overrun" || secs.is_some_and(|s| s > OVERRUN_SECS)) {
             banned = true;
         }
         if v["outcome"] != "all_passed" {
@@ -350,7 +360,9 @@ pub fn classify(
 
     let n = samples.len();
     let (mut class, est) = if n == 0 {
-        reasons.push(format!("no passing run on {host} yet: unknown, first estimate from the commands"));
+        reasons.push(format!(
+            "no passing run on {host} yet: unknown, first estimate from the commands"
+        ));
         (Class::Unknown, content_est)
     } else {
         let mut secs: Vec<i64> = samples.iter().map(|s| s.secs).collect();
@@ -360,7 +372,9 @@ pub fn classify(
             reasons.push(format!("p90 of {n} passing runs"));
             secs[rank - 1]
         } else {
-            reasons.push(format!("max of {n} passing runs (fewer than {P90_MIN_SAMPLES})"));
+            reasons.push(format!(
+                "max of {n} passing runs (fewer than {P90_MIN_SAMPLES})"
+            ));
             secs[n - 1]
         };
         let c = if est <= SHORT_SECS {
@@ -377,13 +391,18 @@ pub fn classify(
             s.cpu.is_some_and(|c| c <= LIGHT_CPU_PCT) && s.rss.is_some_and(|r| r <= LIGHT_RSS_BYTES)
         });
     if n > 0 && !light {
-        reasons.push("not measured light (peak CPU > 4 cores, RSS > 1 GiB, or a number missing)".into());
+        reasons.push(
+            "not measured light (peak CPU > 4 cores, RSS > 1 GiB, or a number missing)".into(),
+        );
     }
     if let Some(h) = heavy.first() {
         class = Class::Long;
         reasons.push(format!("always long: {h}"));
     }
-    if long.iter().any(|e| !e.trim().is_empty() && fp_s.contains(e.trim())) {
+    if long
+        .iter()
+        .any(|e| !e.trim().is_empty() && fp_s.contains(e.trim()))
+    {
         class = Class::Long;
         reasons.push("config: long".into());
     }
@@ -480,7 +499,15 @@ mod tests {
 
     const NOW: i64 = 1_794_240_000;
 
-    fn run_line(host: &str, cmds: &[&str], secs: &[i64], outcome: &str, cpu: i64, rss: i64, end: i64) -> String {
+    fn run_line(
+        host: &str,
+        cmds: &[&str],
+        secs: &[i64],
+        outcome: &str,
+        cpu: i64,
+        rss: i64,
+        end: i64,
+    ) -> String {
         let steps: Vec<Value> = cmds
             .iter()
             .zip(secs)
@@ -505,12 +532,40 @@ mod tests {
     fn tonights_single_crate_checks_are_short_and_may_go_ahead() {
         let cmd = "cargo test -p aibd --locked --test gate_replay";
         let h = hist(&[
-            run_line("pro13", &[cmd], &[60], "all_passed", 380, 500 << 20, NOW - 3600),
-            run_line("pro13", &[cmd], &[55], "all_passed", 300, 480 << 20, NOW - 1800),
-            run_line("pro13", &[cmd], &[70], "all_passed", 390, 510 << 20, NOW - 600),
+            run_line(
+                "pro13",
+                &[cmd],
+                &[60],
+                "all_passed",
+                380,
+                500 << 20,
+                NOW - 3600,
+            ),
+            run_line(
+                "pro13",
+                &[cmd],
+                &[55],
+                "all_passed",
+                300,
+                480 << 20,
+                NOW - 1800,
+            ),
+            run_line(
+                "pro13",
+                &[cmd],
+                &[70],
+                "all_passed",
+                390,
+                510 << 20,
+                NOW - 600,
+            ),
         ]);
         let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
-        assert_eq!((c.class, c.light, c.may_go_ahead, c.est_secs, c.samples), (Class::Short, true, true, 70, 3), "{c:?}");
+        assert_eq!(
+            (c.class, c.light, c.may_go_ahead, c.est_secs, c.samples),
+            (Class::Short, true, true, 70, 3),
+            "{c:?}"
+        );
     }
 
     /// ebb36: the footprint regression, 13 runs of 739–866 s ⇒ medium, never ahead.
@@ -518,7 +573,17 @@ mod tests {
     fn a_thirteen_minute_regression_is_medium() {
         let cmd = "python3 tests/footprint/test_regress.py";
         let lines: Vec<String> = (0..13)
-            .map(|i| run_line("andymini", &[cmd], &[739 + i * 10], "all_passed", 100, 1 << 20, NOW - 100))
+            .map(|i| {
+                run_line(
+                    "andymini",
+                    &[cmd],
+                    &[739 + i * 10],
+                    "all_passed",
+                    100,
+                    1 << 20,
+                    NOW - 100,
+                )
+            })
             .collect();
         let c = classify("andymini", &s(&[cmd]), &hist(&lines), &[], NOW);
         assert_eq!(c.class, Class::Medium, "{c:?}");
@@ -528,8 +593,18 @@ mod tests {
 
     #[test]
     fn no_history_is_unknown_with_a_first_estimate_and_never_goes_ahead() {
-        let c = classify("pro13", &s(&["cargo fmt --check", "cargo test -p aib-lease"]), "", &[], NOW);
-        assert_eq!((c.class, c.may_go_ahead, c.est_secs), (Class::Unknown, false, 30 + 720), "{c:?}");
+        let c = classify(
+            "pro13",
+            &s(&["cargo fmt --check", "cargo test -p aib-lease"]),
+            "",
+            &[],
+            NOW,
+        );
+        assert_eq!(
+            (c.class, c.may_go_ahead, c.est_secs),
+            (Class::Unknown, false, 30 + 720),
+            "{c:?}"
+        );
     }
 
     #[test]
@@ -537,43 +612,91 @@ mod tests {
         let cmd = "aib test --all";
         let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
         let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
-        assert_eq!((c.class, c.may_go_ahead, c.light), (Class::Long, false, false), "{c:?}");
-        for cmd in ["node tools/test.js", "cargo test -p x -- --include-ignored", "python3 test-cdp-shot.py", "claude -p hi", "cargo test --workspace"] {
+        assert_eq!(
+            (c.class, c.may_go_ahead, c.light),
+            (Class::Long, false, false),
+            "{c:?}"
+        );
+        for cmd in [
+            "node tools/test.js",
+            "cargo test -p x -- --include-ignored",
+            "python3 test-cdp-shot.py",
+            "claude -p hi",
+            "cargo test --workspace",
+        ] {
             let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
-            assert_eq!(classify("pro13", &s(&[cmd]), &h, &[], NOW).class, Class::Long, "{cmd}");
+            assert_eq!(
+                classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+                Class::Long,
+                "{cmd}"
+            );
         }
     }
 
     #[test]
     fn shell_syntax_has_no_fingerprint_and_is_unknown() {
-        for cmd in ["cd x && cargo test", "cargo test | tail", "echo $HOME", "cargo test > o", "rm *", "a; b", "echo \"$(id)\""] {
+        for cmd in [
+            "cd x && cargo test",
+            "cargo test | tail",
+            "echo $HOME",
+            "cargo test > o",
+            "rm *",
+            "a; b",
+            "echo \"$(id)\"",
+        ] {
             let c = classify("pro13", &s(&[cmd]), "", &[], NOW);
-            assert_eq!((c.class, c.fingerprint.as_deref()), (Class::Unknown, None), "{cmd}");
+            assert_eq!(
+                (c.class, c.fingerprint.as_deref()),
+                (Class::Unknown, None),
+                "{cmd}"
+            );
         }
     }
 
     #[test]
     fn commit_ids_rev_values_and_temp_paths_do_not_split_the_history() {
         let then = "aib-verify --rev 2640110c --dir /tmp/x1.noindex 3429a17a0f5570265ff2b236300c8a2f0e4c78b8";
-        let now = "aib-verify --rev HEAD --dir /tmp/x2.noindex 5f583dd43d6f3f16fba2d398c4549ee057a6e954";
+        let now =
+            "aib-verify --rev HEAD --dir /tmp/x2.noindex 5f583dd43d6f3f16fba2d398c4549ee057a6e954";
         assert_eq!(fingerprint("h", &s(&[then])), fingerprint("h", &s(&[now])));
         let h = hist(&[run_line("h", &[then], &[20], "all_passed", 100, 1, NOW)]);
         assert_eq!(classify("h", &s(&[now]), &h, &[], NOW).samples, 1);
         // the quoted form `aib-lease run -- …` records is the same command
-        assert_eq!(fingerprint("h", &s(&["'cargo' 'test' '-p' 'aibd'"])), fingerprint("h", &s(&["cargo test -p aibd"])));
+        assert_eq!(
+            fingerprint("h", &s(&["'cargo' 'test' '-p' 'aibd'"])),
+            fingerprint("h", &s(&["cargo test -p aibd"]))
+        );
     }
 
     #[test]
     fn config_moves_to_long_and_nothing_moves_to_short() {
         let cmd = "cargo clippy -p aib-lease";
         let h = hist(&[run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW)]);
-        assert_eq!(classify("pro13", &s(&[cmd]), &h, &[], NOW).class, Class::Short);
-        let c = classify("pro13", &s(&[cmd]), &h, &["clippy -p aib-lease".into()], NOW);
+        assert_eq!(
+            classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+            Class::Short
+        );
+        let c = classify(
+            "pro13",
+            &s(&[cmd]),
+            &h,
+            &["clippy -p aib-lease".into()],
+            NOW,
+        );
         assert_eq!((c.class, c.may_go_ahead), (Class::Long, false), "{c:?}");
         // a config line cannot make a whole suite short
-        let c = classify("pro13", &s(&["aib test --all"]), "", &read_long_config("short: aib test --all\n"), NOW);
+        let c = classify(
+            "pro13",
+            &s(&["aib test --all"]),
+            "",
+            &read_long_config("short: aib test --all\n"),
+            NOW,
+        );
         assert_eq!(c.class, Class::Long);
-        assert_eq!(read_long_config("# comment\n  a  # tail\n\n"), vec!["a".to_string()]);
+        assert_eq!(
+            read_long_config("# comment\n  a  # tail\n\n"),
+            vec!["a".to_string()]
+        );
         assert_eq!(c.to_json()["class"], "long");
     }
 
@@ -582,9 +705,21 @@ mod tests {
         let cmd = "cargo test -p aib-lease";
         let ok = |end| run_line("pro13", &[cmd], &[40], "all_passed", 100, 1, end);
         let over = |end| run_line("pro13", &[cmd], &[901], "short_overrun", 100, 1, end);
-        let c = classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), over(NOW - 3 * 86400)]), &[], NOW);
+        let c = classify(
+            "pro13",
+            &s(&[cmd]),
+            &hist(&[ok(NOW), over(NOW - 3 * 86400)]),
+            &[],
+            NOW,
+        );
         assert_eq!((c.class, c.may_go_ahead), (Class::Short, false), "{c:?}");
-        let c = classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), over(NOW - 8 * 86400)]), &[], NOW);
+        let c = classify(
+            "pro13",
+            &s(&[cmd]),
+            &hist(&[ok(NOW), over(NOW - 8 * 86400)]),
+            &[],
+            NOW,
+        );
         assert!(c.may_go_ahead, "{c:?}");
         // a passing run that took over 15 min bans as well
         let slow = run_line("pro13", &[cmd], &[1000], "step_failed", 100, 1, NOW);
@@ -594,12 +729,25 @@ mod tests {
     #[test]
     fn fewer_than_five_runs_use_the_max_and_only_passing_runs_on_this_host_count() {
         let cmd = "cargo test -p aibd --lib";
-        let p = |secs, outcome: &str, host: &str| run_line(host, &[cmd], &[secs], outcome, 100, 1, NOW);
-        let h = hist(&[p(10, "all_passed", "pro13"), p(10, "all_passed", "pro13"), p(700, "all_passed", "pro13"),
-                       p(2, "step_failed", "pro13"), p(5000, "all_passed", "andymini")]);
+        let p =
+            |secs, outcome: &str, host: &str| run_line(host, &[cmd], &[secs], outcome, 100, 1, NOW);
+        let h = hist(&[
+            p(10, "all_passed", "pro13"),
+            p(10, "all_passed", "pro13"),
+            p(700, "all_passed", "pro13"),
+            p(2, "step_failed", "pro13"),
+            p(5000, "all_passed", "andymini"),
+        ]);
         let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
-        assert_eq!((c.class, c.est_secs, c.samples), (Class::Medium, 700, 3), "{c:?}");
-        let five: Vec<String> = [10, 20, 30, 40, 2000].iter().map(|x| p(*x, "all_passed", "pro13")).collect();
+        assert_eq!(
+            (c.class, c.est_secs, c.samples),
+            (Class::Medium, 700, 3),
+            "{c:?}"
+        );
+        let five: Vec<String> = [10, 20, 30, 40, 2000]
+            .iter()
+            .map(|x| p(*x, "all_passed", "pro13"))
+            .collect();
         let c = classify("pro13", &s(&[cmd]), &hist(&five), &[], NOW);
         assert_eq!(c.est_secs, 2000, "p90 nearest rank of 5 is the 5th: {c:?}");
     }
@@ -607,17 +755,34 @@ mod tests {
     #[test]
     fn a_missing_or_high_number_is_not_light() {
         let cmd = "cargo check -p aibd";
-        let one = |cpu, rss| hist(&[run_line("pro13", &[cmd], &[30], "all_passed", cpu, rss, NOW)]);
+        let one = |cpu, rss| {
+            hist(&[run_line(
+                "pro13",
+                &[cmd],
+                &[30],
+                "all_passed",
+                cpu,
+                rss,
+                NOW,
+            )])
+        };
         assert!(classify("pro13", &s(&[cmd]), &one(400, 1 << 30), &[], NOW).may_go_ahead);
         for (cpu, rss) in [(-1, 1), (401, 1), (100, -1), (100, (1 << 30) + 1)] {
             let c = classify("pro13", &s(&[cmd]), &one(cpu, rss), &[], NOW);
-            assert_eq!((c.class, c.light, c.may_go_ahead), (Class::Short, false, false), "{cpu} {rss}");
+            assert_eq!(
+                (c.class, c.light, c.may_go_ahead),
+                (Class::Short, false, false),
+                "{cpu} {rss}"
+            );
         }
     }
 
     #[test]
     fn words_follow_shell_quoting() {
-        assert_eq!(words("a 'b c' \"d\\\"e\" f\\ g"), Some(s(&["a", "b c", "d\"e", "f g"])));
+        assert_eq!(
+            words("a 'b c' \"d\\\"e\" f\\ g"),
+            Some(s(&["a", "b c", "d\"e", "f g"]))
+        );
         assert_eq!(words("  "), None);
         assert_eq!(words("'open"), None);
         assert_eq!(words("A=1 cargo test"), Some(s(&["A=1", "cargo", "test"])));
