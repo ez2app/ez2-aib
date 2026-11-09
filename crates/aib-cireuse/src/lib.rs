@@ -2,8 +2,9 @@
 //! S1 read-only shadow (plan PLAN-release-tooling v3 9.2 item 3, 1ced7 writes / bb7dc reviews).
 //!
 //! For one push to main: could each CI cell have reused the result the PR already earned on the
-//! very same tree? Only records the answer, the reasons and the minutes it would have saved.
-//! It never writes a status, never skips a cell, and nothing here is gate evidence.
+//! very same tree? Only records the answer and the reasons. It never writes a status, never skips
+//! a cell, and nothing here is gate evidence. It claims no minutes saved: main's observed wall
+//! clock is recorded as an observation only (a saving needs a counterfactual measurement).
 //!
 //! A cell counts as "could reuse" only when every check below holds (anything unreadable = no):
 //! - the PR's latest run of the same workflow file, from this repo (not a fork), finished;
@@ -13,7 +14,14 @@
 //! - the same step list with the same per-step outcome (catches event-dependent paths such as a
 //!   PR cell that only printed "cell not run on this PR");
 //! - the PR job ran at least half as long as main's job (catches empty runs);
-//! - it finished at most 24 h before main's run was created.
+//! - it finished before main's run attempt started, and at most 24 h before (a negative gap = no).
+//!
+//! The whole push counts as "reusable" only when the cell list is also complete: every workflow
+//! file the PR ran has a main run, every job name either side ran exists on both sides exactly
+//! once, and no main run came back with an empty job list. Missing or unreadable = not complete.
+//!
+//! Shadow false green is only counted over cells it could be compared on (main's own run of the
+//! cell ended success or failure). With nothing comparable it is unknown, not 0.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -84,6 +92,8 @@ pub struct Cell {
     pub main_seconds: Option<i64>,
     pub main_conclusion: Option<String>,
     pub cand_job_id: Option<u64>,
+    pub cand_run_attempt: Option<u32>,
+    pub cand_completed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,10 +103,14 @@ pub struct Verdict {
     pub state: String,
     pub note: String,
     pub cells: Vec<Cell>,
-    /// measured: main's wall clock (first run start -> last run end) when every cell could reuse
-    pub save_minutes: Option<f64>,
-    /// predicted reusable but main's own run of that cell was not success
-    pub shadow_false_green: Vec<String>,
+    /// observed only, never a saving: main's wall clock (first run start -> last run end)
+    pub observed_main_wall_minutes: Option<f64>,
+    /// predicted reusable and main's own run of that cell failed. None = nothing comparable (unknown)
+    pub shadow_false_green: Option<Vec<String>>,
+    /// predicted-reusable cells whose main result was success or failure (the false-green denominator)
+    pub compared_cells: usize,
+    /// predicted-reusable cells main cancelled / skipped / left without a conclusion
+    pub uncomparable_cells: Vec<String>,
     pub main_created_at: Option<i64>,
 }
 
@@ -121,8 +135,10 @@ fn verdict(f: &Facts, state: &str, note: &str) -> Verdict {
         state: state.into(),
         note: note.into(),
         cells: vec![],
-        save_minutes: None,
-        shadow_false_green: vec![],
+        observed_main_wall_minutes: None,
+        shadow_false_green: None,
+        compared_cells: 0,
+        uncomparable_cells: vec![],
         main_created_at: f.main_runs.iter().map(|r| r.created_at).min(),
     }
 }
@@ -149,19 +165,60 @@ pub fn judge(f: &Facts) -> Verdict {
             &format!("main run {} ({}) has not finished", r.id, r.path),
         );
     }
+    if let Some(r) = mains.values().find(|r| r.jobs.is_empty()) {
+        return verdict(
+            f,
+            "unknown",
+            &format!("main run {} ({}) came back with no jobs", r.id, r.path),
+        );
+    }
     let cands = latest_per_path(&f.cand_runs);
     let mut cells = vec![];
     for (path, m) in &mains {
         for mj in &m.jobs {
-            cells.push(judge_cell(f, path, m, mj, cands.get(path).copied()));
+            let mut c = judge_cell(f, path, m, mj, cands.get(path).copied());
+            if m.jobs.iter().filter(|j| j.name == mj.name).count() > 1 {
+                c.reasons
+                    .push("ambiguous_main_job: main's run has this job name more than once".into());
+                c.reusable = false;
+            }
+            cells.push(c);
+        }
+        if let Some(cr) = cands.get(path) {
+            for cj in &cr.jobs {
+                if !m.jobs.iter().any(|j| j.name == cj.name) {
+                    cells.push(missing_cell(
+                        path,
+                        &cj.name,
+                        "main_job_missing: the PR ran this job, main's run has no job named so",
+                    ));
+                }
+            }
+        }
+    }
+    for path in cands.keys() {
+        if !mains.contains_key(path) {
+            cells.push(missing_cell(
+                path,
+                "(whole workflow)",
+                "main_workflow_missing: the PR ran this workflow file, main's push has no run of it",
+            ));
         }
     }
     let mut v = verdict(f, "not_reusable", "");
-    v.shadow_false_green = cells
-        .iter()
-        .filter(|c| c.reusable && c.main_conclusion.as_deref() != Some("success"))
-        .map(|c| format!("{} / {}", c.workflow, c.job))
-        .collect();
+    let mut false_green = vec![];
+    for c in cells.iter().filter(|c| c.reusable) {
+        let name = format!("{} / {}", c.workflow, c.job);
+        match c.main_conclusion.as_deref() {
+            Some("success") => v.compared_cells += 1,
+            Some("failure") => {
+                v.compared_cells += 1;
+                false_green.push(name);
+            }
+            _ => v.uncomparable_cells.push(name),
+        }
+    }
+    v.shadow_false_green = (v.compared_cells > 0).then_some(false_green);
     let all = !cells.is_empty() && cells.iter().all(|c| c.reusable);
     let any = cells.iter().any(|c| c.reusable);
     v.state = if all {
@@ -172,26 +229,33 @@ pub fn judge(f: &Facts) -> Verdict {
         "not_reusable"
     }
     .into();
-    if all {
-        let start = mains.values().filter_map(|r| r.run_started_at).min();
-        let end = mains.values().filter_map(|r| r.updated_at).max();
-        if let (Some(a), Some(b)) = (start, end) {
-            if b >= a
-                && mains
-                    .values()
-                    .all(|r| r.run_started_at.is_some() && r.updated_at.is_some())
-            {
-                v.save_minutes = Some(((b - a) as f64 / 60.0 * 10.0).round() / 10.0);
-            }
-        }
-        if v.save_minutes.is_none() {
-            v.note =
-                "every cell could reuse, but main's wall clock is unreadable: no minutes shown"
-                    .into();
+    let start = mains.values().filter_map(|r| r.run_started_at).min();
+    let end = mains.values().filter_map(|r| r.updated_at).max();
+    if let (Some(a), Some(b)) = (start, end) {
+        if b >= a
+            && mains
+                .values()
+                .all(|r| r.run_started_at.is_some() && r.updated_at.is_some())
+        {
+            v.observed_main_wall_minutes = Some(((b - a) as f64 / 60.0 * 10.0).round() / 10.0);
         }
     }
     v.cells = cells;
     v
+}
+
+fn missing_cell(path: &str, job: &str, why: &str) -> Cell {
+    Cell {
+        workflow: path.into(),
+        job: job.into(),
+        reusable: false,
+        reasons: vec![why.into()],
+        main_seconds: None,
+        main_conclusion: None,
+        cand_job_id: None,
+        cand_run_attempt: None,
+        cand_completed_at: None,
+    }
 }
 
 fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> Cell {
@@ -203,6 +267,8 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         main_seconds: mj.seconds(),
         main_conclusion: mj.conclusion.clone(),
         cand_job_id: None,
+        cand_run_attempt: None,
+        cand_completed_at: None,
     };
     let Some(cr) = cand else {
         c.reasons.push(
@@ -240,6 +306,8 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         }
     };
     c.cand_job_id = Some(cj.id);
+    c.cand_run_attempt = Some(cr.run_attempt);
+    c.cand_completed_at = cj.completed_at;
     if cj.conclusion.as_deref() != Some("success") {
         c.reasons.push(format!(
             "candidate_not_success: job {} (run {} attempt {}) is {}",
@@ -249,13 +317,20 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
             cj.conclusion.as_deref().unwrap_or("none")
         ));
     }
-    match cj.completed_at {
-        Some(done) if m.created_at - done <= MAX_AGE_S => {}
-        Some(done) => c.reasons.push(format!(
-            "older_than_24h: finished {} h before main's run",
-            (m.created_at - done) / 3600
+    // main's attempt start (run_started_at moves with a re-run attempt; created_at does not)
+    match (cj.completed_at, m.run_started_at) {
+        (Some(done), Some(start)) if done > start => c.reasons.push(format!(
+            "finished_after_main: PR job finished {} s after main's run attempt {} started",
+            done - start,
+            m.run_attempt
         )),
-        None => c.reasons.push("candidate_time_unknown".into()),
+        (Some(done), Some(start)) if start - done <= MAX_AGE_S => {}
+        (Some(done), Some(start)) => c.reasons.push(format!(
+            "older_than_24h: finished {} h before main's run attempt {} started",
+            (start - done) / 3600,
+            m.run_attempt
+        )),
+        _ => c.reasons.push("candidate_time_unknown".into()),
     }
     match cj.tested_sha.as_deref() {
         None => c
@@ -499,13 +574,17 @@ pub fn verdict_json(v: &Verdict) -> Value {
         "main_sha": v.main_sha,
         "state": v.state,
         "note": v.note,
-        "save_minutes": v.save_minutes,
-        "save_minutes_kind": "measured: main wall clock of this push (only when every cell could reuse)",
+        "saved_minutes": Value::Null,
+        "saved_minutes_kind": "not measured: a saving needs a counterfactual measurement; the observed wall clock is not one",
+        "observed_main_wall_minutes": v.observed_main_wall_minutes,
         "shadow_false_green": v.shadow_false_green,
+        "compared_cells": v.compared_cells,
+        "uncomparable_cells": v.uncomparable_cells,
         "main_created_at": v.main_created_at,
         "cells": v.cells.iter().map(|c| serde_json::json!({
             "workflow": c.workflow, "job": c.job, "reusable": c.reusable, "reasons": c.reasons,
             "main_seconds": c.main_seconds, "main_conclusion": c.main_conclusion, "cand_job_id": c.cand_job_id,
+            "cand_run_attempt": c.cand_run_attempt, "cand_completed_at": c.cand_completed_at,
         })).collect::<Vec<_>>(),
         "writes_status": false,
         "skips_cells": false,
@@ -526,30 +605,39 @@ pub fn day_line(lines: &[String]) -> String {
         }
     }
     let mut count: BTreeMap<String, usize> = BTreeMap::new();
-    let mut minutes = 0.0;
-    let mut fg = 0;
+    let (mut compared, mut fg, mut unc, mut wall) = (0u64, 0usize, 0usize, 0.0);
     for v in by.values() {
         *count.entry(s(v, "state")).or_default() += 1;
-        if s(v, "state") == "reusable" {
-            minutes += v.get("save_minutes").and_then(Value::as_f64).unwrap_or(0.0);
-        }
+        compared += v.get("compared_cells").and_then(Value::as_u64).unwrap_or(0);
         fg += v
             .get("shadow_false_green")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
+        unc += v
+            .get("uncomparable_cells")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        wall += v
+            .get("observed_main_wall_minutes")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
     }
     let g = |k: &str| count.get(k).copied().unwrap_or(0);
+    let fg_text = if compared == 0 {
+        "影子假綠 UNKNOWN(沒有可比較的格)".to_string()
+    } else {
+        format!("影子假綠 {fg} / 可比較 {compared} 格")
+    };
     let mut out = format!(
-        "今天 {} 次可沿用、估少等 {:.0} 分(判了 {} 次：部分可沿用 {}、不可 {}、等跑完 {}、查不到 {}、非合併 {};影子假綠 {})",
+        "今天 {} 次全可沿用(判了 {} 次:部分可沿用 {}、不可 {}、等跑完 {}、查不到 {}、非合併 {});{fg_text}、未可比較 {unc} 格;main 執行牆鐘合計 {:.0} 分(觀察值,不是省下的時間)",
         g("reusable"),
-        minutes,
         by.len(),
         g("partial"),
         g("not_reusable"),
         g("wait"),
         g("unknown"),
         g("not_merge"),
-        fg
+        wall
     );
     if bad > 0 {
         out.push_str(&format!(";帳本壞行 {bad}"));

@@ -110,13 +110,16 @@ fn reasons(v: &Verdict) -> String {
 }
 
 #[test]
-fn positive_same_tree_same_cell_could_reuse_with_measured_minutes() {
+fn positive_same_tree_same_cell_could_reuse() {
     let v = judge(&base());
     assert_eq!(v.state, "reusable", "{}", reasons(&v));
     assert!(v.cells.iter().all(|c| c.reusable));
-    assert_eq!(v.save_minutes, Some(30.2)); // 10 s queue + 1800 s run, main's own wall clock
-    assert!(v.shadow_false_green.is_empty());
+    // observed only (10 s queue + 1800 s run, main's own wall clock), never reported as a saving
+    assert_eq!(v.observed_main_wall_minutes, Some(30.2));
+    assert_eq!(v.shadow_false_green, Some(vec![]));
+    assert_eq!(v.compared_cells, 1);
     let j = verdict_json(&v);
+    assert!(j["saved_minutes"].is_null(), "{j}");
     assert_eq!(j["writes_status"], false);
     assert_eq!(j["skips_cells"], false);
 }
@@ -132,7 +135,11 @@ fn knife_same_tree_different_workflow_file() {
         "{}",
         reasons(&v)
     );
-    assert_eq!(v.save_minutes, None);
+    assert!(
+        reasons(&v).contains("main_workflow_missing"),
+        "{}",
+        reasons(&v)
+    );
 }
 
 #[test]
@@ -264,7 +271,7 @@ fn partial_reuse_shows_no_minutes() {
     ));
     let v = judge(&f);
     assert_eq!(v.state, "partial");
-    assert_eq!(v.save_minutes, None);
+    assert!(verdict_json(&v)["saved_minutes"].is_null());
 }
 
 #[test]
@@ -274,8 +281,9 @@ fn shadow_false_green_is_flagged_when_main_itself_failed() {
     let v = judge(&f);
     assert_eq!(
         v.shadow_false_green,
-        vec![format!("{CI} / smoke (ubuntu-latest, 3.12)")]
+        Some(vec![format!("{CI} / smoke (ubuntu-latest, 3.12)")])
     );
+    assert_eq!(v.compared_cells, 1);
 }
 
 #[test]
@@ -319,10 +327,13 @@ fn day_line_last_line_per_commit_wins() {
         "garbage".to_string(),
     ];
     let line = day_line(&lines);
+    assert!(line.starts_with("今天 1 次全可沿用(判了 1 次"), "{line}");
+    assert!(line.contains("影子假綠 0 / 可比較 1 格"), "{line}");
     assert!(
-        line.starts_with("今天 1 次可沿用、估少等 30 分(判了 1 次"),
+        line.contains("main 執行牆鐘合計 30 分(觀察值,不是省下的時間)"),
         "{line}"
     );
+    assert!(!line.contains("省 ") && !line.contains("估少等"), "{line}");
     assert!(line.contains("帳本壞行 1"), "{line}");
 }
 
@@ -441,7 +452,7 @@ fn facts_end_to_end_from_api_shapes() {
     let f = facts(&Fake(m.clone()), REPO, MAIN).unwrap();
     let v = judge(&f);
     assert_eq!(v.state, "reusable", "{}", reasons(&v));
-    assert_eq!(v.save_minutes, Some(30.7));
+    assert_eq!(v.observed_main_wall_minutes, Some(30.7));
     // the tested commit cannot be read => not reuse (never "unreadable means fine")
     m.remove(&format!("repos/{REPO}/git/commits/{TESTED}"));
     let v = judge(&facts(&Fake(m.clone()), REPO, MAIN).unwrap());
@@ -476,4 +487,159 @@ fn offline_file_source_reads_only_what_was_recorded() {
         "file names may not leave the directory"
     );
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+// ---------- bb7dc #575 review (11-09): four holes, one counterexample each ----------
+
+fn names(v: &Verdict) -> Vec<String> {
+    v.cells
+        .iter()
+        .map(|c| format!("{}|{}|{}", c.job, c.reusable, c.reasons.join(";")))
+        .collect()
+}
+
+#[test]
+fn r1_pr_workflow_missing_on_main_is_not_complete() {
+    let mut f = base();
+    let mut other = f.cand_runs[0].clone();
+    other.id = 3;
+    other.path = ".github/workflows/aibd.yml".into();
+    f.cand_runs.push(other);
+    let v = judge(&f);
+    assert_eq!(v.state, "partial", "{:?}", names(&v));
+    assert!(
+        reasons(&v).contains("main_workflow_missing"),
+        "{:?}",
+        names(&v)
+    );
+}
+
+#[test]
+fn r1_pr_matrix_cell_missing_on_main_is_not_complete() {
+    let mut f = base();
+    let extra = f.cand_runs[0].jobs[0].clone();
+    f.cand_runs[0].jobs.push(Job {
+        id: 22,
+        name: "smoke (ubuntu-latest, 3.14)".into(),
+        ..extra
+    });
+    let v = judge(&f);
+    assert_eq!(v.state, "partial", "{:?}", names(&v));
+    assert!(reasons(&v).contains("main_job_missing"), "{:?}", names(&v));
+}
+
+#[test]
+fn r1_same_count_one_swapped_is_not_complete() {
+    let mut f = base();
+    let mj = f.main_runs[0].jobs[0].clone();
+    f.main_runs[0].jobs.push(Job {
+        id: 12,
+        name: "docs".into(),
+        ..mj
+    });
+    let cj = f.cand_runs[0].jobs[0].clone();
+    f.cand_runs[0].jobs.push(Job {
+        id: 22,
+        name: "tip".into(),
+        ..cj
+    });
+    let v = judge(&f);
+    assert_eq!(v.state, "partial", "{:?}", names(&v));
+    let r = reasons(&v);
+    assert!(
+        r.contains("no_candidate_job") && r.contains("main_job_missing"),
+        "{r}"
+    );
+}
+
+#[test]
+fn r1_empty_main_jobs_and_duplicate_main_job_are_not_reuse() {
+    let mut f = base();
+    f.main_runs[0].jobs.clear();
+    assert_eq!(judge(&f).state, "unknown");
+    let mut f = base();
+    let dup = f.main_runs[0].jobs[0].clone();
+    f.main_runs[0].jobs.push(Job { id: 12, ..dup });
+    let v = judge(&f);
+    assert_eq!(v.state, "not_reusable", "{:?}", names(&v));
+    assert!(reasons(&v).contains("ambiguous_main_job"));
+}
+
+#[test]
+fn r2_all_reusable_still_claims_no_saved_minutes() {
+    let v = judge(&base());
+    assert_eq!(v.state, "reusable");
+    let j = verdict_json(&v);
+    assert!(j["saved_minutes"].is_null(), "{j}");
+    assert!(j.get("save_minutes").is_none(), "{j}");
+    let line = day_line(&[j.to_string()]);
+    assert!(!line.contains("估少等"), "{line}");
+}
+
+#[test]
+fn r3_false_green_needs_a_comparable_cell() {
+    // main cancelled the only cell: nothing comparable => unknown, never "0"
+    let mut f = base();
+    f.main_runs[0].jobs[0].conclusion = Some("cancelled".into());
+    let v = judge(&f);
+    assert_eq!(v.shadow_false_green, None);
+    assert_eq!(v.compared_cells, 0);
+    assert_eq!(v.uncomparable_cells.len(), 1);
+    let line = day_line(&[verdict_json(&v).to_string()]);
+    assert!(line.contains("影子假綠 UNKNOWN"), "{line}");
+    assert!(line.contains("未可比較 1 格"), "{line}");
+    // no reusable cell at all (missing candidate) => unknown too
+    let mut f = base();
+    f.cand_runs.clear();
+    let v = judge(&f);
+    assert_eq!(v.shadow_false_green, None);
+    assert!(day_line(&[verdict_json(&v).to_string()]).contains("影子假綠 UNKNOWN"));
+    // real main failure is counted; real success is 0 of 1
+    let mut f = base();
+    f.main_runs[0].jobs[0].conclusion = Some("failure".into());
+    let line = day_line(&[verdict_json(&judge(&f)).to_string()]);
+    assert!(line.contains("影子假綠 1 / 可比較 1 格"), "{line}");
+    let line = day_line(&[verdict_json(&judge(&base())).to_string()]);
+    assert!(line.contains("影子假綠 0 / 可比較 1 格"), "{line}");
+}
+
+#[test]
+fn r4_candidate_finished_after_main_started_is_refused() {
+    let mut f = base();
+    let start = f.main_runs[0].run_started_at.unwrap();
+    let j = &mut f.cand_runs[0].jobs[0];
+    j.started_at = Some(start - 1000);
+    j.completed_at = Some(start + 1);
+    let r = reasons(&judge(&f));
+    assert!(r.contains("finished_after_main"), "{r}");
+    // boundaries: 0 s and exactly 24 h before are fine, 24 h + 1 s is not
+    for (gap, ok) in [(0, true), (MAX_AGE_S, true), (MAX_AGE_S + 1, false)] {
+        let mut f = base();
+        let j = &mut f.cand_runs[0].jobs[0];
+        j.completed_at = Some(start - gap);
+        j.started_at = Some(start - gap - 1790);
+        let v = judge(&f);
+        assert_eq!(v.state == "reusable", ok, "gap {gap}: {}", reasons(&v));
+    }
+}
+
+#[test]
+fn r4_rerun_attempt_uses_its_own_start_and_records_the_candidate_attempt() {
+    let mut f = base();
+    // main re-run: attempt 2 started 30 h after the run was created
+    f.main_runs[0].run_attempt = 2;
+    let start = f.main_runs[0].created_at + 30 * 3600;
+    f.main_runs[0].run_started_at = Some(start);
+    let mj = &mut f.main_runs[0].jobs[0];
+    mj.started_at = Some(start + 10);
+    mj.completed_at = Some(start + 1810);
+    f.main_runs[0].updated_at = Some(start + 1810);
+    let v = judge(&f);
+    assert!(reasons(&v).contains("older_than_24h"), "{}", reasons(&v));
+    assert!(reasons(&v).contains("attempt 2"), "{}", reasons(&v));
+    let mut f = base();
+    f.cand_runs[0].run_attempt = 3;
+    let v = judge(&f);
+    assert_eq!(v.cells[0].cand_run_attempt, Some(3));
+    assert_eq!(verdict_json(&v)["cells"][0]["cand_run_attempt"], 3);
 }

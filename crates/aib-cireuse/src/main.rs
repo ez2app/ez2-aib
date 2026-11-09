@@ -102,8 +102,10 @@ fn judge_one(a: &Args, src: &dyn Source, sha: &str) -> i32 {
                 state: "unknown".into(),
                 note: e.clone(),
                 cells: vec![],
-                save_minutes: None,
-                shadow_false_green: vec![],
+                observed_main_wall_minutes: None,
+                shadow_false_green: None,
+                compared_cells: 0,
+                uncomparable_cells: vec![],
                 main_created_at: None,
             };
             let _ = record(a, &v);
