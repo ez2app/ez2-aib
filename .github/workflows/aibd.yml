@@ -236,6 +236,37 @@ jobs:
             '        Ok(None) // knife' \
             --expect-fail seats::tests::keys \
             -- cargo test -p aibd --locked --lib seats::tests::keys
+      # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
+      # preview.3). Each knife takes one check out of the gate and must turn its own
+      # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
+      # (`&& false`), RUSTFLAGS has -D warnings.
+      - name: allowlist knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ak() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aibd --locked --test sessions_allowlist "$4"; }
+          # K1 the program list is not checked: an unlisted /bin/echo starts
+          ak crates/aibd/src/allowlist.rs \
+            '    if !listed {' \
+            '    if !listed && false { // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K4 the env name list is not checked: NODE_OPTIONS / HOME reach the child
+          ak crates/aibd/src/allowlist.rs \
+            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) {' \
+            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K9 shells / interpreters are not refused at start: a listed link to /bin/sh runs
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&real) || is_interpreter(a) {' \
+            '        if (is_interpreter(&real) || is_interpreter(a)) && false { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K13 a refusal leaves no audit record
+          ak crates/aibd/src/sessions.rs \
+            '            event_type: "session.spawn_rejected".into(),' \
+            '            event_type: "session.knife_no_audit".into(), // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
