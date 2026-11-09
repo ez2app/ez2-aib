@@ -32,7 +32,9 @@ class Smoke(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("EZ2_", "AIB_")) and k not in ("PYTHONPATH", "BASH_ENV")}
         self.env.update({"HOME": str(self.td / "home"), "XDG_CACHE_HOME": str(self.td / "cache"), "EZ2_AIB_LOCALE": "en",
                          "LANG": "en_US.UTF-8", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"})
+                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+                         # 這支驗沿用本身:一支也要追蹤(11-09 起 aib test 預設不到 100 支不追蹤)
+                         "AIB_TEST_TRACE_MIN": "0"})
         (self.td / "home").mkdir()
         for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
             subprocess.run(["git"] + a, cwd=self.proj, env=self.env, check=True, capture_output=True, stdin=subprocess.DEVNULL)

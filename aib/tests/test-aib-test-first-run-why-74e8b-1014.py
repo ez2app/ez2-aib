@@ -52,7 +52,8 @@ class FirstRunWhy(unittest.TestCase):
         py = os.path.dirname(sys.executable)
         self.state_root = os.path.join(self.home, ".ez2-aib")
         self.env = {"HOME": self.home, "EZ2_AIB_STATE_ROOT": self.state_root, "PATH": "%s:/usr/bin:/bin:%s" % (py, os.path.dirname(shutil.which("git"))),
-                    "LANG": "zh_TW.UTF-8", "EZ2_AIB_LOCALE": "zh-TW", "TMPDIR": self.tmp + "/"}
+                    "LANG": "zh_TW.UTF-8", "EZ2_AIB_LOCALE": "zh-TW", "TMPDIR": self.tmp + "/",
+                    "AIB_TEST_TRACE_MIN": "0"}   # 驗的是追蹤的第一輪說明:兩支也要追蹤(11-09 起預設不到 100 支不追蹤)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

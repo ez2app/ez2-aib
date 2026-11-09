@@ -336,8 +336,9 @@ def versus(tests, wall_s, lease_wait_s=0, mem_wait_s=0):
     沿用的用它被沿用那一列的實跑秒數;都是 aib 底下量的,含追蹤的額外時間);有 aib = 這一輪實際牆鐘。
     沿用的沒有秒數 ⇒ 不算進「沒有 aib」(只會少算,不會多算),另回支數。沒驗的不算(支數另回 unverified)。
     10-14(a seat 派):with_s = 牆鐘扣掉排隊等機器與等記憶體(那段沒在跑測試,算進去看起來像 aib 變慢);
-    含等待的牆鐘另回 wall_s。"""
-    without, unknown, ran, reused, unverified = 0.0, 0, 0, 0, 0
+    含等待的牆鐘另回 wall_s。
+    11-09(影子續跑第 0 步):實跑與沿用的秒數分開回(ran_s / reused_s);without_s 是相加估算(without_kind),不是實測。"""
+    without, unknown, ran, reused, unverified, ran_s, reused_s = 0.0, 0, 0, 0, 0, 0.0, 0.0
     for r in tests:
         if r.get("unverified"):
             unverified += 1
@@ -350,6 +351,10 @@ def versus(tests, wall_s, lease_wait_s=0, mem_wait_s=0):
             d = r.get("elapsed_s")
         if isinstance(d, (int, float)) and d > 0:
             without += float(d)
+            if r.get("reused"):
+                reused_s += float(d)
+            else:
+                ran_s += float(d)
         else:
             unknown += int(bool(r.get("reused")))
     wall = max(0.0, float(wall_s or 0))
@@ -358,7 +363,8 @@ def versus(tests, wall_s, lease_wait_s=0, mem_wait_s=0):
     run = max(0.0, wall - lw - mw)
     return {"without_s": round(without, 1), "with_s": round(run, 1), "saved_s": round(max(0.0, without - run), 1),
             "wall_s": round(wall, 1), "lease_wait_s": round(lw, 1), "mem_wait_s": round(mw, 1),
-            "ran": ran, "reused": reused, "unknown": unknown, "unverified": unverified}
+            "ran": ran, "reused": reused, "unknown": unknown, "unverified": unverified,
+            "ran_s": round(ran_s, 1), "reused_s": round(reused_s, 1), "without_kind": "sum_estimate"}
 
 
 def _test_stats_path():
@@ -401,6 +407,11 @@ def dur_text(seconds):
     return i18n_lib.t("aib.pushgate.unit_h", {"n": ("%.1f" % (s / 3600)).rstrip("0").rstrip(".")}, locale=LOC)
 
 
+# 11-09 影子續跑第 0 步:省時那一行只在「省 ≥ SAVED_MIN_S 秒且 ≥ SAVED_MIN_PCT%」才印,而且標估算
+SAVED_MIN_S = 30.0
+SAVED_MIN_PCT = 20.0
+
+
 def versus_lines(vs, before, who=None, causes=None, required=None):
     """跑完印的 🧮 樹狀(純函式,好測)。10-14 v2(the maintainer 看過的示意 ~/.ez2-aib/pending/MOCK-shadow-explain-v2-8f366-1014.md):
     頂行寫誰跑的、哪棵樹;⚡ 是含等待的牆鐘,底下拆排隊等機器 / 等記憶體 / 真正在跑;🔁 母體單一(整支跳過的另註明不算);
@@ -431,7 +442,8 @@ def versus_lines(vs, before, who=None, causes=None, required=None):
     if vs.get("tracer") and last.get("tracer") and last["tracer"] != vs["tracer"] and not vs["reused"]:
         # aib 換版(追蹤器程式不同)⇒ 舊紀錄全部作廢、這一輪全部實跑;不說的話用戶只看到「這次怎麼沒省」
         out.append(T("vs_aib_changed"))
-    split = {"count": vs["reused"], "n": vs["ran"], "total": vs["reused"] + vs["ran"], "u": vs.get("unverified") or 0}
+    split = {"count": vs["reused"], "n": vs["ran"], "total": vs["reused"] + vs["ran"], "u": vs.get("unverified") or 0,
+             "ran_t": dur_text(vs.get("ran_s") or 0), "reused_t": dur_text(vs.get("reused_s") or 0)}
     out.append(T("vs_split_unverified" if split["u"] else "vs_split", split))   # 母體單一:整支跳過的另註明不算
     if causes:
         out.append(T("vs_causes", {"what": T("vs_wait_sep").join(causes[:3])}))
@@ -443,13 +455,15 @@ def versus_lines(vs, before, who=None, causes=None, required=None):
     out.append(T("vs_compare_waited" if waits else "vs_compare",
                  {"without": dur_text(vs["without_s"]), "actual": dur_text(vs["with_s"])}))
     req.append(out[-1])
+    pct = 100.0 * vs["saved_s"] / vs["without_s"]
     if not before and not vs["reused"]:
         out.append(T("vs_first"))
     elif vs["with_s"] > vs["without_s"]:      # the maintainer 10-07:沒省到只講沒省到,不寫「多花」(a seat 10-14 裁:照舊)
         out.append(T("vs_nosave"))
-    else:
-        pct = 100.0 * vs["saved_s"] / vs["without_s"]
+    elif vs["saved_s"] >= SAVED_MIN_S and pct >= SAVED_MIN_PCT:
         out.append(T("vs_saved", {"seconds": dur_text(vs["saved_s"]), "pct": "%.0f" % pct}))
+    else:     # 省不到 30 秒或 20%:相加估算的誤差就有這麼大,不印省時(11-09 第 0 步)
+        return out
     req.append(out[-1])
     return out
 
@@ -1117,6 +1131,27 @@ def _unmet_needs(repo, name):
     return [c for c in _needs_of(repo, name) if _need_met(repo, c) is False]
 
 
+class GoOnce:
+    """同一個 Go 套件這一批只跑一次(10-08 pflag 實測:32 個測試檔同一個套件 ⇒ 以前 go test 同一包跑 32 次)。
+    11-09 a63ab #565:每次都要成立的規則抽成一處,追蹤 / 不追蹤(小批、退回)兩條路都呼叫,不准各寫一份。
+    same(name) ⇒ 這一批已跑過同套件 ⇒ 回一列沿用那次的結果(不算實跑、紅綠跟那次一樣);否則 None。
+    ran(name, row) ⇒ 記下這支實跑的結果給同套件後面的用。"""
+
+    def __init__(self):
+        self.done = {}
+
+    def same(self, name):
+        first = self.done.get(runner.go_package_key(name) or "\0")
+        if first is None:
+            return None
+        return dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"], baseline_s=None, slow=False)
+
+    def ran(self, name, row):
+        gk = runner.go_package_key(name)
+        if gk is not None and gk not in self.done:
+            self.done[gk] = row
+
+
 def _unverified(name, unmet):
     """缺條件 ⇒ 每個條件寫成「這台缺 X」;別種沒驗(全部跳過、一支都沒收集到)的原因自己寫,不冠「這台缺」(10-08)。"""
     return {"name": name, "rc": None, "unverified": True, "needs": [T("need_missing", {"what": c}) for c in unmet], "reused": False,
@@ -1279,6 +1314,9 @@ MEM_POLL_S = 30
 MEM_WAIT_MAX_S = 600       # 大批最多等這麼久,之後照跑(AIB_TEST_MEM_WAIT_MAX_S 可改)
 MEM_WAIT_SMALL_S = 30      # 小批(≤ BIG_BATCH)最多等這麼久:AI 席的 Bash 工具 2~10 分鐘就逾時,等久了只看到逾時、沒有紅綠(a seat 審)
 BIG_BATCH = 30             # 超過這麼多支算大批(AIB_TEST_BIG_BATCH 可改;0 = 都不排隊)
+# 11-09 影子續跑第 0 步(PLAN-shadow-reuse-rust-a63ab-1109 §3):一次跑不到這麼多支 ⇒ 不起追蹤器、直接實跑。
+#   小迴圈每支多花的追蹤時間比沿用省下的多。AIB_TEST_TRACE_MIN 可改(0 = 一律追蹤);--trace 這一輪強制追蹤。
+TRACE_MIN = 100
 LEASE_POLL_S = 30
 LEASE_WAIT_MAX_S = 3600    # 大批排隊最多等這麼久(推包一輪約 50 分鐘),等滿還沒輪到 ⇒ 這批不跑、回 RC_EXCLUSIVE 請重排
                            # (10-29:以前是不拿租約照跑 ⇒ 跟持有人並跑、租約失去意義);--wait-max / AIB_TEST_LEASE_WAIT_MAX_S 可改
@@ -1287,6 +1325,16 @@ LEASE_WAIT_MAX_S = 3600    # 大批排隊最多等這麼久(推包一輪約 50 �
 def _env_int(name, default):
     v = os.environ.get(name, "").strip()
     return int(v) if v.isdigit() else default
+
+
+def trace_wanted(a, n):
+    """這一輪要不要起追蹤器(影子續跑)。分份的子行程只看主行程傳下來的 --trace / --no-trace(每份都不到門檻,
+    自己算會把 --all 整批關掉);--resume 要追蹤才接得回(環境指紋)⇒ 一律追蹤。"""
+    if getattr(a, "no_trace", False):
+        return False
+    if getattr(a, "trace", False) or getattr(a, "resume", None) is not None:
+        return True
+    return n >= _env_int("AIB_TEST_TRACE_MIN", TRACE_MIN)
 
 
 def free_mb():
@@ -1548,6 +1596,7 @@ def run_sharded(repo, names, jobs, a):
         os.close(fd)
         cmd = [sys.executable, str(Path(__file__).resolve()), "--repo", str(repo), "--jobs", "1", "--shard-out", out]
         cmd += (["--strict"] if a.strict else []) + (["--fresh"] if a.fresh else [])
+        cmd += ["--trace"] if trace_wanted(a, len(names)) else ["--no-trace"]   # 門檻看整批,不看每一份
         cmd += (["--timeout", str(a.timeout)] if a.timeout else []) + s
         procs.append((subprocess.Popen(cmd, cwd=str(repo), stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                        env=dict(os.environ, AIB_TEST_SHARD=str(i))), out))
@@ -1573,8 +1622,8 @@ def run_sharded(repo, names, jobs, a):
     unv = [r for r in tests if r.get("unverified")]
     states = {part.get("state") for part in parts}
     lost = len(tests) < len(names)            # 有一份沒交回結果 ⇒ 不能當全綠
-    if "fallback" in states:
-        fb = next(part for part in parts if part.get("state") == "fallback")
+    if "fallback" in states or states == {"small"}:
+        fb = next(part for part in parts if part.get("state") in ("fallback", "small"))
         return dict(fb, tests=tests, ran=ran, reused=reused, kept=kept, rc=1 if reds or lost else (4 if unv else 0))
     if "short" in states or kept < ran or lost:
         return {"state": "short", "gate": parts[0].get("gate", {}), "tests": tests, "ran": ran, "reused": reused, "kept": kept,
@@ -1583,18 +1632,20 @@ def run_sharded(repo, names, jobs, a):
             "rc": 1 if reds else (4 if unv else 0), "line1": T("line1_enabled", {"reused": reused, "ran": ran, "kept": kept})}
 
 
-def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=None, live=None, resume=None):
+def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=None, live=None, resume=None, trace=True):
     """Run `tests` (repo-relative paths) in `repo` through the entry.  Returns a result dict:
-    {"line1", "state": enabled|fallback|short, "rc", "tests": [{test, rc, reused, elapsed_s, output}],
+    {"line1", "state": enabled|fallback|short|small, "rc", "tests": [{test, rc, reused, elapsed_s, output}],
      "ran", "reused", "kept", "gate"}.  Nothing is printed here (main() prints) except through `live`:
     live(kind, params) is called as each test starts ("start"/"start_nobase"), the moment a running
     test passes 10% over its usual time ("slow"), and as each real run ends ("done_green"/"done_red");
-    None (package_trial etc.) = silent."""
+    None (package_trial etc.) = silent.
+    trace=False(11-09 影子續跑第 0 步,小批):不跑自檢、不起追蹤器、不寫紀錄池,每支一般實跑;state = small。"""
     repo = Path(repo).resolve()
     if strict is None:
         mode, _source, _path = resume_policy.current_mode(str(repo))
         strict = mode == "strict"
-    gate = self_check()
+    small = not trace
+    gate = {"ok": False, "stage": "small", "reason": ""} if small else self_check()
     # 10-04 可接續:--resume <批次名> ⇒ 這一批上次已跑綠(同樹、同跑法)的不重跑;紅的、沒跑完的照跑
     journal, resumed_ok, tree_now, env_fp_now, problem = None, set(), "", None, None
     if resume:
@@ -1628,10 +1679,16 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             if gate.get("ok"):
                 if not _quiet:
                     live("gate_ok", {})
+            elif small:
+                if not _quiet:
+                    live("small_batch", {"n": len(tests), "min": _env_int("AIB_TEST_TRACE_MIN", TRACE_MIN)})
             else:
                 live("gate_fail", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})
         if not gate.get("ok"):
             resumed_ok = set()      # 10-15 A1:自檢沒過 ⇒ 算不出環境指紋、讀不了作廢列 ⇒ 不接續(整批照跑)
+            go_once = GoOnce()      # 11-09 a63ab #565:小批 / 退回也要「同一個 Go 套件只跑一次」(以前只在追蹤那條)
+            executed = 0            # 11-09 bb7dc #565:實跑 = 真的起了一次程序(和追蹤那條的 ran_names 同一個意思);
+            #   以前用「總列數 − 沒驗 − 同套件」,首列沒驗時同套件那列會被扣兩次 ⇒ 可以變負數
             for name in tests:
                 if name in resumed_ok:
                     if live is not None:
@@ -1644,24 +1701,34 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     if live is not None:
                         live("unverified", {"test": name, "what": " ".join(results[-1]["needs"])})
                     continue
+                row = go_once.same(name)
+                if row is not None:
+                    results.append(row)
+                    if live is not None:
+                        live("same_package", {"test": name, "name": row["same_package"]})
+                    continue
                 if live is not None:
-                    live("start_fallback", {"test": name})
+                    live("start_plain" if small else "start_fallback", {"test": name})
                 runner.wait_for_memory(None if live is None else (lambda g: live("mem_wait", {"limit": "%.1f" % g})))
                 with _own_home(repo, env, name) as tenv:
                     results.append(_mark_all_skipped(dict(runner._run_one(repo, name, tenv, timeout=timeout), reused=False)))
+                executed += 1
+                go_once.ran(name, results[-1])
                 _tree_guard(repo, tree_base, results[-1], live)
                 if live is not None:
                     _live_done(live, results[-1])
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
                                              "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
-                                             "verdict": "fallback", "why": str(gate.get("stage") or "?"),
+                                             "verdict": "small" if small else "fallback", "why": str(gate.get("stage") or "?"),
                                              "detail": str(gate.get("reason") or "")[:200]})
             reds = [r for r in results if r["rc"] != 0 and not r.get("unverified")]
             unv = [r for r in results if r.get("unverified")]
-            return {"state": "fallback", "gate": gate, "tests": results, "ran": len(results) - len(unv), "reused": 0,
-                    "kept": 0, "rc": 1 if reds else (4 if unv else 0),
-                    "line1": T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})}
+            line1 = (T("line1_small", {"n": len(tests), "min": _env_int("AIB_TEST_TRACE_MIN", TRACE_MIN)}) if small else
+                     T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")}))
+            return {"state": "small" if small else "fallback", "gate": gate, "tests": results,
+                    "ran": executed, "reused": 0, "kept": 0, "rc": 1 if reds else (4 if unv else 0),
+                    "line1": line1}
         idx = reuse_index.build_index([], repo=str(repo))
         pool = runner._pool_file(repo)
         base = baselines(pool, tests)      # 先讀耗時(容得下壞行),再修池
@@ -1687,7 +1754,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
         offset = _pool_size(pool)
         started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ran_names = []
-        go_done = {}                       # Go 套件 ⇒ 這一批跑那個套件的結果(同一套件只跑一次)
+        go_once = GoOnce()                 # Go 套件 ⇒ 這一批跑那個套件的結果(同一套件只跑一次;小批那條呼叫同一個)
         overheads = []                     # 這一批每支的「牆鐘 − 紀錄耗時」,給即時計時器補準備時間
         for name in tests:
             if name in resumed_ok:
@@ -1723,15 +1790,12 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                                              "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                              "verdict": "reuse", "why": why})
                 continue
-            gk = runner.go_package_key(name)
-            if gk is not None and gk in go_done:
-                # 10-08(pflag 實測:32 個測試檔同一個套件 ⇒ 以前 go test 同一包跑 32 次):同一套件這一批已經跑過 ⇒ 用那次的結果。
-                #   不算實跑(紀錄池沒有它的列,不進 ran_names);紅綠跟那次一樣(同一個 go test ./pkg)。
-                first = go_done[gk]
-                results.append(dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"],
-                                    baseline_s=None, slow=False))
+            row = go_once.same(name)
+            if row is not None:
+                # 同一套件這一批已經跑過 ⇒ 用那次的結果;不算實跑(紀錄池沒有它的列,不進 ran_names)。規則在 GoOnce。
+                results.append(row)
                 if live is not None:
-                    live("same_package", {"test": name, "name": first["name"]})
+                    live("same_package", {"test": name, "name": row["same_package"]})
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
                                              "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
@@ -1765,8 +1829,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                                          "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                          "verdict": "must-run", "why": why, "detail": str(detail or "")[:200]})
             ran_names.append(name)
-            if gk is not None:
-                go_done[gk] = results[-1]
+            go_once.ran(name, results[-1])
         # Step 2's second half: count what really landed in the pool, not what _traced_run said it did.
         here = str(repo)
         landed = {r.get("test") for r in _pool_rows_after(pool, offset, here)
@@ -1918,6 +1981,8 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, default=None)          # 10-08:同時跑幾份(--all 預設 min(4, 核心數);1 = 一支一支跑)
     ap.add_argument("--shard-out", default=None, help=argparse.SUPPRESS)   # 分份的子行程:結果寫成 JSON 到這個檔
     ap.add_argument("--overhead", action="store_true")   # 10-08:量追蹤讓每支慢多少(每支跑兩次)
+    ap.add_argument("--trace", action="store_true")      # 11-09:不到 TRACE_MIN 支也起追蹤器(影子續跑)
+    ap.add_argument("--no-trace", action="store_true", help=argparse.SUPPRESS)   # 分份子行程:主行程判過不追蹤
     ap.add_argument("--exclusive", action="store_true")  # 10-13:要量耗時 ⇒ 不管幾支都拿租約並標獨佔(小批也不准並跑)
     ap.add_argument("--wait", action="store_true")       # 10-13:小批遇到別人的獨佔租約 ⇒ 排隊等,不是直接停
     ap.add_argument("--wait-max", type=int, default=None, metavar="SEC")   # 10-29:大批排隊最多等幾秒(預設 3600);等滿不跑
@@ -2054,7 +2119,8 @@ def main(argv=None):
 
 def _run_shard(repo, names, a, live):
     """分份的子行程:進度照常即時印(stderr),結果交給主行程合併印(一份總結、一筆統計)。"""
-    res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout, live=live, resume=a.resume)
+    res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout, live=live, resume=a.resume,
+                    trace=trace_wanted(a, len(names)))
     res["tmp_leaks"] = list(_TMP_LEAKS)   # 10-09:交回主行程,總表才印得出「哪支留了東西」(以前分份跑這行永遠不見)
     Path(a.shard_out).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
     return res["rc"]
@@ -2081,7 +2147,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
         res = run_sharded(repo, names, jobs, a)
     else:
         res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout,
-                        live=None if a.json else live, resume=a.resume)
+                        live=None if a.json else live, resume=a.resume, trace=trace_wanted(a, len(names)))
     if a.json:
         print(json.dumps({k: v for k, v in res.items() if k != "tests"} | {
             "mem_wait": mem, "lease_wait": {k: lease[k] for k in ("waited", "why")}} | {
@@ -2140,7 +2206,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
     unv = [r for r in res["tests"] if r.get("unverified")]
     print(T("summary", {"total": len(res["tests"]), "green": green, "red": len(res["tests"]) - green - len(unv),
                         "elapsed": "%.1f" % (time.monotonic() - started)}))
-    if not a.resume:      # 推前檢查的分片由 pushgate 自己對帳(ship-stats),這裡不重記
+    if not a.resume and res.get("state") != "small":   # 推前檢查的分片由 pushgate 自己對帳;小批沒追蹤 ⇒ 沒有可比的
         vs = versus(res["tests"], time.monotonic() - started,
                     lease_wait_s=lease.get("waited") or 0, mem_wait_s=mem.get("waited") or 0)
         vs["lease_ahead"] = lease.get("ahead")
@@ -2170,7 +2236,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
         print(T("unverified_summary", {"n": len(unv), "items": "、".join(
             "%s(%s)" % (r["name"], " ".join(r.get("needs") or ())) for r in unv)}))
     slow = [r for r in res["tests"] if r.get("slow")]
-    if res.get("state") != "fallback":
+    if res.get("state") not in ("fallback", "small"):
         nobase = sum(1 for r in res["tests"] if not r["reused"] and not r.get("unverified") and r.get("baseline_s") is None)
         print(T("slow_summary", {"slow": len(slow), "nobase": nobase}))
     return res["rc"]
