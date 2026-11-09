@@ -42,6 +42,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-flaky"
+version = "0.2.0-preview.2"
+dependencies = [
+ "aib-cireuse",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-forkcount"
 version = "0.2.0-preview.2"
 dependencies = [
