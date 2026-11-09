@@ -136,6 +136,16 @@ jobs:
           ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
             '                    Err(_) => {} // knife: skip what cannot be read' \
             what_cannot_be_read_is_unresolved_not_skipped
+          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
+          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA4 (1ced7 #590 L3) no knife found reads as clean
+          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
+            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
+          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
+            ansi_c_quoted_anchors_are_read_like_bash
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

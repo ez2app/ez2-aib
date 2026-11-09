@@ -7,19 +7,25 @@
 //! whole round (20+ minutes) because main had moved the code the two
 //! Windows knives pointed at (merge-ops plan v2 §7.2, a63ab 11-09).
 //!
-//! What is read: every `.github/workflows/*.yml` and `scripts/*.sh` line
+//! What is read: every `.github/workflows/*.yml` / `*.yaml` and
+//! `scripts/*.sh` line (not subdirectories of `scripts/`)
 //! that runs `scripts/knife.py`, either directly
 //! (`python3 -I scripts/knife.py FILE 'OLD' 'NEW' ...`) or through a shell
 //! function defined in the same workflow step / script
 //! (`k() { python3 -I scripts/knife.py FILE "$1" "$2" ...; }` then
 //! `k 'OLD' 'NEW'`). Shell words are split the way bash does for the forms
 //! used there: `'...'`, `"..."` with `\"` `\\` `\$` `` \` ``, `\x`,
-//! backslash-newline, `#` comments. The count is Python's `str.count`
+//! bash ANSI-C `$'...'` with `\n` `\t` `\r` `\\` `\'` `\"` `\xHH` (#580's
+//! multi-line anchors), backslash-newline (removed, as bash does), `#`
+//! comments. CRLF is read as LF in both the workflow and the target, as
+//! knife.py's text mode does (a Windows checkout). The count is Python's `str.count`
 //! (non-overlapping), the same rule knife.py applies.
 //!
 //! Fail closed: a knife line whose FILE or OLD cannot be read as plain text
-//! (a variable other than `$1`..`$9` of a known function, `$'...'`, an
-//! unterminated quote, a missing argument) is `unresolved`, never skipped;
+//! (a variable other than `$1`..`$9` of a known function, a `$'...'`
+//! escape other than those above, an unterminated quote, a missing
+//! argument, an option before FILE / OLD or an OLD starting with `-`) is
+//! `unresolved`, never skipped;
 //! finding no knife at all is an error too (the scan is broken, not clean).
 //!
 //! Not read: knives that patch files their own way (for example
@@ -110,6 +116,65 @@ fn read_var(cs: &[char], i: &mut usize) -> Result<String, String> {
     }
 }
 
+/// Bash ANSI-C quoting, after the opening `$'`: the text up to the closing
+/// `'`. Only the escapes knives use are read; any other is an error (fail
+/// closed, never a guess).
+fn read_ansi_c(cs: &[char], i: &mut usize, parts: &mut Vec<Part>) -> Result<(), String> {
+    let before = parts.len();
+    loop {
+        match cs.get(*i) {
+            None => return Err("unterminated $'...'".into()),
+            Some('\'') => {
+                *i += 1;
+                break;
+            }
+            Some('\\') => {
+                let e = cs.get(*i + 1).ok_or("unterminated $'...'")?;
+                let ch = match e {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '\\' => '\\',
+                    '\'' => '\'',
+                    '"' => '"',
+                    'x' => {
+                        let mut v = 0u32;
+                        let mut n = 0;
+                        while n < 2 {
+                            match cs.get(*i + 2 + n).and_then(|c| c.to_digit(16)) {
+                                Some(d) => {
+                                    v = v * 16 + d;
+                                    n += 1;
+                                }
+                                None => break,
+                            }
+                        }
+                        if n == 0 {
+                            return Err("$'...' \\x without hex digits".into());
+                        }
+                        let c = char::from_u32(v).filter(char::is_ascii);
+                        let c = c.ok_or("$'...' \\x above 7f is not read")?;
+                        push_lit(parts, c);
+                        *i += 2 + n;
+                        continue;
+                    }
+                    other => return Err(format!("$'...' escape \\{other} is not read")),
+                };
+                push_lit(parts, ch);
+                *i += 2;
+            }
+            Some(c) => {
+                push_lit(parts, *c);
+                *i += 1;
+            }
+        }
+    }
+    if parts.len() == before {
+        parts.push(Part::Lit(String::new()));
+    }
+    Ok(())
+}
+
 /// Split one logical line (continuations already joined) into words.
 fn words(line: &str) -> Result<Vec<Word>, String> {
     let cs: Vec<char> = line.chars().collect();
@@ -194,7 +259,9 @@ fn words(line: &str) -> Result<Vec<Word>, String> {
                 '$' => {
                     i += 1;
                     if cs.get(i) == Some(&'\'') {
-                        return Err("$'...' is not supported".into());
+                        i += 1;
+                        read_ansi_c(&cs, &mut i, &mut parts)?;
+                        continue;
                     }
                     parts.push(Part::Var(read_var(&cs, &mut i)?));
                 }
@@ -210,7 +277,8 @@ fn words(line: &str) -> Result<Vec<Word>, String> {
     Ok(out)
 }
 
-/// Lines joined at a trailing backslash; each keeps the number of its first line.
+/// Lines joined at a trailing backslash (backslash and newline removed, no
+/// space added, as bash does); each keeps the number of its first line.
 fn logical_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut cur: Option<(usize, String)> = None;
@@ -222,7 +290,6 @@ fn logical_lines(text: &str) -> Vec<(usize, String)> {
             let run = head.chars().rev().take_while(|c| *c == '\\').count();
             if run % 2 == 0 {
                 acc.push_str(head);
-                acc.push(' ');
                 cur = Some((start, acc));
                 continue;
             }
@@ -273,6 +340,15 @@ fn resolve(w: &Word, args: &[Word]) -> Result<String, String> {
 fn after_knife(ws: &[Word], k: usize) -> Result<Template, String> {
     let file = ws.get(k + 1).filter(|w| !w.op).ok_or("FILE missing")?;
     let old = ws.get(k + 2).filter(|w| !w.op).ok_or("OLD missing")?;
+    // knife.py uses argparse: an option before FILE / OLD moves them, and an
+    // OLD starting with `-` is taken as an option; neither is guessed at
+    for (w, what) in [(file, "FILE"), (old, "OLD")] {
+        if w.literal().is_some_and(|t| t.starts_with('-')) {
+            return Err(format!(
+                "{what} starts with '-' (an option before it, or argparse would read it as one)"
+            ));
+        }
+    }
     Ok(Template {
         file: file.clone(),
         old: old.clone(),
@@ -405,6 +481,11 @@ pub fn count(text: &str, old: &str) -> usize {
     text.matches(old).count()
 }
 
+/// CRLF read as LF, as knife.py's text mode reads it.
+fn lf(t: &str) -> String {
+    t.replace("\r\n", "\n")
+}
+
 fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     if let Ok(rd) = std::fs::read_dir(dir) {
         let mut v: Vec<PathBuf> = rd
@@ -422,14 +503,21 @@ fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 pub fn run(root: &Path) -> u8 {
     let mut files = Vec::new();
     files_in(&root.join(".github/workflows"), "yml", &mut files);
+    files_in(&root.join(".github/workflows"), "yaml", &mut files);
     files_in(&root.join("scripts"), "sh", &mut files);
     let mut knives = Vec::new();
     let mut unresolved = Vec::new();
     for f in &files {
-        let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+        // `/` on every platform, so the two cells print the same lines
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(f)
+            .display()
+            .to_string()
+            .replace('\\', "/");
         match std::fs::read_to_string(f) {
             Ok(t) => {
-                let s = scan_text(&rel, &t);
+                let s = scan_text(&rel, &lf(&t));
                 knives.extend(s.knives);
                 unresolved.extend(s.unresolved);
             }
@@ -440,7 +528,9 @@ pub fn run(root: &Path) -> u8 {
     let mut cache: BTreeMap<String, Result<String, String>> = BTreeMap::new();
     for k in &knives {
         let text = cache.entry(k.file.clone()).or_insert_with(|| {
-            std::fs::read_to_string(root.join(&k.file)).map_err(|e| e.to_string())
+            std::fs::read_to_string(root.join(&k.file))
+                .map(|t| lf(&t))
+                .map_err(|e| e.to_string())
         });
         let shown: String = k.old.trim().chars().take(70).collect();
         match text {
@@ -539,12 +629,15 @@ mod tests {
     fn what_cannot_be_read_is_unresolved_not_skipped() {
         for text in [
             "python3 -I scripts/knife.py \"$F\" 'old' 'new'\n",
-            "python3 -I scripts/knife.py a.rs $'old' 'new'\n",
+            "python3 -I scripts/knife.py a.rs $'old\\q' 'new'\n",
             "python3 -I scripts/knife.py a.rs 'old\n",
             "python3 -I scripts/knife.py a.rs\n",
             "k() { python3 -I scripts/knife.py a.rs \"$1\" \"$2\"; }\nk \"$OLD\" new\n",
             "k() { python3 -I scripts/knife.py a.rs \"$2\" \"$3\"; }\nk only-one\n",
             "python3 -I knife.py a.rs 'old' 'new'\n",
+            "python3 -I scripts/knife.py --expect-fail t a.rs 'old' 'new'\n",
+            "python3 -I scripts/knife.py a.rs '-old' 'new'\n",
+            "python3 -I scripts/knife.py a.rs $'old 'new'\n",
         ] {
             let s = one(text);
             assert!(s.knives.is_empty(), "{text:?} gave {:?}", s.knives);
@@ -573,8 +666,54 @@ mod tests {
 
     #[test]
     fn a_doubled_backslash_at_line_end_does_not_join() {
-        let ls = logical_lines("a \\\\\nb \\\nc\n");
-        assert_eq!(ls, vec![(1, "a \\\\".to_string()), (2, "b  c".to_string())]);
+        let ls = logical_lines("a \\\\\nb \\\nc\nd\\\ne\n");
+        assert_eq!(
+            ls,
+            vec![
+                (1, "a \\\\".to_string()),
+                (2, "b c".to_string()),
+                (4, "de".to_string()) // removed, no space added (bash)
+            ]
+        );
+    }
+
+    /// #580's K5 as it is in main's aibd.yml (1ced7 #590 H1): ANSI-C
+    /// multi-line anchors through a function.
+    #[test]
+    fn ansi_c_quoted_anchors_are_read_like_bash() {
+        let s = one(concat!(
+            "      - name: procwatch knives\n",
+            "        run: |\n",
+            "          fc() { python3 -I scripts/knife.py \"$1\" \"$2\" \"$3\" --expect-fail \"$4\" \\\n",
+            "                   -- cargo test; }\n",
+            "          fc crates/aib-forkcount/src/main.rs \\\n",
+            "            $'        if self.adopted_not_created > 0 {\\n            r.push(\"adopted_not_created\");' \\\n",
+            "            $'        if false {\\n            r.push(\"adopted_not_created\"); // knife' \\\n",
+            "            calibrate_one_missed_and_one_foreign_is_unverified\n",
+            "          python3 -I scripts/knife.py a.rs $'tab\\there \\'q\\' \\\\ \\x41\\x7e' 'new'\n",
+        ));
+        assert!(s.unresolved.is_empty(), "{:?}", s.unresolved);
+        assert_eq!(s.knives.len(), 2, "{:?}", s.knives);
+        assert_eq!(s.knives[0].file, "crates/aib-forkcount/src/main.rs");
+        assert_eq!(
+            s.knives[0].old,
+            "        if self.adopted_not_created > 0 {\n            r.push(\"adopted_not_created\");"
+        );
+        assert_eq!(s.knives[0].at, "w.yml:5");
+        assert_eq!(s.knives[1].old, "tab\there 'q' \\ A~");
+    }
+
+    #[test]
+    fn crlf_is_read_as_lf_in_workflow_and_target() {
+        let wf = "      - name: k\r\n        run: |\r\n          python3 -I scripts/knife.py src/a.rs $'    let x = 1;\\n    let y = 2;' 'z' -- true\r\n";
+        let r = root_with(
+            "crlf",
+            wf,
+            "fn f() {\r\n    let x = 1;\r\n    let y = 2;\r\n}\r\n",
+        );
+        let rc = run(&r);
+        let _ = std::fs::remove_dir_all(&r);
+        assert_eq!(rc, 0);
     }
 
     /// A throwaway root with one workflow and one target file.
