@@ -195,9 +195,10 @@ jobs:
           k '        (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),' \
             '        (Some(_), None) => {} // knife: silent' \
             an_unheld_failed_start_is_listed_at_shutdown
-          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
-            '        session_windows::stop_leftovers(deadline)' \
-            '        { let _ = deadline; Vec::new() } // knife: Windows sweeps nothing' \
+          # #578: the Windows sweep moved into the Lifecycle impl (platform/lifecycle.rs)
+          python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
+            '        Swept::from_unconfirmed(super::session_windows::stop_leftovers(deadline))' \
+            '        { let _ = deadline; Swept::NoneLeft } // knife: Windows sweeps nothing' \
             --expect-fail an_unheld_failed_start_is_listed_at_shutdown \
             -- cargo test -p aibd --locked --lib platform::session_windows
       - name: aibd Windows sessions wiring knife (Windows)
@@ -208,8 +209,9 @@ jobs:
         # back; the real-aibd test must turn red.
         run: |
           set -eu
-          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
-            '        session_windows::spawn' \
-            '        |_: &session::Spec, _| Err(session::SpawnFail { tag: "unsupported_platform".into(), left_running: None }) // knife: not wired' \
+          # #578: the Windows spawn is chosen in the Lifecycle impl (platform/lifecycle.rs)
+          python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
+            '        Step::Done(super::session_windows::spawn)' \
+            '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
