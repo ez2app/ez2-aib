@@ -164,6 +164,67 @@ def folder_of(rec, display):
     return folder
 
 
+_LABELS_CACHE = {}
+
+
+def _folder_labels(vault_dir):
+    """<vault>/.ez2/display/labels.json 的 folders 表;同一行程同一份檔(路徑 + mtime)只讀一次。
+    沒檔、讀不懂、形狀不對 ⇒ {}(不是錯誤:舊版面沒有這份檔)。"""
+    path = os.path.join(vault_dir, '.ez2', 'display', 'labels.json')
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return {}
+    hit = _LABELS_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(path, encoding='utf-8') as fh:
+            folders = json.load(fh).get('folders')
+    except (OSError, ValueError, AttributeError):
+        folders = None
+    folders = folders if isinstance(folders, dict) else {}
+    _LABELS_CACHE[path] = (mtime, folders)
+    return folders
+
+
+def vault_dir():
+    """標籤表所在的 vault:全套件同一條規則(route_register.default_vault:EZ2_VAULT_DIR >
+    EZ2_VAULT_ROOT > <aib 家>/vault-dir > …),這裡不另寫一份。取不到 ⇒ None。"""
+    try:
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        pr = os.path.join(here, '..', 'persona_route')
+        if pr not in sys.path:
+            sys.path.insert(0, pr)
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001 — 畫面上退回路徑,不讓右欄掛掉
+        return None
+
+
+def folder_title(folder, vault):
+    """📁 那一行給人看的名字(a63ab 11-09,Andy 問為什麼畫 uid 路徑):路徑最後一段是 uid 版面的
+    folderId ⇒ 查 labels.json 的 folders[<id>].title(用 zh-TW 的 i18n 優先,再 title)。
+    查不到 ⇒ ''(呼叫端畫原路徑)。與資料夾路徑同一套消毒,並拒 `@` / `|`。"""
+    if not folder or not vault:
+        return ''
+    fid = folder.rstrip('/').rsplit('/', 1)[-1]
+    entry = _folder_labels(vault).get(fid)
+    if not isinstance(entry, dict):
+        return ''
+    i18n = entry.get('i18n')
+    raw = i18n.get('zh-TW') if isinstance(i18n, dict) else None
+    if not (isinstance(raw, str) and raw.strip()):
+        raw = entry.get('title')
+    if not isinstance(raw, str):
+        return ''
+    text = clean_text(raw, 120)
+    if not text or '@' in text or '|' in text:
+        return ''
+    return text
+
+
 _PROJECT_UID_RE = re.compile(r'[A-Za-z0-9:._@-]{4,128}')
 
 
