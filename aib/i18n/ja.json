@@ -5027,6 +5027,8 @@
   "aib.secret.dest_local": "この Mac のキー保管庫",
   "aib.secret.btn_ok": "保存",
   "aib.secret.btn_cancel": "キャンセル",
+  "aib.secret.btn_generate": "生成してコピー",
+  "aib.secret.generated_hint": "{n} 文字の新しいパスワードを欄に入れ、クリップボードにコピーしました。先にパスワードマネージャーに保存してから「{ok}」を押してください。もう一度押すと別のものを生成します。",
   "aib.secret.no_gui_hint": "入力ウィンドウを開けませんでした(この端末はグラフィカルセッション外です。AI 席のシェルではよくあります)。Claude Code の入力欄で ! から始めて同じ行をご自身で実行してください(1 行で、! の前に空白なし)。",
   "aib.cf.touchid_reason": "aib:Cloudflare 一時キーを承認:{zone} {perms} {ttl} → {host}",
   "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write はドメイン全体のセキュリティ設定(SSL モード / AOP / セキュリティレベル)を変更できます。",
