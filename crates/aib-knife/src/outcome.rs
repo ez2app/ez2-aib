@@ -52,7 +52,9 @@ impl Outcome {
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Outcome::AnchorMissing(n) => write!(f, "ANCHOR-MISSING (old occurs {n} times, must be 1)"),
+            Outcome::AnchorMissing(n) => {
+                write!(f, "ANCHOR-MISSING (old occurs {n} times, must be 1)")
+            }
             Outcome::Undecided(w) => write!(f, "UNDECIDED ({w:?})"),
             o => f.write_str(o.tag()),
         }
@@ -106,7 +108,11 @@ pub struct Verdict {
 /// `anchor`: how often `old` occurred (only 1 runs anything). `run`/`restored` are
 /// `None` when nothing ran because the anchor was missing.
 pub fn decide(anchor: usize, restored: Option<bool>, run: Option<&Run>, expect: &str) -> Verdict {
-    let v = |outcome, stop, failed| Verdict { outcome, stop, failed };
+    let v = |outcome, stop, failed| Verdict {
+        outcome,
+        stop,
+        failed,
+    };
     if anchor != 1 {
         return v(Outcome::AnchorMissing(anchor), false, Vec::new());
     }
@@ -181,7 +187,12 @@ mod tests {
     use super::*;
 
     fn run(rc: i32, out: &str) -> Run {
-        Run { rc: Some(rc), timed_out: false, leftovers: Leftovers::NoneSeen, output: Some(out.to_string()) }
+        Run {
+            rc: Some(rc),
+            timed_out: false,
+            leftovers: Leftovers::NoneSeen,
+            output: Some(out.to_string()),
+        }
     }
 
     const RED_X: &str = "test m::x ... FAILED\n";
@@ -196,7 +207,10 @@ mod tests {
 
     #[test]
     fn survived_when_green_even_if_output_names_the_test() {
-        assert_eq!(decide(1, Some(true), Some(&run(0, RED_X)), "x").outcome, Outcome::Survived);
+        assert_eq!(
+            decide(1, Some(true), Some(&run(0, RED_X)), "x").outcome,
+            Outcome::Survived
+        );
     }
 
     #[test]
@@ -207,13 +221,26 @@ mod tests {
 
     #[test]
     fn not_fallen_on_build_failure() {
-        let d = decide(1, Some(true), Some(&run(101, "error[E0425]: x\nerror: could not compile `a`\n")), "x");
+        let d = decide(
+            1,
+            Some(true),
+            Some(&run(101, "error[E0425]: x\nerror: could not compile `a`\n")),
+            "x",
+        );
         assert_eq!(d.outcome, Outcome::NotFallen);
     }
 
     #[test]
     fn bit_wins_over_build_text_in_test_output() {
-        let d = decide(1, Some(true), Some(&run(101, "could not compile (a test's log)\ntest m::x ... FAILED\n")), "x");
+        let d = decide(
+            1,
+            Some(true),
+            Some(&run(
+                101,
+                "could not compile (a test's log)\ntest m::x ... FAILED\n",
+            )),
+            "x",
+        );
         assert_eq!(d.outcome, Outcome::Bit);
     }
 
@@ -222,7 +249,10 @@ mod tests {
         let d = decide(0, None, None, "x");
         assert_eq!(d.outcome, Outcome::AnchorMissing(0));
         assert!(!d.stop);
-        assert_eq!(decide(2, None, None, "x").outcome, Outcome::AnchorMissing(2));
+        assert_eq!(
+            decide(2, None, None, "x").outcome,
+            Outcome::AnchorMissing(2)
+        );
     }
 
     #[test]
@@ -236,7 +266,10 @@ mod tests {
     fn h1_order_dirty_beats_a_bit_and_stops() {
         let mut r = run(101, RED_X);
         r.timed_out = true;
-        assert_eq!(decide(1, Some(true), Some(&r), "x").outcome, Outcome::Undecided(Why::Timeout));
+        assert_eq!(
+            decide(1, Some(true), Some(&r), "x").outcome,
+            Outcome::Undecided(Why::Timeout)
+        );
         let mut r = run(101, RED_X);
         r.leftovers = Leftovers::Seen(2);
         let d = decide(1, Some(true), Some(&r), "x");
@@ -244,21 +277,35 @@ mod tests {
         assert!(d.stop);
         let mut r = run(101, RED_X);
         r.leftovers = Leftovers::Unreadable;
-        assert_eq!(decide(1, Some(true), Some(&r), "x").outcome, Outcome::Undecided(Why::ProcessesUnreadable));
+        assert_eq!(
+            decide(1, Some(true), Some(&r), "x").outcome,
+            Outcome::Undecided(Why::ProcessesUnreadable)
+        );
         let mut r = run(101, RED_X);
         r.output = None;
-        assert_eq!(decide(1, Some(true), Some(&r), "x").outcome, Outcome::Undecided(Why::OutputUnreadable));
+        assert_eq!(
+            decide(1, Some(true), Some(&r), "x").outcome,
+            Outcome::Undecided(Why::OutputUnreadable)
+        );
     }
 
     #[test]
     fn a_signal_kill_counts_as_failed() {
-        let r = Run { rc: None, ..run(0, RED_X) };
+        let r = Run {
+            rc: None,
+            ..run(0, RED_X)
+        };
         assert_eq!(decide(1, Some(true), Some(&r), "x").outcome, Outcome::Bit);
     }
 
     #[test]
     fn m3_ambiguous_is_undecided_not_a_stop() {
-        let d = decide(1, Some(true), Some(&run(1, "test a::x ... FAILED\ntest b::x ... FAILED\n")), "x");
+        let d = decide(
+            1,
+            Some(true),
+            Some(&run(1, "test a::x ... FAILED\ntest b::x ... FAILED\n")),
+            "x",
+        );
         assert_eq!(d.outcome, Outcome::Undecided(Why::Ambiguous));
         assert!(!d.stop);
     }
@@ -276,7 +323,10 @@ mod tests {
     fn noop_require_pass_line() {
         let want = ["x".to_string(), "z".to_string()];
         let r = run(0, "test m::x ... ok\ntest m::y ... ok\n");
-        assert_eq!(decide_noop(&r, Some(&want[..])), Noop::NotSeenPassing(vec!["z".to_string()]));
+        assert_eq!(
+            decide_noop(&r, Some(&want[..])),
+            Noop::NotSeenPassing(vec!["z".to_string()])
+        );
         let r = run(0, "test m::x ... ok\ntest m::z ... ok\n");
         assert_eq!(decide_noop(&r, Some(&want[..])), Noop::Green);
     }
@@ -295,6 +345,8 @@ mod tests {
         assert_eq!(Outcome::Bit.to_string(), "BIT");
         assert_eq!(Outcome::NotFallen.to_string(), "NOT-FALLEN");
         assert!(Outcome::AnchorMissing(2).to_string().contains("2 times"));
-        assert!(Outcome::Undecided(Why::Timeout).to_string().starts_with("UNDECIDED"));
+        assert!(Outcome::Undecided(Why::Timeout)
+            .to_string()
+            .starts_with("UNDECIDED"));
     }
 }

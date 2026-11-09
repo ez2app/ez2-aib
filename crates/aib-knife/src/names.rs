@@ -114,7 +114,9 @@ pub fn passed_names(out: &str) -> Vec<String> {
 /// `name` is the expected test: the whole name, or its last `::` / `.` segment.
 /// `test_add` does not match `test_add_many` (1ced7 #525 H2).
 pub fn name_matches(name: &str, expect: &str) -> bool {
-    name == expect || name.ends_with(&format!("::{expect}")) || name.ends_with(&format!(".{expect}"))
+    name == expect
+        || name.ends_with(&format!("::{expect}"))
+        || name.ends_with(&format!(".{expect}"))
 }
 
 /// What the failed names say about the expected test.
@@ -129,7 +131,11 @@ pub enum Hit {
 }
 
 pub fn find_expected(failed: &[String], expect: &str) -> Hit {
-    let m: Vec<String> = failed.iter().filter(|n| name_matches(n, expect)).cloned().collect();
+    let m: Vec<String> = failed
+        .iter()
+        .filter(|n| name_matches(n, expect))
+        .cloned()
+        .collect();
     match m.len() {
         0 => Hit::None,
         1 => Hit::One(m.into_iter().next().unwrap_or_default()),
@@ -196,21 +202,31 @@ test_sub (__main__.T.test_sub) ... FAIL\n\
 FAIL: test_sub (__main__.T.test_sub)\n\
 ERROR: test_boom (__main__.T.test_boom)\n";
 
-    const PYTEST: &str = "FAILED tests/test_a.py::TestA::test_x - AssertionError\nFAILED nocolon - x\n";
+    const PYTEST: &str =
+        "FAILED tests/test_a.py::TestA::test_x - AssertionError\nFAILED nocolon - x\n";
 
     #[test]
     fn cargo_failed_names_from_lines_and_the_closing_list() {
-        assert_eq!(failed_names(CARGO), vec!["job::tests::the_owner_crashing_kills_the_tree".to_string()]);
+        assert_eq!(
+            failed_names(CARGO),
+            vec!["job::tests::the_owner_crashing_kills_the_tree".to_string()]
+        );
     }
 
     #[test]
     fn cargo_q_names_come_from_the_closing_list_only_crlf_too() {
-        assert_eq!(failed_names(CARGO_Q), vec!["m::x".to_string(), "m::y".to_string()]);
+        assert_eq!(
+            failed_names(CARGO_Q),
+            vec!["m::x".to_string(), "m::y".to_string()]
+        );
     }
 
     #[test]
     fn unittest_fail_and_error() {
-        assert_eq!(failed_names(UNITTEST), vec!["test_boom".to_string(), "test_sub".to_string()]);
+        assert_eq!(
+            failed_names(UNITTEST),
+            vec!["test_boom".to_string(), "test_sub".to_string()]
+        );
     }
 
     #[test]
@@ -252,14 +268,23 @@ ERROR: test_boom (__main__.T.test_boom)\n";
     #[test]
     fn m3_two_tests_with_the_same_tail_are_ambiguous() {
         let failed = vec!["a::test_add".to_string(), "b::test_add".to_string()];
-        assert_eq!(find_expected(&failed, "test_add"), Hit::Ambiguous(failed.clone()));
-        assert_eq!(find_expected(&failed, "a::test_add"), Hit::One("a::test_add".to_string()));
+        assert_eq!(
+            find_expected(&failed, "test_add"),
+            Hit::Ambiguous(failed.clone())
+        );
+        assert_eq!(
+            find_expected(&failed, "a::test_add"),
+            Hit::One("a::test_add".to_string())
+        );
     }
 
     #[test]
     fn m3_one_full_path_is_one() {
         let failed = ["a::test_add".to_string()];
-        assert_eq!(find_expected(&failed, "test_add"), Hit::One("a::test_add".to_string()));
+        assert_eq!(
+            find_expected(&failed, "test_add"),
+            Hit::One("a::test_add".to_string())
+        );
     }
 
     #[test]
@@ -267,7 +292,9 @@ ERROR: test_boom (__main__.T.test_boom)\n";
         assert!(build_failed("error: could not compile `x` (lib test)"));
         assert!(build_failed("error[E0425]: cannot find value"));
         assert!(build_failed("x\nSyntaxError: invalid syntax"));
-        assert!(build_failed("  File x\nIndentationError: unexpected indent"));
+        assert!(build_failed(
+            "  File x\nIndentationError: unexpected indent"
+        ));
         assert!(build_failed("foo.obj : error LNK2019: unresolved"));
         assert!(build_failed("error: linking with `cc` failed"));
         assert!(!build_failed("error[E]: no digits"));

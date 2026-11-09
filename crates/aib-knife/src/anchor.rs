@@ -28,7 +28,10 @@ mod tests {
 
     #[test]
     fn exactly_once_is_applied() {
-        assert_eq!(apply("a\nkill();\nb\n", "kill();\n", ""), Ok("a\nb\n".to_string()));
+        assert_eq!(
+            apply("a\nkill();\nb\n", "kill();\n", ""),
+            Ok("a\nb\n".to_string())
+        );
     }
 
     #[test]

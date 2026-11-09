@@ -76,15 +76,29 @@ impl fmt::Display for SpecError {
 impl std::error::Error for SpecError {}
 
 fn err(at: impl Into<String>, what: impl Into<String>) -> SpecError {
-    SpecError { at: at.into(), what: what.into() }
+    SpecError {
+        at: at.into(),
+        what: what.into(),
+    }
 }
 
 const TOP_KEYS: &[&str] = &["cmd", "timeout", "noop", "knives"];
-const KNIFE_KEYS: &[&str] = &["name", "file", "old", "new", "expect_fail", "cmd", "timeout"];
+const KNIFE_KEYS: &[&str] = &[
+    "name",
+    "file",
+    "old",
+    "new",
+    "expect_fail",
+    "cmd",
+    "timeout",
+];
 
 fn only_keys(o: &Map<String, Value>, allowed: &[&str], at: &str) -> Result<(), SpecError> {
     match o.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(k) => Err(err(at, format!("unknown key {k:?} (allowed: {})", allowed.join(", ")))),
+        Some(k) => Err(err(
+            at,
+            format!("unknown key {k:?} (allowed: {})", allowed.join(", ")),
+        )),
         None => Ok(()),
     }
 }
@@ -100,7 +114,9 @@ fn non_empty_str(o: &Map<String, Value>, key: &str, at: &str) -> Result<String, 
 
 fn cmd_of(v: Option<&Value>, at: &str) -> Result<Option<Vec<String>>, SpecError> {
     let Some(v) = v else { return Ok(None) };
-    let Value::Array(a) = v else { return Err(err(at, "cmd must be an array of strings")) };
+    let Value::Array(a) = v else {
+        return Err(err(at, "cmd must be an array of strings"));
+    };
     if a.is_empty() {
         return Err(err(at, "cmd must not be empty"));
     }
@@ -127,17 +143,25 @@ fn timeout_of(v: Option<&Value>, at: &str) -> Result<Option<u64>, SpecError> {
 fn file_inside_repo(file: &str, at: &str) -> Result<(), SpecError> {
     let p = Path::new(file);
     let escapes = p.components().any(|c| {
-        matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
     });
     if p.is_absolute() || escapes || file.starts_with('/') || file.starts_with('\\') {
-        return Err(err(at, format!("file {file:?} must be relative and inside the repo")));
+        return Err(err(
+            at,
+            format!("file {file:?} must be relative and inside the repo"),
+        ));
     }
     Ok(())
 }
 
 pub fn parse(text: &str) -> Result<Spec, SpecError> {
     let v: Value = serde_json::from_str(text).map_err(|e| err("spec", format!("not JSON: {e}")))?;
-    let Value::Object(top) = v else { return Err(err("spec", "must be a JSON object")) };
+    let Value::Object(top) = v else {
+        return Err(err("spec", "must be a JSON object"));
+    };
     only_keys(&top, TOP_KEYS, "spec")?;
     let top_cmd = cmd_of(top.get("cmd"), "spec.cmd")?;
     let top_timeout = timeout_of(top.get("timeout"), "spec.timeout")?.unwrap_or(DEFAULT_TIMEOUT_S);
@@ -150,12 +174,17 @@ pub fn parse(text: &str) -> Result<Spec, SpecError> {
         return Err(err("spec.knives", "must be an array"));
     };
     if ks.is_empty() {
-        return Err(err("spec.knives", "no knives (zero knives can never all bite)"));
+        return Err(err(
+            "spec.knives",
+            "no knives (zero knives can never all bite)",
+        ));
     }
     let mut knives: Vec<Knife> = Vec::with_capacity(ks.len());
     for (i, k) in ks.iter().enumerate() {
         let at = format!("knives[{i}]");
-        let Value::Object(o) = k else { return Err(err(at, "must be an object")) };
+        let Value::Object(o) = k else {
+            return Err(err(at, "must be an object"));
+        };
         only_keys(o, KNIFE_KEYS, &at)?;
         let name = non_empty_str(o, "name", &at)?;
         if knives.iter().any(|x| x.name == name) {
@@ -175,10 +204,21 @@ pub fn parse(text: &str) -> Result<Spec, SpecError> {
         }
         let cmd = match cmd_of(o.get("cmd"), &format!("{at}.cmd"))? {
             Some(c) => c,
-            None => top_cmd.clone().ok_or_else(|| err(&at, "no cmd here and no top-level cmd"))?,
+            None => top_cmd
+                .clone()
+                .ok_or_else(|| err(&at, "no cmd here and no top-level cmd"))?,
         };
-        let timeout_s = timeout_of(o.get("timeout"), &format!("{at}.timeout"))?.unwrap_or(top_timeout);
-        knives.push(Knife { name, file, old, new, expect_fail, cmd, timeout_s });
+        let timeout_s =
+            timeout_of(o.get("timeout"), &format!("{at}.timeout"))?.unwrap_or(top_timeout);
+        knives.push(Knife {
+            name,
+            file,
+            old,
+            new,
+            expect_fail,
+            cmd,
+            timeout_s,
+        });
     }
     Ok(Spec { knives, noop })
 }
@@ -191,7 +231,8 @@ mod tests {
         format!(r#"{{"cmd": ["cargo", "test"], "knives": [{knife}]}}"#)
     }
 
-    const OK: &str = r#"{"name": "k1", "file": "src/a.rs", "old": "a", "new": "", "expect_fail": "t::x"}"#;
+    const OK: &str =
+        r#"{"name": "k1", "file": "src/a.rs", "old": "a", "new": "", "expect_fail": "t::x"}"#;
 
     #[test]
     fn a_minimal_spec_reads_with_defaults() {
@@ -206,8 +247,10 @@ mod tests {
 
     #[test]
     fn h1_empty_expect_fail_is_a_usage_error() {
-        let e = parse(&one(r#"{"name": "k", "file": "a", "old": "a", "new": "b", "expect_fail": ""}"#))
-            .expect_err("empty expect_fail");
+        let e = parse(&one(
+            r#"{"name": "k", "file": "a", "old": "a", "new": "b", "expect_fail": ""}"#,
+        ))
+        .expect_err("empty expect_fail");
         assert!(e.what.contains("expect_fail must not be empty"), "{e}");
     }
 
@@ -217,7 +260,10 @@ mod tests {
             let mut o: Map<String, Value> = serde_json::from_str(OK).expect("json");
             o.insert(key.to_string(), Value::String(String::new()));
             let e = parse(&one(&Value::Object(o).to_string())).expect_err(key);
-            assert!(e.what.contains(&format!("{key} must not be empty")), "{key}: {e}");
+            assert!(
+                e.what.contains(&format!("{key} must not be empty")),
+                "{key}: {e}"
+            );
         }
     }
 
@@ -235,8 +281,10 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_refused() {
-        let e = parse(&one(r#"{"name": "k", "file": "a", "old": "a", "new": "", "expect-fail": "t"}"#))
-            .expect_err("typo");
+        let e = parse(&one(
+            r#"{"name": "k", "file": "a", "old": "a", "new": "", "expect-fail": "t"}"#,
+        ))
+        .expect_err("typo");
         assert!(e.what.contains("unknown key \"expect-fail\""), "{e}");
         let e = parse(r#"{"cmd": ["x"], "knifes": []}"#).expect_err("typo top");
         assert!(e.what.contains("unknown key"), "{e}");
@@ -255,15 +303,20 @@ mod tests {
     fn duplicate_names_and_no_op_knives_are_refused() {
         let e = parse(&one(&format!("{OK}, {OK}"))).expect_err("dup");
         assert!(e.what.contains("duplicate name"), "{e}");
-        let e = parse(&one(r#"{"name": "k", "file": "a", "old": "x", "new": "x", "expect_fail": "t"}"#))
-            .expect_err("same");
+        let e = parse(&one(
+            r#"{"name": "k", "file": "a", "old": "x", "new": "x", "expect_fail": "t"}"#,
+        ))
+        .expect_err("same");
         assert!(e.what.contains("changes nothing"), "{e}");
     }
 
     #[test]
     fn per_knife_cmd_and_timeout_override() {
         let k2 = r#"{"name": "k2", "file": "b", "old": "b", "new": "c", "expect_fail": "t", "cmd": ["py"], "timeout": 60}"#;
-        let s = parse(&format!(r#"{{"cmd": ["cargo"], "timeout": 120, "knives": [{OK}, {k2}]}}"#)).expect("ok");
+        let s = parse(&format!(
+            r#"{{"cmd": ["cargo"], "timeout": 120, "knives": [{OK}, {k2}]}}"#
+        ))
+        .expect("ok");
         assert_eq!(s.knives[0].timeout_s, 120);
         assert_eq!(s.knives[1].timeout_s, 60);
         assert_eq!(s.knives[1].cmd, vec!["py".to_string()]);
@@ -271,9 +324,17 @@ mod tests {
 
     #[test]
     fn bad_timeout_and_noop_types() {
-        for bad in [r#""timeout": 0"#, r#""timeout": -5"#, r#""timeout": "9""#, r#""noop": "no""#] {
+        for bad in [
+            r#""timeout": 0"#,
+            r#""timeout": -5"#,
+            r#""timeout": "9""#,
+            r#""noop": "no""#,
+        ] {
             let e = parse(&format!(r#"{{"cmd": ["x"], {bad}, "knives": [{OK}]}}"#)).expect_err(bad);
-            assert!(e.what.contains("timeout") || e.what.contains("true or false"), "{bad}: {e}");
+            assert!(
+                e.what.contains("timeout") || e.what.contains("true or false"),
+                "{bad}: {e}"
+            );
         }
     }
 
@@ -284,14 +345,20 @@ mod tests {
         // every knife overrides cmd ⇒ the top-level one is never run
         let s = parse(&format!(r#"{{"cmd": ["unused"], "knives": [{k2}, {k3}]}}"#)).expect("ok");
         assert_eq!(s.noop_cmds(), vec![(vec!["py".to_string()], 90)]);
-        let s = parse(&format!(r#"{{"cmd": ["cargo"], "knives": [{OK}, {k2}, {k3}]}}"#)).expect("ok");
+        let s = parse(&format!(
+            r#"{{"cmd": ["cargo"], "knives": [{OK}, {k2}, {k3}]}}"#
+        ))
+        .expect("ok");
         let c: Vec<Vec<String>> = s.noop_cmds().into_iter().map(|(c, _)| c).collect();
         assert_eq!(c, vec![vec!["cargo".to_string()], vec!["py".to_string()]]);
     }
 
     #[test]
     fn noop_false_is_kept() {
-        let s = parse(&format!(r#"{{"cmd": ["x"], "noop": false, "knives": [{OK}]}}"#)).expect("ok");
+        let s = parse(&format!(
+            r#"{{"cmd": ["x"], "noop": false, "knives": [{OK}]}}"#
+        ))
+        .expect("ok");
         assert!(!s.noop);
     }
 }
