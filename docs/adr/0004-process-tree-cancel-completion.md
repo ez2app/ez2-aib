@@ -288,8 +288,9 @@ decision list (a63ab, 2026-11-09).
 - **The slot.** A stop frees the session's slot only when it saw no survivor in what it
   could observe and its result is on the allow list below. This is not a proof that the
   whole tree is gone, nor a resource-isolation guarantee: `observed_clean` still has its
-  blind spots (`Report::blind_spots()`: a re-parented process after its parent exited, a
-  new session, `env_cleared`, `uid_changed`).
+  blind spots (`Report::blind_spots()`, `BLIND_SPOTS_UNCONTAINED` in
+  `crates/aibd/src/platform/tree.rs`: `exec_after_creator_exit`, `env_cleared`,
+  `fork_watch_miss`, `uid_changed`).
   `Stop::releases_slot()` = `clean`, or `unverified` with a reason in
   `SLOT_RELEASING_REASONS` (today only `observed_clean`), and no survivor. Anything else
   keeps the slot; a second DELETE runs the stop again (H2) [6, 7, 8].
