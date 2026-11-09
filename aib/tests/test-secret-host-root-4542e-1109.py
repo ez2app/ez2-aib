@@ -116,8 +116,8 @@ class HostRoot(unittest.TestCase):
         self.assertEqual(bad["why"], "nonce_mismatch")
 
     def test_r5_clipboard_cleared_after_generate(self):
-        """產生的密碼進了剪貼簿 ⇒ 視窗一關就清:有值先比對(L4)、取消也清、中斷也清(L5);測試注入假的清除,不碰真剪貼簿(L6);
-        斷言被呼叫恰好一次且值為 True(L7)。"""
+        """產生的密碼進了剪貼簿 ⇒ 視窗關掉時:JXA 自己比對剪貼簿 == 最後一次產生值才清(L8)、沒按過產生就不碰(L9)、
+        視窗沒正常回來(中斷)才由 Python 保守清一次(L5;有值先比對 L4)。測試注入假的清除,不碰真剪貼簿(L6);斷言呼叫次數與值(L7)。"""
         calls = []
 
         def fake(content):
@@ -143,13 +143,38 @@ class HostRoot(unittest.TestCase):
                             touchid_available=lambda: True, out=out, ssh_run=lambda *a, **k: self.fail("不該碰 ssh"),
                             clipboard=lambda v: cleared.append(v) or True)
             return rc, json.loads(out.getvalue().strip().splitlines()[-1]), cleared
-        # saved, then refused later (bad shape) → cleared exactly once, with the value, result True
-        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28})
-        self.assertEqual((rc, res["why"], res["clipboard_cleared"], len(cleared)), (2, "bad_format", True, 1))
-        # cancelled: collect returns no value → still cleared once
+        # 1ced7 L8 / L9:視窗正常回來 ⇒ 清不清由 JXA 比對決定(generated / cleared 旗標),Python 不再碰剪貼簿
+        # generated + JXA cleared, then refused later (bad shape) → "cleared", no pbcopy from Python
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"],
+                                   lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28, "generated": True, "cleared": True})
+        self.assertEqual((rc, res["why"], res["clipboard"], res["clipboard_cleared"], cleared), (2, "bad_format", "cleared", True, []))
+        # L8:generated, but the clipboard was no longer the generated value (person copied something else) → "kept", untouched
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"],
+                                   lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28, "generated": True, "cleared": False})
+        self.assertEqual((res["clipboard"], res["clipboard_cleared"], cleared), ("kept", False, []))
+        # L9:cancelled without ever pressing generate → the person's own clipboard is left alone
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": False, "why": "cancel", "generated": False})
+        self.assertEqual((rc, res["clipboard"], res["clipboard_cleared"], cleared), (2, "not_generated", False, []))
+        # cancelled after generating: JXA compared and cleared → "cleared"
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"],
+                                   lambda p, t, **kw: {"ok": False, "why": "cancel", "generated": True, "cleared": True})
+        self.assertEqual((res["clipboard"], res["clipboard_cleared"], cleared), ("cleared", True, []))
+        # a dialog stub without the flags (older shape) counts as "returned, not generated"
         rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": False, "why": "cancel"})
-        self.assertEqual((rc, res["clipboard_cleared"], cleared), (2, True, [None]))
-        # interrupted inside the dialog: the finally still clears
+        self.assertEqual((res["clipboard"], cleared), ("not_generated", []))
+        # dialog() passes the JXA flags through on every parsed path
+        mk = lambda d: (lambda cmd, input=None, **kw: type("R", (), {"stdout": json.dumps(d), "returncode": 0, "stderr": ""})())  # noqa: E731
+        r = SA.dialog("p", "t", run=mk({"ok": False, "why": "cancel", "generated": True, "cleared": True}), generate=True)
+        self.assertEqual((r["why"], r["generated"], r["cleared"]), ("cancel", True, True))
+        r = SA.dialog("p", "t", run=mk({"ok": True, "nonce": "no", "value": "x", "generated": True, "cleared": False}), generate=True)
+        self.assertEqual((r["why"], r["generated"], r["cleared"]), ("nonce_mismatch", True, False))
+        # the JXA does the compare itself and reports both flags; the generated value never leaves the script
+        gen = SA.build_script("p", "t", "n" * 32, generate=True)
+        for needle in ("function settleClipboard(last)", "ObjC.unwrap(cur) === last", "pb.clearContents()",
+                       "out.generated = (last !== null)", "out.cleared = settleClipboard(last)", "last = def;"):
+            self.assertIn(needle, gen)
+        self.assertNotIn("settleClipboard", SA.build_script("p", "t", "n" * 32))   # plain dialog: no clipboard code at all
+        # interrupted inside the dialog: the window never came back → the finally still clears once (L5), value unknown
         def boom(p, t, **kw):
             raise KeyboardInterrupt
         cleared2 = []
