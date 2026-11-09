@@ -218,6 +218,12 @@ jobs:
             '        discard_output: true, // knife' \
             --expect-fail output_lines_are_events_and_read_back_after_a_restart \
             -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S10 (a63ab preview.3) the database is created with the default mode, not 0600
+          python3 -I scripts/knife.py crates/aibd/src/server.rs \
+            '    platform::private_db_file(&db)?;' \
+            '    // knife: no owner-only database file' \
+            --expect-fail output_lines_are_events_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // came from #592 and the gate from #593; neither saw the other).\n    let policy = st.session_policy.clone();' \

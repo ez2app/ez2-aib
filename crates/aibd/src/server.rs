@@ -51,9 +51,12 @@ pub async fn run(
     }
 
     let db = dirs.data_dir().join("aibd.sqlite");
-    let store = tokio::task::spawn_blocking(move || Store::open(&db))
+    platform::private_db_file(&db)?;
+    let db2 = db.clone();
+    let store = tokio::task::spawn_blocking(move || Store::open(&db2))
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))??;
+    platform::restrict_db_sidecars(&db)?;
     if !store.integrity_ok()? {
         return Err(StartError::Integrity);
     }
