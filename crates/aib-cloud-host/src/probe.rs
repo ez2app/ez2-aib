@@ -233,6 +233,15 @@ fn wait_with_timeout(
             return Ok(st);
         }
         if t0.elapsed() > timeout {
+            // c477a #584 L1': the child was spawned as its own process group, so grandchildren
+            // (pct exec → lxc-attach, pct restore → tar / zstd) that inherited our pipes die
+            // with it; otherwise the pipe readers would wait for an EOF that never comes.
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{}", child.id())])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
             let _ = child.kill();
             let _ = child.wait();
             return Err("timeout".to_owned());
@@ -241,8 +250,15 @@ fn wait_with_timeout(
     }
 }
 
+/// Every child becomes the leader of its own process group so a timeout can take its whole
+/// subtree down (`kill -KILL -<pid>`), not just the direct child.
+fn own_group(cmd: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0)
+}
+
 fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
-    let mut child = cmd
+    let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -264,7 +280,7 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<St
 }
 
 pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
-    let mut child = cmd
+    let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -272,12 +288,19 @@ pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String
         .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     let out_h = drain(child.stdout.take());
     let err_h = drain(child.stderr.take());
-    let status =
-        wait_with_timeout(&mut child, timeout).map_err(|e| format!("{:?}: {e}", cmd.get_program()));
-    // the pipes close when the child is gone (also after a timeout kill), so these always return
+    let status = match wait_with_timeout(&mut child, timeout) {
+        Ok(s) => s,
+        Err(e) => {
+            // timeout: the group is dead, but do not wait on the pipes at all (c477a #584 L1');
+            // the reader threads finish on their own once the last holder closes.
+            drop(out_h);
+            drop(err_h);
+            return Err(format!("{:?}: {e}", cmd.get_program()));
+        }
+    };
+    // normal exit: the child and anything it left behind in its group have closed our pipes
     let out = out_h.join().unwrap_or_default();
     let err = err_h.join().unwrap_or_default();
-    let status = status?;
     if !status.success() {
         return Err(format!(
             "{:?} exited {status}: {}",
@@ -1427,5 +1450,26 @@ mod tests {
         });
         assert!(!probe_dns(IpAddr::V4(Ipv4Addr::LOCALHOST), target_port));
         t2.join().unwrap();
+    }
+
+    #[test]
+    fn p12_timeout_kills_the_whole_group_and_returns_promptly() {
+        // c477a #584 L1': a grandchild holding our pipes must not turn a 1 s timeout into a hang
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & sleep 30"]);
+        let t0 = Instant::now();
+        let r = run_capture(&mut cmd, Duration::from_secs(1));
+        assert!(r.is_err(), "{r:?}");
+        assert!(r.unwrap_err().contains("timeout"));
+        assert!(
+            t0.elapsed() < Duration::from_secs(6),
+            "took {:?}",
+            t0.elapsed()
+        );
+        let mut q = Command::new("sh");
+        q.args(["-c", "sleep 30 & sleep 30"]);
+        let t1 = Instant::now();
+        assert!(run_quiet(&mut q, Duration::from_secs(1)).is_err());
+        assert!(t1.elapsed() < Duration::from_secs(6));
     }
 }
