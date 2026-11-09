@@ -43,6 +43,8 @@ class D(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def rec(self, msg, status):
+        if status == "queued":
+            return Q.enqueue(SEAT, msg, "agent:offhub", env=self.env, now=NOW)["id"]
         return Q.record(SEAT, msg, "agent:offhub", status=status, env=self.env, now=NOW,
                         rc=(3 if status != "delivered" else None))["id"]
 
