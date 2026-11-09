@@ -8,14 +8,32 @@
 //! thread meanwhile. Both pipes are close-on-exec: still open in the child
 //! while the `pre_exec` hook runs, closed once it execs.
 //!
-//! The program never runs unless the caller let it go: if the pid cannot be
-//! read, or the caller's code panics, the go pipe closes unwritten and the
-//! child returns an error from the hook instead of exec'ing.
+//! The program never runs unless the caller let it go:
+//! - the caller's code panics ⇒ the held child is killed (`SIGKILL`, it is
+//!   our unreaped child, so the pid is still it) and reaped, then the panic
+//!   goes on. Not by closing the go pipe alone: another child forked at the
+//!   same moment (another held spawn, or any fork + exec) holds a copy of
+//!   our go writer until it execs, so EOF can come late or, with two held
+//!   spawns failing together, never (bb7dc ad94b515 H1);
+//! - the go pipe closes unwritten (the parent died) ⇒ EOF ⇒ the hook
+//!   returns an error and the child never execs;
+//! - nothing comes within [`HOLD_LIMIT`] ⇒ the same. A backstop: aibd
+//!   writes the byte or kills the child well before.
+//!
+//! No time limit on the parent's side: while the child is held aibd only
+//! makes non-blocking calls (coalition, unique id, process table, kqueue).
+//! If a call that can block is ever added there, it needs a registered
+//! operation timer (ADR 0005) (a63ab 11-10 05:19).
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::CommandExt;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::process::{Child, Command};
+
+/// How long a held child waits for the go byte before it gives up without
+/// exec'ing (milliseconds, for `poll`).
+pub const HOLD_LIMIT: libc::c_int = 5_000;
 
 /// Spawn `cmd` held before `exec`; `on_held(pid)` runs while it is held, and
 /// the program starts when it returns. `None` = no child was ever held
@@ -40,9 +58,25 @@ pub fn spawn_held<R>(
             r
         });
         let mut b = [0u8; 4];
-        let held = match (&pid_r).read_exact(&mut b) {
-            Ok(()) => Some(on_held(u32::from_ne_bytes(b))),
-            Err(_) => None,
+        let pid = (&pid_r)
+            .read_exact(&mut b)
+            .ok()
+            .map(|()| u32::from_ne_bytes(b));
+        let held = match pid {
+            Some(p) => match catch_unwind(AssertUnwindSafe(|| on_held(p))) {
+                Ok(r) => Some(r),
+                Err(panic) => {
+                    // never let it run, and do not wait for an EOF another
+                    // fork may hold back: kill it, reap it, go on panicking
+                    kill_held(p);
+                    drop(go_w);
+                    if let Ok(Ok(mut c)) = spawner.join() {
+                        let _ = c.wait();
+                    }
+                    resume_unwind(panic);
+                }
+            },
+            None => None,
         };
         if held.is_some() {
             // a failed write only means the child is gone: spawn says why
@@ -59,9 +93,20 @@ pub fn spawn_held<R>(
     })
 }
 
+/// `SIGKILL` to a held child (our own, not yet reaped: the pid is still it).
+fn kill_held(pid: u32) {
+    if let Ok(p) = libc::pid_t::try_from(pid) {
+        if p > 0 {
+            // SAFETY: `kill` has no memory preconditions; `p` is a positive
+            // pid, so it reaches that one process, never a group.
+            unsafe { libc::kill(p, libc::SIGKILL) };
+        }
+    }
+}
+
 /// In the forked child: close our copy of the go writer, hand over the pid,
-/// wait for one byte. EOF (the parent let go without writing) or any error
-/// ⇒ `Err`, so `std` reports it and never execs.
+/// wait for one byte. EOF, nothing within [`HOLD_LIMIT`], or any error ⇒
+/// `Err`, so `std` reports it and never execs.
 fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
     // SAFETY: `go_w` is an fd this child inherited; closing it only drops
     // this process's copy.
@@ -76,6 +121,24 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
     }
     let mut go = [0u8; 1];
     loop {
+        let mut fds = libc::pollfd {
+            fd: go_r,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `fds` is one live, writable `pollfd`; `poll` reads and
+        // writes only that one entry.
+        let ready = unsafe { libc::poll(&mut fds, 1, HOLD_LIMIT) };
+        if ready == 0 {
+            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+        }
+        if ready < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(e);
+        }
         // SAFETY: `go` is a live, writable 1-byte buffer.
         let n = unsafe { libc::read(go_r, go.as_mut_ptr().cast(), 1) };
         match n {
@@ -148,6 +211,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         assert!(r.is_err(), "the panic did not come back");
         assert!(!ran, "the program ran although it was never let go");
+    }
+
+    /// bb7dc ad94b515 H1: B is forked while A is held and holds a copy of A's
+    /// go writer. A's recording panics: A must come back at once (killed, not
+    /// waiting for an EOF B holds back), its program never runs, and B is
+    /// still let go on its own.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test pacing / bounds only
+    fn a_panic_while_another_spawn_is_held_comes_back_at_once() {
+        use std::sync::mpsc::channel;
+        let d = dir("two");
+        let (fa, fb) = (d.join("a"), d.join("b"));
+        let (a_held_tx, a_held) = channel::<u32>();
+        let (a_go_tx, a_go) = channel::<()>();
+        let mut ca = writer(&fa);
+        let a = std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                spawn_held::<()>(&mut ca, |pid| {
+                    a_held_tx.send(pid).unwrap();
+                    let _ = a_go.recv();
+                    panic!("A's recording failed")
+                })
+            }));
+            (r.is_err(), t.elapsed())
+        });
+        let a_pid = a_held.recv_timeout(Duration::from_secs(10)).unwrap();
+        // B forks now, while A is held: it inherits A's go writer
+        let (b_held_tx, b_held) = channel::<()>();
+        let (b_go_tx, b_go) = channel::<()>();
+        let mut cb = writer(&fb);
+        let b = std::thread::spawn(move || {
+            spawn_held(&mut cb, |_| {
+                b_held_tx.send(()).unwrap();
+                let _ = b_go.recv();
+            })
+        });
+        b_held.recv_timeout(Duration::from_secs(10)).unwrap();
+        a_go_tx.send(()).unwrap();
+        // bounded either way: if A is stuck, letting B go frees it
+        let t = std::time::Instant::now();
+        while !a.is_finished() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let a_stuck = !a.is_finished();
+        b_go_tx.send(()).unwrap();
+        let (a_panicked, a_took) = a.join().unwrap();
+        let (mut cb, _) = b.join().unwrap().unwrap();
+        let b_ok = cb.wait().unwrap().success();
+        std::thread::sleep(Duration::from_millis(200));
+        let (a_ran, b_ran) = (fa.exists(), fb.exists());
+        // A was reaped: its pid is no longer a process of ours
+        let a_left = Command::new("/bin/kill")
+            .args(["-0", &a_pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!a_stuck, "A waited for B (took {a_took:?})");
+        assert!(a_panicked, "A's panic did not come back");
+        assert!(!a_ran, "A's program ran although it was never let go");
+        assert!(!a_left, "A {a_pid} left behind");
+        assert!(b_ok && b_ran, "B was not let go on its own");
     }
 
     /// A program that does not exist: no child was held, the spawn error
