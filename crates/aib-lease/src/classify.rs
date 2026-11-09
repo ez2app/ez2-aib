@@ -21,8 +21,7 @@
 //!   `short_overrun`, or took more than 15 min, ⇒ it may not go ahead.
 //! * **Config** can only move a fingerprint to long, never to short.
 
-use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::run::mask_secrets;
 
@@ -41,8 +40,7 @@ pub const BAN_SECS: i64 = 7 * 24 * 3600;
 /// v1: 5 or more samples use p90, fewer use the max.
 pub const P90_MIN_SAMPLES: usize = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Short,
     Medium,
@@ -51,7 +49,18 @@ pub enum Class {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl Class {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Class::Short => "short",
+            Class::Medium => "medium",
+            Class::Long => "long",
+            Class::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classification {
     pub class: Class,
     /// Measured light (see the module notes); `false` when not measured.
@@ -65,6 +74,20 @@ pub struct Classification {
     pub fingerprint: Option<String>,
     /// Why, in a few words (one per rule that decided).
     pub reasons: Vec<String>,
+}
+
+impl Classification {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "class": self.class.as_str(),
+            "light": self.light,
+            "may_go_ahead": self.may_go_ahead,
+            "est_secs": self.est_secs,
+            "samples": self.samples,
+            "fingerprint": self.fingerprint,
+            "reasons": self.reasons,
+        })
+    }
 }
 
 /// Split one step into words like a POSIX shell would for a plain command. `None` when the
@@ -447,14 +470,13 @@ pub fn cli(argv: &[String]) -> u8 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let c = classify(&host, &steps, &history, &long, now);
-    println!("{}", serde_json::to_string(&c).unwrap_or_default());
+    println!("{}", c.to_json());
     0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     const NOW: i64 = 1_794_240_000;
 
@@ -552,6 +574,7 @@ mod tests {
         let c = classify("pro13", &s(&["aib test --all"]), "", &read_long_config("short: aib test --all\n"), NOW);
         assert_eq!(c.class, Class::Long);
         assert_eq!(read_long_config("# comment\n  a  # tail\n\n"), vec!["a".to_string()]);
+        assert_eq!(c.to_json()["class"], "long");
     }
 
     #[test]
