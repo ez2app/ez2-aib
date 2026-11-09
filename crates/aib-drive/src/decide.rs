@@ -190,11 +190,28 @@ pub struct ReviewLine {
     pub counts: [u32; 4],
     /// `None` = 全文; `Some(from)` = 增量 from..head.
     pub from: Option<Sha>,
-    /// Evidence ids of earlier reviews whose every H / M this review lists,
-    /// one by one, as closed. Set by the snapshot layer from the body; the
-    /// first line cannot say it. See [`closed_by_increment`].
+    /// The ids of the H / M findings this review raised (`H1`, `M2`, …),
+    /// read and checked by the snapshot layer from the body: `Known` only
+    /// when there are exactly H + M of them. The first line cannot say it.
+    #[serde(default = "findings_not_read")]
+    pub findings: Known<Vec<String>>,
+    /// Earlier reviews this one closes, finding by finding (D20).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub closes: Vec<String>,
+    pub closes: Vec<Closing>,
+}
+
+/// One earlier review an increment closes (D20, bb7dc 6ffcb86f M1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Closing {
+    /// The earlier review's evidence id.
+    pub review: String,
+    /// The finding ids the body states closed, as the snapshot layer read
+    /// them; `Unknown` closes nothing.
+    pub findings: Known<Vec<String>>,
+}
+
+fn findings_not_read() -> Known<Vec<String>> {
+    Known::Unknown("findings not read".into())
 }
 
 impl ReviewLine {
@@ -214,6 +231,7 @@ impl ReviewLine {
                 Scope::Incremental { from, .. } => Some(from.to_owned()),
                 Scope::Full | Scope::Other(_) => None,
             },
+            findings: findings_not_read(),
             closes: Vec::new(),
         })
     }
@@ -534,19 +552,42 @@ fn covered_to(commits: &[Sha], reviews: &[&ReviewLine]) -> Option<usize> {
 }
 
 /// D20 (a63ab 11-10 02:02): a review that did not pass at an old head is
-/// closed by an incremental pass `old..new` only when the same verified
-/// writer wrote both and the increment lists each old H / M as closed
-/// (`closes` names the old review). A different reviewer, or an increment
-/// that does not list them, leaves the old review failed.
-fn closed_by_increment(old: &ReviewLine, others: &[&ReviewLine]) -> bool {
+/// closed by an incremental pass `old..new` only when
+///
+/// - the same verified writer wrote both;
+/// - the old head and the increment's head are both on this PR's commits,
+///   the increment's later (bb7dc 6ffcb86f H1: an `old..X` off the branch
+///   closes nothing);
+/// - the old review's H / M ids are `Known` and there are exactly H + M of
+///   them, and the increment states every one of them closed (M1: a
+///   partial list, or one the snapshot could not read, closes nothing).
+///
+/// A different reviewer, or anything missing, leaves the old review failed.
+fn closed_by_increment(old: &ReviewLine, others: &[&ReviewLine], commits: &[Sha]) -> bool {
+    let idx = |s: &str| commits.iter().position(|c| c == s);
     let Known::Known(writer) = &old.by else {
         return false;
     };
+    let Some(at) = idx(&old.head) else {
+        return false;
+    };
+    let Known::Known(raised) = &old.findings else {
+        return false;
+    };
+    if raised.len() as u64 != u64::from(old.counts[0]) + u64::from(old.counts[1]) {
+        return false;
+    }
     others.iter().any(|r| {
         r.passes()
             && r.by.get() == Some(writer)
             && r.from.as_ref() == Some(&old.head)
-            && r.closes.contains(&old.evidence)
+            && idx(&r.head).is_some_and(|j| j > at)
+            && r.closes.iter().any(|c| {
+                c.review == old.evidence
+                    && c.findings
+                        .get()
+                        .is_some_and(|closed| raised.iter().all(|f| closed.contains(f)))
+            })
     })
 }
 
@@ -774,7 +815,7 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
     let chain: Vec<&ReviewLine> = others
         .iter()
         .copied()
-        .filter(|r| r.passes() || closed_by_increment(r, &others))
+        .filter(|r| r.passes() || closed_by_increment(r, &others, commits))
         .collect();
     let covered = covered_to(commits, &chain);
     if last.is_some() && covered == last && !at_head.is_empty() {

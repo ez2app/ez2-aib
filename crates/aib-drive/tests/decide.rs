@@ -33,7 +33,15 @@ fn review(by: &str, head: &str, pass: bool, counts: [u32; 4], from: Option<&str>
         pass,
         counts,
         from: from.map(s),
+        findings: Known::Unknown(s("not read")),
         closes: vec![],
+    }
+}
+
+fn closing(review: &ReviewLine, ids: &[&str]) -> Closing {
+    Closing {
+        review: review.evidence.clone(),
+        findings: Known::Known(ids.iter().map(|x| s(x)).collect()),
     }
 }
 
@@ -532,41 +540,82 @@ fn a_failed_full_review_plus_a_passing_increment_is_not_a_merge() {
 
 /// D20 (a63ab 11-10 02:02, tonight's coalition / decide flow): an old head
 /// that failed plus an increment that passes is full coverage only when the
-/// same reviewer wrote both and the increment lists each old H / M closed.
+/// same reviewer wrote both, the increment is on this branch, and it lists
+/// each old H / M closed (bb7dc 6ffcb86f H1 / M1).
 #[test]
 fn the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch() {
     let mut p = pr(605, Q6);
     p.commits = Known::Known(vec![s(Q5), s(Q6)]);
-    let old = review("bb7dc", Q5, false, [1, 1, 0, 0], None);
+    let mut old = review("bb7dc", Q5, false, [1, 1, 0, 0], None);
+    old.findings = Known::Known(vec![s("H1"), s("M1")]);
     let mut inc = review("bb7dc", Q6, true, [0, 0, 0, 0], Some(Q5));
-    inc.closes = vec![old.evidence.clone()];
+    inc.closes = vec![closing(&old, &["H1", "M1"])];
     p.reviews = vec![old.clone(), inc.clone()];
     assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(605, s(Q6))]);
 
+    let blocked = |reviews: Vec<ReviewLine>, why: &str| {
+        let mut p = p.clone();
+        p.reviews = reviews;
+        assert!(merges(&decide(&snap(vec![p]))).is_empty(), "{why}");
+    };
     // the increment does not list the old findings
-    p.reviews = vec![
-        old.clone(),
-        review("bb7dc", Q6, true, [0, 0, 0, 0], Some(Q5)),
-    ];
-    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
-
+    blocked(
+        vec![
+            old.clone(),
+            review("bb7dc", Q6, true, [0, 0, 0, 0], Some(Q5)),
+        ],
+        "no list",
+    );
+    // M1: only part of them
+    let mut part = inc.clone();
+    part.closes = vec![closing(&old, &["H1"])];
+    blocked(vec![old.clone(), part], "partial list");
+    // M1: the list the snapshot could not read
+    let mut unread = inc.clone();
+    unread.closes[0].findings = Known::Unknown(s("body not read"));
+    blocked(vec![old.clone(), unread], "list not read");
+    // M1: the old review's own findings not read, or fewer than H + M
+    let mut old_unread = old.clone();
+    old_unread.findings = Known::Unknown(s("body not read"));
+    blocked(vec![old_unread, inc.clone()], "old findings not read");
+    let mut old_short = old.clone();
+    old_short.findings = Known::Known(vec![s("H1")]);
+    let mut inc_short = inc.clone();
+    inc_short.closes = vec![closing(&old_short, &["H1"])];
+    blocked(vec![old_short, inc_short], "old list shorter than H + M");
     // a different reviewer closes them
     let mut other = inc.clone();
     other.by = Known::Known(s("1ced7"));
-    p.reviews = vec![old.clone(), other];
-    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
-
+    blocked(vec![old.clone(), other], "different reviewer");
     // the old writer is not verified
     let mut unverified = old.clone();
     unverified.by = Known::Unknown(s("file name only"));
-    p.reviews = vec![unverified, inc.clone()];
-    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
-
+    blocked(vec![unverified, inc.clone()], "unverified writer");
     // the closing increment itself leaves a medium
     let mut leaves = inc.clone();
     leaves.counts = [0, 1, 0, 0];
-    p.reviews = vec![old, leaves];
-    assert!(merges(&decide(&snap(vec![p]))).is_empty());
+    blocked(vec![old.clone(), leaves], "closing leaves a medium");
+}
+
+/// bb7dc 6ffcb86f H1: an increment `A..X` with X off this branch closes
+/// nothing, even when another reviewer's `A..B` would carry the chain on.
+#[test]
+fn a_closing_increment_off_the_branch_closes_nothing() {
+    let mut p = pr(605, Q6);
+    p.commits = Known::Known(vec![s(Q5), s(Q6)]);
+    let mut old = review("bb7dc", Q5, false, [1, 0, 0, 0], None);
+    old.findings = Known::Known(vec![s("H1")]);
+    let mut off = review("bb7dc", MAIN, true, [0, 0, 0, 0], Some(Q5));
+    off.closes = vec![closing(&old, &["H1"])];
+    let on = review("1ced7", Q6, true, [0, 0, 0, 0], Some(Q5));
+    p.reviews = vec![old.clone(), off.clone(), on.clone()];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    // the same close on the branch is the fix cycle
+    let mut here = off;
+    here.head = s(Q6);
+    p.reviews = vec![old, here, on];
+    assert_eq!(merges(&decide(&snap(vec![p]))), vec![(605, s(Q6))]);
 }
 
 /// bb7dc 121b1cbf M1: a writer the snapshot could not verify (a file name's
