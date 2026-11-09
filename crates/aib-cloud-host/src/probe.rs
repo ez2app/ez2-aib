@@ -210,13 +210,16 @@ pub fn probe_here(kind: &str, ip: IpAddr, port: u16) -> bool {
     }
 }
 
-fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+/// Wait for a child up to `timeout`, polling every 20 ms; on timeout kill it and reap it.
+///
+/// ADR 0005 named exception: this binary is a short-lived CLI that runs on the Proxmox host
+/// (not inside aibd, which owns the timer registry); the only clock it needs is "give the
+/// child at most N seconds". Nothing else in this crate sleeps.
+#[allow(clippy::disallowed_methods)]
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
     let t0 = Instant::now();
     loop {
         if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
@@ -231,6 +234,16 @@ fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitS
     }
 }
 
+fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    wait_with_timeout(&mut child, timeout)
+}
+
 fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
     let mut child = cmd
         .stdin(Stdio::null())
@@ -239,18 +252,8 @@ fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
         .spawn()
         .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     let mut out = String::new();
-    let t0 = Instant::now();
-    let status = loop {
-        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
-            break st;
-        }
-        if t0.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("{:?}: timeout", cmd.get_program()));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let status = wait_with_timeout(&mut child, timeout)
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     if let Some(mut so) = child.stdout.take() {
         let _ = so.read_to_string(&mut out);
     }
@@ -529,8 +532,84 @@ fn cmd_one(args: &[String]) -> Result<u8, String> {
     Ok(0)
 }
 
+/// `HOST_ROOT_PASSWORD_<HOST>=<value>` (what `aib secret ask --remote-only --push` writes) or a
+/// bare value → the password. Refuses short values and anything with control characters.
+pub fn parse_root_password(text: &str) -> Result<String, String> {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .ok_or("password file is empty")?;
+    let value = match line.split_once('=') {
+        Some((k, v)) if k.starts_with("HOST_ROOT_PASSWORD") => v,
+        Some(_) => {
+            return Err(
+                "password file: unexpected KEY= (want HOST_ROOT_PASSWORD_<HOST>=…)".to_owned(),
+            )
+        }
+        None => line,
+    };
+    let value = value.trim_end_matches(['\r', '\n']);
+    if value.chars().count() < 24 {
+        return Err("password shorter than 24 characters; refuse (Andy: 24 字以上)".to_owned());
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err("password contains control characters".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
+/// `root-password apply <file>`: set root's password from a file that `aib secret ask
+/// HOST_ROOT_PASSWORD_<HOST> --remote-only --generate --push` delivered (Touch ID on the Mac,
+/// value never in a terminal), then overwrite and delete the file. This is the "forgot the
+/// root password → reset it with biometrics" path (Andy 11-09): the Mac side proves the human,
+/// this side only applies. Only `root` is ever changed.
+fn cmd_root_password(args: &[String]) -> Result<u8, String> {
+    let [sub, file] = args else {
+        return Err("root-password apply <file>".to_owned());
+    };
+    if sub != "apply" {
+        return Err(format!("root-password: unknown {sub}"));
+    }
+    let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let pw = parse_root_password(&text)?;
+    let mut cmd = Command::new("chpasswd");
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("chpasswd: {e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        si.write_all(format!("root:{pw}\n").as_bytes())
+            .map_err(|e| format!("chpasswd stdin: {e}"))?;
+    }
+    let st = wait_with_timeout(&mut child, Duration::from_secs(20))
+        .map_err(|e| format!("chpasswd: {e}"))?;
+    // the file is single-use whatever happened
+    let zeros = vec![0u8; text.len().max(64)];
+    let _ = fs::write(file, zeros);
+    let _ = fs::remove_file(file);
+    if !st.success() {
+        let mut err = String::new();
+        if let Some(mut se) = child.stderr.take() {
+            let _ = se.read_to_string(&mut err);
+        }
+        return Err(format!("chpasswd exited {st}: {}", err.trim()));
+    }
+    let mut status = Command::new("passwd");
+    status.args(["-S", "root"]);
+    let line = run_capture(&mut status, Duration::from_secs(5)).unwrap_or_default();
+    let fields: Vec<&str> = line.split_whitespace().take(2).collect();
+    println!(
+        "root password set; passwd -S: {}; {file} shredded",
+        fields.join(" ")
+    );
+    Ok(0)
+}
+
 pub fn main(args: &[String]) -> Result<u8, String> {
     match args.first().map(String::as_str) {
+        Some("root-password") => cmd_root_password(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
             Some("run") => cmd_run(&args[2..]),
             Some("merge") => cmd_merge(&args[2..]),
@@ -545,7 +624,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file>".to_owned()),
     }
 }
 
@@ -700,6 +779,34 @@ mod tests {
             "duplicate id"
         );
         assert!(merge_reports(&[r("f", "h", &["a"])]).is_err(), "one report");
+    }
+
+    #[test]
+    fn h7_root_password_file() {
+        let pw = "Ab3!".repeat(7);
+        assert_eq!(
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}\n")).unwrap(),
+            pw
+        );
+        assert_eq!(parse_root_password(&format!("{pw}\r\n")).unwrap(), pw);
+        assert!(parse_root_password("").is_err(), "empty");
+        assert!(
+            parse_root_password("HOST_ROOT_PASSWORD_EU02=short\n").is_err(),
+            "short"
+        );
+        assert!(
+            parse_root_password(&format!("PVE_API_TOKEN={pw}\n")).is_err(),
+            "other key"
+        );
+        assert!(
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}\x07\n")).is_err(),
+            "control char"
+        );
+        // a value that itself contains '=' keeps everything after the first '='
+        assert_eq!(
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}=x=y\n")).unwrap(),
+            format!("{pw}=x=y")
+        );
     }
 
     #[test]

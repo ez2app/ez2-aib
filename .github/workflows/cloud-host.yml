@@ -36,7 +36,9 @@ jobs:
       - name: smoke
         run: |
           bin="target/$TARGET/release/aib-cloud-host"
-          file "$bin" | tee /dev/stderr | grep -q "statically linked" || { echo "::error::not static"; exit 1; }
+          # `file` says "statically linked" or (PIE) "static-pie linked" depending on version; both are static
+          file "$bin" | tee /dev/stderr | grep -qiE "static(ally|-pie) linked" || { echo "::error::not static"; exit 1; }
+          ldd "$bin" 2>&1 | grep -qiE "not a dynamic executable|statically linked" || { echo "::error::ldd says dynamic"; exit 1; }
           "$bin" --version
           mkdir -p dist && cp "$bin" "dist/aib-cloud-host-${GITHUB_SHA::8}-$TARGET"
           sha256sum dist/*

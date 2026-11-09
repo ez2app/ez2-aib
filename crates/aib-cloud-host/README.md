@@ -5,6 +5,7 @@ with no I/O (`#![no_std]`); this binary executes on the Proxmox host (or a publi
 and hands the results back.
 
 ```text
+aib-cloud-host root-password apply <file>   # 忘了 root 密碼:Mac 上 aib secret ask HOST_ROOT_PASSWORD_<HOST> --remote-only --generate --push → 這裡套用
 aib-cloud-host probe run   <plan.json> --host <public ip> [--out report.json] [--external]
 aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 ```
