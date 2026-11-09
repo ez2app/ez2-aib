@@ -908,7 +908,10 @@ mod tests {
         let a = ssh_args(&sp, "true");
         let dashes = a.iter().position(|x| x == "--").unwrap();
         assert!(
-            a.iter().position(|x| x == "ServerAliveInterval=15").unwrap() < dashes,
+            a.iter()
+                .position(|x| x == "ServerAliveInterval=15")
+                .unwrap()
+                < dashes,
             "options come before the host: {a:?}"
         );
         assert!(joined.contains("-J sin02-ts -- pro13 true"), "{joined}");
