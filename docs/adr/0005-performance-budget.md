@@ -100,6 +100,12 @@ B2 reports two columns that are never merged into one number:
   least 2 and **at most 4** for now; extra requests wait in a queue and are never
   refused. 8 is the stress-test target, not the default, until the baseline proves it
   safe.
+- The queue is bounded (11-09, a9136 / a63ab): at most 64 sessions wait (trial value);
+  the next request is `429 session_queue_full`, the only refusal for load. Waiting
+  sessions are `pending` (no process), start in arrival order (FIFO) as slots come back,
+  and can be cancelled. A pending session is never started from an old queue: at
+  shutdown it ends `interrupted`, after a crash the next start marks it `interrupted`
+  (`previous_state: pending`). `AIBD_MAX_SESSIONS` (1–64) is for stress tests only.
 - "End an interactive CLI after 15 idle minutes and mark the session resumable" is
   implemented but **off by default** until resume reliability and the energy saving are
   measured. A session that is running a tool or waiting for an approval is never idle.
