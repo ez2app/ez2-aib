@@ -59,6 +59,18 @@ def mentions(text, names):
     return sorted(n for n in names if n in text)
 
 
+def fix_lines(hits, docs):
+    """紅的時候直接印要加的那一行(043dd 11-08 17:51):每個提及兩種修法擇一，照抄後改掉 <> 裡的字。"""
+    out = ["這些檔被程式 / 測試提到。程式真的讀它 ⇒ DOC_EXCLUDE 那行加進 aib/tools/release/docs_only.py;"
+           "只有註解提到 ⇒ SCAN_ALLOW 那行加進本檔。"]
+    for f, n in hits:
+        out.append("- %s mentions %s" % (f, n))
+        for d in sorted(d for d in docs if os.path.basename(d) == n):
+            out.append('    DOC_EXCLUDE:  "%s",  # %s <怎麼讀它>' % (d, f))
+        out.append('    SCAN_ALLOW:   ("%s", "%s"): "<為什麼只是註解>",' % (f, n))
+    return "\n".join(out)
+
+
 class Whitelist(unittest.TestCase):
     def test_docs(self):
         for p in ("docs/RELEASE-OPERATIONS.md", "docs/adr/0007-pty-conpty.md", "docs/migration/x.md",
@@ -228,6 +240,13 @@ class Check(unittest.TestCase):
 class Guard(unittest.TestCase):
     """程式 / 測試寫到名單內的檔名 ⇒ 紅;這種檔不能算「純文件」。"""
 
+    def test_a_red_guard_prints_the_lines_to_paste(self):
+        msg = fix_lines([("aib/tools/x.py", "RELEASE-OPERATIONS.md")],
+                        ["docs/RELEASE-OPERATIONS.md", "docs/aibd/other.md"])
+        self.assertIn('DOC_EXCLUDE:  "docs/RELEASE-OPERATIONS.md",  # aib/tools/x.py', msg)
+        self.assertIn('SCAN_ALLOW:   ("aib/tools/x.py", "RELEASE-OPERATIONS.md"):', msg)
+        self.assertNotIn("other.md", msg)
+
     def test_scanner_catches_the_three_path_forms(self):
         names = {"RELEASE-OPERATIONS.md"}
         for text in ('open("docs/RELEASE-OPERATIONS.md")', 'ROOT / "docs" / "RELEASE-OPERATIONS.md"',
@@ -250,9 +269,8 @@ class Guard(unittest.TestCase):
                 continue
             for n in mentions(text, names):
                 if (f, n) not in SCAN_ALLOW:
-                    hits.append("%s mentions %s" % (f, n))
-        self.assertEqual(hits, [], "這些檔被程式 / 測試提到:程式真的讀它 ⇒ 加進 docs_only.py 的 DOC_EXCLUDE(寫誰讀);"
-                                   "只有註解提到 ⇒ 加進這裡的 SCAN_ALLOW(寫原因)")
+                    hits.append((f, n))
+        self.assertEqual(hits, [], fix_lines(hits, docs))
 
     def test_a_doc_that_code_reads_is_excluded_and_the_exclusion_is_still_read(self):
         """a63ab #510:docs/perf/timers.md 被 timers.rs 的測試讀 ⇒ 不算純文件;排除名單每一條都要真的還有人提到。"""
