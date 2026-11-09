@@ -1400,7 +1400,13 @@ mod tests {
         )
         .unwrap();
         assert!(rc.ok(), "{:?}", rc.fail);
-        assert_eq!(rc.pass.len(), cells.len());
+        // Observe cells (one site-N-to-peerhost-443 per site, ebb36 #587 L1) are recorded, never
+        // judged: they sit in `observed`, not `pass`, so pass + observed covers every cell.
+        let observe = cells.iter().filter(|c| c.expect == Expect::Observe).count();
+        assert_eq!(observe, 2);
+        assert_eq!(rc.observed.len(), observe);
+        assert_eq!(rc.pass.len() + rc.observed.len(), cells.len());
+        assert!(rc.missing.is_empty(), "{:?}", rc.missing);
         assert_eq!(rc.to_json()["counts"]["fail"], 0);
         assert_eq!(rc.plan_fnv, plan_fingerprint(&probe_plan(&cells)));
     }
