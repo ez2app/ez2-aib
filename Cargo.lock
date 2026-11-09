@@ -34,6 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-drive"
+version = "0.2.0-preview.4"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-fixture-tree"
 version = "0.2.0-preview.4"
 dependencies = [
