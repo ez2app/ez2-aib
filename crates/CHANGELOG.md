@@ -5,6 +5,22 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- Session queue (ADR 0005 §5): when every slot is taken a POST is no longer refused with
+  `429 too_many_sessions`; it answers `202` with the session `pending` (no process, `pid` 0,
+  event `session.queued` with its `position`). Waiting sessions start in arrival order as
+  slots come back. `DELETE` of a pending session cancels it (`cancelled`, never started).
+  At most 64 wait; the next POST is `429 session_queue_full` (new code). At shutdown the
+  waiting ones end `interrupted` (`ended_by: shutdown`); after a crash the next start marks
+  a stored `pending` session `interrupted` (`previous_state: pending`,
+  `processes_may_remain: false`). A queued start that cannot start ends `failed`
+  (`ended_by: spawn_failed`); one the M1 gate refuses when it leaves the queue (it runs again
+  on the `argv[0]` asked for) ends `failed` (`ended_by: policy_refused`). `GET` of a pending
+  session has `queue {position, slots, held_by: [{id, state, reason}], held_unknown}`. Known
+  limit: slots kept by unconfirmed stops are not given back by time, so the queue can stand
+  still; `held_by` shows which (a session that is starting right now is not listed). A panic
+  in the dequeue thread after it reserved a slot would keep that slot (no known path). The default running limit is now
+  `clamp(floor(physical memory × 0.5 ÷ 500 MiB), 2, 4)`; `AIBD_MAX_SESSIONS` (1–64) is for
+  stress tests.
 - **M1 security gate, `POST /api/v1/sessions` (breaking):** only programs and env names on an
   allow-list may be started. The list is a JSON file named by `AIBD_SESSION_POLICY`
   (`{"programs": [{"name", "path", "signer"}], "env": [...]}`), read once at start. Unset means

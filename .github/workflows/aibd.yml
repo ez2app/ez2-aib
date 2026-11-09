@@ -230,10 +230,47 @@ jobs:
             $'// knife: unknown fields accepted\nstruct PolicyFile {' \
             --expect-fail allowlist::tests::the_file_is_checked_field_by_field \
             -- cargo test -p aibd --locked --lib allowlist::tests::the_file_is_checked_field_by_field
+          # ADR 0005 §5 queue (a63ab 19:13). Q1 LIFO instead of FIFO
+          qk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test session_queue "$3"; }
+          qk '                let Some(q) = g.queue.pop_front() else {' \
+            '                let Some(q) = g.queue.pop_back() else { // knife' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q2 a slot coming back starts nobody (no kick at the end of a stop)
+          qk $'            self.kick(&mut g);\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            $'            // knife: no kick\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q3 the queue has no bound
+          qk '                if g.queue.len() >= MAX_QUEUE {' \
+            '                if g.queue.len() >= MAX_QUEUE && false { // knife' \
+            the_queue_is_bounded_and_the_waiting_end_interrupted_at_shutdown
+          # Q4 DELETE does not look in the queue: a waiting session cannot be cancelled
+          qk '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id) {' \
+            '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id && false) { // knife' \
+            a_cancelled_queued_session_never_starts
+          # Q5 a session left pending by a crash is not interrupted at the next start
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "holds_slot = 1 OR state = 'pending'" "holds_slot = 1 -- knife" \
+            --expect-fail pending_and_running_are_interrupted_with_previous_state_and_process_flag \
+            -- cargo test -p aib-store --locked --test sessions pending_and_running_are_interrupted_with_previous_state_and_process_flag
+          # Q6 (043dd 11-10 M1) a session leaving the queue is not gated again
+          qk '            let argv = match self.regate(&q) {' \
+            '            let argv = match self.regate(&q).map(|_| q.rec.argv.clone()).or(Ok::<Vec<String>, ErrorCode>(q.rec.argv.clone())) { // knife: the gate runs, its answer is dropped' \
+            a_queued_session_is_gated_again_when_it_leaves_the_queue
+          # Q7 (043dd M2) a pending session does not say what it waits for
+          qk '                rec.queue = Some(self.queue_view(&g, i + 1));' \
+            '                rec.queue = None; let _ = self.queue_view(&g, i + 1); // knife' \
+            a_pending_session_shows_its_place_and_who_holds_the_slots
+          # Q8 (043dd f6500f85 L1) a dequeue thread that panics leaves the queue stopped
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if std::thread::panicking() {' \
+            '        if std::thread::panicking() && false { // knife' \
+            --expect-fail sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue \
+            -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match Ok::<Request, Response>(req) { // knife: no gate' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let asked = req.argv.first().cloned();\n    let (req, asked) = match Ok::<(Request, Option<String>), ApiError>((req, asked)) { // knife: no gate' \
             --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
             -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
           # S6 an over-long line is not marked as cut

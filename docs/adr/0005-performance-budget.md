@@ -100,6 +100,21 @@ B2 reports two columns that are never merged into one number:
   least 2 and **at most 4** for now; extra requests wait in a queue and are never
   refused. 8 is the stress-test target, not the default, until the baseline proves it
   safe.
+- The queue is bounded (11-09, a9136 / a63ab): at most 64 sessions wait (trial value);
+  the next request is `429 session_queue_full`, the only refusal for load. Waiting
+  sessions are `pending` (no process), start in arrival order (FIFO) as slots come back,
+  and can be cancelled. A pending session is never started from an old queue: at
+  shutdown it ends `interrupted`, after a crash the next start marks it `interrupted`
+  (`previous_state: pending`). `AIBD_MAX_SESSIONS` (1–64) is for stress tests only.
+- A session leaving the queue goes through the M1 gate again on the `argv[0]` it was asked
+  with (ADR 0003: every spawn resolves the real path again); refused ⇒ `failed`
+  (`ended_by: policy_refused`), audited like a POST refusal (043dd 11-10 M1).
+- Known limit (043dd 11-10 M2 / L3): a slot kept by a stop that could not confirm the tree
+  is gone (ADR 0004: on a desktop Mac a longer session may end `candidates_unreadable`) is
+  not given back by time. While every slot is held that way the queue does not move: there
+  is no wait limit yet. A pending session shows why: `GET` returns `queue` with its
+  `position`, the limit, and every session holding a slot with its state and stop reason.
+  DELETE the holder again to re-check it, or restart aibd.
 - "End an interactive CLI after 15 idle minutes and mark the session resumable" is
   implemented but **off by default** until resume reliability and the energy saving are
   measured. A session that is running a tool or waiting for an approval is never idle.
