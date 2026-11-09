@@ -215,6 +215,21 @@ async fn output_lines_are_events_and_read_back_after_a_restart() {
                 && e["aggregate_id"] == format!("{id}/output").as_str()),
         "{ev}"
     );
+    // the output lives in the store: folder 0700, database (and its WAL /
+    // shared-memory files) 0600 (a63ab preview.3)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dir.path()), 0o700, "data dir");
+        let db = dir.path().join("aibd.sqlite");
+        assert_eq!(mode(&db), 0o600, "database");
+        for ext in ["aibd.sqlite-wal", "aibd.sqlite-shm"] {
+            let p = dir.path().join(ext);
+            if p.exists() {
+                assert_eq!(mode(&p), 0o600, "{ext}");
+            }
+        }
+    }
     d.shutdown().await;
 
     let mut d = start(dir.path()).await;
