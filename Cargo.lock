@@ -69,8 +69,10 @@ dependencies = [
 name = "aib-seatops"
 version = "0.2.0-preview.3"
 dependencies = [
+ "libc",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
