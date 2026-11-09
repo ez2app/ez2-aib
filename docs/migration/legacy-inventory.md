@@ -268,7 +268,6 @@ acceptance list (port the cases, keep the knives). Owner = who writes the Rust v
 | ID | Need | Closed PR | Acceptance (from the PR's tests) | Target | Owner |
 |----|------|-----------|-----------------------------------|--------|-------|
 | R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | `aib/tests/test-cooldown-reap-authority-34d15-1103.py`: 30 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
-| R2 | cabin_guard storm detection runs one `log show` per round for the whole machine, not one per cabin | [#474](https://github.com/ez2app/ez2-aib/pull/474) | `aib/tests/test-cabin-guard-log-once-34d15-1103.py`: 11 cases (C1–C10) + 5 knives (K1–K5) | Rust host / thermal guard (same module as R1) | c477a |
 
 ### R1 — cooldown reap authority
 
@@ -286,15 +285,3 @@ Why: 2026-11-03 on andymini a single sensor reading ≥ 90°C killed every runni
 - Reaping still happens when logging fails or stderr is broken (A19, A19b).
 - Unfinished records are reported (A20), not double counted (A20b), not cleared by dry-run
   (A20c); summary (A21); pressure parsing (A12); i18n in four languages (A13).
-
-### R2 — one storm probe per round
-
-Why: every cabin guard ran `/usr/bin/log show` every 15 s; on 2026-11-03 andymini had five or
-more at once, about 28% CPU each. `storm_once` already acts on the whole machine.
-
-- Five cabins in one round run one probe (C1); the next window runs again (C2); slack lets the
-  next seat take over (C3); a probe running elsewhere blocks a second one (C4); thread race (C5).
-- A crash releases the lock (C6); a probe that fails or measures nothing is not recorded as
-  done, so the next seat retries (C10 — write the marker only after the probe finishes).
-- A marker stamped in the future is not fresh (C7); if the lock cannot be opened the probe
-  still runs (C8); every guard goes through the slot (C9).
