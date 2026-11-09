@@ -92,12 +92,19 @@ struct EventsQuery {
     #[serde(default)]
     cursor: i64,
     limit: Option<u32>,
+    aggregate_id: Option<String>,
 }
 
 async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Response {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let store = st.store.clone();
-    let res = tokio::task::spawn_blocking(move || store.events_after(q.cursor.max(0), limit)).await;
+    let cursor = q.cursor.max(0);
+    let filtered = q.aggregate_id.is_some();
+    let res = tokio::task::spawn_blocking(move || match q.aggregate_id {
+        Some(id) => store.events_for_after(&id, cursor, limit),
+        None => store.events_after(cursor, limit),
+    })
+    .await;
     match res {
         Ok(Ok(evs)) => {
             let next = evs.last().map(|e| e.global_seq).unwrap_or(q.cursor.max(0));
@@ -118,7 +125,11 @@ async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Res
                     })
                 })
                 .collect();
-            Json(serde_json::json!({"events": items, "next_cursor": next})).into_response()
+            if filtered {
+                Json(serde_json::json!({"events": items, "next_cursor": next, "filter_applied": true})).into_response()
+            } else {
+                Json(serde_json::json!({"events": items, "next_cursor": next})).into_response()
+            }
         }
         _ => {
             tracing::error!("events read failed");
