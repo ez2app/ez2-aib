@@ -34,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::lineage::{Lineage, M1Cache};
+use aib_sys::SysError;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 pub const SESSION_ENV: &str = "AIBD_SESSION";
@@ -304,14 +305,65 @@ fn running_now(pid: u32, start: u64) -> bool {
     running(&one, pid, start)
 }
 
-fn running(sys: &System, pid: u32, start: u64) -> bool {
-    match sys.process(Pid::from_u32(pid)) {
-        Some(p) => {
-            p.start_time() == start
-                && !matches!(p.status(), ProcessStatus::Zombie | ProcessStatus::Dead)
-        }
-        None => false,
+/// Is a recorded `(pid, start)` still that process? (G1, 043dd efbe548d M1)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ident {
+    Running,
+    Gone,
+    /// listed, but its start time could not be checked: never signalled,
+    /// never dropped (it counts as alive, identity unverified)
+    Unverified,
+}
+
+/// sysinfo reads a setuid process (M2 EPERM) as an empty entry whose start
+/// time is 0, while the fork watcher recorded its real start through sysctl.
+/// So 0 means "sysinfo could not read it": ask the same fallback.
+fn ident(seen_start: u64, start: u64, fallback: impl FnOnce() -> Result<u64, SysError>) -> Ident {
+    if seen_start == start {
+        return Ident::Running;
     }
+    if seen_start != 0 {
+        return Ident::Gone; // another process has the pid now
+    }
+    match fallback() {
+        Ok(t) if t == start => Ident::Running,
+        Ok(_) | Err(SysError::Gone) => Ident::Gone,
+        Err(_) => Ident::Unverified,
+    }
+}
+
+/// The start time when sysinfo has none (macOS: sysctl, self-checked).
+fn start_fallback(pid: u32) -> Result<u64, SysError> {
+    #[cfg(target_os = "macos")]
+    {
+        if !super::fork_watch::sysctl_start_ok() {
+            return Err(SysError::Unknown);
+        }
+        aib_sys::Macos.start_sec_sysctl(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        Err(SysError::Gone) // unchanged: no fallback there
+    }
+}
+
+fn ident_of(sys: &System, pid: u32, start: u64) -> Ident {
+    match sys.process(Pid::from_u32(pid)) {
+        None => Ident::Gone,
+        Some(p) if matches!(p.status(), ProcessStatus::Zombie | ProcessStatus::Dead) => Ident::Gone,
+        Some(p) => ident(p.start_time(), start, || start_fallback(pid)),
+    }
+}
+
+/// Only a checked identity counts for a signal.
+fn running(sys: &System, pid: u32, start: u64) -> bool {
+    ident_of(sys, pid, start) == Ident::Running
+}
+
+/// For "is anything left": an unverified one is left (never a quiet drop).
+fn counts_as_alive(i: Ident) -> bool {
+    i != Ident::Gone
 }
 
 /// Exit status of the CLI itself, set by a thread blocked in `wait()`: no
@@ -857,7 +909,7 @@ impl TreeHandle {
     fn alive(&self, sys: &System) -> Vec<(u32, u64)> {
         self.known
             .iter()
-            .filter(|(pid, start)| running(sys, **pid, **start))
+            .filter(|(pid, start)| counts_as_alive(ident_of(sys, **pid, **start)))
             .map(|(p, s)| (*p, *s))
             .collect()
     }
@@ -1184,6 +1236,31 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// G1 (043dd efbe548d M1): sysinfo's 0 for a setuid process is checked
+    /// through the fallback; an unchecked one is never dropped from "alive"
+    /// and never counts as running for a signal.
+    #[test]
+    fn a_setuid_process_with_no_sysinfo_start_is_checked_through_the_fallback() {
+        let never = || -> Result<u64, SysError> { panic!("fallback asked") };
+        assert_eq!(ident(100, 100, never), Ident::Running);
+        assert_eq!(ident(50, 100, never), Ident::Gone);
+        assert_eq!(ident(0, 100, || Ok(100)), Ident::Running);
+        assert_eq!(ident(0, 100, || Ok(99)), Ident::Gone);
+        assert_eq!(ident(0, 100, || Err(SysError::Gone)), Ident::Gone);
+        assert_eq!(
+            ident(0, 100, || Err(SysError::PermissionDenied)),
+            Ident::Unverified
+        );
+        assert_eq!(ident(0, 100, || Err(SysError::Unknown)), Ident::Unverified);
+    }
+
+    #[test]
+    fn an_unverified_process_still_counts_as_alive() {
+        assert!(counts_as_alive(Ident::Running));
+        assert!(counts_as_alive(Ident::Unverified));
+        assert!(!counts_as_alive(Ident::Gone));
+    }
 
     fn rep() -> Report {
         Report {

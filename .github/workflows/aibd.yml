@@ -299,6 +299,16 @@ jobs:
             '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),' \
             '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid).or(Ok(0)), // knife' \
             platform::fork_watch::tests::a_refused_child_whose_fallback_fails_stays_a_gap
+          # G1h (043dd efbe548d M1) sysinfo's 0 for a setuid process taken as "gone"
+          gk crates/aibd/src/platform/tree.rs \
+            '    if seen_start != 0 {' \
+            '    if seen_start != 0 || start != 0 { // knife' \
+            platform::tree::tests::a_setuid_process_with_no_sysinfo_start_is_checked_through_the_fallback
+          # G1i an unverified process quietly dropped from "alive" (a false observed_clean)
+          gk crates/aibd/src/platform/tree.rs \
+            '    i != Ident::Gone' \
+            '    i == Ident::Running // knife' \
+            platform::tree::tests::an_unverified_process_still_counts_as_alive
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used

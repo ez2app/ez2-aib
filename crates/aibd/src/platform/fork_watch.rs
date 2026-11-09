@@ -131,7 +131,9 @@ impl Probe for Ctx {
         }
         // same uid and still refused (sandboxed, restricted): no reason to
         // trust it not to fork unseen (043dd THREAT 3)
-        let me = Macos.euid(std::process::id())?;
+        // 043dd N1: aibd's own euid, read once
+        static ME: OnceLock<Result<u32, SysError>> = OnceLock::new();
+        let me = ME.get_or_init(|| Macos.euid(std::process::id())).clone()?;
         if Macos.euid(pid)? == me {
             return Err(SysError::PermissionDenied);
         }
@@ -177,7 +179,7 @@ fn watch_gap(res: Result<(), Errno>, lineage_on: bool) -> Option<&'static str> {
 /// Self-check of the sysctl fallback, once per process: on ourselves it must
 /// read exactly what M2 reads. Otherwise the fallback is off and a refused
 /// start stays a gap (the rule before G1's fallback).
-fn sysctl_start_ok() -> bool {
+pub(crate) fn sysctl_start_ok() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
         let me = std::process::id();
