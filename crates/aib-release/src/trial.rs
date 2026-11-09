@@ -15,10 +15,12 @@
 //!   3.14 cells unless `full-ci` is set (PLAN-release-tooling 9.1, DECIDED
 //!   #24), which looks like a pass that never ran.
 //!
-//! Nothing is written to the repository: every object the trial makes goes
-//! to a throw-away object directory that borrows the repository's objects
-//! as an alternate, and is deleted when the trial ends. Refs are resolved
-//! once to full SHAs; every later git call gets only those SHAs.
+//! Nothing is written to the repository and none of its config runs: the
+//! repository is only asked to resolve names (`rev-parse`); every merge runs
+//! in a throw-away bare repository that borrows the repository's objects as
+//! an alternate, reads no config, and is deleted when the trial ends (see
+//! [`GitCli`]). Names are resolved once to full SHAs; every later git call
+//! gets only those SHAs.
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -33,16 +35,19 @@ pub struct Request {
     pub integ_branch: Option<String>,
 }
 
-/// One merge result: the tree git wrote and the files it could not merge.
+/// One merge result: the tree git wrote, whether git called it a conflict
+/// (its exit code; some conflicts, e.g. directory renames, name no file),
+/// and the files it could not merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merge {
     pub tree: String,
+    pub conflicted: bool,
     pub conflicts: Vec<String>,
 }
 
 impl Merge {
     pub fn clean(&self) -> bool {
-        self.conflicts.is_empty()
+        !self.conflicted
     }
 }
 
@@ -50,7 +55,8 @@ impl Merge {
 pub trait Git {
     /// `REF^{commit}` as a full SHA.
     fn commit(&self, r: &str) -> Result<String, String>;
-    /// `REF^{tree}` as a full SHA.
+    /// `REF^{tree}` as a full SHA (a name in the repository, or a commit
+    /// the repository has).
     fn tree(&self, r: &str) -> Result<String, String>;
     /// Merge two commits (full SHAs) without touching any ref or worktree.
     fn merge(&self, a: &str, b: &str) -> Result<Merge, String>;
@@ -89,6 +95,9 @@ pub struct Blocked {
 pub struct ExpectTree {
     pub name: String,
     pub tree: String,
+    /// The tree ids are equal. The diff is only for the reader: a diff can
+    /// come out empty for trees that differ (an ignored submodule).
+    pub matches: bool,
     pub diff: Vec<String>,
 }
 
@@ -114,6 +123,9 @@ pub struct Report {
     pub base: Option<(String, String)>,
     pub heads: Vec<Head>,
     pub pairs: Vec<Pair>,
+    /// Pairs git could not merge at all (e.g. no common ancestor). Only the
+    /// stacking hint loses them; the stack itself is still tried.
+    pub pair_errors: Vec<(String, String, String)>,
     pub order: Vec<String>,
     pub blocked: Vec<Blocked>,
     /// The fully stacked tree; `None` when something is blocked.
@@ -154,6 +166,7 @@ pub fn run(git: &dyn Git, req: &Request) -> Report {
         base: None,
         heads: Vec::new(),
         pairs: Vec::new(),
+        pair_errors: Vec::new(),
         order: Vec::new(),
         blocked: Vec::new(),
         stacked_tree: None,
@@ -176,7 +189,7 @@ pub fn run(git: &dyn Git, req: &Request) -> Report {
     }
     let ready = rep.blocked.is_empty()
         && rep.prefixes.iter().all(|p| p.refused.is_none())
-        && rep.expect.as_ref().is_none_or(|e| e.diff.is_empty());
+        && rep.expect.as_ref().is_none_or(|e| e.matches);
     rep.verdict = if ready {
         Verdict::Clean
     } else {
@@ -202,13 +215,14 @@ fn fill(git: &dyn Git, req: &Request, rep: &mut Report) -> Result<(), String> {
     }
     for (i, a) in rep.heads.iter().enumerate() {
         for b in &rep.heads[i + 1..] {
-            let m = git.merge(&a.sha, &b.sha)?;
-            if !m.clean() {
-                rep.pairs.push(Pair {
+            match git.merge(&a.sha, &b.sha) {
+                Ok(m) if !m.clean() => rep.pairs.push(Pair {
                     a: a.name.clone(),
                     b: b.name.clone(),
                     conflicts: m.conflicts,
-                });
+                }),
+                Ok(_) => {}
+                Err(e) => rep.pair_errors.push((a.name.clone(), b.name.clone(), e)),
             }
         }
     }
@@ -257,7 +271,8 @@ fn fill(git: &dyn Git, req: &Request, rep: &mut Report) -> Result<(), String> {
         };
         if let Some(want) = &req.expect_tree {
             let tree = git.tree(want)?;
-            let diff = if tree == stacked {
+            let matches = tree == stacked;
+            let diff = if matches {
                 Vec::new()
             } else {
                 git.diff_trees(&stacked, &tree)?
@@ -265,6 +280,7 @@ fn fill(git: &dyn Git, req: &Request, rep: &mut Report) -> Result<(), String> {
             rep.expect = Some(ExpectTree {
                 name: want.clone(),
                 tree,
+                matches,
                 diff,
             });
         }
@@ -299,13 +315,16 @@ pub fn to_json(rep: &Report) -> Value {
         "conflicting_pairs": rep.pairs.iter().map(|p| json!({
             "a": p.a, "b": p.b, "conflicts": p.conflicts,
         })).collect::<Vec<_>>(),
+        "pair_errors": rep.pair_errors.iter().map(|(a, b, e)| json!({
+            "a": a, "b": b, "error": e,
+        })).collect::<Vec<_>>(),
         "order": rep.order,
         "blocked": rep.blocked.iter().map(|b| json!({
             "ref": b.name, "conflicts": b.conflicts, "stack_on": b.stack_on,
         })).collect::<Vec<_>>(),
         "stacked_tree": rep.stacked_tree,
         "expect_tree": rep.expect.as_ref().map(|e| json!({
-            "ref": e.name, "tree": e.tree, "match": e.diff.is_empty(), "diff": e.diff,
+            "ref": e.name, "tree": e.tree, "match": e.matches, "diff": e.diff,
         })),
         "integ_prefix": rep.prefixes.iter().map(|p| json!({
             "name": p.name, "ok": p.refused.is_none(), "reason": p.refused,
@@ -317,11 +336,16 @@ pub fn to_json(rep: &Report) -> Value {
     v
 }
 
-/// The real git, run in `dir`, writing objects only to a private object
-/// directory removed on drop.
+/// The real git.
+///
+/// Names are resolved in the repository (`rev-parse` only). Every merge,
+/// commit and diff runs in a throw-away bare repository that borrows the
+/// repository's objects through `objects/info/alternates` and reads no
+/// system / global / repository config: no custom merge driver, no
+/// `merge.*` setting, no worktree, and git's own `.merge_file_*` scratch
+/// files land there too. The bare repository is removed on drop.
 pub struct GitCli {
-    dir: PathBuf,
-    objects: PathBuf,
+    src: PathBuf,
     scratch: Scratch,
 }
 
@@ -333,76 +357,116 @@ impl Drop for Scratch {
     }
 }
 
+/// The config file that means "none".
+const NO_CONFIG: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// A git command with no repository chosen by the caller's environment.
+fn bare_cmd() -> Command {
+    let mut c = Command::new("git");
+    for v in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_ATTR_SOURCE",
+    ] {
+        c.env_remove(v);
+    }
+    c
+}
+
+/// A git command that reads no config at all (for the scratch repository).
+fn isolated_cmd() -> Command {
+    let mut c = bare_cmd();
+    c.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", NO_CONFIG)
+        .env("GIT_AUTHOR_NAME", "aib-release trial")
+        .env("GIT_AUTHOR_EMAIL", "trial@aib.invalid")
+        .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+        .env("GIT_COMMITTER_NAME", "aib-release trial")
+        .env("GIT_COMMITTER_EMAIL", "trial@aib.invalid")
+        .env("GIT_COMMITTER_DATE", "1700000000 +0000");
+    c
+}
+
+fn run_ok(mut c: Command, what: &str) -> Result<Vec<u8>, String> {
+    let out = c.output().map_err(|e| format!("git {what}: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!(
+            "git {what} failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// NUL-separated git output (`-z`) ⇒ the non-empty entries.
+fn nul_list(b: &[u8]) -> Vec<String> {
+    b.split(|c| *c == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
 impl GitCli {
     pub fn new(dir: &Path) -> Result<Self, String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-path",
-                "objects",
-            ])
-            .output()
-            .map_err(|e| format!("git: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "{} is not a git repository: {}",
-                dir.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+        let mut probe = bare_cmd();
+        probe.arg("-C").arg(dir).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ]);
+        let objects = run_ok(probe, "rev-parse --git-path objects")
+            .map_err(|e| format!("{} is not a git repository: {e}", dir.display()))?;
+        let objects = String::from_utf8_lossy(&objects).trim().to_owned();
+        if objects.is_empty() || objects.contains('\n') || objects.starts_with('"') {
+            return Err(format!("objects path {objects:?} cannot be an alternate"));
         }
-        let objects = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path =
-            std::env::temp_dir().join(format!("aib-release-trial-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "aib-release-trial-{}-{nanos}.git",
+            std::process::id()
+        ));
         std::fs::create_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let scratch = Scratch(path);
+        let mut init = isolated_cmd();
+        init.args(["init", "-q", "--bare", "--template="])
+            .arg(&scratch.0);
+        run_ok(init, "init --bare")?;
+        let info = scratch.0.join("objects").join("info");
+        std::fs::create_dir_all(&info).map_err(|e| format!("{}: {e}", info.display()))?;
+        std::fs::write(info.join("alternates"), format!("{objects}\n"))
+            .map_err(|e| format!("alternates: {e}"))?;
         Ok(Self {
-            dir: dir.to_owned(),
-            objects,
-            scratch: Scratch(path),
+            src: dir.to_owned(),
+            scratch,
         })
     }
 
-    fn git(&self, args: &[&str]) -> Command {
-        let mut c = Command::new("git");
-        c.arg("-C")
-            .arg(&self.dir)
-            .args(args)
-            .env("GIT_OBJECT_DIRECTORY", &self.scratch.0)
-            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &self.objects)
-            .env("GIT_AUTHOR_NAME", "aib-release trial")
-            .env("GIT_AUTHOR_EMAIL", "trial@aib.invalid")
-            .env("GIT_AUTHOR_DATE", "1700000000 +0000")
-            .env("GIT_COMMITTER_NAME", "aib-release trial")
-            .env("GIT_COMMITTER_EMAIL", "trial@aib.invalid")
-            .env("GIT_COMMITTER_DATE", "1700000000 +0000")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE");
+    /// A read-only call in the repository itself.
+    fn src_git(&self, args: &[&str]) -> Command {
+        let mut c = bare_cmd();
+        c.arg("-C").arg(&self.src).args(args);
         c
     }
 
-    /// stdout of a git call that must succeed.
-    fn ok(&self, args: &[&str]) -> Result<String, String> {
-        let out = self
-            .git(args)
-            .output()
-            .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-        } else {
-            Err(format!(
-                "git {} failed ({}): {}",
-                args.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        }
+    /// A call in the scratch repository.
+    fn scratch_git(&self, args: &[&str]) -> Command {
+        let mut c = isolated_cmd();
+        c.arg("--git-dir").arg(&self.scratch.0).args(args);
+        c
     }
 
     fn resolve(&self, r: &str, kind: &str) -> Result<String, String> {
@@ -410,16 +474,18 @@ impl GitCli {
             return Err(format!("bad ref {r:?}"));
         }
         let spec = format!("{r}^{{{kind}}}");
-        let sha = self
-            .ok(&[
+        let out = run_ok(
+            self.src_git(&[
                 "rev-parse",
                 "--verify",
                 "--quiet",
                 "--end-of-options",
                 &spec,
-            ])
-            .map_err(|_| format!("{r} is not a {kind} here"))?;
-        let sha = sha.trim().to_owned();
+            ]),
+            "rev-parse",
+        )
+        .map_err(|_| format!("{r} is not a {kind} here"))?;
+        let sha = String::from_utf8_lossy(&out).trim().to_owned();
         if crate::yield_integ::is_full_sha(&sha) {
             Ok(sha)
         } else {
@@ -441,37 +507,39 @@ impl Git for GitCli {
         let args = [
             "merge-tree",
             "--write-tree",
+            "-z",
             "--name-only",
             "--no-messages",
             a,
             b,
         ];
         let out = self
-            .git(&args)
+            .scratch_git(&args)
             .output()
             .map_err(|e| format!("git merge-tree: {e}"))?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut lines = text.lines();
-        let tree = lines.next().unwrap_or("").trim().to_owned();
-        match out.status.code() {
-            Some(0 | 1) if crate::yield_integ::is_full_sha(&tree) => {}
+        let mut parts = out.stdout.split(|c| *c == 0);
+        let tree = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
+        let conflicted = match out.status.code() {
+            Some(0) if crate::yield_integ::is_full_sha(&tree) => false,
+            Some(1) if crate::yield_integ::is_full_sha(&tree) => true,
             _ => {
                 return Err(format!(
                     "git merge-tree {a} {b} failed ({}): {}",
                     out.status,
                     String::from_utf8_lossy(&out.stderr).trim()
-                ));
+                ))
             }
-        }
-        let mut conflicts: Vec<String> = lines
-            .take_while(|l| !l.is_empty())
-            .map(str::to_owned)
+        };
+        let mut conflicts: Vec<String> = parts
+            .take_while(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
             .collect();
         conflicts.dedup();
-        if out.status.code() == Some(1) && conflicts.is_empty() {
-            return Err(format!("git merge-tree {a} {b}: conflict without a file"));
-        }
-        Ok(Merge { tree, conflicts })
+        Ok(Merge {
+            tree,
+            conflicted,
+            conflicts,
+        })
     }
 
     fn commit_tree(&self, tree: &str, parents: &[&str]) -> Result<String, String> {
@@ -480,7 +548,8 @@ impl Git for GitCli {
             args.extend(["-p", p]);
         }
         args.extend(["-m", "aib-release trial"]);
-        let sha = self.ok(&args)?.trim().to_owned();
+        let out = run_ok(self.scratch_git(&args), "commit-tree")?;
+        let sha = String::from_utf8_lossy(&out).trim().to_owned();
         if crate::yield_integ::is_full_sha(&sha) {
             Ok(sha)
         } else {
@@ -489,10 +558,16 @@ impl Git for GitCli {
     }
 
     fn diff_trees(&self, a: &str, b: &str) -> Result<Vec<String>, String> {
-        Ok(self
-            .ok(&["diff-tree", "-r", "--name-only", "--no-renames", a, b])?
-            .lines()
-            .map(str::to_owned)
-            .collect())
+        let args = [
+            "diff-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            "--ignore-submodules=none",
+            a,
+            b,
+        ];
+        Ok(nul_list(&run_ok(self.scratch_git(&args), "diff-tree")?))
     }
 }

@@ -1,7 +1,8 @@
 //! A8 / A9 trial merge against real throw-away git repositories: clean
 //! stacks, pairwise conflicts and the stacking hint, a head that needs the
 //! base first, the expected tree (match and mismatch), the `int/` prefix,
-//! bad refs, and that the repository is left exactly as it was.
+//! bad refs, pairs with no common ancestor, and that the repository is left
+//! exactly as it was and its own merge config never runs.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aib_release::trial::{exit_code, integ_prefix_refusal, run, to_json, GitCli, Request, Verdict};
@@ -51,6 +52,10 @@ impl Repo {
             )
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .env_remove("GIT_COMMON_DIR")
             .output()
             .unwrap();
         assert!(
@@ -285,4 +290,61 @@ fn a_directory_that_is_not_a_repository_is_refused() {
     let e = GitCli::new(&p).err();
     let _ = std::fs::remove_dir_all(&p);
     assert!(e.is_some_and(|e| e.contains("not a git repository")));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_repository_merge_driver_and_config_never_run() {
+    let r = Repo::new("driver");
+    let marker = r.dir().join("DRIVER-RAN");
+    // a driver that would leave a marker and "resolve" every conflict
+    r.git(&[
+        "config",
+        "merge.mark.driver",
+        &format!("touch '{}'; cp %B %A; exit 0", marker.display()),
+    ]);
+    r.git(&["config", "merge.conflictStyle", "diff3"]);
+    r.write(".gitattributes", "a.txt merge=mark\n");
+    r.commit("attrs");
+    r.branch("x", "main", "a.txt", "a1\nX\na3\n");
+    r.branch("y", "main", "a.txt", "a1\nY\na3\n");
+    let before = r.snapshot();
+    let git = GitCli::new(r.dir()).unwrap();
+    let rep = run(&git, &req("main", &["x", "y"]));
+    drop(git);
+    assert!(!marker.exists(), "the repository's merge driver ran");
+    assert_eq!(rep.pairs.len(), 1, "{}", to_json(&rep));
+    assert_eq!(rep.blocked[0].name, "y");
+    assert_eq!(r.snapshot(), before);
+    let stray: Vec<_> = std::fs::read_dir(r.dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".merge_file"))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
+}
+
+#[test]
+fn a_pair_with_no_common_ancestor_does_not_stop_the_stack() {
+    let r = Repo::new("unrelated");
+    let first = r.git(&["rev-parse", "HEAD"]);
+    r.git(&["checkout", "-q", "--orphan", "other"]);
+    r.git(&["rm", "-q", "-r", "--cached", "."]);
+    std::fs::remove_file(r.dir().join("a.txt")).unwrap();
+    std::fs::remove_file(r.dir().join("b.txt")).unwrap();
+    r.write("c.txt", "c1\n");
+    let other = r.commit("other root");
+    r.git(&["checkout", "-q", "-f", "main"]);
+    r.git(&[
+        "merge",
+        "-q",
+        "--no-edit",
+        "--allow-unrelated-histories",
+        "other",
+    ]);
+    let git = GitCli::new(r.dir()).unwrap();
+    let rep = run(&git, &req("main", &[&first, &other]));
+    assert_eq!(rep.verdict, Verdict::Clean, "{}", to_json(&rep));
+    assert_eq!(rep.pair_errors.len(), 1);
+    assert_eq!(rep.order.len(), 2);
 }

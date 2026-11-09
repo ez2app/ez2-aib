@@ -359,16 +359,16 @@ jobs:
              '            if !m.clean() && false { // knife' \
              two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first
           # T2 a reported head with a different tree still passes (A9)
-          tk '        && rep.expect.as_ref().is_none_or(|e| e.diff.is_empty());' \
-             '        && rep.expect.as_ref().is_none_or(|e| e.diff.is_empty() || true); // knife' \
+          tk '        && rep.expect.as_ref().is_none_or(|e| e.matches);' \
+             '        && rep.expect.as_ref().is_none_or(|e| e.matches || true); // knife' \
              a_reported_head_whose_tree_is_not_the_stack_lists_the_files_that_differ
           # T3 an `integ/` integration branch passes
           tk '        && rep.prefixes.iter().all(|p| p.refused.is_none())' \
              '        && rep.prefixes.iter().all(|p| p.refused.is_none() || true) // knife' \
              integration_branches_must_be_int_slash
-          # T4 the trial writes its objects into the repository
-          tk '            .env("GIT_OBJECT_DIRECTORY", &self.scratch.0)' \
-             '            .env("GIT_KNIFE_NOT_OBJECTS", &self.scratch.0) // knife' \
+          # T4 the merge runs in the repository: its objects, config and drivers
+          tk '            .scratch_git(&args)' \
+             '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
