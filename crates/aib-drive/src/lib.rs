@@ -1,6 +1,8 @@
 //! Read-only building blocks for aib-drive. No external actions are executed.
 use serde::{Deserialize, Serialize};
 
+pub mod decide;
+
 /// An observation is unknown unless its source is complete and identifiable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Observation<T> {
