@@ -18,7 +18,10 @@ fn aibd_is_its_own_check_tree_and_the_stop_meets_root_and_child() {
     assert!(c.child_started, "the leaf never reported: {c:?}");
     assert!(c.tree_running, "the tree had ended before the stop: {c:?}");
     assert!(c.stop.survivors.is_empty(), "{c:?}");
-    assert!(c.stop.tree_size >= 2, "the leaf was not in the stopped tree: {c:?}");
+    assert!(
+        c.stop.tree_size >= 2,
+        "the leaf was not in the stopped tree: {c:?}"
+    );
     assert!(
         !process_row(&Ok(c)).status.label().starts_with("failed"),
         "the row failed"

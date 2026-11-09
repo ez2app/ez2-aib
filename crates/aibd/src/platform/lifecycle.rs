@@ -237,7 +237,6 @@ impl Lifecycle for Windows {
         Step::Done(CheckTree::SelfExec)
     }
 
-
     fn child_reaping() -> Step<ChildReaping> {
         Step::NotApplicable {
             step: StepId::ChildReaping,
@@ -332,7 +331,6 @@ impl Lifecycle for Unlisted {
             Step::Done(CheckTree::SelfExec)
         }
     }
-
 
     fn child_reaping() -> Step<ChildReaping> {
         Step::Unsupported {
