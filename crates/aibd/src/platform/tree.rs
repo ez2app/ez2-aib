@@ -59,8 +59,9 @@ pub struct SpawnSpec {
     pub discard_output: bool,
     /// M1 lineage, shared by every session (`None` = off).
     pub lineage: Option<Arc<Lineage>>,
-    /// Test hook: fail this step after the program started (bb7dc #544).
-    /// Always `None` in aibd.
+    /// Test hook: fail this step after the program started (bb7dc #544), or
+    /// (`RootUnrecorded`) act as if the root were already gone when it is
+    /// recorded (043dd #510 M1). Always `None` in aibd.
     #[doc(hidden)]
     pub inject: Option<Inject>,
 }
@@ -72,6 +73,10 @@ pub enum Inject {
     RootWait,
     System,
     ForkWatch,
+    /// Not a failure: the root lookup at record time finds nothing, as when
+    /// a CLI exits before it could be recorded (the race itself cannot be
+    /// made to happen on demand).
+    RootUnrecorded,
 }
 
 fn injected(spec: &SpawnSpec, at: Inject) -> std::io::Result<()> {
@@ -440,7 +445,10 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         }
     };
     refresh(&mut sys, false);
-    if let Some(p) = sys.process(Pid::from_u32(root)) {
+    let recorded = sys
+        .process(Pid::from_u32(root))
+        .filter(|_| injected(spec, Inject::RootUnrecorded).is_ok());
+    if let Some(p) = recorded {
         h.known.insert(root, p.start_time());
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
