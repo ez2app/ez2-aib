@@ -326,6 +326,16 @@ jobs:
             '                        "cand": cand}), // knife' \
             --expect-fail a_slot_that_stays_unreadable_stays_held_with_the_reason \
             -- cargo test -p aibd --locked --test sessions a_slot_that_stays_unreadable_stays_held_with_the_reason
+          # C1 (1ced7 c25144e1 DockHelper) a launchd service in its own coalition holds the slot again
+          gk crates/aibd/src/platform/tree.rs \
+            '        None if other_coalition(session, coalition()) => Candidate::OtherCoalition,' \
+            '        None if other_coalition(session, coalition()) => Candidate::Unreadable, // knife' \
+            platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
+          # C2 the coalition is checked before the marker: a marked process of ours is let go
+          gk crates/aibd/src/platform/tree.rs \
+            '        Some(true) => Candidate::Ours,' \
+            '        Some(true) => if other_coalition(session, coalition()) { Candidate::OtherCoalition } else { Candidate::Ours }, // knife' \
+            platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
