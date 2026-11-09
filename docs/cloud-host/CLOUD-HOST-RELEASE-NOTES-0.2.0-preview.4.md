@@ -9,7 +9,7 @@
 - **`site drift`**:每個 CT 的資源限額與漂移偵測(`ez2-host-health` 每日帶 drift 欄位 → EU01 告警)。
 - **`site suspend / resume / restore`**:停權、恢復與藍綠還原(11-09 SUS-1 / BG-1 演練同邏輯)。
 - **`root-password apply`**:套用由 Mac 端 `aib secret ask --generate --push` 送來的 root 密碼檔,套完 shred。
-- **新:`self-update <version>`**:從 GitHub release 換自己 —— 抓該版的 `SHA256SUMS` 與檔案、`sha256sum` 比對、跑新檔的 `--version`,三樣都對才一次 `rename` 換上;舊檔留在 `/usr/local/sbin/aib-cloud-host.prev`。檢查碼不對就不換、不碰現有檔。
+- **新:`self-update <version>`**:只從我們自己的 GitHub release(`ez2app/ez2-aib`,tag `cloud-host-v<ver>`)換自己 —— 抓該版的 `SHA256SUMS` 與檔案、`sha256sum` 比對、跑新檔的 `--version`,三樣都對才換。換檔先把現有檔硬連結成 `/usr/local/sbin/aib-cloud-host.prev.new`,再一次 `rename` 把新檔蓋上,最後把連結改名成 `aib-cloud-host.prev`;任何時刻 `aib-cloud-host` 不是舊檔就是新檔,中斷不留半套。檢查碼不對就不換、不碰現有檔。比現在舊的版本預設拒絕,要回滾加 `--allow-downgrade`;`--base-url` 只收 `file:///`(CI 離線驗用),沒有 `--repo`。
 - **`--version`** 現在印 `aib-cloud-host <version> linux-x86_64`(換版流程靠它核對)。
 
 ## 檔案

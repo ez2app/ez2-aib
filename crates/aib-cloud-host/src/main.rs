@@ -7,7 +7,7 @@
 //! aib-cloud-host probe one   <tcp|dns|icmp> <ip> <port>      (internal: runs inside a CT netns)
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
 //! aib-cloud-host root-password apply <file>
-//! aib-cloud-host self-update <version> [--dest f] [--repo owner/name] [--base-url u]
+//! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
 //! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
 //! ```
 //!

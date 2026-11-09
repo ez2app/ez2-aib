@@ -722,7 +722,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | self-update <version> [--dest f] [--repo owner/name] [--base-url u] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 

@@ -91,6 +91,34 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools >/dev/null
       - name: test (host crate, native)
         run: cargo test -p aib-cloud-host --locked
+      # #612 (33e28, c477a review M1 / M2 / L1): each knife breaks one self-update rule and must turn
+      # its own test red (scripts/knife.py restores the file and checks the named test failed).
+      - name: self-update knives
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-cloud-host/src/update.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-cloud-host --locked --bin aib-cloud-host "$3"; }
+          # K1 M1: https:// --base-url accepted again
+          tk '        Some(u) if u.starts_with("file:///") =>' \
+            '        Some(u) if u.starts_with("file:///") || u.starts_with("https://") =>' \
+            u7_args_refused
+          # K2 L1: downgrade not checked
+          tk '    if w < c && !allow {' \
+            '    if w < c && !allow && false { // knife' \
+            u8_downgrade_refused_unless_asked
+          # K3 L1: preview sorts above its release
+          tk '        None => u64::MAX,' \
+            '        None => 0, // knife' \
+            u8_downgrade_refused_unless_asked
+          # K4 M2: old file not kept
+          tk '        fs::hard_link(dest, &link).map_err(|e| {' \
+            '        fs::copy(new, &link).map(|_| ()).map_err(|e| { // knife' \
+            u9_swap_keeps_prev_and_never_leaves_dest_missing
+          # K5 M2: failed install leaves the half-made link
+          tk '            let _ = fs::remove_file(&link);' \
+            '            // knife: link left behind' \
+            u9_swap_keeps_prev_and_never_leaves_dest_missing
       - name: build (static)
         run: cargo build --release --locked -p aib-cloud-host --target "$TARGET"
       - name: smoke (static, --version exact)
@@ -125,6 +153,22 @@ jobs:
           grep -q "SHA-256" su3.txt || { echo "::error::refusal did not name the checksum"; cat su3.txt; exit 1; }
           cmp -s "dist/$NAME" inst/aib-cloud-host || { echo "::error::a refused update changed the installed file"; exit 1; }
           [ -z "$(ls -A inst | grep '^\.aib-cloud-host-update\.')" ] || { echo "::error::temp directory left behind"; ls -la inst; exit 1; }
+          # 4) #612 c477a M2: --dest already holds a different file ⇒ new file in place, old one kept as
+          #    .prev, no half-made .prev.new, no temp directory
+          rm -f inst/aib-cloud-host.prev
+          printf '#!/bin/sh\necho "aib-cloud-host 0.0.1 linux-x86_64"\n' > inst/aib-cloud-host && chmod +x inst/aib-cloud-host
+          cp inst/aib-cloud-host old-copy
+          inst/old-aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD/dist" | tee su4.txt
+          grep -q "was aib-cloud-host 0.0.1" su4.txt || { echo "::error::should report the old version it replaced"; cat su4.txt; exit 1; }
+          cmp -s "dist/$NAME" inst/aib-cloud-host || { echo "::error::existing file was not replaced by the build"; exit 1; }
+          cmp -s old-copy inst/aib-cloud-host.prev || { echo "::error::previous file not kept as .prev"; ls -la inst; exit 1; }
+          [ ! -e inst/aib-cloud-host.prev.new ] || { echo "::error::.prev.new left behind"; ls -la inst; exit 1; }
+          [ -z "$(ls -A inst | grep '^\.aib-cloud-host-update\.')" ] || { echo "::error::temp directory left behind"; ls -la inst; exit 1; }
+          # 5) #612 c477a M1: an https:// --base-url is refused before anything is fetched
+          if inst/aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "https://example.com/x" 2>su5.txt; then
+            echo "::error::self-update accepted an https --base-url"; exit 1
+          fi
+          grep -q "file:///" su5.txt || { echo "::error::refusal did not say file:///"; cat su5.txt; exit 1; }
           echo "self-update smoke pass"
       - uses: actions/upload-artifact@v4
         with:
