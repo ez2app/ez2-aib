@@ -298,6 +298,8 @@ async fn metrics_needs_the_token_and_reports_lineage() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         j,
-        serde_json::json!({"lineage": {"enabled": false, "selfcheck": "test", "failures": 0}})
+        serde_json::json!({"lineage": {
+            "enabled": false, "selfcheck": "test", "failures": 0, "orphan_candidates_extra": 0
+        }})
     );
 }
