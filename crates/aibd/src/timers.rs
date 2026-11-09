@@ -123,6 +123,21 @@ impl Op {
     }
 }
 
+impl Op {
+    /// Time left until this operation's end (`None` = no end). For a wait
+    /// that blocks on events instead of ticking (a9136 #514): it still keeps
+    /// to the same end and counts each wake-up with [`Op::woke`].
+    pub fn remaining(&self) -> Option<Duration> {
+        self.end
+            .map(|end| end.saturating_duration_since(Instant::now()))
+    }
+
+    /// Count one wake-up of an event wait (see [`Op::remaining`]).
+    pub fn woke(&self) {
+        self.timer.wakeups.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl Drop for Op {
     fn drop(&mut self) {
         self.timer.active.fetch_sub(1, Ordering::Relaxed);

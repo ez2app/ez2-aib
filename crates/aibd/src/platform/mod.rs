@@ -6,6 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
+pub mod exit_watch;
+#[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod session;
 #[cfg(unix)]

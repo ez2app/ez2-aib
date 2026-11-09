@@ -850,12 +850,38 @@ impl TreeHandle {
 
     fn wait_gone(&mut self, grace: Duration) -> std::io::Result<Vec<(u32, u64)>> {
         let op = crate::timers::TREE_CANCEL_WAIT.begin(Some(Instant::now() + grace));
+        // macOS (#514): block on NOTE_EXIT of what is still alive and read the
+        // process table once per wake-up, not every 50 ms. Only when a process
+        // cannot be watched does this call fall back to the tick.
+        #[cfg(target_os = "macos")]
+        let mut exits = if grace.is_zero() {
+            None
+        } else {
+            super::exit_watch::ExitWatch::new().ok()
+        };
         loop {
             let mut sys = new_system()?;
             refresh(&mut sys, false);
             self.scan_with(&sys);
             let alive = self.alive(&sys);
-            if alive.is_empty() || !op.tick() {
+            if alive.is_empty() {
+                return Ok(alive);
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(w) = exits.as_mut() {
+                if w.watch(alive.iter().map(|(p, _)| *p)) {
+                    match op.remaining() {
+                        Some(left) if !left.is_zero() => {
+                            w.wait(left);
+                            op.woke();
+                            continue;
+                        }
+                        _ => return Ok(alive),
+                    }
+                }
+                exits = None; // could not watch one: tick for the rest of this wait
+            }
+            if !op.tick() {
                 return Ok(alive);
             }
         }
