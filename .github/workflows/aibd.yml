@@ -103,7 +103,7 @@ jobs:
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
-      - name: aib-sys dependents (only aibd)
+      - name: aib-sys dependents (aibd, aib-procwatch)
         if: env.RUN == 'true'
         shell: bash
         run: |
@@ -127,6 +127,59 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
+      # Each knife breaks one rule and must turn its own test red (knife.py
+      # restores the file and checks the named test failed).
+      - name: procwatch listing knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          fc() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-forkcount --locked --test forkcount "$4"; }
+          # K1 procwatch: a failed listing washed into an empty list
+          fc crates/aib-procwatch/src/lib.rs \
+            '            let kids = match list_children(sh, p) {' \
+            '            let kids = match list_children(sh, p).or_else(|_| Ok::<_, SysError>(Vec::new())) { // knife' \
+            calibrate_a_failed_listing_is_unverified_not_empty
+          # K2 procwatch: a list that did not fit is skipped instead of counted
+          fc crates/aib-procwatch/src/lib.rs \
+            $'                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            $'                Err(SysError::Incomplete) => continue, // knife\n                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            calibrate_an_incomplete_listing_is_unverified
+          # K3 aib-sys fill stage, end to end: a failed fill read as "0 bytes"
+          fc crates/aib-sys/src/list.rs \
+            '        let bytes = call(&mut buf).map_err(SysError::from_errno)?;' \
+            '        let bytes = call(&mut buf).unwrap_or(0); // knife' \
+            calibrate_a_failed_listing_is_unverified_not_empty
+          # K4 aib-sys truncation, end to end: a full buffer accepted as the whole list
+          fc crates/aib-sys/src/list.rs \
+            '        if n < cap {' \
+            '        if n <= cap { // knife' \
+            calibrate_an_incomplete_listing_is_unverified
+          # K5 forkcount, end to end: a foreign child not flagged (one missed + one foreign)
+          fc crates/aib-forkcount/src/main.rs \
+            $'        if self.adopted_not_created > 0 {\n            r.push("adopted_not_created");' \
+            $'        if false {\n            r.push("adopted_not_created"); // knife' \
+            calibrate_one_missed_and_one_foreign_is_unverified
+          # K6 forkcount: comparing counts only (one missed + one foreign would pass)
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '        let a_p = cs.iter().filter(|c| adopted.get(c) == Some(p)).count() as u64;' \
+            '        let a_p = (adopted.values().filter(|q| *q == p).count() as u64).min(c_p); // knife' \
+            --expect-fail one_missed_and_one_foreign_is_caught_although_totals_match \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
+          python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
+            '    if need < 0 || (need == 0 && errno() != 0) {' \
+            '    if false { // knife' \
+            --expect-fail a_failed_size_query_is_an_error \
+            -- cargo test -p aib-sys --locked --lib macos::
+          # K8 aib-sys fill stage (unit): errno not cleared before a fill ⇒ a stale ESRCH reads as Gone
+          python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
+            $'        clear_errno();\n        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size);' \
+            $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
+            --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
+            -- cargo test -p aib-sys --locked --lib macos::
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

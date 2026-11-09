@@ -7,7 +7,11 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+# DECISION-10 B: the child listing goes through aib-sys M3 (aib-procwatch is
+# the one crate besides aibd allowed to depend on it; `aib-xtask deps`).
+# libproc stays for the start time and program name only.
 [target.'cfg(target_os = "macos")'.dependencies]
+aib-sys = { path = "../aib-sys" }
 libproc = "0.15.0"
 nix = { version = "0.31.3", features = ["event"] }
 
