@@ -135,27 +135,21 @@ class SecretAsk(unittest.TestCase):
         self.assertNotIn("value", SA.dialog('say "hi"\nnext', "t", run=runner(lambda n: json.dumps({"ok": False, "why": "timeout"}))))
 
     def test_s2b_generate_button(self):
-        """--generate:視窗多一顆「產生並複製」(JXA 內 arc4random 產 GEN_LEN ≥ 24 字、寫剪貼簿、值放回欄位);
-        值仍只從 nonce 對得上的 stdout 回來;沒開 --generate 就沒有那顆鈕。"""
-        plain = SA.build_script("p", "t", "n" * 32)
-        gen = SA.build_script("p", "t", "n" * 32, generate=True)
-        self.assertNotIn("arc4random", plain)
-        self.assertIn("arc4random_uniform", gen)
-        self.assertIn("setTheClipboardTo", gen)
-        self.assertGreaterEqual(SA.GEN_LEN, 24)
-        self.assertIn("out.length < %d" % SA.GEN_LEN, gen)
-        for frag in ("__PROMPT__", "__TITLE__", "__OK__", "__CANCEL__", "__GEN__", "__GEN_HINT__", "__GEN_LEN__", "__NONCE__", "__WAIT__"):
-            self.assertNotIn(frag, gen, frag)
+        """--generate 只影響視窗那一層:collect 把 generate 傳給 dialog;沒開就沒有那顆鈕(細節在 test-secret-host-root R4–R6)。"""
+        self.assertNotIn("arc4random", SA.build_script("p", "t", "n" * 32))
+        seen = []
 
-        def runner(reply):
-            def run(cmd, input=None, **kw):
-                self.assertIn("arc4random_uniform", input)
-                nonce = re.search(r'nonce: "([0-9a-f]{32})"', input).group(1)
-                return type("R", (), {"stdout": reply(nonce), "returncode": 0})()
-            return run
-        ok = SA.dialog("p", "t", run=runner(lambda n: json.dumps({"ok": True, "nonce": n, "value": "Ab3!" * 7})), generate=True)
-        self.assertEqual(ok["value"], "Ab3!" * 7)
-        self.assertEqual(SA.dialog("p", "t", run=runner(lambda n: json.dumps({"ok": True, "nonce": "0" * 32, "value": "x"})), generate=True)["why"], "nonce_mismatch")
+        def fake_dialog(p, t, raw=False, generate=False):
+            seen.append(generate)
+            return {"ok": True, "why": "ok", "value": "Ab3!" * 7}
+        old = SA.dialog
+        try:
+            SA.dialog = fake_dialog
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_EU02", "eu02", "darwin", generate=True)[0], "Ab3!" * 7)
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_EU02", "eu02", "darwin")[0], "Ab3!" * 7)
+        finally:
+            SA.dialog = old
+        self.assertEqual(seen, [True, False])
 
     def test_s3_mac_happy(self):
         f = Fake([KEY])

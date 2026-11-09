@@ -103,10 +103,9 @@ JSON.stringify(out);
 # --generate 時視窗多一顆「產生並複製」:在視窗裡用 arc4random 產 GEN_LEN 字(大小寫 / 數字 / 符號各至少一個,去掉 l I O 0 1),
 # 寫進剪貼簿、重開同一個視窗把值放進(遮住的)欄位,提示先存進密碼管理器再按「儲存」。值一樣只走 osascript stdout,不進 argv。
 GEN_LEN = 28
-JXA_GEN = r"""
+# gen() 獨立一段:測試可以用 osascript 真的跑它(1ced7 L3),不只比字串。
+JXA_GEN_FN = r"""
 ObjC.import("stdlib");
-var app = Application.currentApplication();
-app.includeStandardAdditions = true;
 function rnd(n) { return $.arc4random_uniform(n); }
 function gen() {
   var L = "abcdefghijkmnopqrstuvwxyz", U = "ABCDEFGHJKLMNPQRSTUVWXYZ", D = "23456789", S = "-_.!@#%^*+=";
@@ -115,6 +114,20 @@ function gen() {
   for (var i = out.length - 1; i > 0; i--) { var j = rnd(i + 1); var t = out[i]; out[i] = out[j]; out[j] = t; }
   return out.join("");
 }
+"""
+# 1ced7 #588 M1':寫剪貼簿只留本機(不經 Universal Clipboard 同步到其他 Apple 裝置)並標 concealed / transient
+# (剪貼簿管理工具不記歷史、不顯示);不用 setTheClipboardTo。
+JXA_GEN = JXA_GEN_FN + r"""
+ObjC.import("AppKit");
+var app = Application.currentApplication();
+app.includeStandardAdditions = true;
+function copyConcealed(text) {
+  var pb = $.NSPasteboard.generalPasteboard;
+  pb.prepareForNewContentsWithOptions($.NSPasteboardContentsCurrentHostOnly);
+  pb.setStringForType($(text), $.NSPasteboardTypeString);
+  pb.setStringForType($(""), $("org.nspasteboard.ConcealedType"));
+  pb.setStringForType($(""), $("org.nspasteboard.TransientType"));
+}
 var out, def = "", hint = "";
 try {
   app.activate();
@@ -122,7 +135,7 @@ try {
     var r = app.displayDialog(__PROMPT__ + hint, {withTitle: __TITLE__, defaultAnswer: def, hiddenAnswer: true,
       buttons: [__CANCEL__, __GEN__, __OK__], defaultButton: __OK__, cancelButton: __CANCEL__, givingUpAfter: __WAIT__});
     if (r.gaveUp) { out = {ok: false, why: "timeout"}; break; }
-    if (r.buttonReturned === __GEN__) { def = gen(); app.setTheClipboardTo(def); hint = "\n\n" + __GEN_HINT__; continue; }
+    if (r.buttonReturned === __GEN__) { def = gen(); copyConcealed(def); hint = "\n\n" + __GEN_HINT__; continue; }
     out = {ok: true, nonce: __NONCE__, value: r.textReturned}; break;
   }
 } catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error",
@@ -173,12 +186,18 @@ def build_script(prompt, title, nonce, wait=WAIT_S, generate=False):
                .replace("__NONCE__", json.dumps(nonce)).replace("__WAIT__", str(int(wait))))
 
 
-def clear_clipboard(run=subprocess.run):
-    """--generate 把產生的密碼放進剪貼簿;同帳號任何程式(含 AI)都讀得到,所以視窗關掉(不論成敗)就清掉。
-    本人在按「儲存」前已存進密碼管理器;清不掉只記 False,不影響結果。"""
+def clear_clipboard(value=None, run=subprocess.run):
+    """--generate 把產生的密碼放進剪貼簿;同帳號任何程式(含 AI)都讀得到,所以視窗關掉(不論成敗、含中斷)就清掉。
+    1ced7 #588 L4:給了 value 就先比對 —— 剪貼簿裡不是那個值(本人後來複製了別的)就不動,回 False;
+    沒給 value(取消 / 沒拿到值)就直接清。本人在按「儲存」前已存進密碼管理器;清不掉只記 False,不影響結果。"""
     try:
+        if value is not None:
+            cur = run(["pbpaste"], capture_output=True, timeout=5)
+            got = cur.stdout.decode("utf-8", "replace") if isinstance(cur.stdout, bytes) else str(cur.stdout or "")
+            if cur.returncode != 0 or got.strip() != value.strip():
+                return False
         return run(["pbcopy"], input=b"", capture_output=True, timeout=5).returncode == 0
-    except (OSError, subprocess.TimeoutExpired, TypeError):
+    except (OSError, subprocess.TimeoutExpired, TypeError, AttributeError):
         return False
 
 
@@ -326,7 +345,8 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
 
 
 def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_available=None,
-            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr, seal=None):
+            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr, seal=None,
+            clipboard=None):
     import argparse
     import aib_secrets as S
     import secret_collect as SC
@@ -352,9 +372,12 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     if rel is None:
         res["why"] = "unknown_name"
         return done(2)
+    if a.generate and platform != "darwin":  # 1ced7 L2:非 Mac 沒有那個視窗,不默默忽略
+        res["why"] = "generate_needs_mac"
+        return done(2)
     res["file"] = rel
     if a.name in S.SE_ONLY_NAMES:
-        return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal)
+        return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal, clipboard=clipboard)
     if S.is_remote_only(a.name) and not a.remote_only:  # 先擋:不解析主機、不叫輸入框
         res["why"] = "remote_only_name"
         return done(2)
@@ -371,9 +394,12 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["why"] = "remote_only_needs_push"
         return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
-    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
-    if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿,不論按了儲存還是取消(產生過的值在上面)
-        res["clipboard_cleared"] = clear_clipboard()
+    value = why = None
+    try:
+        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+    finally:
+        if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿:儲存 / 取消 / 逾時 / 中斷都清;有值先比對(1ced7 L4 / L5)
+            res["clipboard_cleared"] = (clipboard or clear_clipboard)(value)
     if value is None:
         res["why"] = why
         if why == "no_gui":
@@ -410,7 +436,7 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         value = None  # noqa: F841
 
 
-def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal):
+def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal, clipboard=None):
     """只准放 Secure Enclave 的名字(CF_TOKEN_MINTER):輸入框 → Touch ID → SE 封存;不寫金鑰櫃檔、不推遠端
     (@abb89 審 #222:母鑰在本機檔 = 同帳號 AI 讀得到;推到伺服器 = 又放回伺服器上)。"""
     import se_vault as SV
@@ -423,9 +449,12 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
         res["why"] = "not_mac"
         return done(2)
     dest = _t("aib.secret.dest_se")
-    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
-    if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿,不論按了儲存還是取消(產生過的值在上面)
-        res["clipboard_cleared"] = clear_clipboard()
+    value = why = None
+    try:
+        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+    finally:
+        if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿:儲存 / 取消 / 逾時 / 中斷都清;有值先比對(1ced7 L4 / L5)
+            res["clipboard_cleared"] = (clipboard or clear_clipboard)(value)
     if value is None:
         res["why"] = why
         if why == "no_gui":

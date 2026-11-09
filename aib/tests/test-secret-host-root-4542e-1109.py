@@ -88,7 +88,11 @@ class HostRoot(unittest.TestCase):
         self.assertNotIn("arc4random", plain)
         self.assertNotIn(json.dumps("產生並複製"), plain)
         self.assertIn("arc4random_uniform", gen)
-        self.assertIn("setTheClipboardTo", gen)
+        self.assertNotIn("setTheClipboardTo", gen, "一般剪貼簿會同步到其他 Apple 裝置、進剪貼簿歷史(1ced7 M1')")
+        # 1ced7 M1':只留本機 + concealed / transient;拿掉任一個這裡要紅
+        self.assertIn("NSPasteboardContentsCurrentHostOnly", gen)
+        self.assertIn("org.nspasteboard.ConcealedType", gen)
+        self.assertIn("org.nspasteboard.TransientType", gen)
         self.assertIn(json.dumps("產生並複製"), gen)
         self.assertGreaterEqual(SA.GEN_LEN, 24)
         self.assertIn("out.length < %d" % SA.GEN_LEN, gen)
@@ -112,23 +116,71 @@ class HostRoot(unittest.TestCase):
         self.assertEqual(bad["why"], "nonce_mismatch")
 
     def test_r5_clipboard_cleared_after_generate(self):
-        """產生的密碼進了剪貼簿(同帳號 AI 也讀得到)⇒ 視窗一關就 pbcopy 清空;清不掉回 False,不影響結果。"""
+        """產生的密碼進了剪貼簿 ⇒ 視窗一關就清:有值先比對(L4)、取消也清、中斷也清(L5);測試注入假的清除,不碰真剪貼簿(L6);
+        斷言被呼叫恰好一次且值為 True(L7)。"""
         calls = []
 
-        def run(cmd, input=None, **kw):
-            calls.append((cmd, input))
-            return type("R", (), {"returncode": 0})()
-        self.assertTrue(SA.clear_clipboard(run=run))
+        def fake(content):
+            def run(cmd, input=None, **kw):
+                calls.append((cmd, input))
+                return type("R", (), {"returncode": 0, "stdout": content.encode() if cmd == ["pbpaste"] else b""})()
+            return run
+        self.assertTrue(SA.clear_clipboard(run=fake("whatever")))          # no value: clear unconditionally
         self.assertEqual(calls, [(["pbcopy"], b"")])
+        calls.clear()
+        self.assertTrue(SA.clear_clipboard("Ab3!" * 7, run=fake("Ab3!" * 7 + "\n")))   # same value: compare, clear
+        self.assertEqual(calls, [(["pbpaste"], None), (["pbcopy"], b"")])
+        calls.clear()
+        self.assertFalse(SA.clear_clipboard("Ab3!" * 7, run=fake("shopping list")))     # the person copied something else
+        self.assertEqual(calls, [(["pbpaste"], None)])
         self.assertFalse(SA.clear_clipboard(run=lambda *a, **k: (_ for _ in ()).throw(OSError("no pbcopy"))))
-        # ask_cmd with --generate: the dialog closes (here: value refused three times ⇒ bad_format) and the
-        # clipboard is cleared right after the dialog, before any later refusal
+
+        # ask_cmd paths, with an injected clearer (never the real clipboard)
+        def harness(argv, ask):
+            cleared = []
+            out = io.StringIO()
+            rc = SA.ask_cmd(argv, env=dict(self.env), platform="darwin", ask=ask, touchid=lambda r: {"ok": True},
+                            touchid_available=lambda: True, out=out, ssh_run=lambda *a, **k: self.fail("不該碰 ssh"),
+                            clipboard=lambda v: cleared.append(v) or True)
+            return rc, json.loads(out.getvalue().strip().splitlines()[-1]), cleared
+        # saved, then refused later (bad shape) → cleared exactly once, with the value, result True
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28})
+        self.assertEqual((rc, res["why"], res["clipboard_cleared"], len(cleared)), (2, "bad_format", True, 1))
+        # cancelled: collect returns no value → still cleared once
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": False, "why": "cancel"})
+        self.assertEqual((rc, res["clipboard_cleared"], cleared), (2, True, [None]))
+        # interrupted inside the dialog: the finally still clears
+        def boom(p, t, **kw):
+            raise KeyboardInterrupt
+        cleared2 = []
+        with self.assertRaises(KeyboardInterrupt):
+            SA.ask_cmd(["PVE_API_TOKEN", "--generate"], env=dict(self.env), platform="darwin", ask=boom, touchid=lambda r: {"ok": True},
+                       touchid_available=lambda: True, out=io.StringIO(), ssh_run=lambda *a, **k: self.fail("ssh"),
+                       clipboard=lambda v: cleared2.append(v) or True)
+        self.assertEqual(cleared2, [None])
+        # not macOS: --generate is refused up front, nothing opened, nothing cleared (L2)
         out = io.StringIO()
-        rc = SA.ask_cmd(["PVE_API_TOKEN", "--generate"], env=dict(self.env), platform="darwin", ask=lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28},
-                        touchid=lambda r: {"ok": True}, touchid_available=lambda: True, out=out, ssh_run=lambda *a, **k: self.fail("不該碰 ssh"))
-        res = json.loads(out.getvalue().strip().splitlines()[-1])
-        self.assertEqual((rc, res["why"]), (2, "bad_format"))
-        self.assertIn("clipboard_cleared", res)
+        rc = SA.ask_cmd(["PVE_API_TOKEN", "--generate"], env=dict(self.env), platform="linux", ask=lambda p, t, **kw: self.fail("不該開視窗"),
+                        touchid=lambda r: {"ok": True}, touchid_available=lambda: True, out=out, ssh_run=lambda *a, **k: self.fail("ssh"),
+                        clipboard=lambda v: self.fail("不該清"))
+        self.assertEqual((rc, json.loads(out.getvalue().strip().splitlines()[-1])["why"]), (2, "generate_needs_mac"))
+
+    def test_r6_gen_really_runs(self):
+        """1ced7 L3:gen() 不只比字串 —— 有 osascript 的機器真的跑它 20 次:長度 GEN_LEN、四類各至少一個、沒有 l I O 0 1、
+        沒有引號 / 空白 / 反斜線(chpasswd 與 SQL 都安全),20 次不重複。沒有 osascript(Linux CI)就具名 skip。"""
+        if not os.path.exists(SA.OSASCRIPT):
+            self.skipTest("no osascript on this platform")
+        import subprocess
+        src = SA.JXA_GEN_FN.replace("__GEN_LEN__", str(SA.GEN_LEN)) + "\nvar r = []; for (var k = 0; k < 20; k++) r.push(gen()); JSON.stringify(r);"
+        r = subprocess.run([SA.OSASCRIPT, "-l", "JavaScript", "-"], input=src, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        pws = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(len(set(pws)), 20)
+        for pw in pws:
+            self.assertEqual(len(pw), SA.GEN_LEN, pw)
+            self.assertTrue(any(c.islower() for c in pw) and any(c.isupper() for c in pw) and any(c.isdigit() for c in pw) and any(c in "-_.!@#%^*+=" for c in pw), pw)
+            self.assertFalse(set(pw) & set("lIO01'\"\\ \t\n"), pw)
+            self.assertIsNone(SA.check_format("HOST_ROOT_PASSWORD_EU02", pw))
 
 
 if __name__ == "__main__":
