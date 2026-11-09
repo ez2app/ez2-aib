@@ -25,6 +25,8 @@ still waiting (11-09 21:47, K10: registered with `--ttl 1500`, dropped 1505 s la
 * `--host` another machine ⇒ `--heartbeat-s` (10–600) is required; the pid is recorded but never
   probed here. Without `--host` (or naming this machine) the 1.x rules apply unchanged.
 * A beat after the deadline does not revive the record: rc 4 `not_found` = you lost the place.
+* With `--heartbeat-s S`, `--ttl` is ignored on both `acquire` and `queue add`: the deadline is always
+  now + 3 × S and only beats move it. `--ttl` counts only for holders without a heartbeat (1.x rules).
 * `release` / `renew` / `status` / `queue remove`: keep using `aib lease` (same files).
 * Output: one JSON line. Exit 0 ok, 2 usage (or the local pid is already gone), 3 files unreadable
   (fail closed), 4 held / queue ahead / not found. Judge by rc only.
@@ -49,12 +51,26 @@ not drop a beating entry. `tests/python_compat.rs` runs both tools on the same i
 ## Remote holder (Mac → andymini)
 
 ```sh
-J="-J eu02-ts andymini"; RID=k10k-2240e
-ssh $J aib-lease queue add --owner 2240e --what k10k --run-id $RID --host "$(uname -n)" --pid $$ --heartbeat-s 60
-( while kill -0 $$ 2>/dev/null; do ssh $J aib-lease heartbeat --run-id $RID >/dev/null || break; sleep 60; done ) &
-until ssh $J aib-lease acquire --owner 2240e --what k10k --run-id $RID --host "$(uname -n)" --pid $$ --heartbeat-s 60 --exclusive; do sleep 30; done
-# … run …
-ssh $J aib lease release --run-id $RID
+J="-J eu02-ts andymini"; RID=k10k-2240e; H=$(uname -n); S=60
+cleanup() { kill $HB $T 2>/dev/null; ssh $J aib lease release --run-id $RID; ssh $J aib lease queue remove --run-id $RID; }
+trap cleanup EXIT                 # release on every way out: green, red, lost place, Ctrl-C
+trap 'exit 4' TERM                # the beat loop sends TERM when the place is lost
+ssh $J aib-lease queue add --owner 2240e --what k10k --run-id $RID --host "$H" --pid $$ --heartbeat-s $S
+( while kill -0 $$ 2>/dev/null; do
+    ssh $J aib-lease heartbeat --run-id $RID >/dev/null; rc=$?
+    # 255 = ssh / jump host hiccup: just beat again next round (the place is lost only after 3 × S of silence)
+    # 4   = record gone or taken over: stop everything, the test must not go on without the lease
+    [ $rc -eq 4 ] && { kill -TERM $$; break; }
+    sleep $S
+  done ) & HB=$!
+until ssh $J aib-lease acquire --owner 2240e --what k10k --run-id $RID --host "$H" --pid $$ --heartbeat-s $S --exclusive; do sleep 30; done
+ssh -tt $J 'cd ~/tree && node tools/test.js' & T=$!   # child, so cleanup can stop it; -tt so the remote side gets a hangup
+wait $T
 ```
+
+* Do not `|| break` on a failed beat: one jump-host hiccup would stop the beats for good while the test keeps
+  running, and 3 × S later someone else takes the machine with your test still on it.
+* Killing the local `ssh` does not always stop the remote command (no tty ⇒ no hangup). Use `-tt` as above, or
+  kill the remote pid yourself before `release`.
 
 Tests: `cargo test -p aib-lease` (not on the Mac Pro 16: heat order; andymini or CI).
