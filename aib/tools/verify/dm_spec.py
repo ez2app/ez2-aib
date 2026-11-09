@@ -64,7 +64,14 @@ FLAGS = ("plain", "global", "im")
 NOT_COVERED = ["evidence=commit(要 git 倉)", "evidence=回信 id(要別席佇列)", "rev 檢查只列四種(見 rev_cases)"]
 
 
+# 暫存目錄(_Env)的路徑:Mac 的 /var/folders/… 一定超過 40 字 ⇒ 本來就記 <str>;Linux 的 /tmp/aib-dm-spec-xxxxxxxx/…
+#   常常不到 40 字 ⇒ 會照原文寫進去,而且每次隨機(#570 ubuntu 三格紅 58 格)。含暫存路徑的字串一律記 <str>,兩個平台一樣。
+TMP_ROOTS = []
+
+
 def _norm(v, now):
+    if isinstance(v, str) and any(r and r in v for r in TMP_ROOTS):
+        return "<str>"
     if v == now:
         return "<now>"
     if v == T0:
@@ -91,6 +98,7 @@ class _Env:
     def __init__(self):
         self.td = tempfile.TemporaryDirectory(prefix="aib-dm-spec-")
         d = Path(self.td.name)
+        TMP_ROOTS[:] = sorted({str(d), os.path.realpath(str(d))}, key=len, reverse=True)
         (d / "home").mkdir()
         self.env = {"EZ2_AIB_STATE_ROOT": str(d / "state"), "HOME": str(d / "home"), "EZ2_AIB_LOCALE": "zh-TW"}
         self.evfile = d / "evidence.txt"
