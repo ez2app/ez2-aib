@@ -88,6 +88,10 @@ pub fn version_line() -> String {
 pub struct Checked {
     pub stop: Stop,
     pub child_started: bool,
+    /// The root was still running right before the stop. A tree that had
+    /// already ended was not stopped by us: the row cannot say it was
+    /// (a9136 11-09, found by the leaf-ends-at-once knife).
+    pub tree_running: bool,
 }
 
 /// How long the check waits for its child to report it started.
@@ -197,12 +201,14 @@ pub fn check_argv(
         child_started = started();
     }
     drop(op);
+    let tree_running = matches!(run.try_exit(), Ok(None));
     // stopped whatever the handshake said: never leave the check tree behind
     let stop = run.stop(Duration::from_secs(2));
     let _ = std::fs::remove_file(&marker);
     Ok(Checked {
         stop,
         child_started,
+        tree_running,
     })
 }
 
@@ -253,6 +259,7 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
         Ok(Checked {
             child_started: false,
             stop,
+            ..
         }) => {
             let mut row = Row::new(
                 N,
@@ -265,6 +272,25 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
                 ),
             );
             row.notes.push(("reason", "child_not_started".to_string()));
+            row
+        }
+        // the tree had ended on its own before the stop: nothing was stopped
+        Ok(Checked {
+            tree_running: false,
+            stop,
+            ..
+        }) => {
+            let mut row = Row::new(
+                N,
+                Status::Unverified,
+                format!(
+                    "the check tree ended on its own before the stop (tree of {}): \
+                     the process manager did not stop it",
+                    stop.tree_size
+                ),
+            );
+            row.notes
+                .push(("reason", "tree_ended_before_stop".to_string()));
             row
         }
         Ok(Checked { stop, .. }) => match &stop.status {
@@ -485,6 +511,7 @@ mod tests {
                 blind_spots: Vec::new(),
             },
             child_started: true,
+            tree_running: true,
         }
     }
 
@@ -565,6 +592,27 @@ mod tests {
         }
         assert_eq!(
             only_root(StopStatus::Clean, vec![5]).status.label(),
+            "failed:tree_not_clean"
+        );
+    }
+
+    /// a9136 11-09: a tree that ended before the stop was not stopped by us;
+    /// a survivor still fails the row.
+    #[test]
+    fn a_tree_that_ended_before_the_stop_is_not_reported_as_stopped() {
+        let ended = |status, survivors| {
+            let mut c = stop(status, survivors);
+            c.tree_running = false;
+            process_row(&Ok(c))
+        };
+        let row = ended(StopStatus::Clean, vec![]);
+        assert_eq!(row.status.label(), "unverified");
+        assert_eq!(
+            row.notes,
+            vec![("reason", "tree_ended_before_stop".to_string())]
+        );
+        assert_eq!(
+            ended(StopStatus::Clean, vec![5]).status.label(),
             "failed:tree_not_clean"
         );
     }
