@@ -257,3 +257,19 @@ local API call.
 3. The hard ports are 3.3 (process trees on Windows) and 3.6 (human presence on
    Windows). Both are UNVERIFIED-desktop until someone runs them on a Windows machine.
 4. Most file locks disappear into SQLite transactions.
+
+## 6. Pending replacement (待取代) — frozen 1.x features
+
+Since 2026-11-09 (RULES §9, ADR 0001 strangler order) AIB 1.x Python gets no new
+features. A 1.x feature PR that was in flight is frozen (draft, not merged) and its
+requirement is kept here as an acceptance item for the `aibd` feature that replaces it.
+Each seat writes the rows for its own PRs. "Tests" names the 1.x test file whose cases
+should become fixtures or acceptance tests for the replacement; the 1.x tests stay on
+the frozen branch and are not run.
+
+| 1.x feature | Frozen at | Requirement (acceptance item for 2.0) | 1.x tests to port | 2.0 home |
+|---|---|---|---|---|
+| DM mid-turn hint | #548 (draft) | When a seat has ≥ 2 open DMs (waiting: no 3-minute grace; in-progress: read, no wait, not read by the system), tell the seat during its turn, not only at turn end. One hint per batch (key = sha256 of sorted `id@rev`), and ≥ 120 s between hints. Off by default, per seat. Never fires for the seat's own sub-agents. Any error ⇒ silent. | `aib/tests/test-dm-midturn-hint-043dd-1109.py` (7 cases, 7 knives) | `aibd` Message / Event (Phase 1); event-driven, so it also reaches non-Claude seats and quiet turns |
+| DM merge key (workflow 7c) | branch `feat/dm-merge-key-043dd-1109` 9d41f1d5 (never pushed) | Two DMs that both name a PR and a head are grouped only when PR number and the first 7 hex chars of the head are equal; different heads never merge, even in the same thread or with near-identical text. A group carries its key, so A(head X)–B(no key)–C(head Y) cannot merge transitively. A head is 7–40 lowercase hex with at least one digit and one a–f, not adjacent to `[0-9A-Za-z_]` (DM ids, dates and words are not heads). A long DM is keyed from its stored body. | `aib/tests/test-dm-merge-key-043dd-1109.py` M1–M9, knives K1–K4 | `aibd` Message grouping; check against the #570 DM fixture |
+| DM `kind=notice` auto-close | not started | A notice (no reply or action asked) is closed once delivered and read, with the delivery as evidence. | none yet | `aibd` Message / outbox |
+| Gameworld switch result "unknown" | #491 (draft) | A cabin switch whose POST may have happened but was not confirmed (plugin says `post_unconfirmed`, core timeout, broken or empty plugin output) is recorded as *unknown*, not failure: no window, no success message, and the same request id is never retried automatically (`unknown_kept`). Markers are not clock-based and are never garbage-collected until an approved tombstone / ack interface exists (DECISION-16, DECISION-22). Request ids carry a time; > 12 h old or > 5 min in the future ⇒ `stale`. Only a spawn failure or an explicit `sent: false` clears the marker. User-facing text needs Andy's wording. | `aib/tests/test-gameworld-043dd-1107.py` U11, U14, U17–U19, knives KG11–KG25 | Captain-room Scene (spec principle 5), after Phase 3 |
