@@ -11,6 +11,8 @@
   main 推送 / 混合 / 算不出來 / 動到 .github/** ⇒ false;讀 crates/ / Cargo.* 的測試都要在 RUST_READ_TESTS;
   Rust 範圍每一條都要被 aibd.yml 的 pull_request paths 蓋到(Rust 照樣有人測);
   workflow 的判斷片段實跑(舊版腳本只印 docs_only、印錯 ⇒ false)。
+- 11-09 aibd.yml(Andy「Rust 兩格改成必過」):沒有 paths 過濾、每張 PR 都觸發;changes job 用 rust-ci 判斷,
+  只有整行 rust_ci=false 才換 ubuntu 只印一行;main 推送 / 算不出 / 0 檔 / 動 .github/** ⇒ 真跑;每一步真跑的步驟都卡 RUN。
 """
 import importlib.util
 import os
@@ -364,15 +366,168 @@ class RustOnly(unittest.TestCase):
                 self.assertTrue(RUST_MENTION.search(text))
 
     def test_aibd_workflow_covers_the_rust_range(self):
-        # rust_only 跳過 Python 的前提:這些檔一改,aibd.yml 一定會在 PR 上跑
-        wf = (ROOT / ".github" / "workflows" / "aibd.yml").read_text(encoding="utf-8")
-        m = re.search(r"(?ms)^  pull_request:\n    paths:\n((?:      - .*\n)+)", wf)
-        self.assertIsNotNone(m, "aibd.yml 沒有 on.pull_request.paths")
-        paths = re.findall(r'- "([^"]+)"', m.group(1))
+        # rust_only 跳過 Python 的前提:這些檔一改,aibd.yml 一定真跑 Rust 兩格
         for f in do.RUST_FILES:
-            self.assertIn(f, paths)
+            self.assertTrue(do.rust_ci("pull_request", [f])[0], f)
+            self.assertIn(f, do.RUST_CI_PATHS)
         for pre in do.RUST_PREFIXES:
-            self.assertIn(pre + "**", paths)
+            self.assertIn(pre + "**", do.RUST_CI_PATHS)
+            self.assertTrue(do.rust_ci("pull_request", [pre + "a/b.rs"])[0], pre)
+
+
+class RustCI(unittest.TestCase):
+    """aibd.yml changes job 的判斷:True = 真跑 Rust 兩格。"""
+
+    def test_rules(self):
+        R = lambda *f: do.rust_ci("pull_request", list(f))[0]
+        self.assertTrue(do.rust_ci("push", ["aib/x.py"])[0], "main 推送一律真跑")
+        self.assertTrue(do.rust_ci("pull_request", None)[0], "算不出來 ⇒ 真跑")
+        self.assertTrue(do.rust_ci("pull_request", [])[0])
+        for f in (".github/workflows/ci.yml", ".github/CODEOWNERS", ".github/workflows/aibd.yml"):
+            with self.subTest(f=f):
+                self.assertTrue(R(f), "動到 .github/** ⇒ 真跑")
+                self.assertTrue(R("aib/x.py", f))
+        for f in do.RUST_CI_PATHS:
+            with self.subTest(f=f):
+                self.assertTrue(R("aib/x.py", f.replace("**", "a/b")), "混合 ⇒ 真跑")
+        for f in ("aib/x.py", "docs/a.md", "README.md", "scripts/aibd-api-smoke.py", "cratesx/a.rs",
+                  "sub/Cargo.toml", "tests/test_x.py"):
+            with self.subTest(f=f):
+                self.assertFalse(R(f), "沒動 Rust 路徑 ⇒ 換 ubuntu 印一行")
+
+    def test_path_list_forms(self):
+        self.assertEqual(len(set(do.RUST_CI_PATHS)), len(do.RUST_CI_PATHS))
+        for pat in do.RUST_CI_PATHS:
+            with self.subTest(pat=pat):
+                body = pat[:-3] if pat.endswith("/**") else pat
+                self.assertTrue(body and not any(c in body for c in "*?[]!{}"), "只准完整檔名或「目錄/**」")
+        files = git(ROOT, "ls-files").splitlines()
+        for pat in do.RUST_CI_PATHS:
+            with self.subTest(exists=pat):
+                hit = [f for f in files if f == pat or (pat.endswith("/**") and f.startswith(pat[:-2]))]
+                self.assertTrue(hit, "名單裡的路徑倉裡沒有:%s" % pat)
+                self.assertTrue(all(do.in_rust_ci(f) for f in hit))
+
+    def test_cli(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td) / "r"
+            (r / "crates").mkdir(parents=True)
+            (r / "crates" / "a.rs").write_text("x\n", encoding="utf-8")
+            (r / "x.py").write_text("x = 1\n", encoding="utf-8")
+            git(r, "init", "-q", "-b", "main")
+            git(r, "add", "-A")
+            git(r, "commit", "-qm", "base")
+            base = git(r, "rev-parse", "HEAD")
+            (r / "x.py").write_text("x = 2\n", encoding="utf-8")
+            git(r, "commit", "-qam", "py")
+            rc, out, _ = cli("rust-ci", "--event", "pull_request", "--base", base, "--head", "HEAD", "--root", str(r))
+            self.assertEqual((rc, out.strip()), (0, "rust_ci=false"))
+            rc, out, _ = cli("rust-ci", "--event", "push", "--base", base, "--head", "HEAD", "--root", str(r))
+            self.assertEqual(out.strip(), "rust_ci=true")
+            rc, out, _ = cli("rust-ci", "--event", "pull_request", "--base", "0" * 40, "--head", "HEAD", "--root", str(r))
+            self.assertEqual(out.strip(), "rust_ci=true")
+            (r / "crates" / "a.rs").write_text("y\n", encoding="utf-8")
+            git(r, "commit", "-qam", "rs")
+            rc, out, _ = cli("rust-ci", "--event", "pull_request", "--base", base, "--head", "HEAD", "--root", str(r))
+            self.assertEqual(out.strip(), "rust_ci=true")
+
+
+class RustCIPathsCoverScripts(unittest.TestCase):
+    """aibd.yml 會跑的 scripts/* 改了也要跑 Rust 兩格,不然只改刀工具的 PR 兩格必過直接回綠 = 刀沒跑(1ced7 11-09)。"""
+
+    SCRIPT = re.compile(r"(?<![\w./-])(?:\./)?(scripts/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]+)*)")
+
+    def referenced(self, text):
+        return {m.rstrip("/.") for m in self.SCRIPT.findall(text)}
+
+    def test_every_script_aibd_yml_runs_is_in_rust_ci_paths(self):
+        seen, todo = set(), self.referenced(aibd_text())
+        while todo:                                   # aibd.yml → 它呼叫的腳本 → 腳本再呼叫的
+            p = todo.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            f = ROOT / p
+            if f.is_file() and f.suffix in (".sh", ".py", ""):
+                todo |= self.referenced(f.read_text(encoding="utf-8", errors="replace"))
+        self.assertTrue(seen, "aibd.yml 一個 scripts/ 都沒抓到 = 這支測試壞了")
+        for p in sorted(seen):
+            with self.subTest(p=p):
+                self.assertTrue(do.in_rust_ci(p), "%s 被 aibd.yml 用到,卻不在 RUST_CI_PATHS" % p)
+
+    def test_knife_tools_are_listed(self):
+        for p in ("scripts/knife.py",):
+            with self.subTest(p=p):
+                self.assertTrue(do.in_rust_ci(p))
+                self.assertTrue(do.rust_ci("pull_request", [p])[0], "只改刀工具 ⇒ 真跑 Rust 兩格")
+
+    def test_the_scan_sees_a_knife_call(self):
+        # 之後 aibd.yml 引用刀規格檔(scripts/knives/…)時,掃描抓得到 ⇒ 沒加進名單就紅
+        self.assertIn("scripts/knives/win-job.json",
+                      self.referenced("python3 -I scripts/knife.py --spec scripts/knives/win-job.json"))
+        # 刀:aibd.yml 換成 #535 那種寫法也要抓得到
+        self.assertIn("scripts/knife.py",
+                      self.referenced("k() { python3 -I scripts/knife.py crates/x.rs \"$1\" -- cargo test; }"))
+        self.assertIn("scripts/check-sys-deps.sh", self.referenced("          ./scripts/check-sys-deps.sh --self-test"))
+
+
+def aibd_text():
+    return (ROOT / ".github" / "workflows" / "aibd.yml").read_text(encoding="utf-8")
+
+
+def aibd_job(name):
+    m = re.search(r"(?ms)^  %s:\n(.*?)(?=^  [a-z][a-z-]*:\n|\Z)" % re.escape(name), aibd_text())
+    return m.group(1)
+
+
+class AibdWorkflow(unittest.TestCase):
+    def test_no_paths_filter_runs_on_every_pr_and_main_push(self):
+        t = aibd_text()
+        on = re.search(r"(?ms)^on:\n(.*?)(?=^\S)", t).group(1)
+        self.assertNotIn("paths", on, "必過格:不能有 paths / paths-ignore(沒觸發的必過格會一直等)")
+        self.assertRegex(on, r"(?m)^  pull_request:\s*$")
+        self.assertRegex(on, r"(?m)^  push:\n    branches: \[main\]$")
+
+    def test_changes_job_and_cells(self):
+        c = aibd_job("changes")
+        self.assertIn('git show "$BASE:$tool"', c, "判斷腳本優先用 base 的版本")
+        self.assertIn("rust-ci --event", c)
+        self.assertIn("|| out=rust_ci=true", c, "腳本失敗 ⇒ 真跑")
+        r = aibd_job("rust")
+        self.assertRegex(r, r"(?m)^    needs: changes$")
+        self.assertRegex(r, r"(?m)^    if: \$\{\{ !cancelled\(\) \}\}$")
+        self.assertIn("os: [macos-latest, windows-latest]", r, "格名 rust (macos-latest) / rust (windows-latest) 不改")
+        self.assertIn("runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || matrix.os }}", r)
+        self.assertIn("RUN: ${{ needs.changes.outputs.run != 'false' }}", r)
+        self.assertIn("if: needs.changes.result != 'success'", r)
+        steps = re.split(r"(?m)^      - ", r.split("    steps:\n", 1)[1])[1:]
+        self.assertGreater(len(steps), 8)
+        gate, note, real = steps[0], steps[1], steps[2:]
+        self.assertIn("exit 1", gate)
+        self.assertIn("if: env.RUN != 'true'", note)
+        for st in real:
+            with self.subTest(step=st.splitlines()[0]):
+                self.assertRegex(st, r"(?m)^        if: env\.RUN == 'true'( &&|$)", "真跑的步驟都要卡 RUN")
+
+    def run_snippet(self, out):
+        c = aibd_job("changes")
+        i = c.index("run=true")
+        j = c.index('| tee -a "$GITHUB_OUTPUT"', i) + len('| tee -a "$GITHUB_OUTPUT"')
+        snip = "\n".join(ln.strip() for ln in c[i:j].splitlines())
+        with tempfile.TemporaryDirectory() as td:
+            gho = Path(td) / "gho"
+            gho.write_text("", encoding="utf-8")
+            p = subprocess.run(["bash", "-eo", "pipefail", "-c", snip], capture_output=True, text=True,
+                               env=dict(os.environ, out=out, GITHUB_OUTPUT=str(gho)), timeout=30)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return gho.read_text(encoding="utf-8").strip()
+
+    def test_snippet_only_a_whole_false_line_skips(self):
+        for out, want in (("rust_ci=false", "run=false"), ("rust_ci=true", "run=true"), ("", "run=true"),
+                          ("rust_ci=falsey", "run=true"), (" rust_ci=false", "run=true"),
+                          ("usage: docs_only ...", "run=true"), ("x\nrust_ci=false\n", "run=false")):
+            with self.subTest(out=out):
+                self.assertEqual(self.run_snippet(out), want)
 
 
 def decide_snippet():

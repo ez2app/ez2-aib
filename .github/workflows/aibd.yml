@@ -1,35 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-# AIB 2.0 Rust workspace (aibd). Runs only when Rust paths change; the Python
-# ci.yml / release.yml are untouched (ADR 0001).
+# AIB 2.0 Rust workspace (aibd). The Python ci.yml / release.yml are untouched (ADR 0001).
+# 11-09 Andy「Rust 兩格改成必過」(a63ab 派 1ced7):no paths filter any more — every PR and every main push
+#   triggers this, so the two cells always report (a required check that never starts would block every PR).
+#   The `changes` job decides: no Rust path touched (RUST_CI_PATHS in aib/tools/release/docs_only.py, the one list;
+#   prepr reads it too) ⇒ both cells move to ubuntu and print one line; otherwise fmt / clippy / test run for real.
+#   main push / mixed / cannot tell / anything under .github/** ⇒ real run. The decision runs from the base version.
 name: aibd
 on:
   push:
     branches: [main]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "clippy.toml"
-      - "crates/**"
-      - "xtask/**"
-      - "migrations/**"
-      - "scripts/check-core-purity.sh"
-      - "scripts/check-sys-deps.sh"
-      - "scripts/check-win-job-knives.sh"
-      - ".github/workflows/aibd.yml"
   pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "clippy.toml"
-      - "crates/**"
-      - "xtask/**"
-      - "migrations/**"
-      - "scripts/check-core-purity.sh"
-      - "scripts/check-sys-deps.sh"
-      - "scripts/check-win-job-knives.sh"
-      - ".github/workflows/aibd.yml"
 permissions:
   contents: read
 # 11-08 DECISION-8 第 3 項:同一張 PR 推新頭碼就取消舊的那一輪;main 每次推送各自一組、不取消。
@@ -39,7 +19,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.d.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: d
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tool=aib/tools/release/docs_only.py
+          if [ -n "$BASE" ] && git show "$BASE:$tool" > "$RUNNER_TEMP/docs_only.py" 2>/dev/null; then tool="$RUNNER_TEMP/docs_only.py"; fi
+          out=$(python3 "$tool" rust-ci --event "$GITHUB_EVENT_NAME" --base "$BASE" --head "$HEAD") || out=rust_ci=true
+          # only a whole line rust_ci=false skips; anything else (old base script without rust-ci, error) runs for real
+          run=true
+          case $'\n'"$out"$'\n' in *$'\n'rust_ci=false$'\n'*) run=false ;; esac
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
   rust:
+    needs: changes
+    # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
+    if: ${{ !cancelled() }}
     # 45: the Windows cell also runs the Job tests 5x and 7 knives
     timeout-minutes: 45
     strategy:
@@ -50,20 +55,32 @@ jobs:
         # *-latest on purpose: pinned images get retired (macos-14 was refused
         # on 2026-11-07); the first step prints what we actually got.
         os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || matrix.os }}
     env:
+      RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
     steps:
+      - name: upstream job (changes) must have passed
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} — this cell is red because the change detection did not pass"
+          exit 1
+      - name: no Rust path changed, nothing else to run
+        if: env.RUN != 'true'
+        run: echo "::notice::no Rust path changed (see the changes job; RUST_CI_PATHS in aib/tools/release/docs_only.py); this cell is not run"
       - name: Windows version (what the Job tests ran on)
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           [System.Environment]::OSVersion.VersionString
           Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, BuildNumber, OSArchitecture
       - uses: actions/checkout@v4
+        if: env.RUN == 'true'
       - name: Toolchain (pinned by rust-toolchain.toml)
+        if: env.RUN == 'true'
         shell: bash
         run: |
           echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
@@ -71,6 +88,7 @@ jobs:
           rustc -vV
           cargo --version
       - uses: actions/cache@v4
+        if: env.RUN == 'true'
         with:
           path: |
             ~/.cargo/registry/index
@@ -80,35 +98,39 @@ jobs:
           key: aibd-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-${{ matrix.os }}-
       - name: Core purity
+        if: env.RUN == 'true'
         shell: bash
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
       - name: aib-sys dependents (only aibd)
+        if: env.RUN == 'true'
         shell: bash
         run: |
           ./scripts/check-sys-deps.sh
           ./scripts/check-sys-deps.sh --self-test
       - name: fmt
+        if: env.RUN == 'true'
         run: cargo fmt --all --check
       - name: clippy
+        if: env.RUN == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
-        if: runner.os != 'macOS'
+        if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
       # and a warning is shown; they still run on our own Macs (#503).
       - name: test (macOS; two forkcount calibration tests skipped by name)
-        if: runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS'
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
         run: |
           for i in 1 2 3 4 5; do
@@ -116,6 +138,6 @@ jobs:
             cargo test -q -p aib-sys --locked || exit 1
           done
       - name: aib-sys job knives (Windows)
-        if: runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
         run: ./scripts/check-win-job-knives.sh

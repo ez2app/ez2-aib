@@ -239,11 +239,18 @@ class Units(unittest.TestCase):
         self.assertRegex(src, r"整批 rc %d" % prepr.AIB_TEST_RC_ALL_SKIPPED)
 
     def test_files_that_aibd_ci_treats_as_rust_trigger_the_rust_checks(self):
-        # the patterns come from the repo's own aibd.yml, so a path added there (check-sys-deps.sh, #485) follows
+        # the patterns come from the repo's own list, so a path added there (check-sys-deps.sh, #485) follows.
+        # Since 11-09 (#538) aibd.yml has no paths filter; the list aibd.yml's changes job uses is
+        # docs_only.py RUST_CI_PATHS, and prepr reads that one (literal, not imported).
         patterns, source = prepr.rust_paths(str(ROOT))
-        self.assertEqual(source, prepr.AIBD_WORKFLOW)
+        self.assertEqual(source, prepr.RUST_CI_LIST + " RUST_CI_PATHS")
+        src = (ROOT / "aib" / "tools" / "release" / "docs_only.py").read_text()
+        import ast
+        lit = [ast.literal_eval(n.value) for n in ast.parse(src).body if isinstance(n, ast.Assign)
+               and any(getattr(t, "id", None) == "RUST_CI_PATHS" for t in n.targets)]
+        self.assertEqual([list(patterns)], [list(x) for x in lit])
         wf = (ROOT / ".github" / "workflows" / "aibd.yml").read_text()
-        self.assertEqual(list(patterns), prepr.workflow_paths(wf))
+        self.assertEqual(prepr.workflow_paths(wf), [], "aibd.yml 不該再有 paths 過濾(#538)")
         for f in ("migrations/0002_x.sql", "rust-toolchain.toml", "clippy.toml", "scripts/check-core-purity.sh",
                   "scripts/check-sys-deps.sh", "crates/aibd/README.md", "xtask/Cargo.toml",
                   ".github/workflows/aibd.yml"):
@@ -251,6 +258,17 @@ class Units(unittest.TestCase):
             self.assertFalse(prepr.kinds([f], patterns)["python"], f)
         for p in patterns:
             self.assertTrue(prepr.is_rust(p.replace("**", "x/y.sql"), patterns), p)
+
+    def test_without_the_list_aibd_yml_paths_are_used(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / ".github" / "workflows").mkdir(parents=True)
+            (Path(td) / ".github" / "workflows" / "aibd.yml").write_text(
+                'on:\n  pull_request:\n    paths:\n      - "crates/**"\n      - "odd/x.sh"\n', encoding="utf-8")
+            self.assertEqual(prepr.rust_paths(td), (("crates/**", "odd/x.sh"), prepr.AIBD_WORKFLOW))
+            (Path(td) / "aib" / "tools" / "release").mkdir(parents=True)
+            (Path(td) / "aib" / "tools" / "release" / "docs_only.py").write_text(
+                'import os\nos.system("echo never run")\nRUST_CI_PATHS = ("crates/**", "x.toml")\n', encoding="utf-8")
+            self.assertEqual(prepr.rust_paths(td), (("crates/**", "x.toml"), prepr.RUST_CI_LIST + " RUST_CI_PATHS"))
 
     def test_the_workflow_reader_takes_pull_request_paths_globs_and_negations(self):
         wf = textwrap.dedent("""\
