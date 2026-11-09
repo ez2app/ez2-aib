@@ -460,6 +460,107 @@ jobs:
             '            event_type: "session.spawn_rejected".into(),' \
             '            event_type: "session.knife_no_audit".into(), // knife' \
             the_audit_record_has_the_ruled_keys_and_no_request_value
+          # M1 batch 2 (1ced7, TESTPLAN L / a63ab 21:58)
+          # K2 the request's text is compared, not the real paths: a link / another
+          # spelling of the listed program is refused
+          ak crates/aibd/src/allowlist.rs \
+            '            .map(|r| same_path(&r, &real))' \
+            '            .map(|_r| same_path(&e.path, a)) // knife' \
+            other_spellings_and_links_of_a_listed_program_run_its_real_path
+          # K3 the checked real path is not what runs (argv[0] kept as sent)
+          ak crates/aibd/src/sessions.rs \
+            '    req.argv[0] = real;' \
+            '    let _ = real; req.argv[0].push_str(""); // knife' \
+            every_start_resolves_the_real_path_again
+          # K5 Unix env names compared without case: `my_var` passes as `MY_VAR`
+          ak crates/aibd/src/allowlist.rs \
+            'fn env_name_eq(a: &str, b: &str) -> bool {' \
+            '#[allow(unreachable_code)] fn env_name_eq(a: &str, b: &str) -> bool { return a.eq_ignore_ascii_case(b); // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K6 an empty list allows everything
+          ak crates/aibd/src/allowlist.rs \
+            '    let listed = p.programs.iter().any(|e| {' \
+            '    let listed = p.programs.is_empty() || p.programs.iter().any(|e| { // knife' \
+            no_policy_starts_nothing_on_either_route
+          # K7 the child inherits aibd's environment (no env_clear): AIBD_* leaks
+          ak crates/aibd/src/platform/session_unix.rs \
+            '        env_clear: true,' \
+            '        env_clear: false, // knife' \
+            the_child_sees_listed_env_and_its_session_id_but_no_aibd_variable
+          # K8 a refusal keeps a slot
+          ak crates/aibd/src/sessions.rs \
+            '        let program = allowlist::audit_name(program);' \
+            '        let program = allowlist::audit_name(program); lock(&self.inner).reserved += 1; // knife' \
+            refusals_use_no_slot
+          # K10 the deny table sees only the request's name, not the real file's (start)
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&real) || is_interpreter(a) {' \
+            '        if is_interpreter(a) { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K10b the same at load: only the listed name is checked
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&p.path) || real_is_interp {' \
+            '        if is_interpreter(&p.path) || (real_is_interp && false) { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K11 the real path is cached per argv[0]: a moved link keeps the old target
+          ak crates/aibd/src/allowlist.rs \
+            '    let real = std::fs::canonicalize(a).map_err(|_| Refused::Program)?;' \
+            '    static KC: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> = std::sync::OnceLock::new(); let hit = KC.get_or_init(Default::default).lock().unwrap().get(a).cloned(); let real = match hit { Some(r) => r, None => { let r = std::fs::canonicalize(a).map_err(|_| Refused::Program)?; KC.get_or_init(Default::default).lock().unwrap().insert(a.to_path_buf(), r.clone()); r } }; // knife' \
+            every_start_resolves_the_real_path_again
+          # K12 no npm (node) detection: a node install gets the generic code
+          ak crates/aibd/src/allowlist.rs \
+            '            Kind::Node => return Err(Refused::ProviderInstall),' \
+            '            Kind::Node => return Err(Refused::Program), // knife' \
+            scripts_are_refused_and_node_installs_get_their_own_code
+          # K14 the record keeps the full argv[0] (directories included)
+          ak crates/aibd/src/sessions.rs \
+            '        program: name(argv0),' \
+            '        program: { let _ = &name; argv0.to_owned() }, // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K15 the record carries an env name and value
+          ak crates/aibd/src/sessions.rs \
+            '                "folded_before": folded_before,' \
+            '                "folded_before": folded_before, "env": "NOT_LISTED_1CED7=VALSECRET-1ced7", // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K16 no one-minute fold: every refusal is its own record
+          ak crates/aibd/src/allowlist.rs \
+            '            Some(w) if now.saturating_duration_since(w.start) < REJECT_WINDOW => {' \
+            '            Some(w) if now.saturating_duration_since(w.start) < REJECT_WINDOW && false => { // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K17 the fold keys on the token only, not token + code
+          ak crates/aibd/src/sessions.rs \
+            '        match self.rejections.note(now, token_id, code, &program) {' \
+            '        match self.rejections.note(now, token_id, "any_code", &program) { // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K18 deny-listed env (DYLD_* / LD_* / AIBD_* / PATH) refused early is not audited
+          ak crates/aibd/src/sessions.rs \
+            '            if audit {' \
+            '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
+            deny_listed_env_is_refused_and_audited_on_both_routes
+      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
+      - name: aib-release trial knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-release/src/trial.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-release --locked --test trial "$3"; }
+          # T1 pairwise conflicts are not recorded: no stacking hint
+          tk '                Ok(m) if !m.clean() => rep.pairs.push(Pair {' \
+             '                Ok(m) if !m.clean() && false => rep.pairs.push(Pair { // knife' \
+             two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first
+          # T2 a reported head with a different tree still passes (A9)
+          tk '        && rep.expect.as_ref().is_none_or(|e| e.matches);' \
+             '        && rep.expect.as_ref().is_none_or(|e| e.matches || true); // knife' \
+             a_reported_head_whose_tree_is_not_the_stack_lists_the_files_that_differ
+          # T3 an `integ/` integration branch passes
+          tk '        && rep.prefixes.iter().all(|p| p.refused.is_none())' \
+             '        && rep.prefixes.iter().all(|p| p.refused.is_none() || true) // knife' \
+             integration_branches_must_be_int_slash
+          # T4 the merge runs in the repository: its objects, config and drivers
+          tk '            .scratch_git(&args)' \
+             '            .src_git(&args) // knife: merge in the repository itself' \
+             heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -470,6 +571,30 @@ jobs:
             echo "== run $i/5"
             cargo test -q -p aib-sys --locked || exit 1
           done
+      # DIAG-win-session-flake (a9136 11-09): the three "failed root open"
+      # session tests used to wait for "2 active processes", which cmd +
+      # conhost can reach before ping exists. They now wait for PING.EXE.
+      # No Windows machine here: 20 runs in a row, one test at a time, all
+      # 20 must pass; every run is printed, a red one with its member list.
+      - name: aib-sys session failed-open tests (Windows) 20x
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u -o pipefail
+          cargo test -q -p aib-sys --locked --lib --no-run
+          pass=0
+          for i in $(seq 1 20); do
+            # a filter that matches nothing is green too: require all 3 ran
+            if cargo test -p aib-sys --locked --lib session::tests::a_failed_root_open \
+                 -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/failed-open.log" \
+               && grep -q "test result: ok. 3 passed" "$RUNNER_TEMP/failed-open.log"; then
+              pass=$((pass + 1)); echo "== run $i/20 ok"
+            else
+              echo "== run $i/20 FAILED"
+            fi
+          done
+          echo "session failed-open: $pass/20 passed"
+          test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
@@ -501,6 +626,11 @@ jobs:
           k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+          # DIAG-win-session-flake: the tests really wait for ping; an image
+          # that never comes must turn them red in hold_members
+          k2 '    const AWAITED_IMAGE: &str = "PING.EXE";' \
+            '    const AWAITED_IMAGE: &str = "NOPE.EXE"; // knife: wait for nothing real' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

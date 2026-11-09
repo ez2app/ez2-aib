@@ -17,6 +17,7 @@
 //! `~/.ez2-aib/state/host-lease.json`, `.queue.json`, `.lock`, `.log`). Added fields:
 //! `heartbeat_s`, `heartbeat_epoch`, `lease_host`; `queue_leave` rows also carry `gone_why`.
 
+pub mod classify;
 pub mod run;
 
 use serde_json::{json, Map, Value};
