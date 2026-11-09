@@ -75,15 +75,18 @@ pub fn default_spawn() -> session::SpawnFn {
     {
         session_unix::spawn
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Windows: 043dd's `session_windows::spawn` (J0 + Job per session)
-        // lands separately; until then every start is refused honestly.
+        // J0 + one Job per session (043dd #543).
+        session_windows::spawn
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         unsupported_spawn
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_spawn(
     _: &session::Spec,
     _: Option<std::sync::Arc<crate::lineage::Lineage>>,

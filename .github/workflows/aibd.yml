@@ -163,3 +163,16 @@ jobs:
             an_unanswered_root_wait_pauses_before_none_and_is_bounded
           k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    std::thread::sleep(timeout.max(IDLE_MAX)); // knife: unbounded' \
             an_unanswered_root_wait_pauses_before_none_and_is_bounded
+      - name: aibd Windows sessions wiring knife (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # default_spawn must be session_windows::spawn (a63ab 11-09: unwired,
+        # every POST was 422 unsupported_platform). The knife puts the refusal
+        # back; the real-aibd test must turn red.
+        run: |
+          set -eu
+          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
+            '        session_windows::spawn' \
+            '        |_: &session::Spec, _| Err(session::SpawnFail { tag: "unsupported_platform".into(), left_running: None }) // knife: not wired' \
+            --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
+            -- cargo test -p aibd --locked --test sessions_windows
