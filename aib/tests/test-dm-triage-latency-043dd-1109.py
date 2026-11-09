@@ -66,7 +66,7 @@ class L(unittest.TestCase):
         allst = H.latency_stats(self.env)
         self.assertEqual(allst["n"], 11)
         self.assertEqual(allst["seats"], {SEAT: 10, "bbbbb": 1})
-        self.assertEqual(H.latency_stats(self.env, seat=SEAT, since=1050)["n"], 5)
+        self.assertEqual(H.latency_stats(self.env, seat=SEAT, since=1050)["n"], 6)   # at = 1000+i+lat:1054 / 1065 / 1076 / 1087 / 1098 / 2009
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = Q.main(["triage-status", "--latency", "--seat", SEAT])

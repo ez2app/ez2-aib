@@ -62,6 +62,7 @@ class R(unittest.TestCase):
         text = Path(p).read_text(encoding="utf-8")
         self.assertIn("- %s@%d | close" % (self.a, self.ra), text)
         self.assertIn("整理那刻", text)
+        self.assertTrue(H.cover_path(p).is_file(), "整理稿旁沒有涵蓋檔")
         cov = json.loads(H.cover_path(p).read_text(encoding="utf-8"))
         self.assertEqual(cov["schema"], H.COVER_SCHEMA)
         self.assertEqual(cov["at"], NOW)
