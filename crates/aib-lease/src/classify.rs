@@ -243,9 +243,17 @@ fn always_long(w: &[String]) -> Option<&'static str> {
     }
     if lw.iter().any(|x| {
         // 2240e #609 L1: `*-browser.js`, `require("puppeteer")` style tests open Chrome too
-        ["chrome", "chromium", "cdp", "e2e", "playwright", "puppeteer", "browser"]
-            .iter()
-            .any(|k| x.contains(k))
+        [
+            "chrome",
+            "chromium",
+            "cdp",
+            "e2e",
+            "playwright",
+            "puppeteer",
+            "browser",
+        ]
+        .iter()
+        .any(|k| x.contains(k))
     }) {
         return Some("opens a browser");
     }
@@ -739,28 +747,20 @@ mod tests {
             v.push(x);
             hist(&v)
         };
-        let c = classify(
-            "pro13",
-            &s(&[cmd]),
-            &with(over(NOW - 3 * 86400)),
-            &[],
-            NOW,
-        );
+        let c = classify("pro13", &s(&[cmd]), &with(over(NOW - 3 * 86400)), &[], NOW);
         assert_eq!((c.class, c.may_go_ahead), (Class::Short, false), "{c:?}");
-        let c = classify(
-            "pro13",
-            &s(&[cmd]),
-            &with(over(NOW - 8 * 86400)),
-            &[],
-            NOW,
-        );
+        let c = classify("pro13", &s(&[cmd]), &with(over(NOW - 8 * 86400)), &[], NOW);
         assert!(c.may_go_ahead, "{c:?}");
         // a passing run that took over 15 min bans as well
         let slow = run_line("pro13", &[cmd], &[1000], "step_failed", 100, 1, NOW);
         assert!(!classify("pro13", &s(&[cmd]), &with(slow), &[], NOW).may_go_ahead);
         // two passing runs are not enough to go ahead on (2240e #609 N2)
         let c = classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), ok(NOW)]), &[], NOW);
-        assert_eq!((c.class, c.light, c.may_go_ahead), (Class::Short, true, false), "{c:?}");
+        assert_eq!(
+            (c.class, c.light, c.may_go_ahead),
+            (Class::Short, true, false),
+            "{c:?}"
+        );
     }
 
     #[test]
@@ -813,7 +813,11 @@ mod tests {
     fn a_browser_test_or_a_run_that_saw_chrome_never_goes_ahead() {
         for cmd in ["node tests/shot-browser.js", "node tests/puppeteer-shot.js"] {
             let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
-            assert_eq!(classify("pro13", &s(&[cmd]), &h, &[], NOW).class, Class::Long, "{cmd}");
+            assert_eq!(
+                classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+                Class::Long,
+                "{cmd}"
+            );
         }
         let cmd = "python3 tests/test-shot.py";
         let ok = run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW);
