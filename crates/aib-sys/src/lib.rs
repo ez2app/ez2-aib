@@ -49,6 +49,8 @@
 //! (checked by `aib-xtask deps`).
 
 pub mod fake;
+#[cfg(target_os = "macos")]
+pub mod held;
 #[cfg(windows)]
 pub mod job;
 pub mod list;

@@ -796,3 +796,69 @@ fn a_system_failure_after_spawn_stops_the_tree() {
 fn a_fork_watch_failure_after_spawn_stops_the_tree() {
     a_late_failure_is_stopped("s-fail-watch", aibd::platform::tree::Inject::ForkWatch);
 }
+
+/// G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): a program that
+/// exits at once, recorded 300 ms late, is still recorded on macOS: it is
+/// held before exec until it is. Without the hold it is gone by then.
+#[cfg(target_os = "macos")]
+fn held_spec(session: &str, program: &str, args: &[&str]) -> SpawnSpec {
+    SpawnSpec {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).into()).collect(),
+        env: vec![],
+        discard_output: true,
+        inject: Some(aibd::platform::tree::Inject::RecordLate),
+        ..spec_watch("unused", session, true)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_instant_program_is_recorded_before_it_can_exit() {
+    let mut h = spawn_tree(&held_spec("s-held-true", "/usr/bin/true", &[])).unwrap();
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+}
+
+/// 043dd / bb7dc / Codex counterexample: the root forks at once, the child
+/// clears the environment, leaves the session (`setsid`) and execs a long
+/// sleep, the root exits. Held and watched from before exec, the sleep is
+/// recorded and stopped; it is never left running.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
+    let dir = std::env::temp_dir().join(format!("aibd-held-gc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("pid");
+    let script = format!(
+        "( /usr/bin/env -i /usr/bin/perl -MPOSIX -e \
+         'POSIX::setsid(); open(F, \">{f}\"); print F $$; close F; exec q(/bin/sleep), 30' & ) ; exit 0",
+        f = f.display()
+    );
+    let mut h = spawn_tree(&held_spec("s-held-gc", "/bin/sh", &["-c", &script])).unwrap();
+    let t = std::time::Instant::now();
+    let gc = loop {
+        if let Some(p) = std::fs::read_to_string(&f)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            break p;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no grandchild pid");
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let rep = h.cleanup(Duration::from_millis(500)).unwrap();
+    let left = still_running(&[gc]);
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+    assert!(left.is_empty(), "grandchild {gc} left running: {rep:?}");
+}

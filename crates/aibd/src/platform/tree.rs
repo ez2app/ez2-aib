@@ -74,6 +74,10 @@ pub enum Inject {
     RootWait,
     System,
     ForkWatch,
+    /// Not a failure: wait 300 ms before the root is recorded, so a program
+    /// that exits at once is gone by then unless it is held (G1
+    /// root_unrecorded, DECISION-root-unrecorded-a9136-1110).
+    RecordLate,
 }
 
 fn injected(spec: &SpawnSpec, at: Inject) -> std::io::Result<()> {
@@ -548,10 +552,25 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         c.current_dir(d);
     }
     imp::new_group(&mut c);
-    let mut child = c.spawn().map_err(StartFailedOr::NotStarted)?;
+    // macOS: held between fork and exec while it is recorded, so it cannot
+    // run, fork or exit first (G1 root_unrecorded); elsewhere right after
+    #[cfg(target_os = "macos")]
+    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))
+        .map_err(StartFailedOr::NotStarted)?;
+    #[cfg(target_os = "macos")]
+    // the child execs only after `record` returned, so this is always Some;
+    // if not, record it as before (it may already be gone: root_unrecorded)
+    let rec = match rec {
+        Some(r) => r,
+        None => record(spec, child.id()),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let child = c.spawn().map_err(StartFailedOr::NotStarted)?;
+    #[cfg(not(target_os = "macos"))]
+    let rec = record(spec, child.id());
+    let mut child = child;
     let root = child.id();
-    // read at once: an instant program is gone before anything else runs
-    let root_coalition = coalition_of(root);
+    let root_coalition = rec.coalition;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let exit = Arc::new(RootExit::default());
@@ -589,7 +608,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         #[cfg(target_os = "macos")]
         watch: None,
     };
-    if let Some(u) = h.lineage.as_ref().and_then(|l| l.unique_of(root)) {
+    if let Some(u) = rec.unique {
         h.uniques.insert(root, u);
     }
     let fail = |h: TreeHandle, err| {
@@ -598,43 +617,91 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
             handle: Box::new(h),
         })
     };
-    let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
-        Ok(s) => s,
-        Err(e) => {
-            // nothing is recorded yet, so a later stop would see nothing to
-            // signal: kill the group now, through the H1 check, and wait for
-            // the root (bb7dc #544)
-            if h.kill_group_unrecorded() {
-                let _ = h.exit.wait(Duration::from_secs(2));
-            }
-            return Err(fail(h, e));
+    if let Some(e) = rec.system_err {
+        // nothing is recorded, so a later stop would see nothing to signal:
+        // kill the group now, through the H1 check, and wait for the root
+        // (bb7dc #544)
+        if h.kill_group_unrecorded() {
+            let _ = h.exit.wait(Duration::from_secs(2));
         }
-    };
-    refresh(&mut sys, false);
-    if let Some(p) = sys.process(Pid::from_u32(root)) {
-        h.known.insert(root, p.start_time());
-        #[cfg(target_os = "macos")]
-        if spec.watch_forks {
-            let w = injected(spec, Inject::ForkWatch).and_then(|()| {
-                super::fork_watch::ForkWatch::start(root, p.start_time(), h.lineage.clone())
-            });
-            match w {
-                Ok(w) => h.watch = Some(w),
+        return Err(fail(h, e));
+    }
+    match rec.start {
+        Some(start) => {
+            h.known.insert(root, start);
+            #[cfg(target_os = "macos")]
+            match rec.watch {
+                Some(Ok(w)) => h.watch = Some(w),
                 // 043dd #510 M2 / bb7dc #544: never leave it running with
                 // nobody holding it; the caller stops it and checks
-                Err(e) => return Err(fail(h, e)),
+                Some(Err(e)) => return Err(fail(h, e)),
+                None => {}
             }
         }
-    } else {
-        // 043dd #510 M1: gone before it could be recorded (a CLI that exits at once)
-        h.gaps.insert(GAP_ROOT_UNRECORDED);
+        // 043dd #510 M1: gone before it could be recorded (a CLI that exits
+        // at once; on macOS only if it could not be read while held)
+        None => {
+            h.gaps.insert(GAP_ROOT_UNRECORDED);
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = spec.watch_forks;
     if let Some(e) = wait_err {
         return Err(fail(h, e));
     }
     Ok(h)
+}
+
+/// What [`start_tree`] reads about the root before (macOS: while it is held
+/// before exec) anything else: its coalition, its start time, the fork
+/// watcher.
+struct Recorded {
+    coalition: Result<u64, SysError>,
+    /// M1 lineage on: the root's unique id (the same before and after exec,
+    /// measured on Pro 13 11-10), read while it cannot have exited yet.
+    unique: Option<u64>,
+    /// The process table could not be read (nothing is recorded then).
+    system_err: Option<std::io::Error>,
+    start: Option<u64>,
+    #[cfg(target_os = "macos")]
+    watch: Option<std::io::Result<super::fork_watch::ForkWatch>>,
+}
+
+fn record(spec: &SpawnSpec, root: u32) -> Recorded {
+    let coalition = coalition_of(root);
+    if spec.inject == Some(Inject::RecordLate) {
+        #[allow(clippy::disallowed_methods)] // test hook only: `inject` is always None in aibd
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let lineage = spec.lineage.clone().filter(|l| l.enabled());
+    let mut rec = Recorded {
+        coalition,
+        unique: lineage.as_ref().and_then(|l| l.unique_of(root)),
+        system_err: None,
+        start: None,
+        #[cfg(target_os = "macos")]
+        watch: None,
+    };
+    let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
+        Ok(s) => s,
+        Err(e) => {
+            rec.system_err = Some(e);
+            return rec;
+        }
+    };
+    refresh(&mut sys, false);
+    let Some(start) = sys.process(Pid::from_u32(root)).map(|p| p.start_time()) else {
+        return rec;
+    };
+    rec.start = Some(start);
+    #[cfg(target_os = "macos")]
+    if spec.watch_forks {
+        rec.watch = Some(
+            injected(spec, Inject::ForkWatch)
+                .and_then(|()| super::fork_watch::ForkWatch::start(root, start, lineage)),
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = spec.watch_forks;
+    rec
 }
 
 /// Why [`start_tree`] failed: before the program started (nothing to stop),
