@@ -420,8 +420,8 @@ jobs:
             the_audit_record_has_the_ruled_keys_and_no_request_value
           # K18 deny-listed env (DYLD_* / LD_* / AIBD_* / PATH) refused early is not audited
           ak crates/aibd/src/sessions.rs \
-            '            if e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE {' \
-            '            if (e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE) && false { // knife' \
+            '            if audit {' \
+            '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
             deny_listed_env_is_refused_and_audited_on_both_routes
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
