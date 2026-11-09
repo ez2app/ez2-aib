@@ -500,6 +500,33 @@ fn attribute(
     a
 }
 
+/// Every recorded creation whose identity was not confirmed, one record each
+/// (DECISION-10 3: a missing identity is listed, never explained away by a
+/// count). `adopted_under` is the parent the child was listed under, if it
+/// was adopted at all; `parent_watched` says whether the recorded parent was
+/// itself a root or an adopted process (if not, its children could not be
+/// seen by events).
+fn missing_identities(
+    created: &[Creation],
+    adopted: &BTreeMap<u32, u32>,
+    forks_by_pid: &BTreeMap<u32, u64>,
+    roots: &[u32],
+) -> Vec<Value> {
+    created
+        .iter()
+        .filter(|(p, c)| adopted.get(c) != Some(p))
+        .map(|(p, c)| {
+            json!({
+                "parent": p,
+                "child": c,
+                "adopted_under": adopted.get(c),
+                "parent_watched": roots.contains(p) || adopted.contains_key(p),
+                "parent_fork_events": forks_by_pid.get(p).copied().unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
 /// Lines that look like records (`C …`) but do not parse.
 fn malformed_records(stdout: &str) -> u64 {
     stdout
@@ -598,6 +625,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let created = parse_creations(&stdout);
     let malformed = malformed_records(&stdout);
     let att = attribute(planned, &created, &adopted, &stats.fork_events_by_pid);
+    let missing = missing_identities(&created, &adopted, &stats.fork_events_by_pid, &[gen_pid]);
     let v = verdict(
         &att,
         Observed {
@@ -638,6 +666,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "capture_threshold": CAPTURE_THRESHOLD,
             "meets_threshold": v.meets_threshold,
             "identity_confirmed": att.identity_confirmed,
+            "missing_identities": missing,
             "count_consistency": rate(att.fixture_fork_events),
             "count_consistency_definition": "fork events from fixture parents / expected (proxy: no identity, coalesced)",
             "limits": "passing does not rule out unknown losses",
@@ -790,6 +819,24 @@ mod tests {
             (v.reasons, v.meets_threshold, v.rc),
             (vec!["fault_injected"], false, 1)
         );
+    }
+
+    #[test]
+    fn every_unconfirmed_creation_is_listed_with_its_parent() {
+        // 11 confirmed; 12 never adopted (its parent 10 is the root); 13 was
+        // adopted under another parent; 21's parent 20 was never watched
+        let created = [(10, 11), (10, 12), (10, 13), (20, 21)];
+        let adopted: BTreeMap<u32, u32> = [(11, 10), (13, 77)].into_iter().collect();
+        let v = missing_identities(&created, &adopted, &m(&[(10, 3)]), &[10]);
+        assert_eq!(v.len(), 3, "{v:?}");
+        assert_eq!(v[0]["child"], 12);
+        assert_eq!(v[0]["adopted_under"], Value::Null);
+        assert_eq!(v[0]["parent_watched"], true);
+        assert_eq!(v[0]["parent_fork_events"], 3);
+        assert_eq!(v[1]["child"], 13);
+        assert_eq!(v[1]["adopted_under"], 77);
+        assert_eq!(v[2]["parent"], 20);
+        assert_eq!(v[2]["parent_watched"], false);
     }
 
     #[test]

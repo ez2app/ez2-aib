@@ -65,10 +65,13 @@ pub struct Stats {
 /// better, and is counted in [`Stats::injected`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListFault {
-    /// The `nth` listing (1-based) fails with an OS error.
+    /// The `nth` listing (1-based): the fill call fails with EIO. Goes
+    /// through aib-sys's real `read_pid_list`, so its error classification is
+    /// what is tested, not a made-up result.
     Error { nth: u64 },
-    /// The `nth` listing (1-based) did not fit after retries
-    /// (aib-sys `Incomplete`).
+    /// The `nth` listing (1-based): every fill comes back full. aib-sys's
+    /// real `read_pid_list` grows and retries, then refuses with
+    /// `Incomplete` (a truncated list must never be returned).
     Incomplete { nth: u64 },
     /// The first listing that has children drops its first child, and every
     /// later listing drops that pid too (a missed child: it is never adopted,
@@ -141,11 +144,13 @@ mod imp {
         match fault {
             Some(ListFault::Error { nth }) if nth == n => {
                 lock(sh).stats.injected += 1;
-                return Err(SysError::Os(5)); // EIO
+                // the fill fails with EIO (5)
+                return aib_sys::list::read_pid_list(1, |_| Err(5));
             }
             Some(ListFault::Incomplete { nth }) if nth == n => {
                 lock(sh).stats.injected += 1;
-                return Err(SysError::Incomplete);
+                // the OS keeps filling whatever buffer it gets
+                return aib_sys::list::read_pid_list(1, |buf| Ok(std::mem::size_of_val(buf)));
             }
             _ => {}
         }

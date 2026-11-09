@@ -224,21 +224,21 @@ fn calibrate_rejects_an_unknown_pattern_or_count() {
     }
 }
 
-/// DECISION-10 B: run `calibrate` with a fault injected into the child
-/// listing and return (rc, report).
-fn calibrate_injected(fault: &str) -> (Option<i32>, serde_json::Value) {
-    let out = tool()
-        .args([
-            "calibrate",
-            "--pattern",
-            "single",
-            "--count",
-            "10",
-            "--inject-list",
-            fault,
-        ])
-        .output()
-        .unwrap();
+/// DECISION-10 B: run `calibrate --pattern single --count 10` with a fault
+/// injected into the child listing (plus `extra` flags) and return
+/// (rc, report).
+fn calibrate_injected(fault: &str, extra: &[&str]) -> (Option<i32>, serde_json::Value) {
+    let mut args = vec![
+        "calibrate",
+        "--pattern",
+        "single",
+        "--count",
+        "10",
+        "--inject-list",
+        fault,
+    ];
+    args.extend_from_slice(extra);
+    let out = tool().args(&args).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
             "{e}\nstdout: {}\nstderr: {}",
@@ -249,12 +249,12 @@ fn calibrate_injected(fault: &str) -> (Option<i32>, serde_json::Value) {
     (out.status.code(), v)
 }
 
-/// A listing that fails is a failure, never an empty list: the run is
-/// unverified for `list_failures` (not only because a fault was injected)
-/// and exits non-zero.
+/// The fill fails (EIO, through aib-sys's real `read_pid_list`): a failure,
+/// never an empty list. The run is unverified for `list_failures` (not only
+/// because a fault was injected) and exits non-zero.
 #[test]
 fn calibrate_a_failed_listing_is_unverified_not_empty() {
-    let (rc, v) = calibrate_injected("error");
+    let (rc, v) = calibrate_injected("error", &[]);
     assert_eq!(rc, Some(1), "{v}");
     assert_eq!(v["status"], "unverified", "{v}");
     assert_eq!(v["injected_list_fault"], "error", "{v}");
@@ -271,11 +271,12 @@ fn calibrate_a_failed_listing_is_unverified_not_empty() {
     assert_eq!(v["meets_threshold"], false, "{v}");
 }
 
-/// A list that does not fit after retries (aib-sys `Incomplete`) counts as a
-/// failure too; a truncated list is never used.
+/// Every fill comes back full: aib-sys's real `read_pid_list` retries and
+/// then refuses (`Incomplete`); a truncated list is never used and the run
+/// is unverified with a non-zero exit.
 #[test]
 fn calibrate_an_incomplete_listing_is_unverified() {
-    let (rc, v) = calibrate_injected("incomplete");
+    let (rc, v) = calibrate_injected("incomplete", &[]);
     assert_eq!(rc, Some(1), "{v}");
     let reasons = v["unverified_reasons"].to_string();
     assert!(reasons.contains("\"list_failures\""), "{v}");
@@ -289,12 +290,40 @@ fn calibrate_an_incomplete_listing_is_unverified() {
 }
 
 /// One child hidden from every listing: it is never adopted, so identity
-/// coverage cannot reach the expected count, and the run never passes.
+/// coverage cannot reach the expected count, the missing identity is listed,
+/// and the run never passes.
 #[test]
 fn calibrate_a_hidden_child_lowers_identity_and_never_passes() {
-    let (rc, v) = calibrate_injected("hide-one");
+    let (rc, v) = calibrate_injected("hide-one", &[]);
     assert_eq!(rc, Some(1), "{v}");
     assert_eq!(v["result"]["list_faults_injected"], 1, "{v}");
+    assert!(v["identity_confirmed"].as_u64().unwrap() <= 9, "{v}");
+    assert!(
+        !v["missing_identities"].as_array().unwrap().is_empty(),
+        "{v}"
+    );
+    assert_eq!(v["meets_threshold"], false, "{v}");
+}
+
+/// One missed (hidden) + one foreign (unlisted) child in the same run: the
+/// adopted count can still add up, but identity cannot. The run must be
+/// unverified for `adopted_not_created` with a non-zero exit, and identity
+/// stays below the expected count (DECISION-10 3, end to end).
+#[test]
+fn calibrate_one_missed_and_one_foreign_is_unverified() {
+    let (rc, v) = calibrate_injected("hide-one", &["--inject-unlisted"]);
+    assert_eq!(rc, Some(1), "{v}");
+    assert_eq!(v["status"], "unverified", "{v}");
+    assert_eq!(v["result"]["list_faults_injected"], 1, "{v}");
+    let reasons = v["unverified_reasons"].to_string();
+    assert!(reasons.contains("\"adopted_not_created\""), "{v}");
+    assert!(
+        v["miscount_checks"]["adopted_not_created"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{v}"
+    );
     assert!(v["identity_confirmed"].as_u64().unwrap() <= 9, "{v}");
     assert_eq!(v["meets_threshold"], false, "{v}");
 }
