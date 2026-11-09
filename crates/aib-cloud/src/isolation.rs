@@ -231,6 +231,9 @@ pub enum Expect {
     Blocked,
     /// The connection must fail because nothing listens there (configuration assertion).
     Closed,
+    /// Recorded, never judged: the receipt shows what was observed (open or closed) so a
+    /// policy change later does not turn old receipts red (ebb36 #587 L1). Carries no control.
+    Observe,
 }
 
 impl Expect {
@@ -239,6 +242,7 @@ impl Expect {
             Expect::Open => "open",
             Expect::Blocked => "blocked",
             Expect::Closed => "closed",
+            Expect::Observe => "observe",
         }
     }
 }
@@ -337,6 +341,28 @@ impl Builder {
             proto,
             Expect::Blocked,
             Some(control.to_owned()),
+            why,
+        );
+    }
+    /// An Observe cell: measured and written into the receipt, never pass / fail.
+    fn observe(
+        &mut self,
+        id: String,
+        section: &'static str,
+        from: Source,
+        to: &str,
+        port: u16,
+        why: &'static str,
+    ) {
+        self.add(
+            id,
+            section,
+            from,
+            to,
+            port,
+            Proto::Tcp,
+            Expect::Observe,
+            None,
             why,
         );
     }
@@ -734,17 +760,16 @@ pub fn matrix(t: &Topology) -> Result<Vec<Cell>, Error> {
             );
         }
         if let Some(p) = &t.peer_host {
-            // measured 11-09: open. Egress 443 is allowed to anywhere (updates / APIs), our other
-            // host included — the same reach any internet client has. Recorded so the receipt says
-            // so; lateral protection is 22 + the private / tailnet ranges (ebb36 r2 L5).
-            b.open(
+            // Observe, not judged (ebb36 #587 L1): today egress 443 is allowed anywhere, our other
+            // host included (customer WP plugins call the footprint API on EU01 over 443 — f1fae
+            // 11-09), so this reads open; if NET-1 ever tightens it, old receipts stay valid.
+            b.observe(
                 alloc::format!("site-{}-to-peerhost-443", s.id),
                 "5.6",
                 S.clone(),
                 p.as_str(),
                 443,
-                Proto::Tcp,
-                "站可達另一台主機的 https(與公網任何 443 相同;橫向只擋 22 與私網)",
+                "站 → 另一台主機 https:只記錄(政策:出站 443 放行,含足跡 API)",
             );
         }
         if let (Some(v), Some(c)) = (&t.internet.https6, &c_v6) {
@@ -978,6 +1003,8 @@ pub struct Receipt {
     /// `peer_host`, `ipv6`) and `egress-25` (the provider blocks 25, so no cell can tell our
     /// DROP from theirs; re-add the cells before port 25 is ever opened).
     pub not_covered: Vec<String>,
+    /// Observe cells: (id, open) as measured; never pass / fail (ebb36 #587 L1).
+    pub observed: Vec<(String, bool)>,
 }
 
 impl Receipt {
@@ -994,6 +1021,7 @@ impl Receipt {
             "fail": self.fail.iter().map(|(id, why)| json!({"id": id, "why": why})).collect::<Vec<_>>(),
             "missing": self.missing,
             "not_covered": self.not_covered,
+            "observed": self.observed.iter().map(|(id, open)| json!({"id": id, "open": open})).collect::<Vec<_>>(),
             "counts": {"pass": self.pass.len(), "fail": self.fail.len(), "missing": self.missing.len()},
         })
     }
@@ -1098,7 +1126,18 @@ pub fn judge(
     rc.not_covered
         .push("egress-25 (provider blocks 25; re-add the cells before opening it)".to_owned());
     let mut passed: Vec<String> = Vec::new();
-    for c in cells.iter().filter(|c| c.expect != Expect::Blocked) {
+    for c in cells.iter().filter(|c| c.expect == Expect::Observe) {
+        match lookup(&c.id) {
+            Some(open) => rc.observed.push((c.id.clone(), open)),
+            None => rc
+                .not_covered
+                .push(alloc::format!("{} (observe cell not measured)", c.id)),
+        }
+    }
+    for c in cells
+        .iter()
+        .filter(|c| c.expect != Expect::Blocked && c.expect != Expect::Observe)
+    {
         match (lookup(&c.id), c.expect) {
             (Some(true), Expect::Open) | (Some(false), Expect::Closed) => {
                 passed.push(c.id.clone());
@@ -1361,7 +1400,13 @@ mod tests {
         )
         .unwrap();
         assert!(rc.ok(), "{:?}", rc.fail);
-        assert_eq!(rc.pass.len(), cells.len());
+        // Observe cells (one site-N-to-peerhost-443 per site, ebb36 #587 L1) are recorded, never
+        // judged: they sit in `observed`, not `pass`, so pass + observed covers every cell.
+        let observe = cells.iter().filter(|c| c.expect == Expect::Observe).count();
+        assert_eq!(observe, 2);
+        assert_eq!(rc.observed.len(), observe);
+        assert_eq!(rc.pass.len() + rc.observed.len(), cells.len());
+        assert!(rc.missing.is_empty(), "{:?}", rc.missing);
         assert_eq!(rc.to_json()["counts"]["fail"], 0);
         assert_eq!(rc.plan_fnv, plan_fingerprint(&probe_plan(&cells)));
     }
@@ -1569,9 +1614,54 @@ mod tests {
         }
         // L5 cells exist when a peer host is given
         assert!(full.iter().any(|c| c.id == "site-110-to-peerhost-443"
-            && c.expect == Expect::Open
+            && c.expect == Expect::Observe
             && c.control.is_none()));
         assert!(full.iter().any(|c| c.id == "edge-101-to-hostpub-22"
             && c.control.as_deref() == Some("host-to-hostpub-22")));
+    }
+
+    #[test]
+    fn i12_observe_cells_are_recorded_never_judged() {
+        let cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
+        let obs = "site-110-to-peerhost-443";
+        // report() marks non-Open cells closed; an observe cell reads closed here and that is fine
+        let r = report(&cells, "135.181.75.90", |_, _| {});
+        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        assert!(
+            rc.ok() && rc.observed.iter().any(|(id, open)| id == obs && !*open),
+            "{:?}",
+            rc.observed
+        );
+        assert!(
+            !rc.pass.iter().any(|p| p == obs),
+            "observe cells are not pass"
+        );
+        // open (today's policy): still ok, recorded as open
+        let r = report(&cells, "135.181.75.90", |c, v| {
+            if c.id == obs {
+                v["open"] = json!(true);
+            }
+        });
+        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        assert!(rc.ok() && rc.observed.iter().any(|(id, open)| id == obs && *open));
+        // not measured: ok, but named in not_covered
+        let mut r = report(&cells, "135.181.75.90", |_, _| {});
+        r["results"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|v| v["id"] != obs);
+        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        assert!(
+            rc.ok() && rc.not_covered.iter().any(|x| x.starts_with(obs)),
+            "{:?}",
+            rc.not_covered
+        );
+        assert!(rc.to_json()["observed"].is_array());
+        // the plan carries the tag the runners accept
+        assert!(probe_plan(&cells)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["expect"] == "observe"));
     }
 }
