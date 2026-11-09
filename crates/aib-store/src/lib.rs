@@ -170,6 +170,37 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// One aggregate's events with `sequence > after`, in order, at most `limit`.
+    pub fn events_of(
+        &self,
+        aggregate_id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT global_seq, event_id, aggregate_type, aggregate_id, sequence, type,
+                    schema_version, correlation_id, occurred_at, payload
+             FROM events WHERE aggregate_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![aggregate_id, after, limit], |r| {
+            let payload: String = r.get(9)?;
+            Ok(StoredEvent {
+                global_seq: r.get(0)?,
+                event_id: r.get(1)?,
+                aggregate_type: r.get(2)?,
+                aggregate_id: r.get(3)?,
+                sequence: r.get(4)?,
+                event_type: r.get(5)?,
+                schema_version: r.get(6)?,
+                correlation_id: r.get(7)?,
+                occurred_at: r.get(8)?,
+                payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Versions recorded in `schema_migrations`, ascending.
     pub fn applied_migrations(&self) -> Result<Vec<i64>> {
         let c = self.read()?;

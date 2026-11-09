@@ -58,6 +58,10 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
                 .delete(sessions::delete_one)
                 .fallback(sessions::method_not_allowed),
         )
+        .route(
+            "/api/v1/sessions/{id}/output",
+            get(sessions::output).fallback(sessions::method_not_allowed),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(

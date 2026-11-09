@@ -450,7 +450,7 @@ impl Sessions {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         self.cv.notify_all();
-        let run = match res {
+        let mut run = match res {
             Ok(r) => r,
             Err(f) => {
                 let Some(pid) = f.left_running else {
@@ -496,6 +496,7 @@ impl Sessions {
             stop: None,
         };
         let exit_wait = run.exit_wait();
+        let output = run.take_output();
         let shutting = g.shutting;
         g.live.insert(
             id.clone(),
@@ -520,6 +521,11 @@ impl Sessions {
             }),
         );
         tracing::info!(session = %id, pid = rec.pid, "session started");
+        if let Some(out) = output {
+            // after `session.started`, so the first line comes after it on
+            // the global cursor; the readers never take `inner`
+            crate::session_output::start(self.store.clone(), &id, out);
+        }
         if shutting {
             // H3: shutdown began while this spawn ran; it must not escape the
             // sweep, so this request stops it before answering
@@ -1199,6 +1205,61 @@ pub async fn get_one(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -
     match st.sessions.get(&id) {
         Some(s) => Json(s).into_response(),
         None => ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response(),
+    }
+}
+
+/// Query of `GET /api/v1/sessions/{id}/output`.
+#[derive(Debug, serde::Deserialize)]
+pub struct OutputQuery {
+    #[serde(default)]
+    after: i64,
+    limit: Option<u32>,
+}
+
+/// `GET /api/v1/sessions/{id}/output?after=&limit=`: the session's output
+/// events (`session.output`, `session.output_truncated`,
+/// `session.output_closed`) with `sequence > after`, from the store, so a
+/// session of an earlier aibd run reads back the same. `next` is the last
+/// sequence returned (pass it as `after`).
+pub async fn output(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<OutputQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(500).clamp(1, 1000);
+    let after = q.after.max(0);
+    let known = st.sessions.get(&id).is_some();
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        if !known && store.session_row(&id)?.is_none() {
+            return Ok(None);
+        }
+        store
+            .events_of(&crate::session_output::aggregate_id(&id), after, limit)
+            .map(Some)
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(evs))) => {
+            let next = evs.last().map(|e| e.sequence).unwrap_or(after);
+            let items: Vec<_> = evs
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "sequence": e.sequence,
+                        "global_seq": e.global_seq,
+                        "type": e.event_type,
+                        "occurred_at": e.occurred_at,
+                        "payload": e.payload,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({"output": items, "next": next})).into_response()
+        }
+        Ok(Ok(None)) => {
+            ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response()
+        }
+        _ => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
 }
 

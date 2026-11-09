@@ -185,7 +185,7 @@ jobs:
       # and open sessions are interrupted at start. Each knife must turn its
       # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
       # binding used (`&& false`, not `if false`).
-      - name: seats / sessions store knives (macOS)
+      - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
@@ -212,6 +212,18 @@ jobs:
             '        if let Err(err) = self.store.append(vec![ev]).map(|_| drop(row)) { // knife' \
             --expect-fail a_seat_session_is_stored_and_read_back_after_a_restart \
             -- cargo test -p aibd --locked --test seat_sessions a_seat_session_is_stored_and_read_back_after_a_restart
+          # S5 sessions go back to discarding their output: nothing to read
+          python3 -I scripts/knife.py crates/aibd/src/platform/session_unix.rs \
+            '        discard_output: false,' \
+            '        discard_output: true, // knife' \
+            --expect-fail output_lines_are_events_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S6 an over-long line is not marked as cut
+          python3 -I scripts/knife.py crates/aibd/src/session_output.rs \
+            '                cut = true;' \
+            '                cut = cut && false; // knife' \
+            --expect-fail an_over_long_line_is_cut_and_the_next_line_still_arrives \
+            -- cargo test -p aibd --locked --test session_output an_over_long_line_is_cut_and_the_next_line_still_arrives
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

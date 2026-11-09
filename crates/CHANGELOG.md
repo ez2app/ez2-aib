@@ -20,13 +20,21 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   At start, aibd marks every session still `running`, or still holding a slot, from the previous run as
   `interrupted` (`ended_by: aibd_restart`, event `session.interrupted` with `processes_may_remain: true`);
   nothing is re-attached or restarted.
+- Session output (preview.3): on macOS / Linux a session's stdout and stderr are kept, one
+  `session.output` event per line (`{stream, line, cut}`) on the aggregate `<session id>/output`, one
+  sequence for both streams, ending with `session.output_closed {stream, why}` per stream. They are on
+  the global cursor and read with `GET /api/v1/sessions/{id}/output?after=&limit=` (also for a session
+  of an earlier aibd run). A line over 256 KiB is cut (`cut: true`); after 32 MiB per session one
+  `session.output_truncated` event and the rest is read and dropped. With Claude Code
+  `--output-format stream-json` each line is one whole event, not a token delta. The text is never
+  written to aibd's log. Windows sessions still start with null stdio (output not kept; UNVERIFIED).
 
 - `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
   (macOS process group, Windows Job). Details and limits: the preview.2 release notes.
 
 - Sessions API (token only, loopback only): `POST /api/v1/sessions` starts a program in its own process
-  group (absolute `argv[0]`, no PATH lookup; stdin / stdout / stderr are the null device, no output
-  is kept), `GET /api/v1/sessions[/{id}]`, `DELETE /api/v1/sessions/{id}?grace_ms=` stops the whole
+  group (absolute `argv[0]`, no PATH lookup; stdin is the null device; stdout / stderr: see session output
+  above), `GET /api/v1/sessions[/{id}]`, `DELETE /api/v1/sessions/{id}?grace_ms=` stops the whole
   recorded tree and answers after the stop.
   - End states are honest: `exited` / `killed` only for a proven-clean stop; on macOS (never provable)
     a session ends `stop_unconfirmed` with the reason, survivors and blind spots. A session with a known
