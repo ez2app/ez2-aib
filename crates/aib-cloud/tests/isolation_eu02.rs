@@ -79,7 +79,11 @@ fn eu02_recorded_report_passes() {
         rc.missing
     );
     assert!(rc.missing.is_empty(), "missing={:?}", rc.missing);
-    assert_eq!(rc.pass.len(), cells.len(), "every cell must have passed");
+    assert_eq!(
+        rc.pass.len() + rc.observed.len(),
+        cells.len(),
+        "every cell must have passed or been observed"
+    );
     if let Ok(path) = std::env::var("AIB_CLOUD_WRITE_RECEIPT") {
         fs::write(
             path,

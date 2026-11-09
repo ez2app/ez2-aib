@@ -176,6 +176,16 @@ pub fn restrict_db_sidecars(db: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Physical memory in bytes (the default session limit, ADR 0005 §5); `None` when it
+/// cannot be read. sysinfo reads it the platform's own way (macOS `hw.memsize`, Windows
+/// `GlobalMemoryStatusEx`, Linux `/proc/meminfo`).
+pub fn physical_memory() -> Option<u64> {
+    // sysinfo 0.40: `System::new` can fail; no reading = no memory-based default
+    let mut s = sysinfo::System::new().ok()?;
+    s.refresh_memory();
+    Some(s.total_memory()).filter(|m| *m > 0)
+}
+
 /// Single-instance lock. Held for the life of the returned `File`.
 /// Uses `std::fs::File::try_lock` (flock on Unix, LockFileEx on Windows).
 pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {
