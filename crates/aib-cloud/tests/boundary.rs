@@ -315,7 +315,10 @@ fn dependency_source_violation(lock: &str, root_pkg: &str) -> Option<String> {
         pkgs.iter()
             .find(|p| p.name == name && version.is_none_or(|v| p.version == v))
     };
-    let root = pkgs.iter().find(|p| p.name == root_pkg)?;
+    // #583 r1 L1 (ebb36): a lock without the crate itself is a violation, not a pass
+    let Some(root) = pkgs.iter().find(|p| p.name == root_pkg) else {
+        return Some(format!("{root_pkg} is not in Cargo.lock"));
+    };
     if !root.source.is_empty() {
         return Some(format!(
             "{root_pkg} has a source ({}); it should be the workspace member",
@@ -791,6 +794,9 @@ fn metadata_shape_and_transitive_sources_fail_closed() {
         "[[package]]\nname = \"serde_korea\"",
     );
     assert!(dependency_source_violation(&dangling, "aib-cloud").is_some());
+    // the crate itself missing from the lock (#583 L1): refuse, never "nothing wrong"
+    assert!(dependency_source_violation("[[package]]\nname = \"serde_json\"\nversion = \"1.0.154\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n", "aib-cloud").is_some());
+    assert!(dependency_source_violation("", "aib-cloud").is_some());
     // the real lock is clean
     assert_eq!(
         dependency_source_violation(
