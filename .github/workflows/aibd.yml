@@ -336,6 +336,11 @@ jobs:
             '        Some(true) => Candidate::Ours,' \
             '        Some(true) => if other_coalition(session, coalition()) { Candidate::OtherCoalition } else { Candidate::Ours }, // knife' \
             platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
+          # C3 the self-check is gone: a root read as another coalition keeps the filter on
+          gk crates/aibd/src/platform/tree.rs \
+            '        (Ok(m), Ok(r)) if r != m => (None, true),' \
+            '        (Ok(m), Ok(r)) if r != m && false => (None, true), // knife' \
+            platform::tree::tests::the_coalition_self_check
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
