@@ -25,7 +25,9 @@ const FORBIDDEN_FORMS: &[&str] = &[
     "include!",     // N5: `include!("../x.rs")`
     "include_str!", //     same idea, as a string
     "include_bytes!",
-    "env!", // N6: `env!` / `option_env!` bake build-time environment into the binary
+    "env!",         // N6: `env!` / `option_env!` bake build-time environment into the binary
+    "macro_rules!", // X3–X6 (r4): a local macro can reassemble any of the above from split tokens
+    "cfg_attr",     // X1 / X7 (r4): `cfg_attr(…, path = …)` / `cfg_attr(test, no_std)`
 ];
 
 /// The only `extern crate` lines a `#![no_std]` crate needs: `alloc` for String / Vec, and
@@ -53,9 +55,39 @@ fn io_violation(text: &str) -> Option<String> {
         .map(|f| format!("用了 {f}(no_std 之外的逃生口)"))
 }
 
-/// lib.rs must opt out of `std`; that is what turns every I/O path into a compile error.
+/// Remove `//` line comments and `/* … */` block comments (string literals are not
+/// tracked: an inner attribute has to precede every item, so no string can sit in front
+/// of a real `#![no_std]`).
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let Some(cut) = [rest.find("//"), rest.find("/*")]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..cut]);
+        if rest[cut..].starts_with("//") {
+            rest = rest[cut..].find('\n').map_or("", |e| &rest[cut + e..]);
+        } else {
+            rest = rest[cut + 2..]
+                .find("*/")
+                .map_or("", |e| &rest[cut + 2 + e + 2..]);
+        }
+    }
+}
+
+/// lib.rs must opt out of `std` for real: after comments are gone, one line has to be
+/// exactly `#![no_std]` (#532 r4 X2 / X7: a commented-out copy or `cfg_attr(test, no_std)`
+/// does not count). That is what turns every I/O path into a compile error.
 fn declares_no_std(lib_rs: &str) -> bool {
-    compact(lib_rs).contains("#![no_std]")
+    strip_comments(lib_rs)
+        .lines()
+        .any(|l| l.trim() == "#![no_std]")
 }
 
 /// Manifest lines that count: comments (`#…`) are dropped first (#532 r3 N11), then the
@@ -225,6 +257,13 @@ fn io_checker_catches_escape_hatches() {
         ("N5c include_bytes!", "const X: &[u8] = include_bytes!(\"../secret.bin\");"),
         ("N6 option_env!", "pub fn leak() -> Option<&'static str> { option_env!(\"HETZNER_ROBOT_PASS\") }"),
         ("N6b env!", "const P: &str = env!(\"HETZNER_ROBOT_PASS\");"),
+        ("X1 cfg_attr path", "#[cfg_attr(all(), path = \"../knife_evil.rs\")]\npub mod knife_evil;"),
+        ("X3 巨集拼 extern crate", "macro_rules! e { ($a:tt, $b:tt) => { $a $b std as s; } }\ne!(extern, crate);"),
+        ("X4 巨集拼 option_env", "macro_rules! m { ($n:ident) => { $n!(\"HETZNER_ROBOT_PASS\") } }\nm!(option_env);"),
+        ("X5 巨集拼 include", "macro_rules! m { ($n:ident) => { $n!(\"../knife_inc.rs\"); } }\nm!(include);"),
+        ("X6 巨集拼 #[path]", "macro_rules! m { ($a:ident) => { #[$a = \"../knife_evil.rs\"] mod k; } }\nm!(path);"),
+        ("X7 cfg_attr no_std", "#![cfg_attr(test, no_std)]"),
+        ("macro_rules 拆空白", "macro_rules !\n x { () => {} }"),
     ];
     for (name, src) in caught {
         assert!(io_violation(src).is_some(), "{name} 沒被抓到");
@@ -240,8 +279,16 @@ fn io_checker_catches_escape_hatches() {
         assert_eq!(io_violation(ok), None, "{ok:?} 不該被抓");
     }
     assert!(declares_no_std("//! doc\n#![no_std]\nextern crate alloc;"));
-    assert!(declares_no_std("#! [ no_std ]"));
+    assert!(declares_no_std("/* block */\n  #![no_std]  // trailing\n"));
+    assert!(!declares_no_std("#! [ no_std ]")); // not the exact spelling the compiler sees
     assert!(!declares_no_std("//! says no_std in a comment only"));
+    assert!(!declares_no_std("// #![no_std]\npub mod robot;")); // X2: commented out
+    assert!(!declares_no_std("/*\n#![no_std]\n*/\npub mod robot;")); // X2 via block comment
+    assert!(!declares_no_std(
+        "#![cfg_attr(test, no_std)]\n// #![no_std]"
+    )); // X7
+    assert!(!declares_no_std("#![no_std] pub mod robot;")); // must be a line of its own
+    assert_eq!(strip_comments("a // x\nb /* y\nz */ c"), "a \nb  c");
     // manifest: N10 `build="x"` without spaces, N11 `[lints]` only inside a comment
     assert!(has_build_key(
         "[package]\nname = \"x\"\nbuild=\"knife/gen.rs\"\n"
