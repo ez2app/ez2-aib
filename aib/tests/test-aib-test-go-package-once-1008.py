@@ -10,6 +10,7 @@ O3 分份同時跑(--jobs 2)⇒ 同一套件分到同一份,照樣只跑 1 次
 O4 go_package_key:_test.go ⇒ 資料夾;倉根 ⇒ ".";不是 Go ⇒ None
 刀(複本):K1 不沿用同套件的結果 ⇒ O1 紅;K2 分份不照套件分組 ⇒ O3 紅
 """
+import json
 import os
 import re
 import shutil
@@ -29,6 +30,20 @@ GO = shutil.which("go") or ("/usr/local/go/bin/go" if os.path.exists("/usr/local
 
 A = 'package calc\n\nimport "testing"\n\nfunc TestA(t *testing.T) { if Add(1, 2) != 3 { t.Fatal("bad") } }\n'
 B = 'package calc\n\nimport "testing"\n\nfunc TestB(t *testing.T) { if Add(2, 2) != 4 { t.Fatal("bad") } }\n'
+# 11-09 bb7dc #565:被 build tag 排除的測試檔 ⇒ go test 回「[no test files]」、rc 0 ⇒ 這支「沒驗」(真 Go 走得到)
+NEVER = '//go:build never\n\npackage calc\n\nimport "testing"\n\nfunc TestN%d(t *testing.T) {}\n'
+# 三條路(追蹤 / 小批 / 自檢失敗退回)直接呼叫 run_tests,印每列 + ran + rc;退回那條把自檢結果先設成失敗
+PATHS = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import test_entry
+mode, repo, tests = sys.argv[2], sys.argv[3], sys.argv[4:]
+if mode == "fallback":
+    test_entry._GATE["res"] = {"ok": False, "stage": "setup", "reason": "forced by test"}
+res = test_entry.run_tests(repo, tests, trace=(mode != "small"))
+rows = [[r["name"], r.get("rc"), bool(r.get("unverified")), r.get("same_package")] for r in res["tests"]]
+print(json.dumps({"state": res["state"], "ran": res["ran"], "rc": res["rc"], "rows": rows}))
+'''
 BAD = 'package calc\n\nimport "testing"\n\nfunc TestBad(t *testing.T) { t.Fatal("GO-RED-MARKER") }\n'
 
 
@@ -128,6 +143,26 @@ class GoOnce(unittest.TestCase):
         self.assertEqual(traced, small, "開追蹤:\n%s\n---- 不開:\n%s" % (out_t[-1500:], out_s[-1500:]))
         self.assertEqual(traced[0], 1)
 
+    def test_o7_unverified_package_counts_once_on_every_path(self):
+        """11-09 bb7dc #565:同一套件兩檔都被 build tag 排除(真 go test:[no test files])⇒ 兩列都「沒驗」、第二列是同套件;
+        追蹤 / 小批 / 退回三條路:逐列一樣、實跑 = 1(只起了一次 go test,不是 0、不是負數)、整批 rc 4(沒驗不能當綠)。"""
+        for i, f in enumerate(("a_test.go", "b_test.go")):
+            (self.repo / "calc" / f).write_text(NEVER % i, encoding="utf-8")
+        self._commit()
+        names = ["calc/a_test.go", "calc/b_test.go"]
+        got = {}
+        for mode in ("traced", "small", "fallback"):
+            p = subprocess.run([sys.executable, "-c", PATHS, str(ROOT / "tools" / "verify"), mode, str(self.repo)] + names,
+                               cwd=str(self.repo), env=self.env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                               timeout=600)
+            line = (p.stdout.strip().splitlines() or ["{}"])[-1]
+            self.assertEqual(p.returncode, 0, mode + ":" + p.stdout[-1500:] + p.stderr[-1500:])
+            got[mode] = json.loads(line)
+        want_rows = [["calc/a_test.go", None, True, None], ["calc/b_test.go", None, True, "calc/a_test.go"]]
+        for mode, r in got.items():
+            self.assertEqual((r["rows"], r["ran"], r["rc"]), (want_rows, 1, 4), "%s: %s" % (mode, r))
+        self.assertEqual([got[m]["state"] for m in ("traced", "small", "fallback")], ["enabled", "small", "fallback"], got)
+
 
 class Knives(unittest.TestCase):
     def _red(self, rel, needle, repl, cell):
@@ -165,6 +200,13 @@ class Knives(unittest.TestCase):
         # 共用規則本身壞掉(永遠不沿用)⇒ 追蹤那條的 o1 紅(o5 同理)
         self._red("tools/verify/test_entry.py", "        if first is None:\n            return None\n", "        return None\n",
                   "GoOnce.test_o1_one_run_per_package")
+
+    @unittest.skipUnless(GO, "沒有 go")
+    def test_k6_old_ran_formula_reds_o7(self):
+        # bb7dc 推導的那個公式:首列沒驗時同套件列被扣兩次 ⇒ 小批 / 退回 ran = -1
+        self._red("tools/verify/test_entry.py", '"ran": executed, "reused": 0,',
+                  '"ran": len(results) - len(unv) - sum(1 for r in results if r.get("same_package")), "reused": 0,',
+                  "GoOnce.test_o7_unverified_package_counts_once_on_every_path")
 
 
 if __name__ == "__main__":

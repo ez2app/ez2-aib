@@ -1687,6 +1687,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
         if not gate.get("ok"):
             resumed_ok = set()      # 10-15 A1:自檢沒過 ⇒ 算不出環境指紋、讀不了作廢列 ⇒ 不接續(整批照跑)
             go_once = GoOnce()      # 11-09 a63ab #565:小批 / 退回也要「同一個 Go 套件只跑一次」(以前只在追蹤那條)
+            executed = 0            # 11-09 bb7dc #565:實跑 = 真的起了一次程序(和追蹤那條的 ran_names 同一個意思);
+            #   以前用「總列數 − 沒驗 − 同套件」,首列沒驗時同套件那列會被扣兩次 ⇒ 可以變負數
             for name in tests:
                 if name in resumed_ok:
                     if live is not None:
@@ -1710,6 +1712,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 runner.wait_for_memory(None if live is None else (lambda g: live("mem_wait", {"limit": "%.1f" % g})))
                 with _own_home(repo, env, name) as tenv:
                     results.append(_mark_all_skipped(dict(runner._run_one(repo, name, tenv, timeout=timeout), reused=False)))
+                executed += 1
                 go_once.ran(name, results[-1])
                 _tree_guard(repo, tree_base, results[-1], live)
                 if live is not None:
@@ -1724,8 +1727,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             line1 = (T("line1_small", {"n": len(tests), "min": _env_int("AIB_TEST_TRACE_MIN", TRACE_MIN)}) if small else
                      T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")}))
             return {"state": "small" if small else "fallback", "gate": gate, "tests": results,
-                    "ran": len(results) - len(unv) - sum(1 for r in results if r.get("same_package")),
-                    "reused": 0, "kept": 0, "rc": 1 if reds else (4 if unv else 0),
+                    "ran": executed, "reused": 0, "kept": 0, "rc": 1 if reds else (4 if unv else 0),
                     "line1": line1}
         idx = reuse_index.build_index([], repo=str(repo))
         pool = runner._pool_file(repo)
