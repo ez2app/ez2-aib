@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """aib prepr — the pre-PR checklist (DECISION-7 A, 2026-11-08), called by hand.
 
-    aib prepr [--repo DIR] [--base REF] [--run-tests] [--json]
+    aib prepr [--repo DIR] [--base REF] [--run-tests] [--json | --md]
 
 Each item prints pass / fail / warn / not_run, with the reason, the scope, the tool version and the real exit code.
 "not_run" and "warn" are never counted as green; "warn" is not a failure either. Without --run-tests the test items are not run (they are long and need the
@@ -528,12 +528,35 @@ def collect(repo, base, run_tests, aib, runner=run):
     return files, items
 
 
+def md_cell(text):
+    """One Markdown table cell: no line breaks, no bare pipes."""
+    return " ".join(str(text).split()).replace("|", "\\|")
+
+
+def markdown(base, files, items, failed):
+    """The summary to paste into a PR description (DECISION-14 #2): one row per item with its real exit code.
+    It says the same as the plain output and never more: not_run / warn stay visible, nothing is folded."""
+    warned = sum(i["status"] == "warn" for i in items)
+    out = ["`aib prepr` (base `%s`, %s changed file(s)): **%s**%s" % (
+        base, "?" if files is None else len(files), "FAILED" if failed else "no failures",
+        ", %d warning(s)" % warned if warned else ""), "",
+        "| # | item | status | rc | reason / scope |", "|---|---|---|---|---|"]
+    for i in items:
+        why = "; ".join(x for x in (i["reason"], i["scope"]) if x)
+        out.append("| %d | %s | %s | %s | %s |" % (i["item"], md_cell(i["name"]), i["status"],
+                                                   "" if i["rc"] is None else i["rc"], md_cell(why)))
+    out += ["", "not_run and warn are not green."]
+    return "\n".join(out)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="aib prepr", description=__doc__.split("\n\n")[0])
     ap.add_argument("--repo", default=".")
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--run-tests", action="store_true", help="also run cargo test / aib test (take the lease first)")
-    ap.add_argument("--json", action="store_true")
+    fmt = ap.add_mutually_exclusive_group()
+    fmt.add_argument("--json", action="store_true")
+    fmt.add_argument("--md", action="store_true", help="a Markdown summary to paste into the PR description")
     a = ap.parse_args(argv)
     repo = os.path.abspath(a.repo)
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -545,6 +568,8 @@ def main(argv=None):
     if a.json:
         print(json.dumps({"repo": repo, "base": a.base, "files": files, "items": items, "failed": failed},
                          ensure_ascii=False, indent=1))
+    elif a.md:
+        print(markdown(a.base, files, items, failed))
     else:
         print("aib prepr  repo=%s  base=%s  changed files=%s" % (repo, a.base, "?" if files is None else len(files)))
         for i in items:

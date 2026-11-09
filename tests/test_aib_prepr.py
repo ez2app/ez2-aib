@@ -475,6 +475,36 @@ class TimeoutCalls(unittest.TestCase):
         self.assertIn("1 warning(s)", text)
 
 
+class Markdown(unittest.TestCase):
+    """DECISION-14 #2: the PR-description summary says what the plain output says, never more."""
+
+    def test_every_item_is_a_row_with_its_status_and_real_rc(self):
+        items = [prepr.item(1, "rust fmt", "pass", "", "workspace", "cargo 1", 0, ["cargo", "fmt"]),
+                 prepr.item(1, "cargo test", "not_run", "needs --run-tests (take the lease first)", "workspace"),
+                 prepr.item(10, "timeout without proc_group", "warn", "a.py:3 uses | pipes\nand lines"),
+                 prepr.item(2, "aib test --changed", "fail", "red", rc=1)]
+        md = prepr.markdown("origin/main", ["a.py"], items, True)
+        self.assertIn("**FAILED**, 1 warning(s)", md)
+        self.assertIn("| 1 | rust fmt | pass | 0 | workspace |", md)
+        self.assertIn("| 1 | cargo test | not_run |  | needs --run-tests (take the lease first); workspace |", md)
+        self.assertIn("| 2 | aib test --changed | fail | 1 | red |", md)
+        self.assertIn("uses \\| pipes and lines |", md)   # one row: no line break, pipe escaped
+        self.assertEqual(len([l for l in md.splitlines() if l.startswith("| ")]), 1 + len(items))
+        self.assertIn("not_run and warn are not green.", md)
+        self.assertIn("**no failures**", prepr.markdown("b", None, items[:2], False))
+
+    def test_md_and_json_cannot_be_asked_together(self):
+        with tempfile.TemporaryFile("w+") as err:
+            old = sys.stderr
+            sys.stderr = err
+            try:
+                with self.assertRaises(SystemExit) as e:
+                    prepr.main(["--md", "--json"])
+            finally:
+                sys.stderr = old
+        self.assertEqual(e.exception.code, 2)
+
+
 class Cli(unittest.TestCase):
     """Real `aib prepr` on a throwaway git repo: docs-only change, nothing run, every manual item listed."""
 
