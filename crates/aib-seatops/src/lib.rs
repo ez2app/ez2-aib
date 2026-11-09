@@ -163,7 +163,9 @@ pub fn prepare(
         "id": item.get("id"), "rev": item.get("rev"), "msg": item.get("msg"),
         "seat": item.get("seat"), "ts": item.get("ts"), "sent_at": item.get("sent_at"),
         "sender": item.get("sender"), "sender_label": item.get("sender_label"),
-        "sender_kind": item.get("sender_kind"), "kind": item.get("kind"),
+        "sender_kind": item.get("sender_kind"), "sender_seat": item.get("sender_seat"),
+        "sender_origin": item.get("sender_origin"), "sender_hub": item.get("sender_hub"),
+        "thread": item.get("thread"), "supersedes": item.get("supersedes"), "kind": item.get("kind"),
         "kind_orig": item.get("kind_orig"), "global": item.get("global"), "im": item.get("im"),
     });
     let stable_bytes = serde_json::to_vec(&stable).map_err(|_| "invalid item")?;
@@ -246,6 +248,22 @@ mod tests {
             prepare(a, None, "q_1234567890abcdef", 2, "hi").unwrap_err(),
             "expect too short"
         );
+        for key in [
+            "sender_seat",
+            "sender_origin",
+            "sender_hub",
+            "thread",
+            "supersedes",
+        ] {
+            let mut modified: Value = serde_json::from_slice(a).unwrap();
+            modified[key] = Value::String("different".into());
+            let bytes = serde_json::to_vec(&modified).unwrap();
+            assert_eq!(
+                verify_snapshot(&snap, &bytes, None, "specific").unwrap_err(),
+                "fingerprint mismatch",
+                "{key}"
+            );
+        }
     }
 
     #[test]
@@ -265,6 +283,20 @@ mod tests {
             prepare_from_paths(&item, &[other], "q_1234567890abcdef", 2, "specific").unwrap_err(),
             "relay outside permitted directory"
         );
+        for bad in ["notadate", "2026110", "20261109/nested"] {
+            let folder = d.path().join("instance-a").join("relay").join(bad);
+            std::fs::create_dir_all(&folder).unwrap();
+            let path = folder.join("RELAY-dm-bad.txt");
+            std::fs::write(&path, "specific body").unwrap();
+            std::fs::write(&item, serde_json::json!({"id":"q_1234567890abcdef","rev":2,"msg":format!("長訊已落檔(13 位元組),請讀:{}",path.display())}).to_string()).unwrap();
+            let root = d.path().join("instance-a").join("relay");
+            assert_eq!(
+                prepare_from_paths(&item, &[root], "q_1234567890abcdef", 2, "specific")
+                    .unwrap_err(),
+                "relay outside permitted directory",
+                "{bad}"
+            );
+        }
     }
     #[test]
     fn relay_is_required_and_content_checked() {
