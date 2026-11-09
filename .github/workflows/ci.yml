@@ -200,7 +200,7 @@ jobs:
         if: always() && env.RUN_CELL == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ci-shard-${{ matrix.os }}-${{ matrix.python }}
+          name: ci-shard-${{ matrix.os }}-${{ matrix.python }}-attempt${{ github.run_attempt }}   # 重跑同一個 run 不撞名(1ced7 #571 r1)
           path: |
             ${{ runner.temp }}/ci-shard.json
             ${{ runner.temp }}/ci-durations.json

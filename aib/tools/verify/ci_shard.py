@@ -241,6 +241,8 @@ def verify(exp, results, interrupted=False):
         if len(rows) > 1:
             problems.append("duplicate %s(跑了 %d 次)" % (name, len(rows)))
     for root, names in sorted(exp.items()):
+        if not names:      # 1ced7 #571 r1 必修:空集合 = 空集合也會「逐名相等」;一個根 0 支 = 收集錯了(或 --repo 指錯)
+            problems.append("empty %s(這個根一支測試都沒有)" % root)
         got = sorted({r["name"] for r in results if r.get("root") == root})
         miss = sorted(set(names) - set(got))
         extra = sorted(set(got) - set(names))

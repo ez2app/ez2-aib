@@ -12,9 +12,10 @@ C5 跑到一半收到 SIGTERM ⇒ 停排新的、殺跑中的、rc 1、印 inter
 C6 串行組:內容有 pgrep / 檔頭 `# aib: ci-serial` ⇒ 串行;`# aib: ci-parallel-ok` ⇒ 並行;串行組在並行組全結束後才開始。
 C7 真的並行:4 支各睡 1.5 秒、--jobs 4 ⇒ 牆鐘 < 4 秒。
 C8 每支自己的 HOME(不是 runner 的 HOME,彼此不同)。
-C9 ci.yml 的 smoke 格改呼叫 ci_shard.py、舊的逐支迴圈不在了。
+C9 ci.yml 的 smoke 格改呼叫 ci_shard.py、舊的逐支迴圈不在了;結果 artifact 名字帶 run_attempt(重跑不撞名)。
+C10 零支不算綠(1ced7 #571 r1 必修):兩根都空 / 只有一根空 / --repo 指到不存在的路徑 ⇒ rc 1、列 empty。
 刀(複本 + run_guarded):K1 漏測(收集少一支)⇒ C1 紅;K2 重複測 ⇒ C1 紅;K3 子程序非零記成綠 ⇒ C2 紅;
-K4 收到中斷不停 ⇒ C5 紅;K5 只比總數(同數不同名放過)⇒ C4 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 收到中斷不停 ⇒ C5 紅;K5 只比總數(同數不同名放過)⇒ C4 紅;K6 拿掉空根檢查 ⇒ C10 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import json
 import os
@@ -67,6 +68,10 @@ class Base(unittest.TestCase):
         p.write_text(text, encoding="utf-8")
         return p
 
+    def root_ok(self):
+        """倉根 tests/ 放一支綠的:兩個根都要有測試,不然 C10 的「空根判紅」會讓只測 aib/tests 的格紅。"""
+        self.put("tests/test_root.py", ROOT_OK)
+
     def run_shard(self, *extra, timeout=120):
         out = self.d / "res.json"
         r = subprocess.run([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--results", str(out)] + list(extra),
@@ -112,7 +117,7 @@ class C(Base):
         self.assertEqual(r.returncode, 1)
 
     def test_c4_verify_names_not_counts(self):
-        exp = {"aib/tests": ["aib/tests/test-a.py", "aib/tests/test-b.py"], "tests": []}
+        exp = {"aib/tests": ["aib/tests/test-a.py", "aib/tests/test-b.py"]}
         row = lambda n, root="aib/tests", rc=0: {"name": n, "root": root, "rc": rc}  # noqa: E731
         ok, p = CS.verify(exp, [row("aib/tests/test-a.py"), row("aib/tests/test-b.py")])
         self.assertTrue(ok, p)
@@ -184,6 +189,7 @@ class C(Base):
         self.assertEqual(kinds["aib/tests/test-s2.py"], "serial")
         self.assertEqual(kinds["aib/tests/test-ok.py"], "parallel")
         self.assertEqual(kinds["aib/tests/test-p1.py"], "parallel")
+        self.root_ok()
         r, res = self.run_shard("--jobs", "3")
         self.assertEqual(r.returncode, 0, r.stdout)
         rows = res["results"]
@@ -194,6 +200,7 @@ class C(Base):
     def test_c7_really_parallel(self):
         for i in range(4):
             self.put("aib/tests/test-w%d.py" % i, "import time\ntime.sleep(1.5)\n")
+        self.root_ok()
         r, res = self.run_shard("--jobs", "4")
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertLess(res["wall_s"], 4.0, res)
@@ -204,6 +211,7 @@ class C(Base):
         for n in ("a", "b"):
             self.put("aib/tests/test-%s.py" % n,
                      "import os\nopen(os.path.join(%r, %r), 'w').write(os.environ['HOME'])\n" % (str(homes), n))
+        self.root_ok()
         r, _ = self.run_shard("--jobs", "2")
         self.assertEqual(r.returncode, 0, r.stdout)
         a, b = ((homes / n).read_text() for n in ("a", "b"))
@@ -216,6 +224,22 @@ class C(Base):
         self.assertIn("python aib/tools/verify/ci_shard.py --repo .", smoke)
         self.assertNotIn("for f in aib/tests/test-*.py", smoke)
         self.assertNotIn("unittest discover -s tests", smoke)
+        self.assertIn("${{ github.run_attempt }}", smoke[smoke.index("upload-artifact"):])
+
+    def test_c10_zero_tests_is_red(self):
+        r, res = self.run_shard()                                   # 兩根都空
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(any(x.startswith("empty aib/tests") for x in res["problems"]), res)
+        self.assertTrue(any(x.startswith("empty tests") for x in res["problems"]), res)
+        self.root_ok()                                              # 只有 aib/tests 空
+        r, res = self.run_shard()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual([x for x in res["problems"] if x.startswith("empty")][0][:15], "empty aib/tests")
+        out = self.d / "res-bad.json"                               # --repo 指錯
+        r = subprocess.run([sys.executable, "-B", str(SHARD), "--repo", str(self.d / "nope"), "--results", str(out)],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=self.env())
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("全綠", r.stdout)
 
 
 KNIVES = [
@@ -236,6 +260,9 @@ KNIVES = [
      "        miss = sorted(set(names) - set(got))\n        extra = sorted(set(got) - set(names))\n",
      "        miss = extra = [] if len(got) == len(names) else [\"count\"]\n",
      "C.test_c4_verify_names_not_counts"),
+    ("K6 拿掉空根檢查", "tools/verify/ci_shard.py",
+     "        if not names:      #", "        if False:      #",
+     "C.test_c10_zero_tests_is_red"),
 ]
 
 
