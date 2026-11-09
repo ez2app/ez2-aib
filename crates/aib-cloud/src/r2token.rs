@@ -21,7 +21,10 @@
 //!   bucket denied);
 //! - anything secret-looking in a report is dropped before it can be printed.
 
-use std::fmt;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 use serde_json::{json, Value};
 
@@ -29,18 +32,6 @@ use serde_json::{json, Value};
 pub const PERM_ITEM_READ: &str = "6a018a9f2fc74eb6b293b0c548f38b39";
 /// Cloudflare permission group "Workers R2 Storage Bucket Item Write".
 pub const PERM_ITEM_WRITE: &str = "2efd5506f9c8494dacb1fa10a3e7d5b6";
-
-/// Keys that must never reach stdout, whatever a remote side echoes back.
-const SECRET_KEYS: &[&str] = &[
-    "value",
-    "secret",
-    "secret_access_key",
-    "access_key_id",
-    "token",
-    "cf_global_key",
-    "cf_auth_key",
-    "authorization",
-];
 
 /// Why a plan could not be built or a report could not be judged.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +48,8 @@ pub enum Error {
     Dest(String),
     /// rclone remote section name is not `[A-Za-z0-9_-]+`.
     Remote(String),
+    /// Custom token name has characters Cloudflare / the popup should not see.
+    Name(String),
     /// Account id is not 32 lowercase hex characters.
     Account(String),
     /// The verification report is missing a field or has the wrong shape.
@@ -72,13 +65,14 @@ impl fmt::Display for Error {
             Error::Zone(s) => write!(f, "zone refused: {s}"),
             Error::Dest(s) => write!(f, "destination path refused: {s}"),
             Error::Remote(s) => write!(f, "rclone remote name refused: {s}"),
+            Error::Name(s) => write!(f, "token name refused: {s}"),
             Error::Account(s) => write!(f, "account id refused: {s}"),
             Error::Report(s) => write!(f, "verification report unusable: {s}"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 fn is_ascii_lower_digit_dash(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
@@ -137,7 +131,7 @@ impl HostAlias {
 
 /// The destination host's IPv4 egress address; the token is usable only from it.
 /// Parsed by hand (four dotted ASCII octets) because this crate's `src/` must not
-/// touch the standard network module (#532 M4 boundary test scans the text).
+/// touch the standard network module (the crate is no_std; #532 M4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EgressIp([u8; 4]);
 
@@ -152,6 +146,11 @@ impl EgressIp {
             if part.is_empty() || part.len() > 3 || !part.chars().all(|c| c.is_ascii_digit()) {
                 return Err(Error::Ip(format!("not an IPv4 address: {s}")));
             }
+            if part.len() > 1 && part.starts_with('0') {
+                return Err(Error::Ip(format!(
+                    "octet with leading zero is ambiguous (#564 L1): {s}"
+                )));
+            }
             o[i] = part
                 .parse::<u16>()
                 .ok()
@@ -159,13 +158,31 @@ impl EgressIp {
                 .map(|v| v as u8)
                 .ok_or_else(|| Error::Ip(format!("octet out of range: {s}")))?;
         }
-        let unspecified = o == [0, 0, 0, 0];
-        let loopback = o[0] == 127;
-        let multicast = (224..=239).contains(&o[0]);
-        let broadcast = o == [255, 255, 255, 255];
-        let link_local = o[0] == 169 && o[1] == 254;
-        if unspecified || loopback || multicast || broadcast || link_local {
-            return Err(Error::Ip(format!("not a usable egress address: {s}")));
+        // Only a public unicast address can be a host's egress IP. Everything below is refused
+        // with a reason, because the usual slip is pasting a Tailscale 100.64/10 address (#564 L1).
+        let why = if o[0] == 0 {
+            Some("0.0.0.0/8 (this network)")
+        } else if o[0] == 10 {
+            Some("10.0.0.0/8 (private)")
+        } else if o[0] == 127 {
+            Some("127.0.0.0/8 (loopback)")
+        } else if o[0] == 169 && o[1] == 254 {
+            Some("169.254.0.0/16 (link-local)")
+        } else if o[0] == 172 && (16..=31).contains(&o[1]) {
+            Some("172.16.0.0/12 (private)")
+        } else if o[0] == 192 && o[1] == 168 {
+            Some("192.168.0.0/16 (private)")
+        } else if o[0] == 100 && (64..=127).contains(&o[1]) {
+            Some("100.64.0.0/10 (carrier-grade NAT / Tailscale, not the host's public egress)")
+        } else if o[0] >= 224 {
+            Some("224.0.0.0/3 (multicast / reserved / broadcast)")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(Error::Ip(format!(
+                "{s} is in {why}; want the host's public IPv4 egress"
+            )));
         }
         Ok(EgressIp(o))
     }
@@ -272,15 +289,19 @@ impl Plan {
         let ip = EgressIp::parse(ip)?;
         let creds_host = HostAlias::parse(creds_host)?;
         let zone = Zone::parse(zone)?;
+        let file_name = dest.rsplit('/').next().unwrap_or("");
         if !dest.starts_with('/')
             || dest.contains("..")
+            || dest.contains("//")
             || dest.len() > 200
+            || file_name.is_empty()
+            || file_name == "."
             || !dest
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
         {
             return Err(Error::Dest(format!(
-                "want an absolute plain path, got {dest}"
+                "want an absolute plain path ending in a file name, got {dest}"
             )));
         }
         if remote.is_empty()
@@ -301,7 +322,7 @@ impl Plan {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
                 {
-                    return Err(Error::Remote(format!("token name refused: {n}")));
+                    return Err(Error::Name(format!("token name refused: {n}")));
                 }
                 n.to_owned()
             }
@@ -479,27 +500,37 @@ impl VerifyReport {
     }
 }
 
-/// Remove anything secret-looking from a report before it is printed. Recurses into
-/// objects and arrays; key match is case-insensitive.
+/// Mask a report before it is printed: the crate-wide [`crate::robot::mask`] (substring key
+/// match on password / token / secret / key / auth / cookie …, plus `scheme://user:pw@`
+/// userinfo inside strings), so a remote side that renames a key cannot leak a value
+/// (#564 M1). On top of that, any key named `value` is masked (Cloudflare returns the raw
+/// token under `result.value`). `token_id` is the one token-ish key the report legitimately
+/// carries; it is kept only when it looks like an id (hex, at most 64 chars).
 pub fn sanitize(v: &mut Value) {
+    let keep = v
+        .get("token_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_owned);
+    crate::robot::mask(v);
+    mask_value_keys(v);
+    if let (Some(id), Some(obj)) = (keep, v.as_object_mut()) {
+        obj.insert("token_id".to_owned(), Value::String(id));
+    }
+}
+
+fn mask_value_keys(v: &mut Value) {
     match v {
         Value::Object(m) => {
-            let doomed: Vec<String> = m
-                .keys()
-                .filter(|k| {
-                    let k = k.to_ascii_lowercase();
-                    SECRET_KEYS.iter().any(|s| k == *s)
-                })
-                .cloned()
-                .collect();
-            for k in doomed {
-                m.remove(&k);
-            }
-            for x in m.values_mut() {
-                sanitize(x);
+            for (k, x) in m.iter_mut() {
+                if k.eq_ignore_ascii_case("value") {
+                    *x = Value::String("***".to_owned());
+                } else {
+                    mask_value_keys(x);
+                }
             }
         }
-        Value::Array(a) => a.iter_mut().for_each(sanitize),
+        Value::Array(a) => a.iter_mut().for_each(mask_value_keys),
         _ => {}
     }
 }
@@ -508,6 +539,7 @@ pub fn sanitize(v: &mut Value) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     fn plan() -> Plan {
         Plan::new(
@@ -533,11 +565,8 @@ mod tests {
         assert_eq!(s["ip_condition"], "135.181.75.90/32");
         assert_eq!(s["name"], "ez2-cloud-eu02-ez2-cloud-eu02-r2");
         let text = s.to_string();
-        for k in SECRET_KEYS {
-            assert!(
-                !text.contains(&format!("\"{k}\"")),
-                "{k} leaked into summary"
-            );
+        for k in ["secret", "access_key", "value", "authorization"] {
+            assert!(!text.contains(k), "{k} leaked into summary");
         }
     }
 
@@ -607,10 +636,19 @@ mod tests {
         for bad in [
             "2a01:4f9:4b:134f::2",
             "0.0.0.0",
+            "0.1.2.3",
             "127.0.0.1",
             "224.0.0.1",
+            "240.0.0.1",
             "255.255.255.255",
             "169.254.1.1",
+            "10.1.1.1",
+            "172.16.5.5",
+            "172.31.255.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "100.120.222.46",
+            "010.1.1.1",
             "1.2.3",
             "１.2.3.4",
             "1.2.3.256",
@@ -625,6 +663,11 @@ mod tests {
         assert_eq!(
             EgressIp::parse("135.181.75.90").unwrap().cidr(),
             "135.181.75.90/32"
+        );
+        assert!(EgressIp::parse("172.32.0.1").is_ok()); // just outside 172.16/12
+        assert!(EgressIp::parse("100.128.0.1").is_ok()); // just outside 100.64/10
+        assert!(
+            matches!(EgressIp::parse("100.120.222.46"), Err(Error::Ip(m)) if m.contains("Tailscale"))
         );
     }
 
@@ -646,6 +689,10 @@ mod tests {
         assert!(matches!(mk("relative.env", "r2"), Err(Error::Dest(_))));
         assert!(matches!(mk("/etc/../x", "r2"), Err(Error::Dest(_))));
         assert!(matches!(mk("/etc/x;rm", "r2"), Err(Error::Dest(_))));
+        assert!(matches!(mk("/", "r2"), Err(Error::Dest(_)))); // #564 L2: must name a file
+        assert!(matches!(mk("/etc/ez2-cloud/", "r2"), Err(Error::Dest(_))));
+        assert!(matches!(mk("/etc//x", "r2"), Err(Error::Dest(_))));
+        assert!(matches!(mk("/etc/.", "r2"), Err(Error::Dest(_))));
         assert!(matches!(mk("/etc/x", "r 2"), Err(Error::Remote(_))));
         assert!(matches!(mk("/etc/x", ""), Err(Error::Remote(_))));
         assert!(mk("/etc/x", "r2").is_ok());
@@ -660,7 +707,7 @@ mod tests {
                 "r2",
                 Some("bad name")
             ),
-            Err(Error::Remote(_))
+            Err(Error::Name(_)) // #564 L3
         ));
         assert!(matches!(
             AccountId::parse("3D7F55AAAAAAAAAAAAAAAAAAAAAAAAAA"),
@@ -676,17 +723,35 @@ mod tests {
         let r = VerifyReport::from_json(&good).unwrap();
         assert!(r.ok());
         assert!(r.failures().is_empty());
-        let mut one_off = good.clone();
-        one_off["delete_blocked_by_lock"] = json!(false);
-        let r = VerifyReport::from_json(&one_off).unwrap();
-        assert!(!r.ok());
-        assert_eq!(r.failures(), vec!["delete_blocked_by_lock"]);
-        let mut missing = good.clone();
-        missing.as_object_mut().unwrap().remove("write");
-        assert!(matches!(
-            VerifyReport::from_json(&missing),
-            Err(Error::Report(_))
-        ));
+        // #564 M2 (ebb36): each of the five checks on its own must fail the report and be
+        // named; dropping any one of them from `failures()` turns this red.
+        const CHECKS: [&str; 5] = [
+            "list_own_bucket",
+            "write",
+            "read_back",
+            "delete_blocked_by_lock",
+            "other_bucket_denied",
+        ];
+        for k in CHECKS {
+            let mut one_off = good.clone();
+            one_off[k] = json!(false);
+            let r = VerifyReport::from_json(&one_off).unwrap();
+            assert!(!r.ok(), "{k}=false must fail the report");
+            assert_eq!(r.failures(), vec![k], "{k}");
+            let mut missing = good.clone();
+            missing.as_object_mut().unwrap().remove(k);
+            assert!(
+                matches!(VerifyReport::from_json(&missing), Err(Error::Report(_))),
+                "missing {k}"
+            );
+        }
+        let mut two_off = good.clone();
+        two_off["write"] = json!(false);
+        two_off["other_bucket_denied"] = json!(false);
+        assert_eq!(
+            VerifyReport::from_json(&two_off).unwrap().failures(),
+            vec!["write", "other_bucket_denied"]
+        );
         let mut not_bool = good.clone();
         not_bool["write"] = json!("yes");
         assert!(matches!(
@@ -706,16 +771,31 @@ mod tests {
     }
 
     #[test]
-    fn r7_sanitize_drops_secret_keys_recursively() {
-        let mut v = json!({"ok": true, "token_id": "abc", "secret_access_key": "S", "Access_Key_ID": "A",
-                           "nested": {"value": "tok", "keep": 1}, "list": [{"Authorization": "Basic x", "fine": true}]});
+    fn r7_sanitize_masks_like_robot_and_keeps_token_id() {
+        // #564 M1 (ebb36 probe): renamed keys and URL userinfo must not survive.
+        let mut v = json!({
+            "ok": true, "token_id": "709325321f3e207ca9c8152720134ae2",
+            "api_token": "T1", "cf_api_token": "T2", "password": "P1", "secret_key": "S1",
+            "SecretAccessKey": "S2", "secret_access_key": "S3", "Access_Key_Id": "A1",
+            "value": "V1", "authorization": "Basic x",
+            "endpoint": "https://k:S7@x.r2.cloudflarestorage.com",
+            "nested": {"private_key": "K1", "keep": 1, "result": {"Value": "V2"}},
+            "list": [{"Cookie": "C1", "fine": true}],
+        });
         sanitize(&mut v);
         let text = v.to_string();
-        for leak in ["\"S\"", "\"A\"", "\"tok\"", "Basic x"] {
-            assert!(!text.contains(leak), "{leak} survived sanitize");
+        for leak in [
+            "T1", "T2", "P1", "S1", "S2", "S3", "A1", "V1", "V2", "Basic x", "S7", "K1", "C1",
+        ] {
+            assert!(!text.contains(leak), "{leak} survived sanitize: {text}");
         }
+        assert_eq!(v["token_id"], "709325321f3e207ca9c8152720134ae2");
+        assert_eq!(v["endpoint"], "https://***:***@x.r2.cloudflarestorage.com");
         assert_eq!(v["nested"]["keep"], 1);
         assert_eq!(v["list"][0]["fine"], true);
-        assert_eq!(v["token_id"], "abc");
+        // a token_id that does not look like an id is masked like any other token-ish key
+        let mut w = json!({"token_id": "not-an-id value!"});
+        sanitize(&mut w);
+        assert_eq!(w["token_id"], "***");
     }
 }
