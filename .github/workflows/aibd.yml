@@ -397,10 +397,17 @@ jobs:
           set -eu
           # H1 the child does not wait for the go byte: the program runs while held
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            '        let n = unsafe { libc::read(go_r, go.as_mut_ptr().cast(), 1) };' \
-            '        let n: isize = 1; let _ = (go_r, &mut go); // knife: never wait' \
+            $'    let mut go = [0u8; 1];\n    loop {' \
+            $'    let mut go = [0u8; 1];\n    if go.len() == 1 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
+          # spawn holds back, instead of killing its own child
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '                    kill_held(p);' \
+            '                    let _ = kill_held; // knife: wait for EOF' \
+            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
           # H2 / H3 start_tree does not hold: an instant root is recorded too late,
           # and a detached grandchild of it is left running
           for t in an_instant_program_is_recorded_before_it_can_exit \
