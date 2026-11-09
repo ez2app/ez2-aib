@@ -298,7 +298,14 @@ pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String
             return Err(format!("{:?}: {e}", cmd.get_program()));
         }
     };
-    // normal exit: the child and anything it left behind in its group have closed our pipes
+    // normal exit: anything the child left behind in its group (a backgrounded grandchild
+    // still holding our pipes) is killed before we wait for the readers (c477a #585 r3 L).
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let out = out_h.join().unwrap_or_default();
     let err = err_h.join().unwrap_or_default();
     if !status.success() {
@@ -1479,5 +1486,17 @@ mod tests {
         let t1 = Instant::now();
         assert!(run_quiet(&mut q, Duration::from_secs(1)).is_err());
         assert!(t1.elapsed() < Duration::from_secs(6));
+        // c477a #585 r3 L: the child exits at once but leaves a grandchild holding our pipes;
+        // the normal path must still return promptly with the child's own output
+        let mut bg = Command::new("sh");
+        bg.args(["-c", "echo parent-done; sleep 30 &"]);
+        let t2 = Instant::now();
+        let out = run_capture(&mut bg, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.trim(), "parent-done");
+        assert!(
+            t2.elapsed() < Duration::from_secs(6),
+            "took {:?}",
+            t2.elapsed()
+        );
     }
 }

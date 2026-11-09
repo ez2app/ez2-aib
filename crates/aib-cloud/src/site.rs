@@ -300,6 +300,13 @@ pub fn desired(spec: &SiteSpec) -> Vec<(&'static str, String)> {
     v
 }
 
+/// The CT's own root volume: LVM-thin / dir storage names it `vm-<ct>-disk-N`, ZFS names it
+/// `subvol-<ct>-disk-N` (c477a #585 r3 N). Anything else is another CT's disk.
+pub fn rootfs_is_own(value: &str, ct: u32) -> bool {
+    value.contains(&alloc::format!("vm-{ct}-disk-"))
+        || value.contains(&alloc::format!("subvol-{ct}-disk-"))
+}
+
 /// Keys a site CT's `pct config` may carry without being drift: what `desired()` declares,
 /// the identity keys PVE writes itself, and `lxc.idmap` (per-CT uid range, DECISION
 /// ct-idmap 11-10). Everything else — `lxc.hook.*`, `hookscript`, `lxc.cgroup2.devices.allow`,
@@ -585,11 +592,14 @@ pub fn drift(
     }
     for (k, v) in &obs {
         // rootfs must be this CT's own volume (c477a #585 L3: another CT's volume = two sites on one disk)
-        if k == "rootfs" && !v.contains(&alloc::format!("vm-{}-disk-", spec.ct)) {
+        if k == "rootfs" && !rootfs_is_own(v, spec.ct) {
             out.push(Drift {
                 ct: spec.ct,
                 key: "rootfs".to_owned(),
-                want: alloc::format!("<a volume named vm-{}-disk-*>", spec.ct),
+                want: alloc::format!(
+                    "<a volume named vm-{ct}-disk-* or subvol-{ct}-disk-*>",
+                    ct = spec.ct
+                ),
                 got: v.clone(),
             });
             continue;
@@ -1227,6 +1237,20 @@ mod tests {
                 .unwrap()
             ),
             ["rootfs"]
+        );
+        // ZFS names the same volume subvol-<ct>-disk-N (c477a #585 r3 N)
+        assert_eq!(
+            drift(
+                &site2(),
+                &CT112.replace("local-lvm:vm-112-disk-0", "tank:subvol-112-disk-0"),
+                Some(&fw)
+            )
+            .unwrap(),
+            Vec::<Drift>::new()
+        );
+        assert!(
+            rootfs_is_own("tank:subvol-112-disk-0,size=16G", 112)
+                && !rootfs_is_own("tank:subvol-110-disk-0", 112)
         );
         assert!(config_key_allowed("lxc.cgroup2.pids.max") && config_key_allowed("lxc.idmap"));
         assert!(
