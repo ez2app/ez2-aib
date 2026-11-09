@@ -103,7 +103,7 @@ jobs:
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
-      - name: aib-sys dependents (only aibd)
+      - name: aib-sys dependents (aibd, aib-procwatch)
         if: env.RUN == 'true'
         shell: bash
         run: |
@@ -127,6 +127,31 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # DECISION-10 B (a9136, bb7dc review): the child listing goes through aib-sys.
+      # Each knife breaks one rule and must turn its own test red.
+      - name: procwatch listing knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # a failed listing washed into an empty list
+          python3 -I scripts/knife.py crates/aib-procwatch/src/lib.rs \
+            '            let kids = match list_children(sh, p) {' \
+            '            let kids = match list_children(sh, p).or_else(|_| Ok::<_, SysError>(Vec::new())) { // knife' \
+            --expect-fail calibrate_a_failed_listing_is_unverified_not_empty \
+            -- cargo test -p aib-forkcount --locked --test forkcount calibrate_a_failed_listing_is_unverified_not_empty
+          # a list that did not fit is skipped instead of counted
+          python3 -I scripts/knife.py crates/aib-procwatch/src/lib.rs \
+            $'                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            $'                Err(SysError::Incomplete) => continue, // knife\n                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            --expect-fail calibrate_an_incomplete_listing_is_unverified \
+            -- cargo test -p aib-forkcount --locked --test forkcount calibrate_an_incomplete_listing_is_unverified
+          # one missed + one foreign child: comparing counts only would pass
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '        let a_p = cs.iter().filter(|c| adopted.get(c) == Some(p)).count() as u64;' \
+            '        let a_p = (adopted.values().filter(|q| *q == p).count() as u64).min(c_p); // knife' \
+            --expect-fail one_missed_and_one_foreign_is_caught_although_totals_match \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

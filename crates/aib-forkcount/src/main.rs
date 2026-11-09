@@ -16,7 +16,7 @@
 //! ADR 0005 timer rule does not apply here.
 #![allow(clippy::disallowed_methods)]
 
-use aib_procwatch::{program_name, start_time, ForkWatch, Stats};
+use aib_procwatch::{program_name, start_time, ForkWatch, ListFault, Stats};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -142,6 +142,11 @@ fn report(stats: &Stats, seconds: f64, tracked: usize) -> Value {
         "by_parent": stats.by_parent,
         "register_failures": stats.register_failures,
         "list_failures": stats.list_failures,
+        "list_failures_by_tag": stats.list_failures_by_tag,
+        "empty_lists": stats.empty_lists,
+        "fork_without_child": stats.fork_without_child,
+        "fork_without_child_definition": "NOTE_FORK events after which the parent's listing adopted no new child; report only (coalesced events, early exits), no threshold",
+        "list_faults_injected": stats.injected,
         "tracked_processes": tracked,
     })
 }
@@ -532,7 +537,18 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
         eprintln!("aib-forkcount: unknown --pattern {pattern} or bad --count {count}");
         return ExitCode::from(2);
     };
-    let w = match ForkWatch::start(&[]) {
+    let inject_list = arg_values(args, "--inject-list").first().cloned();
+    let fault = match inject_list.as_deref() {
+        None => None,
+        Some(f) => match list_fault(f) {
+            Some(x) => Some(x),
+            None => {
+                eprintln!("aib-forkcount: unknown --inject-list {f} (error|incomplete|hide-one)");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let w = match ForkWatch::start_with(&[], fault) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("aib-forkcount: {e}");
@@ -590,6 +606,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             malformed,
             list_failures: stats.list_failures,
             register_failures: stats.register_failures,
+            faults_injected: stats.injected,
         },
     );
     let reasons = v.reasons;
@@ -613,6 +630,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "recorded_process_creations": att.recorded,
             "generator_rc": gen_rc,
             "malformed_records": malformed,
+            "injected_list_fault": inject_list,
             "status": if reasons.is_empty() { "ok" } else { "unverified" },
             "unverified_reasons": reasons,
             "capture_rate": rate(att.identity_confirmed),
@@ -661,6 +679,19 @@ struct Observed {
     malformed: u64,
     list_failures: u64,
     register_failures: u64,
+    /// listings where `--inject-list` changed the result
+    faults_injected: u64,
+}
+
+/// `--inject-list` value: the first listing fails (`error`), does not fit
+/// (`incomplete`), or the first listing with children drops one (`hide-one`).
+fn list_fault(name: &str) -> Option<ListFault> {
+    match name {
+        "error" => Some(ListFault::Error { nth: 1 }),
+        "incomplete" => Some(ListFault::Incomplete { nth: 1 }),
+        "hide-one" => Some(ListFault::HideOne),
+        _ => None,
+    }
 }
 
 /// A failed child listing or watch registration means the watcher may have
@@ -683,6 +714,9 @@ fn verdict(att: &Attribution, o: Observed) -> Verdict {
     }
     if o.register_failures > 0 {
         reasons.push("register_failures");
+    }
+    if o.faults_injected > 0 {
+        reasons.push("fault_injected");
     }
     let meets_threshold = reasons.is_empty()
         && att.expected > 0
@@ -716,7 +750,7 @@ fn main() -> ExitCode {
         Some("gen-one") => cmd_gen_one(rest),
         _ => {
             eprintln!(
-                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N] [--inject-unlisted] [--inject-short]"
+                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N] [--inject-unlisted] [--inject-short] [--inject-list error|incomplete|hide-one]"
             );
             ExitCode::from(2)
         }
@@ -743,7 +777,30 @@ mod tests {
             malformed: 0,
             list_failures,
             register_failures,
+            faults_injected: 0,
         }
+    }
+
+    #[test]
+    fn an_injected_fault_never_lets_a_run_pass() {
+        let mut o = obs(true, 0, 0);
+        o.faults_injected = 1;
+        let v = verdict(&att(10, 10), o);
+        assert_eq!(
+            (v.reasons, v.meets_threshold, v.rc),
+            (vec!["fault_injected"], false, 1)
+        );
+    }
+
+    #[test]
+    fn list_fault_names() {
+        assert_eq!(list_fault("error"), Some(ListFault::Error { nth: 1 }));
+        assert_eq!(
+            list_fault("incomplete"),
+            Some(ListFault::Incomplete { nth: 1 })
+        );
+        assert_eq!(list_fault("hide-one"), Some(ListFault::HideOne));
+        assert_eq!(list_fault("nope"), None);
     }
 
     #[test]

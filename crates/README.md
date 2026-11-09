@@ -4,7 +4,7 @@
 |---|---|---|
 | `aib-core` | domain types, Seat/Session state machines, error codes, port traits | `#![no_std]` + `#![forbid(unsafe_code)]`, dependency-tree allow-list, no platform `cfg` (`scripts/check-core-purity.sh`; `--self-test` proves each rule catches a bypass) |
 | `aib-store` | SQLite (rusqlite, bundled), migrations from `/migrations`, event log | only crate with SQL |
-| `aib-sys` | macOS process APIs M1–M4 (libproc, incl. the private `PROC_PIDUNIQIDENTIFIERINFO`), `ProcessInfo` trait + `FakeProcessInfo`, start-up `selfcheck` | the only crate allowed `unsafe` (each block one FFI call with a SAFETY note); only `aibd` may depend on it (`scripts/check-sys-deps.sh`, `--self-test`); M1 only adds candidates, never decides a signal |
+| `aib-sys` | macOS process APIs M1–M4 (libproc, incl. the private `PROC_PIDUNIQIDENTIFIERINFO`), `ProcessInfo` trait + `FakeProcessInfo`, start-up `selfcheck` | the only crate allowed `unsafe` (each block one FFI call with a SAFETY note); only `aibd` and `aib-procwatch` may depend on it, `aib-forkcount` only through aib-procwatch (DECISION-10 B; `scripts/check-sys-deps.sh`, `--self-test`); M1 only adds candidates, never decides a signal |
 | `aibd` | local daemon: Axum on loopback, Host/Origin guard, bearer token, platform module | platform code only under `src/platform/`; logs only known route templates (`<unmatched>` otherwise), never raw paths or queries |
 
 Decisions: `docs/adr/0001` (coexistence with the 1.x cockpit), `0002` (SQLite driver),

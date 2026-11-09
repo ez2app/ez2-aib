@@ -46,6 +46,7 @@ dependencies = [
 name = "aib-procwatch"
 version = "0.2.0-preview.2"
 dependencies = [
+ "aib-sys",
  "libproc",
  "nix",
 ]
