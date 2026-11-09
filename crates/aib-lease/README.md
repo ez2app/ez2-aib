@@ -74,3 +74,32 @@ wait $T
   kill the remote pid yourself before `release`.
 
 Tests: `cargo test -p aib-lease` (not on the Mac Pro 16: heat order; andymini or CI).
+
+## `aib-lease run` — steps on another Mac under its lease (D3 + D5 + D6)
+
+```sh
+aib-lease run --host 100.116.110.31 --owner 043dd \
+  --step 'cargo clippy -p aibd --all-targets --locked -- -D warnings' \
+  --step 'cargo test -p aibd --locked --test sessions'
+# or: aib-lease run --host H --owner S --rev <commit|tree> -- cargo test -p aibd
+```
+
+* Sends `git archive <rev>` (default HEAD; uncommitted changes are not sent, it warns) on ssh's
+  stdin; the remote script goes as a base64 argument. ssh always has `ForwardAgent=no`,
+  `ClearAllForwardings=yes`, `BatchMode=yes`.
+* On the other Mac, one bash: unpack → `aib lease acquire … --pid $$` → **nothing runs unless
+  rc 0** → `EXIT` trap releases the lease, stops a running step's process tree and removes the
+  tree → each step as its own `bash -c`, every rc printed; a failing step does not stop the rest.
+* cargo builds into `~/.cache/aib-lease/<seat>/target` on that Mac (`AIB_LEASE_TARGET_ROOT`),
+  so a short step is not a cold build every time.
+* **ttl (D6):** no `--ttl` ⇒ p90 × 1.5 of earlier runs of the same steps on the same host from
+  the history (no history: 900 s), at most 1800 s. `--ttl 3600` or more needs `--long REASON`.
+* **History (D5):** one JSON line per run (granted or not) in
+  `~/.ez2-aib/state/lease/history.jsonl` on the machine that ran `aib-lease` (`AIB_LEASE_HISTORY`):
+  host, seat, rev / tree, start / end, secs, rc, outcome, ttl and its source, and per step: the
+  command with secret-looking values masked, start / end, secs, rc, user / sys CPU s and max RSS
+  (`/usr/bin/time -l`), highest CPU % of its process tree (sampled once a second). Stat lines
+  carry a per-run nonce, so a step's own output cannot pass for them. A failed write warns and
+  never changes the exit code.
+* Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
+  bad rev · 73 remote unpack · 75 lease not granted (nothing ran).
