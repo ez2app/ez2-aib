@@ -322,3 +322,18 @@ fn facts_end_to_end_from_api_shapes() {
     m.remove(&format!("repos/{REPO}/actions/runs/2/attempts/1/jobs?per_page=100&page=1"));
     assert!(facts(&Fake(m), REPO, MAIN).is_err());
 }
+
+#[test]
+fn offline_file_source_reads_only_what_was_recorded() {
+    use aib_cireuse::gh::FileSource;
+    let d = std::env::temp_dir().join(format!("aib-cireuse-off-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("a"), "{\"ok\":1}").unwrap();
+    std::fs::write(d.join("index.json"), r#"{"repos/x/commits/y":"a"}"#).unwrap();
+    let f = FileSource::open(&d).unwrap();
+    assert_eq!(f.get("repos/x/commits/y").unwrap(), "{\"ok\":1}");
+    assert!(f.get("repos/x/commits/z").unwrap_err().contains("not recorded"));
+    std::fs::write(d.join("index.json"), r#"{"p":"../etc/passwd"}"#).unwrap();
+    assert!(FileSource::open(&d).is_err(), "file names may not leave the directory");
+    std::fs::remove_dir_all(&d).unwrap();
+}

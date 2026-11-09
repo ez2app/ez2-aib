@@ -28,6 +28,37 @@ impl Source for GhCli {
     }
 }
 
+/// Recorded responses for offline runs: DIR/index.json maps each API path to a file in DIR.
+/// A path that was not recorded is an error, exactly like a failed read.
+pub struct FileSource {
+    dir: std::path::PathBuf,
+    index: BTreeMap<String, String>,
+}
+
+impl FileSource {
+    pub fn open(dir: &std::path::Path) -> Result<Self, String> {
+        let raw = std::fs::read_to_string(dir.join("index.json")).map_err(|e| format!("offline index: {e}"))?;
+        let v: Value = serde_json::from_str(&raw).map_err(|e| format!("offline index: {e}"))?;
+        let obj = v.as_object().ok_or("offline index: not an object")?;
+        let mut index = BTreeMap::new();
+        for (k, f) in obj {
+            let f = f.as_str().ok_or("offline index: file name must be a string")?;
+            if f.contains('/') || f.starts_with('.') {
+                return Err(format!("offline index: bad file name {f}"));
+            }
+            index.insert(k.clone(), f.to_string());
+        }
+        Ok(Self { dir: dir.to_path_buf(), index })
+    }
+}
+
+impl Source for FileSource {
+    fn get(&self, path: &str) -> Result<String, String> {
+        let f = self.index.get(path).ok_or_else(|| format!("offline: not recorded: {path}"))?;
+        std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("offline {f}: {e}"))
+    }
+}
+
 fn json(src: &dyn Source, path: &str) -> Result<Value, String> {
     let body = src.get(path)?;
     serde_json::from_str(&body).map_err(|e| format!("{path}: bad json: {e}"))

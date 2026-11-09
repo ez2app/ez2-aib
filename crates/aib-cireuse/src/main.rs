@@ -4,12 +4,13 @@
 //!   aib-cireuse judge --repo OWNER/NAME --sha SHA [--ledger DIR] [--tz-hours 8]
 //!   aib-cireuse recent --repo OWNER/NAME [--limit 10] [--ledger DIR] [--tz-hours 8]
 //!   aib-cireuse day --ledger DIR [--date YYYY-MM-DD] [--tz-hours 8]
+//!   --offline DIR (judge / recent): read recorded responses (DIR/index.json: API path -> file) instead of gh
 //!
 //! judge / recent print one JSON verdict per main commit and, with --ledger, append it to
 //! DIR/<day>.jsonl. day prints the board line. Exit: 0 done (whatever the verdict), 1 a read
 //! failed (recorded as state unknown), 2 usage. Never writes to GitHub.
 
-use aib_cireuse::gh::{facts, GhCli, Source};
+use aib_cireuse::gh::{facts, FileSource, GhCli, Source};
 use aib_cireuse::{day_key, day_line, judge, verdict_json, Verdict};
 use std::io::Write;
 use std::path::PathBuf;
@@ -23,10 +24,11 @@ struct Args {
     tz: i64,
     limit: usize,
     date: Option<String>,
+    offline: Option<PathBuf>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
-    let mut a = Args { cmd: String::new(), repo: String::new(), sha: String::new(), ledger: None, tz: 8, limit: 10, date: None };
+    let mut a = Args { cmd: String::new(), repo: String::new(), sha: String::new(), ledger: None, tz: 8, limit: 10, date: None, offline: None };
     let mut it = argv.iter();
     a.cmd = it.next().cloned().ok_or("missing command (judge | recent | day)")?;
     while let Some(k) = it.next() {
@@ -38,6 +40,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--tz-hours" => a.tz = val()?.parse().map_err(|_| "--tz-hours: integer")?,
             "--limit" => a.limit = val()?.parse().map_err(|_| "--limit: integer")?,
             "--date" => a.date = Some(val()?),
+            "--offline" => a.offline = Some(PathBuf::from(val()?)),
             _ => return Err(format!("unknown argument {k}")),
         }
     }
@@ -95,9 +98,22 @@ fn run(argv: &[String]) -> i32 {
             return 2;
         }
     };
-    let src = GhCli;
+    let file_src;
+    let src: &dyn Source = match &a.offline {
+        Some(dir) => match FileSource::open(dir) {
+            Ok(f) => {
+                file_src = f;
+                &file_src
+            }
+            Err(e) => {
+                eprintln!("aib-cireuse: {e}");
+                return 2;
+            }
+        },
+        None => &GhCli,
+    };
     match a.cmd.as_str() {
-        "judge" if !a.repo.is_empty() && !a.sha.is_empty() => judge_one(&a, &src, &a.sha.clone()),
+        "judge" if !a.repo.is_empty() && !a.sha.is_empty() => judge_one(&a, src, &a.sha.clone()),
         "recent" if !a.repo.is_empty() => {
             let body = match src.get(&format!("repos/{}/commits?sha=main&per_page={}", a.repo, a.limit.clamp(1, 100))) {
                 Ok(b) => b,
@@ -114,7 +130,7 @@ fn run(argv: &[String]) -> i32 {
                 eprintln!("aib-cireuse: no commits read");
                 return 1;
             }
-            shas.iter().map(|s| judge_one(&a, &src, s)).max().unwrap_or(0)
+            shas.iter().map(|s| judge_one(&a, src, s)).max().unwrap_or(0)
         }
         "day" => {
             let Some(dir) = &a.ledger else {
