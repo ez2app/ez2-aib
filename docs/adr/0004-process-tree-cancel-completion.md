@@ -409,7 +409,9 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   - the root already gone (an instant program; Mac Pro 13 2026-11-09: `printenv` held its
     slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
     coalition is used;
-  - aibd's own not readable ⇒ no filter.
+  - any other error reading the root, or aibd's own not readable (or 0) ⇒ no filter for
+    that session.
+- A candidate whose coalition reads as 0 is not "another coalition": 0 is not an id.
 - A candidate whose environment cannot be read, and whose coalition is read as different
   from the session's, is let go (`stop.candidates.other_coalition`, pid + name, same
   16-entry limit with `other_coalition_more`). It is not

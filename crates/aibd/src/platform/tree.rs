@@ -381,9 +381,10 @@ fn session_coalition(root: Result<u64, SysError>) -> Option<u64> {
 /// The self-check of a private interface. A child starts in its parent's
 /// coalition, so a root read as different means the read is not to be
 /// trusted: no filter, now and for the rest of this aibd. A root that ended
-/// before it could be read (an instant program: Pro 13 11-09 13:35,
+/// before it could be read (`Gone`; an instant program: Pro 13 11-09 13:35,
 /// `printenv` held its slot on `AddressBookSourceSync`) does not disprove
-/// it: aibd's own coalition is used. aibd's own unread (or 0) = no filter.
+/// it: aibd's own coalition is used. Any other error reading the root, or
+/// aibd's own unread (or 0) = no filter for that session.
 /// Returns (filter, distrust from now on).
 fn coalition_rule(
     me: Result<u64, SysError>,
@@ -394,7 +395,10 @@ fn coalition_rule(
         _ if distrusted => (None, false),
         (Err(_) | Ok(0), _) => (None, false),
         (Ok(m), Ok(r)) if r != m => (None, true),
-        (Ok(m), _) => (Some(m), false),
+        (Ok(m), Ok(_)) => (Some(m), false),
+        (Ok(m), Err(SysError::Gone)) => (Some(m), false),
+        // bb7dc 981abfe8 M1: any other error proves nothing either way
+        (Ok(_), Err(_)) => (None, false),
     }
 }
 
@@ -415,7 +419,8 @@ fn coalition_of(pid: u32) -> Result<u64, SysError> {
 /// processes (re-parented or not) stay in the session's. An unread one is
 /// kept (checked by its environment, as before G1).
 fn other_coalition(session: Option<u64>, candidate: Result<u64, SysError>) -> bool {
-    matches!((session, candidate), (Some(s), Ok(c)) if c != s)
+    // bb7dc 981abfe8 H1: 0 is not a coalition id, so it proves nothing
+    matches!((session, candidate), (Some(s), Ok(c)) if c != 0 && c != s)
 }
 
 /// What one late-exec candidate is.
@@ -1407,6 +1412,11 @@ mod tests {
         let s = Some(481);
         assert_eq!(classify(None, s, || Ok(75991)), Candidate::OtherCoalition);
         assert_eq!(classify(None, s, || Ok(481)), Candidate::Unreadable);
+        assert_eq!(
+            classify(None, s, || Ok(0)),
+            Candidate::Unreadable,
+            "0 is not another coalition"
+        );
         assert_eq!(classify(Some(true), s, || Ok(75991)), Candidate::Ours);
         assert_eq!(
             classify(Some(false), s, || Err(SysError::Unknown)),
@@ -1432,10 +1442,9 @@ mod tests {
         let gone = || Err(SysError::Gone);
         assert_eq!(coalition_rule(Ok(481), Ok(481), false), (Some(481), false));
         assert_eq!(coalition_rule(Ok(481), gone(), false), (Some(481), false));
-        assert_eq!(
-            coalition_rule(Ok(481), Err(SysError::PermissionDenied), false),
-            (Some(481), false)
-        );
+        for e in [SysError::PermissionDenied, SysError::Unknown] {
+            assert_eq!(coalition_rule(Ok(481), Err(e), false), (None, false));
+        }
         assert_eq!(coalition_rule(Ok(481), Ok(75991), false), (None, true));
         assert_eq!(coalition_rule(Ok(481), Ok(481), true), (None, false));
         assert_eq!(
