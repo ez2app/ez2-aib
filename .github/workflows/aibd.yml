@@ -355,8 +355,8 @@ jobs:
           tk() { python3 -I scripts/knife.py crates/aib-release/src/trial.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-release --locked --test trial "$3"; }
           # T1 pairwise conflicts are not recorded: no stacking hint
-          tk '            if !m.clean() {' \
-             '            if !m.clean() && false { // knife' \
+          tk '                Ok(m) if !m.clean() => rep.pairs.push(Pair {' \
+             '                Ok(m) if !m.clean() && false => rep.pairs.push(Pair { // knife' \
              two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first
           # T2 a reported head with a different tree still passes (A9)
           tk '        && rep.expect.as_ref().is_none_or(|e| e.matches);' \
