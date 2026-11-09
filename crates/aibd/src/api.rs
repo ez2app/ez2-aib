@@ -1,7 +1,9 @@
-//! `/api/v1` routes: health (public); event cursor and metrics (authenticated).
+//! `/api/v1` routes: health (public); event cursor, metrics, seats and sessions
+//! (authenticated).
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::seats;
 use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
@@ -21,6 +23,8 @@ pub struct AppState {
     pub lineage: Arc<Lineage>,
     /// Sessions API state (preview.2).
     pub sessions: Arc<crate::sessions::Sessions>,
+    /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
+    pub session_policy: Arc<crate::config::SessionPolicy>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
@@ -28,6 +32,22 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/events", get(events))
         .route("/api/v1/metrics", get(metrics))
+        .route(
+            "/api/v1/seats",
+            get(seats::list)
+                .post(seats::create)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/seats/{id}",
+            get(seats::get_one).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/seats/{id}/sessions",
+            get(sessions::list_for_seat)
+                .post(sessions::create_for_seat)
+                .fallback(sessions::method_not_allowed),
+        )
         .route(
             "/api/v1/sessions",
             get(sessions::list)
@@ -39,6 +59,10 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
             get(sessions::get_one)
                 .delete(sessions::delete_one)
                 .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/sessions/{id}/output",
+            get(sessions::output).fallback(sessions::method_not_allowed),
         )
         .fallback(not_found)
         .with_state(state)
