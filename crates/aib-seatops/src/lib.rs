@@ -89,7 +89,14 @@ pub fn prepare_from_paths(
         let allowed = allowed_relay_dirs
             .iter()
             .filter_map(|p| std::fs::canonicalize(p).ok())
-            .any(|p| p == parent);
+            .any(|p| {
+                p == parent
+                    || (parent.parent() == Some(p.as_path())
+                        && parent
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.len() == 8 && n.bytes().all(|b| b.is_ascii_digit())))
+            });
         if !allowed {
             return Err("relay outside permitted directory");
         }
@@ -117,6 +124,9 @@ pub fn prepare(
 ) -> Result<Snapshot, &'static str> {
     if needle.is_empty() {
         return Err("empty expect");
+    }
+    if needle.trim().chars().count() < 4 {
+        return Err("expect too short");
     }
     let item: Value = serde_json::from_slice(item_bytes).map_err(|_| "invalid item")?;
     let id = item.get("id").and_then(Value::as_str).ok_or("missing id")?;
@@ -147,9 +157,19 @@ pub fn prepare(
     if !(if needs_relay { relay } else { message }).contains(needle) {
         return Err("expect mismatch");
     }
+    // Hash the identity and content fields, not delivery/read bookkeeping.
+    // The backend must still check the current state inside its transition lock.
+    let stable = serde_json::json!({
+        "id": item.get("id"), "rev": item.get("rev"), "msg": item.get("msg"),
+        "seat": item.get("seat"), "ts": item.get("ts"), "sent_at": item.get("sent_at"),
+        "sender": item.get("sender"), "sender_label": item.get("sender_label"),
+        "sender_kind": item.get("sender_kind"), "kind": item.get("kind"),
+        "kind_orig": item.get("kind_orig"), "global": item.get("global"), "im": item.get("im"),
+    });
+    let stable_bytes = serde_json::to_vec(&stable).map_err(|_| "invalid item")?;
     let mut h = Sha256::new();
-    h.update((item_bytes.len() as u64).to_be_bytes());
-    h.update(item_bytes);
+    h.update((stable_bytes.len() as u64).to_be_bytes());
+    h.update(&stable_bytes);
     match relay_bytes {
         Some(b) => {
             h.update([1]);
@@ -211,6 +231,41 @@ pub fn verify_snapshot_from_paths(
 mod tests {
     use super::*;
     const MSG: &[u8] = br#"{"id":"q_1234567890abcdef","rev":2,"msg":"Read /tmp/RELAY-dm-x.txt"}"#;
+    #[test]
+    fn bookkeeping_changes_do_not_change_content_fingerprint() {
+        let a = br#"{"id":"q_1234567890abcdef","rev":2,"msg":"hello specific","sender_label":"alice","status":"delivered","delivered_at":1}"#;
+        let b = br#"{"id":"q_1234567890abcdef","rev":2,"msg":"hello specific","sender_label":"alice","status":"read","read_at":2}"#;
+        let changed = br#"{"id":"q_1234567890abcdef","rev":2,"msg":"hello specific","sender_label":"bob","status":"read"}"#;
+        let snap = prepare(a, None, "q_1234567890abcdef", 2, "specific").unwrap();
+        assert!(verify_snapshot(&snap, b, None, "specific").is_ok());
+        assert_eq!(
+            verify_snapshot(&snap, changed, None, "specific").unwrap_err(),
+            "fingerprint mismatch"
+        );
+        assert_eq!(
+            prepare(a, None, "q_1234567890abcdef", 2, "hi").unwrap_err(),
+            "expect too short"
+        );
+    }
+
+    #[test]
+    fn dated_relay_directory_requires_its_own_allowed_root() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("instance-a").join("relay");
+        let other = d.path().join("instance-b").join("relay");
+        let dated = root.join("20261109");
+        std::fs::create_dir_all(&dated).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let relay = dated.join("RELAY-dm-abc.txt");
+        std::fs::write(&relay, "specific body").unwrap();
+        let item = d.path().join("item.json");
+        std::fs::write(&item, serde_json::json!({"id":"q_1234567890abcdef","rev":2,"msg":format!("長訊已落檔(13 位元組),請讀:{}",relay.display())}).to_string()).unwrap();
+        assert!(prepare_from_paths(&item, &[root], "q_1234567890abcdef", 2, "specific").is_ok());
+        assert_eq!(
+            prepare_from_paths(&item, &[other], "q_1234567890abcdef", 2, "specific").unwrap_err(),
+            "relay outside permitted directory"
+        );
+    }
     #[test]
     fn relay_is_required_and_content_checked() {
         assert_eq!(
