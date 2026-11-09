@@ -180,7 +180,8 @@ pub fn restrict_db_sidecars(db: &Path) -> std::io::Result<()> {
 /// cannot be read. sysinfo reads it the platform's own way (macOS `hw.memsize`, Windows
 /// `GlobalMemoryStatusEx`, Linux `/proc/meminfo`).
 pub fn physical_memory() -> Option<u64> {
-    let mut s = sysinfo::System::new();
+    // sysinfo 0.40: `System::new` can fail; no reading = no memory-based default
+    let mut s = sysinfo::System::new().ok()?;
     s.refresh_memory();
     Some(s.total_memory()).filter(|m| *m > 0)
 }
