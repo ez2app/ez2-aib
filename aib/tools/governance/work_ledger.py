@@ -359,10 +359,34 @@ def same_cmd(a, b):
     return na is not None and nb is not None and na == nb
 
 
-def judge_receipt(p, item, head, now=None, db=None):
+def reopened_hit(item, head, receipt_sha256):
+    """同頭碼被派工席退回(reopened)的收據 → 那筆 superseded;沒有 → None。
+    比收據內容的 sha256,不比路徑:複製到新路徑一樣擋(ebb36 #569 ①)。"""
+    if not receipt_sha256:
+        return None
+    for old in item.get("superseded") or []:
+        if old.get("why") == "reopened" and sha_match(old.get("head") or "", head) \
+                and receipt_sha256 in (old.get("evidence_sha256") or []):
+            return old
+    return None
+
+
+def receipt_sha(path):
+    """收據檔內容的 sha256;讀不到回空字串(讀不到的收據本來就過不了 check_receipt)。"""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def judge_receipt(p, item, head, now=None, db=None, live=True):
     """一張收據在這個件上紅不紅 → (kind, problems, recorded, info)。check_receipt 之外再套件的規則
-    (needs recorded、--cmd)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1)。"""
+    (needs recorded、--cmd、退回的收據不能再用)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1);
+    earlier_red 看的是已作廢的那幾張本身,live=False 不套「退回不能再用」。"""
     kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+    hit = reopened_hit(item, head, info.get("receipt_sha256")) if live else None
+    if hit is not None:
+        rp = rp + ["reopened receipt reused (superseded at %s by %s)" % (hit.get("at") or "?", hit.get("by") or "?")]
     want = item.get("expect_cmd") or ""
     if "recorded" in (item.get("needs") or []) and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
         rp = ["needs recorded: this receipt was not written by aib ledger record"]
@@ -406,7 +430,7 @@ def earlier_red(item, now=None, db=None):
         if not sha_match(old.get("head") or "", head):
             continue
         for p in old.get("evidence") or []:
-            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)
+            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db, live=False)
             if rp:
                 out.append({"path": p, "kind": kind, "problems": rp, "why": old.get("why") or "",
                             "at": old.get("at") or "", "by": old.get("by") or "", "cmd": info.get("cmd")})
@@ -549,7 +573,9 @@ def apply_move(item, a, request, by, roles):
             raise Refused(RC_USAGE, "sending accepted work back to running needs --next (why it is reopened)")
         if item["evidence"]:
             item["superseded"].append({"head": item["head"], "evidence": item["evidence"], "why": "reopened",
-                                       "at": now_iso(), "by": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)
+                                       "at": now_iso(), "by": by,   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)
+                                       "evidence_sha256": [receipt_sha(p) for p in item["evidence"]],   # ebb36 #569 ①
+                                       "note": a.next.strip()})   # 為什麼退(ebb36 #569 L1)
             item["evidence"] = []
     if a.to == "accepted" and by == item["owner"]:
         raise Refused(RC_RULE, "%s owns %s and cannot accept its own work" % (by, a.id))
@@ -692,6 +718,8 @@ def print_item(it, hist=None):
             {"resubmitted": "resubmitted at", "reopened": "reopened at"}.get(why, why), old["head"][:12],
             "".join(", %s" % x for x in (old.get("at"), old.get("by") and "by " + old["by"]) if x),
             len(old["evidence"])))
+        if old.get("note"):
+            print("      why: %s" % old["note"])
         for p in old["evidence"]:
             print("      %s" % p)
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))

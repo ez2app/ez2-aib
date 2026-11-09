@@ -735,6 +735,18 @@ class AibLedger(unittest.TestCase):
         self.assertIn("reopened at", self.ok("show", "B-reo").stdout)
         self.assertEqual(it["superseded"][-1]["by"], "f1fae")
         self.assertTrue(it["superseded"][-1]["at"])
+        self.assertEqual(it["superseded"][-1]["note"], "作者又推了修 Low 的 commit")
+        self.assertIn("why: 作者又推了修 Low 的 commit", self.ok("show", "B-reo").stdout)
+        # ebb36 #569 ①:同頭碼把剛退回的那張再交(原路徑、或複製到新路徑)⇒ 收件要紅
+        copy = str(Path(first).with_name("copied-receipt.json"))
+        shutil.copyfile(first, copy)
+        for again in (first, copy):
+            self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", again,
+                    "--by", "seat:2240e")
+            r = self.L("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+            self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+            self.assertIn("reopened receipt reused", r.stdout + r.stderr)
+            self.ok("move", "B-reo", "--from", "review", "--to", "running", "--by", "seat:f1fae")
         self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", self.receipt(sha=sha),
                 "--by", "seat:2240e")
         self.ok("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")

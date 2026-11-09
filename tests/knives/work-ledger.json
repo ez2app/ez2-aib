@@ -350,8 +350,8 @@
       "name": "reopen-keeps-evidence",
       "proves": "reopening moves the accepted receipts to superseded (11-09 f1fae)",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "                                       \"at\": now_iso(), \"by\": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)\n            item[\"evidence\"] = []",
-      "new": "                                       \"at\": now_iso(), \"by\": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)\n            pass"
+      "old": "                                       \"note\": a.next.strip()})   # 為什麼退(ebb36 #569 L1)\n            item[\"evidence\"] = []",
+      "new": "                                       \"note\": a.next.strip()})   # 為什麼退(ebb36 #569 L1)\n            pass"
     },
     {
       "name": "reopen-from-integrating",
@@ -359,6 +359,20 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "    \"integrating\": (\"deployed\", \"accepted\") + SIDE,",
       "new": "    \"integrating\": (\"deployed\", \"accepted\", \"running\") + SIDE,"
+    },
+    {
+      "name": "reopened-receipt-reusable",
+      "proves": "a receipt superseded by reopen cannot be resubmitted on the same head, even copied (ebb36 #569 ①)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    hit = reopened_hit(item, head, info.get(\"receipt_sha256\")) if live else None",
+      "new": "    hit = None"
+    },
+    {
+      "name": "reopened-check-by-path",
+      "proves": "the reopened check compares receipt content sha256, not the path (ebb36 #569 ①)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "                                       \"evidence_sha256\": [receipt_sha(p) for p in item[\"evidence\"]],   # ebb36 #569 ①",
+      "new": "                                       \"evidence_sha256\": [str(Path(p).resolve()) for p in item[\"evidence\"]],   # ebb36 #569 ①"
     }
   ]
 }
