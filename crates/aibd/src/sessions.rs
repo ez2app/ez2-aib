@@ -1484,7 +1484,7 @@ mod tests {
     const TRUE_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\whoami.exe"
     } else {
-        "/bin/true"
+        "/usr/bin/true" // macOS has no /bin/true (Linux has both)
     };
     const ECHO_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\cmd.exe"
