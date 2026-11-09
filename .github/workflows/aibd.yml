@@ -230,6 +230,29 @@ jobs:
             $'// knife: unknown fields accepted\nstruct PolicyFile {' \
             --expect-fail allowlist::tests::the_file_is_checked_field_by_field \
             -- cargo test -p aibd --locked --lib allowlist::tests::the_file_is_checked_field_by_field
+          # ADR 0005 §5 queue (a63ab 19:13). Q1 LIFO instead of FIFO
+          qk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test session_queue "$3"; }
+          qk '                let Some(q) = g.queue.pop_front() else {' \
+            '                let Some(q) = g.queue.pop_back() else { // knife' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q2 a slot coming back starts nobody (no kick at the end of a stop)
+          qk $'            self.kick(&g);\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            $'            // knife: no kick\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q3 the queue has no bound
+          qk '                if g.queue.len() >= MAX_QUEUE {' \
+            '                if g.queue.len() >= MAX_QUEUE && false { // knife' \
+            the_queue_is_bounded_and_the_waiting_end_interrupted_at_shutdown
+          # Q4 DELETE does not look in the queue: a waiting session cannot be cancelled
+          qk '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id) {' \
+            '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id && false) { // knife' \
+            a_cancelled_queued_session_never_starts
+          # Q5 a session left pending by a crash is not interrupted at the next start
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "holds_slot = 1 OR state = 'pending'" "holds_slot = 1 -- knife" \
+            --expect-fail pending_and_running_are_interrupted_with_previous_state_and_process_flag \
+            -- cargo test -p aib-store --locked --test sessions pending_and_running_are_interrupted_with_previous_state_and_process_flag
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \

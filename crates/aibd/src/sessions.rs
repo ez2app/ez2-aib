@@ -20,6 +20,15 @@
 //!   events and logs name only `argv[0]`'s file name and the argument count.
 //!   `argv` is returned by GET (the caller gave it; the API is token-only).
 //!
+//! - **Queue (ADR 0005 §5).** A POST when every slot is taken (or others are
+//!   already waiting) is not refused: the session is `pending` (202, no
+//!   process, `pid` 0, `session.queued`) and starts in arrival order (FIFO)
+//!   as slots come back. At most [`MAX_QUEUE`] wait; the next POST is `429
+//!   session_queue_full`. DELETE of a pending session takes it out of the
+//!   queue (`cancelled`, never started). At shutdown the waiting ones end
+//!   `interrupted` (`ended_by: shutdown`); after a crash the next start marks
+//!   them `interrupted` from the store (nothing is started from an old queue).
+//!
 //! Blocking calls (spawn, stop, the event store) run on blocking threads.
 
 use crate::allowlist::{self, SessionPolicy};
@@ -48,6 +57,9 @@ pub const MAX_ENV: usize = 32;
 pub const MAX_ENV_VALUE: usize = 4096;
 /// Ended sessions kept in memory for GET (not persisted).
 pub const KEEP_ENDED: usize = 100;
+/// Sessions that may wait for a slot (ADR 0005 §5, trial value; a63ab 19:13). The next
+/// one is `429 session_queue_full`.
+pub const MAX_QUEUE: usize = 64;
 pub const DEFAULT_GRACE: Duration = Duration::from_millis(5000);
 pub const MAX_GRACE_MS: u64 = 30_000;
 /// The one stop after the root exited by itself, and each stop at shutdown.
@@ -132,14 +144,18 @@ pub struct Session {
     pub seat_id: Option<String>,
     pub argv: Vec<String>,
     pub cwd: String,
+    /// 0 while `pending` (and for a queued start that failed).
     pub pid: u32,
+    /// When it was accepted while `pending`; when its process started after.
     pub started_at: String,
-    /// `running` | `exited` | `killed` | `stop_unconfirmed` (H2).
+    /// `pending` (queued, no process yet) | `running` | `exited` | `killed` |
+    /// `stop_unconfirmed` (H2) | `cancelled` (DELETE while pending) | `interrupted`
+    /// (pending at shutdown) | `failed` (a queued start that could not start).
     pub state: &'static str,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
     pub ended_at: Option<String>,
-    /// `root_exit` | `api` | `shutdown`.
+    /// `root_exit` | `api` | `shutdown` | `spawn_failed`.
     pub ended_by: Option<&'static str>,
     /// Still counts against the running limit: running, or a stop that could
     /// not show the tree is gone (H2 whitelist). DELETE again to re-check.
@@ -346,8 +362,21 @@ struct Entry {
     rescanning: bool,
 }
 
+/// A session waiting for a slot: what is needed to start it later. Its env stays in
+/// memory only (never stored, never returned).
+struct Queued {
+    rec: Session,
+    cwd: PathBuf,
+    env: Vec<(String, String)>,
+    /// Next event sequence (`session.queued` was 1).
+    seq: i64,
+    order: u64,
+}
+
 #[derive(Default)]
 struct Inner {
+    /// Waiting for a slot, oldest first (ADR 0005 §5).
+    queue: VecDeque<Queued>,
     /// Running sessions, and stop_unconfirmed ones still holding a slot.
     live: HashMap<String, Entry>,
     ended: VecDeque<(u64, Session)>,
@@ -457,6 +486,7 @@ impl Sessions {
             .live
             .values()
             .map(|e| (e.order, e.rec.clone()))
+            .chain(g.queue.iter().map(|q| (q.order, q.rec.clone())))
             .chain(g.ended.iter().cloned())
             .collect();
         v.sort_by_key(|(o, _)| std::cmp::Reverse(*o));
@@ -465,18 +495,32 @@ impl Sessions {
 
     pub fn get(&self, id: &str) -> Option<Session> {
         let g = lock(&self.inner);
-        g.live.get(id).map(|e| e.rec.clone()).or_else(|| {
-            g.ended
-                .iter()
-                .find(|(_, s)| s.id == id)
-                .map(|(_, s)| s.clone())
-        })
+        g.live
+            .get(id)
+            .map(|e| e.rec.clone())
+            .or_else(|| {
+                g.queue
+                    .iter()
+                    .find(|q| q.rec.id == id)
+                    .map(|q| q.rec.clone())
+            })
+            .or_else(|| {
+                g.ended
+                    .iter()
+                    .find(|(_, s)| s.id == id)
+                    .map(|(_, s)| s.clone())
+            })
     }
 
     /// Running slots in use (live + reserved), for tests and metrics.
     pub fn slots_in_use(&self) -> usize {
         let g = lock(&self.inner);
         g.live.len() + g.reserved + g.held_unknown
+    }
+
+    /// Sessions waiting for a slot, for tests and metrics.
+    pub fn queued(&self) -> usize {
+        lock(&self.inner).queue.len()
     }
 
     /// POST. Blocking (spawn, event store).
@@ -486,6 +530,8 @@ impl Sessions {
 
     /// POST for a seat (`POST /api/v1/seats/{id}/sessions`); the caller has
     /// checked that the seat exists (the store refuses an unknown one too).
+    /// A free slot with nobody waiting ⇒ started now (`running`); otherwise
+    /// queued (`pending`, ADR 0005 §5), or `session_queue_full`.
     pub fn start_for_seat(
         self: &Arc<Self>,
         seat_id: Option<String>,
@@ -500,21 +546,81 @@ impl Sessions {
                     "aibd is shutting down",
                 ));
             }
-            if g.live.len() + g.reserved + g.held_unknown >= self.max {
-                return Err(ApiError::new(
-                    ErrorCode::TooManySessions,
-                    format!("{} sessions already running", self.max),
-                ));
+            // FIFO: a new POST never overtakes one that is already waiting
+            if !g.queue.is_empty() || g.live.len() + g.reserved + g.held_unknown >= self.max {
+                if g.queue.len() >= MAX_QUEUE {
+                    return Err(ApiError::new(
+                        ErrorCode::SessionQueueFull,
+                        format!("{} sessions running and {MAX_QUEUE} waiting", self.max),
+                    ));
+                }
+                return Ok(self.enqueue(&mut g, id, seat_id, req));
             }
             g.reserved += 1; // H3: the slot is ours before anything starts
         }
         let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
         let spec = Spec {
-            id: id.clone(),
+            id,
             argv: req.argv,
             cwd,
             env: req.env,
         };
+        self.launch(spec, seat_id, None)
+    }
+
+    /// Put a session in the queue (the caller holds the lock and checked the bound).
+    fn enqueue(&self, g: &mut Inner, id: String, seat_id: Option<String>, req: Request) -> Session {
+        let order = g.next_order;
+        g.next_order += 1;
+        let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
+        let rec = Session {
+            id: id.clone(),
+            seat_id,
+            argv: req.argv,
+            cwd: cwd.to_string_lossy().into_owned(),
+            pid: 0,
+            started_at: now_rfc3339(),
+            state: "pending",
+            exit_code: None,
+            signal: None,
+            ended_at: None,
+            ended_by: None,
+            holds_slot: false,
+            stop: None,
+        };
+        let position = g.queue.len() + 1;
+        self.write(
+            &rec,
+            1,
+            "session.queued",
+            serde_json::json!({
+                "id": id,
+                "position": position,
+                "argv0": Path::new(&rec.argv[0]).file_name().map(|n| n.to_string_lossy().into_owned()),
+                "argc": rec.argv.len(),
+            }),
+        );
+        tracing::info!(session = %id, position, "session queued");
+        g.queue.push_back(Queued {
+            rec: rec.clone(),
+            cwd,
+            env: req.env,
+            seq: 2,
+            order,
+        });
+        rec
+    }
+
+    /// Start a session whose slot is already reserved: a POST with a free
+    /// slot (`queued` = `None`), or the head of the queue (its order and next
+    /// event sequence).
+    fn launch(
+        self: &Arc<Self>,
+        spec: Spec,
+        seat_id: Option<String>,
+        queued: Option<(u64, i64)>,
+    ) -> Result<Session, ApiError> {
+        let id = spec.id.clone();
         let res = (self.spawn)(&spec, self.lineage.clone());
         let mut g = lock(&self.inner);
         g.reserved -= 1;
@@ -522,33 +628,63 @@ impl Sessions {
         let mut run = match res {
             Ok(r) => r,
             Err(f) => {
-                let Some(pid) = f.left_running else {
-                    return Err(ApiError::new(
-                        ErrorCode::SpawnFailed,
-                        format!("could not start: {}", f.tag),
-                    ));
-                };
-                // started but neither under control nor confirmed gone: the
-                // slot stays taken and the event says so (never "not started")
-                g.held_unknown += 1;
-                self.append(
-                    &id,
-                    1,
-                    "session.spawn_failed",
-                    serde_json::json!({"id": id, "tag": f.tag, "left_running": pid}),
-                );
-                tracing::warn!(session = %id, pid, tag = %f.tag, "start failed, a process may be left running");
+                if f.left_running.is_some() {
+                    // started but neither under control nor confirmed gone:
+                    // the slot stays taken (never "not started")
+                    g.held_unknown += 1;
+                } else {
+                    // the slot is free again: the next waiting one may start
+                    self.kick(&g);
+                }
+                let mut payload = serde_json::json!({"id": id, "tag": f.tag});
+                if let Some(pid) = f.left_running {
+                    payload["left_running"] = pid.into();
+                    tracing::warn!(session = %id, pid, tag = %f.tag, "start failed, a process may be left running");
+                }
+                if let Some((order, seq)) = queued {
+                    // nobody waits for this answer: the session itself ends
+                    // `failed`, on its row and in the recent list
+                    let rec = Session {
+                        id: id.clone(),
+                        seat_id,
+                        argv: spec.argv.clone(),
+                        cwd: spec.cwd.to_string_lossy().into_owned(),
+                        pid: 0,
+                        started_at: now_rfc3339(),
+                        state: "failed",
+                        exit_code: None,
+                        signal: None,
+                        ended_at: Some(now_rfc3339()),
+                        ended_by: Some("spawn_failed"),
+                        holds_slot: f.left_running.is_some(),
+                        stop: None,
+                    };
+                    self.write(&rec, seq, "session.spawn_failed", payload);
+                    g.ended.push_front((order, rec));
+                    g.ended.truncate(KEEP_ENDED);
+                } else if f.left_running.is_some() {
+                    self.append(&id, 1, "session.spawn_failed", payload);
+                }
                 return Err(ApiError::new(
                     ErrorCode::SpawnFailed,
-                    format!(
-                        "could not start: {} (a process may be left running: pid {pid})",
-                        f.tag
-                    ),
+                    match f.left_running {
+                        Some(pid) => format!(
+                            "could not start: {} (a process may be left running: pid {pid})",
+                            f.tag
+                        ),
+                        None => format!("could not start: {}", f.tag),
+                    },
                 ));
             }
         };
-        let order = g.next_order;
-        g.next_order += 1;
+        let (order, seq) = match queued {
+            Some(q) => q,
+            None => {
+                let o = g.next_order;
+                g.next_order += 1;
+                (o, 1)
+            }
+        };
         let rec = Session {
             id: id.clone(),
             seat_id,
@@ -573,7 +709,7 @@ impl Sessions {
                 rec: rec.clone(),
                 run: Arc::new(Mutex::new(run)),
                 stopping: shutting,
-                seq: 1,
+                seq,
                 order,
                 rescanning: false,
             },
@@ -630,6 +766,50 @@ impl Sessions {
             return Err(ApiError::new(ErrorCode::Internal, "internal error"));
         }
         Ok(rec)
+    }
+
+    /// A slot may have come back: start waiting sessions on their own thread
+    /// (the caller holds the lock). Nothing to do with an empty queue.
+    fn kick(&self, g: &Inner) {
+        if g.queue.is_empty() || g.shutting {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("aibd-session-dequeue".into())
+            .spawn(move || me.dequeue());
+        if spawned.is_err() {
+            // the next slot change kicks again
+            tracing::warn!("could not start the dequeue thread");
+        }
+    }
+
+    /// Start waiting sessions, oldest first, while slots are free. Each slot
+    /// is reserved under the lock before its spawn (H3, as a POST).
+    fn dequeue(self: &Arc<Self>) {
+        loop {
+            let q = {
+                let mut g = lock(&self.inner);
+                if g.shutting || g.live.len() + g.reserved + g.held_unknown >= self.max {
+                    return;
+                }
+                let Some(q) = g.queue.pop_front() else {
+                    return;
+                };
+                g.reserved += 1;
+                q
+            };
+            let spec = Spec {
+                id: q.rec.id.clone(),
+                argv: q.rec.argv.clone(),
+                cwd: q.cwd,
+                env: q.env,
+            };
+            // errors are recorded on the session itself (`failed`)
+            let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));
+        }
     }
 
     /// Mark a live session as being stopped; `None` if it is not live or a
@@ -722,6 +902,7 @@ impl Sessions {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
+            self.kick(&g);
         } else if worth_rescanning(&stop) && !g.shutting {
             // nothing known alive, but the stop could not look everywhere
             // (candidates_unreadable): re-check in the background
@@ -945,6 +1126,7 @@ impl Sessions {
                     g.ended.push_front((e.order, e.rec));
                     g.ended.truncate(KEEP_ENDED);
                 }
+                self.kick(g);
             }
             None => {
                 self.event(
@@ -966,6 +1148,26 @@ impl Sessions {
         let run = {
             let mut g = lock(&self.inner);
             loop {
+                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id) {
+                    // waiting: out of the queue, never started (no tree to stop)
+                    let Some(q) = g.queue.remove(i) else {
+                        return Err(not_found());
+                    };
+                    let mut rec = q.rec;
+                    rec.state = "cancelled";
+                    rec.ended_at = Some(now_rfc3339());
+                    rec.ended_by = Some("api");
+                    self.write(
+                        &rec,
+                        q.seq,
+                        "session.cancelled",
+                        serde_json::json!({"id": id, "previous_state": "pending"}),
+                    );
+                    tracing::info!(session = %id, "queued session cancelled");
+                    g.ended.push_front((q.order, rec.clone()));
+                    g.ended.truncate(KEEP_ENDED);
+                    return Ok(rec);
+                }
                 if let Some(e) = g.live.get_mut(id) {
                     if !e.stopping {
                         // running, or stop_unconfirmed with survivors: stop
@@ -1003,6 +1205,24 @@ impl Sessions {
         let deadline = Instant::now() + SHUTDOWN_CAP;
         let mut g = lock(&self.inner);
         g.shutting = true;
+        // nothing waiting starts any more: each ends `interrupted` (its row too,
+        // so the next start has nothing pending to mark)
+        let waiting: Vec<Queued> = g.queue.drain(..).collect();
+        for q in waiting {
+            let mut rec = q.rec;
+            rec.state = "interrupted";
+            rec.ended_at = Some(now_rfc3339());
+            rec.ended_by = Some("shutdown");
+            self.write(
+                &rec,
+                q.seq,
+                "session.interrupted",
+                serde_json::json!({"id": rec.id, "reason": "shutdown",
+                    "previous_state": "pending", "processes_may_remain": false}),
+            );
+            g.ended.push_front((q.order, rec));
+        }
+        g.ended.truncate(KEEP_ENDED);
         // A POST still spawning is not in `live` yet: it sees `shutting` when
         // its spawn returns and stops its own tree; the wait below counts its
         // reservation until that stop is recorded.
@@ -1076,7 +1296,14 @@ impl Sessions {
         };
         let seq = e.seq;
         e.seq += 1;
-        let row = row_of(&e.rec);
+        self.write(&e.rec, seq, kind, payload);
+    }
+
+    /// One event of a session with its current row, in one transaction (a live
+    /// session through [`Self::event`], a queued or ended one directly).
+    fn write(&self, rec: &Session, seq: i64, kind: &str, payload: serde_json::Value) {
+        let id = rec.id.as_str();
+        let row = row_of(rec);
         let ev = NewEvent {
             event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
             aggregate_type: "session".into(),
@@ -1290,6 +1517,15 @@ async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
     }
 }
 
+/// 201 for a started session, 202 for one waiting in the queue (ADR 0005 §5).
+fn created_or_queued(rec: &Session) -> StatusCode {
+    if rec.state == "pending" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::CREATED
+    }
+}
+
 pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
     let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
@@ -1301,7 +1537,7 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start(req)).await {
-        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
@@ -1337,7 +1573,7 @@ pub async fn create_for_seat(
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
-        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
