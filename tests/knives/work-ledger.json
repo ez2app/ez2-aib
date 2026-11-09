@@ -182,8 +182,8 @@
       "name": "needs-recorded-off",
       "proves": "--needs recorded refuses hand-written receipts",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "        if \"recorded\" in needs and not recorded and not rp:",
-      "new": "        if False:"
+      "old": "    if \"recorded\" in (item.get(\"needs\") or []) and not recorded and not rp:",
+      "new": "    if False:"
     },
     {
       "name": "record-dirty-ok",
@@ -210,8 +210,8 @@
       "name": "cmd-ignored",
       "proves": "positive receipts must run the dispatched command",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "        if want and kind in (\"positive\", \"default\") and not rp and not same_cmd(info.get(\"cmd\"), want):",
-      "new": "        if False:"
+      "old": "    if want and kind in (\"positive\", \"default\") and not rp and not same_cmd(info.get(\"cmd\"), want):",
+      "new": "    if False:"
     },
     {
       "name": "record-untracked-ok",
@@ -254,6 +254,76 @@
       "file": "aib/tools/governance/work_ledger.py",
       "old": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role}",
       "new": "               \"needs\": sorted(needs), \"by\": by, \"as\": a.as_role, \"cmd\": a.expect_cmd or \"\"}"
+    },
+    {
+      "name": "ev-format-skip",
+      "proves": "move refuses --evidence that is not an aib-receipt/1 JSON (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    bad = [(p, why) for p, why in bad if why]",
+      "new": "    bad = []"
+    },
+    {
+      "name": "ev-resubmit-append",
+      "proves": "resubmitting to review replaces the evidence of the last submission (11-09 f1fae)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    if a.to == \"review\" and item[\"evidence\"]:",
+      "new": "    if False:"
+    },
+    {
+      "name": "earlier-red-hidden",
+      "proves": "verify lists red receipts submitted earlier at this head before RESULT (ebb36 #541 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "                if v[\"earlier_red\"]:",
+      "new": "                if False:"
+    },
+    {
+      "name": "earlier-red-empty",
+      "proves": "verify --json carries the earlier red receipts (ebb36 #541 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "\"earlier_red\": earlier_red(item, now, db)}",
+      "new": "\"earlier_red\": []}"
+    },
+    {
+      "name": "earlier-red-any-head",
+      "proves": "only receipts superseded at the current head are listed, not old heads (ebb36 #541 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "        if not sha_match(old.get(\"head\") or \"\", head):",
+      "new": "        if False:"
+    },
+    {
+      "name": "accept-note-silent",
+      "proves": "accepting prints a note when this head had red receipts (ebb36 #541 M1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            if verdict.get(\"earlier_red\"):",
+      "new": "            if False:"
+    },
+    {
+      "name": "replay-after-format",
+      "proves": "a reused event id replays before --evidence format is checked (ebb36 #541 L1)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "    seen = db.execute(\"SELECT 1 FROM events WHERE event_id=?\", (event_id,)).fetchone() is not None",
+      "new": "    seen = False"
+    },
+    {
+      "name": "first-review-resubmitted",
+      "proves": "evidence from moves before the first review is not labelled resubmitted (ebb36 #541 L2)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "\"resubmitted\" if had_review else \"before first review\"",
+      "new": "\"resubmitted\""
+    },
+    {
+      "name": "superseded-no-by",
+      "proves": "superseded entries record when and by whom (ebb36 #541 L3)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "\"before first review\",\n                                   \"at\": now_iso(), \"by\": by})",
+      "new": "\"before first review\"})"
+    },
+    {
+      "name": "earlier-red-check-only",
+      "proves": "earlier_red applies the item rules (--cmd mismatch, needs recorded), not check_receipt alone (ebb36 #541 r2 M1; bites both earlier-red-cmd and earlier-red-needs-recorded tests)",
+      "file": "aib/tools/governance/work_ledger.py",
+      "old": "            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)",
+      "new": "            kind, rp, _recorded, info = check_receipt(p, head, now, item.get(\"head_time\") or None, db)"
     }
   ]
 }

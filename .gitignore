@@ -6,3 +6,4 @@ __pycache__/
 
 # AIB 2.0 Rust workspace
 /target/
+/target-wincheck.noindex/
