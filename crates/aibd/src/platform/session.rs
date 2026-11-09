@@ -150,13 +150,30 @@ pub struct CandidateDiag {
     pub count: usize,
     /// Of those, added only by the widened orphan check (G1 `unread_gone`).
     pub orphan_extra: usize,
-    /// Candidates whose environment could not be read.
+    /// Candidates whose environment could not be read, at most
+    /// [`UNREADABLE_LISTED`] of them (043dd #607 L1: a desktop can have a
+    /// long run of launchd services; every record, event and log line
+    /// carries this list).
     pub unreadable: Vec<UnreadableCandidate>,
+    /// How many unreadable candidates were not listed. Left out of the JSON
+    /// when 0. `count` is always the real total.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unreadable_more: usize,
     /// G1 coalition: unreadable candidates let go because they run in a
     /// coalition other than the session's (launchd services). Left out of
     /// the JSON when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub other_coalition: Vec<UnreadableCandidate>,
+    /// Same limit for the coalition list.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub other_coalition_more: usize,
+}
+
+/// The most unreadable candidates one stop record lists.
+pub const UNREADABLE_LISTED: usize = 16;
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// One candidate: pid and the process name (not its arguments).
@@ -223,9 +240,14 @@ impl Stop {
             candidates: CandidateDiag {
                 count: r.candidates,
                 orphan_extra: r.orphan_candidates_extra,
+                unreadable_more: r
+                    .candidates_unreadable
+                    .len()
+                    .saturating_sub(UNREADABLE_LISTED),
                 unreadable: r
                     .candidates_unreadable
                     .iter()
+                    .take(UNREADABLE_LISTED)
                     .enumerate()
                     .map(|(i, &pid)| UnreadableCandidate {
                         pid,
@@ -236,9 +258,14 @@ impl Stop {
                             .unwrap_or_default(),
                     })
                     .collect(),
+                other_coalition_more: r
+                    .candidates_other_coalition
+                    .len()
+                    .saturating_sub(UNREADABLE_LISTED),
                 other_coalition: r
                     .candidates_other_coalition
                     .iter()
+                    .take(UNREADABLE_LISTED)
                     .enumerate()
                     .map(|(i, &pid)| UnreadableCandidate {
                         pid,
@@ -471,6 +498,8 @@ mod tests {
                     },
                 ],
                 other_coalition: vec![],
+                unreadable_more: 0,
+                other_coalition_more: 0,
             }
         );
     }
@@ -510,6 +539,35 @@ mod tests {
             }]
         );
         assert!(s.candidates.unreadable.is_empty());
+    }
+
+    /// 043dd #607 L1: a long run of unreadable candidates is listed up to
+    /// the limit; the rest is a number, and `count` stays the real total.
+    #[test]
+    fn a_long_run_of_unreadable_candidates_is_cut_at_the_limit() {
+        let n = UNREADABLE_LISTED + 5;
+        let r = Report {
+            candidates: n,
+            candidates_unreadable: (1..=n as u32).collect(),
+            candidates_unreadable_comm: (1..=n).map(|i| format!("svc{i}")).collect(),
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let c = Stop::from_report(&r).candidates;
+        assert_eq!(c.count, n);
+        assert_eq!(c.unreadable.len(), UNREADABLE_LISTED);
+        assert_eq!(c.unreadable_more, 5);
+        assert_eq!(c.unreadable[0].comm, "svc1");
+        let j = serde_json::to_value(&c).unwrap();
+        assert_eq!(j["unreadable_more"], 5);
+        let short = Report {
+            candidates: 1,
+            candidates_unreadable: vec![9],
+            candidates_unreadable_comm: vec!["x".into()],
+            ..Report::default()
+        };
+        let j = serde_json::to_value(Stop::from_report(&short).candidates).unwrap();
+        assert!(j.get("unreadable_more").is_none(), "{j}");
     }
 
     #[test]

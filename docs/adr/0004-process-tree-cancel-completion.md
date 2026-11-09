@@ -391,6 +391,10 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   check) and the unreadable candidates as pid + process name (never arguments). A
   `candidates_unreadable` stop then shows which processes held the slot and which rule
   took them (1ced7 2026-11-09: the record had neither).
+- At most 16 unreadable candidates are listed; the rest is `unreadable_more` (left out
+  when 0), and `count` is always the real total (043dd #607 L1).
+- A `slot_held` event after a re-check that timed out carries the candidates of the last
+  pass that answered (043dd #607 N1).
 
 **Coalition filter (043dd MEASURE-G1-coalition, 1ced7 c25144e1 DockHelper).**
 - A process starts in its parent's resource coalition and keeps it when it is re-parented
@@ -401,7 +405,8 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   `proc_pidinfo` flavor). Only when both are read and equal does the filter turn on for
   that session: this is the self-check of the private interface.
 - A candidate whose environment cannot be read, and whose coalition is read as different
-  from the session's, is let go (`stop.candidates.other_coalition`, pid + name). It is not
+  from the session's, is let go (`stop.candidates.other_coalition`, pid + name, same
+  16-entry limit with `other_coalition_more`). It is not
   signalled and does not make the stop `candidates_unreadable`.
 - Kept as before: a candidate with the session marker (whatever its coalition), a
   candidate whose coalition cannot be read, and every candidate when the self-check failed.
