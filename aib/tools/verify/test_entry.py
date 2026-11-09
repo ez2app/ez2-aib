@@ -942,6 +942,13 @@ def skipped_cells(output):
     return int(m[-1]) if m else 0
 
 
+def row_skipped_cells(r):
+    """11-09 §G:這一列綠燈裡跳過幾格 —— Ruby / Go / PHP / JS 認那個語言的總結(_other_lang_cells),其餘照 skipped_cells。
+    以前顯示只認 unittest / pytest 的寫法 ⇒ Go 套件一過一跳只印「綠」,看不出有一格沒驗。"""
+    other = _other_lang_cells(r.get("output"), r.get("name"))
+    return other[1] if other is not None else skipped_cells(r.get("output"))
+
+
 def _live_done(live, r):
     """10-04 the maintainer「為什麼不能一紅就知」:每支實跑一結束就即時說綠或紅(以前要等整批跑完才印總表)。"""
     # ★ 10-06 a seat(Mini 推 v0.71.0 第一包被擋):全部格跳過的那支在這裡 rc 已是 None、unverified 已是 True
@@ -1164,6 +1171,12 @@ def _other_lang_cells(output, name):
     if n.endswith("_test.go"):
         if re.search(r"\[no test files\]|\[no tests to run\]", text) and not re.search(r"^--- (PASS|FAIL)", text, re.M):
             return 0, 0
+        # 11-09 §G(1ced7):go test 現在帶 -v(runner._go_command)⇒ 每支頂層測試一行「--- PASS / FAIL / SKIP: 名字」。
+        #   數頂層那幾行(子測試前面有縮排,不算):全部 SKIP ⇒ 呼叫端判「沒驗」;以前沒帶 -v 只有一行 ok,全 t.Skip 也是綠。
+        #   讀不到任何一行(例:舊輸出、被截斷)⇒ None,照原 rc,不猜。
+        top = re.findall(r"^--- (PASS|FAIL|SKIP): ", text, re.M)
+        if top:
+            return len(top), top.count("SKIP")
         return None
     if n.endswith((".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx")):
         m = _JEST_RE.findall(text) or _VITEST_RE.findall(text)
@@ -2088,8 +2101,8 @@ def _main_run(repo, names, a, live, started, lease, mem):
             "tests": [{k: r.get(k) for k in ("name", "rc", "reused", "elapsed_s", "baseline_s", "slow")}
                       for r in res["tests"]],
             "unverified": [{"name": r["name"], "needs": r.get("needs")} for r in res["tests"] if r.get("unverified")],
-            "skipped": {r["name"]: skipped_cells(r.get("output")) for r in res["tests"]
-                        if r["rc"] == 0 and skipped_cells(r.get("output"))}},
+            "skipped": {r["name"]: row_skipped_cells(r) for r in res["tests"]
+                        if r["rc"] == 0 and row_skipped_cells(r)}},
             ensure_ascii=False))
         return res["rc"]
     print(res["line1"])
@@ -2116,8 +2129,8 @@ def _main_run(repo, names, a, live, started, lease, mem):
             print(T("row_same_package", {"test": r["name"], "name": r["same_package"], "rc": r["rc"]}))
         elif r["reused"]:
             line = T("row_reused", {"test": r["name"]})
-            if skipped_cells(r.get("output")):
-                line += T("row_skipped", {"n": skipped_cells(r.get("output"))})
+            if row_skipped_cells(r):
+                line += T("row_skipped", {"n": row_skipped_cells(r)})
             print(line)
         else:
             line = T("row_ran", {"test": r["name"], "rc": r["rc"], "elapsed": r.get("elapsed_s", 0)})
@@ -2129,8 +2142,8 @@ def _main_run(repo, names, a, live, started, lease, mem):
                                            "pct": "%d" % round((el / base - 1) * 100)})
                 else:
                     line += T("row_slow", {"base": "%.1f" % (base or 0), "pct": "?"})
-            if r["rc"] == 0 and skipped_cells(r.get("output")):
-                line += T("row_skipped", {"n": skipped_cells(r.get("output"))})
+            if r["rc"] == 0 and row_skipped_cells(r):
+                line += T("row_skipped", {"n": row_skipped_cells(r)})
             print(line)
         if r["rc"] != 0 and not r.get("unverified") and r.get("output") and not r.get("same_package"):
             sys.stderr.write(T("output_banner", {"test": r["name"]}) + "\n" + r["output"])
@@ -2158,7 +2171,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
         step_summary(lines + (summary_extra(vs, res["tests"]) if lines else []))
         shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh), tree=(lines + advice) or None, required=req or None,
                             next_actions=_LAST_ADVICE.get("acts"))
-    sk = [(r["name"], skipped_cells(r.get("output"))) for r in res["tests"] if r["rc"] == 0]
+    sk = [(r["name"], row_skipped_cells(r)) for r in res["tests"] if r["rc"] == 0]
     sk = [(n, c) for n, c in sk if c]
     if sk:       # ★ 綠燈裡跳過的格子:跟沒驗的同一個顯眼程度
         print(T("skipped_summary", {"n": sum(c for _n, c in sk), "items": "、".join(
