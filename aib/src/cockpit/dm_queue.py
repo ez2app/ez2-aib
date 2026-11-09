@@ -5861,6 +5861,8 @@ def main(argv=None, env=None):
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
+    ts_.add_argument("--latency", action="store_true", help="印背景整理「第 2 封入列 → 整理稿寫出」秒數 p50 / p95(#552 G4)")
+    ts_.add_argument("--since-hours", type=float, default=None, help="--latency 只看最近幾小時")
     tl = sub.add_parser("triage-lock")              # 整理子代理開工前自願登記(每席同時 1 個;只是協調,不是防線)
     tl.add_argument("--seat", default=None)
     tl.add_argument("--by", default=None)
@@ -6137,6 +6139,11 @@ def main(argv=None, env=None):
 
     if args.cmd == "triage-status":
         import dm_triage_agent as TA
+        if args.latency:
+            import dm_triage_headless as TH
+            since = time.time() - args.since_hours * 3600 if args.since_hours else None
+            _print_json(TH.latency_stats(env=env, seat=args.seat, since=since))
+            return 0
         _print_json(TA.status(env=env, seat=args.seat))
         return 0
 

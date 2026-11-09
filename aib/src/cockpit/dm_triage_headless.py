@@ -542,6 +542,62 @@ def _write_report(seat, actor, decisions, results, env, now, brand, dry=False):
     return path
 
 
+LATENCY_LOG = "triage-latency.jsonl"        # #552 G4:每輪「第 2 封入列 → 整理稿寫出」秒數(只是量測,不是帳)
+LATENCY_LOG_MAX = 256 * 1024
+
+
+def record_latency(seat, items, at, env=None, dry=False):
+    """餵進去的信 ≥2 封 ⇒ 追加一列 {at, t_second, latency_s, n, dry};t_second = 第 2 早入列那封的 ts。
+    少於 2 封 / 量不到 ts ⇒ 不寫(回 None)。寫不了不影響整理(只是量測)。"""
+    ts = sorted(int(it["ts"]) for it in items if isinstance(it, dict) and type(it.get("ts")) is int)
+    if len(ts) < 2:
+        return None
+    row = {"seat": seat, "at": int(at), "t_second": ts[1], "latency_s": int(at) - ts[1], "n": len(ts), "dry": bool(dry)}
+    p = Q.seat_dir(seat, env) / LATENCY_LOG
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > LATENCY_LOG_MAX:
+            keep = p.read_text(encoding="utf-8").splitlines()
+            p.write_text("\n".join(keep[len(keep) // 2:]) + "\n", encoding="utf-8")
+        with open(str(p), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        return None
+    return row
+
+
+def _pct(vals, q):
+    """最近秩(nearest-rank)百分位;vals 已排序、非空。"""
+    k = max(1, -(-len(vals) * q // 100))
+    return vals[int(k) - 1]
+
+
+def latency_stats(env=None, seat=None, since=None):
+    """讀每席 triage-latency.jsonl ⇒ {n, p50, p95, max, seats:{席: n}};沒資料 n=0 其餘 None。"""
+    root = Q.seat_dir("00000", env).parent
+    seats = [seat] if seat else sorted(x.name for x in root.iterdir() if x.is_dir()) if root.is_dir() else []
+    vals, per = [], {}
+    for s0 in seats:
+        try:
+            lines = (Q.seat_dir(s0, env) / LATENCY_LOG).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for ln in lines:
+            try:
+                r = json.loads(ln)
+                v = int(r["latency_s"])
+                if since is not None and int(r["at"]) < int(since):
+                    continue
+            except (ValueError, KeyError, TypeError):
+                continue
+            vals.append(v)
+            per[s0] = per.get(s0, 0) + 1
+    vals.sort()
+    if not vals:
+        return {"n": 0, "p50": None, "p95": None, "max": None, "seats": {}}
+    return {"n": len(vals), "p50": _pct(vals, 50), "p95": _pct(vals, 95), "max": vals[-1], "seats": per}
+
+
 def cover_path(report_path):
     return Path(report_path).with_suffix(".cover.json")
 
@@ -791,6 +847,7 @@ def _run(seat, brand, env, now, ask, gh, dry, actor):
         dry = bool(dry) or mode == "draft"
         results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed}, dry=dry)
         path = _write_report(seat, actor, decisions, results, env, now, brand, dry=dry)
+        record_latency(seat, list(items.values()), time.time(), env, dry=dry)   # G4:寫出那刻(問 AI 要幾分鐘,不用起拍的 now)
         try:
             _write_notice(seat, path, decisions, results, env, now, dry)
         except OSError:
