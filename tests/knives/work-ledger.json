@@ -77,8 +77,8 @@
       "name": "h1-keep-old-evidence",
       "proves": "rework with a new head moves old receipts aside",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "            item[\"evidence\"] = []\n",
-      "new": "            pass\n"
+      "old": "                                       \"at\": now_iso(), \"by\": by})\n            item[\"evidence\"] = []\n        item[\"head\"], item[\"head_time\"] = head, when",
+      "new": "                                       \"at\": now_iso(), \"by\": by})\n            pass\n        item[\"head\"], item[\"head_time\"] = head, when"
     },
     {
       "name": "h2-owner-releases-human",
@@ -350,8 +350,8 @@
       "name": "reopen-keeps-evidence",
       "proves": "reopening moves the accepted receipts to superseded (11-09 f1fae)",
       "file": "aib/tools/governance/work_ledger.py",
-      "old": "            item[\"superseded\"].append({\"head\": item[\"head\"], \"evidence\": item[\"evidence\"], \"why\": \"reopened\"})\n            item[\"evidence\"] = []",
-      "new": "            pass"
+      "old": "                                       \"at\": now_iso(), \"by\": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)\n            item[\"evidence\"] = []",
+      "new": "                                       \"at\": now_iso(), \"by\": by})   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)\n            pass"
     },
     {
       "name": "reopen-from-integrating",
