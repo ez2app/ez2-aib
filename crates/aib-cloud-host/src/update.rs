@@ -29,7 +29,6 @@
 //! No shell strings anywhere; every child is `Command::new(prog).args([...])`.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -308,8 +307,12 @@ fn install(plan: &Plan, tmp: &Path) -> Result<u8, String> {
     }
 
     // 5. it runs and is the version it claims
-    fs::set_permissions(&new_bin, fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("chmod {}: {e}", new_bin.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&new_bin, fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod {}: {e}", new_bin.display()))?;
+    }
     let line = version_line_of(&new_bin)?;
     let expect = expected_version_line(&plan.version);
     if line != expect {
