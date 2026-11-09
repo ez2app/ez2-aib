@@ -13,17 +13,50 @@ use std::path::{Path, PathBuf};
 /// Allowed `[dependencies]` of aib-cloud: name → exact version requirement.
 const ALLOWED: &[(&str, &str)] = &[("serde_json", "\"1.0.154\"")];
 
-/// `std` paths that would let this crate do I/O. Matched as substrings of the
-/// source (comments included on purpose: a reviewer should not have to wonder).
+/// `std` paths that would let this crate do I/O or read the environment. Matched on
+/// the whitespace-stripped source (comments included on purpose: a reviewer should
+/// not have to wonder), so `std :: net` and line breaks do not hide them.
 const FORBIDDEN_STD: &[&str] = &[
     "std::net",
     "std::process",
     "std::fs",
+    "std::env",
     "std::os::unix::net",
     "std::os::windows",
     "tokio::",
     "libc::",
 ];
+
+/// Spellings that would let a grouped `use` or a crate alias reach the same modules
+/// without ever writing `std::net` (#532 r2 M1, ebb36 knives B2b–B2d). The crate is
+/// small enough to simply forbid them.
+const FORBIDDEN_FORMS: &[&str] = &["std::{", "externcrate", "::std::{"];
+
+/// `Some(reason)` when a source text breaks the no-I/O promise. Whitespace is removed
+/// first so neither spacing nor line breaks can split a forbidden path.
+fn io_violation(text: &str) -> Option<String> {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    for needle in FORBIDDEN_STD {
+        if compact.contains(needle) {
+            return Some(format!("用了 {needle}"));
+        }
+    }
+    for form in FORBIDDEN_FORMS {
+        if compact.contains(form) {
+            return Some(format!(
+                "用了被禁的寫法 {form}(分組 use / crate 別名會繞過路徑比對)"
+            ));
+        }
+    }
+    None
+}
+
+/// `[lints] workspace = true` must stay in the manifest: the FFI-socket knife (B2f) is
+/// stopped only by the workspace `unsafe_code = "forbid"` lint.
+fn lints_inherit_workspace(manifest: &str) -> bool {
+    let compact: String = manifest.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("[lints]workspace=true")
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -112,7 +145,8 @@ fn core_and_store_do_not_depend_on_cloud() {
     }
 }
 
-// #532 M4: "no I/O" also means no std::net / std::process / std::fs in src/ and no build script.
+// #532 M4: "no I/O" also means no std::net / std::process / std::fs / std::env in src/,
+// no grouped `std::{…}` or `extern crate` alias that could hide them, and no build script.
 #[test]
 fn cloud_sources_do_no_io() {
     let mut files = Vec::new();
@@ -120,12 +154,8 @@ fn cloud_sources_do_no_io() {
     assert!(!files.is_empty());
     for f in files {
         let text = fs::read_to_string(&f).expect("source");
-        for needle in FORBIDDEN_STD {
-            assert!(
-                !text.contains(needle),
-                "{} 用了 {needle}:aib-cloud 的 src/ 不做 I/O(#532 M4)",
-                f.display()
-            );
+        if let Some(why) = io_violation(&text) {
+            panic!("{} {why}:aib-cloud 的 src/ 不做 I/O(#532 M4)", f.display());
         }
     }
     let m = manifest("aib-cloud");
@@ -134,4 +164,38 @@ fn cloud_sources_do_no_io() {
         !crate_dir("aib-cloud").join("build.rs").exists(),
         "aib-cloud 不准有 build.rs"
     );
+    assert!(
+        lints_inherit_workspace(&m),
+        "aib-cloud 的 Cargo.toml 要留著 [lints] workspace = true(unsafe FFI 靠它擋,#532 r2 M1)"
+    );
+}
+
+// #532 r2 M1 knives B2b–B2e: the checker itself must catch the bypasses, independent of
+// what the real sources currently contain.
+#[test]
+fn io_checker_catches_grouped_use_alias_env_and_spacing() {
+    let samples = [
+        ("B2b 分組 use", "use core::fmt;\nuse std::{net::TcpStream};\npub fn leak() { let _ = TcpStream::connect(\"127.0.0.1:1\"); }"),
+        ("B2c 分組 use 別名", "use std::{fs as f, process as p};\npub fn leak() { let _ = f::read(\"/etc/hosts\"); let _ = p::Command::new(\"true\").status(); }"),
+        ("B2d extern crate 別名", "extern crate std as s;\npub fn leak() { let _ = s::net::TcpStream::connect(\"127.0.0.1:1\"); }"),
+        ("B2e std::env", "pub fn leak() -> Option<String> { std::env::var(\"HETZNER_ROBOT_PASS\").ok() }"),
+        ("空白拆開", "pub fn leak() { let _ = std :: net\n:: TcpStream::connect(\"127.0.0.1:1\"); }"),
+        ("絕對路徑分組", "use ::std::{fs};"),
+        ("直接寫", "fn f() { std::process::Command::new(\"true\"); }"),
+    ];
+    for (name, src) in samples {
+        assert!(io_violation(src).is_some(), "{name} 沒被抓到");
+    }
+    for ok in [
+        "use core::fmt;\nuse serde_json::Value;",
+        "// the standard network module is not used here",
+        "fn x() -> std::fmt::Result { Ok(()) }",
+    ] {
+        assert_eq!(io_violation(ok), None, "{ok:?} 不該被抓");
+    }
+    assert!(lints_inherit_workspace(
+        "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n"
+    ));
+    assert!(!lints_inherit_workspace("[package]\nname = \"x\"\n"));
+    assert!(!lints_inherit_workspace("[lints]\nworkspace = false\n"));
 }

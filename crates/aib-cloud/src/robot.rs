@@ -398,7 +398,7 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// Key fragments that mark a value as secret (case-insensitive substring match).
-const MASK_KEYS: [&str; 9] = [
+const MASK_KEYS: [&str; 15] = [
     "password",
     "passwd",
     "pass",
@@ -408,6 +408,12 @@ const MASK_KEYS: [&str; 9] = [
     "api_key",
     "apikey",
     "authorization",
+    "auth",
+    "credential",
+    "private_key",
+    "privatekey",
+    "cookie",
+    "session",
 ];
 
 /// Replace the value of every secret-looking key with `***` and blank out any
@@ -435,19 +441,33 @@ pub fn mask(value: &mut serde_json::Value) {
     }
 }
 
-/// `https://user:pw@host/x` → `https://***:***@host/x`. Returns `None` when
-/// the string carries no userinfo.
+/// `https://user:pw@host/x` → `https://***:***@host/x`, for **every** URL in the
+/// string (#532 r2 L1: a message quoting two URLs used to leak the second one).
+/// Returns `None` when no URL carries userinfo.
 pub fn mask_userinfo(s: &str) -> Option<String> {
-    let scheme_end = s.find("://")?;
-    let rest = &s[scheme_end + 3..];
-    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..host_end];
-    let at = authority.rfind('@')?;
-    Some(format!(
-        "{}://***:***@{}",
-        &s[..scheme_end],
-        &rest[at + 1..]
-    ))
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    let mut changed = false;
+    while let Some(scheme_end) = rest.find("://") {
+        let (head, after) = rest.split_at(scheme_end + 3);
+        out.push_str(head);
+        let host_end = after.find(['/', '?', '#', ' ']).unwrap_or(after.len());
+        let authority = &after[..host_end];
+        if let Some(at) = authority.rfind('@') {
+            out.push_str("***:***@");
+            out.push_str(&authority[at + 1..]);
+            changed = true;
+        } else {
+            out.push_str(authority);
+        }
+        rest = &after[host_end..];
+    }
+    if changed {
+        out.push_str(rest);
+        Some(out)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -708,6 +728,47 @@ mod tests {
         assert_eq!(
             mask_userinfo("ftp://u:p@h:21/x#y"),
             Some("ftp://***:***@h:21/x#y".to_owned())
+        );
+        // #532 r2 L1: every URL in the string, not only the first one.
+        assert_eq!(
+            mask_userinfo("see https://a.example/x then https://u:hunter2@b.example/y done"),
+            Some("see https://a.example/x then https://***:***@b.example/y done".to_owned())
+        );
+        assert_eq!(
+            mask_userinfo("https://u:p1@a/ https://v:p2@b/"),
+            Some("https://***:***@a/ https://***:***@b/".to_owned())
+        );
+        assert_eq!(mask_userinfo("https://a/ and https://b/"), None);
+    }
+
+    // #532 r2 L1: key names the first round missed.
+    #[test]
+    fn mask_hides_credential_private_key_cookie_auth() {
+        let mut v = json!({
+            "credential": PW, "credentials": [PW], "private_key": PW, "privateKey": PW,
+            "Cookie": PW, "set-cookie": PW, "auth": PW, "session_id": PW, "author": "keep me",
+            "note": format!("see https://a.example/x then https://u:{PW}@b.example/y"),
+        });
+        mask(&mut v);
+        let text = v.to_string();
+        assert!(!text.contains(PW), "{text}");
+        for k in [
+            "credential",
+            "private_key",
+            "privatekey",
+            "privateKey",
+            "Cookie",
+            "set-cookie",
+            "auth",
+            "session_id",
+        ] {
+            assert_eq!(v[k], "***", "{k}");
+        }
+        assert_eq!(v["credentials"], "***");
+        assert_eq!(v["author"], "***"); // "auth" substring: over-masking accepted (ebb36 r2 L1)
+        assert_eq!(
+            v["note"],
+            "see https://a.example/x then https://***:***@b.example/y"
         );
     }
 
