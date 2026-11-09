@@ -218,7 +218,9 @@ fn pid_of(r: &Rec) -> Option<i64> {
 }
 
 fn heartbeat_of(r: &Rec) -> Option<i64> {
-    r.get("heartbeat_s").and_then(Value::as_i64).filter(|h| *h > 0)
+    r.get("heartbeat_s")
+        .and_then(Value::as_i64)
+        .filter(|h| *h > 0)
 }
 
 // ── liveness ──────────────────────────────────────────────────────────────────────────
@@ -365,7 +367,10 @@ pub fn queue_read(paths: &Paths) -> Vec<Rec> {
         })
         .filter(|m| s(m, "run_id").is_some())
         .filter(|m| num(m.get("since_epoch")).is_some() && num(m.get("until_epoch")).is_some())
-        .filter(|m| matches!(m.get("pid"), None | Some(Value::Null)) || m.get("pid").and_then(Value::as_i64).is_some())
+        .filter(|m| {
+            matches!(m.get("pid"), None | Some(Value::Null))
+                || m.get("pid").and_then(Value::as_i64).is_some()
+        })
         .collect()
 }
 
@@ -411,8 +416,14 @@ pub fn queue_live(paths: &Paths, now: f64, p: &dyn Probe) -> Vec<Rec> {
         .filter(|e| queue_entry_state(e, now, p).is_ok())
         .collect();
     rows.sort_by(|a, b| {
-        let ka = (!a.get("priority").and_then(Value::as_bool).unwrap_or(false), num(a.get("since_epoch")).unwrap_or(0.0));
-        let kb = (!b.get("priority").and_then(Value::as_bool).unwrap_or(false), num(b.get("since_epoch")).unwrap_or(0.0));
+        let ka = (
+            !a.get("priority").and_then(Value::as_bool).unwrap_or(false),
+            num(a.get("since_epoch")).unwrap_or(0.0),
+        );
+        let kb = (
+            !b.get("priority").and_then(Value::as_bool).unwrap_or(false),
+            num(b.get("since_epoch")).unwrap_or(0.0),
+        );
         ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
     });
     rows
@@ -515,7 +526,11 @@ impl Holder {
         r.insert("pid".into(), json!(self.pid));
         r.insert(
             "host".into(),
-            json!(if remote { self.host.as_deref().unwrap_or(local) } else { local }),
+            json!(if remote {
+                self.host.as_deref().unwrap_or(local)
+            } else {
+                local
+            }),
         );
         let start = match (self.pid, remote) {
             (Some(pid), false) => match p.proc_start(pid) {
@@ -548,14 +563,21 @@ pub fn live_ships(repo: &str, p: &dyn Probe) -> Vec<Rec> {
     let local = p.hostname();
     let mut out = vec![];
     for f in files {
-        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let name = f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let Ok(pid) = name.parse::<i64>() else {
             continue;
         };
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let mut rec = match fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+        let mut rec = match fs::read_to_string(&f)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        {
             Some(Value::Object(m)) => m,
             _ => Rec::new(),
         };
@@ -642,7 +664,10 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
     }
     let ttl = a.ttl.unwrap_or(DEFAULT_TTL_S);
     if ttl <= 0 {
-        return done(RC_USAGE, json!({"result": "usage", "error": "--ttl must be > 0"}));
+        return done(
+            RC_USAGE,
+            json!({"result": "usage", "error": "--ttl must be > 0"}),
+        );
     }
     let _m = match mutex(paths) {
         Ok(m) => m,
@@ -670,7 +695,10 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
     let expiry = match h.heartbeat_s {
         Some(hb) => now as i64 + HEARTBEAT_MISSES * hb,
         // 1.x: a pid whose start time cannot be read is checked by time only ⇒ at least 3 h
-        None if h.pid.is_some() && new.get("pid_start").is_some_and(Value::is_null) && ttl < SHORT_TTL_FLOOR_S => {
+        None if h.pid.is_some()
+            && new.get("pid_start").is_some_and(Value::is_null)
+            && ttl < SHORT_TTL_FLOOR_S =>
+        {
             now as i64 + SHORT_TTL_FLOOR_S
         }
         None => now as i64 + ttl,
@@ -709,9 +737,15 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
                 return unreadable(format!("{}: {e}", d.display()));
             }
         }
-        match OpenOptions::new().write(true).create_new(true).open(&paths.lease) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&paths.lease)
+        {
             Ok(mut fh) => {
-                let body = serde_json::to_string_pretty(&Value::Object(new.clone())).unwrap_or_default() + "\n";
+                let body = serde_json::to_string_pretty(&Value::Object(new.clone()))
+                    .unwrap_or_default()
+                    + "\n";
                 if let Err(e) = fh.write_all(body.as_bytes()) {
                     return unreadable(format!("{}: {e}", paths.lease.display()));
                 }
@@ -725,7 +759,10 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
                            "exclusive": a.exclusive, "waited_s": w, "holder_host": new["host"],
                            "heartbeat_s": h.heartbeat_s}),
                 );
-                return done(RC_OK, json!({"result": "acquired", "run_id": h.run_id, "until": new["expiry_at"]}));
+                return done(
+                    RC_OK,
+                    json!({"result": "acquired", "run_id": h.run_id, "until": new["expiry_at"]}),
+                );
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match read_lease(paths) {
                 Err(e) => return unreadable(e),
@@ -755,7 +792,10 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
             "reenter",
             json!({"owner": h.owner, "what": h.what, "run_id": h.run_id, "expiry": new["expiry_at"]}),
         );
-        return done(RC_OK, json!({"result": "reentered", "run_id": h.run_id, "until": new["expiry_at"]}));
+        return done(
+            RC_OK,
+            json!({"result": "reentered", "run_id": h.run_id, "until": new["expiry_at"]}),
+        );
     }
     if is_expired(&cur, now, p) {
         let why = takeover_why(&cur, p);
@@ -781,7 +821,10 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
     }
     let mut out = json!({"result": "busy", "holder": holder_view(&cur)});
     if matches!(holder_alive(&cur, p), Live::Dead | Live::Reused) {
-        let pids: Vec<Value> = shipping_under(&cur, p).iter().map(|r| r.get("pid").cloned().unwrap_or(Value::Null)).collect();
+        let pids: Vec<Value> = shipping_under(&cur, p)
+            .iter()
+            .map(|r| r.get("pid").cloned().unwrap_or(Value::Null))
+            .collect();
         out["shipping_pids"] = Value::Array(pids);
     }
     log_event(
@@ -812,7 +855,10 @@ pub fn queue_add(paths: &Paths, p: &dyn Probe, now: f64, a: &QueueAddArgs) -> Ou
     }
     let ttl = a.ttl.unwrap_or(QUEUE_TTL_S);
     if ttl <= 0 {
-        return done(RC_USAGE, json!({"result": "usage", "error": "--ttl must be > 0"}));
+        return done(
+            RC_USAGE,
+            json!({"result": "usage", "error": "--ttl must be > 0"}),
+        );
     }
     let _m = match mutex(paths) {
         Ok(m) => m,
@@ -825,13 +871,19 @@ pub fn queue_add(paths: &Paths, p: &dyn Probe, now: f64, a: &QueueAddArgs) -> Ou
             Err(g) => log_gone(paths, p, now, &e, g),
         }
     }
-    let old = rows.iter().find(|e| s(e, "run_id") == Some(h.run_id.as_str())).cloned();
+    let old = rows
+        .iter()
+        .find(|e| s(e, "run_id") == Some(h.run_id.as_str()))
+        .cloned();
     let mut e = Rec::new();
     e.insert("run_id".into(), json!(h.run_id));
     e.insert("owner".into(), json!(h.owner));
     e.insert("what".into(), json!(h.what));
     h.stamp(&mut e, &local, now, p);
-    e.insert("notify".into(), json!(a.notify.as_deref().filter(|n| !n.is_empty())));
+    e.insert(
+        "notify".into(),
+        json!(a.notify.as_deref().filter(|n| !n.is_empty())),
+    );
     e.insert("priority".into(), json!(a.priority));
     let since = old
         .as_ref()
@@ -861,10 +913,19 @@ pub fn queue_add(paths: &Paths, p: &dyn Probe, now: f64, a: &QueueAddArgs) -> Ou
         );
     }
     let live = queue_live(paths, now, p);
-    match live.iter().position(|x| s(x, "run_id") == Some(h.run_id.as_str())) {
-        Some(i) => done(RC_OK, json!({"result": "queued", "run_id": h.run_id, "position": i + 1, "until": until})),
+    match live
+        .iter()
+        .position(|x| s(x, "run_id") == Some(h.run_id.as_str()))
+    {
+        Some(i) => done(
+            RC_OK,
+            json!({"result": "queued", "run_id": h.run_id, "position": i + 1, "until": until}),
+        ),
         // the pid given is already gone: the entry does not count; say so instead of pretending
-        None => done(RC_USAGE, json!({"result": "not_in_queue", "run_id": h.run_id})),
+        None => done(
+            RC_USAGE,
+            json!({"result": "not_in_queue", "run_id": h.run_id}),
+        ),
     }
 }
 

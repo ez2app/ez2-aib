@@ -111,7 +111,11 @@ fn refs(v: &[String]) -> Vec<&str> {
 #[test]
 fn a_beating_remote_queue_entry_survives_the_1x_cleanup_and_blocks_its_jump() {
     let l = lease_file("q");
-    let a = argv(&["queue", "add"], "rq", &["--host", FAR, "--pid", "68643", "--heartbeat-s", "60"]);
+    let a = argv(
+        &["queue", "add"],
+        "rq",
+        &["--host", FAR, "--pid", "68643", "--heartbeat-s", "60"],
+    );
     let (rc, v) = rs(&l, T, &refs(&a));
     assert_eq!((rc, v["result"].as_str()), (0, Some("queued")), "{v}");
     // 1.x registers someone else at T+100 and rewrites the file with what it thinks is live
@@ -120,7 +124,10 @@ fn a_beating_remote_queue_entry_survives_the_1x_cleanup_and_blocks_its_jump() {
     assert_eq!(py_queue_ids(&l, T + 100.0), vec!["rq", "py1"]);
     assert_eq!(rs_queue_ids(&l, T + 100.0), vec!["rq", "py1"]);
     // 1.x acquire for a third run on the free machine: the remote entry is ahead ⇒ denied
-    assert_eq!(py(&l, T + 100.0, &refs(&argv(&["acquire"], "py2", &[]))).0, 4);
+    assert_eq!(
+        py(&l, T + 100.0, &refs(&argv(&["acquire"], "py2", &[]))).0,
+        4
+    );
     // a beat at T+150 keeps it past the first deadline (T+180) for both tools
     assert_eq!(rs(&l, T + 150.0, &["heartbeat", "--run-id", "rq"]).0, 0);
     assert_eq!(py_queue_ids(&l, T + 300.0), vec!["rq", "py1"]);
@@ -133,7 +140,11 @@ fn a_beating_remote_queue_entry_survives_the_1x_cleanup_and_blocks_its_jump() {
 #[test]
 fn a_beating_remote_lease_holds_against_1x_acquire_and_frees_on_silence() {
     let l = lease_file("lease");
-    let a = argv(&["acquire"], "rl", &["--host", FAR, "--pid", "68643", "--heartbeat-s", "60"]);
+    let a = argv(
+        &["acquire"],
+        "rl",
+        &["--host", FAR, "--pid", "68643", "--heartbeat-s", "60"],
+    );
     let (rc, v) = rs(&l, T, &refs(&a));
     assert_eq!((rc, v["result"].as_str()), (0, Some("acquired")), "{v}");
     let b = argv(&["acquire"], "py1", &[]);
@@ -143,7 +154,7 @@ fn a_beating_remote_lease_holds_against_1x_acquire_and_frees_on_silence() {
     assert_eq!(rs(&l, T + 150.0, &["heartbeat", "--run-id", "rl"]).0, 0);
     assert_eq!(py(&l, T + 300.0, &b).0, 4);
     assert_eq!(py(&l, T + 330.0, &b).0, 0); // took over after silence
-    // the remote holder learns it on its next beat
+                                            // the remote holder learns it on its next beat
     assert_eq!(rs(&l, T + 340.0, &["heartbeat", "--run-id", "rl"]).0, 4);
 }
 
@@ -151,9 +162,21 @@ fn a_beating_remote_lease_holds_against_1x_acquire_and_frees_on_silence() {
 fn d1_the_1x_tool_takes_over_a_holder_on_another_machine_at_once() {
     // what b127 fixes: 1.x records the Mac pid as a pid of this machine
     let l = lease_file("d1");
-    assert_eq!(py(&l, T, &refs(&argv(&["acquire"], "old", &["--pid", "999999"]))).0, 0);
+    assert_eq!(
+        py(
+            &l,
+            T,
+            &refs(&argv(&["acquire"], "old", &["--pid", "999999"]))
+        )
+        .0,
+        0
+    );
     let b = argv(&["acquire"], "other", &[]);
-    assert_eq!(py(&l, T + 10.0, &refs(&b)).0, 0, "1.x: holder_dead takeover");
+    assert_eq!(
+        py(&l, T + 10.0, &refs(&b)).0,
+        0,
+        "1.x: holder_dead takeover"
+    );
 }
 
 #[test]
@@ -161,16 +184,43 @@ fn local_records_get_the_same_decision_from_both_tools() {
     let me = std::process::id().to_string();
     // a lease taken by 1.x for a live local pid: aib-lease refuses to take it, and vice versa
     let l = lease_file("local");
-    assert_eq!(py(&l, T, &refs(&argv(&["acquire"], "pylocal", &["--pid", &me]))).0, 0);
+    assert_eq!(
+        py(
+            &l,
+            T,
+            &refs(&argv(&["acquire"], "pylocal", &["--pid", &me]))
+        )
+        .0,
+        0
+    );
     let lease: Value = serde_json::from_str(&std::fs::read_to_string(&l).unwrap()).unwrap();
-    assert!(lease["pid_start"].is_string(), "1.x measured the start time");
+    assert!(
+        lease["pid_start"].is_string(),
+        "1.x measured the start time"
+    );
     let (rc, v) = rs(&l, T + 99_999.0, &refs(&argv(&["acquire"], "rsother", &[])));
-    assert_eq!((rc, v["result"].as_str()), (4, Some("busy")), "live local holder, even long after expiry: {v}");
+    assert_eq!(
+        (rc, v["result"].as_str()),
+        (4, Some("busy")),
+        "live local holder, even long after expiry: {v}"
+    );
 
     let l = lease_file("local2");
-    assert_eq!(rs(&l, T, &refs(&argv(&["acquire"], "rslocal", &["--pid", &me]))).0, 0);
+    assert_eq!(
+        rs(
+            &l,
+            T,
+            &refs(&argv(&["acquire"], "rslocal", &["--pid", &me]))
+        )
+        .0,
+        0
+    );
     let b = argv(&["acquire"], "pyother", &[]);
-    assert_eq!(py(&l, T + 99_999.0, &refs(&b)).0, 4, "1.x sees the aib-lease record as alive (same host + start text)");
+    assert_eq!(
+        py(&l, T + 99_999.0, &refs(&b)).0,
+        4,
+        "1.x sees the aib-lease record as alive (same host + start text)"
+    );
 
     // a queue entry whose local pid has exited: neither tool counts it
     let l = lease_file("local3");
