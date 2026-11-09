@@ -28,6 +28,9 @@
   返工要能發生;事件裡看得到。
 返工換頭碼(H1):running → review 帶了不同的 --head,舊頭碼的收據移到 superseded(連同舊頭碼記下),不再算數;
   收件只看現在頭碼的收據。
+  收件後又改(作者在 accepted 之後推了新 commit):派工席 move --from accepted --to running --next <原因>,這次收件的收據
+  整批移到 superseded(why reopened),之後照一般流程重交 review、重新收件;只有派工席能退、一定要 --next。
+  integrating 之後不開這條路(11-09 f1fae)。
   同頭碼重交(退回 running 再交 review):以這次交的 --evidence 為準,上一次交的整批移到 superseded(11-09 f1fae 派)。
   被換掉的收據不算,但看得到:verify 對現在頭碼 superseded 的收據逐張重驗,沒過的在 RESULT 前列出(路徑 + 哪條不符,
   --json 帶 earlier_red),收件成功也多印一行提醒;只顯示、不擋(ebb36 #541 M1,11-09 f1fae 定)。superseded 每格記 why / at / by。
@@ -96,7 +99,7 @@ TRANSITIONS = {
     "queued": ("running",) + SIDE,
     "running": ("review", "queued") + SIDE,
     "review": ("accepted", "queued", "running") + SIDE,
-    "accepted": ("integrating", "queued") + SIDE,
+    "accepted": ("integrating", "queued", "running") + SIDE,   # → running 只給派工席、要 --next(收件後又改,11-09 f1fae)
     "integrating": ("deployed", "accepted") + SIDE,
     "deployed": (),
     "blocked": ("queued", "running"),
@@ -356,10 +359,34 @@ def same_cmd(a, b):
     return na is not None and nb is not None and na == nb
 
 
-def judge_receipt(p, item, head, now=None, db=None):
+def reopened_hit(item, head, receipt_sha256):
+    """同頭碼被派工席退回(reopened)的收據 → 那筆 superseded;沒有 → None。
+    比收據內容的 sha256,不比路徑:複製到新路徑一樣擋(ebb36 #569 ①)。"""
+    if not receipt_sha256:
+        return None
+    for old in item.get("superseded") or []:
+        if old.get("why") == "reopened" and sha_match(old.get("head") or "", head) \
+                and receipt_sha256 in (old.get("evidence_sha256") or []):
+            return old
+    return None
+
+
+def receipt_sha(path):
+    """收據檔內容的 sha256;讀不到回空字串(讀不到的收據本來就過不了 check_receipt)。"""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def judge_receipt(p, item, head, now=None, db=None, live=True):
     """一張收據在這個件上紅不紅 → (kind, problems, recorded, info)。check_receipt 之外再套件的規則
-    (needs recorded、--cmd)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1)。"""
+    (needs recorded、--cmd、退回的收據不能再用)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1);
+    earlier_red 看的是已作廢的那幾張本身,live=False 不套「退回不能再用」。"""
     kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+    hit = reopened_hit(item, head, info.get("receipt_sha256")) if live else None
+    if hit is not None:
+        rp = rp + ["reopened receipt reused (superseded at %s by %s)" % (hit.get("at") or "?", hit.get("by") or "?")]
     want = item.get("expect_cmd") or ""
     if "recorded" in (item.get("needs") or []) and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
         rp = ["needs recorded: this receipt was not written by aib ledger record"]
@@ -403,7 +430,7 @@ def earlier_red(item, now=None, db=None):
         if not sha_match(old.get("head") or "", head):
             continue
         for p in old.get("evidence") or []:
-            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)
+            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db, live=False)
             if rp:
                 out.append({"path": p, "kind": kind, "problems": rp, "why": old.get("why") or "",
                             "at": old.get("at") or "", "by": old.get("by") or "", "cmd": info.get("cmd")})
@@ -508,7 +535,7 @@ def op_add(db, a, by, event_id):
                    " updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (a.id, a.batch, a.title, request["owner"], "queued", request["next"], json.dumps(request["needs"]),
                     request.get("cmd", ""), 1, t, t, by))
-        res = {"ok": True, "id": a.id, "state": "queued", "rev": 1}
+        res = {"ok": True, "id": a.id, "state": "queued", "rev": 1, "needs": request["needs"]}
         _record(db, event_id, "add", a.id, None, "queued", by, request, res)
         return res
     return tx(db, run)
@@ -537,6 +564,19 @@ def apply_move(item, a, request, by, roles):
         raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
     if a.from_state == "blocked-human" and "dispatch" not in worn:
         raise Refused(RC_RULE, "only the dispatch seat can release blocked-human (it waits for a human)")
+    if a.from_state == "accepted" and a.to == "running":
+        # 收件後作者又推了 commit(例:修 Low):派工席把件退回 running 重做,原因寫在 --next;這次收件的收據作廢。
+        # integrating 之後不開這條路(已交給整合席)。11-09 f1fae
+        if "dispatch" not in worn:
+            raise Refused(RC_RULE, "only the dispatch seat can send accepted work back to running")
+        if not (a.next or "").strip():
+            raise Refused(RC_USAGE, "sending accepted work back to running needs --next (why it is reopened)")
+        if item["evidence"]:
+            item["superseded"].append({"head": item["head"], "evidence": item["evidence"], "why": "reopened",
+                                       "at": now_iso(), "by": by,   # 跟其他作廢一樣記時間和誰(ebb36 #541 L3)
+                                       "evidence_sha256": [receipt_sha(p) for p in item["evidence"]],   # ebb36 #569 ①
+                                       "note": a.next.strip()})   # 為什麼退(ebb36 #569 L1)
+            item["evidence"] = []
     if a.to == "accepted" and by == item["owner"]:
         raise Refused(RC_RULE, "%s owns %s and cannot accept its own work" % (by, a.id))
     if request["head"]:
@@ -675,9 +715,11 @@ def print_item(it, hist=None):
     for old in it.get("superseded") or []:
         why = old.get("why") or "old head"
         print("  superseded (%s %s%s): %d receipt(s)" % (
-            ("resubmitted at" if why == "resubmitted" else why), old["head"][:12],
+            {"resubmitted": "resubmitted at", "reopened": "reopened at"}.get(why, why), old["head"][:12],
             "".join(", %s" % x for x in (old.get("at"), old.get("by") and "by " + old["by"]) if x),
             len(old["evidence"])))
+        if old.get("note"):
+            print("      why: %s" % old["note"])
         for p in old["evidence"]:
             print("      %s" % p)
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))
@@ -922,7 +964,10 @@ def main(argv=None):
             emit(a, res, "%s%s is now %s" % ("(replayed) " if res.get("replayed") else "", res["seat"], res["role"]))
         elif a.cmd == "add":
             res = op_add(db, a, by, event_id)
-            emit(a, res, "%squeued %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"], res["rev"]))
+            line = "%squeued %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"], res["rev"])
+            if a.expect_cmd:   # ebb36 #531 r2 L1:讓派工的人看到 --cmd 帶來的後果
+                line += "\n  --cmd implies --needs recorded: only receipts written by aib ledger record are accepted"
+            emit(a, res, line)
         else:
             res = op_move(db, a, by, event_id)
             emit(a, res, "%s%s %s -> %s (rev %d)%s" % (

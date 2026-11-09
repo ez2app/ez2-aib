@@ -701,6 +701,59 @@ class AibLedger(unittest.TestCase):
         self.assertEqual(it["superseded"][-1]["why"], "before first review")
         self.assertNotIn("resubmitted", self.ok("show", "B-first").stdout)
 
+    def test_531_r2_l1_add_says_cmd_implies_recorded(self):
+        # ebb36 #531 r2 L1:帶 --cmd 時 add 要講出「只收 record 產的收據」,不帶就不講
+        self.roles()
+        r = self.ok("add", "B-say", "--batch", "b117", "--owner", "2240e", "--title", "s", "--cmd", "python3 -m unittest",
+                    "--by", "seat:f1fae")
+        self.assertIn("only receipts written by aib ledger record", r.stdout)
+        r = self.ok("add", "B-quiet", "--batch", "b117", "--owner", "2240e", "--title", "q", "--by", "seat:f1fae")
+        self.assertNotIn("aib ledger record", r.stdout)
+        j = json.loads(self.ok("add", "B-json", "--batch", "b117", "--owner", "2240e", "--title", "j", "--cmd", "x",
+                               "--by", "seat:f1fae", "--json").stdout)
+        self.assertEqual(j["needs"], ["recorded"])
+
+    def test_1109_dispatch_reopens_accepted_work(self):
+        # f1fae 11-09(#542):收件後作者又推了 commit ⇒ 派工席把 accepted 退回 running(要 --next),收據作廢;integrating 之後不准退
+        _, sha = self.repo()
+        self.review_at(sha, item="B-reo")
+        first = self.receipt(sha=sha)
+        self.ok("move", "B-reo", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", first,
+                "--by", "seat:2240e")
+        self.ok("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        r = self.L("move", "B-reo", "--from", "accepted", "--to", "running", "--next", "作者自己退", "--by", "seat:2240e")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        r = self.L("move", "B-reo", "--from", "accepted", "--to", "running", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.ok("move", "B-reo", "--from", "accepted", "--to", "running", "--next", "作者又推了修 Low 的 commit",
+                "--by", "seat:f1fae")
+        it = json.loads(self.ok("show", "B-reo", "--json").stdout)
+        self.assertEqual((it["state"], it["evidence"]), ("running", []))
+        self.assertEqual((it["superseded"][-1]["why"], it["superseded"][-1]["evidence"]),
+                         ("reopened", [str(Path(first).resolve())]))
+        self.assertIn("reopened at", self.ok("show", "B-reo").stdout)
+        self.assertEqual(it["superseded"][-1]["by"], "f1fae")
+        self.assertTrue(it["superseded"][-1]["at"])
+        self.assertEqual(it["superseded"][-1]["note"], "作者又推了修 Low 的 commit")
+        self.assertIn("why: 作者又推了修 Low 的 commit", self.ok("show", "B-reo").stdout)
+        # ebb36 #569 ①:同頭碼把剛退回的那張再交(原路徑、或複製到新路徑)⇒ 收件要紅
+        copy = str(Path(first).with_name("copied-receipt.json"))
+        shutil.copyfile(first, copy)
+        for again in (first, copy):
+            self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", again,
+                    "--by", "seat:2240e")
+            r = self.L("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+            self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+            self.assertIn("reopened receipt reused", r.stdout + r.stderr)
+            self.ok("move", "B-reo", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        self.ok("move", "B-reo", "--from", "running", "--to", "review", "--head", sha, "--evidence", self.receipt(sha=sha),
+                "--by", "seat:2240e")
+        self.ok("move", "B-reo", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.ok("move", "B-reo", "--from", "accepted", "--to", "integrating", "--by", "seat:a0f9b")
+        r = self.L("move", "B-reo", "--from", "integrating", "--to", "running", "--next", "x", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
