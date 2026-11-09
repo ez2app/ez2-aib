@@ -137,6 +137,30 @@ jobs:
             echo "== run $i/5"
             cargo test -q -p aib-sys --locked || exit 1
           done
+      # DIAG-win-session-flake (a9136 11-09): the three "failed root open"
+      # session tests used to wait for "2 active processes", which cmd +
+      # conhost can reach before ping exists. They now wait for PING.EXE.
+      # No Windows machine here: 20 runs in a row, one test at a time, all
+      # 20 must pass; every run is printed, a red one with its member list.
+      - name: aib-sys session failed-open tests (Windows) 20x
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u -o pipefail
+          cargo test -q -p aib-sys --locked --lib --no-run
+          pass=0
+          for i in $(seq 1 20); do
+            # a filter that matches nothing is green too: require all 3 ran
+            if cargo test -p aib-sys --locked --lib session::tests::a_failed_root_open \
+                 -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/failed-open.log" \
+               && grep -q "test result: ok. 3 passed" "$RUNNER_TEMP/failed-open.log"; then
+              pass=$((pass + 1)); echo "== run $i/20 ok"
+            else
+              echo "== run $i/20 FAILED"
+            fi
+          done
+          echo "session failed-open: $pass/20 passed"
+          test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
@@ -168,6 +192,11 @@ jobs:
           k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+          # DIAG-win-session-flake: the tests really wait for ping; an image
+          # that never comes must turn them red in hold_members
+          k2 '    const AWAITED_IMAGE: &str = "PING.EXE";' \
+            '    const AWAITED_IMAGE: &str = "NOPE.EXE"; // knife: wait for nothing real' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
