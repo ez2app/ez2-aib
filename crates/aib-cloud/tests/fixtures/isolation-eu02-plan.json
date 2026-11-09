@@ -1,0 +1,410 @@
+[
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-101-egress-25",
+    "ip": "64.233.184.26",
+    "kind": "tcp",
+    "port": 25
+  },
+  {
+    "expect": "open",
+    "from": "ct:101",
+    "id": "edge-101-egress-443",
+    "ip": "140.82.121.4",
+    "kind": "tcp",
+    "port": 443
+  },
+  {
+    "expect": "open",
+    "from": "ct:101",
+    "id": "edge-101-self-22",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "open",
+    "from": "ct:101",
+    "id": "edge-101-self-80",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-101-to-host-22",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-101-to-host-8006",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 8006
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-101-to-tailnet",
+    "ip": "100.120.222.46",
+    "kind": "icmp",
+    "port": 0
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-to-site-110-22",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-to-site-110-3306",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "open",
+    "from": "ct:101",
+    "id": "edge-to-site-110-80",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-to-site-111-22",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:101",
+    "id": "edge-to-site-111-3306",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "open",
+    "from": "ct:101",
+    "id": "edge-to-site-111-80",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "open",
+    "from": "host",
+    "id": "host-self-22",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "open",
+    "from": "host",
+    "id": "host-self-8006",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 8006
+  },
+  {
+    "expect": "open",
+    "from": "host",
+    "id": "host-tailnet-icmp",
+    "ip": "100.120.222.46",
+    "kind": "icmp",
+    "port": 0
+  },
+  {
+    "expect": "open",
+    "from": "external",
+    "id": "public-host-22",
+    "ip": "135.181.75.90",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "open",
+    "from": "external",
+    "id": "public-host-443",
+    "ip": "135.181.75.90",
+    "kind": "tcp",
+    "port": 443
+  },
+  {
+    "expect": "blocked",
+    "from": "external",
+    "id": "public-host-8006",
+    "ip": "135.181.75.90",
+    "kind": "tcp",
+    "port": 8006
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-egress-22",
+    "ip": "140.82.121.4",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-egress-25",
+    "ip": "64.233.184.26",
+    "kind": "tcp",
+    "port": 25
+  },
+  {
+    "expect": "open",
+    "from": "ct:110",
+    "id": "site-110-egress-443",
+    "ip": "140.82.121.4",
+    "kind": "tcp",
+    "port": 443
+  },
+  {
+    "expect": "open",
+    "from": "ct:110",
+    "id": "site-110-egress-80",
+    "ip": "151.101.2.132",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "open",
+    "from": "ct:110",
+    "id": "site-110-egress-dns",
+    "ip": "1.1.1.1",
+    "kind": "dns",
+    "port": 53
+  },
+  {
+    "expect": "open",
+    "from": "ct:110",
+    "id": "site-110-self-22",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "open",
+    "from": "ct:110",
+    "id": "site-110-self-3306",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-edge-22",
+    "ip": "10.77.0.2",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-edge-80",
+    "ip": "10.77.0.2",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-host-22",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-host-8006",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 8006
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-hostpub-22",
+    "ip": "135.181.75.90",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-site-111-22",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-site-111-3306",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-site-111-80",
+    "ip": "10.77.0.11",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:110",
+    "id": "site-110-to-tailnet",
+    "ip": "100.120.222.46",
+    "kind": "icmp",
+    "port": 0
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-egress-22",
+    "ip": "140.82.121.4",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-egress-25",
+    "ip": "64.233.184.26",
+    "kind": "tcp",
+    "port": 25
+  },
+  {
+    "expect": "open",
+    "from": "ct:111",
+    "id": "site-111-egress-443",
+    "ip": "140.82.121.4",
+    "kind": "tcp",
+    "port": 443
+  },
+  {
+    "expect": "open",
+    "from": "ct:111",
+    "id": "site-111-egress-80",
+    "ip": "151.101.2.132",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "open",
+    "from": "ct:111",
+    "id": "site-111-egress-dns",
+    "ip": "1.1.1.1",
+    "kind": "dns",
+    "port": 53
+  },
+  {
+    "expect": "open",
+    "from": "ct:111",
+    "id": "site-111-self-22",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "open",
+    "from": "ct:111",
+    "id": "site-111-self-3306",
+    "ip": "127.0.0.1",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-edge-22",
+    "ip": "10.77.0.2",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-edge-80",
+    "ip": "10.77.0.2",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-host-22",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-host-8006",
+    "ip": "10.77.0.1",
+    "kind": "tcp",
+    "port": 8006
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-hostpub-22",
+    "ip": "135.181.75.90",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-site-110-22",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 22
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-site-110-3306",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 3306
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-site-110-80",
+    "ip": "10.77.0.10",
+    "kind": "tcp",
+    "port": 80
+  },
+  {
+    "expect": "blocked",
+    "from": "ct:111",
+    "id": "site-111-to-tailnet",
+    "ip": "100.120.222.46",
+    "kind": "icmp",
+    "port": 0
+  }
+]

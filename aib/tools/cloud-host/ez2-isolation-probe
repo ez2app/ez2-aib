@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""ez2-isolation-probe — 在 Proxmox 宿主上執行 aib_cloud::isolation 產的探測清單(I/O 殼;Rust 端只規劃與判定)。
+
+用法:ez2-isolation-probe <plan.json> [--out results.json]
+  plan.json = [{"id","from":"host"|"ct:<id>"|"external","kind":"tcp"|"dns"|"icmp","ip","port","expect"}, …]
+  from=host  → 直接在宿主跑;from=ct:N → nsenter 進 CT N 的 network namespace(用宿主的工具,不碰 CT 檔案);
+  from=external → 略過(由別的機器跑再合併)。
+  tcp:bash /dev/tcp 3 秒;dns:dig +time=2 @ip;icmp:ping -c1 -W2。只記 open 真假與毫秒,不送任何內容。
+輸出:[{"id","open":bool,"ms":int,"from","kind","ip","port"}],給 Rust judge()。
+"""
+import json, subprocess, sys, time
+
+def ct_init_pid(ct):
+    lxc = subprocess.run(["pgrep", "-f", f"lxc-start.*-n {ct}(\\s|$)"], capture_output=True, text=True).stdout.split()
+    if not lxc:
+        raise SystemExit(f"ct {ct} not running")
+    kids = subprocess.run(["pgrep", "-P", lxc[0]], capture_output=True, text=True).stdout.split()
+    if not kids:
+        raise SystemExit(f"ct {ct}: init pid not found")
+    return kids[0]
+
+def probe(ns_prefix, kind, ip, port):
+    if kind == "tcp":
+        cmd = ns_prefix + ["timeout", "3", "bash", "-c", f"exec 3<>/dev/tcp/{ip}/{port}"]
+    elif kind == "dns":
+        cmd = ns_prefix + ["timeout", "4", "dig", "+short", "+time=2", "+tries=1", f"@{ip}", "example.com"]
+    elif kind == "icmp":
+        cmd = ns_prefix + ["ping", "-c", "1", "-W", "2", ip]
+    else:
+        raise SystemExit(f"unknown kind {kind}")
+    t0 = time.monotonic()
+    rc = subprocess.run(cmd, capture_output=True, text=True).returncode
+    return rc == 0, int((time.monotonic() - t0) * 1000)
+
+def main(argv):
+    if not argv:
+        print(__doc__); return 2
+    plan = json.load(open(argv[0]))
+    out_path = argv[argv.index("--out") + 1] if "--out" in argv else None
+    pids = {}
+    results = []
+    for c in plan:
+        src = c["from"]
+        if src == "external":
+            continue
+        if src == "host":
+            prefix = []
+        elif src.startswith("ct:"):
+            ct = src[3:]
+            pids.setdefault(ct, ct_init_pid(ct))
+            prefix = ["nsenter", "-t", pids[ct], "-n", "--"]
+        else:
+            raise SystemExit(f"unknown from {src}")
+        open_, ms = probe(prefix, c["kind"], c["ip"], c["port"])
+        results.append({"id": c["id"], "open": open_, "ms": ms, "from": src, "kind": c["kind"], "ip": c["ip"], "port": c["port"]})
+        flag = "OPEN " if open_ else "closed"
+        mark = "ok" if (open_ == (c.get("expect") == "open")) else "!!"
+        print(f"{mark} {flag} {c['id']:38s} {src:8s} {c['kind']}://{c['ip']}:{c['port']} {ms}ms", file=sys.stderr)
+    text = json.dumps(results, indent=1)
+    if out_path:
+        open(out_path, "w").write(text)
+    else:
+        print(text)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

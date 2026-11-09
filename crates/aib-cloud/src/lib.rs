@@ -39,4 +39,5 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod isolation;
 pub mod robot;
