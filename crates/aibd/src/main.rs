@@ -1,3 +1,4 @@
+mod ctl;
 use aibd::{config::Config, platform, server};
 use std::process::ExitCode;
 
@@ -11,13 +12,22 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | --help]\n  (no argument: start the local server)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         [] => {}
+        ["ctl", rest @ ..] => {
+            return match ctl::run(rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("aibd ctl: {e}");
+                    ExitCode::from(1)
+                }
+            };
+        }
         ["--version"] | ["-V"] => {
             println!("{}", aibd::selfcheck::version_line());
             return ExitCode::SUCCESS;

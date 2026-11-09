@@ -574,6 +574,10 @@ impl TreeHandle {
         self.stdout.take()
     }
 
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self._stderr.take()
+    }
+
     /// Test hook: record a process as if a scan had found it.
     #[doc(hidden)]
     pub fn record_for_test(&mut self, pid: u32, start_time: u64) {

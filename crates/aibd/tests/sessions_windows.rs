@@ -9,6 +9,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use aib_sys::job::Process;
+use aibd::allowlist::{Program, SessionPolicy};
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use std::io::{Read, Write};
@@ -48,6 +49,26 @@ async fn start(dir: &Path, max: usize) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: max,
+        // M1 gate: exactly the programs these tests start. PowerShell is an interpreter,
+        // so these in-process tests set `interpreters_ok` (only Rust code can).
+        session_policy: SessionPolicy {
+            programs: [
+                ("ping", system32("PING.EXE")),
+                (
+                    "powershell",
+                    system32(r"WindowsPowerShell\v1.0\powershell.exe"),
+                ),
+            ]
+            .into_iter()
+            .map(|(name, p)| Program {
+                name: name.into(),
+                path: PathBuf::from(p),
+                signer: None,
+            })
+            .collect(),
+            env: vec![],
+            interpreters_ok: true,
+        },
     };
     let h = tokio::spawn(async move {
         server::run(

@@ -92,7 +92,7 @@ class Static(unittest.TestCase):
         self.assertIn('EXPECTED_FILES: "%d"' % len(targets), job("draft"), "draft 檢查的檔數要跟矩陣一致")
         vt = re.findall(r"target: ([\w-]+), exe", job("verify"))
         self.assertEqual(vt, targets, "verify 矩陣要跟 build 一致")
-        self.assertIn('cargo build --release --locked -p aibd --target "$TARGET"', b)
+        self.assertIn('cargo build --release --locked -p aibd -p aib-fixture-tree --target "$TARGET"', b)
         self.assertEqual(re.findall(r"(?m)^            plat: (\S+)", b), ["macos-aarch64", "windows-x86_64"])
         self.assertEqual(re.findall(r"(?m)^            arch: (\S+)", b), ["arm64", "x86_64"])
         self.assertIn('[ "$out" = "aibd $VERSION $PLAT" ]', b)
@@ -158,12 +158,12 @@ class Static(unittest.TestCase):
     def test_r9_api_and_sessions_smoke_in_build_and_verify(self):
         b, v = job("build"), job("verify")
         self.assertIn('-I scripts/aibd-api-smoke.py "dist/${NAME}"', b)
-        self.assertIn('-I scripts/aibd-sessions-smoke.py --require "dist/${NAME}"', b)  # 定案 #19:API 合了 ⇒ 必過
+        self.assertIn('-I scripts/aibd-sessions-smoke.py --require --fixture "target/${TARGET}/release/aib-fixture-tree${EXE}" "dist/${NAME}"', b)  # 定案 #19:API 合了 ⇒ 必過;#593 起用原生 fixture(M1 閘拒直譯器)
         self.assertLess(b.index("selfcheck rc 0"), b.index("aibd-api-smoke.py"))
         self.assertLess(b.index("aibd-sessions-smoke.py"), b.index("upload-artifact"), "冒煙沒過不准上傳")
         dl, run = v.split("- name: run what was uploaded")
         self.assertIn('-I ../scripts/aibd-api-smoke.py "./$NAME"', run, "冒煙跑的是從 draft 下載的那份")
-        self.assertIn('-I ../scripts/aibd-sessions-smoke.py --require "./$NAME"', run)  # 定案 #19
+        self.assertIn('-I ../scripts/aibd-sessions-smoke.py --require --fixture "../fx/aib-fixture-tree${EXE}" "./$NAME"', run)  # 定案 #19;#593 fixture
         self.assertNotIn("GH_TOKEN", run)
         self.assertLess(v.index("uses: actions/checkout@v4"), v.index("gh api"), "checkout 會清工作區:要在下載之前")
         self.assertIn('- "scripts/aibd-*-smoke.py"', T, "改冒煙腳本的 PR 也要跑這支 workflow")
@@ -331,7 +331,7 @@ class Docs(unittest.TestCase):
 CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
 # 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
 # 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
-NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md")
+NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md")
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
 
 

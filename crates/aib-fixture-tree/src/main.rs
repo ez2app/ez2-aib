@@ -23,6 +23,16 @@
 //!                 included, is readable), and its parent stays 300 ms so the
 //!                 fork watcher records it. Unix only.
 //!
+//!   smoke-tree <marker> <stop>
+//!                 portable (macOS, Linux, Windows), no signal tricks: starts one
+//!                 child (`smoke-wait <stop>`), writes "<own pid> <child pid>"
+//!                 to <marker> atomically, then waits. Both exit by themselves
+//!                 once <stop> exists, or after 600 s. The release sessions smoke
+//!                 starts this (M1 gate, 043dd 11-09: a shell or interpreter can
+//!                 no longer be a session's program, so the Python helper cannot).
+//!   smoke-wait <stop>
+//!                 wait until <stop> exists (600 s at most).
+//!
 //! With AIB_FIXTURE_GO=<path>, `tree-platform` / `tree-plain` start nothing
 //! until that file exists (the test creates it once `spawn_tree` returned, so
 //! the fork watcher is on the root before the first fork). No go within
@@ -114,8 +124,49 @@ fn write_pid(role: &str) {
     }
 }
 
+/// Poll for `stop` every 200 ms; give up after 600 s.
+fn wait_for_stop(stop: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while !stop.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// `smoke-tree`: one child, the marker, then wait. rc 1 on an I/O error.
+fn smoke_tree(marker: &str, stop: &str) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut child = Command::new(exe)
+        .args(["smoke-wait", stop])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let tmp = format!("{marker}.tmp");
+    std::fs::write(&tmp, format!("{} {}", std::process::id(), child.id()))?;
+    std::fs::rename(&tmp, marker)?;
+    wait_for_stop(std::path::Path::new(stop));
+    // the child polls the same stop file, so this returns within about 200 ms
+    child.wait()?;
+    Ok(())
+}
+
 fn main() {
-    let mode = std::env::args().nth(1).unwrap_or_default();
+    let args: Vec<String> = std::env::args().collect();
+    match (args.get(1).map(String::as_str), args.len()) {
+        (Some("smoke-tree"), 4) => {
+            if let Err(e) = smoke_tree(&args[2], &args[3]) {
+                eprintln!("aib-fixture-tree smoke-tree: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("smoke-wait"), 3) => {
+            wait_for_stop(std::path::Path::new(&args[2]));
+            return;
+        }
+        _ => {}
+    }
+    let mode = args.get(1).cloned().unwrap_or_default();
     match mode.as_str() {
         "complete" => {
             emit(serde_json::json!({"type": "started"}));
