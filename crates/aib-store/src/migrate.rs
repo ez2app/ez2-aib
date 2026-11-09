@@ -11,11 +11,18 @@ pub struct Migration {
 
 /// All migrations this build knows, in order. Never edit an entry that has
 /// shipped; add a new one.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "events",
-    sql: include_str!("../../../migrations/0001_events.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "events",
+        sql: include_str!("../../../migrations/0001_events.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "seats",
+        sql: include_str!("../../../migrations/0002_seats.sql"),
+    },
+];
 
 /// FNV-1a 64-bit: detects edits to an applied migration. Not a security hash.
 fn checksum(sql: &str) -> String {

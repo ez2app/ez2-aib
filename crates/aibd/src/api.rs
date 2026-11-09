@@ -1,7 +1,9 @@
-//! `/api/v1` routes: health (public); event cursor and metrics (authenticated).
+//! `/api/v1` routes: health (public); event cursor, metrics, seats and sessions
+//! (authenticated).
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::seats;
 use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
@@ -28,6 +30,16 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/events", get(events))
         .route("/api/v1/metrics", get(metrics))
+        .route(
+            "/api/v1/seats",
+            get(seats::list)
+                .post(seats::create)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/seats/{id}",
+            get(seats::get_one).fallback(sessions::method_not_allowed),
+        )
         .route(
             "/api/v1/sessions",
             get(sessions::list)

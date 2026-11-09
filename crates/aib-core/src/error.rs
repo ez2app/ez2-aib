@@ -35,10 +35,14 @@ pub enum ErrorCode {
     ShuttingDown,
     /// The route exists but not with this method.
     MethodNotAllowed,
+    /// No seat with that id.
+    SeatNotFound,
+    /// This `Idempotency-Key` was already used on this route for a different request.
+    IdempotencyConflict,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 14] = [
+    pub const ALL: [ErrorCode; 16] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -53,6 +57,8 @@ impl ErrorCode {
         ErrorCode::SpawnFailed,
         ErrorCode::ShuttingDown,
         ErrorCode::MethodNotAllowed,
+        ErrorCode::SeatNotFound,
+        ErrorCode::IdempotencyConflict,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -71,6 +77,8 @@ impl ErrorCode {
             ErrorCode::SpawnFailed => "spawn_failed",
             ErrorCode::ShuttingDown => "shutting_down",
             ErrorCode::MethodNotAllowed => "method_not_allowed",
+            ErrorCode::SeatNotFound => "seat_not_found",
+            ErrorCode::IdempotencyConflict => "idempotency_conflict",
         }
     }
 
@@ -89,6 +97,8 @@ impl ErrorCode {
             ErrorCode::SpawnFailed => 422,
             ErrorCode::ShuttingDown => 503,
             ErrorCode::MethodNotAllowed => 405,
+            ErrorCode::SeatNotFound => 404,
+            ErrorCode::IdempotencyConflict => 409,
         }
     }
 }

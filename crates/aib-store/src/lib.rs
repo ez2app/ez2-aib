@@ -5,6 +5,7 @@
 //! The API is synchronous on purpose; async callers use `spawn_blocking`.
 
 mod migrate;
+mod seats;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 pub use migrate::{Migration, MIGRATIONS};
+pub use seats::{IdemKey, Seat, SeatCreate};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -23,6 +25,8 @@ pub enum StoreError {
     UnknownMigration(i64),
     #[error("writer thread is gone")]
     WriterGone,
+    #[error("invalid write: {0}")]
+    Invalid(&'static str),
     #[error("aggregate {aggregate_id}: expected next sequence {expected}, got {got}")]
     SequenceConflict {
         aggregate_id: String,
@@ -131,34 +135,7 @@ impl Store {
             let tx = c.transaction()?;
             let mut out = Vec::with_capacity(events.len());
             for e in &events {
-                let last: i64 = tx.query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
-                    params![e.aggregate_id],
-                    |r| r.get(0),
-                )?;
-                if e.sequence != last + 1 {
-                    return Err(StoreError::SequenceConflict {
-                        aggregate_id: e.aggregate_id.clone(),
-                        expected: last + 1,
-                        got: e.sequence,
-                    });
-                }
-                tx.execute(
-                    "INSERT INTO events (event_id, aggregate_type, aggregate_id, sequence, type,
-                         correlation_id, occurred_at, payload)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        e.event_id,
-                        e.aggregate_type,
-                        e.aggregate_id,
-                        e.sequence,
-                        e.event_type,
-                        e.correlation_id,
-                        e.occurred_at,
-                        e.payload.to_string(),
-                    ],
-                )?;
-                out.push(tx.last_insert_rowid());
+                out.push(insert_event(&tx, e)?);
             }
             tx.commit()?;
             Ok(out)
@@ -207,6 +184,39 @@ impl Store {
             .optional()?;
         Ok(r.as_deref() == Some("ok"))
     }
+}
+
+/// Insert one event inside an open transaction; its `sequence` must be the
+/// next one for the aggregate. Returns its `global_seq`.
+fn insert_event(tx: &rusqlite::Transaction<'_>, e: &NewEvent) -> Result<i64> {
+    let last: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
+        params![e.aggregate_id],
+        |r| r.get(0),
+    )?;
+    if e.sequence != last + 1 {
+        return Err(StoreError::SequenceConflict {
+            aggregate_id: e.aggregate_id.clone(),
+            expected: last + 1,
+            got: e.sequence,
+        });
+    }
+    tx.execute(
+        "INSERT INTO events (event_id, aggregate_type, aggregate_id, sequence, type,
+             correlation_id, occurred_at, payload)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            e.event_id,
+            e.aggregate_type,
+            e.aggregate_id,
+            e.sequence,
+            e.event_type,
+            e.correlation_id,
+            e.occurred_at,
+            e.payload.to_string(),
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
 }
 
 impl Drop for Store {

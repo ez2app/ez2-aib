@@ -5,6 +5,14 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.2 — unreleased
 
+- Seats (M1, spec 4.1 / 5 / 8): `POST /api/v1/seats` (`{"name"}`, 1–128 characters), `GET /api/v1/seats`,
+  `GET /api/v1/seats/{id}`. A seat is stored in SQLite (migration 0002) together with its `seat.created`
+  event in one transaction, so it is read back after a restart. A new seat is `CREATED`; sessions are
+  not attached to seats yet. Writes take an optional `Idempotency-Key` (1–128 of `A-Z a-z 0-9 - _ . :`):
+  the same key and body replays the first answer with `Idempotent-Replayed: true` (also after a
+  restart), another body is `409 idempotency_conflict`. New error codes `seat_not_found`,
+  `idempotency_conflict`.
+
 - `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
   (macOS process group, Windows Job). Details and limits: the preview.2 release notes.
 

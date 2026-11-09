@@ -180,6 +180,25 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+      # M1 seats (a9136): an Idempotency-Key is bound to its request, and a
+      # seat is written together with its event. Each knife must turn its
+      # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
+      # binding used (`&& false`, not `if false`).
+      - name: seats knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py crates/aib-store/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-store --locked --test seats "$3"; }
+          # S1 a reused key with another request replays the first answer instead of refusing
+          sk '                    if request != k.request {' \
+            '                    if request != k.request && false { // knife' \
+            the_same_key_with_another_request_is_a_conflict_and_writes_nothing
+          # S2 the seat is written without its event
+          sk '            insert_event(&tx, &event)?;' \
+            '            // knife: no event' \
+            a_seat_and_its_event_survive_a_restart
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

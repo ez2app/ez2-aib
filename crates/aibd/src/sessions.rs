@@ -157,11 +157,11 @@ pub struct Request {
 pub struct ApiError(pub ErrorCode, pub String);
 
 impl ApiError {
-    fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
+    pub(crate) fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
         ApiError(code, msg.into())
     }
 
-    fn into_response(self) -> Response {
+    pub(crate) fn into_response(self) -> Response {
         error_response(self.0, &self.1, &guard::request_id())
     }
 }
@@ -969,7 +969,7 @@ fn wait_timeout<'a>(cv: &Condvar, g: MutexGuard<'a, Inner>, d: Duration) -> Mute
         .unwrap_or_else(|e| e.into_inner().0)
 }
 
-fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
+pub(crate) fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b)?;
     Ok(format!(
@@ -1009,7 +1009,7 @@ fn rfc3339(secs: i64, ms: u32) -> String {
 
 // ---- HTTP handlers ----
 
-fn json_content_type(h: &HeaderMap) -> bool {
+pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
     h.get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
