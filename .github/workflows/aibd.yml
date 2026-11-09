@@ -289,6 +289,16 @@ jobs:
             '    let mut stack = vec![parent];' \
             $'    let mut stack = vec![parent];\n    unread_gone.store(false, Ordering::Relaxed); // knife' \
             platform::fork_watch::tests::unread_gone_is_latched_across_passes
+          # G1f (setuid /bin/ps, 043dd THREAT) no sysctl fallback: a setuid child is a gap again
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),' \
+            '        Err(SysError::PermissionDenied) if false => pr.start_other_uid(pid), // knife' \
+            platform::fork_watch::tests::a_setuid_child_is_read_through_the_fallback_and_followed
+          # G1g a failed fallback is let through (a made-up start time)
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),' \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid).or(Ok(0)), // knife' \
+            platform::fork_watch::tests::a_refused_child_whose_fallback_fails_stays_a_gap
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used

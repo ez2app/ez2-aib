@@ -42,6 +42,7 @@ use nix::errno::Errno;
 use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
@@ -94,6 +95,9 @@ fn watch(kq: &Kqueue, pid: u32) -> Result<(), Errno> {
 trait Probe {
     fn kids(&self, parent: u32) -> Result<Vec<u32>, SysError>;
     fn start(&self, pid: u32) -> Result<u64, SysError>;
+    /// G1 (setuid child): the start time when `start` was refused. Only for a
+    /// process running as another uid; a same-uid refusal stays refused.
+    fn start_other_uid(&self, pid: u32) -> Result<u64, SysError>;
     /// Register the kqueue watch.
     fn watch(&self, pid: u32) -> Result<(), Errno>;
     /// Read and keep the unique id now (lineage on); false = not read.
@@ -120,6 +124,18 @@ impl Probe for Ctx {
     }
     fn start(&self, pid: u32) -> Result<u64, SysError> {
         start_time(pid)
+    }
+    fn start_other_uid(&self, pid: u32) -> Result<u64, SysError> {
+        if !sysctl_start_ok() {
+            return Err(SysError::PermissionDenied);
+        }
+        // same uid and still refused (sandboxed, restricted): no reason to
+        // trust it not to fork unseen (043dd THREAT 3)
+        let me = Macos.euid(std::process::id())?;
+        if Macos.euid(pid)? == me {
+            return Err(SysError::PermissionDenied);
+        }
+        Macos.start_sec_sysctl(pid)
     }
     fn watch(&self, pid: u32) -> Result<(), Errno> {
         watch(&self.kq, pid)
@@ -158,6 +174,31 @@ fn watch_gap(res: Result<(), Errno>, lineage_on: bool) -> Option<&'static str> {
     }
 }
 
+/// Self-check of the sysctl fallback, once per process: on ourselves it must
+/// read exactly what M2 reads. Otherwise the fallback is off and a refused
+/// start stays a gap (the rule before G1's fallback).
+fn sysctl_start_ok() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let me = std::process::id();
+        matches!(
+            (Macos.start_sec_sysctl(me), start_time(me)),
+            (Ok(a), Ok(b)) if a == b
+        )
+    })
+}
+
+/// A child's start time. G1 (1ced7 VERIFY, 043dd THREAT-G1-setuid): claude
+/// runs `/bin/ps`, setuid root, whose M2 read is EPERM. Its start time is then
+/// read through sysctl, and it is followed like any other child (watched,
+/// its children listed): no blind spot, no wide-rule flag.
+fn read_start(pr: &impl Probe, pid: u32) -> Result<u64, SysError> {
+    match pr.start(pid) {
+        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),
+        r => r,
+    }
+}
+
 /// Record and watch every not-yet-known descendant of `parent`. A child
 /// gone before it was read sets `unread_gone` (lineage on; never cleared).
 fn adopt(pr: &impl Probe, seen: &Seen, gaps: &Gaps, unread_gone: &AtomicBool, parent: u32) {
@@ -172,7 +213,7 @@ fn adopt(pr: &impl Probe, seen: &Seen, gaps: &Gaps, unread_gone: &AtomicBool, pa
             if k == 0 || lock(seen).contains_key(&k) {
                 continue;
             }
-            let ks = match pr.start(k) {
+            let ks = match read_start(pr, k) {
                 Ok(ks) => ks,
                 // G1: gone before it was read. What it started is under
                 // launchd now, with a creator unique id nobody recorded: the
@@ -366,6 +407,8 @@ mod tests {
         start_err: BTreeMap<u32, SysError>,
         /// pids that are gone when their start is read
         gone: BTreeSet<u32>,
+        /// what the setuid fallback returns (default: refused, same uid)
+        other_uid: BTreeMap<u32, Result<u64, SysError>>,
         unwatchable: BTreeMap<u32, Errno>,
         lineage: bool,
         watched: RefCell<Vec<u32>>,
@@ -387,6 +430,12 @@ mod tests {
                 return Err(e.clone());
             }
             self.starts.get(&pid).copied().ok_or(SysError::Unknown)
+        }
+        fn start_other_uid(&self, pid: u32) -> Result<u64, SysError> {
+            self.other_uid
+                .get(&pid)
+                .cloned()
+                .unwrap_or(Err(SysError::PermissionDenied))
         }
         fn watch(&self, pid: u32) -> Result<(), Errno> {
             self.watched.borrow_mut().push(pid);
@@ -454,6 +503,52 @@ mod tests {
             let (_, gaps, unread) = run_adopt_g1(&f, &AtomicBool::new(false));
             assert_eq!((gaps, unread), (vec![GAP_CHILD_UNREADABLE], false), "{e:?}");
         }
+    }
+
+    /// G1 setuid (claude runs /bin/ps): M2 is refused, the sysctl fallback
+    /// reads the start time, and the child is followed like any other:
+    /// recorded, watched, its own children listed. No gap.
+    #[test]
+    fn a_setuid_child_is_read_through_the_fallback_and_followed() {
+        let f = Fake {
+            kids: BTreeMap::from([(10, Some(vec![11])), (11, Some(vec![12]))]),
+            starts: BTreeMap::from([(12, 102)]),
+            start_err: BTreeMap::from([(11, SysError::PermissionDenied)]),
+            other_uid: BTreeMap::from([(11, Ok(101))]),
+            ..Fake::default()
+        };
+        assert_eq!(run_adopt(&f), (vec![10, 11, 12], vec![]));
+        assert!(f.watched.borrow().contains(&11), "{:?}", f.watched.borrow());
+    }
+
+    /// The fallback failing (same uid, or any error) is still a gap; gone
+    /// with lineage is the usual "unread, gone" case.
+    #[test]
+    fn a_refused_child_whose_fallback_fails_stays_a_gap() {
+        for e in [
+            SysError::PermissionDenied,
+            SysError::Unknown,
+            SysError::Os(5),
+        ] {
+            let f = Fake {
+                kids: BTreeMap::from([(10, Some(vec![11]))]),
+                start_err: BTreeMap::from([(11, SysError::PermissionDenied)]),
+                other_uid: BTreeMap::from([(11, Err(e.clone()))]),
+                lineage: true,
+                ..Fake::default()
+            };
+            let (_, gaps, unread) = run_adopt_g1(&f, &AtomicBool::new(false));
+            assert_eq!((gaps, unread), (vec![GAP_CHILD_UNREADABLE], false), "{e:?}");
+        }
+        let f = Fake {
+            kids: BTreeMap::from([(10, Some(vec![11]))]),
+            start_err: BTreeMap::from([(11, SysError::PermissionDenied)]),
+            other_uid: BTreeMap::from([(11, Err(SysError::Gone))]),
+            lineage: true,
+            ..Fake::default()
+        };
+        let (_, gaps, unread) = run_adopt_g1(&f, &AtomicBool::new(false));
+        assert_eq!((gaps, unread), (Vec::<&str>::new(), true));
     }
 
     /// 043dd 21:42 #1: `unread_gone` holds for the whole session. A child
