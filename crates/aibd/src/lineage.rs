@@ -27,6 +27,9 @@ pub struct Lineage {
     info: Option<Arc<dyn ProcessInfo>>,
     selfcheck: String,
     failures: AtomicU64,
+    /// G1: candidates the widened orphan check added over the narrow one,
+    /// summed over every check (measured first, narrowed later if needed).
+    orphan_extra: AtomicU64,
 }
 
 impl std::fmt::Debug for Lineage {
@@ -35,6 +38,7 @@ impl std::fmt::Debug for Lineage {
             .field("enabled", &self.enabled())
             .field("selfcheck", &self.selfcheck)
             .field("failures", &self.failures())
+            .field("orphan_candidates_extra", &self.orphan_candidates_extra())
             .finish()
     }
 }
@@ -62,6 +66,7 @@ impl Lineage {
             info: None,
             selfcheck: reason.to_owned(),
             failures: AtomicU64::new(0),
+            orphan_extra: AtomicU64::new(0),
         }
     }
 
@@ -72,6 +77,7 @@ impl Lineage {
                 info: Some(info),
                 selfcheck: "ok".into(),
                 failures: AtomicU64::new(0),
+                orphan_extra: AtomicU64::new(0),
             },
             Err(f) => Self::disabled(&format!("failed:{}", f.tag())),
         }
@@ -100,12 +106,18 @@ impl Lineage {
         self.failures.load(Ordering::Relaxed)
     }
 
+    /// G1: see the `orphan_extra` field.
+    pub fn orphan_candidates_extra(&self) -> u64 {
+        self.orphan_extra.load(Ordering::Relaxed)
+    }
+
     /// `/api/v1/metrics` view.
     pub fn status(&self) -> serde_json::Value {
         serde_json::json!({
             "enabled": self.enabled(),
             "selfcheck": self.selfcheck,
             "failures": self.failures(),
+            "orphan_candidates_extra": self.orphan_candidates_extra(),
         })
     }
 
@@ -272,11 +284,18 @@ impl Lineage {
     /// session root (`unique` > `root_unique`). Pids in `skip` (already known)
     /// and `me` are left out. Never signals anything; the caller only checks
     /// their environment. `complete` is false when any read failed.
+    ///
+    /// `wide` (G1): a child of the session was gone before its unique id was
+    /// read, so its own children carry a `parent_unique` nobody recorded.
+    /// Then every same-uid `ppid` 1 process newer than the root is a
+    /// candidate, whatever its `parent_unique`. How many that adds is
+    /// `Candidates::extra` (and summed in the metrics).
     pub fn late_exec_candidates(
         &self,
         root_unique: u64,
         me: u32,
         skip: &BTreeMap<u32, u64>,
+        wide: bool,
     ) -> Candidates {
         let Some(info) = self.info.as_ref() else {
             return Candidates::default();
@@ -299,6 +318,7 @@ impl Lineage {
         let mut c = Candidates {
             pids: Vec::new(),
             complete: true,
+            extra: 0,
         };
         for pid in all {
             if pid == me || skip.contains_key(&pid) {
@@ -318,7 +338,11 @@ impl Lineage {
                 continue;
             }
             match info.unique_ids(pid) {
-                Ok(u) if u.parent_unique == 1 && u.unique > root_unique => c.pids.push(pid),
+                Ok(u) if u.unique > root_unique && u.parent_unique == 1 => c.pids.push(pid),
+                Ok(u) if u.unique > root_unique && wide => {
+                    c.pids.push(pid);
+                    c.extra += 1;
+                }
                 Ok(_) | Err(SysError::Gone) => {}
                 Err(_) => {
                     self.fail();
@@ -326,6 +350,8 @@ impl Lineage {
                 }
             }
         }
+        self.orphan_extra
+            .fetch_add(c.extra as u64, Ordering::Relaxed);
         c
     }
 }
@@ -346,6 +372,8 @@ pub struct M1Cache {
 pub struct Candidates {
     pub pids: Vec<u32>,
     pub complete: bool,
+    /// How many of `pids` only the widened check (`wide`) added.
+    pub extra: usize,
 }
 
 #[cfg(test)]
@@ -391,14 +419,57 @@ mod tests {
         f.add(504, 1, 5040, 7777, 73); // creator recorded (lineage's job): no
         f.add(505, 1, 5050, 1, 74); // already known: no
         let (l, _f) = on(f);
-        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50), (505, 74)]));
+        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50), (505, 74)]), false);
         assert_eq!(
             c,
             Candidates {
                 pids: vec![500],
-                complete: true
+                complete: true,
+                extra: 0,
             }
         );
+    }
+
+    /// G1 / 043dd 20:42: a child gone before it was read leaves orphans whose
+    /// `parent_unique` names a dead, unrecorded process. The narrow check
+    /// (`parent_unique == 1`) misses them; the wide one takes every same-uid
+    /// launchd child newer than the root, and says how many it added.
+    #[test]
+    fn an_unread_gone_child_widens_the_orphan_candidates() {
+        let f = table();
+        f.add(50, 1, 900_000, 77, 80); // orphan: creator 77 is dead and unrecorded
+        f.add(51, 1, 900_001, 1, 81); // launchd child newer than the root
+        f.add(52, 1, 700, 77, 30); // orphan older than the root: not ours
+        f.add(53, 1, 900_002, 77, 82); // other account: not ours
+        f.set_uid(53, 0);
+        let (l, _f) = on(f);
+        let k = known(&[(ROOT, 50)]);
+        let narrow = l.late_exec_candidates(1000, ME, &k, false);
+        assert!(!narrow.pids.contains(&50), "{narrow:?}");
+        assert!(narrow.pids.contains(&51), "{narrow:?}");
+        assert_eq!(narrow.extra, 0);
+        assert_eq!(l.orphan_candidates_extra(), 0);
+        let wide = l.late_exec_candidates(1000, ME, &k, true);
+        assert!(
+            wide.pids.contains(&50) && wide.pids.contains(&51),
+            "{wide:?}"
+        );
+        assert!(
+            !wide.pids.contains(&52) && !wide.pids.contains(&53),
+            "{wide:?}"
+        );
+        // table(): 300 (creator 2000, dead) and 400 (creator 9999) are newer
+        // than the root too, so the wide check adds them as well
+        let added: Vec<u32> = wide
+            .pids
+            .iter()
+            .copied()
+            .filter(|p| !narrow.pids.contains(p))
+            .collect();
+        assert_eq!(wide.extra, added.len(), "{wide:?}");
+        assert!(added.contains(&50), "{added:?}");
+        assert_eq!(l.orphan_candidates_extra(), added.len() as u64);
+        assert_eq!(l.status()["orphan_candidates_extra"], added.len() as u64);
     }
 
     #[test]
@@ -407,22 +478,31 @@ mod tests {
         f.add(500, 1, 5000, 1, 70);
         f.fail(Call::UniqueIds, 500, SysError::Incomplete);
         let (l, _f) = on(f);
-        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50)]));
+        let c = l.late_exec_candidates(1000, ME, &known(&[(ROOT, 50)]), false);
         assert!(!c.complete, "{c:?}");
 
         let f = table();
         f.fail(Call::BsdInfo, 400, SysError::Incomplete);
         let (l, _f) = on(f);
-        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
+        assert!(
+            !l.late_exec_candidates(1000, ME, &BTreeMap::new(), false)
+                .complete
+        );
 
         let f = table();
         f.fail(Call::AllPids, 0, SysError::Incomplete);
         let (l, _f) = on(f);
-        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
+        assert!(
+            !l.late_exec_candidates(1000, ME, &BTreeMap::new(), false)
+                .complete
+        );
 
         // lineage off: never complete
         let l = Lineage::disabled("test");
-        assert!(!l.late_exec_candidates(1000, ME, &BTreeMap::new()).complete);
+        assert!(
+            !l.late_exec_candidates(1000, ME, &BTreeMap::new(), false)
+                .complete
+        );
     }
 
     #[test]

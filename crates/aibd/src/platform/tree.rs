@@ -134,6 +134,9 @@ pub struct Report {
     pub candidates_unreadable: Vec<u32>,
     /// The candidate list itself was read in full.
     pub candidates_complete: bool,
+    /// G1: candidates only the widened orphan check added (a child of the
+    /// session was gone before it could be read; see `unread_gone`).
+    pub orphan_candidates_extra: usize,
     /// Misses a layer knows about (codes, sorted): `root_unrecorded` and the
     /// fork watcher's `fork_watch_*`. Any of them = never `observed_clean`.
     pub known_gaps: Vec<&'static str>,
@@ -234,6 +237,7 @@ impl Report {
 #[derive(Default)]
 struct CandidateCheck {
     count: usize,
+    extra: usize,
     complete: bool,
     unreadable: Vec<u32>,
     marked_alive: Vec<u32>,
@@ -264,6 +268,9 @@ pub struct TreeHandle {
     /// unique ids read while each process was alive (lineage on only)
     uniques: BTreeMap<u32, u64>,
     lineage_incomplete: bool,
+    /// G1: the fork watcher saw a child gone before it could be read.
+    /// Latched for the session (043dd 21:42 #1): widens the orphan check.
+    unread_gone: bool,
     /// Misses known to this handle (merged with the fork watcher's).
     gaps: BTreeSet<&'static str>,
     /// M1 reads of processes that are not ours, between passes (M4).
@@ -413,6 +420,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         lineage: spec.lineage.clone().filter(|l| l.enabled()),
         uniques: BTreeMap::new(),
         lineage_incomplete: false,
+        unread_gone: false,
         gaps: BTreeSet::new(),
         m1_cache: M1Cache::default(),
         #[cfg(target_os = "macos")]
@@ -613,6 +621,8 @@ impl TreeHandle {
                 self.uniques.entry(pid).or_insert(u);
             }
             self.gaps.extend(w.gaps());
+            // never reset: once seen, the widened check holds to the stop
+            self.unread_gone |= w.unread_gone();
         }
     }
 
@@ -948,6 +958,7 @@ impl TreeHandle {
             candidates: check.count,
             candidates_unreadable: check.unreadable,
             candidates_complete: check.complete,
+            orphan_candidates_extra: check.extra,
             known_gaps: self.gaps.iter().copied().collect(),
             exit_code,
         })
@@ -962,9 +973,16 @@ impl TreeHandle {
         else {
             return CandidateCheck::default();
         };
-        let c = l.late_exec_candidates(root_unique, std::process::id(), &self.known);
+        self.absorb();
+        let c = l.late_exec_candidates(
+            root_unique,
+            std::process::id(),
+            &self.known,
+            self.unread_gone,
+        );
         let mut out = CandidateCheck {
             count: c.pids.len(),
+            extra: c.extra,
             complete: c.complete,
             ..CandidateCheck::default()
         };
