@@ -135,8 +135,9 @@ def _env(td: Path, **extra) -> dict:
         env.pop(k, None)
     home = td / "home"
     home.mkdir(exist_ok=True)
+    # AIB_TEST_TRACE_MIN=0:本檔驗的是影子續跑本身,一兩支也要追蹤(11-09 起預設不到 100 支不追蹤)
     env.update({"HOME": str(home), "EZ2_AIB_LOCALE": "zh-TW", "EZ2_VERIFY_SHADOW_DIR": str(td / "shadow"),
-                "PYTHONDONTWRITEBYTECODE": "1", **GIT_ENV})
+                "PYTHONDONTWRITEBYTECODE": "1", "AIB_TEST_TRACE_MIN": "0", **GIT_ENV})
     env.update(extra)
     return env
 
@@ -1081,7 +1082,7 @@ class EntryKnives(unittest.TestCase):
             layer = dst / "tools" / "verify" / "test_entry.py"
             src = layer.read_text(encoding="utf-8")
             needle = (
-                '    if res.get("state") != "fallback":\n'
+                '    if res.get("state") not in ("fallback", "small"):\n'
                 '        nobase = sum(1 for r in res["tests"] if not r["reused"] and not r.get("unverified") and r.get("baseline_s") is None)\n'
                 '        print(T("slow_summary", {"slow": len(slow), "nobase": nobase}))\n'
             )
