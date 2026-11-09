@@ -101,6 +101,7 @@ pub async fn run(
             store,
             lineage,
             sessions: sessions.clone(),
+            session_policy: Arc::new(cfg.session_policy.clone()),
         },
         guard_cfg,
     );

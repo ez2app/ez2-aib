@@ -21,7 +21,8 @@ pub enum ErrorCode {
     Internal,
     /// Request body or a field broke the contract (the message names the field, never its value).
     InvalidRequest,
-    /// A session `env` key is on the deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`).
+    /// A session `env` key is not on the configured allow-list (`AIBD_SESSION_POLICY`), or
+    /// is on the fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) that no list overrides.
     EnvNotAllowed,
     /// Request body larger than the endpoint allows.
     PayloadTooLarge,
@@ -39,10 +40,15 @@ pub enum ErrorCode {
     SeatNotFound,
     /// This `Idempotency-Key` was already used on this route for a different request.
     IdempotencyConflict,
+    /// A session's `argv[0]` is not a program the policy allows (`AIBD_SESSION_POLICY`;
+    /// compared by real path; shells, interpreters and launchers never).
+    ProgramNotAllowed,
+    /// The listed provider is an npm (node) install; only standalone signed builds run.
+    ProviderInstallUnsupported,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 16] = [
+    pub const ALL: [ErrorCode; 18] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -59,6 +65,8 @@ impl ErrorCode {
         ErrorCode::MethodNotAllowed,
         ErrorCode::SeatNotFound,
         ErrorCode::IdempotencyConflict,
+        ErrorCode::ProgramNotAllowed,
+        ErrorCode::ProviderInstallUnsupported,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -79,6 +87,8 @@ impl ErrorCode {
             ErrorCode::MethodNotAllowed => "method_not_allowed",
             ErrorCode::SeatNotFound => "seat_not_found",
             ErrorCode::IdempotencyConflict => "idempotency_conflict",
+            ErrorCode::ProgramNotAllowed => "program_not_allowed",
+            ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
         }
     }
 
@@ -99,6 +109,7 @@ impl ErrorCode {
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,
+            ErrorCode::ProgramNotAllowed | ErrorCode::ProviderInstallUnsupported => 403,
         }
     }
 }

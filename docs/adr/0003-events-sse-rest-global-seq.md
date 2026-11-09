@@ -104,3 +104,46 @@ for that proof; no Risk 3 operation exists before it is implemented.
   network while hidden, and their exceptions. aibd's side (cursor resume, snapshot,
   bounded buffers) is fixed here; the browser-side contract follows in a later ADR from
   the web seat, after spec v0.2.1.
+
+## Update 2026-11-09 (Risk 3: who a session may start, M1 gate)
+
+Four rulings (a63ab 11-09 19:12 / 19:14 / 19:15, Andy approved 19:1x):
+
+1. **Shells and interpreters are never on the list.** `POST /api/v1/sessions` starts only
+   programs on an allow-list (`AIBD_SESSION_POLICY`, a JSON file read once at start; unset
+   = nothing may start). Shells, interpreters and launchers (sh, bash, zsh, cmd,
+   PowerShell, python, node, ruby, perl, osascript, env, xargs, sudo …) are refused both
+   when the file is read and at every spawn. Programs are compared by **real path**
+   (symlinks resolved), so a link to `sh` or a renamed link is refused. On Windows the
+   comparison ignores case, and the name check drops `.exe`. `argv[0]` with `..` is
+   refused before anything is resolved, and aibd runs the real path it checked. If you
+   really need an interpreter later, write a new ADR. It needs per-program rules (a fixed
+   script path; no `-c` / `-e` / `-m` / program on stdin) and is Risk 3 with approval.
+2. **A renamed copy of a shell passes M1 (known gap, I4).** The M1 list guards against
+   mistakes and against an API caller passing an arbitrary path. It is **not** a defence
+   against a same-user AI. That AI can edit the policy file or copy `sh` under another
+   name. A permission or hash check on the file would not change that, and is not added.
+   The defences come in three steps:
+   - M2: the provider adapter checks the executable's signer (macOS codesign Team ID,
+     Windows Authenticode subject). A copied `sh` is not signed by the provider vendor.
+   - M4: the approval centre, with Touch ID / Windows Hello.
+   - Phase 5: the installer keeps the list where the user cannot write.
+
+   The I4 test asserts today's "allowed". It must flip to "refused" when M2 lands.
+3. **Only standalone signed installs are supported.** An npm install of a provider runs
+   through node. aibd refuses it with `provider_install_unsupported` (403), naming the
+   standalone build, rather than relax the node rule. The cases are a `.js` real path, or
+   a `#!` line or `.cmd` shim that names node. Measured standalone builds (11-09, macOS
+   only): claude 2.1.319 (Anthropic, Team Q6L2SF6YDW) and codex 0.160.0 (Team 2DC432GLL2).
+   Both are signed Mach-O binaries. Windows waits for a real machine.
+4. **A list entry is a name plus the expected signer.**
+   `{"name": "claude", "path": "/abs/claude", "signer": "Q6L2SF6YDW"}`. In M1, every spawn
+   resolves the real path again with no cache, so a version update that moves the target
+   is followed. M1 records `signer` and does not check it. From M2 the signer decides, so a
+   versioned path change does not matter.
+
+Env names are on the same file's `env` list. Anything else answers `env_not_allowed`.
+The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) cannot be listed. Refusals happen
+before anything starts. They take no slot, write no event, and name the setting, never a
+value from the request. Gaps that remain: a file swapped between the check and exec (P8)
+is not caught.

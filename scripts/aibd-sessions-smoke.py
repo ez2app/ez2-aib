@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Sessions smoke for a built aibd: open a program that has a grandchild, DELETE it, check the whole tree is gone.
 
-    python3 -I scripts/aibd-sessions-smoke.py PATH/TO/aibd[.exe] [--require] [--timeout S] [--marker-timeout S]
+    python3 -I scripts/aibd-sessions-smoke.py PATH/TO/aibd[.exe] [--require] [--fixture PATH] [--timeout S] [--marker-timeout S]
+  --fixture PATH      the aib-fixture-tree binary; the session runs `PATH smoke-tree <marker> <stop>` and
+                      AIBD_SESSION_POLICY lists exactly PATH (M1 gate, 043dd 11-09: aibd refuses shells and
+                      interpreters, so a Python helper can no longer be the session's program). Without it the
+                      old Python helper is used and no policy is set (an aibd with the gate then refuses it).
   --timeout S         how long to wait for aibd's start-up line (default 20)
   --marker-timeout S  how long the started program may take to write its marker (default 20; bb7dc #537:
                       a separate limit, so a wider start-up wait never widens this check)
@@ -10,8 +14,9 @@ a63ab PLAN-preview2-usable-today (1ced7, 11-09). Same script on macOS and Window
 
 1. Starts aibd the same way as scripts/aibd-api-smoke.py: AIBD_BIND=127.0.0.1:0, AIBD_DATA_DIR in a fresh temp dir,
    reads the start-up line {"listening", "token_file"}.
-2. POST /api/v1/sessions {"argv": [python, helper, marker, stopfile], "cwd": tmp} must answer 201 with an id and a pid.
-   The helper starts one grandchild, writes "<child pid> <grandchild pid>" to the marker file, then both wait.
+2. POST /api/v1/sessions {"argv": [fixture, "smoke-tree", marker, stopfile], "cwd": tmp} (or [python, helper, …]
+   without --fixture) must answer 201 with an id and a pid.
+   The program starts one grandchild, writes "<child pid> <grandchild pid>" to the marker file, then both wait.
    - 404 / 405 on POST = this aibd has no sessions API ⇒ SKIP (rc 0), unless --require (then rc 1).
 3. GET /api/v1/sessions/{id} must answer 200 with state "running".
 4. DELETE /api/v1/sessions/{id} must answer 2xx with a stop result the contract allows as "done"
@@ -200,12 +205,19 @@ def wait_for(pred, seconds, step=0.1):
     return pred()
 
 
-def smoke(exe, require, timeout, marker_timeout=20.0):
+def smoke(exe, require, timeout, marker_timeout=20.0, fixture=None):
     res = {"exe": os.path.basename(exe)}
     work = tempfile.mkdtemp(prefix="aibd-sessions-smoke-")
     out_path, err_path = os.path.join(work, "out.txt"), os.path.join(work, "err.txt")
     env = dict(os.environ, AIBD_BIND="127.0.0.1:0", AIBD_DATA_DIR=os.path.join(work, "data"))
     env.pop("AIBD_ALLOWED_ORIGINS", None)
+    env.pop("AIBD_SESSION_POLICY", None)
+    if fixture:
+        # M1 gate (043dd 11-09): aibd starts only listed programs; list exactly the one this smoke starts
+        policy = os.path.join(work, "session-policy.json")
+        with open(policy, "w", encoding="utf-8") as f:
+            json.dump({"programs": [{"name": "aib-fixture-tree", "path": fixture, "signer": None}]}, f)
+        env["AIBD_SESSION_POLICY"] = policy
     proc, ok, pids = None, False, []
     stopfile = os.path.join(work, "stop")
     try:
@@ -227,12 +239,16 @@ def smoke(exe, require, timeout, marker_timeout=20.0):
         except OSError:
             token = ""
         res["token_read"] = bool(token)
-        helper = os.path.join(work, "helper.py")
-        with open(helper, "w", encoding="utf-8") as f:
-            f.write(HELPER)
         marker = os.path.join(work, "pids.txt")
-        code, body = call("POST", base + "/api/v1/sessions", token,
-                          {"argv": [os.path.abspath(sys.executable), helper, marker, stopfile], "cwd": work})
+        if fixture:
+            argv = [fixture, "smoke-tree", marker, stopfile]
+        else:
+            helper = os.path.join(work, "helper.py")
+            with open(helper, "w", encoding="utf-8") as f:
+                f.write(HELPER)
+            argv = [os.path.abspath(sys.executable), helper, marker, stopfile]
+        res["program"] = "fixture" if fixture else "python-helper"
+        code, body = call("POST", base + "/api/v1/sessions", token, {"argv": argv, "cwd": work})
         res["post"] = code
         if code in (404, 405):
             res["sessions"] = "absent"
@@ -305,6 +321,17 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     require = "--require" in argv
     argv = [a for a in argv if a != "--require"]
+    fixture = None
+    if "--fixture" in argv:
+        i = argv.index("--fixture")
+        if i + 1 >= len(argv):
+            print("aibd-sessions-smoke: --fixture needs a path")
+            return 2
+        fixture = os.path.abspath(argv[i + 1])
+        del argv[i:i + 2]
+        if not os.path.isfile(fixture):
+            print("aibd-sessions-smoke: no such fixture: %s" % fixture)
+            return 2
     limits = {"--timeout": 20.0, "--marker-timeout": 20.0}
     for flag in limits:
         if flag in argv:
@@ -317,13 +344,13 @@ def main(argv=None):
             del argv[i:i + 2]
     timeout, marker_timeout = limits["--timeout"], limits["--marker-timeout"]
     if len(argv) != 1:
-        print("usage: aibd-sessions-smoke.py PATH/TO/aibd [--require] [--timeout S] [--marker-timeout S]")
+        print("usage: aibd-sessions-smoke.py PATH/TO/aibd [--require] [--fixture PATH] [--timeout S] [--marker-timeout S]")
         return 2
     exe = os.path.abspath(argv[0])
     if not os.path.isfile(exe):
         print("aibd-sessions-smoke: no such file: %s" % exe)
         return 2
-    res, ok = smoke(exe, require, timeout, marker_timeout)
+    res, ok = smoke(exe, require, timeout, marker_timeout, fixture)
     res["pass"] = bool(ok)
     print(("SKIP sessions API absent " if res.get("skipped") else "") + json.dumps(res, ensure_ascii=False))
     return 0 if ok else 1

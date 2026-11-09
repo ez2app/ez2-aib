@@ -3,8 +3,23 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## 0.2.0-preview.2 — unreleased
+## 0.2.0-preview.3 — unreleased
 
+- **M1 security gate, `POST /api/v1/sessions` (breaking):** only programs and env names on an
+  allow-list may be started. The list is a JSON file named by `AIBD_SESSION_POLICY`
+  (`{"programs": [{"name", "path", "signer"}], "env": [...]}`), read once at start. Unset means
+  nothing may be started; an unreadable or invalid file stops aibd (exit 2).
+  - Every spawn resolves the real path again and runs it.
+  - Shells, interpreters and launchers are refused even when listed. So is `..` in `argv[0]`.
+    These answer `403 program_not_allowed` (new).
+  - An npm (node) install of a provider answers `403 provider_install_unsupported` (new).
+  - Unlisted env names answer `400 env_not_allowed`.
+  - The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) still applies and cannot be listed.
+  - `signer` is recorded, not checked yet (M2).
+  - Not a defence against a same-user process: ADR 0003 "Update 2026-11-09" lists the known
+    gaps.
+- `aib-fixture-tree smoke-tree` / `smoke-wait`: a portable native program for the sessions smoke.
+  The release smoke now runs it with `--fixture` instead of a Python helper.
 - Seats (M1, spec 4.1 / 5 / 8): `POST /api/v1/seats` (`{"name"}`, 1–128 characters), `GET /api/v1/seats`,
   `GET /api/v1/seats/{id}`. A seat is stored in SQLite (migration 0002) together with its `seat.created`
   event in one transaction, so it is read back after a restart. A new seat is `CREATED`; sessions are
@@ -28,6 +43,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `session.output_truncated` event and the rest is read and dropped. With Claude Code
   `--output-format stream-json` each line is one whole event, not a token delta. The text is never
   written to aibd's log. Windows sessions still start with null stdio (output not kept; UNVERIFIED).
+
+## 0.2.0-preview.2 — 2026-11-09
 
 - `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
   (macOS process group, Windows Job). Details and limits: the preview.2 release notes.

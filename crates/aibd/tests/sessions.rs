@@ -7,6 +7,7 @@
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
+use aibd::allowlist::{Program, SessionPolicy};
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use std::io::{Read, Write};
@@ -37,7 +38,42 @@ impl Drop for Own {
     }
 }
 
+/// A listed file without any execute bit: it resolves and passes the gate, then exec
+/// fails (the "a failed start gives its slot back" case).
+fn not_executable(dir: &Path) -> PathBuf {
+    let f = dir.join("not-executable");
+    std::fs::write(&f, b"plain data\n").unwrap();
+    f
+}
+
+fn fx(name: &str, path: impl Into<PathBuf>) -> Program {
+    Program {
+        name: name.into(),
+        path: path.into(),
+        signer: None,
+    }
+}
+
+/// The policy most tests use: exactly the programs / env names they start. `/bin/sh` is
+/// a shell, so these in-process tests set `interpreters_ok` (only Rust code can).
+fn fixtures(dir: &Path) -> SessionPolicy {
+    SessionPolicy {
+        programs: vec![
+            fx("sh", "/bin/sh"),
+            fx("sleep", "/bin/sleep"),
+            fx("true", "/bin/true"),
+            fx("not-executable", not_executable(dir)),
+        ],
+        env: vec!["MY_VAR".into(), "MY_TOKEN".into()],
+        interpreters_ok: true,
+    }
+}
+
 async fn start(dir: &Path, max: usize) -> Daemon {
+    start_policy(dir, max, fixtures(dir)).await
+}
+
+async fn start_policy(dir: &Path, max: usize, session_policy: SessionPolicy) -> Daemon {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (st_tx, st_rx) = tokio::sync::oneshot::channel::<Started>();
     let c = Config {
@@ -45,6 +81,7 @@ async fn start(dir: &Path, max: usize) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: max,
+        session_policy,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -345,14 +382,22 @@ async fn limits_errors_and_the_guard_on_every_route() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 2).await;
     let v = view(&d);
+    let ne = tmp.path().join("not-executable").display().to_string();
     blocking!(v, |v| {
         let d = v.d();
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "{s}");
         // a failed start gives its reserved slot back: the second still fits
-        let (c, s) = d.post(&["/no/such/program"]);
+        let (c, s) = d.post(&[ne.as_str()]);
         assert_eq!((c, s["code"].as_str()), (422, Some("spawn_failed")), "{s}");
-        assert_eq!(s["message"], "could not start: enoent");
+        assert_eq!(s["message"], "could not start: eacces");
+        // a path that does not exist is not a listed program
+        let (c, s) = d.post(&["/no/such/program"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "slot leaked by the failed spawn: {s}");
         let (c, s) = d.post(&["/bin/sleep", "60"]);
@@ -468,6 +513,145 @@ async fn h3_concurrent_posts_never_exceed_the_limit() {
     d.shutdown().await;
 }
 
+/// M1 gate (a63ab 11-09): a program the policy does not allow and an env name it does not
+/// list are refused before anything starts; nothing is listed and no session event is
+/// written for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn m1_gate_refuses_unlisted_programs_and_env_names_before_starting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let v = view(&d);
+    blocking!(v, |v| {
+        let d = v.d();
+        let (c, s) = d.post(&["/bin/echo", "should-not-run"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
+        assert!(
+            !s.to_string().contains("/bin/echo"),
+            "message echoes the request: {s}"
+        );
+        // `..` is refused before anything is resolved
+        let (c, s) = d.post(&["/bin/../bin/true"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
+        let body =
+            serde_json::json!({"argv": ["/bin/true"], "env": {"NOT_LISTED": "sk-SECRET-ENV"}})
+                .to_string();
+        let (c, s) = d.call("POST", "/api/v1/sessions", Some(&body));
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("env_not_allowed")),
+            "{s}"
+        );
+        let (c, s) = d.call("GET", "/api/v1/sessions", None);
+        assert_eq!(c, 200);
+        assert_eq!(s["sessions"].as_array().map(Vec::len), Some(0), "{s}");
+        let (c, evs) = d.call("GET", "/api/v1/events?limit=500", None);
+        assert_eq!(c, 200);
+        let started = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.started")
+            .count();
+        assert_eq!(started, 0, "{evs}");
+        // a63ab 19:23: each refusal is audited, folded per token + code per minute
+        // (two program refusals ⇒ one record), with exactly these payload keys
+        let rejected: Vec<&serde_json::Value> = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.spawn_rejected")
+            .collect();
+        assert_eq!(rejected.len(), 2, "{evs}");
+        let mut codes: Vec<&str> = rejected
+            .iter()
+            .map(|e| e["payload"]["code"].as_str().unwrap())
+            .collect();
+        codes.sort_unstable();
+        assert_eq!(codes, ["env_not_allowed", "program_not_allowed"]);
+        for e in &rejected {
+            assert_eq!(e["aggregate_type"], "security", "{e}");
+            let mut keys: Vec<&str> = e["payload"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                ["at", "code", "folded_before", "program", "token_id"],
+                "{e}"
+            );
+            assert_eq!(e["payload"]["token_id"], "startup", "{e}");
+            assert_eq!(e["payload"]["folded_before"], 0, "{e}");
+        }
+        let text = evs.to_string();
+        for secret in ["should-not-run", "sk-SECRET-ENV", "NOT_LISTED", "/bin/echo"] {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+    });
+    d.shutdown().await;
+}
+
+/// M1 gate with the policy aibd really runs (`interpreters_ok` false): a shell is refused
+/// even when listed in code, and an npm-style provider gets its own code (I2, N3).
+#[tokio::test(flavor = "multi_thread")]
+async fn m1_gate_refuses_shells_and_npm_installs_over_http() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let link = tmp.path().join("fixture-ok");
+    symlink("/bin/sh", &link).unwrap();
+    let js = tmp.path().join("cli.js");
+    std::fs::write(&js, b"#!/usr/bin/env node\n").unwrap();
+    std::fs::set_permissions(&js, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = tmp.path().join("claude");
+    symlink(&js, &claude).unwrap();
+    let policy = SessionPolicy {
+        programs: vec![
+            fx("fixture-ok", link.clone()),
+            fx("claude", claude.clone()),
+            fx("sleep", "/bin/sleep"),
+        ],
+        env: vec![],
+        interpreters_ok: false,
+    };
+    let mut d = start_policy(tmp.path(), 8, policy).await;
+    let v = view(&d);
+    let (link, claude) = (link.display().to_string(), claude.display().to_string());
+    blocking!(v, |v| {
+        let d = v.d();
+        for p in [link.as_str(), "/bin/sh"] {
+            let (c, s) = d.post(&[p, "-c", "exit 0"]);
+            assert_eq!(
+                (c, s["code"].as_str()),
+                (403, Some("program_not_allowed")),
+                "{p}: {s}"
+            );
+        }
+        let (c, s) = d.post(&[claude.as_str()]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("provider_install_unsupported")),
+            "{s}"
+        );
+        let (c, s) = d.call("GET", "/api/v1/sessions", None);
+        assert_eq!(c, 200);
+        assert_eq!(s["sessions"].as_array().map(Vec::len), Some(0), "{s}");
+        // the gate is what refused them: a listed native program still starts
+        let (c, s) = d.post(&["/bin/sleep", "60"]);
+        assert_eq!(c, 201, "{s}");
+    });
+    d.shutdown().await;
+}
+
 /// Contract §4 / bb7dc: neither events nor GET carry env values or the full
 /// argv's secret parts; events name argv[0]'s file name and the count.
 #[tokio::test(flavor = "multi_thread")]
@@ -497,7 +681,12 @@ async fn events_never_carry_env_or_the_full_argv() {
         .iter()
         .find(|e| e["type"] == "session.started" && e["aggregate_id"] == id.as_str())
         .unwrap();
-    assert_eq!(started["payload"]["argv0"], "sh");
+    // argv[0] is replaced by the real path (Linux: /bin/sh is dash)
+    let sh = std::fs::canonicalize("/bin/sh").unwrap();
+    assert_eq!(
+        started["payload"]["argv0"],
+        sh.file_name().unwrap().to_str().unwrap()
+    );
     assert_eq!(started["payload"]["argc"], 4);
     d.shutdown().await;
 }
