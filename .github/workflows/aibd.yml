@@ -388,6 +388,29 @@ jobs:
             '        (Ok(_), Err(_)) => (None, false),' \
             '        (Ok(m), Err(_)) => (Some(m), false), // knife' \
             platform::tree::tests::the_coalition_self_check
+      # G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): macOS holds a new
+      # program before exec until it is recorded. Each knife must turn its test red.
+      - name: held-before-exec knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # H1 the child does not wait for the go byte: the program runs while held
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '        let n = unsafe { libc::read(go_r, go.as_mut_ptr().cast(), 1) };' \
+            '        let n: isize = 1; let _ = (go_r, &mut go); // knife: never wait' \
+            --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
+            -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
+          # H2 / H3 start_tree does not hold: an instant root is recorded too late,
+          # and a detached grandchild of it is left running
+          for t in an_instant_program_is_recorded_before_it_can_exit \
+                   a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped; do
+            python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+              $'    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))\n        .map_err(StartFailedOr::NotStarted)?;' \
+              '    let (child, rec): (_, Option<Recorded>) = (c.spawn().map_err(StartFailedOr::NotStarted)?, None); // knife: not held' \
+              --expect-fail "$t" \
+              -- cargo test -p aibd --locked --test tree "$t"
+          done
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used

@@ -424,6 +424,26 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - The interface is private: an OS update may change the struct. `pidinfo` refuses any
   answer that is not exactly 40 bytes, and an unread coalition keeps the rule before.
 
+**Held before exec (G1 root_unrecorded, DECISION-root-unrecorded-a9136-1110).**
+- A program that exited at once could be gone before aibd recorded its start time and
+  started the fork watcher. The stop then had the `root_unrecorded` gap: never clean, the
+  slot held until aibd restarted (#609, `printenv`). The gap stays a gap: a root that is
+  not recorded may have forked a child that cleared its environment and left the session
+  (`env -i` + `setsid`), which no other layer finds (1ced7 / 043dd / bb7dc / Codex).
+- macOS now starts the program held between `fork` and `exec` (`aib-sys`
+  `held::spawn_held`): the child hands its pid over a close-on-exec pipe in `pre_exec`
+  and waits for one byte on a second pipe. While it waits aibd reads its coalition, its
+  unique id (the same before and after exec, Mac Pro 13), its start time, and starts the
+  fork watcher; then it writes the byte. `std::process::Command::spawn` returns only after
+  exec, so it runs on another thread meanwhile. If aibd cannot read the pid, or panics,
+  the pipe closes unwritten and the program never runs.
+- `POSIX_SPAWN_START_SUSPENDED` + `SIGCONT` also holds a program (measured), but
+  `std::process::Command` exposes no spawn flags and `std::process::Child` is what the
+  rest of the tree code uses.
+- Failures while recording keep their paths: no process table ⇒ the group is killed
+  through the H1 check; the watcher not started ⇒ `StartFailed` with the handle.
+- Other platforms record right after spawn, as before.
+
 **Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
 records. A child that the watcher reads after that point, and that has already exited, sets
 the flag too late for this stop: the narrow rule is used once. This needs a fork and an
