@@ -660,7 +660,7 @@ async fn the_child_sees_listed_env_and_its_session_id_but_no_aibd_variable() {
                 "{lines:?}"
             );
             let own = format!("AIBD_SESSION={id}");
-            assert!(lines.iter().any(|l| *l == own), "no {own}: {lines:?}");
+            assert!(lines.contains(&own), "no {own}: {lines:?}");
             assert!(
                 !lines.iter().any(|l| l.contains("AIBDLEAK-1ced7")),
                 "aibd's own AIBD_* reached the child: {lines:?}"
