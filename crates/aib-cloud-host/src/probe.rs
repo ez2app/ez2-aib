@@ -1088,31 +1088,39 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
     );
     if switch {
         let new_ip = format!("10.77.0.{}", ip.unwrap_or(0));
-        let current = edge_caddyfile()?;
-        let next = caddy_swap_block(&current, &code, &caddy_block_upstream(&spec, &new_ip))
-            .map_err(|e| e.to_string())?;
-        let backup_file = edge_apply_caddyfile(&next)?;
-        eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
-        // c477a #585 L4: the record follows the switch (ct, ip, ssh_port) so drift and backups
-        // look at the new CT; the old record is kept beside it.
+        // c477a #585 增量 L1: build and validate the new record *before* the Edge moves, so a
+        // record that cannot be written (ssh_port overflow, bad fields) never leaves the Edge
+        // pointing at a CT no record describes.
         let rec_path = format!("{records}/{code}.json");
         let text = fs::read_to_string(&rec_path).map_err(|e| format!("{rec_path}: {e}"))?;
-        fs::write(format!("{rec_path}.bak-{}", unix_now()), &text)
-            .map_err(|e| format!("{rec_path}.bak: {e}"))?;
         let mut rec: Value = serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
         let new_ct_n = ct.unwrap_or(0);
         rec["ct"] = json!(new_ct_n);
         rec["ip"] = json!(new_ip);
         let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
         if had_ssh {
-            rec["ssh_port"] = json!(2000 + new_ct_n);
+            let port = 2000u64 + u64::from(new_ct_n);
+            if port > 65535 {
+                return Err(format!(
+                    "new ct {new_ct_n}: customer ssh port 2000+ct would be {port}; not switching"
+                ));
+            }
+            rec["ssh_port"] = json!(port);
         }
-        aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("new record invalid: {e}"))?;
-        fs::write(
-            &rec_path,
-            serde_json::to_string(&rec).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| format!("{rec_path}: {e}"))?;
+        aib_cloud::site::spec_from_record(&rec)
+            .map_err(|e| format!("new record invalid, not switching: {e}"))?;
+        let new_text = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
+        let current = edge_caddyfile()?;
+        let next = caddy_swap_block(&current, &code, &caddy_block_upstream(&spec, &new_ip))
+            .map_err(|e| e.to_string())?;
+        let backup_file = edge_apply_caddyfile(&next)?;
+        eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
+        // the record follows the switch (c477a #585 L4); old record kept, new one written via tmp + rename
+        fs::write(format!("{rec_path}.bak-{}", unix_now()), &text)
+            .map_err(|e| format!("{rec_path}.bak: {e}"))?;
+        let tmp = format!("{rec_path}.tmp-{}", std::process::id());
+        fs::write(&tmp, new_text).map_err(|e| format!("{tmp}: {e}"))?;
+        fs::rename(&tmp, &rec_path).map_err(|e| format!("{tmp} → {rec_path}: {e}"))?;
         eprintln!(
             "record {rec_path} now points at ct {new_ct_n} / {new_ip}{}",
             if had_ssh {

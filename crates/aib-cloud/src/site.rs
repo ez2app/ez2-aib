@@ -332,6 +332,45 @@ pub fn config_key_allowed(key: &str) -> bool {
     DESIRED.contains(&key) || HARMLESS.contains(&key) || key == "lxc.idmap"
 }
 
+/// One `lxc.idmap` value that the per-CT range plan allows (DECISION ct-idmap, c477a #585 M1'):
+/// `u 0 <base> 65536` or `g 0 <base> 65536` with `base = 100000 + 65536 × k`, k ≥ 1 — never
+/// base 0 (that would make container root the host's root while `unprivileged: 1` still
+/// reads fine). Returns the kind and base.
+pub fn idmap_value(value: &str) -> Option<(char, u64)> {
+    let mut it = value.split_whitespace();
+    let kind = match it.next()? {
+        "u" => 'u',
+        "g" => 'g',
+        _ => return None,
+    };
+    if it.next()? != "0" {
+        return None;
+    }
+    let base: u64 = it.next()?.parse().ok()?;
+    if it.next()? != "65536" || it.next().is_some() {
+        return None;
+    }
+    if base < 100_000 + 65_536 || (base - 100_000) % 65_536 != 0 || base > 4_000_000_000 {
+        return None;
+    }
+    Some((kind, base))
+}
+
+/// The whole `lxc.idmap` set of a CT: absent is fine (default shared range, the 11-09 sites),
+/// otherwise exactly one `u` and one `g` line with the same allowed base.
+pub fn idmap_set_ok(values: &[&str]) -> bool {
+    if values.is_empty() {
+        return true;
+    }
+    if values.len() != 2 {
+        return false;
+    }
+    match (idmap_value(values[0]), idmap_value(values[1])) {
+        (Some((k1, b1)), Some((k2, b2))) => k1 != k2 && b1 == b2,
+        _ => false,
+    }
+}
+
 /// The per-CT firewall file: options, the two SSH-1 rules when the site has customer ssh
 /// (private / tailnet sources still dropped on 22, public DNATed ssh accepted), then the
 /// versioned group, nothing else. The shell writes exactly this; `drift` compares against it
@@ -530,7 +569,31 @@ pub fn drift(
     // Everything else in the config must be on the allow-list (c477a #585 M1: a deny-list
     // missed `lxc.hook.*`, which runs as host root at CT start). Anything not declared by
     // `desired()` and not a known harmless PVE key is drift, named by its key.
+    // lxc.idmap: the key is allowed, the value must be the per-CT range shape (M1')
+    let idmaps: Vec<&str> = obs
+        .iter()
+        .filter(|(k, _)| k == "lxc.idmap")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    if !idmap_set_ok(&idmaps) {
+        out.push(Drift {
+            ct: spec.ct,
+            key: "lxc.idmap".to_owned(),
+            want: "<absent> or exactly `u 0 <base> 65536` + `g 0 <base> 65536` with base = 100000 + 65536k, k ≥ 1 (never base 0)".to_owned(),
+            got: idmaps.join(" | "),
+        });
+    }
     for (k, v) in &obs {
+        // rootfs must be this CT's own volume (c477a #585 L3: another CT's volume = two sites on one disk)
+        if k == "rootfs" && !v.contains(&alloc::format!("vm-{}-disk-", spec.ct)) {
+            out.push(Drift {
+                ct: spec.ct,
+                key: "rootfs".to_owned(),
+                want: alloc::format!("<a volume named vm-{}-disk-*>", spec.ct),
+                got: v.clone(),
+            });
+            continue;
+        }
         if !config_key_allowed(k) {
             let why = if k.starts_with("mp") || k.starts_with("dev") {
                 "<absent> (no bind mounts / devices on a site CT)"
@@ -1131,6 +1194,39 @@ mod tests {
         assert_eq!(
             drift(&site2(), &benign, Some(&fw)).unwrap(),
             Vec::<Drift>::new()
+        );
+        // c477a #585 M1': lxc.idmap value is checked — base 0 is root-as-root, one line alone or
+        // mismatched bases are not a range plan either
+        for bad in [
+            "lxc.idmap: u 0 0 65536\nlxc.idmap: g 0 0 65536\n",
+            "lxc.idmap: u 0 165536 65536\n",
+            "lxc.idmap: u 0 165536 65536\nlxc.idmap: g 0 231072 65536\n",
+            "lxc.idmap: u 0 100000 65536\nlxc.idmap: g 0 100000 65536\n",
+            "lxc.idmap: u 0 165537 65536\nlxc.idmap: g 0 165537 65536\n",
+            "lxc.idmap: u 0 165536 65535\nlxc.idmap: g 0 165536 65535\n",
+            "lxc.idmap: u 1000 165536 1\nlxc.idmap: g 0 165536 65536\n",
+        ] {
+            assert_eq!(
+                keys(drift(&site2(), &alloc::format!("{CT112}{bad}"), Some(&fw)).unwrap()),
+                ["lxc.idmap"],
+                "{bad}"
+            );
+        }
+        assert_eq!(idmap_value("u 0 165536 65536"), Some(('u', 165_536)));
+        assert_eq!(idmap_value("g 0 231072 65536"), Some(('g', 231_072)));
+        assert!(idmap_value("u 0 0 65536").is_none() && idmap_value("x 0 165536 65536").is_none());
+        assert!(idmap_set_ok(&[]) && !idmap_set_ok(&["u 0 165536 65536"]));
+        // L3: rootfs pointing at another CT's volume is drift
+        assert_eq!(
+            keys(
+                drift(
+                    &site2(),
+                    &CT112.replace("vm-112-disk-0", "vm-110-disk-0"),
+                    Some(&fw)
+                )
+                .unwrap()
+            ),
+            ["rootfs"]
         );
         assert!(config_key_allowed("lxc.cgroup2.pids.max") && config_key_allowed("lxc.idmap"));
         assert!(
