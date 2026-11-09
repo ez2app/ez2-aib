@@ -24,8 +24,10 @@ from unittest import mock
 
 AIB = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(AIB / "src" / "cockpit"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dm_queue as Q  # noqa: E402
+from tmp_paths import forms as _tmp_forms  # noqa: E402
 
 # 刀測複本不帶 tests/fixtures ⇒ 測試用 AIB_DM_SPEC_FIXTURE 指回真樹那份(只讀)
 FIXTURE = Path(os.environ.get("AIB_DM_SPEC_FIXTURE") or AIB / "tests" / "fixtures" / "dm-spec" / "transitions-v1.json")
@@ -66,11 +68,9 @@ NOT_COVERED = ["evidence=commit(要 git 倉)", "evidence=回信 id(要別席佇�
 
 # 暫存目錄(_Env)的路徑:Mac 的 /var/folders/… 一定超過 40 字 ⇒ 本來就記 <str>;Linux 的 /tmp/aib-dm-spec-xxxxxxxx/…
 #   常常不到 40 字 ⇒ 會照原文寫進去,而且每次隨機(#570 ubuntu 三格紅 58 格)。含暫存路徑的字串一律記 <str>,兩個平台一樣。
-TMP_ROOTS = []
-
-
-def _norm(v, now):
-    if isinstance(v, str) and any(r and r in v for r in TMP_ROOTS):
+#   根的寫法(原樣 + realpath)由 tmp_paths.forms 給;每次呼叫自己帶 roots,不留模組層級狀態(#570 a9136 N1)。
+def _norm(v, now, roots=()):
+    if isinstance(v, str) and any(r and r in v for r in roots):
         return "<str>"
     if v == now:
         return "<now>"
@@ -83,14 +83,14 @@ def _norm(v, now):
     return "<%s>" % type(v).__name__
 
 
-def _changes(before, after, now):
+def _changes(before, after, now, roots=()):
     keys = sorted(set(before) | set(after))
     out = {}
     for k in keys:
         if k.startswith("_"):
             continue
         if before.get(k, "<absent>") != after.get(k, "<absent>"):
-            out[k] = _norm(after[k], now) if k in after else "<removed>"
+            out[k] = _norm(after[k], now, roots) if k in after else "<removed>"
     return out
 
 
@@ -98,7 +98,7 @@ class _Env:
     def __init__(self):
         self.td = tempfile.TemporaryDirectory(prefix="aib-dm-spec-")
         d = Path(self.td.name)
-        TMP_ROOTS[:] = sorted({str(d), os.path.realpath(str(d))}, key=len, reverse=True)
+        self.roots = _tmp_forms(str(d))
         (d / "home").mkdir()
         self.env = {"EZ2_AIB_STATE_ROOT": str(d / "state"), "HOME": str(d / "home"), "EZ2_AIB_LOCALE": "zh-TW"}
         self.evfile = d / "evidence.txt"
@@ -150,7 +150,7 @@ def cell(box, frm, to, actor_key, why_key, ev_key, flag):
     row = {"from": frm, "to": to, "actor": actor_key, "why": why_key, "evidence": ev_key, "flag": flag,
            "ok": bool(r.get("ok")), "reason": r.get("reason")}
     if r.get("ok"):
-        row["set"] = _changes(before, after, NOW)
+        row["set"] = _changes(before, after, NOW, box.roots)
         row["in_order"] = iid in (Q._load_order(SEAT, env).get("ids") or [])
         if receipts:
             row["receipt"] = receipts

@@ -13,6 +13,7 @@ T5 長的先換:自己的資料夾在系統暫存根底下 ⇒ 換成 <TMP>/… 
 T6 不留狀態:前一次呼叫帶的根,下一次不會再換(#570 a9136 N1)。
 T7 row_export 的 _roots / _sub_root 就是 helper(行為一字不差)。
 T8 aib_tmp_root 匯出同一組名字。
+T9 dm_spec 不再有模組層級 TMP_ROOTS,每次呼叫自己帶 roots(#570 a9136 N1);含暫存路徑的短字串記 <str>。
 刀(複本 + run_guarded):K1 拿掉 realpath ⇒ T2 紅(macOS 另外 T3 紅);K2 改成短的先 ⇒ T5 紅;K3 拿掉邊界 ⇒ T4 紅。
 """
 import os
@@ -94,6 +95,14 @@ class T(unittest.TestCase):
         self.assertIs(aib_tmp_root.norm_tmp, TP.norm_tmp)
         self.assertIs(aib_tmp_root.tmp_forms, TP.forms)
         self.assertEqual(aib_tmp_root.TMP_TAG, "<TMP>")
+
+    def test_t9_dm_spec_takes_roots_per_call(self):
+        import dm_spec
+        self.assertFalse(hasattr(dm_spec, "TMP_ROOTS"), "dm_spec 又有模組層級的 TMP_ROOTS(#570 N1)")
+        roots = TP.forms(self.d)
+        short = os.path.join(os.path.realpath(self.d), "e.txt")     # Linux 上常常不到 40 字
+        self.assertEqual(dm_spec._norm(short, None, roots), "<str>")
+        self.assertEqual(dm_spec._norm("看過了", None, roots), "看過了")
 
 
 REL = "tools/verify/tmp_paths.py"
