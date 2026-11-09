@@ -310,7 +310,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let (ran_r, ran_p) = (fr.exists(), fp.exists());
         let _ = std::fs::remove_dir_all(&d);
-        assert!(r.is_err(), "a hold past the limit still started: {:?}", r.map(|(c, h)| (c.id(), h)));
+        assert!(
+            r.is_err(),
+            "a hold past the limit still started: {:?}",
+            r.map(|(c, h)| (c.id(), h))
+        );
         assert!(p.is_err(), "the late panic did not come back");
         assert!(seen.lock().unwrap().is_some(), "on_held never ran");
         assert!(!ran_r && !ran_p, "a program ran after its hold gave up");
