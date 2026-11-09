@@ -205,9 +205,10 @@ and the "periodic scans cost CPU" consequence.
 
 Windows section drafted by @043dd, merged here by @a9136 and checked against the code on
 `main` (`crates/aib-sys/src/job.rs`, `crates/aib-sys/tests/windows.rs`,
-`scripts/check-win-job-knives.sh`). What is on `main` came in with #492. The aibd side
-(sessions on Windows, J0 adopted in `main`) is #543, still a draft: those points are
-marked **(#543)** and are not a decision until it merges. Status: CI-windows (GitHub
+`scripts/check-win-job-knives.sh`). What is on `main` came in with #492, #535 and #539
+(references below are `file:line` at `main` d018516c). The aibd session adapter on
+Windows is #543, still a draft: those points are marked **(#543)** and are not a decision
+until it merges. Status: CI-windows (GitHub
 `windows-latest`); desktop behaviour is UNVERIFIED.
 
 - **Where.** `aib-sys::job` is the only place with `unsafe` for this (`windows-sys
@@ -222,7 +223,8 @@ marked **(#543)** and are not a decision until it merges. Status: CI-windows (Gi
   (see "Update 2026-11-07 (performance budget)").
 - **J0 (DECISION-21).** `aib-sys` can put the calling process into its own job with
   `KILL_ON_JOB_CLOSE`, no breakaway and a non-inheritable handle; session jobs are then
-  nested in it. aibd adopting J0 first thing in `main` is **(#543)**.
+  nested in it. aibd adopts J0 first thing in `main`, before the runtime and before any
+  child exists, and refuses to start if it cannot (`crates/aibd/src/main.rs:42`).
 - **Identity.** `(pid, creation time)`, with the creation time from `GetProcessTimes`
   (FILETIME, 100 ns). The ppid is never read. Membership is re-checked with
   `IsProcessInJob`, so a reused pid outside the job is never reported as a member.
@@ -234,9 +236,10 @@ marked **(#543)** and are not a decision until it merges. Status: CI-windows (Gi
   attached it polls every 20 ms and reports `wait_mode = poll`.
 - **What "clean" means.** Unchanged: `Report::clean_status()` gives `clean` only with
   proven containment and complete lineage (DECISION-23); everything else is
-  `tree_not_clean` or `unverified` with a reason. On Windows **(#543)** a session stop is
-  `Clean` only when the job emptied **and** every member handle opened before
-  `TerminateJobObject` has signalled (`KillReport::all_gone`); survivors ⇒
+  `tree_not_clean` or `unverified` with a reason. On Windows the settle rule is on `main`
+  (`KillReport::all_gone`, `crates/aib-sys/src/settle.rs:41`); the session stop that uses
+  it is **(#543)**: `Clean` only when the job emptied **and** every member handle opened
+  before `TerminateJobObject` has signalled; survivors ⇒
   `TreeNotClean`; an error ⇒ `Unverified("job_error:<tag>")`.
 - **Cancel on Windows.** Replaces "Windows: go straight to step 3" in section 2.
   - `aib-sys` can send `CTRL_BREAK_EVENT` to the CLI's group, only while the root is a
