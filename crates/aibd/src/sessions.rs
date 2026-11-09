@@ -1242,17 +1242,17 @@ pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
 /// Content type, size and [`validate`], shared by both POST routes. The first layer's
 /// refusals that matter are audited (1ced7 #593 M2: deny-listed env names, a relative
 /// `argv[0]`); plain shape errors (bad JSON, too long) are not.
-async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Request, Response> {
+async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Request, ApiError> {
     if !json_content_type(headers) {
-        return Err(bad("Content-Type must be application/json").into_response());
+        return Err(bad("Content-Type must be application/json"));
     }
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
-            return Err(
-                ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                    .into_response(),
-            )
+            return Err(ApiError::new(
+                ErrorCode::PayloadTooLarge,
+                "request body over 64 KiB",
+            ))
         }
     };
     match validate(&bytes) {
@@ -1267,14 +1267,14 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
                 })
                 .await;
             }
-            Err(e.into_response())
+            Err(e)
         }
     }
 }
 
 /// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
 /// is audited.
-async fn gate(st: &AppState, req: Request) -> Result<Request, Response> {
+async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
     let run = move || {
@@ -1285,19 +1285,19 @@ async fn gate(st: &AppState, req: Request) -> Result<Request, Response> {
     };
     match tokio::task::spawn_blocking(run).await {
         Ok(Ok(r)) => Ok(r),
-        Ok(Err(e)) => Err(e.into_response()),
-        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error").into_response()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error")),
     }
 }
 
 pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
     let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(e) => return e.into_response(),
     };
     let req = match gate(&st, req).await {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start(req)).await {
@@ -1318,7 +1318,7 @@ pub async fn create_for_seat(
 ) -> Response {
     let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(e) => return e.into_response(),
     };
     let store = st.store.clone();
     let sid = seat.clone();
@@ -1333,7 +1333,7 @@ pub async fn create_for_seat(
     // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
     let req = match gate(&st, req).await {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
