@@ -74,7 +74,8 @@ impl Review<'_> {
 
     /// A pass with no high or medium finding left (a `通過` with M > 0 is a
     /// contradiction the merge chain must not resolve on its own). This looks
-    /// at the review alone: a merge must use [`Review::mergeable_at`].
+    /// at the review alone: a merge must use [`Review::mergeable_at`] (one `全文` review) or
+    /// [`chain_mergeable_at`] (a chain of increments).
     pub fn mergeable(&self) -> bool {
         self.conforms()
             && self.verdict == Verdict::Pass
@@ -82,11 +83,52 @@ impl Review<'_> {
             && self.counts.medium == 0
     }
 
-    /// [`Review::mergeable`] and reviewed at `head` (the PR's head now). The
-    /// only check a merge may use: a review of an older head never merges a
-    /// newer one (a9136 c3d2f112 L1).
+    /// This one review alone lets `head` (the PR's head now) merge: it is
+    /// [`Review::mergeable`], for `head` (a review of an older head never
+    /// merges a newer one, a9136 c3d2f112 L1), and covers the whole PR
+    /// (`全文`). An incremental review covers only its range, so it never
+    /// passes here on its own (a63ab 11-10: an old head reviewed in full and
+    /// refused, then a new head passed on the increment alone, must not merge
+    /// on that one file): use [`chain_mergeable_at`] for a chain.
     pub fn mergeable_at(&self, head: &str) -> bool {
-        self.head == head && self.mergeable()
+        self.head == head && self.scope == Scope::Full && self.mergeable()
+    }
+}
+
+/// The reviews of one PR let `head` merge:
+///
+/// - no conforming review **of `head`** refuses it (`不通過`, or H / M left):
+///   one reviewer's refusal is not outvoted by another's pass;
+/// - one review of `head` is [`Review::mergeable`];
+/// - its coverage reaches a `全文` review: an incremental review's `from` must
+///   be the head of another conforming review, and so on back to a `全文` one.
+///
+/// A link may be a review that refused its head: that is the usual fix cycle
+/// (refused in full, fixed, the fix passed on the increment; #589 95ade73f ⇒
+/// 2af03401). A range nobody reviewed breaks the chain. Non-conforming reviews
+/// (a short range, `全分支 …`) never count. Who wrote each review (not the
+/// author) is the caller's check.
+pub fn chain_mergeable_at(reviews: &[Review<'_>], head: &str) -> bool {
+    let at_head = || reviews.iter().filter(|r| r.head == head && r.conforms());
+    if at_head().any(|r| !r.mergeable()) {
+        return false;
+    }
+    at_head().any(|r| covers_from_full(reviews, r, reviews.len()))
+}
+
+/// `r`'s coverage reaches a `全文` review in at most `left` links (the bound
+/// stops a cycle of ranges).
+fn covers_from_full(reviews: &[Review<'_>], r: &Review<'_>, left: usize) -> bool {
+    match r.scope {
+        Scope::Full => true,
+        Scope::Incremental { from, .. } => {
+            left > 0
+                && reviews
+                    .iter()
+                    .filter(|p| p.head == from && p.conforms())
+                    .any(|p| covers_from_full(reviews, p, left - 1))
+        }
+        Scope::Other(_) => false,
     }
 }
 
@@ -417,6 +459,80 @@ mod tests {
             !r.mergeable_at(A),
             "a review of an older head merged a newer one"
         );
+    }
+
+    const C: &str = "2af03401a124ce7276eb2f180cdf809a346a5d2d";
+
+    fn line(verdict: &str, head: &str, counts: &str, scope: &str) -> std::string::String {
+        std::format!("結論: {verdict} 頭: {head} H/M/L/N: {counts} 範圍: {scope}")
+    }
+
+    /// a63ab 11-10 (decide had the same hole): the old head refused in full,
+    /// the new head passed on the increment. That increment alone is not a
+    /// review of the PR.
+    #[test]
+    fn an_increment_alone_never_merges_on_its_own() {
+        let full_no = line("不通過", A, "0/2/0/0", "全文");
+        let inc_ok = line("通過", B, "0/0/0/0", &std::format!("增量 {A}..{B}"));
+        let inc = parse_review(&inc_ok).unwrap();
+        assert!(inc.mergeable(), "the increment itself is clean");
+        assert!(
+            !inc.mergeable_at(B),
+            "an incremental review merged a PR on its own"
+        );
+        // nobody reviewed base..A: the chain is broken
+        assert!(!chain_mergeable_at(&[inc], B));
+        // with the refused full review of A it is the fix cycle (#589): the chain holds
+        let full = parse_review(&full_no).unwrap();
+        assert!(!full.mergeable_at(A));
+        assert!(chain_mergeable_at(&[full, inc], B));
+        // and still nothing merges at the old head
+        assert!(!chain_mergeable_at(&[full, inc], A));
+    }
+
+    #[test]
+    fn a_refusal_of_the_head_is_not_outvoted() {
+        let yes = line("通過", B, "0/0/0/0", "全文");
+        let no = line("不通過", B, "0/1/0/0", "全文");
+        let m_left = line("通過", B, "0/1/0/0", "全文");
+        let (yes, no, m_left) = (
+            parse_review(&yes).unwrap(),
+            parse_review(&no).unwrap(),
+            parse_review(&m_left).unwrap(),
+        );
+        assert!(chain_mergeable_at(&[yes], B));
+        assert!(!chain_mergeable_at(&[yes, no], B));
+        assert!(!chain_mergeable_at(&[no, yes], B));
+        assert!(!chain_mergeable_at(&[yes, m_left], B));
+    }
+
+    #[test]
+    fn a_chain_of_increments_reaches_the_full_review() {
+        let l1 = line("通過", A, "0/0/1/0", "全文");
+        let l2 = line("不通過", B, "0/1/0/0", &std::format!("增量 {A}..{B}"));
+        let l3 = line("通過", C, "0/0/0/1", &std::format!("增量 {B}..{C}"));
+        let short = line("通過", C, "0/0/0/0", "增量 967111ff..2af03401");
+        let rs: std::vec::Vec<Review<'_>> = [&l1, &l2, &l3]
+            .iter()
+            .map(|l| parse_review(l).unwrap())
+            .collect();
+        assert!(chain_mergeable_at(&rs, C));
+        // drop the middle link: B..C hangs on nothing
+        assert!(!chain_mergeable_at(&[rs[0], rs[2]], C));
+        // a short range is not a link and not a pass
+        assert!(!chain_mergeable_at(
+            &[rs[0], parse_review(&short).unwrap()],
+            C
+        ));
+    }
+
+    #[test]
+    fn a_cycle_of_ranges_is_not_a_chain() {
+        let ab = line("通過", B, "0/0/0/0", &std::format!("增量 {A}..{B}"));
+        let ba = line("通過", A, "0/0/0/0", &std::format!("增量 {B}..{A}"));
+        let rs = [parse_review(&ab).unwrap(), parse_review(&ba).unwrap()];
+        assert!(!chain_mergeable_at(&rs, B));
+        assert!(!chain_mergeable_at(&rs, A));
     }
 
     #[test]
