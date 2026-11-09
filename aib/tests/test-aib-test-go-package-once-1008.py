@@ -50,7 +50,8 @@ class GoOnce(unittest.TestCase):
         (self.repo / "calc" / "a_test.go").write_text(A, encoding="utf-8")
         (self.repo / "calc" / "b_test.go").write_text(B, encoding="utf-8")
         self.env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE", "AIB_TEST_JOBS")}
-        self.env.update({"HOME": str(Path(self.td.name) / "home"), "EZ2_AIB_LOCALE": "en", "GIT_AUTHOR_NAME": "t",
+        self.env.update({"AIB_TEST_TRACE_MIN": "0",   # 11-09 #565:o1–o3 驗的是追蹤那條(兩支也要追蹤);小批另有 o5
+                         "HOME": str(Path(self.td.name) / "home"), "EZ2_AIB_LOCALE": "en", "GIT_AUTHOR_NAME": "t",
                          "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
         (Path(self.td.name) / "home").mkdir()
 
@@ -93,6 +94,19 @@ class GoOnce(unittest.TestCase):
         self.assertEqual(p.returncode, 0, out[-2000:])
         self.assertIn("ran 1", out, out[-2000:])
 
+    def test_o5_small_batch_also_runs_a_package_once(self):
+        """11-09 #565:不到門檻(小批、不開追蹤)也要同一個 Go 套件只跑一次,紅綠跟那次一樣。"""
+        self.env.pop("AIB_TEST_TRACE_MIN")
+        (self.repo / "calc" / "b_test.go").write_text(BAD, encoding="utf-8")
+        self._commit()
+        p = self._aib("calc/a_test.go", "calc/b_test.go")
+        out = p.stdout + p.stderr
+        self.assertEqual(p.returncode, 1, out[-2000:])
+        self.assertIn("2 tests: 0 green, 2 red", p.stdout, out[-2000:])
+        self.assertIn("same Go package", out, out[-2000:])
+        self.assertNotIn("Shadow resume: enabled", out, out[-2000:])
+        self.assertEqual(len(re.findall(r"^--- .*calc/\w+_test\.go", p.stderr, re.M)), 1, p.stderr[-3000:])
+
 
 class Knives(unittest.TestCase):
     def _red(self, rel, needle, repl, cell):
@@ -113,6 +127,11 @@ class Knives(unittest.TestCase):
     def test_k2_no_grouping_reds_o3(self):
         self._red("tools/verify/test_entry.py", '        units.setdefault(runner.go_package_key(t) or ("\\0" + t), []).append(t)\n',
                   '        units.setdefault("\\0" + t, []).append(t)\n', "GoOnce.test_o3_sharded_same_package_same_shard")
+
+    @unittest.skipUnless(GO, "沒有 go")
+    def test_k3_small_batch_without_grouping_reds_o5(self):
+        self._red("tools/verify/test_entry.py", "                if gk is not None and gk in go_plain:\n", "                if False:\n",
+                  "GoOnce.test_o5_small_batch_also_runs_a_package_once")
 
 
 if __name__ == "__main__":
