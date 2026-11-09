@@ -38,19 +38,24 @@ pub enum Exit {
     Code(i32),
     /// POSIX only: the signal name, e.g. `SIGKILL`. Windows never uses it.
     Signal(String),
+    /// The root is over for us but its status cannot be told: macOS M5 could
+    /// not read it because the root's identity was lost (reaped elsewhere).
+    /// No code and no signal go on the wire (`exit_code: null`), never a made-up
+    /// `-1` (043dd #544 Medium); the stop says why (`root_identity_lost`).
+    Unknown,
 }
 
 impl Exit {
     pub fn code(&self) -> Option<i32> {
         match self {
             Exit::Code(c) => Some(*c),
-            Exit::Signal(_) => None,
+            Exit::Signal(_) | Exit::Unknown => None,
         }
     }
 
     pub fn signal(&self) -> Option<&str> {
         match self {
-            Exit::Code(_) => None,
+            Exit::Code(_) | Exit::Unknown => None,
             Exit::Signal(s) => Some(s),
         }
     }
@@ -268,8 +273,21 @@ pub trait ExitWait: Send + Sync {
 }
 
 /// One started session tree.
+/// The program's stdout and stderr, for platforms that capture them
+/// (POSIX today; Windows still starts sessions with null stdio, UNVERIFIED).
+pub struct Output {
+    pub stdout: Box<dyn std::io::Read + Send>,
+    pub stderr: Box<dyn std::io::Read + Send>,
+}
+
 pub trait Running: Send {
     fn pid(&self) -> u32;
+    /// Take the output pipes once (`None`: not captured on this platform,
+    /// or already taken). The caller must keep reading them: a full pipe
+    /// stops the program.
+    fn take_output(&mut self) -> Option<Output> {
+        None
+    }
     /// Has the root exited? Never blocks, never reaps (macOS: M5 `WNOWAIT`;
     /// the root is reaped only after the last signal, H1).
     fn try_exit(&mut self) -> std::io::Result<Option<Exit>>;

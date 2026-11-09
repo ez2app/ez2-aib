@@ -144,6 +144,39 @@ pub fn write_private_file(p: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, p)
 }
 
+/// The store's database file, owner only before SQLite writes anything to
+/// it (session output is kept there, a63ab preview.3: 0600; the folder is
+/// already [`create_private_dir`]). Created empty if missing (SQLite takes
+/// an empty file as a new database), locked down and checked if it exists.
+/// SQLite gives `-wal` / `-shm` the main file's permissions; they are
+/// locked down too when present ([`restrict_db_sidecars`]).
+pub fn private_db_file(p: &Path) -> std::io::Result<()> {
+    if !p.exists() {
+        let mut o = OpenOptions::new();
+        o.write(true).create_new(true);
+        imp::private_file_options(&mut o);
+        match o.open(p) {
+            Ok(f) => drop(f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    imp::restrict_file(p)
+}
+
+/// `-wal` / `-shm` next to the database, when present: owner only.
+pub fn restrict_db_sidecars(db: &Path) -> std::io::Result<()> {
+    for ext in ["-wal", "-shm"] {
+        let mut s = db.as_os_str().to_owned();
+        s.push(ext);
+        let p = PathBuf::from(s);
+        if p.exists() {
+            imp::restrict_file(&p)?;
+        }
+    }
+    Ok(())
+}
+
 /// Single-instance lock. Held for the life of the returned `File`.
 /// Uses `std::fs::File::try_lock` (flock on Unix, LockFileEx on Windows).
 pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {

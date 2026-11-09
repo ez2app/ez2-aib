@@ -1,0 +1,14 @@
+[package]
+name = "aib-release"
+description = "Release / merge tooling (plan v3 9.2): cross-PR yield first — an integration PR takes over, the original PRs' CI runs give way"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

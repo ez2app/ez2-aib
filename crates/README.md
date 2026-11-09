@@ -4,7 +4,7 @@
 |---|---|---|
 | `aib-core` | domain types, Seat/Session state machines, error codes, port traits | `#![no_std]` + `#![forbid(unsafe_code)]`, dependency-tree allow-list, no platform `cfg` (`scripts/check-core-purity.sh`; `--self-test` proves each rule catches a bypass) |
 | `aib-store` | SQLite (rusqlite, bundled), migrations from `/migrations`, event log | only crate with SQL |
-| `aib-sys` | macOS process APIs M1–M4 (libproc, incl. the private `PROC_PIDUNIQIDENTIFIERINFO`), `ProcessInfo` trait + `FakeProcessInfo`, start-up `selfcheck` | the only crate allowed `unsafe` (each block one FFI call with a SAFETY note); only `aibd` may depend on it (`scripts/check-sys-deps.sh`, `--self-test`); M1 only adds candidates, never decides a signal |
+| `aib-sys` | macOS process APIs M1–M4 (libproc, incl. the private `PROC_PIDUNIQIDENTIFIERINFO`), `ProcessInfo` trait + `FakeProcessInfo`, start-up `selfcheck` | the only crate allowed `unsafe` (each block one FFI call with a SAFETY note); only `aibd` and `aib-procwatch` may depend on it, `aib-forkcount` only through aib-procwatch (DECISION-10 B; `scripts/check-sys-deps.sh`, `--self-test`); M1 only adds candidates, never decides a signal |
 | `aibd` | local daemon: Axum on loopback, Host/Origin guard, bearer token, platform module | platform code only under `src/platform/`; logs only known route templates (`<unmatched>` otherwise), never raw paths or queries |
 
 Decisions: `docs/adr/0001` (coexistence with the 1.x cockpit), `0002` (SQLite driver),
@@ -22,7 +22,10 @@ curl -s -H "Authorization: Bearer $(cat /tmp/aibd-dev/run/aibd.token)" http://12
 
 Environment: `AIBD_BIND` (loopback only, default `127.0.0.1:47770`), `AIBD_DATA_DIR`
 (default: OS app data dir, never `~/.ez2-aib`), `AIBD_ALLOWED_ORIGINS` (comma list of exact
-origins, default none), `AIBD_LOG` (tracing filter, default `info`).
+origins, default none), `AIBD_LOG` (tracing filter, default `info`), `AIBD_MAX_SESSIONS`
+(1–64, default 8), `AIBD_SESSION_POLICY` (absolute path of a JSON file listing the programs a
+session may start and the env names it may set; default none = no session can start; see
+ADR 0003 "Update 2026-11-09").
 
 Exit codes: 0 stopped cleanly, 2 bad config (e.g. `0.0.0.0`), 3 another aibd holds the
 data directory, 1 other start failure.

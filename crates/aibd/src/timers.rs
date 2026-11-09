@@ -159,6 +159,13 @@ pub static SELFCHECK_CHILD_WAIT: Timer = Timer::operation(
     "wait for the selfcheck tree's child to report it started, before stopping the tree (bb7dc #549)",
 );
 
+pub static SESSION_REJECT_FLUSH: Timer = Timer::operation(
+    "session.reject_flush",
+    secs(60),
+    secs(61),
+    "when a window of folded spawn rejections closes, write how many were folded (a63ab 11-09 19:23, 1ced7 #593 M1)",
+);
+
 pub static SELFCHECK_LEAF_LIFE: Timer = Timer::operation(
     "selfcheck.leaf_life",
     secs(30),
@@ -170,6 +177,7 @@ pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
+    &SESSION_REJECT_FLUSH,
     &SELFCHECK_LEAF_LIFE,
 ];
 
