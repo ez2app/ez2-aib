@@ -12,8 +12,9 @@
 //! 6. the build failed ⇒ `NotFallen`;
 //! 7. anything else (red without naming the test, "everything went red") ⇒ `Survived`.
 //!
-//! rc: 0 every knife `Bit` and the noop ran green / 4 every knife `Bit` but the noop was
-//! skipped (`"noop": false`, a weaker proof; Codex M1) / 1 anything else / 2 usage error.
+//! rc: 0 every knife `Bit` and every noop green / 4 every knife `Bit` but the noop was
+//! skipped (`"noop": false`, a weaker proof; Codex M1) / 1 anything else, **including a
+//! red or dirty noop** (a9136 #586 H1) / 2 usage error.
 
 use crate::names::{build_failed, failed_names, find_expected, passed_names, Hit};
 use std::fmt;
@@ -158,9 +159,11 @@ pub fn decide_noop(r: &Run, require_pass: Option<&[String]>) -> Noop {
     }
     if let Some(want) = require_pass {
         let passed = passed_names(r.output.as_deref().unwrap_or(""));
+        // the same rule as the knife side: an ambiguous short name is not "seen passing"
+        // (a9136 #586 L3: `x` must not be satisfied by `b::x` when `a::x` is gone)
         let missing: Vec<String> = want
             .iter()
-            .filter(|e| !passed.iter().any(|p| crate::names::name_matches(p, e)))
+            .filter(|e| !matches!(find_expected(&passed, e), Hit::One(_)))
             .cloned()
             .collect();
         if !missing.is_empty() {
@@ -170,15 +173,41 @@ pub fn decide_noop(r: &Run, require_pass: Option<&[String]>) -> Noop {
     Noop::Green
 }
 
-/// The run's exit code. `noop_ran`: the noop ran and every noop was green.
-pub fn exit_code(noop_ran: bool, outcomes: &[Outcome]) -> i32 {
-    if outcomes.is_empty() || !outcomes.iter().all(|o| *o == Outcome::Bit) {
+/// How the noop ended, for the exit code (a9136 #586 H1: "skipped" and "failed" are
+/// different; a red or dirty noop must never become the weaker-but-passing rc 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoopResult {
+    /// Every noop command ran and was `Noop::Green`.
+    Green,
+    /// `"noop": false`: nothing ran.
+    Skipped,
+    /// At least one noop was red, dirty or did not show the expected test passing (or
+    /// there was nothing to judge): no knife may count.
+    Failed,
+}
+
+/// `None` = the spec skipped the noop.
+pub fn noop_result(noops: Option<&[Noop]>) -> NoopResult {
+    match noops {
+        None => NoopResult::Skipped,
+        Some(n) if !n.is_empty() && n.iter().all(|x| *x == Noop::Green) => NoopResult::Green,
+        Some(_) => NoopResult::Failed,
+    }
+}
+
+/// The run's exit code: 0 every knife `Bit` and the noop green / 4 every knife `Bit`
+/// and the noop skipped / 1 anything else, including a failed noop.
+pub fn exit_code(noop: NoopResult, outcomes: &[Outcome]) -> i32 {
+    if noop == NoopResult::Failed
+        || outcomes.is_empty()
+        || !outcomes.iter().all(|o| *o == Outcome::Bit)
+    {
         return 1;
     }
-    if noop_ran {
-        0
-    } else {
-        4
+    match noop {
+        NoopResult::Green => 0,
+        NoopResult::Skipped => 4,
+        NoopResult::Failed => 1,
     }
 }
 
@@ -333,11 +362,53 @@ mod tests {
 
     #[test]
     fn exit_codes() {
-        assert_eq!(exit_code(true, &[Outcome::Bit, Outcome::Bit]), 0);
-        assert_eq!(exit_code(false, &[Outcome::Bit]), 4);
-        assert_eq!(exit_code(true, &[Outcome::Bit, Outcome::Survived]), 1);
-        assert_eq!(exit_code(true, &[Outcome::AnchorMissing(0)]), 1);
-        assert_eq!(exit_code(true, &[]), 1);
+        let g = NoopResult::Green;
+        assert_eq!(exit_code(g, &[Outcome::Bit, Outcome::Bit]), 0);
+        assert_eq!(exit_code(NoopResult::Skipped, &[Outcome::Bit]), 4);
+        assert_eq!(exit_code(g, &[Outcome::Bit, Outcome::Survived]), 1);
+        assert_eq!(exit_code(g, &[Outcome::AnchorMissing(0)]), 1);
+        assert_eq!(exit_code(g, &[]), 1);
+        assert_eq!(exit_code(NoopResult::Skipped, &[]), 1);
+    }
+
+    #[test]
+    fn h1_a_failed_noop_is_rc_1_never_4_even_when_every_knife_bit() {
+        let all_bit = [Outcome::Bit, Outcome::Bit];
+        let red = [Noop::Red];
+        let dirty = [Noop::Green, Noop::Dirty(Why::Leftovers(1))];
+        let unseen = [Noop::NotSeenPassing(vec!["x".to_string()])];
+        for n in [&red[..], &dirty[..], &unseen[..], &[][..]] {
+            assert_eq!(noop_result(Some(n)), NoopResult::Failed, "{n:?}");
+            assert_eq!(exit_code(noop_result(Some(n)), &all_bit), 1, "{n:?}");
+        }
+        assert_eq!(noop_result(None), NoopResult::Skipped);
+        assert_eq!(exit_code(noop_result(None), &all_bit), 4);
+        assert_eq!(
+            noop_result(Some(&[Noop::Green, Noop::Green][..])),
+            NoopResult::Green
+        );
+        assert_eq!(
+            exit_code(noop_result(Some(&[Noop::Green][..])), &all_bit),
+            0
+        );
+    }
+
+    #[test]
+    fn l3_require_pass_line_refuses_an_ambiguous_or_other_test() {
+        let want = ["x".to_string()];
+        let only_b = run(0, "test b::x ... ok\n");
+        assert_eq!(decide_noop(&only_b, Some(&want[..])), Noop::Green); // one x, unambiguous
+        let two = run(0, "test a::x ... ok\ntest b::x ... ok\n");
+        assert_eq!(
+            decide_noop(&two, Some(&want[..])),
+            Noop::NotSeenPassing(vec!["x".to_string()])
+        );
+        let want_a = ["a::x".to_string()];
+        assert_eq!(
+            decide_noop(&only_b, Some(&want_a[..])),
+            Noop::NotSeenPassing(vec!["a::x".to_string()])
+        );
+        assert_eq!(decide_noop(&two, Some(&want_a[..])), Noop::Green);
     }
 
     #[test]

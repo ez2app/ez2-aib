@@ -1,14 +1,22 @@
 //! Test names in runner output, and the rule that decides whether a failed name is the
 //! one a knife expects.
 //!
-//! Formats (the same ones knife.py reads):
-//! - cargo / libtest: `test a::b ... FAILED`, and the closing `failures:` list (the only
-//!   names `cargo test -q` prints), whose lines are four spaces + the name;
-//! - unittest: `FAIL: name (` / `ERROR: name (`;
-//! - pytest: `FAILED path::name` (everything after the first `::`).
+//! Formats:
+//! - cargo / libtest: `test a::b ... FAILED` (also `test a::b - should panic ... FAILED`),
+//!   and the closing `failures:` list (the only names `cargo test -q` prints): every line
+//!   that starts with four spaces is one name, whole line (doctest names have spaces:
+//!   `src/lib.rs - foo (line 3)`), until an empty or unindented line;
+//! - unittest: `FAIL: short (qual)` / `ERROR: short (qual)`. Always the **full** name
+//!   `module.Class.short`: Python 3.11+ prints it as `qual`, 3.9 prints `module.Class`
+//!   and the short name is appended (a9136 #586 M1);
+//! - pytest: `FAILED <nodeid>`, the whole node id including the file (`tests/a.py::T::x`).
 //!
-//! Passed names (for `--require-pass-line`): libtest `test a::b ... ok`, unittest -v
-//! `name (qualified.name) ... ok` (both the short and the qualified name count).
+//! knife.py kept only the short unittest name and dropped the pytest file, so two red
+//! tests with the same short name looked like one (a false BIT; named difference in the
+//! #586 old-vs-new table).
+//!
+//! Passed names (for `--require-pass-line`): libtest `test a::b ... ok` (with or without
+//! ` - should panic`), unittest -v `short (qual) ... ok`, full name as above.
 
 use std::collections::BTreeSet;
 
@@ -25,17 +33,41 @@ fn token(s: &str) -> Option<&str> {
     }
 }
 
-/// `test NAME ... RESULT` (libtest) ⇒ NAME when RESULT matches.
+/// `test NAME[ - should panic] ... RESULT` (libtest) ⇒ NAME when RESULT matches.
 fn libtest_line<'a>(line: &'a str, result: &str) -> Option<&'a str> {
     let rest = line.strip_prefix("test ")?;
     let name = token(rest)?;
-    let tail = &rest[name.len()..];
-    let want = format!(" ... {result}");
-    if tail.starts_with(&want) {
+    let mut tail = &rest[name.len()..];
+    if let Some(t) = tail.strip_prefix(" - should panic") {
+        tail = t;
+    }
+    if tail.starts_with(&format!(" ... {result}")) {
         Some(name)
     } else {
         None
     }
+}
+
+/// unittest's `short (qual)` ⇒ the full `module.Class.short` (3.11+ `qual` already ends
+/// in `.short`; 3.9 `qual` is `module.Class`).
+fn unittest_full(short: &str, qual: &str) -> Option<String> {
+    let bad = |x: &str| x.is_empty() || x.contains(char::is_whitespace);
+    if bad(short) || bad(qual) {
+        return None;
+    }
+    if qual.ends_with(&format!(".{short}")) {
+        Some(qual.to_string())
+    } else {
+        Some(format!("{qual}.{short}"))
+    }
+}
+
+/// `short (qual)...` at the start of `s` ⇒ (short, qual).
+fn short_and_qual(s: &str) -> Option<(&str, &str)> {
+    let short = token(s)?;
+    let after = s[short.len()..].strip_prefix(" (")?;
+    let close = after.find(')')?;
+    Some((short, &after[..close]))
 }
 
 /// Every failed test name in `out`, sorted, no duplicates.
@@ -45,11 +77,10 @@ pub fn failed_names(out: &str) -> Vec<String> {
     for line in lines(out) {
         if in_failures {
             if let Some(rest) = line.strip_prefix("    ") {
-                if let Some(t) = token(rest) {
-                    if t.len() == rest.len() {
-                        got.insert(t.to_string());
-                        continue;
-                    }
+                let n = rest.trim_end();
+                if !n.is_empty() {
+                    got.insert(n.to_string());
+                    continue;
                 }
             }
             in_failures = false;
@@ -63,29 +94,22 @@ pub fn failed_names(out: &str) -> Vec<String> {
             continue;
         }
         for p in ["FAIL: ", "ERROR: "] {
-            if let Some(rest) = line.strip_prefix(p) {
-                if let Some(n) = token(rest) {
-                    if rest[n.len()..].starts_with(" (") {
-                        got.insert(n.to_string());
-                    }
+            if let Some((short, qual)) = line.strip_prefix(p).and_then(short_and_qual) {
+                if let Some(full) = unittest_full(short, qual) {
+                    got.insert(full);
                 }
             }
         }
-        if let Some(rest) = line.strip_prefix("FAILED ") {
-            if let Some(t) = token(rest) {
-                if let Some(i) = t.find("::") {
-                    let n = &t[i + 2..];
-                    if !n.is_empty() {
-                        got.insert(n.to_string());
-                    }
-                }
+        if let Some(t) = line.strip_prefix("FAILED ").and_then(token) {
+            if t.contains("::") {
+                got.insert(t.to_string());
             }
         }
     }
     got.into_iter().collect()
 }
 
-/// Every passed test name in `out` (libtest `... ok`, unittest -v `name (qual) ... ok`).
+/// Every passed test name in `out` (libtest `... ok`, unittest -v `short (qual) ... ok`).
 pub fn passed_names(out: &str) -> Vec<String> {
     let mut got = BTreeSet::new();
     for line in lines(out) {
@@ -93,17 +117,11 @@ pub fn passed_names(out: &str) -> Vec<String> {
             got.insert(n.to_string());
             continue;
         }
-        // unittest -v: "test_add (__main__.T.test_add) ... ok"
-        if let Some(open) = line.find(" (") {
-            let short = &line[..open];
-            let after = &line[open + 2..];
-            if let Some(close) = after.find(") ... ok") {
-                let qual = &after[..close];
-                if !short.is_empty() && !short.contains(char::is_whitespace) {
-                    got.insert(short.to_string());
-                    if !qual.is_empty() && !qual.contains(char::is_whitespace) {
-                        got.insert(qual.to_string());
-                    }
+        if let Some((short, qual)) = short_and_qual(line) {
+            let shown = format!("{short} ({qual}) ... ok");
+            if line.starts_with(&shown) {
+                if let Some(full) = unittest_full(short, qual) {
+                    got.insert(full);
                 }
             }
         }
@@ -222,16 +240,105 @@ ERROR: test_boom (__main__.T.test_boom)\n";
     }
 
     #[test]
-    fn unittest_fail_and_error() {
+    fn unittest_fail_and_error_full_names() {
         assert_eq!(
             failed_names(UNITTEST),
-            vec!["test_boom".to_string(), "test_sub".to_string()]
+            vec![
+                "__main__.T.test_boom".to_string(),
+                "__main__.T.test_sub".to_string()
+            ]
         );
     }
 
     #[test]
-    fn pytest_takes_everything_after_the_first_double_colon() {
-        assert_eq!(failed_names(PYTEST), vec!["TestA::test_x".to_string()]);
+    fn unittest_39_short_qualifier_gets_the_method_appended() {
+        let out = "FAIL: test_sub (__main__.T)\nERROR: test_boom (__main__.T)\n";
+        assert_eq!(
+            failed_names(out),
+            vec![
+                "__main__.T.test_boom".to_string(),
+                "__main__.T.test_sub".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unittest_subtest_line_takes_the_first_parentheses() {
+        let out = "FAIL: test_knives (__main__.Knife.test_knives) (tag='K1')\n";
+        assert_eq!(
+            failed_names(out),
+            vec!["__main__.Knife.test_knives".to_string()]
+        );
+    }
+
+    #[test]
+    fn m1_two_unittest_classes_with_one_short_name_are_ambiguous() {
+        let failed = failed_names("FAIL: test_sub (m.A.test_sub)\nFAIL: test_sub (m.B.test_sub)\n");
+        assert_eq!(failed.len(), 2);
+        assert!(matches!(
+            find_expected(&failed, "test_sub"),
+            Hit::Ambiguous(_)
+        ));
+        assert_eq!(
+            find_expected(&failed, "A.test_sub"),
+            Hit::One("m.A.test_sub".to_string())
+        );
+    }
+
+    #[test]
+    fn m1_qualified_expect_matches_unittest() {
+        let failed = failed_names(UNITTEST);
+        assert_eq!(
+            find_expected(&failed, "T.test_sub"),
+            Hit::One("__main__.T.test_sub".to_string())
+        );
+    }
+
+    #[test]
+    fn pytest_keeps_the_whole_node_id() {
+        assert_eq!(
+            failed_names(PYTEST),
+            vec!["tests/test_a.py::TestA::test_x".to_string()]
+        );
+    }
+
+    #[test]
+    fn m1_two_pytest_files_with_one_tail_are_ambiguous() {
+        let failed =
+            failed_names("FAILED a.py::TestA::test_x - e\nFAILED b.py::TestA::test_x - e\n");
+        assert!(matches!(
+            find_expected(&failed, "TestA::test_x"),
+            Hit::Ambiguous(_)
+        ));
+        assert!(matches!(
+            find_expected(&failed, "test_x"),
+            Hit::Ambiguous(_)
+        ));
+        assert_eq!(
+            find_expected(&failed, "a.py::TestA::test_x"),
+            Hit::One("a.py::TestA::test_x".to_string())
+        );
+    }
+
+    #[test]
+    fn l1_should_panic_lines() {
+        assert_eq!(
+            passed_names("test m::x - should panic ... ok\n"),
+            vec!["m::x".to_string()]
+        );
+        assert_eq!(
+            failed_names("test m::y - should panic ... FAILED\n"),
+            vec!["m::y".to_string()]
+        );
+    }
+
+    #[test]
+    fn l2_doctest_names_do_not_end_the_closing_list() {
+        let out = "failures:\n    src/lib.rs - foo (line 3)\n    m::x\n\ntest result: FAILED.\n";
+        assert_eq!(
+            failed_names(out),
+            vec!["m::x".to_string(), "src/lib.rs - foo (line 3)".to_string()]
+        );
     }
 
     #[test]
@@ -240,13 +347,17 @@ ERROR: test_boom (__main__.T.test_boom)\n";
     }
 
     #[test]
-    fn passed_names_libtest_and_unittest_verbose() {
+    fn passed_names_libtest_and_unittest_verbose_full_names() {
         let p = passed_names(CARGO);
         assert_eq!(p, vec!["job::tests::a".to_string()]);
-        let u = passed_names(UNITTEST);
-        assert!(u.contains(&"test_add".to_string()));
-        assert!(u.contains(&"__main__.T.test_add".to_string()));
-        assert!(!u.contains(&"test_sub".to_string()));
+        assert_eq!(
+            passed_names(UNITTEST),
+            vec!["__main__.T.test_add".to_string()]
+        );
+        assert_eq!(
+            passed_names("test_add (__main__.T) ... ok\n"),
+            vec!["__main__.T.test_add".to_string()]
+        );
     }
 
     #[test]
