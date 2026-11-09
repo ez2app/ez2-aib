@@ -733,6 +733,20 @@ pub fn matrix(t: &Topology) -> Result<Vec<Cell>, Error> {
                 "站 → 另一台主機 ssh",
             );
         }
+        if let Some(p) = &t.peer_host {
+            // measured 11-09: open. Egress 443 is allowed to anywhere (updates / APIs), our other
+            // host included — the same reach any internet client has. Recorded so the receipt says
+            // so; lateral protection is 22 + the private / tailnet ranges (ebb36 r2 L5).
+            b.open(
+                alloc::format!("site-{}-to-peerhost-443", s.id),
+                "5.6",
+                S.clone(),
+                p.as_str(),
+                443,
+                Proto::Tcp,
+                "站可達另一台主機的 https(與公網任何 443 相同;橫向只擋 22 與私網)",
+            );
+        }
         if let (Some(v), Some(c)) = (&t.internet.https6, &c_v6) {
             b.blocked(
                 alloc::format!("site-{}-egress6-443", s.id),
@@ -843,6 +857,16 @@ pub fn matrix(t: &Topology) -> Result<Vec<Cell>, Error> {
             "Edge 沒有 IPv6 出站",
         );
     }
+    b.blocked(
+        alloc::format!("edge-{}-to-hostpub-22", e.id),
+        "5.8",
+        E.clone(),
+        hp,
+        22,
+        Proto::Tcp,
+        &c_hp22,
+        "Edge → 宿主公網位址 ssh(ebb36 r2 L5)",
+    );
     // --- from outside ---
     b.open(
         "public-host-22".to_owned(),
@@ -949,6 +973,11 @@ pub struct Receipt {
     pub fail: Vec<(String, String)>,
     /// Cells with no result; `ok()` tolerates only External ones.
     pub missing: Vec<String>,
+    /// What this matrix does not prove, so a receipt never looks complete by omission
+    /// (ebb36 r2 L2 / L4): optional topology parts that were absent (`tailnet`,
+    /// `peer_host`, `ipv6`) and `egress-25` (the provider blocks 25, so no cell can tell our
+    /// DROP from theirs; re-add the cells before port 25 is ever opened).
+    pub not_covered: Vec<String>,
 }
 
 impl Receipt {
@@ -964,6 +993,7 @@ impl Receipt {
             "pass": self.pass,
             "fail": self.fail.iter().map(|(id, why)| json!({"id": id, "why": why})).collect::<Vec<_>>(),
             "missing": self.missing,
+            "not_covered": self.not_covered,
             "counts": {"pass": self.pass.len(), "fail": self.fail.len(), "missing": self.missing.len()},
         })
     }
@@ -983,6 +1013,9 @@ pub fn judge(
     report: &Value,
     external_required: bool,
 ) -> Result<Receipt, Error> {
+    // ebb36 r2 N1: cells are pub, so a caller could hand in a blocked cell whose control
+    // probes another target; refuse such a list before trusting any control.
+    check_matrix(cells)?;
     let obj = report
         .as_object()
         .ok_or_else(|| Error::Report("not an object".to_owned()))?;
@@ -1052,6 +1085,18 @@ pub fn judge(
         host: host_public.to_owned(),
         ..Receipt::default()
     };
+    let has = |id: &str| cells.iter().any(|c| c.id == id);
+    for (ctl, what) in [
+        ("host-tailnet-icmp", "tailnet"),
+        ("host-to-peerhost-22", "peer_host"),
+        ("host-egress6-443", "ipv6"),
+    ] {
+        if !has(ctl) {
+            rc.not_covered.push(what.to_owned());
+        }
+    }
+    rc.not_covered
+        .push("egress-25 (provider blocks 25; re-add the cells before opening it)".to_owned());
     let mut passed: Vec<String> = Vec::new();
     for c in cells.iter().filter(|c| c.expect != Expect::Blocked) {
         match (lookup(&c.id), c.expect) {
@@ -1477,5 +1522,55 @@ mod tests {
         let mut other = plan.clone();
         other[3]["port"] = json!(5353);
         assert_ne!(plan_fingerprint(&other), "52240dcf9134f54d");
+    }
+
+    #[test]
+    fn i10_judge_refuses_a_forged_cell_list() {
+        // N1: a hand-built list whose blocked cell's control probes another target
+        let mut cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
+        let ctl = cells
+            .iter()
+            .position(|c| c.id == "host-to-hostint-22")
+            .unwrap();
+        cells[ctl].port = 2222;
+        let r = report(&cells, "135.181.75.90", |_, _| {});
+        assert!(matches!(
+            judge(&cells, "135.181.75.90", &r, false),
+            Err(Error::Matrix(_))
+        ));
+    }
+
+    #[test]
+    fn i11_receipt_names_what_is_not_covered() {
+        let full = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
+        let r = report(&full, "135.181.75.90", |_, _| {});
+        let rc = judge(&full, "135.181.75.90", &r, false).unwrap();
+        assert_eq!(rc.not_covered.len(), 1, "{:?}", rc.not_covered);
+        assert!(rc.not_covered[0].starts_with("egress-25"));
+        assert!(rc.to_json()["not_covered"].as_array().unwrap().len() == 1);
+        let mut t = topo(&[(110, "10.77.0.10")]);
+        t.tailnet = None;
+        t.peer_host = None;
+        t.internet.https6 = None;
+        let bare = matrix(&t).unwrap();
+        let r = report(&bare, "135.181.75.90", |_, _| {});
+        let rc = judge(&bare, "135.181.75.90", &r, false).unwrap();
+        assert!(
+            rc.ok(),
+            "nothing failed, but the receipt must say what it skipped"
+        );
+        for w in ["tailnet", "peer_host", "ipv6"] {
+            assert!(
+                rc.not_covered.iter().any(|x| x == w),
+                "{w} missing from {:?}",
+                rc.not_covered
+            );
+        }
+        // L5 cells exist when a peer host is given
+        assert!(full.iter().any(|c| c.id == "site-110-to-peerhost-443"
+            && c.expect == Expect::Open
+            && c.control.is_none()));
+        assert!(full.iter().any(|c| c.id == "edge-101-to-hostpub-22"
+            && c.control.as_deref() == Some("host-to-hostpub-22")));
     }
 }
