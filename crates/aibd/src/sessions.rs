@@ -224,7 +224,7 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
         return Err(bad("argv over 32 KiB in total"));
     }
     if !Path::new(&argv[0]).is_absolute() {
-        return Err(bad("argv[0] must be an absolute path (no PATH lookup)"));
+        return Err(bad(ARGV0_RELATIVE));
     }
     let cwd = match raw.cwd {
         None => None,
@@ -267,6 +267,22 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
         env.push((k, v));
     }
     Ok(Request { argv, cwd, env })
+}
+
+const ARGV0_RELATIVE: &str = "argv[0] must be an absolute path (no PATH lookup)";
+
+/// `argv[0]`'s file name from a body that failed [`validate`], for the audit record only
+/// (empty when the body has none).
+fn lenient_argv0_name(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["argv"][0].as_str().map(str::to_owned))
+        .and_then(|a| {
+            Path::new(&a)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
 }
 
 /// The only credential today is the startup token: its id is this name, never anything
@@ -980,6 +996,10 @@ impl Sessions {
     /// flight, stop every live session in parallel, all within
     /// [`SHUTDOWN_CAP`]. Returns how many were still stopping at the cap.
     pub fn shutdown_all(self: &Arc<Self>) -> usize {
+        // folded rejection counts still in an open window are written now (1ced7 #593 M1)
+        for (token_id, code, n, program) in self.rejections.drain() {
+            self.write_rejection(code, &program, &token_id, n);
+        }
         let deadline = Instant::now() + SHUTDOWN_CAP;
         let mut g = lock(&self.inner);
         g.shutting = true;
@@ -1072,22 +1092,56 @@ impl Sessions {
         }
     }
 
-    /// Audit a gate refusal (a63ab 19:23): event `session.spawn_rejected` in aggregate type
+    /// Audit a refusal (a63ab 19:23): event `session.spawn_rejected` in aggregate type
     /// `security` (each record its own aggregate, sequence 1) plus one `warn` line, at most
-    /// one per token + code per minute (`now` is injected). The payload is exactly
-    /// `code`, `program` (a file name only), `token_id`, `at`, `folded_before`: never env
-    /// values, the full argv or the cwd.
-    pub fn record_rejection(&self, now: Instant, token_id: &str, r: &Refusal) {
-        let code = r.error.0.as_str();
-        let Some(folded) = self.rejections.note(now, token_id, code) else {
+    /// one per token + code per minute (`now` is injected); the count of the folded ones
+    /// is written when the window closes (see [`allowlist::RejectLog`]). The payload is
+    /// exactly `code`, `program` (a file name, cut to 64 characters, control characters
+    /// escaped), `token_id`, `at`, `folded_before`: never env values, the full argv or the
+    /// cwd.
+    pub fn record_rejection(&self, now: Instant, token_id: &str, code: ErrorCode, program: &str) {
+        let code = code.as_str();
+        let program = allowlist::audit_name(program);
+        match self.rejections.note(now, token_id, code, &program) {
+            allowlist::Note::Write { folded_before } => {
+                self.write_rejection(code, &program, token_id, folded_before)
+            }
+            allowlist::Note::Folded { arm: Some(start) } => {
+                self.arm_reject_flush(token_id.to_owned(), code, start)
+            }
+            allowlist::Note::Folded { arm: None } => {}
+        }
+    }
+
+    /// One flush per window, at its end (`session.reject_flush`, an Operation timer that
+    /// lives at most one window).
+    fn arm_reject_flush(&self, token_id: String, code: &'static str, start: Instant) {
+        let Some(me) = self.me.upgrade() else {
             return;
         };
+        let spawned = std::thread::Builder::new()
+            .name("aibd-reject-flush".into())
+            .spawn(move || {
+                let op = crate::timers::SESSION_REJECT_FLUSH
+                    .begin(Some(start + allowlist::REJECT_WINDOW));
+                while op.tick() {}
+                drop(op);
+                if let Some((n, program)) = me.rejections.close(&token_id, code, start) {
+                    me.write_rejection(code, &program, &token_id, n);
+                }
+            });
+        if spawned.is_err() {
+            tracing::error!(code, "session.reject_flush could not start; the count is written by the next rejection or at shutdown");
+        }
+    }
+
+    fn write_rejection(&self, code: &str, program: &str, token_id: &str, folded_before: u64) {
         let at = now_rfc3339();
         tracing::warn!(
             code,
-            program = %r.program,
+            program,
             token_id,
-            folded_before = folded,
+            folded_before,
             "session spawn rejected"
         );
         let agg = new_id("rj_").unwrap_or_else(|_| format!("rj_{}", at.replace([':', '.'], "")));
@@ -1101,10 +1155,10 @@ impl Sessions {
             occurred_at: at.clone(),
             payload: serde_json::json!({
                 "code": code,
-                "program": r.program,
+                "program": program,
                 "token_id": token_id,
                 "at": at,
-                "folded_before": folded,
+                "folded_before": folded_before,
             }),
         };
         if self.store.append(vec![ev]).is_err() {
@@ -1185,33 +1239,65 @@ pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
 }
 
-pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
-    if !json_content_type(&headers) {
-        return bad("Content-Type must be application/json").into_response();
+/// Content type, size and [`validate`], shared by both POST routes. The first layer's
+/// refusals that matter are audited (1ced7 #593 M2: deny-listed env names, a relative
+/// `argv[0]`); plain shape errors (bad JSON, too long) are not.
+async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Request, Response> {
+    if !json_content_type(headers) {
+        return Err(bad("Content-Type must be application/json").into_response());
     }
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
-            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                .into_response()
+            return Err(
+                ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
+                    .into_response(),
+            )
         }
     };
-    let req = match validate(&bytes) {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
+    match validate(&bytes) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            if e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE {
+                let program = lenient_argv0_name(&bytes);
+                let audit = st.sessions.clone();
+                let code = e.0;
+                let _ = tokio::task::spawn_blocking(move || {
+                    audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, code, &program)
+                })
+                .await;
+            }
+            Err(e.into_response())
+        }
+    }
+}
+
+/// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
+/// is audited.
+async fn gate(st: &AppState, req: Request) -> Result<Request, Response> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
-    let gate = move || {
+    let run = move || {
         admit(req, &policy).map_err(|r| {
-            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, &r);
+            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
     };
-    let req = match tokio::task::spawn_blocking(gate).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return e.into_response(),
-        Err(_) => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    match tokio::task::spawn_blocking(run).await {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => Err(e.into_response()),
+        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error").into_response()),
+    }
+}
+
+pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    let req = match read_valid(&st, &headers, body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let req = match gate(&st, req).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start(req)).await {
@@ -1230,19 +1316,9 @@ pub async fn create_for_seat(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if !json_content_type(&headers) {
-        return bad("Content-Type must be application/json").into_response();
-    }
-    let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
-        Ok(b) => b,
-        Err(_) => {
-            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                .into_response()
-        }
-    };
-    let req = match validate(&bytes) {
+    let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
-        Err(e) => return e.into_response(),
+        Err(resp) => return resp,
     };
     let store = st.store.clone();
     let sid = seat.clone();
@@ -1253,20 +1329,11 @@ pub async fn create_for_seat(
         }
         _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
-    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route
-    // came from #592 and the gate from #593; neither saw the other).
-    let policy = st.session_policy.clone();
-    let audit = st.sessions.clone();
-    let gate = move || {
-        admit(req, &policy).map_err(|r| {
-            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, &r);
-            r.error
-        })
-    };
-    let req = match tokio::task::spawn_blocking(gate).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return e.into_response(),
-        Err(_) => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
+    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
+    let req = match gate(&st, req).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
