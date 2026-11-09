@@ -13,10 +13,13 @@
 //!   seconds (lease waiting is not in it). 5 or more: p90 (nearest rank); fewer: the max.
 //! * **Class**: short ≤ 10 min, medium ≤ 20 min, long beyond. No history ⇒ unknown, which is
 //!   scheduled as long; a content table still gives a first estimate.
-//! * **Always long**: a whole suite, Chrome / CDP / e2e, a real AI CLI, ignored tests. History
-//!   cannot make these short.
+//! * **Always long**: a whole suite, Chrome / CDP / e2e / browser / puppeteer, a real AI CLI,
+//!   ignored tests. History cannot make these short.
 //! * **Light** (measured only): every passing run's peak CPU ≤ 4 cores and max RSS ≤ 1 GiB; a
-//!   number missing in any of them ⇒ not light.
+//!   number missing in any of them ⇒ not light. Max RSS is `/usr/bin/time -l`'s: the largest
+//!   **single process** of a step, not the sum of its tree (2240e #609 N1).
+//! * **Going ahead** also needs 3 passing runs and no Chrome process seen during any run of
+//!   these steps (`chrome_seen`, any process on the machine; 2240e #609 L1 / N2).
 //! * **Overrun**: a run of this fingerprint in the last 7 days that was stopped as
 //!   `short_overrun`, or took more than 15 min, ⇒ it may not go ahead.
 //! * **Config** can only move a fingerprint to long, never to short.
@@ -31,7 +34,7 @@ pub const SHORT_SECS: i64 = 600;
 pub const MEDIUM_SECS: i64 = 1200;
 /// v1.1: light is a peak of at most 4 cores …
 pub const LIGHT_CPU_PCT: i64 = 400;
-/// … and at most 1 GiB of memory (v1).
+/// … and at most 1 GiB of memory (v1): the largest single process's max RSS, not the tree's sum.
 pub const LIGHT_RSS_BYTES: i64 = 1 << 30;
 /// v1: a short run past 15 min is not short any more.
 pub const OVERRUN_SECS: i64 = 900;
@@ -39,6 +42,8 @@ pub const OVERRUN_SECS: i64 = 900;
 pub const BAN_SECS: i64 = 7 * 24 * 3600;
 /// v1: 5 or more samples use p90, fewer use the max.
 pub const P90_MIN_SAMPLES: usize = 5;
+/// 2240e #609 N2: going ahead needs at least this many passing runs.
+pub const GO_AHEAD_MIN_SAMPLES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -237,7 +242,8 @@ fn always_long(w: &[String]) -> Option<&'static str> {
         return Some("whole suite (tools/test.js)");
     }
     if lw.iter().any(|x| {
-        ["chrome", "cdp", "e2e", "playwright", "puppeteer"]
+        // 2240e #609 L1: `*-browser.js`, `require("puppeteer")` style tests open Chrome too
+        ["chrome", "chromium", "cdp", "e2e", "playwright", "puppeteer", "browser"]
             .iter()
             .any(|k| x.contains(k))
     }) {
@@ -317,6 +323,7 @@ pub fn classify(
 
     let mut samples = Vec::new();
     let mut banned = false;
+    let mut chrome_seen = false;
     for v in history
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -339,6 +346,14 @@ pub fn classify(
         let recent = now - ended <= BAN_SECS;
         if recent && (v["outcome"] == "short_overrun" || secs.is_some_and(|s| s > OVERRUN_SECS)) {
             banned = true;
+        }
+        // 2240e #609 L1: a Chrome process was on the machine during a run of this fingerprint
+        // (any outcome, any time): never ahead of anyone
+        if v["steps"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|s| s["chrome_seen"] == true))
+        {
+            chrome_seen = true;
         }
         if v["outcome"] != "all_passed" {
             continue;
@@ -409,7 +424,20 @@ pub fn classify(
     if banned {
         reasons.push("ran over 15 min (or short_overrun) in the last 7 days".into());
     }
-    let may_go_ahead = class == Class::Short && light && heavy.is_empty() && !banned;
+    if chrome_seen {
+        reasons.push("Chrome was running during a run of these steps".into());
+    }
+    if n < GO_AHEAD_MIN_SAMPLES {
+        reasons.push(format!(
+            "fewer than {GO_AHEAD_MIN_SAMPLES} passing runs to go ahead on"
+        ));
+    }
+    let may_go_ahead = class == Class::Short
+        && light
+        && heavy.is_empty()
+        && !banned
+        && !chrome_seen
+        && n >= GO_AHEAD_MIN_SAMPLES;
     Classification {
         class,
         light: light && heavy.is_empty(),
@@ -705,10 +733,16 @@ mod tests {
         let cmd = "cargo test -p aib-lease";
         let ok = |end| run_line("pro13", &[cmd], &[40], "all_passed", 100, 1, end);
         let over = |end| run_line("pro13", &[cmd], &[901], "short_overrun", 100, 1, end);
+        let three = || vec![ok(NOW), ok(NOW - 60), ok(NOW - 120)];
+        let with = |x: String| {
+            let mut v = three();
+            v.push(x);
+            hist(&v)
+        };
         let c = classify(
             "pro13",
             &s(&[cmd]),
-            &hist(&[ok(NOW), over(NOW - 3 * 86400)]),
+            &with(over(NOW - 3 * 86400)),
             &[],
             NOW,
         );
@@ -716,14 +750,17 @@ mod tests {
         let c = classify(
             "pro13",
             &s(&[cmd]),
-            &hist(&[ok(NOW), over(NOW - 8 * 86400)]),
+            &with(over(NOW - 8 * 86400)),
             &[],
             NOW,
         );
         assert!(c.may_go_ahead, "{c:?}");
         // a passing run that took over 15 min bans as well
         let slow = run_line("pro13", &[cmd], &[1000], "step_failed", 100, 1, NOW);
-        assert!(!classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), slow]), &[], NOW).may_go_ahead);
+        assert!(!classify("pro13", &s(&[cmd]), &with(slow), &[], NOW).may_go_ahead);
+        // two passing runs are not enough to go ahead on (2240e #609 N2)
+        let c = classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), ok(NOW)]), &[], NOW);
+        assert_eq!((c.class, c.light, c.may_go_ahead), (Class::Short, true, false), "{c:?}");
     }
 
     #[test]
@@ -756,15 +793,9 @@ mod tests {
     fn a_missing_or_high_number_is_not_light() {
         let cmd = "cargo check -p aibd";
         let one = |cpu, rss| {
-            hist(&[run_line(
-                "pro13",
-                &[cmd],
-                &[30],
-                "all_passed",
-                cpu,
-                rss,
-                NOW,
-            )])
+            let ok = run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW);
+            let x = run_line("pro13", &[cmd], &[30], "all_passed", cpu, rss, NOW);
+            hist(&[ok.clone(), ok, x])
         };
         assert!(classify("pro13", &s(&[cmd]), &one(400, 1 << 30), &[], NOW).may_go_ahead);
         for (cpu, rss) in [(-1, 1), (401, 1), (100, -1), (100, (1 << 30) + 1)] {
@@ -775,6 +806,25 @@ mod tests {
                 "{cpu} {rss}"
             );
         }
+    }
+
+    /// 2240e #609 L1: tonight's queues were Chrome tests; a browser test is never ahead.
+    #[test]
+    fn a_browser_test_or_a_run_that_saw_chrome_never_goes_ahead() {
+        for cmd in ["node tests/shot-browser.js", "node tests/puppeteer-shot.js"] {
+            let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
+            assert_eq!(classify("pro13", &s(&[cmd]), &h, &[], NOW).class, Class::Long, "{cmd}");
+        }
+        let cmd = "python3 tests/test-shot.py";
+        let ok = run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW);
+        let mut saw: Value = serde_json::from_str(&ok).unwrap();
+        saw["steps"][0]["chrome_seen"] = Value::Bool(true);
+        saw["outcome"] = "step_failed".into();
+        let clean = hist(&[ok.clone(), ok.clone(), ok.clone()]);
+        assert!(classify("pro13", &s(&[cmd]), &clean, &[], NOW).may_go_ahead);
+        let dirty = hist(&[ok.clone(), ok.clone(), ok, saw.to_string()]);
+        let c = classify("pro13", &s(&[cmd]), &dirty, &[], NOW);
+        assert_eq!((c.class, c.may_go_ahead), (Class::Short, false), "{c:?}");
     }
 
     #[test]
