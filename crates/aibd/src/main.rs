@@ -34,6 +34,21 @@ fn main() -> ExitCode {
         }
     }
     init_tracing();
+    // DECISION-21 J0 (Windows): aibd puts itself in a KILL_ON_JOB_CLOSE Job
+    // before the runtime and before any child exists, and holds it until it
+    // exits. Every session Job is nested in J0, so if aibd dies for any reason
+    // the OS kills every tree it started. No "run unprotected" mode.
+    #[cfg(windows)]
+    let _j0 = match aib_sys::job::Job::adopt_current() {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(
+                error = e.tag(),
+                "j0: cannot put aibd in its Job; refusing to start"
+            );
+            return ExitCode::from(1);
+        }
+    };
     match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
         Err(e) => {
