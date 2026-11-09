@@ -27,7 +27,13 @@
   負責席能把 accepted / integrating 的件推到 blocked 再自己解回 running(把件從整合席手上拉回來;L2):這是刻意留的,
   返工要能發生;事件裡看得到。
 返工換頭碼(H1):running → review 帶了不同的 --head,舊頭碼的收據移到 superseded(連同舊頭碼記下),不再算數;
-  收件只看現在頭碼的收據。--repo DIR 帶了就用 git 查這個 commit 真的存在、記下它的 commit 時間(M4),
+  收件只看現在頭碼的收據。
+  同頭碼重交(退回 running 再交 review):以這次交的 --evidence 為準,上一次交的整批移到 superseded(11-09 f1fae 派)。
+  被換掉的收據不算,但看得到:verify 對現在頭碼 superseded 的收據逐張重驗,沒過的在 RESULT 前列出(路徑 + 哪條不符,
+  --json 帶 earlier_red),收件成功也多印一行提醒;只顯示、不擋(ebb36 #541 M1,11-09 f1fae 定)。superseded 每格記 why / at / by。
+  事件 id 已用過 ⇒ 先重播(或 rc 6),不再查 --evidence 格式(收據檔事後被刪也照樣重播;L1)。
+  --evidence 帶的檔在 move 時就先看格式:要是 schema aib-receipt/1 的 JSON 物件,不是(.md、壞 JSON、別的 schema)⇒ rc 2,
+  什麼都不寫(說明文字放 --next)。格式對不代表收據過,收件時才驗內容。--repo DIR 帶了就用 git 查這個 commit 真的存在、記下它的 commit 時間(M4),
   收據的 started_at 不能早於它。事件 id 去重:--event-id 相同、內容相同 ⇒ 重送不重做(印原結果,rc 0);同 id 不同內容 ⇒ rc 6。
 收件門(→ accepted):帳上的頭碼 + 收據驗證器全過才放行(見 verify)。
 
@@ -350,6 +356,18 @@ def same_cmd(a, b):
     return na is not None and nb is not None and na == nb
 
 
+def judge_receipt(p, item, head, now=None, db=None):
+    """一張收據在這個件上紅不紅 → (kind, problems, recorded, info)。check_receipt 之外再套件的規則
+    (needs recorded、--cmd)。verify_item 和 earlier_red 都用這一支,規則不分岔(ebb36 #541 r2 M1)。"""
+    kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
+    want = item.get("expect_cmd") or ""
+    if "recorded" in (item.get("needs") or []) and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
+        rp = ["needs recorded: this receipt was not written by aib ledger record"]
+    if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
+        rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
+    return kind, rp, recorded, info
+
+
 def verify_item(item, now=None, db=None):
     """件 → {"ok": bool, "problems": [...], "receipts": [{path, kind, ok, problems}]}。"""
     probs, out = [], []
@@ -360,14 +378,8 @@ def verify_item(item, now=None, db=None):
     if not ev:
         probs.append("no receipt attached (--evidence)")
     good_kinds = []
-    needs = item.get("needs") or []
     for p in ev:
-        kind, rp, recorded, info = check_receipt(p, head, now, item.get("head_time") or None, db)
-        want = item.get("expect_cmd") or ""
-        if "recorded" in needs and not recorded and not rp:   # 帶 --cmd 的件在 add 時已自動加 recorded(#531 M2)
-            rp = ["needs recorded: this receipt was not written by aib ledger record"]
-        if want and kind in ("positive", "default") and not rp and not same_cmd(info.get("cmd"), want):
-            rp = ["cmd %r is not the dispatched command %r" % (info.get("cmd"), want)]
+        kind, rp, recorded, info = judge_receipt(p, item, head, now, db)
         out.append(dict(info, path=p, kind=kind, ok=not rp, problems=rp, recorded=recorded))
         if rp:
             probs.extend("%s: %s" % (Path(p).name, x) for x in rp)
@@ -377,7 +389,25 @@ def verify_item(item, now=None, db=None):
         probs.append("no passing positive or default receipt (knife / chrome alone do not count)")
     if "chrome" in (item.get("needs") or []) and "chrome" not in good_kinds:
         probs.append("needs chrome: no passing chrome receipt for this head")
-    return {"ok": not probs, "problems": probs, "receipts": out}
+    return {"ok": not probs, "problems": probs, "receipts": out, "earlier_red": earlier_red(item, now, db)}
+
+
+def earlier_red(item, now=None, db=None):
+    """同一個頭碼之前交過、被這次交件換掉的收據裡,沒過的那幾張(ebb36 #541 M1)。
+    只顯示、不擋:RESULT 仍以這次交的為準;但「同頭碼先紅後綠」要讓收件的人看得到。"""
+    head = item.get("head") or ""
+    out = []
+    if not head:
+        return out
+    for old in item.get("superseded") or []:
+        if not sha_match(old.get("head") or "", head):
+            continue
+        for p in old.get("evidence") or []:
+            kind, rp, _recorded, info = judge_receipt(p, item, head, now, db)
+            if rp:
+                out.append({"path": p, "kind": kind, "problems": rp, "why": old.get("why") or "",
+                            "at": old.get("at") or "", "by": old.get("by") or "", "cmd": info.get("cmd")})
+    return out
 
 
 # ---------- 寫入(交易 + 事件 id 去重) ----------
@@ -502,6 +532,7 @@ def apply_move(item, a, request, by, roles):
     if a.to not in TRANSITIONS[a.from_state]:
         raise Refused(RC_RULE, "%s -> %s is not an allowed move" % (a.from_state, a.to))
     worn = hats(roles, by, item["owner"], a.as_role)
+    had_review = bool(item["head"])   # 頭碼只在交 review 時設:有頭碼 = 之前交過(L2)
     if not worn & set(WRITERS[a.to]):
         raise Refused(RC_RULE, "%s cannot write state %s (writers: %s)" % (by, a.to, ", ".join(WRITERS[a.to])))
     if a.from_state == "blocked-human" and "dispatch" not in worn:
@@ -517,9 +548,17 @@ def apply_move(item, a, request, by, roles):
         if request.get("repo"):
             head, when = request["git"]
         if item["head"] and not sha_match(head, item["head"]):
-            item["superseded"].append({"head": item["head"], "evidence": item["evidence"]})
+            item["superseded"].append({"head": item["head"], "evidence": item["evidence"], "why": "old head",
+                                       "at": now_iso(), "by": by})
             item["evidence"] = []
         item["head"], item["head_time"] = head, when
+    if a.to == "review" and item["evidence"]:
+        # 同頭碼重交:以這次交件為準,上一次的整批作廢(不然交錯的檔拿不掉,verify 永遠紅;11-09 f1fae)
+        # 第一次交 review 前別的 move 帶的 --evidence 不叫「重交」(ebb36 #541 L2);兩種都記時間和誰(L3)
+        item["superseded"].append({"head": item["head"], "evidence": item["evidence"],
+                                   "why": "resubmitted" if had_review else "before first review",
+                                   "at": now_iso(), "by": by})
+        item["evidence"] = []
     if a.to == "review" and not item["head"]:
         raise Refused(RC_RULE, "moving to review needs --head")
     if a.to in SIDE and not (a.blocker or "").strip():
@@ -530,8 +569,26 @@ def apply_move(item, a, request, by, roles):
     return ((a.blocker or "").strip() if a.to in SIDE else ""), (item["next"] if a.next is None else a.next)
 
 
+def receipt_format_problem(path):
+    """--evidence 的檔在 move 時先看格式(只看是不是收據,不驗內容)。回 None = 格式對。"""
+    try:
+        r = json.loads(Path(path).read_bytes().decode("utf-8"))
+    except (OSError, ValueError) as e:
+        return "not readable as JSON (%s)" % (e.__class__.__name__,)
+    if not isinstance(r, dict) or r.get("schema") != RECEIPT_SCHEMA:
+        return "not a %s receipt" % RECEIPT_SCHEMA
+    return None
+
+
 def op_move(db, a, by, event_id):
     evidence = [str(Path(p).expanduser().resolve()) for p in (a.evidence or [])]
+    # 事件 id 已用過 ⇒ 交給 run() 重播或回 rc 6,不先查格式(收據檔事後被刪 / 舊版交過 .md,原樣重送仍是重播;ebb36 #541 L1)
+    seen = db.execute("SELECT 1 FROM events WHERE event_id=?", (event_id,)).fetchone() is not None
+    bad = [] if seen else [(p, receipt_format_problem(p)) for p in evidence]
+    bad = [(p, why) for p, why in bad if why]
+    if bad:
+        raise Refused(RC_USAGE, "--evidence takes receipts only (put notes in --next); nothing written: "
+                      + "; ".join("%s: %s" % (Path(p).name, why) for p, why in bad))
     request = {"id": a.id, "from": a.from_state, "to": a.to, "head": (a.head or "").lower(), "evidence": evidence,
                "next": a.next, "blocker": a.blocker, "by": by, "as": a.as_role,
                "repo": str(Path(a.repo).expanduser().resolve()) if getattr(a, "repo", None) else None}
@@ -576,6 +633,8 @@ def op_move(db, a, by, event_id):
         if verdict is not None:
             res["verified"] = [{"path": r["path"], "receipt_sha256": r.get("receipt_sha256"),
                                 "output_sha256": r.get("output_sha256")} for r in verdict["receipts"] if r["ok"]]
+            if verdict.get("earlier_red"):
+                res["earlier_red"] = [r["path"] for r in verdict["earlier_red"]]
         _record(db, event_id, "move", a.id, a.from_state, a.to, by, request, res)
         return res
     return tx(db, run)
@@ -614,7 +673,13 @@ def print_item(it, hist=None):
     for p in it["evidence"]:
         print("  evidence: %s" % p)
     for old in it.get("superseded") or []:
-        print("  superseded (old head %s): %d receipt(s)" % (old["head"][:12], len(old["evidence"])))
+        why = old.get("why") or "old head"
+        print("  superseded (%s %s%s): %d receipt(s)" % (
+            ("resubmitted at" if why == "resubmitted" else why), old["head"][:12],
+            "".join(", %s" % x for x in (old.get("at"), old.get("by") and "by " + old["by"]) if x),
+            len(old["evidence"])))
+        for p in old["evidence"]:
+            print("      %s" % p)
     print("  updated:  %s by %s" % (it["updated_at"], it["updated_by"]))
     for h in hist or []:
         print("  - %s %s %s -> %s by %s%s (%s)" % (h["at"], h["op"], h["from_state"] or "", h["to_state"] or "",
@@ -822,6 +887,13 @@ def main(argv=None):
                                             "" if r["ok"] else "  (" + "; ".join(r["problems"]) + ")"))
                     if r.get("cmd"):
                         print("     cmd: %s" % r["cmd"])
+                if v["earlier_red"]:
+                    print("EARLIER this head was also submitted with receipts that did not pass (not counted; RESULT is "
+                          "this submission):")
+                    for r in v["earlier_red"]:
+                        print("  RED  %-8s %s  (%s)%s" % (r["kind"] or "unreadable", r["path"], "; ".join(r["problems"]),
+                                                          (" — %s %s by %s" % (r["why"], r["at"], r["by"]))
+                                                          if r["at"] else ""))
                 print("RESULT %s %s at %s%s" % ("OK" if v["ok"] else "FAIL", it["id"], it["head"] or "-",
                                                  "" if v["ok"] else ": " + "; ".join(v["problems"])))
             return RC_OK if v["ok"] else RC_RECEIPT
@@ -853,8 +925,10 @@ def main(argv=None):
             emit(a, res, "%squeued %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"], res["rev"]))
         else:
             res = op_move(db, a, by, event_id)
-            emit(a, res, "%s%s %s -> %s (rev %d)" % ("(replayed) " if res.get("replayed") else "", res["id"],
-                                                     res["from"], res["state"], res["rev"]))
+            emit(a, res, "%s%s %s -> %s (rev %d)%s" % (
+                "(replayed) " if res.get("replayed") else "", res["id"], res["from"], res["state"], res["rev"],
+                ("\n  note: this head was also submitted with %d receipt(s) that did not pass; see aib ledger verify"
+                 % len(res["earlier_red"])) if res.get("earlier_red") else ""))
         return RC_OK
     except Refused as e:
         if getattr(a, "json", False):
