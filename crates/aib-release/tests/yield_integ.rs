@@ -16,6 +16,7 @@ const INTEG: u64 = 567;
 const IH: &str = "1111111111111111111111111111111111111111";
 const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const CI: &str = ".github/workflows/ci.yml";
 const AIBD: &str = ".github/workflows/aibd.yml";
 
@@ -770,4 +771,192 @@ fn a_run_that_finished_meanwhile_is_left_alone() {
     assert_eq!(f.writes(), vec!["label #537 in-integ", "cancel 10"]);
     assert_eq!(done[0].runs[1], (11, "left:not_cancellable_now".into()));
     assert_eq!(exit_code(&p, &done), 0);
+}
+
+// ── bb7dc #572 f7a02962: a new UNKNOWN mid-apply stops the whole batch ─────
+
+/// Two originals: #537 at A (runs 10, 11) and #538 at C (run 40), both in
+/// the integration.
+fn world2() -> World {
+    let mut w = world();
+    w.pulls.insert(538, pull(538, "open", C, &[]));
+    w.runs
+        .insert(C.into(), Ok(vec![prun(40, CI, "queued", None, C, 538)]));
+    w.contained.insert((C.into(), IH.into()));
+    w
+}
+
+fn req2() -> Request {
+    req(&[(537, A), (538, C)])
+}
+
+fn stopped(a: &Applied) -> bool {
+    a.label.starts_with("batch_stopped:") && a.runs.is_empty()
+}
+
+#[test]
+fn two_originals_both_yield_when_nothing_moves() {
+    let f = Fake::new(world2());
+    let (p, done) = go(&f, &req2());
+    assert_eq!(
+        f.writes(),
+        vec![
+            "label #537 in-integ",
+            "cancel 10",
+            "cancel 11",
+            "label #538 in-integ",
+            "cancel 40"
+        ]
+    );
+    assert_eq!(exit_code(&p, &done), 0);
+}
+
+/// #537 turns unreadable after the plan: its fresh check before the label
+/// fails; #538 is not touched either.
+#[test]
+fn unknown_before_the_first_label_stops_every_later_pr() {
+    let f = Fake::new(world2());
+    let r = req2();
+    let p = plan(&f, &r);
+    f.w.borrow_mut()
+        .pulls
+        .insert(537, Err(GhError("http:502".into())));
+    let done = apply(&f, &r, &p, &|| {});
+    assert!(f.writes().is_empty(), "{:?}", f.writes());
+    assert!(
+        done[0].label.starts_with("aborted:pull_unreadable"),
+        "{}",
+        done[0].label
+    );
+    assert!(stopped(&done[1]), "{:?}", done[1]);
+    assert_eq!(exit_code(&p, &done), 3);
+}
+
+/// #537's runs turn unreadable after its label, before its first cancel:
+/// the label stays (reported), no cancel is sent, #538 is not touched.
+#[test]
+fn unknown_before_a_cancel_stops_the_rest_of_the_batch() {
+    let f = Fake::new(world2());
+    let r = req2();
+    let p = plan(&f, &r);
+    f.before("label", 1, |w| {
+        w.runs.insert(A.into(), Err(GhError("http:502".into())));
+    });
+    let done = apply(&f, &r, &p, &|| {});
+    assert_eq!(f.writes(), vec!["label #537 in-integ"]);
+    assert_eq!(done[0].label, "added");
+    assert!(
+        done[0].runs[0].1.starts_with("aborted:runs_unreadable"),
+        "{:?}",
+        done[0].runs
+    );
+    assert_eq!(done[0].runs.len(), 1, "run 11 is not tried");
+    assert!(stopped(&done[1]), "{:?}", done[1]);
+    assert_eq!(exit_code(&p, &done), 3);
+}
+
+/// #537's head cannot be read back after its label: nothing more.
+#[test]
+fn unreadable_head_after_a_label_stops_the_rest_of_the_batch() {
+    let f = Fake::new(world2());
+    let r = req2();
+    let p = plan(&f, &r);
+    f.before("label", 1, |w| {
+        w.pulls.insert(537, Err(GhError("http:502".into())));
+    });
+    let done = apply(&f, &r, &p, &|| {});
+    assert_eq!(f.writes(), vec!["label #537 in-integ"]);
+    assert!(
+        done[0].label.starts_with("added_head_moved:unreadable:"),
+        "{}",
+        done[0].label
+    );
+    assert!(stopped(&done[1]), "{:?}", done[1]);
+    assert_eq!(exit_code(&p, &done), 3);
+}
+
+/// The second PR's head moves after the first PR is done: the first stays
+/// done (reported), the second gets nothing, and there is no settle re-read
+/// for the first (no wait, no new cancel).
+#[test]
+fn a_stop_on_the_second_pr_keeps_the_first_as_done_and_skips_the_recheck() {
+    let f = Fake::new(world2());
+    let r = req2();
+    let p = plan(&f, &r);
+    f.before("cancel", 2, |w| {
+        w.pulls.insert(538, pull(538, "open", B, &[]));
+    });
+    let settled = RefCell::new(0);
+    let done = apply(&f, &r, &p, &|| *settled.borrow_mut() += 1);
+    assert_eq!(
+        f.writes(),
+        vec!["label #537 in-integ", "cancel 10", "cancel 11"]
+    );
+    assert_eq!(
+        done[0].runs[..2],
+        [(10, "cancelled".into()), (11, "cancelled".into())]
+    );
+    assert!(
+        done[0].runs[2].1.starts_with("batch_stopped:recheck:"),
+        "{:?}",
+        done[0].runs
+    );
+    assert_eq!(done[1].label, "aborted:head_moved");
+    assert_eq!(*settled.borrow(), 0);
+    assert_eq!(exit_code(&p, &done), 3);
+}
+
+/// The settle re-read of #537 fails: #538's re-read and late cancels are
+/// not done.
+#[test]
+fn unknown_at_the_settle_recheck_stops_the_later_rechecks() {
+    let f = Fake::new(world2());
+    let r = req2();
+    let p = plan(&f, &r);
+    let done = apply(&f, &r, &p, &|| {
+        let mut w = f.w.borrow_mut();
+        w.runs.insert(A.into(), Err(GhError("http:502".into())));
+        w.runs.insert(
+            C.into(),
+            Ok(vec![
+                prun(40, CI, "in_progress", None, C, 538),
+                prun(41, CI, "queued", None, C, 538),
+            ]),
+        );
+    });
+    assert!(
+        !f.writes().contains(&"cancel 41".to_owned()),
+        "{:?}",
+        f.writes()
+    );
+    assert!(done[0]
+        .runs
+        .iter()
+        .any(|(_, s)| s.starts_with("failed:recheck:")));
+    assert!(
+        done[1]
+            .runs
+            .iter()
+            .any(|(_, s)| s.starts_with("batch_stopped:recheck:")),
+        "{:?}",
+        done[1].runs
+    );
+    assert_eq!(exit_code(&p, &done), 3);
+}
+
+/// A write the API refuses is reported but is not an UNKNOWN: the batch
+/// goes on.
+#[test]
+fn a_refused_cancel_does_not_stop_the_batch() {
+    let mut w = world2();
+    w.cancel_fails.insert(10);
+    let f = Fake::new(w);
+    let (p, done) = go(&f, &req2());
+    assert!(
+        f.writes().contains(&"cancel 40".to_owned()),
+        "{:?}",
+        f.writes()
+    );
+    assert_eq!(done[0].runs[0], (10, "failed:http:500".into()));
+    assert_eq!(exit_code(&p, &done), 3);
 }

@@ -314,17 +314,22 @@ pub fn plan(gh: &dyn Github, req: &Request) -> Plan {
 pub struct Applied {
     pub number: u64,
     /// `added`, `already`, `failed:<err>`, `aborted:<why>` (a fresh check
-    /// before it failed: not added), or `added_head_moved:<sha>`.
+    /// before it failed: not added), `added_head_moved:<sha>`, or
+    /// `batch_stopped:<why>` (not reached: an earlier PR stopped the batch).
     pub label: String,
     /// (run id, `cancelled` | `already_done` | `failed:<err>` |
-    /// `aborted:<why>` | `left:not_cancellable_now`)
+    /// `aborted:<why>` | `left:not_cancellable_now`; id 0 =
+    /// `failed:recheck:<why>` / `batch_stopped:recheck:<why>`)
     pub runs: Vec<(u64, String)>,
 }
 
 impl Applied {
     pub fn failed(&self) -> bool {
         let bad = |s: &str| {
-            s.starts_with("failed") || s.starts_with("aborted") || s.starts_with("added_head_moved")
+            s.starts_with("failed")
+                || s.starts_with("aborted")
+                || s.starts_with("added_head_moved")
+                || s.starts_with("batch_stopped")
         };
         bad(&self.label) || self.runs.iter().any(|(_, s)| bad(s))
     }
@@ -354,8 +359,9 @@ fn cancel_one(gh: &dyn Github, id: u64) -> String {
     }
 }
 
-/// Cancel each id after a fresh check; the first failed check stops the
-/// rest of this PR (state moved under us: nothing more is safe).
+/// Cancel each id after a fresh check. The first failed check stops: the
+/// reason is returned and the caller stops the whole batch (bb7dc #572
+/// f7a02962: a new UNKNOWN mid-apply is still "any UNKNOWN, nothing more").
 fn cancel_checked(
     gh: &dyn Github,
     req: &Request,
@@ -363,17 +369,20 @@ fn cancel_checked(
     d: &Decision,
     ids: &[u64],
     out: &mut Applied,
-) {
+) -> Option<String> {
     for id in ids {
         match fresh(gh, req, head, d) {
             Err(why) => {
                 out.runs.push((*id, format!("aborted:{why}")));
-                return;
+                return Some(why);
             }
-            Ok(now) if !now.contains(id) => out.runs.push((*id, "left:not_cancellable_now".into())),
+            Ok(now) if !now.contains(id) => {
+                out.runs.push((*id, "left:not_cancellable_now".into()));
+            }
             Ok(_) => out.runs.push((*id, cancel_one(gh, *id))),
         }
     }
+    None
 }
 
 /// Carry out a plan. Nothing is done when the gate refused, or when any
@@ -381,15 +390,24 @@ fn cancel_checked(
 /// deliberate Skips do not stop the others).
 ///
 /// Per original: fresh check → label (if missing) → read the head again
-/// (a push between the check and the label: report, cancel nothing) →
-/// each run cancelled after its own fresh check. ci.yml also runs on
-/// `labeled`, so when a label was added `settle` runs (the caller waits for
-/// GitHub to create that run) and the fresh cancel list is applied once more.
+/// (a push between the check and the label) → each run cancelled after its
+/// own fresh check. ci.yml also runs on `labeled`, so when a label was added
+/// `settle` runs (the caller waits for GitHub to create that run) and the
+/// fresh cancel list is applied once more.
 ///
-/// GitHub has no compare-and-swap for any of this: a change between the last
-/// fresh check and the write itself is not caught here. The label cannot
-/// make a head green (ci.yml only reacts to the labelling event itself, and
-/// that run's macOS cells fail as "not a verdict").
+/// The batch stops at the first check that does not pass during apply
+/// (a fresh check failing for any reason, a head that moved or could not be
+/// read after labelling, a failed re-read after `settle`): no later label or
+/// cancel for any PR, no `settle`; every original not reached says
+/// `batch_stopped:<why>`. What was already written stays written and is
+/// reported as it happened (GitHub cannot roll a cancel back): a stopped
+/// batch is a partial result, exit 3. A write the API refuses (a label or a
+/// cancel failing) is reported and does not stop the batch.
+///
+/// GitHub has no compare-and-swap: a change between the last fresh check
+/// and the write itself is not caught here. The label cannot make a head
+/// green (ci.yml only reacts to the labelling event itself, and that run's
+/// macOS cells fail as "not a verdict").
 pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> Vec<Applied> {
     let Gate::Ready { head } = &plan.gate else {
         return Vec::new();
@@ -403,6 +421,7 @@ pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> 
     }
     let mut out = Vec::new();
     let mut relabelled = Vec::new();
+    let mut stop: Option<String> = None;
     for d in &plan.decisions {
         let Verdict::Yield { cancel, add_label } = &d.verdict else {
             continue;
@@ -412,9 +431,15 @@ pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> 
             label: "already".into(),
             runs: Vec::new(),
         };
+        if let Some(why) = &stop {
+            a.label = format!("batch_stopped:{why}");
+            out.push(a);
+            continue;
+        }
         if *add_label {
             if let Err(why) = fresh(gh, req, head, d) {
                 a.label = format!("aborted:{why}");
+                stop = Some(why);
                 out.push(a);
                 continue;
             }
@@ -423,27 +448,38 @@ pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> 
                 Err(e) => format!("failed:{e}"),
             };
             if a.label == "added" {
-                match gh.pull(d.number) {
-                    Ok(p) if p.head_sha == d.want => relabelled.push(out.len()),
-                    Ok(p) => {
-                        // pushed between the check and the label: the label's
-                        // run is on the new head; leave every run alone
-                        a.label = format!("added_head_moved:{}", p.head_sha);
-                        out.push(a);
-                        continue;
-                    }
-                    Err(e) => {
-                        a.label = format!("added_head_moved:unreadable:{e}");
-                        out.push(a);
-                        continue;
-                    }
+                let moved = match gh.pull(d.number) {
+                    Ok(p) if p.head_sha == d.want => None,
+                    // pushed between the check and the label: the label's
+                    // run is on the new head; leave every run alone
+                    Ok(p) => Some(p.head_sha),
+                    Err(e) => Some(format!("unreadable:{e}")),
+                };
+                if let Some(m) = moved {
+                    a.label = format!("added_head_moved:{m}");
+                    stop = Some(format!("head_moved_after_label:#{}", d.number));
+                    out.push(a);
+                    continue;
                 }
+                relabelled.push(out.len());
             }
         }
-        cancel_checked(gh, req, head, d, cancel, &mut a);
+        stop = cancel_checked(gh, req, head, d, cancel, &mut a);
         out.push(a);
     }
     if relabelled.is_empty() {
+        return out;
+    }
+    if let Some(why) = &stop {
+        // the labels' own runs may still be going: say so on each PR that
+        // is otherwise done (one that stopped itself already says why)
+        for i in relabelled {
+            if !out[i].failed() {
+                out[i]
+                    .runs
+                    .push((0, format!("batch_stopped:recheck:{why}")));
+            }
+        }
         return out;
     }
     settle();
@@ -451,18 +487,23 @@ pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> 
         let Some(d) = plan.decisions.iter().find(|d| d.number == out[i].number) else {
             continue;
         };
-        if out[i].runs.iter().any(|(_, s)| s.starts_with("aborted")) {
-            // already stopped: the state moved, nothing more is safe here
+        if let Some(why) = &stop {
+            out[i]
+                .runs
+                .push((0, format!("batch_stopped:recheck:{why}")));
             continue;
         }
         let seen: Vec<u64> = out[i].runs.iter().map(|(id, _)| *id).collect();
         match fresh(gh, req, head, d) {
             Ok(now) => {
                 let new: Vec<u64> = now.into_iter().filter(|id| !seen.contains(id)).collect();
-                cancel_checked(gh, req, head, d, &new, &mut out[i]);
+                stop = cancel_checked(gh, req, head, d, &new, &mut out[i]);
             }
             // the label's own run may still be going: say so
-            Err(why) => out[i].runs.push((0, format!("failed:recheck:{why}"))),
+            Err(why) => {
+                out[i].runs.push((0, format!("failed:recheck:{why}")));
+                stop = Some(why);
+            }
         }
     }
     out
