@@ -4,7 +4,8 @@
 //! `POST /api/v1/seats/{id}/sessions` with `-p … --output-format
 //! stream-json --verbose`, the stream-json lines read back as
 //! `session.output` events, then the same output after an aibd restart.
-//! One real model call on the user's own login. Run explicitly:
+//! One real model call on the user's own login; a failure never prints
+//! the output text (1ced7 L1). Run explicitly:
 //!
 //!   AIBD_REAL_CLAUDE=1 cargo test -p aibd --test claude_api_smoke -- --ignored --nocapture
 //!
@@ -139,7 +140,11 @@ impl Daemon {
             if closed == 2 {
                 return items;
             }
-            assert!(Instant::now() < end, "streams not closed: {v}");
+            assert!(
+                Instant::now() < end,
+                "streams not closed after {} events (text not printed)",
+                items.len()
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -218,8 +223,17 @@ async fn a_real_claude_session_streams_its_output_and_reads_back_after_a_restart
     let result = stdout
         .iter()
         .find(|v| v["type"] == "result")
-        .unwrap_or_else(|| panic!("no result event: {items:?}"));
-    assert_eq!(result["is_error"], false, "{result}");
+        .unwrap_or_else(|| {
+            panic!(
+                "no result event in {} output events (text not printed)",
+                items.len()
+            )
+        });
+    assert_eq!(
+        result["is_error"], false,
+        "result subtype {} (text not printed)",
+        result["subtype"]
+    );
     // the session ends by itself
     let end = Instant::now() + Duration::from_secs(30);
     let ended = loop {
@@ -242,10 +256,12 @@ async fn a_real_claude_session_streams_its_output_and_reads_back_after_a_restart
         )
         .await;
     assert_eq!(code, 200, "{v}");
-    assert_eq!(
-        v["output"].as_array().unwrap(),
-        &items,
-        "the same output after a restart"
+    // compared, never printed: the output is the model's text
+    assert!(
+        v["output"].as_array().unwrap() == &items,
+        "the output after a restart differs ({} vs {} events)",
+        v["output"].as_array().unwrap().len(),
+        items.len()
     );
     let (_, list) = d
         .call("GET", &format!("/api/v1/seats/{seat}/sessions"), None)
