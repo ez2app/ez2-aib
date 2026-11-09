@@ -519,6 +519,10 @@ fn r1_pr_workflow_missing_on_main_is_not_complete() {
     let mut other = f.cand_runs[0].clone();
     other.id = 3;
     other.path = ".github/workflows/aibd.yml".into();
+    // its own job name: reusing the required smoke name would make that check two jobs on the PR
+    // side, which is unknown by itself (r1b) and would hide what this test is about
+    other.jobs[0].id = 31;
+    other.jobs[0].name = "rust (macos-latest)".into();
     f.cand_runs.push(other);
     let v = judge(&f);
     assert_eq!(v.state, "partial", "{:?}", names(&v));
