@@ -110,6 +110,11 @@ SITES = {
     "cloud_robot.apply": _s("cloud-host/robot.py", "host_rescue", "aib.cloud_robot.touchid_apply",
                             {"action": 16, "server": FULL, "fp": FULL},   # r2 H2:server 也不截,彈窗 = 網址
                             "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}"),
+    # 11-09 @4542e(Andy「key 從 eu01 取得,再彈出生物辨識」):tools/cloud-host/r2token.py mint --apply;
+    # 在 EU01 用那裡的 CF 憑證開只限一個 R2 bucket、只從一台主機 IP 用的 token,管線直送目的主機;bucket / host / ip 都不截
+    "cloud_r2token.mint": _s("cloud-host/r2token.py", "cf_token", "aib.cloud_r2token.touchid_mint",
+                             {"bucket": FULL, "host": FULL, "ip": FULL},
+                             "aib: mint a Cloudflare R2 token for bucket {bucket}, usable only from {host} ({ip}); sent straight to that host"),
     "secret_share.copy": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_copy", {"name": FULL},
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
     "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},

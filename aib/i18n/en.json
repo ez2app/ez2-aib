@@ -5981,5 +5981,6 @@
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
   "aib.cloud_robot.touchid_apply": "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}",
+  "aib.cloud_r2token.touchid_mint": "aib: mint a Cloudflare R2 token for bucket {bucket}, usable only from {host} ({ip}); sent straight to that host",
   "aib.approve_gate.cat.host_rescue": "Host rescue (Hetzner Robot rescue / reset)"
 }
