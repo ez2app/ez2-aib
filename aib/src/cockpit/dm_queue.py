@@ -1816,6 +1816,15 @@ def done_group(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, 
 
 
 def reclass(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
+    """Serialize reclassification with other seat transitions."""
+    try:
+        with _seat_transition_lock(seat, env):
+            return _reclass_locked(seat, item_id, kind, actor, env=env, now=now, if_rev=if_rev)
+    except TransitionLockTimeout:
+        return {"ok": False, "reason": "lock_timeout", "message": TRANSITION_REASON["lock_timeout"]}
+
+
+def _reclass_locked(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
     """S7-2:收件席把寄件人的分類改掉(知會 → 工作 / 要裁…);只有收件席本人、只改已送達 / 已讀的;
     改了 rev+1(審查:不加的話 triage / stage-tidy 先前拿的 if_rev 擋不住,升成要裁的信還會被代標讀)。"""
     now = int(time.time() if now is None else now)
@@ -5826,7 +5835,7 @@ def upkeep(env=None, now=None, alive_fn=None, hold_fn=None, deliver_fn=None, dry
     return rows
 
 
-_TRANSITION_RC = {"rev_mismatch": 5, "no_rev": 6, "actor": 7, "actor_missing": 7,
+_TRANSITION_RC = {"rev_mismatch": 5, "no_rev": 6, "actor": 7, "actor_missing": 7, "lock_timeout": 10,
                   "transition": 8, "evidence": 9, "not_found": 4, "im_room_only": 8}
 
 
@@ -6479,10 +6488,11 @@ def main(argv=None, env=None):
         msg = None
         if args.msg is not None or args.msg_file:
             msg = _read_msg(args)
-        item = edit(args.seat, args.id, msg=msg, priority=args.priority, env=env, if_rev=args.if_rev, no_rev_check=bool(args.no_rev_check) or None)
-        if not item:
-            return 2
-        _print_json(item)
+        result = edit_result(args.seat, args.id, msg=msg, priority=args.priority, env=env, if_rev=args.if_rev, no_rev_check=bool(args.no_rev_check) or None)
+        if not result["ok"]:
+            _print_json(result)
+            return _TRANSITION_RC.get(result["reason"], 4)
+        _print_json(result["item"])
         return 0
 
     if args.cmd == "claim-next":
