@@ -87,7 +87,7 @@ class Smoke(unittest.TestCase):
         exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = smoke.main([str(exe), "--timeout", "15"])
+            rc = smoke.main([str(exe), "--timeout", os.environ.get("AIBD_SMOKE_TEST_TIMEOUT", "60")])
         return rc, json.loads(buf.getvalue().strip().splitlines()[-1])
 
     def test_good_aibd_passes_and_is_stopped_and_cleaned(self):

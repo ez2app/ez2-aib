@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod session;
+#[cfg(unix)]
+pub mod session_unix;
+#[cfg(windows)]
+pub mod session_windows;
 pub mod tree;
 
 #[cfg(unix)]
@@ -62,6 +66,78 @@ pub fn keep_child_zombies() -> Option<&'static str> {
     #[cfg(not(target_os = "macos"))]
     {
         None
+    }
+}
+
+/// The platform's session starter (`session::SpawnFn`).
+pub fn default_spawn() -> session::SpawnFn {
+    #[cfg(unix)]
+    {
+        session_unix::spawn
+    }
+    #[cfg(windows)]
+    {
+        // J0 + one Job per session (043dd #543).
+        session_windows::spawn
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        unsupported_spawn
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unsupported_spawn(
+    _: &session::Spec,
+    _: Option<std::sync::Arc<crate::lineage::Lineage>>,
+) -> Result<Box<dyn session::Running>, session::SpawnFail> {
+    Err(session::SpawnFail {
+        tag: "unsupported_platform".into(),
+        left_running: None,
+    })
+}
+
+/// Stop the trees left by failed starts once more, all within `deadline`
+/// (aibd is ending; bb7dc #544). Returns the roots not confirmed gone, as
+/// (pid, recorded start time).
+/// Windows: (pid, Job creation time); a root never held is listed with `None`.
+pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
+    #[cfg(unix)]
+    {
+        session_unix::stop_leftovers(deadline)
+    }
+    #[cfg(windows)]
+    {
+        session_windows::stop_leftovers(deadline)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = deadline;
+        Vec::new()
+    }
+}
+
+/// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a
+/// plain `kill` still collects every session, D11).
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

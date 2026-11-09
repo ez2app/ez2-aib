@@ -56,8 +56,8 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread,
+    TerminateProcess, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     THREAD_SUSPEND_RESUME,
 };
@@ -229,6 +229,23 @@ impl Process {
     /// `timeout`.
     pub fn wait(&self, timeout: Duration) -> Result<bool, SysError> {
         wait_handle(raw(&self.h), timeout)
+    }
+
+    /// The exit code once the process has exited, `None` while it runs. The
+    /// handle's own wait decides "exited" (an exit code of 259 = STILL_ACTIVE
+    /// is a real code once the handle is signaled), never the code alone.
+    pub fn exit_code(&self) -> Result<Option<u32>, SysError> {
+        if !self.wait(Duration::ZERO)? {
+            return Ok(None);
+        }
+        let mut code = 0u32;
+        let h = raw(&self.h);
+        check_bool(|| {
+            // SAFETY: `h` is a live process handle with limited query access;
+            // `code` is a local u32.
+            unsafe { GetExitCodeProcess(h, &mut code) }
+        })?;
+        Ok(Some(code))
     }
 
     /// `TerminateProcess` through this handle (needs
