@@ -55,9 +55,11 @@ fn io_violation(text: &str) -> Option<String> {
         .map(|f| format!("用了 {f}(no_std 之外的逃生口)"))
 }
 
-/// Remove `//` line comments and `/* … */` block comments (string literals are not
-/// tracked: an inner attribute has to precede every item, so no string can sit in front
-/// of a real `#![no_std]`).
+/// Remove `//` line comments and `/* … */` block comments. Block comments nest in Rust
+/// (`/* /* */ still a comment */`), so the depth is counted (#532 r5 Y3). String literals
+/// are not tracked: an inner attribute has to precede every item, so no string can sit in
+/// front of a real `#![no_std]`; and [`declares_no_std`] only looks at the first non-empty
+/// line, so a string constant containing the text later in the file does not count (Y1).
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -73,21 +75,42 @@ fn strip_comments(text: &str) -> String {
         out.push_str(&rest[..cut]);
         if rest[cut..].starts_with("//") {
             rest = rest[cut..].find('\n').map_or("", |e| &rest[cut + e..]);
-        } else {
-            rest = rest[cut + 2..]
-                .find("*/")
-                .map_or("", |e| &rest[cut + 2 + e + 2..]);
+            continue;
         }
+        // block comment: walk forward counting nested `/*` and `*/` until depth returns to 0
+        let mut depth = 0usize;
+        let mut i = cut;
+        let bytes = rest.as_bytes();
+        let mut end = rest.len();
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                depth += 1;
+                i += 2;
+            } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        rest = &rest[end..];
     }
 }
 
-/// lib.rs must opt out of `std` for real: after comments are gone, one line has to be
-/// exactly `#![no_std]` (#532 r4 X2 / X7: a commented-out copy or `cfg_attr(test, no_std)`
-/// does not count). That is what turns every I/O path into a compile error.
+/// lib.rs must opt out of `std` for real: after comments are gone, the **first non-empty
+/// line** has to be exactly `#![no_std]` (#532 r4 X2 / X7, r5 Y1: a commented-out copy,
+/// `cfg_attr(test, no_std)` or the text inside a string constant later in the file does not
+/// count). That is what turns every I/O path into a compile error.
 fn declares_no_std(lib_rs: &str) -> bool {
     strip_comments(lib_rs)
         .lines()
-        .any(|l| l.trim() == "#![no_std]")
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| l == "#![no_std]")
 }
 
 /// Manifest lines that count: comments (`#…`) are dropped first (#532 r3 N11), then the
@@ -288,7 +311,24 @@ fn io_checker_catches_escape_hatches() {
         "#![cfg_attr(test, no_std)]\n// #![no_std]"
     )); // X7
     assert!(!declares_no_std("#![no_std] pub mod robot;")); // must be a line of its own
+                                                            // r5 Y1: the attribute text inside a string constant, after the real attribute was removed
+    assert!(!declares_no_std(
+        "pub mod robot;\npub const KNIFE: &str = \"\\n#![no_std]\\n\";"
+    ));
+    assert!(!declares_no_std(
+        "#[macro_use]\nextern crate alloc;\n#![no_std]"
+    )); // not first
+        // r5 Y3: nested block comment swallowing the attribute
+    assert!(!declares_no_std("/* /* */\n#![no_std]\n*/\npub mod robot;"));
+    assert!(!declares_no_std(
+        "/* a /* b */ c */ /* d */\npub mod robot;\n#![no_std]"
+    ));
+    assert!(declares_no_std(
+        "/* a /* b */ c */\n#![no_std]\npub mod robot;"
+    ));
     assert_eq!(strip_comments("a // x\nb /* y\nz */ c"), "a \nb  c");
+    assert_eq!(strip_comments("a /* 1 /* 2 */ 3 */ b"), "a  b");
+    assert_eq!(strip_comments("a /* never closed"), "a ");
     // manifest: N10 `build="x"` without spaces, N11 `[lints]` only inside a comment
     assert!(has_build_key(
         "[package]\nname = \"x\"\nbuild=\"knife/gen.rs\"\n"
