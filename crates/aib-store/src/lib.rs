@@ -6,6 +6,7 @@
 
 mod migrate;
 mod seats;
+mod sessions;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use std::thread::JoinHandle;
 
 pub use migrate::{Migration, MIGRATIONS};
 pub use seats::{IdemKey, Seat, SeatCreate};
+pub use sessions::SessionRow;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

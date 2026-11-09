@@ -22,6 +22,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "seats",
         sql: include_str!("../../../migrations/0002_seats.sql"),
     },
+    Migration {
+        version: 3,
+        name: "sessions",
+        sql: include_str!("../../../migrations/0003_sessions.sql"),
+    },
 ];
 
 /// FNV-1a 64-bit: detects edits to an applied migration. Not a security hash.

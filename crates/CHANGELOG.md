@@ -12,6 +12,14 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   the same key and body replays the first answer with `Idempotent-Replayed: true` (also after a
   restart), another body is `409 idempotency_conflict`. New error codes `seat_not_found`,
   `idempotency_conflict`.
+- Sessions of a seat (M1): `POST /api/v1/seats/{id}/sessions` (same body and answers as
+  `POST /api/v1/sessions`; `404 seat_not_found` for an unknown seat) and `GET /api/v1/seats/{id}/sessions`
+  (the stored rows, oldest first). Every session (both routes) is now stored in SQLite (migration 0003)
+  with each of its events in one transaction; the stored form keeps only argv[0]'s file name and the
+  argument count, never argv or env. Sessions gain `seat_id` (`null` on the preview.2 route).
+  At start, aibd marks every session still `running`, or still holding a slot, from the previous run as
+  `interrupted` (`ended_by: aibd_restart`, event `session.interrupted` with `processes_may_remain: true`);
+  nothing is re-attached or restarted.
 
 - `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
   (macOS process group, Windows Job). Details and limits: the preview.2 release notes.

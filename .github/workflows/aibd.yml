@@ -180,11 +180,12 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
-      # M1 seats (a9136): an Idempotency-Key is bound to its request, and a
-      # seat is written together with its event. Each knife must turn its
+      # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
+      # is written together with its event, a session row follows its events
+      # and open sessions are interrupted at start. Each knife must turn its
       # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
       # binding used (`&& false`, not `if false`).
-      - name: seats knives (macOS)
+      - name: seats / sessions store knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
@@ -199,6 +200,18 @@ jobs:
           sk '            insert_event(&tx, &event)?;' \
             '            // knife: no event' \
             a_seat_and_its_event_survive_a_restart
+          # S3 a session still holding a slot is not interrupted at start (only `running` ones)
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "                     WHERE state = 'running' OR holds_slot = 1" \
+            "                     WHERE state = 'running' -- knife" \
+            --expect-fail open_sessions_are_interrupted_at_start_and_never_resumed \
+            -- cargo test -p aib-store --locked --test sessions open_sessions_are_interrupted_at_start_and_never_resumed
+          # S4 aibd writes the event but not the session row: nothing to read back
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if let Err(err) = self.store.session_event(row, ev) {' \
+            '        if let Err(err) = self.store.append(vec![ev]).map(|_| drop(row)) { // knife' \
+            --expect-fail a_seat_session_is_stored_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test seat_sessions a_seat_session_is_stored_and_read_back_after_a_restart
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

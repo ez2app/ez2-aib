@@ -41,6 +41,12 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
             get(seats::get_one).fallback(sessions::method_not_allowed),
         )
         .route(
+            "/api/v1/seats/{id}/sessions",
+            get(sessions::list_for_seat)
+                .post(sessions::create_for_seat)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
             "/api/v1/sessions",
             get(sessions::list)
                 .post(sessions::create)
