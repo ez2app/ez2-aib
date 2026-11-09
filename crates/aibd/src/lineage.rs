@@ -77,17 +77,14 @@ impl Lineage {
         }
     }
 
-    /// The real thing: macOS runs the self-check on this process.
-    #[cfg(target_os = "macos")]
+    /// The real thing: where the platform has a lineage reader (macOS), the
+    /// self-check runs on this process.
     pub fn detect() -> Self {
-        let info: Arc<dyn ProcessInfo> = Arc::new(aib_sys::Macos);
-        let check = aib_sys::selfcheck::run(info.as_ref());
-        Self::from_selfcheck(info, check)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub fn detect() -> Self {
-        Self::disabled("unsupported")
+        use crate::platform::lifecycle::{Current, Lifecycle, Step};
+        match <Current as Lifecycle>::lineage() {
+            Step::Done(l) => l,
+            Step::Unsupported { .. } | Step::NotApplicable { .. } => Self::disabled("unsupported"),
+        }
     }
 
     /// The self-check result: `ok`, `failed:<tag>`, `unsupported`, ...
