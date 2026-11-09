@@ -186,8 +186,15 @@ fn probe_dns(ip: IpAddr, port: u16) -> bool {
         return false;
     }
     let mut buf = [0u8; 512];
+    // c477a #584 L4: the answer must come from the address we asked, not from anyone who guessed
+    // the id. One datagram only: a stray packet is a "closed", not a retry.
     match sock.recv_from(&mut buf) {
-        Ok((n, _)) => n >= 12 && buf[0..2] == id.to_be_bytes() && buf[2] & 0x80 != 0,
+        Ok((n, from)) => {
+            from == SocketAddr::new(ip, port)
+                && n >= 12
+                && buf[0..2] == id.to_be_bytes()
+                && buf[2] & 0x80 != 0
+        }
         Err(_) => false,
     }
 }
@@ -244,24 +251,34 @@ fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitS
     wait_with_timeout(&mut child, timeout)
 }
 
-fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
+/// Drain one pipe on its own thread so a child that writes more than the pipe buffer
+/// (c477a #584 L3: ~64 KB) can never block against our `wait`.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_string(&mut s);
+        }
+        s
+    })
+}
+
+pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
-    let mut out = String::new();
-    let status = wait_with_timeout(&mut child, timeout)
-        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
-    if let Some(mut so) = child.stdout.take() {
-        let _ = so.read_to_string(&mut out);
-    }
+    let out_h = drain(child.stdout.take());
+    let err_h = drain(child.stderr.take());
+    let status =
+        wait_with_timeout(&mut child, timeout).map_err(|e| format!("{:?}: {e}", cmd.get_program()));
+    // the pipes close when the child is gone (also after a timeout kill), so these always return
+    let out = out_h.join().unwrap_or_default();
+    let err = err_h.join().unwrap_or_default();
+    let status = status?;
     if !status.success() {
-        let mut err = String::new();
-        if let Some(mut se) = child.stderr.take() {
-            let _ = se.read_to_string(&mut err);
-        }
         return Err(format!(
             "{:?} exited {status}: {}",
             cmd.get_program(),
@@ -297,7 +314,10 @@ fn ct_init_pid(ct: u32) -> Result<String, String> {
 }
 
 /// The nsenter prefix for a CT, proven: the namespace we land in is the CT's and not ours.
-fn nsenter_for(ct: u32, host_ns: &str, me: &Path) -> Result<Vec<String>, String> {
+/// Returns the prefix and the namespace it must keep landing in; every later cell re-checks
+/// that (c477a #584 L1: a CT restart mid-run frees the init pid, and a host process could
+/// inherit it, so one proof at the start is not enough).
+fn nsenter_for(ct: u32, host_ns: &str, me: &Path) -> Result<(Vec<String>, String), String> {
     let pid = ct_init_pid(ct)?;
     let want = netns_of(&pid)?;
     if want == host_ns {
@@ -321,20 +341,51 @@ fn nsenter_for(ct: u32, host_ns: &str, me: &Path) -> Result<Vec<String>, String>
             got.trim()
         ));
     }
-    Ok(prefix)
+    Ok((prefix, want))
 }
 
-fn probe_in(prefix: &[String], me: &Path, kind: &str, ip: IpAddr, port: u16) -> bool {
+/// `probe one` prints `open ns=<netns>` / `closed ns=<netns>`: the verdict and the namespace
+/// it was measured in. Both parts are required.
+pub fn parse_one_output(out: &str) -> Option<(bool, &str)> {
+    let mut it = out.split_whitespace();
+    let verdict = match it.next()? {
+        "open" => true,
+        "closed" => false,
+        _ => return None,
+    };
+    let ns = it.next()?.strip_prefix("ns=")?;
+    if ns.is_empty() || it.next().is_some() {
+        return None;
+    }
+    Some((verdict, ns))
+}
+
+/// One cell inside a CT. `Err` = the measurement is not trustworthy (nsenter failed, output
+/// unreadable, or it ran in a namespace other than the one proven for this CT): the whole
+/// run must stop, a report must not be written from it.
+fn probe_in(
+    prefix: &[String],
+    want_ns: &str,
+    me: &Path,
+    kind: &str,
+    ip: IpAddr,
+    port: u16,
+) -> Result<bool, String> {
     let mut cmd = Command::new(&prefix[0]);
     cmd.args(&prefix[1..])
         .arg(me)
         .args(["probe", "one", kind])
         .arg(ip.to_string())
         .arg(port.to_string());
-    match run_capture(&mut cmd, Duration::from_secs(12)) {
-        Ok(out) => out.trim() == "open",
-        Err(_) => false,
+    let out = run_capture(&mut cmd, Duration::from_secs(12))?;
+    let (open, ns) =
+        parse_one_output(&out).ok_or_else(|| format!("probe one printed {:?}", out.trim()))?;
+    if ns != want_ns {
+        return Err(format!(
+            "netns changed mid-run: cell measured in {ns:?}, proven namespace was {want_ns:?} (CT restarted?)"
+        ));
     }
+    Ok(open)
 }
 
 // ---------------------------------------------------------------- commands
@@ -422,7 +473,7 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
     } else {
         self_netns()?
     };
-    let mut prefixes: Vec<(u32, Vec<String>)> = Vec::new();
+    let mut prefixes: Vec<(u32, Vec<String>, String)> = Vec::new();
     let mut results: Vec<Value> = Vec::new();
     for c in &cells {
         let is_ext = c.from == Source::External;
@@ -433,16 +484,17 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         let open = match &c.from {
             Source::Host | Source::External => probe_here(&c.kind, c.ip, c.port),
             Source::Ct(n) => {
-                if !prefixes.iter().any(|(k, _)| k == n) {
-                    let p = nsenter_for(*n, &host_ns, &me)?;
-                    prefixes.push((*n, p));
+                if !prefixes.iter().any(|(k, _, _)| k == n) {
+                    let (p, ns) = nsenter_for(*n, &host_ns, &me)?;
+                    prefixes.push((*n, p, ns));
                 }
-                let p = &prefixes
+                let (p, ns) = prefixes
                     .iter()
-                    .find(|(k, _)| k == n)
-                    .map(|(_, p)| p)
+                    .find(|(k, _, _)| k == n)
+                    .map(|(_, p, ns)| (p, ns))
                     .ok_or("prefix")?;
-                probe_in(p, &me, &c.kind, c.ip, c.port)
+                probe_in(p, ns, &me, &c.kind, c.ip, c.port)
+                    .map_err(|e| format!("cell {} (ct {n}): {e}", c.id))?
             }
         };
         let ms = t0.elapsed().as_millis() as u64;
@@ -563,8 +615,9 @@ fn cmd_one(args: &[String]) -> Result<u8, String> {
     let ip: IpAddr = ip.parse().map_err(|_| format!("ip {ip:?}"))?;
     let port: u16 = port.parse().map_err(|_| format!("port {port:?}"))?;
     let open = probe_here(kind, ip, port);
+    let ns = self_netns()?;
     let mut so = std::io::stdout();
-    let _ = writeln!(so, "{}", if open { "open" } else { "closed" });
+    let _ = writeln!(so, "{} ns={ns}", if open { "open" } else { "closed" });
     Ok(0)
 }
 
@@ -622,8 +675,15 @@ fn cmd_root_password(args: &[String]) -> Result<u8, String> {
     let st = wait_with_timeout(&mut child, Duration::from_secs(20))
         .map_err(|e| format!("chpasswd: {e}"))?;
     // the file is single-use whatever happened
-    let zeros = vec![0u8; text.len().max(64)];
-    let _ = fs::write(file, zeros);
+    // Overwrite the bytes in place (no truncate, so the same blocks are rewritten on ext4),
+    // then unlink. This is one pass, not a secure shred (c477a #584 L2): the sender puts the
+    // file on tmpfs (/run) when the disk must never see it.
+    if let Ok(mut f) = fs::OpenOptions::new().write(true).open(file) {
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0) as usize;
+        let zeros = vec![0u8; len.max(text.len())];
+        let _ = f.write_all(&zeros);
+        let _ = f.sync_all();
+    }
     let _ = fs::remove_file(file);
     if !st.success() {
         let mut err = String::new();
@@ -637,7 +697,7 @@ fn cmd_root_password(args: &[String]) -> Result<u8, String> {
     let line = run_capture(&mut status, Duration::from_secs(5)).unwrap_or_default();
     let fields: Vec<&str> = line.split_whitespace().take(2).collect();
     println!(
-        "root password set; passwd -S: {}; {file} shredded",
+        "root password set; passwd -S: {}; {file} overwritten once and deleted (not a secure shred; keep it on tmpfs)",
         fields.join(" ")
     );
     Ok(0)
@@ -888,5 +948,76 @@ mod tests {
             parse_run(&["--host".into(), "1.1.1.1".into()]).is_err(),
             "plan required"
         );
+    }
+
+    #[test]
+    fn p9_probe_one_output_carries_the_namespace() {
+        assert_eq!(
+            parse_one_output("open ns=net:[4026532345]\n"),
+            Some((true, "net:[4026532345]"))
+        );
+        assert_eq!(
+            parse_one_output("closed ns=net:[1]"),
+            Some((false, "net:[1]"))
+        );
+        for bad in [
+            "open",
+            "open ns=",
+            "maybe ns=net:[1]",
+            "open net:[1]",
+            "open ns=net:[1] extra",
+            "",
+        ] {
+            assert!(parse_one_output(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn p10_run_capture_survives_output_larger_than_a_pipe_buffer() {
+        // c477a #584 L3: 300 KB on stdout and 300 KB on stderr at once must not deadlock
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "head -c 300000 /dev/zero | tr '\\0' a; head -c 300000 /dev/zero | tr '\\0' b >&2",
+        ]);
+        let out = run_capture(&mut cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.len(), 300_000);
+        assert!(out.bytes().all(|b| b == b'a'));
+    }
+
+    #[test]
+    fn p11_dns_answer_must_come_from_the_target() {
+        use std::net::{Ipv4Addr, UdpSocket};
+        // a "resolver" on localhost that answers from the queried socket → open
+        let good = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let good_port = good.local_addr().unwrap().port();
+        good.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let t = std::thread::spawn(move || {
+            let mut b = [0u8; 512];
+            if let Ok((n, from)) = good.recv_from(&mut b) {
+                let mut r = b[..n].to_vec();
+                r[2] |= 0x80;
+                let _ = good.send_to(&r, from);
+            }
+        });
+        assert!(probe_dns(IpAddr::V4(Ipv4Addr::LOCALHOST), good_port));
+        t.join().unwrap();
+        // the same answer sent from a *different* socket than the one queried → closed (L4)
+        let target = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        target
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let t2 = std::thread::spawn(move || {
+            let mut b = [0u8; 512];
+            if let Ok((n, from)) = target.recv_from(&mut b) {
+                let mut r = b[..n].to_vec();
+                r[2] |= 0x80;
+                let other = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                let _ = other.send_to(&r, from);
+            }
+        });
+        assert!(!probe_dns(IpAddr::V4(Ipv4Addr::LOCALHOST), target_port));
+        t2.join().unwrap();
     }
 }

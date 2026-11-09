@@ -23,5 +23,3 @@ tool is Rust; that file goes once this binary has run a full matrix on EU02).
 
 Build for the host: workflow `cloud-host` (static `x86_64-unknown-linux-musl`), artifact
 `aib-cloud-host-x86_64-unknown-linux-musl`; copy to `/usr/local/sbin/aib-cloud-host`.
-
-CI note: after #568 merged and this PR was retargeted to main, GitHub ran no pull_request workflows for 40671e3d; this line exists to fire a synchronize event.
