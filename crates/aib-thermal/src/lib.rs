@@ -522,6 +522,31 @@ mod tests {
         assert_eq!(s.reaps.len(), 1);
     }
 
+    /// #615 33e28 L1: pins today's 1.x behaviour on the fallback path. No
+    /// pressure and only one sample (first round after start / a pause):
+    /// a lone spike (max 95, avg 80) reaps via NoSignal. Changing this is a
+    /// behaviour change for the PR 2 / PR 3 DECISION, not a silent edit.
+    #[test]
+    fn l1_fallback_lone_spike_reaps_like_1x() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        s.step(95.0, Some(80.0), 20.0);
+        assert_eq!(s.reaps, vec![Why::NoSignal]);
+    }
+
+    /// #615 33e28 L2: the Linux steady state (pressure never readable). Once
+    /// samples are continuous, a spike with a low average is not reaped; only
+    /// the first round (no pair yet) takes the fallback.
+    #[test]
+    fn l2_no_pressure_continuous_spike_not_reaped() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        for _ in 0..6 {
+            s.step(91.9, Some(80.0), 20.0);
+        }
+        assert_eq!(s.reaps, vec![Why::NoSignal]);
+    }
+
     #[test]
     fn unmeasured_is_unknown_and_never_reaps() {
         let d = decide(
