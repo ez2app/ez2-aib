@@ -29,7 +29,7 @@ import time
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 CT_RE = re.compile(r"^ct:([1-9][0-9]{0,8})$")
 KINDS = ("tcp", "dns", "icmp")
-EXPECTS = ("open", "blocked", "closed")
+EXPECTS = ("open", "blocked", "closed", "observe")
 TCP_SNIPPET = (
     "import socket,sys\n"
     "s=socket.create_connection((sys.argv[1],int(sys.argv[2])),3)\n"
@@ -180,7 +180,7 @@ def cmd_run(args):
             prefix = prefixes[ct]
         is_open, ms = probe(prefix, c["kind"], c["ip"], c["port"])
         results.append({"id": c["id"], "from": src, "kind": c["kind"], "ip": c["ip"], "port": c["port"], "open": is_open, "ms": ms})
-        mark = "ok" if is_open == (c["expect"] == "open") else "!!"
+        mark = "ok" if c["expect"] == "observe" or is_open == (c["expect"] == "open") else "!!"
         print(f"{mark} {'OPEN  ' if is_open else 'closed'} {c['id']:34s} {src:9s} {c['kind']}://{c['ip']}:{c['port']} {ms}ms", file=sys.stderr)
     report = {"plan_fnv": fnv, "host": host, "results": results}
     text = json.dumps(report, indent=1)
