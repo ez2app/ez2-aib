@@ -364,6 +364,10 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - The fallback is self-checked once per aibd process: sysctl must equal M2 on aibd itself.
   Otherwise the fallback is off.
 - Descendants running as root stay in `uid_changed`.
+- sysinfo reads such a process with start time 0. The tree handle's identity check then
+  asks the same fallback. A process it still cannot check is never signalled, but it
+  counts as alive (a survivor), so the stop is never `observed_clean` because of it
+  (043dd efbe548d M1).
 
 **What this does not fix (043dd review, measured on a desktop Mac, 2026-11-09).**
 - macOS does not let another process read the environment of Apple platform binaries.
