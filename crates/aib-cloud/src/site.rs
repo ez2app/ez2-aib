@@ -357,7 +357,7 @@ pub fn idmap_value(value: &str) -> Option<(char, u64)> {
     if it.next()? != "65536" || it.next().is_some() {
         return None;
     }
-    if base < 100_000 + 65_536 || (base - 100_000) % 65_536 != 0 || base > 4_000_000_000 {
+    if base < 100_000 + 65_536 || !(base - 100_000).is_multiple_of(65_536) || base > 4_000_000_000 {
         return None;
     }
     Some((kind, base))
@@ -745,9 +745,9 @@ pub fn caddy_block_is_suspended(caddyfile: &str, code: &str) -> Result<bool, Err
     let body: Vec<&str> = lines[start..end].iter().map(|l| l.trim()).collect();
     // c477a #585 L5: a stray "# suspended" comment in a live block must not count; the
     // suspended shape is our own marker *and* the 503 file_server pair.
-    let marked = body.iter().any(|l| *l == "# ez2:suspended");
-    let serves_503 = body.iter().any(|l| l.starts_with("file_server"))
-        && body.iter().any(|l| *l == "status 503");
+    let marked = body.contains(&"# ez2:suspended");
+    let serves_503 =
+        body.iter().any(|l| l.starts_with("file_server")) && body.contains(&"status 503");
     Ok(marked && serves_503)
 }
 
