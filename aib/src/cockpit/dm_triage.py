@@ -365,24 +365,55 @@ MERGE_TEXT_CHARS = 1500          # 審查:相似度在排空鎖裡算,4000 字�
 MERGE_PAIR_MAX = 400             # 一次最多比這麼多對;超過的只靠 thread 合(寧可少合,不讓排空卡住)
 
 
-def _merge_text(row, relay_text):
-    """比相近用的正文:長訊指標信改比落檔內容(指標句彼此只差檔名,直接比會全部誤合);讀不到 ⇒ None(不參與相近合併)。"""
-    msg = row.get("msg")
+def _raw_text(row, relay_text):
+    """(信的原文, 是否讀不到落檔):長訊指標信換成落檔內容;不是指標 ⇒ 信本身;是指標但讀不到 ⇒ (指標句, True)。"""
+    msg = str(row.get("msg") or "")
     if relay_text is not None:
         got = relay_text(msg)
         if got is not False:
-            return normalize_body(got)[:MERGE_TEXT_CHARS] if got else None
-    return normalize_body(msg)[:MERGE_TEXT_CHARS] or None
+            return (str(got), False) if got else (msg, True)
+    return msg, False
+
+
+def _merge_text(row, relay_text, raw=None):
+    """比相近用的正文:長訊指標信改比落檔內容(指標句彼此只差檔名,直接比會全部誤合);讀不到 ⇒ None(不參與相近合併)。"""
+    text, unreadable = raw if raw is not None else _raw_text(row, relay_text)
+    if unreadable:
+        return None
+    return normalize_body(text)[:MERGE_TEXT_CHARS] or None
+
+
+# 7c(a63ab 11-09 06:03):合併鍵 = PR 號 + 頭碼。兩封都寫了 PR 號和頭碼 ⇒ 鍵一樣才合、不一樣一律不合
+#   (同 thread、正文 95% 相近也不合:「請審 #578 頭 A」和「請審 #578 頭 B」是兩次審查,`done --group` 不能一起結)。
+#   只有一封有鍵、或都沒有 ⇒ 照舊(thread / 相近)。
+_PR_RE = re.compile(r"(?:#|pull/)(\d{1,6})(?!\d)")
+_HEAD_RE = re.compile(r"(?<![0-9A-Za-z_])[0-9a-f]{7,40}(?![0-9A-Za-z_])")   # 前後接 _ 也不算(q_<16 碼> 是信 id)
+HEAD_KEY_CHARS = 7               # 短頭碼 7 碼和 8 碼是同一個 commit ⇒ 一律比前 7 碼
+
+
+def pr_head_key(text):
+    """信裡的 (PR 號們, 頭碼們) ⇒ (("578", ...), ("8a51908", ...)),兩樣都要有才算;沒有 ⇒ None。
+    頭碼只認 7–40 碼小寫十六進位、前後不接英數或 _、至少一個數字和一個 a–f(擋「decade」「20261109」這類)。"""
+    text = str(text or "")
+    prs = sorted({m.group(1) for m in _PR_RE.finditer(text)})
+    heads = sorted({h[:HEAD_KEY_CHARS] for h in _HEAD_RE.findall(text)
+                    if any(c.isdigit() for c in h) and any(c in "abcdef" for c in h)})
+    if not prs or not heads:
+        return None
+    return tuple(prs), tuple(heads)
 
 
 def merge_groups(rows, relay_text=None, ratio=MERGE_RATIO):
-    """待處理的信先合併再交 AI(純函式)。同寄件人且(同 thread,或正文相似度 ≥ ratio)⇒ 同一組。
+    """待處理的信先合併再交 AI(純函式)。同寄件人且(兩封都有 PR 號 + 頭碼 ⇒ 鍵相同;否則同 thread,或正文相似度 ≥ ratio)⇒ 同一組。
     relay_text(msg) ⇒ 落檔內容字串 / None(是指標信但讀不到)/ False(不是指標信)。
     回 [[row, ...], ...]:組內舊→新(最後一封是代表);組的順序照代表在 rows 裡的位置(呼叫端已排好優先序)。
     不同寄件人不合(誰要的要分得出來);主題前 12 字那種寬鬆判準不用(太容易誤合)。"""
     rows = [r for r in (rows or []) if isinstance(r, dict) and r.get("id")]
-    texts = {str(r["id"]): _merge_text(r, relay_text) for r in rows}
+    raws = {str(r["id"]): _raw_text(r, relay_text) for r in rows}
+    texts = {str(r["id"]): _merge_text(r, relay_text, raws[str(r["id"])]) for r in rows}
+    keys = {i: pr_head_key(raw[0]) for i, raw in raws.items()}
     parent = {str(r["id"]): str(r["id"]) for r in rows}
+    gkey = dict(keys)        # 組根 ⇒ 組裡的 PR + 頭碼鍵(沒有 ⇒ None)
 
     def find(x):
         while parent[x] != x:
@@ -390,12 +421,27 @@ def merge_groups(rows, relay_text=None, ratio=MERGE_RATIO):
             x = parent[x]
         return x
 
+    def union(x, y):
+        """7c:兩組的鍵不同就不合 —— 不然 A(頭 X)和沒鍵的 B 同 thread、B 又和 C(頭 Y)同 thread,A 和 C 會被間接併成一組。"""
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            return
+        kx, ky = gkey.get(rx), gkey.get(ry)
+        if kx is not None and ky is not None and kx != ky:
+            return
+        parent[ry] = rx
+        gkey[rx] = kx if kx is not None else ky
+
     pairs = 0
     for i, a in enumerate(rows):
         for b in rows[i + 1:]:
             if sender_key(a) != sender_key(b):
                 continue
             ia, ib = str(a["id"]), str(b["id"])
+            if keys[ia] is not None and keys[ib] is not None:
+                if keys[ia] == keys[ib]:          # 7c:同 PR 同頭碼 ⇒ 合(不另比相近)
+                    union(ia, ib)
+                continue                          # 7c:不同頭碼(或不同 PR)⇒ 不合,thread / 相近都不看
             th_a, th_b = a.get("thread"), b.get("thread")
             same = bool(th_a) and th_a == th_b
             if not same and pairs < MERGE_PAIR_MAX:
@@ -406,7 +452,7 @@ def merge_groups(rows, relay_text=None, ratio=MERGE_RATIO):
                     # 先用上界快篩(real_quick / quick 都是 ratio 的上界),過了才算真的
                     same = sm.real_quick_ratio() >= ratio and sm.quick_ratio() >= ratio and sm.ratio() >= ratio
             if same:
-                parent[find(ib)] = find(ia)
+                union(ia, ib)
     groups = {}
     for r in rows:
         groups.setdefault(find(str(r["id"])), []).append(r)
