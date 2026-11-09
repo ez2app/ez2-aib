@@ -6,7 +6,7 @@
 //! same daemon, so a red one means the gate refused, not that nothing could start.
 //!
 //! The policy is the one aibd really runs (`interpreters_ok: false`); the allowed
-//! programs are native system tools (`/bin/sleep`, `/bin/true`), not shells.
+//! programs are native system tools (`/bin/sleep`, `/usr/bin/true`), not shells.
 //! POSIX only (symlinks, `/bin/sh`); the Windows cells are UNVERIFIED-desktop.
 #![cfg(unix)]
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
@@ -35,10 +35,10 @@ fn fx(name: &str, path: impl Into<PathBuf>) -> Program {
     }
 }
 
-/// `/bin/sleep` and `/bin/true`, one env name, interpreters refused (the real rule).
+/// `/bin/sleep` and `/usr/bin/true`, one env name, interpreters refused (the real rule).
 fn policy() -> SessionPolicy {
     SessionPolicy {
-        programs: vec![fx("sleep", "/bin/sleep"), fx("true", "/bin/true")],
+        programs: vec![fx("sleep", "/bin/sleep"), fx("true", "/usr/bin/true")],
         env: vec!["MY_VAR".into()],
         interpreters_ok: false,
     }
@@ -211,24 +211,24 @@ async fn both_routes_refuse_what_is_not_listed_and_start_what_is() {
             );
             // E1 an env name that today's deny list would let through
             for k in ["NODE_OPTIONS", "BASH_ENV", "PYTHONPATH", "HOME"] {
-                let body = serde_json::json!({"argv": ["/bin/true"], "env": {k: "v"}});
+                let body = serde_json::json!({"argv": ["/usr/bin/true"], "env": {k: "v"}});
                 refused(&v.start_on(route, &body), 400, "env_not_allowed");
             }
             // E2 Unix compares env names exactly: `my_var` is not `MY_VAR`
-            let body = serde_json::json!({"argv": ["/bin/true"], "env": {"my_var": "v"}});
+            let body = serde_json::json!({"argv": ["/usr/bin/true"], "env": {"my_var": "v"}});
             refused(&v.start_on(route, &body), 400, "env_not_allowed");
             assert_eq!(v.count("session.started"), 0, "{at}: something started");
         }
         assert_eq!(v.sessions(), 0);
         // the positive half, both routes
-        let ok = serde_json::json!({"argv": ["/bin/true"], "env": {"MY_VAR": "1"}});
+        let ok = serde_json::json!({"argv": ["/usr/bin/true"], "env": {"MY_VAR": "1"}});
         let a = v.start_on(None, &ok);
         assert_eq!(a.0, 201, "{}", a.1);
         let b = v.start_on(Some(seat.as_str()), &ok);
         assert_eq!(b.0, 201, "{}", b.1);
         assert_eq!(b.1["seat_id"], seat.as_str(), "{}", b.1);
         // what runs is the real path that was checked
-        let real = std::fs::canonicalize("/bin/true").unwrap();
+        let real = std::fs::canonicalize("/usr/bin/true").unwrap();
         assert_eq!(a.1["argv"][0], real.to_str().unwrap(), "{}", a.1);
         assert_eq!(v.count("session.started"), 2);
     })
@@ -247,7 +247,7 @@ async fn no_policy_starts_nothing_on_either_route() {
         let seat = v.new_seat();
         for route in [None, Some(seat.as_str())] {
             refused(
-                &v.start_on(route, &argv(&["/bin/true"])),
+                &v.start_on(route, &argv(&["/usr/bin/true"])),
                 403,
                 "program_not_allowed",
             );
@@ -339,7 +339,7 @@ async fn a_listed_link_to_a_shell_is_refused_at_load_and_at_start() {
             );
         }
         assert_eq!(v.count("session.started"), 0);
-        let ok = v.start_on(None, &argv(&["/bin/true"]));
+        let ok = v.start_on(None, &argv(&["/usr/bin/true"]));
         assert_eq!(ok.0, 201, "{}", ok.1);
     })
     .await
@@ -353,7 +353,7 @@ async fn a_listed_link_to_a_shell_is_refused_at_load_and_at_start() {
 async fn every_start_resolves_the_real_path_again() {
     let tmp = tempfile::tempdir().unwrap();
     let link = tmp.path().join("provider");
-    std::os::unix::fs::symlink("/bin/true", &link).unwrap();
+    std::os::unix::fs::symlink("/usr/bin/true", &link).unwrap();
     let mut p = policy();
     p.programs.push(fx("provider", &link));
     let data = tmp.path().join("data");
@@ -364,7 +364,7 @@ async fn every_start_resolves_the_real_path_again() {
         let l = link.to_str().unwrap().to_string();
         let a = v.start_on(None, &argv(&[l.as_str()]));
         assert_eq!(a.0, 201, "{}", a.1);
-        let t = std::fs::canonicalize("/bin/true").unwrap();
+        let t = std::fs::canonicalize("/usr/bin/true").unwrap();
         assert_eq!(a.1["argv"][0], t.to_str().unwrap(), "{}", a.1);
         // N1: the link now points at sleep (a version update moving the target)
         std::fs::remove_file(&link).unwrap();
@@ -463,7 +463,7 @@ async fn refusals_use_no_slot() {
             403,
             "program_not_allowed",
         );
-        let e = serde_json::json!({"argv": ["/bin/true"], "env": {"NOPE": "1"}});
+        let e = serde_json::json!({"argv": ["/usr/bin/true"], "env": {"NOPE": "1"}});
         refused(&v.start_on(None, &e), 400, "env_not_allowed");
         let ok = v.start_on(Some(seat.as_str()), &argv(&["/bin/sleep", "1"]));
         assert_eq!(ok.0, 201, "{}", ok.1);
@@ -496,7 +496,7 @@ async fn the_audit_record_has_the_ruled_keys_and_no_request_value() {
     tokio::task::spawn_blocking(move || {
         let seat = v.new_seat();
         let env_bad = serde_json::json!({
-            "argv": ["/bin/true", "ARGSECRET-1ced7"],
+            "argv": ["/usr/bin/true", "ARGSECRET-1ced7"],
             "cwd": cwd_s,
             "env": {"NOT_LISTED_1CED7": "VALSECRET-1ced7"}
         });
