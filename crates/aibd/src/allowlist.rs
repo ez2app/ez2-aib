@@ -818,6 +818,14 @@ mod tests {
         assert_eq!(parse("{}").unwrap(), SessionPolicy::default());
         let bad = |t: &str| parse(t).unwrap_err();
         assert!(matches!(bad(r#"{"x":1}"#), PolicyError::Invalid(_)));
+        // a63ab 20:0x: the file can never turn the interpreter rule off
+        for t in [
+            r#"{"interpreters_ok":true}"#,
+            r#"{"programs":[],"interpreters_ok":true}"#,
+            r#"{"interpreters_ok":false}"#,
+        ] {
+            assert!(matches!(bad(t), PolicyError::Invalid(_)), "{t}");
+        }
         assert!(matches!(
             bad(r#"{"programs":[{"name":"a","path":"/a","extra":1}]}"#),
             PolicyError::Invalid(_)
