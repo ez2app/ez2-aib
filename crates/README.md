@@ -22,7 +22,10 @@ curl -s -H "Authorization: Bearer $(cat /tmp/aibd-dev/run/aibd.token)" http://12
 
 Environment: `AIBD_BIND` (loopback only, default `127.0.0.1:47770`), `AIBD_DATA_DIR`
 (default: OS app data dir, never `~/.ez2-aib`), `AIBD_ALLOWED_ORIGINS` (comma list of exact
-origins, default none), `AIBD_LOG` (tracing filter, default `info`).
+origins, default none), `AIBD_LOG` (tracing filter, default `info`), `AIBD_MAX_SESSIONS`
+(1–64, default 8), `AIBD_SESSION_POLICY` (absolute path of a JSON file listing the programs a
+session may start and the env names it may set; default none = no session can start; see
+ADR 0003 "Update 2026-11-09").
 
 Exit codes: 0 stopped cleanly, 2 bad config (e.g. `0.0.0.0`), 3 another aibd holds the
 data directory, 1 other start failure.

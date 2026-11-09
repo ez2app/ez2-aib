@@ -21,6 +21,8 @@ pub struct AppState {
     pub lineage: Arc<Lineage>,
     /// Sessions API state (preview.2).
     pub sessions: Arc<crate::sessions::Sessions>,
+    /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
+    pub session_policy: Arc<crate::config::SessionPolicy>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {

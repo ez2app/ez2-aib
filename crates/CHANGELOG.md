@@ -3,6 +3,24 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
+## Unreleased
+
+- **M1 security gate, `POST /api/v1/sessions` (breaking):** only programs and env names on an
+  allow-list may be started. The list is a JSON file named by `AIBD_SESSION_POLICY`
+  (`{"programs": [{"name", "path", "signer"}], "env": [...]}`), read once at start. Unset means
+  nothing may be started; an unreadable or invalid file stops aibd (exit 2).
+  - Every spawn resolves the real path again and runs it.
+  - Shells, interpreters and launchers are refused even when listed. So is `..` in `argv[0]`.
+    These answer `403 program_not_allowed` (new).
+  - An npm (node) install of a provider answers `403 provider_install_unsupported` (new).
+  - Unlisted env names answer `400 env_not_allowed`.
+  - The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) still applies and cannot be listed.
+  - `signer` is recorded, not checked yet (M2).
+  - Not a defence against a same-user process: ADR 0003 "Update 2026-11-09" lists the known
+    gaps.
+- `aib-fixture-tree smoke-tree` / `smoke-wait`: a portable native program for the sessions smoke.
+  The release smoke now runs it with `--fixture` instead of a Python helper.
+
 ## 0.2.0-preview.2 — unreleased
 
 - `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree

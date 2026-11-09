@@ -22,6 +22,7 @@
 //!
 //! Blocking calls (spawn, stop, the event store) run on blocking threads.
 
+use crate::allowlist::{self, SessionPolicy};
 use crate::api::AppState;
 use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
@@ -180,7 +181,7 @@ struct RawRequest {
     env: Option<BTreeMap<String, String>>,
 }
 
-fn env_key_ok(k: &str) -> bool {
+pub(crate) fn env_key_ok(k: &str) -> bool {
     let b = k.as_bytes();
     !b.is_empty()
         && b.len() <= 64
@@ -188,7 +189,7 @@ fn env_key_ok(k: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
 }
 
-fn env_key_denied(k: &str) -> bool {
+pub(crate) fn env_key_denied(k: &str) -> bool {
     let up = k.to_ascii_uppercase();
     ENV_DENY_PREFIX.iter().any(|p| up.starts_with(p)) || ENV_DENY_EXACT.contains(&up.as_str())
 }
@@ -265,6 +266,55 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
     Ok(Request { argv, cwd, env })
 }
 
+/// The only credential today is the startup token: its id is this name, never anything
+/// derived from the value. Pairing cookies (Phase 3) get their own ids.
+pub const TOKEN_ID_STARTUP: &str = "startup";
+
+/// A gate refusal: the answer, and the program's file name for the audit record.
+#[derive(Debug)]
+pub struct Refusal {
+    pub error: ApiError,
+    /// The real path's file name when it resolves, else `argv[0]`'s; never more of argv.
+    pub program: String,
+}
+
+/// M1 security gate (crate::allowlist), after [`validate`] (syntax first) and before
+/// anything starts: `argv[0]` must resolve, now, to the real path of a listed program that
+/// is not a shell / interpreter / launcher / npm install, and every env name must be
+/// listed. On success `argv[0]` is replaced by that real path, so what runs is what was
+/// checked. The fixed deny list still applies inside `validate`. Blocking (reads the file
+/// system): call it on a blocking thread.
+pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
+    let Some(argv0) = req.argv.first() else {
+        return Err(Refusal {
+            error: bad("argv must have 1-64 items"),
+            program: String::new(),
+        });
+    };
+    let name = |a: &str| {
+        let a = Path::new(a);
+        let real = std::fs::canonicalize(a).ok();
+        real.as_deref()
+            .unwrap_or(a)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let refuse = |r: allowlist::Refused, argv0: &str| Refusal {
+        error: ApiError::new(r.code(), r.message()),
+        program: name(argv0),
+    };
+    let real = allowlist::resolve(argv0, p).map_err(|r| refuse(r, argv0))?;
+    allowlist::env_allowed(p, req.env.iter().map(|(k, _)| k.as_str()))
+        .map_err(|r| refuse(r, argv0))?;
+    let real = real
+        .into_os_string()
+        .into_string()
+        .map_err(|_| refuse(allowlist::Refused::Program, argv0))?;
+    req.argv[0] = real;
+    Ok(req)
+}
+
 struct Entry {
     rec: Session,
     run: Arc<Mutex<Box<dyn Running>>>,
@@ -302,6 +352,8 @@ pub struct Sessions {
     /// How long the background slot re-check runs (a63ab: 30 s; tests shorten it).
     /// (window, longest pass): test hook only changes them.
     rescan_window: Mutex<(Duration, Duration)>,
+    /// M1 gate rejections, folded per token + code per minute.
+    rejections: allowlist::RejectLog,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -327,6 +379,7 @@ impl Sessions {
             max,
             default_cwd,
             rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
+            rejections: allowlist::RejectLog::default(),
             me: me.clone(),
         })
     }
@@ -943,6 +996,46 @@ impl Sessions {
         self.append(id, seq, kind, payload);
     }
 
+    /// Audit a gate refusal (a63ab 19:23): event `session.spawn_rejected` in aggregate type
+    /// `security` (each record its own aggregate, sequence 1) plus one `warn` line, at most
+    /// one per token + code per minute (`now` is injected). The payload is exactly
+    /// `code`, `program` (a file name only), `token_id`, `at`, `folded_before`: never env
+    /// values, the full argv or the cwd.
+    pub fn record_rejection(&self, now: Instant, token_id: &str, r: &Refusal) {
+        let code = r.error.0.as_str();
+        let Some(folded) = self.rejections.note(now, token_id, code) else {
+            return;
+        };
+        let at = now_rfc3339();
+        tracing::warn!(
+            code,
+            program = %r.program,
+            token_id,
+            folded_before = folded,
+            "session spawn rejected"
+        );
+        let agg = new_id("rj_").unwrap_or_else(|_| format!("rj_{}", at.replace([':', '.'], "")));
+        let ev = NewEvent {
+            event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{agg}_1")),
+            aggregate_type: "security".into(),
+            aggregate_id: agg,
+            sequence: 1,
+            event_type: "session.spawn_rejected".into(),
+            correlation_id: None,
+            occurred_at: at.clone(),
+            payload: serde_json::json!({
+                "code": code,
+                "program": r.program,
+                "token_id": token_id,
+                "at": at,
+                "folded_before": folded,
+            }),
+        };
+        if self.store.append(vec![ev]).is_err() {
+            tracing::error!(code, "session.spawn_rejected write failed");
+        }
+    }
+
     fn append(&self, id: &str, seq: i64, kind: &str, payload: serde_json::Value) {
         let ev = NewEvent {
             event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
@@ -1031,6 +1124,19 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
+    let policy = st.session_policy.clone();
+    let audit = st.sessions.clone();
+    let gate = move || {
+        admit(req, &policy).map_err(|r| {
+            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, &r);
+            r.error
+        })
+    };
+    let req = match tokio::task::spawn_blocking(gate).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return e.into_response(),
+        Err(_) => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start(req)).await {
         Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
@@ -1090,6 +1196,74 @@ mod tests {
     } else {
         "/bin/echo"
     };
+
+    fn policy() -> SessionPolicy {
+        SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "fx".into(),
+                path: PathBuf::from(TRUE_ABS),
+                signer: None,
+            }],
+            env: vec!["MY_VAR".into()],
+            interpreters_ok: false,
+        }
+    }
+
+    fn req(argv0: &str, env: &[(&str, &str)]) -> Request {
+        Request {
+            argv: vec![argv0.into(), "--secret-arg".into()],
+            cwd: None,
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn m1_gate_a_listed_program_runs_by_its_real_path() {
+        let r = admit(req(TRUE_ABS, &[("MY_VAR", "1")]), &policy()).unwrap();
+        let real = std::fs::canonicalize(TRUE_ABS).unwrap();
+        assert_eq!(Path::new(&r.argv[0]), allowlist_exec(&real));
+        assert_eq!(r.argv[1], "--secret-arg");
+        assert!(admit(req(TRUE_ABS, &[]), &policy()).is_ok());
+    }
+
+    /// What admit runs for a real path (Windows drops the `\\?\` prefix).
+    fn allowlist_exec(real: &Path) -> PathBuf {
+        let s = real.to_str().unwrap();
+        PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(s))
+    }
+
+    #[test]
+    fn m1_gate_other_program_is_program_not_allowed_and_not_echoed() {
+        let r = admit(req(ECHO_ABS, &[]), &policy()).unwrap_err();
+        let want = std::fs::canonicalize(ECHO_ABS).unwrap();
+        assert_eq!(r.program, want.file_name().unwrap().to_str().unwrap());
+        let e = r.error;
+        assert_eq!(e.0, ErrorCode::ProgramNotAllowed);
+        assert_eq!(e.0.http_status(), 403);
+        assert!(!e.1.contains(ECHO_ABS), "{}", e.1);
+        assert!(!e.1.contains("secret"), "{}", e.1);
+    }
+
+    #[test]
+    fn m1_gate_unlisted_env_name_is_env_not_allowed() {
+        let e = admit(req(TRUE_ABS, &[("OTHER", "v-SECRET")]), &policy())
+            .unwrap_err()
+            .error;
+        assert_eq!(e.0, ErrorCode::EnvNotAllowed);
+        assert!(!e.1.contains("OTHER") && !e.1.contains("SECRET"), "{}", e.1);
+    }
+
+    #[test]
+    fn m1_gate_empty_policy_allows_nothing() {
+        let none = SessionPolicy::default();
+        assert_eq!(
+            admit(req(TRUE_ABS, &[]), &none).unwrap_err().error.0,
+            ErrorCode::ProgramNotAllowed
+        );
+    }
 
     fn v(j: serde_json::Value) -> Result<Request, ApiError> {
         validate(j.to_string().as_bytes())
