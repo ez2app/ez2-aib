@@ -135,6 +135,11 @@ pub struct Report {
     pub candidates_unreadable: Vec<u32>,
     /// F: the process name of each `candidates_unreadable` pid, same order.
     pub candidates_unreadable_comm: Vec<String>,
+    /// G1 coalition: unreadable candidates let go because they run in a
+    /// coalition other than the session's (a service launchd started), and
+    /// their process names, same order. Never signalled, never counted.
+    pub candidates_other_coalition: Vec<u32>,
+    pub candidates_other_coalition_comm: Vec<String>,
     /// The candidate list itself was read in full.
     pub candidates_complete: bool,
     /// G1: candidates only the widened orphan check added (a child of the
@@ -244,6 +249,8 @@ struct CandidateCheck {
     complete: bool,
     unreadable: Vec<u32>,
     unreadable_comm: Vec<String>,
+    other_coalition: Vec<u32>,
+    other_coalition_comm: Vec<String>,
     marked_alive: Vec<u32>,
 }
 
@@ -275,6 +282,10 @@ pub struct TreeHandle {
     /// G1: the fork watcher saw a child gone before it could be read.
     /// Latched for the session (043dd 21:42 #1): widens the orphan check.
     unread_gone: bool,
+    /// G1 (043dd M1): the session's coalition, set only when the root's
+    /// read the same as aibd's own at start (the self-check of a private
+    /// interface). `None` = no filter (the rule before G1).
+    coalition: Option<u64>,
     /// Misses known to this handle (merged with the fork watcher's).
     gaps: BTreeSet<&'static str>,
     /// M1 reads of processes that are not ours, between passes (M4).
@@ -348,6 +359,68 @@ fn start_fallback(pid: u32) -> Result<u64, SysError> {
     {
         let _ = pid;
         Err(SysError::Gone) // unchanged: no fallback there
+    }
+}
+
+/// G1 (043dd M1): the session's coalition, if the root is in aibd's own.
+/// A child starts in its parent's coalition, so a root that reads otherwise
+/// (or cannot be read) means the private read is not to be trusted here.
+fn session_coalition(root: u32) -> Option<u64> {
+    let me = coalition_of(std::process::id()).ok()?;
+    let r = coalition_of(root).ok()?;
+    (me == r).then_some(r)
+}
+
+fn coalition_of(pid: u32) -> Result<u64, SysError> {
+    #[cfg(target_os = "macos")]
+    {
+        aib_sys::Macos.coalition(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        Err(SysError::Unknown)
+    }
+}
+
+/// A candidate is let go only when both coalitions were read and differ:
+/// launchd starts each service in a coalition of its own, a session's
+/// processes (re-parented or not) stay in the session's. An unread one is
+/// kept (checked by its environment, as before G1).
+fn other_coalition(session: Option<u64>, candidate: Result<u64, SysError>) -> bool {
+    matches!((session, candidate), (Some(s), Ok(c)) if c != s)
+}
+
+/// What one late-exec candidate is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Candidate {
+    /// Carries the session marker: part of the session, whatever its
+    /// coalition.
+    Ours,
+    /// Environment read, no marker.
+    NotOurs,
+    /// Environment unreadable and nothing rules it out: it might be ours.
+    Unreadable,
+    /// Environment unreadable, but it runs in a coalition read as different
+    /// from the session's: a service launchd started (1ced7 c25144e1:
+    /// DockHelper), not a process of this session.
+    OtherCoalition,
+}
+
+/// `marked`: `None` = the environment could not be read (or was empty),
+/// `Some(m)` = read, and whether it carries the session marker. The
+/// coalition is read only for an unreadable candidate: a readable one is
+/// decided by its environment, as before.
+fn classify(
+    marked: Option<bool>,
+    session: Option<u64>,
+    coalition: impl FnOnce() -> Result<u64, SysError>,
+) -> Candidate {
+    match marked {
+        Some(true) => Candidate::Ours,
+        Some(false) => Candidate::NotOurs,
+        None if other_coalition(session, coalition()) => Candidate::OtherCoalition,
+        None => Candidate::Unreadable,
     }
 }
 
@@ -476,6 +549,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         uniques: BTreeMap::new(),
         lineage_incomplete: false,
         unread_gone: false,
+        coalition: None,
         gaps: BTreeSet::new(),
         m1_cache: M1Cache::default(),
         #[cfg(target_os = "macos")]
@@ -505,6 +579,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     refresh(&mut sys, false);
     if let Some(p) = sys.process(Pid::from_u32(root)) {
         h.known.insert(root, p.start_time());
+        h.coalition = session_coalition(root);
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
             let w = injected(spec, Inject::ForkWatch).and_then(|()| {
@@ -1013,6 +1088,8 @@ impl TreeHandle {
             candidates: check.count,
             candidates_unreadable: check.unreadable,
             candidates_unreadable_comm: check.unreadable_comm,
+            candidates_other_coalition: check.other_coalition,
+            candidates_other_coalition_comm: check.other_coalition_comm,
             candidates_complete: check.complete,
             orphan_candidates_extra: check.extra,
             known_gaps: self.gaps.iter().copied().collect(),
@@ -1052,23 +1129,28 @@ impl TreeHandle {
         refresh(&mut sys, true);
         let want = format!("{SESSION_ENV}={}", self.session_id);
         for pid in c.pids {
-            match sys.process(Pid::from_u32(pid)) {
-                None => {} // gone since the list was read
-                Some(p) if p.environ().is_empty() => {
-                    out.unreadable.push(pid);
-                    out.unreadable_comm
-                        .push(p.name().to_string_lossy().into_owned());
-                }
-                Some(p)
-                    if p.environ()
-                        .iter()
-                        .any(|e| e.to_str() == Some(want.as_str())) =>
-                {
+            let Some(p) = sys.process(Pid::from_u32(pid)) else {
+                continue; // gone since the list was read
+            };
+            let env = p.environ();
+            let marked =
+                (!env.is_empty()).then(|| env.iter().any(|e| e.to_str() == Some(want.as_str())));
+            let comm = p.name().to_string_lossy().into_owned();
+            match classify(marked, self.coalition, || coalition_of(pid)) {
+                Candidate::Ours => {
                     self.known.insert(pid, p.start_time());
                     self.found_by_marker.push(pid);
                     out.marked_alive.push(pid);
                 }
-                Some(_) => {} // readable, no marker: not this session's
+                Candidate::NotOurs => {}
+                Candidate::Unreadable => {
+                    out.unreadable.push(pid);
+                    out.unreadable_comm.push(comm);
+                }
+                Candidate::OtherCoalition => {
+                    out.other_coalition.push(pid);
+                    out.other_coalition_comm.push(comm);
+                }
             }
         }
         out
@@ -1261,6 +1343,71 @@ mod tests {
             Ident::Unverified
         );
         assert_eq!(ident(0, 100, || Err(SysError::Unknown)), Ident::Unverified);
+    }
+
+    /// G1 (043dd M1, 1ced7 cbfaa52f): a launchd service in a coalition of
+    /// its own is let go; anything not read, or a failed self-check, keeps
+    /// the rule before G1.
+    #[test]
+    fn a_candidate_is_let_go_only_in_a_coalition_read_as_different() {
+        assert!(other_coalition(Some(7), Ok(8)));
+        assert!(
+            !other_coalition(Some(7), Ok(7)),
+            "same coalition: still checked"
+        );
+        assert!(
+            !other_coalition(Some(7), Err(SysError::PermissionDenied)),
+            "unread: kept"
+        );
+        assert!(
+            !other_coalition(Some(7), Err(SysError::Gone)),
+            "unread: kept"
+        );
+        assert!(
+            !other_coalition(None, Ok(8)),
+            "self-check failed: no filter"
+        );
+    }
+
+    /// G1 coalition, the 1ced7 c25144e1 desktop stop: pid 43028 DockHelper
+    /// (ppid 1, unreadable) next to 043dd's MEASURE-G1-coalition numbers
+    /// (aibd's coalition 481, a launchd service its own, 75991). The
+    /// session's own re-parented orphan stays in 481 and stays checked; the
+    /// marker wins over any coalition; a readable candidate never needs one.
+    #[test]
+    fn the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept() {
+        let s = Some(481);
+        assert_eq!(classify(None, s, || Ok(75991)), Candidate::OtherCoalition);
+        assert_eq!(classify(None, s, || Ok(481)), Candidate::Unreadable);
+        assert_eq!(classify(Some(true), s, || Ok(75991)), Candidate::Ours);
+        assert_eq!(
+            classify(Some(false), s, || Err(SysError::Unknown)),
+            Candidate::NotOurs
+        );
+        assert_eq!(
+            classify(None, s, || Err(SysError::PermissionDenied)),
+            Candidate::Unreadable,
+            "coalition not read: kept"
+        );
+        assert_eq!(
+            classify(None, None, || Ok(75991)),
+            Candidate::Unreadable,
+            "self-check failed: the rule before"
+        );
+    }
+
+    /// G1: a root started by aibd is in aibd's coalition (macOS), so the
+    /// filter is on; elsewhere it stays off.
+    #[test]
+    fn a_root_started_here_turns_the_coalition_filter_on_only_on_macos() {
+        let mut c = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let got = session_coalition(c.id());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(got.is_some(), cfg!(target_os = "macos"));
     }
 
     #[test]

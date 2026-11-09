@@ -747,7 +747,8 @@ impl Sessions {
         tracing::info!(session = %id, state = rec.state, ended_by = by,
             stop = stop.status.as_str(), survivors = stop.survivors.len(),
             candidates = stop.candidates.count, orphan_extra = stop.candidates.orphan_extra,
-            unreadable = ?stop.candidates.unreadable, "session stop");
+            unreadable = ?stop.candidates.unreadable,
+            other_coalition = ?stop.candidates.other_coalition, "session stop");
         if stop.releases_slot() {
             if let Some(e) = g.live.remove(id) {
                 g.ended.push_front((e.order, e.rec));
@@ -987,7 +988,8 @@ impl Sessions {
                     .unwrap_or_default();
                 tracing::warn!(session = %id, tries, reason = ?last,
                     candidates = cand.count, orphan_extra = cand.orphan_extra,
-                    unreadable = ?cand.unreadable, "slot still held after re-check");
+                    unreadable = ?cand.unreadable,
+                    other_coalition = ?cand.other_coalition, "slot still held after re-check");
                 self.event(
                     g,
                     id,

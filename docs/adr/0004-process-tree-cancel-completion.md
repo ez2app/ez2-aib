@@ -392,6 +392,25 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   `candidates_unreadable` stop then shows which processes held the slot and which rule
   took them (1ced7 2026-11-09: the record had neither).
 
+**Coalition filter (043dd MEASURE-G1-coalition, 1ced7 c25144e1 DockHelper).**
+- A process starts in its parent's resource coalition and keeps it when it is re-parented
+  to launchd. launchd starts each service it launches in a coalition of its own. On the
+  measured desktop, 77 of 88 new same-uid `ppid` 1 processes in an hour were in another
+  coalition than the shell aibd ran under; the session's own re-parented orphan was not.
+- At start aibd reads its own coalition and the root's (`PROC_PIDCOALITIONINFO`, a private
+  `proc_pidinfo` flavor). Only when both are read and equal does the filter turn on for
+  that session: this is the self-check of the private interface.
+- A candidate whose environment cannot be read, and whose coalition is read as different
+  from the session's, is let go (`stop.candidates.other_coalition`, pid + name). It is not
+  signalled and does not make the stop `candidates_unreadable`.
+- Kept as before: a candidate with the session marker (whatever its coalition), a
+  candidate whose coalition cannot be read, and every candidate when the self-check failed.
+- Blind spot: a process the session asks launchd / LaunchServices to start (`open -a`, an
+  XPC service) gets a coalition of its own. It is not in the session's process tree either
+  way; if its environment cannot be read it is now let go instead of holding the slot.
+- The interface is private: an OS update may change the struct. `pidinfo` refuses any
+  answer that is not exactly 40 bytes, and an unread coalition keeps the rule before.
+
 **Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
 records. A child that the watcher reads after that point, and that has already exited, sets
 the flag too late for this stop: the narrow rule is used once. This needs a fork and an

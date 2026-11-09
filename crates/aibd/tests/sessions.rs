@@ -1091,6 +1091,7 @@ impl aibd::platform::session::Running for Unreadable {
                         pid: 4343,
                         comm: "mdworker_shared".into(),
                     }],
+                    other_coalition: vec![],
                 }
             } else {
                 CandidateDiag::default()
