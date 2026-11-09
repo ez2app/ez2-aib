@@ -83,6 +83,7 @@ curl -s -X DELETE http://<位址>/api/v1/sessions/<id> -H "Authorization: Bearer
   - 刻意脫離的程式(自己另開一組、或清掉 aibd 給的標記)可能收不到。
   - aibd 被強制結束(例如「強制結束」、kill -9、當機)時，它開的程式在 macOS 上會留著，要自己關。
   - Windows 由系統代收;這部分在實體電腦還沒驗完。
+  - Windows 上 aibd 只處理 Ctrl-C:直接關掉視窗、登出或關機時，不會跑正常的關閉流程;不過它開的程式仍會跟著 aibd 結束，一起被系統收掉。
 - **還沒有的**:用 aibd 開 AI 席位(人格、對話畫面)、網頁工作台、取代現有 aib 的完整功能。
 
 ## 檢查碼
