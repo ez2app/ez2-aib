@@ -189,16 +189,17 @@ def _folder_labels(vault_dir):
 
 
 def vault_dir():
-    """標籤表所在的 vault:全套件同一條規則(route_register.default_vault:EZ2_VAULT_DIR >
-    EZ2_VAULT_ROOT > <aib 家>/vault-dir > …),這裡不另寫一份。取不到 ⇒ None。"""
+    """標籤表所在的 vault:全套件同一條規則(vault_location.default_vault:EZ2_VAULT_DIR >
+    EZ2_VAULT_ROOT > <aib 家>/vault-dir > …),這裡不另寫一份。取不到 ⇒ None。
+    匯入 vault_location 而不是 route_register:後者冷啟動約 24 ms,右欄每回合都畫。"""
     try:
         import sys
         here = os.path.dirname(os.path.abspath(__file__))
         pr = os.path.join(here, '..', 'persona_route')
         if pr not in sys.path:
             sys.path.insert(0, pr)
-        import route_register
-        return route_register.default_vault()
+        import vault_location
+        return vault_location.default_vault()
     except Exception:  # noqa: BLE001 — 畫面上退回路徑,不讓右欄掛掉
         return None
 
