@@ -269,8 +269,8 @@ jobs:
             -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match Ok::<Request, Response>(req) { // knife: no gate' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let asked = req.argv.first().cloned();\n    let (req, asked) = match Ok::<(Request, Option<String>), ApiError>((req, asked)) { // knife: no gate' \
             --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
             -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
           # S6 an over-long line is not marked as cut
