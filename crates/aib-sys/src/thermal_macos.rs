@@ -323,14 +323,14 @@ fn pressure_raw() -> Result<u64, SysError> {
     // SAFETY: the name is NUL-terminated and static; `token` is a live out-parameter.
     let st = unsafe { notify_register_check(PRESSURE_NAME.as_ptr(), &mut token) };
     if st != NOTIFY_OK {
-        return Err(SysError::Os(i32::try_from(st).unwrap_or(-1)));
+        return Err(SysError::Notify(st));
     }
     let token = Token(token);
     let mut state: u64 = 0;
     // SAFETY: `token.0` is a live registration; `state` is a live out-parameter.
     let st = unsafe { notify_get_state(token.0, &mut state) };
     if st != NOTIFY_OK {
-        return Err(SysError::Os(i32::try_from(st).unwrap_or(-1)));
+        return Err(SysError::Notify(st));
     }
     Ok(state)
 }

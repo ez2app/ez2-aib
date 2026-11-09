@@ -142,6 +142,9 @@ pub enum SysError {
     /// A private SPI symbol (T1) is not in this macOS. The call is off, aibd still runs.
     #[error("private SPI symbol not found")]
     SpiMissing,
+    /// A `notify.h` call (T2) returned this `NOTIFY_STATUS_*` code (not an errno).
+    #[error("notify status {0}")]
+    Notify(u32),
 }
 
 impl SysError {
@@ -172,6 +175,7 @@ impl SysError {
             SysError::NotReaped { .. } => "not_reaped",
             SysError::Implausible => "implausible",
             SysError::SpiMissing => "spi_missing",
+            SysError::Notify(_) => "notify_status",
         }
     }
 }
