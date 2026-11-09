@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "aib-flaky"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "aib-cireuse",
  "serde_json",
