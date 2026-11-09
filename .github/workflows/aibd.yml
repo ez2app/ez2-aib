@@ -276,8 +276,8 @@ jobs:
             platform::fork_watch::tests::a_child_gone_before_it_is_read_is_covered_by_lineage_not_a_gap
           # G1c the orphan check is not widened: an orphan of an unread child is missed
           gk crates/aibd/src/lineage.rs \
-            '                Ok(u) if u.unique > root_unique && wide => {' \
-            '                Ok(u) if u.unique > root_unique && wide && false => { // knife' \
+            '                Ok(u) if u.unique > root_unique && wide && u.parent_unique > root_unique => {' \
+            '                Ok(u) if u.unique > root_unique && wide && false && u.parent_unique > root_unique => { // knife' \
             lineage::tests::an_unread_gone_child_widens_the_orphan_candidates
           # G1d a child we may not read (alive, other reason) treated as gone
           gk crates/aibd/src/platform/fork_watch.rs \

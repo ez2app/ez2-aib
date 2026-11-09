@@ -320,7 +320,7 @@ decision list (a63ab, 2026-11-09).
   This is a known limit, stated as such; Windows covers it with `KILL_ON_JOB_CLOSE`
   (previous update, UNVERIFIED on a real machine).
 
-## Update 2026-11-10 (G1: a program that ends at once gives its slot back, macOS)
+## Update 2026-11-10 (G1: a program that ends at once gives its slot back, macOS — partly)
 
 preview.3 known issue: on macOS a session whose program ends at once (`claude`, `printenv`,
 `sleep 0`) kept its slot (1ced7 gate, 2026-11-09). Two causes, two codes:
@@ -334,9 +334,11 @@ preview.3 known issue: on macOS a session whose program ends at once (`claude`, 
   its start time is read (ESRCH, `SysError::Gone`).
   - With lineage on, that is no longer a gap. The watcher notes it (`unread_gone`, latched
     for the whole session), and the stop's candidate check is widened: every same-uid
-    `ppid` 1 process newer than the root is a candidate, whatever its `parent_unique`. The
-    child's own children carry a `parent_unique` nobody recorded, so the narrow
-    `parent_unique == 1` rule would miss them.
+    `ppid` 1 process newer than the root whose `parent_unique` is also newer than the root
+    is a candidate. The child's own children carry a `parent_unique` nobody recorded, so the
+    narrow `parent_unique == 1` rule would miss them. The unread child was born after the
+    root, so its orphans' creator id is larger than the root's; apps the user opened earlier
+    are left out (043dd L1).
   - How many candidates the wide rule adds is counted (`Report::orphan_candidates_extra`,
     and `orphan_candidates_extra` in `/api/v1/metrics`). It is measured before anyone
     decides to narrow it.
@@ -348,5 +350,26 @@ spots (`exec_after_creator_exit` and the rest), never `clean`. Windows is unchan
 watcher there). Tests: `crates/aibd/src/platform/fork_watch.rs` (fake probe + one real-OS
 stale-errno case), `crates/aibd/src/lineage.rs`
 (`an_unread_gone_child_widens_the_orphan_candidates`), and `crates/aibd/tests/sessions.rs`
-(`g1_*`, macOS). Knives G1a–G1e are in `.github/workflows/aibd.yml`. The real `claude` race
-is checked on a CI-built aibd: 10 starts in a row with one slot (1ced7).
+(`g1_*`, macOS). Knives G1a–G1e are in `.github/workflows/aibd.yml`.
+
+**What this does not fix (043dd review, measured on a desktop Mac, 2026-11-09).**
+- macOS does not let another process read the environment of Apple platform binaries.
+  On a desktop with a login session and Spotlight, launchd starts such services all the
+  time: 28 new same-uid `ppid` 1 processes in 10 minutes, 23 of them with
+  `parent_unique == 1` and an empty environment (`mdworker_shared`, `followupd`, ...).
+- The narrow rule has always taken them as candidates. Their empty environment makes the
+  stop `candidates_unreadable`, which keeps the slot.
+- So programs that end within milliseconds (`printenv`, `sleep 0`) now give their slot
+  back. A session that runs seconds to minutes (`claude`) may still end
+  `candidates_unreadable` on a desktop, and keep its slot. Quiet machines (CI runners,
+  Mac Pro 13) do not show this.
+- The 10-starts `claude` check (1ced7) runs on a desktop Mac and reports the distribution
+  of `stop.reason`, not only whether each start worked.
+- Telling launchd's own services apart from "re-parented, then exec'd" session processes
+  is a separate item. Directions to measure first: responsible pid / coalition, platform
+  binary paths.
+
+**Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
+records. A child that the watcher reads after that point, and that has already exited, sets
+the flag too late for this stop: the narrow rule is used once. This needs a fork and an
+exit right at the moment of the stop, so it is rare. It is stated, not handled.

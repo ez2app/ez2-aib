@@ -36,5 +36,8 @@ tower = { version = "0.5.3", features = ["util"] }
 nix = { version = "0.31.3", features = ["signal", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Only for knife G1a (aibd.yml): it puts the libproc 0.15 child listing back to
+# prove the stale-errno bug. aibd itself lists through aib-sys. Do not drop it
+# as unused without removing that knife (043dd G1 N1).
 libproc = "0.15.0"
 nix = { version = "0.31.3", features = ["signal", "process", "event"] }

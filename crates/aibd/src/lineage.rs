@@ -287,8 +287,8 @@ impl Lineage {
     ///
     /// `wide` (G1): a child of the session was gone before its unique id was
     /// read, so its own children carry a `parent_unique` nobody recorded.
-    /// Then every same-uid `ppid` 1 process newer than the root is a
-    /// candidate, whatever its `parent_unique`. How many that adds is
+    /// Then every same-uid `ppid` 1 process newer than the root whose
+    /// creator is also newer than the root is a candidate (043dd L1). How many that adds is
     /// `Candidates::extra` (and summed in the metrics).
     pub fn late_exec_candidates(
         &self,
@@ -339,7 +339,10 @@ impl Lineage {
             }
             match info.unique_ids(pid) {
                 Ok(u) if u.unique > root_unique && u.parent_unique == 1 => c.pids.push(pid),
-                Ok(u) if u.unique > root_unique && wide => {
+                // 043dd L1: the unread child was born after the root, so its
+                // orphans' creator is newer than the root too; an older
+                // creator (an app the user opened earlier) is not ours
+                Ok(u) if u.unique > root_unique && wide && u.parent_unique > root_unique => {
                     c.pids.push(pid);
                     c.extra += 1;
                 }
@@ -432,16 +435,20 @@ mod tests {
 
     /// G1 / 043dd 20:42: a child gone before it was read leaves orphans whose
     /// `parent_unique` names a dead, unrecorded process. The narrow check
-    /// (`parent_unique == 1`) misses them; the wide one takes every same-uid
-    /// launchd child newer than the root, and says how many it added.
+    /// (`parent_unique == 1`) misses them; the wide one also takes same-uid
+    /// launchd children newer than the root whose creator is newer than the
+    /// root (043dd L1), and says how many it added.
     #[test]
     fn an_unread_gone_child_widens_the_orphan_candidates() {
         let f = table();
-        f.add(50, 1, 900_000, 77, 80); // orphan: creator 77 is dead and unrecorded
+        f.add(50, 1, 900_000, 5555, 80); // orphan: creator 5555 (newer than the root) is dead, unrecorded
         f.add(51, 1, 900_001, 1, 81); // launchd child newer than the root
-        f.add(52, 1, 700, 77, 30); // orphan older than the root: not ours
-        f.add(53, 1, 900_002, 77, 82); // other account: not ours
+        f.add(52, 1, 700, 5555, 30); // orphan older than the root: not ours
+        f.add(53, 1, 900_002, 5555, 82); // other account: not ours
         f.set_uid(53, 0);
+        // 043dd L1: creator older than the root (an app opened before the
+        // session): not ours, even with the wide check
+        f.add(54, 1, 900_003, 500, 83);
         let (l, _f) = on(f);
         let k = known(&[(ROOT, 50)]);
         let narrow = l.late_exec_candidates(1000, ME, &k, false);
@@ -455,11 +462,11 @@ mod tests {
             "{wide:?}"
         );
         assert!(
-            !wide.pids.contains(&52) && !wide.pids.contains(&53),
+            !wide.pids.contains(&52) && !wide.pids.contains(&53) && !wide.pids.contains(&54),
             "{wide:?}"
         );
-        // table(): 300 (creator 2000, dead) and 400 (creator 9999) are newer
-        // than the root too, so the wide check adds them as well
+        // table(): 300 (creator 2000, dead) and 400 (creator 9999) have
+        // creators newer than the root too, so the wide check adds them as well
         let added: Vec<u32> = wide
             .pids
             .iter()
