@@ -140,6 +140,27 @@ pub struct Signal {
     pub targets: Vec<u32>,
 }
 
+/// F (1ced7 11-09 23:38): what the late-exec candidate check saw, so a
+/// `candidates_unreadable` stop says which processes and which rule
+/// (narrow, or the G1 widened orphan check) put them there. macOS only;
+/// empty elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CandidateDiag {
+    /// Candidates found (narrow + widened).
+    pub count: usize,
+    /// Of those, added only by the widened orphan check (G1 `unread_gone`).
+    pub orphan_extra: usize,
+    /// Candidates whose environment could not be read.
+    pub unreadable: Vec<UnreadableCandidate>,
+}
+
+/// One unreadable candidate: pid and the process name (not its arguments).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnreadableCandidate {
+    pub pid: u32,
+    pub comm: String,
+}
+
 /// Result of one [`Running::stop`] (contract §1 `stop`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stop {
@@ -150,6 +171,8 @@ pub struct Stop {
     /// What no layer here can rule out (macOS: always the DECISION-23 list).
     /// Windows: empty.
     pub blind_spots: Vec<&'static str>,
+    /// F: the candidate check behind the status (see [`CandidateDiag`]).
+    pub candidates: CandidateDiag,
 }
 
 impl Stop {
@@ -192,6 +215,23 @@ impl Stop {
                 })
                 .collect(),
             blind_spots: r.blind_spots(),
+            candidates: CandidateDiag {
+                count: r.candidates,
+                orphan_extra: r.orphan_candidates_extra,
+                unreadable: r
+                    .candidates_unreadable
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &pid)| UnreadableCandidate {
+                        pid,
+                        comm: r
+                            .candidates_unreadable_comm
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+            },
         }
     }
 }
@@ -328,6 +368,7 @@ mod tests {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 
@@ -379,6 +420,39 @@ mod tests {
             ..r
         };
         assert_eq!(Stop::from_report(&left).status, StopStatus::TreeNotClean);
+    }
+
+    /// F (1ced7 11-09 23:38): the stop says which candidates it could not
+    /// read (pid + process name, same order) and how many only the widened
+    /// orphan check added.
+    #[test]
+    fn a_macos_report_carries_its_candidate_check_into_the_stop() {
+        let r = Report {
+            candidates: 3,
+            orphan_candidates_extra: 1,
+            candidates_unreadable: vec![9, 11],
+            candidates_unreadable_comm: vec!["mdworker_shared".into(), "followupd".into()],
+            ..Report::default()
+        };
+        let s = Stop::from_report(&r);
+        assert_eq!(s.status.reason(), Some("candidates_unreadable"));
+        assert_eq!(
+            s.candidates,
+            CandidateDiag {
+                count: 3,
+                orphan_extra: 1,
+                unreadable: vec![
+                    UnreadableCandidate {
+                        pid: 9,
+                        comm: "mdworker_shared".into()
+                    },
+                    UnreadableCandidate {
+                        pid: 11,
+                        comm: "followupd".into()
+                    },
+                ],
+            }
+        );
     }
 
     #[test]

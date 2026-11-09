@@ -936,6 +936,7 @@ impl aibd::platform::session::Running for Stubborn {
             tree_size: 2,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: Default::default(),
         }
     }
 }
@@ -1068,9 +1069,10 @@ impl aibd::platform::session::Running for Unreadable {
         std::sync::Arc::new(NeverExits)
     }
     fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
-        use aibd::platform::session::{Stop, StopStatus};
+        use aibd::platform::session::{CandidateDiag, Stop, StopStatus, UnreadableCandidate};
         let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let reason = if n < self.1 {
+        let unreadable = n < self.1;
+        let reason = if unreadable {
             "candidates_unreadable"
         } else {
             "observed_clean"
@@ -1081,6 +1083,18 @@ impl aibd::platform::session::Running for Unreadable {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: if unreadable {
+                CandidateDiag {
+                    count: 2,
+                    orphan_extra: 1,
+                    unreadable: vec![UnreadableCandidate {
+                        pid: 4343,
+                        comm: "mdworker_shared".into(),
+                    }],
+                }
+            } else {
+                CandidateDiag::default()
+            },
         }
     }
 }
@@ -1193,6 +1207,17 @@ fn a_slot_that_stays_unreadable_stays_held_with_the_reason() {
         .find(|e| e.event_type == "session.slot_held")
         .unwrap();
     assert_eq!(h.payload["reason"], "candidates_unreadable", "{evs:?}");
+    // F (1ced7 11-09 23:38): which candidates, and which rule put them there
+    let want = serde_json::json!({"count": 2, "orphan_extra": 1,
+        "unreadable": [{"pid": 4343, "comm": "mdworker_shared"}]});
+    assert_eq!(h.payload["candidates"], want, "{evs:?}");
+    let u = evs
+        .iter()
+        .find(|e| e.event_type == "session.stop_unconfirmed")
+        .unwrap();
+    assert_eq!(u.payload["candidates"], want, "{evs:?}");
+    let got = serde_json::to_value(s.get(&rec.id).unwrap()).unwrap();
+    assert_eq!(got["stop"]["candidates"], want, "{got}");
     assert!(!evs.iter().any(|e| e.event_type == "session.slot_released"));
     assert_eq!(
         s.start(one_req()).unwrap_err().0,
@@ -1306,6 +1331,7 @@ impl aibd::platform::session::Running for Gated {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: Default::default(),
         }
     }
 }
@@ -1382,6 +1408,7 @@ impl aibd::platform::session::Running for Slow {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }
@@ -1506,6 +1533,7 @@ impl aibd::platform::session::Running for Stuck {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }
@@ -1614,6 +1642,7 @@ impl aibd::platform::session::Running for LostRoot {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }

@@ -315,6 +315,17 @@ jobs:
             '    i != Ident::Gone' \
             '    i == Ident::Running // knife' \
             platform::tree::tests::an_unverified_process_still_counts_as_alive
+          # F1 (1ced7 11-09 23:38) the stop drops which rule added the candidates
+          gk crates/aibd/src/platform/session.rs \
+            '                orphan_extra: r.orphan_candidates_extra,' \
+            '                orphan_extra: 0, // knife' \
+            platform::session::tests::a_macos_report_carries_its_candidate_check_into_the_stop
+          # F2 slot_held without the candidate check (the record 1ced7 could not read)
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '                        "candidates": cand}),' \
+            '                        "cand": cand}), // knife' \
+            --expect-fail a_slot_that_stays_unreadable_stays_held_with_the_reason \
+            -- cargo test -p aibd --locked --test sessions a_slot_that_stays_unreadable_stays_held_with_the_reason
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
