@@ -360,7 +360,11 @@ mod tests {
         for _ in 0..6 {
             s.step(91.9, Some(80.0), 20.0);
         }
-        assert_eq!(instant_level(91.9), Level::Crit, "panel still shows the spike");
+        assert_eq!(
+            instant_level(91.9),
+            Level::Crit,
+            "panel still shows the spike"
+        );
         assert!(s.reaps.is_empty());
         assert!(!s.nogo);
     }
@@ -484,7 +488,10 @@ mod tests {
         let mut s = Sim::new();
         s.step(95.0, Some(91.0), 20.0);
         s.step(95.0, Some(91.0), SUSTAIN_GAP_S - 1.0);
-        assert!(s.reaps.is_empty(), "the gap between two samples is not evidence");
+        assert!(
+            s.reaps.is_empty(),
+            "the gap between two samples is not evidence"
+        );
         s.step(95.0, Some(91.0), 30.0);
         assert_eq!(s.reaps.len(), 1);
     }
@@ -493,8 +500,8 @@ mod tests {
     fn a16b_same_moment_panels_are_one_sample() {
         let h = History::from_rows(&[(0.0, 91.0), (89.0, 91.0), (89.3, 91.0)]).unwrap();
         assert_eq!(h.held_for(REAP_AVG_C), 0.0);
-        let h = History::from_rows(&[(0.0, 91.0), (89.0, 91.0), (89.3, 91.0), (119.0, 91.0)])
-            .unwrap();
+        let h =
+            History::from_rows(&[(0.0, 91.0), (89.0, 91.0), (89.3, 91.0), (119.0, 91.0)]).unwrap();
         assert_eq!(h.held_for(REAP_AVG_C), 119.0);
     }
 
@@ -517,15 +524,39 @@ mod tests {
 
     #[test]
     fn unmeasured_is_unknown_and_never_reaps() {
-        let d = decide(Reading { max: None, avg: Some(95.0) }, None, Some(0));
-        assert_eq!((d.level, d.why, d.reap()), (Level::Unknown, Why::Unmeasured, false));
-        let d = decide(Reading { max: Some(f64::NAN), avg: None }, None, None);
+        let d = decide(
+            Reading {
+                max: None,
+                avg: Some(95.0),
+            },
+            None,
+            Some(0),
+        );
+        assert_eq!(
+            (d.level, d.why, d.reap()),
+            (Level::Unknown, Why::Unmeasured, false)
+        );
+        let d = decide(
+            Reading {
+                max: Some(f64::NAN),
+                avg: None,
+            },
+            None,
+            None,
+        );
         assert_eq!(d.level, Level::Unknown);
     }
 
     #[test]
     fn pressure_beats_unmeasured() {
-        let d = decide(Reading { max: None, avg: None }, None, Some(1));
+        let d = decide(
+            Reading {
+                max: None,
+                avg: None,
+            },
+            None,
+            Some(1),
+        );
         assert_eq!((d.level, d.why), (Level::Crit, Why::Pressure));
     }
 
@@ -552,7 +583,14 @@ mod tests {
         .collect();
         assert_eq!(
             codes,
-            ["pressure", "unmeasured", "no_history", "no_signal", "sustained", "below"]
+            [
+                "pressure",
+                "unmeasured",
+                "no_history",
+                "no_signal",
+                "sustained",
+                "below"
+            ]
         );
     }
 }
