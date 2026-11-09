@@ -30,6 +30,12 @@ SMOKE = ROOT / "scripts" / "aibd-sessions-smoke.py"
 # how long the smoke waits for the fake to print its start-up line; a busy CI runner (364 tests serial on
 # macos 3.12, #537 run 42533782542) needed more than 15 s. Wider wait, same verdict rules.
 START = os.environ.get("AIBD_SMOKE_TEST_TIMEOUT", "60")
+MARKER = "15"  # bb7dc #537:marker 時限固定 15,不跟 AIBD_SMOKE_TEST_TIMEOUT 走
+
+
+def smoke_args(fake, start=None, marker=None):
+    return [sys.executable, "-I", str(SMOKE), str(fake), "--timeout", START if start is None else start,
+            "--marker-timeout", MARKER if marker is None else marker]
 
 FAKE = textwrap.dedent('''\
     #!%(py)s
@@ -90,13 +96,12 @@ FAKE = textwrap.dedent('''\
 
 @unittest.skipUnless(os.name == "posix", "fake aibd uses process groups")
 class SessionsSmoke(unittest.TestCase):
-    def run_smoke(self, mode, *extra, start=START, marker="15", delay="0"):
+    def run_smoke(self, mode, *extra, start=START, marker=MARKER, delay="0"):
         with tempfile.TemporaryDirectory() as d:
             fake = Path(d) / "aibd"
             fake.write_text(FAKE, encoding="utf-8")
             fake.chmod(0o755)
-            r = subprocess.run([sys.executable, "-I", str(SMOKE), str(fake), "--timeout", start, "--marker-timeout", marker]
-                               + list(extra), env=dict(os.environ, FAKE_MODE=mode, FAKE_DELAY=delay), capture_output=True, text=True,
+            r = subprocess.run(smoke_args(fake, start, marker) + list(extra), env=dict(os.environ, FAKE_MODE=mode, FAKE_DELAY=delay), capture_output=True, text=True,
                                timeout=2 * float(start) + 90)
         line = (r.stdout.strip().splitlines() or [""])[-1]
         res = json.loads(line[line.index("{"):]) if "{" in line else {}
@@ -112,6 +117,24 @@ class SessionsSmoke(unittest.TestCase):
         """正向對照:同一個 slowmarker,marker 時限比延遲長 ⇒ 綠(證明上面那支紅是時限造成的，不是假 aibd 壞)。"""
         rc, res, log = self.run_smoke("slowmarker", marker="15", delay="1")
         self.assertEqual((rc, res.get("marker"), res.get("pass")), (0, True, True), log)
+
+    def test_a_wide_start_wait_leaves_the_marker_limit_at_15(self):
+        """a63ab 09:56:設 AIBD_SMOKE_TEST_TIMEOUT=60 時，傳給 smoke 的 marker 時限仍是 15,smoke 自己也記 15。"""
+        spec = importlib.util.spec_from_file_location("sessions_smoke_test_again", __file__)
+        mod = importlib.util.module_from_spec(spec)
+        old = os.environ.get("AIBD_SMOKE_TEST_TIMEOUT")
+        os.environ["AIBD_SMOKE_TEST_TIMEOUT"] = "60"
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            if old is None:
+                os.environ.pop("AIBD_SMOKE_TEST_TIMEOUT", None)
+            else:
+                os.environ["AIBD_SMOKE_TEST_TIMEOUT"] = old
+        args = mod.smoke_args("aibd")
+        self.assertEqual((args[args.index("--timeout") + 1], args[args.index("--marker-timeout") + 1]), ("60", "15"))
+        rc, res, log = self.run_smoke("good")
+        self.assertEqual((rc, res.get("marker_wait_s")), (0, 15.0), log)
 
     def test_the_two_limits_are_separate_flags(self):
         src = SMOKE.read_text(encoding="utf-8")
