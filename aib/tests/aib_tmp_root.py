@@ -54,3 +54,14 @@ def aib_tmp_root():
         "本函式不會改猜 TMPDIR 或 tempfile.gettempdir()。"
         % "; ".join(tried)
     )
+
+
+# 11-09(043dd,Andy 18:1x 准):測試裡的暫存路徑統一正規化成 <TMP>。實作放 aib/tools/verify/tmp_paths.py
+#   (row_export 等驗證工具也用同一份);這裡匯出同一組名字,測試只要 `from aib_tmp_root import norm_tmp`。
+#   用 append 不用 insert(0):tools/verify 裡有 runner.py 這類常見名字,不能蓋掉測試自己的模組。
+import sys as _sys  # noqa: E402
+
+_VERIFY = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools", "verify"))
+if _VERIFY not in _sys.path:
+    _sys.path.append(_VERIFY)
+from tmp_paths import TAG as TMP_TAG, forms as tmp_forms, norm_tmp, tmp_roots  # noqa: E402,F401

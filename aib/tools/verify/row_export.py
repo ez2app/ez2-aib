@@ -94,16 +94,9 @@ def find_secret(text):
     return None
 
 
-def _roots(path):
-    """一個根的所有寫法(給的 + realpath),長的在前;空的不收。"""
-    out = []
-    if not path:
-        return out
-    for p in (os.path.abspath(path), os.path.realpath(path)):
-        p = p.rstrip("/") or "/"
-        if p not in out:
-            out.append(p)
-    return sorted(out, key=len, reverse=True)
+# 一個根的所有寫法 / 換字:11-09 搬到 tmp_paths(測試的 <TMP> 正規化共用同一份,043dd);行為一字不差
+from tmp_paths import forms as _roots  # noqa: E402
+from tmp_paths import sub_root as _sub_root  # noqa: E402
 
 
 def _under(path, roots):
@@ -113,14 +106,6 @@ def _under(path, roots):
         if path == r or path.startswith(r + "/"):
             return r
     return None
-
-
-def _sub_root(text, roots, tag):
-    for r in roots:
-        if r == "/":
-            continue
-        text = re.sub(re.escape(r) + r"(?=/|$|[^A-Za-z0-9._-])", tag, text)
-    return text
 
 
 def split_item(item):
