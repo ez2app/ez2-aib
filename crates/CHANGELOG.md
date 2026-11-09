@@ -17,7 +17,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   on the `argv[0]` asked for) ends `failed` (`ended_by: policy_refused`). `GET` of a pending
   session has `queue {position, slots, held_by: [{id, state, reason}], held_unknown}`. Known
   limit: slots kept by unconfirmed stops are not given back by time, so the queue can stand
-  still; `held_by` shows which. The default running limit is now
+  still; `held_by` shows which (a session that is starting right now is not listed). A panic
+  in the dequeue thread after it reserved a slot would keep that slot (no known path). The default running limit is now
   `clamp(floor(physical memory × 0.5 ÷ 500 MiB), 2, 4)`; `AIBD_MAX_SESSIONS` (1–64) is for
   stress tests.
 - **M1 security gate, `POST /api/v1/sessions` (breaking):** only programs and env names on an

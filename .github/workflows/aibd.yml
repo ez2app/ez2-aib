@@ -255,11 +255,11 @@ jobs:
             -- cargo test -p aib-store --locked --test sessions pending_and_running_are_interrupted_with_previous_state_and_process_flag
           # Q6 (043dd 11-10 M1) a session leaving the queue is not gated again
           qk '            let argv = match self.regate(&q) {' \
-            '            let argv = match Ok::<Vec<String>, ErrorCode>(q.rec.argv.clone()) { // knife' \
+            '            let argv = match self.regate(&q).map(|_| q.rec.argv.clone()).or(Ok::<Vec<String>, ErrorCode>(q.rec.argv.clone())) { // knife: the gate runs, its answer is dropped' \
             a_queued_session_is_gated_again_when_it_leaves_the_queue
           # Q7 (043dd M2) a pending session does not say what it waits for
           qk '                rec.queue = Some(self.queue_view(&g, i + 1));' \
-            '                let _ = self.queue_view(&g, i + 1); // knife' \
+            '                rec.queue = None; let _ = self.queue_view(&g, i + 1); // knife' \
             a_pending_session_shows_its_place_and_who_holds_the_slots
           # Q8 (043dd f6500f85 L1) a dequeue thread that panics leaves the queue stopped
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
