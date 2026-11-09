@@ -189,7 +189,10 @@ async fn a_real_claude_session_streams_its_output_and_reads_back_after_a_restart
     assert_eq!(code, 201, "{seat}");
     let seat = seat["seat_id"].as_str().unwrap().to_string();
     let body = json!({
-        "argv": [claude, "-p", "--setting-sources", "", "--strict-mcp-config",
+        // aibd refuses an empty argv item (1..=4096 bytes each), so not
+        // `--setting-sources ""`: `project` in the empty temp work dir loads
+        // no settings either (no user hooks / MCP from this Mac)
+        "argv": [claude, "-p", "--setting-sources", "project", "--strict-mcp-config",
                  "--model", "haiku", "--output-format", "stream-json", "--verbose",
                  "--", "Reply with the single word DONE."],
         "cwd": work.path(),
