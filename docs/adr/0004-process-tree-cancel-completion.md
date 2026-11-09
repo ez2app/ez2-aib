@@ -172,9 +172,11 @@ and the "periodic scans cost CPU" consequence.
     2026-11-08 (a9136):** that holds only while the process does not exec again. A
     process that execs *after* its creator exited gets launchd's id (1) as
     `p_puniqueid` (10 of 10 runs; 10 of 10 kept the creator when the exec came first).
-    `p_uniqueid` itself does not change. This is the `exec_after_creator_exit` blind
-    spot (see "Update 2026-11-09 (sessions preview.2 on macOS)", the slot), pinned by
-    `crates/aib-sys/tests/macos.rs`. That unique ids are
+    `p_uniqueid` itself does not change. Lineage still reports `complete = true` in
+    this case, so a pass that finds no live descendant is at most `observed_clean`
+    (with this blind spot), never `clean`. This is the `exec_after_creator_exit` blind
+    spot (see "Update 2026-11-09 (sessions preview.2 on macOS: #544, #546, #549)", the
+    slot), pinned by `crates/aib-sys/tests/macos.rs`. That unique ids are
     not reused is an XNU implementation property we rely on, **not** a documented
     contract. Both are hypotheses until the fixture and a real-machine run confirm them,
     and they are re-checked on every major macOS version (capability table; versions not
