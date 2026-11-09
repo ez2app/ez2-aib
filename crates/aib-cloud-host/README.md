@@ -52,5 +52,3 @@ Every later version: `aib-cloud-host self-update <version>` (fetches the release
 one `rename`; the old file stays at `/usr/local/sbin/aib-cloud-host.prev`). Nothing here is
 signed; the checksum comes from the same release page as the file, so it proves the download is
 what CI built, not who built it.
-
-CI note: after #568 merged and this PR was retargeted to main, GitHub ran no pull_request workflows for 40671e3d; this line exists to fire a synchronize event.
