@@ -1,7 +1,7 @@
 //! Pure thermal-protection decisions for aibd.
 //!
 //! Rust replacement for the decision half of 1.x `aib/src/cockpit/cooldown.py`
-//! (closed PR #473, head 9a3812eb4; `docs/migration/legacy-inventory.md`
+//! (closed PR #473, head 9a3812eb4; the migration inventory's
 //! "to replace" R1). This crate never touches the OS: sampling lives in
 //! `aib-sys`, history persistence in `aib-store`, and acting (reaping aibd's
 //! own process tree) in `aibd`. Everything here takes injected samples and an
