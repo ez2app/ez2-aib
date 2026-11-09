@@ -3,7 +3,7 @@
 //! Knife ids (K1–K12) are the ones in DESIGN-flaky-suspect-1ced7-1109.md.
 
 use aib_cireuse::gh::Source;
-use aib_flaky::gh::{b64, gather};
+use aib_flaky::gh::{b64, gather, run_counts, Context};
 use aib_flaky::*;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -774,7 +774,7 @@ fn gh_map(changed_files: u64) -> Map {
     };
     put(
         "repos/o/r/pulls/7",
-        json!({"head": {"sha": HEAD}, "base": {"sha": "b"}, "changed_files": changed_files}),
+        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "changed_files": changed_files}),
     );
     put(
         "repos/o/r/pulls/7/files?per_page=100&page=1",
@@ -783,8 +783,10 @@ fn gh_map(changed_files: u64) -> Map {
     put(
         "repos/o/r/actions/runs?head_sha=h1&per_page=100&page=1",
         json!({"total_count": 2, "workflow_runs": [
-            {"id": 1, "head_sha": HEAD, "path": ".github/workflows/ci.yml", "run_attempt": 2},
-            {"id": 5, "head_sha": "zzz", "path": ".github/workflows/ci.yml", "run_attempt": 1}
+            {"id": 1, "head_sha": HEAD, "path": ".github/workflows/ci.yml", "run_attempt": 2,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 7}]},
+            {"id": 5, "head_sha": "zzz", "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 7}]}
         ]}),
     );
     put(
@@ -881,6 +883,135 @@ fn gather_rust_tree_truncated_or_missing_is_none() {
             "{t:?}"
         );
     }
+}
+
+// ---------- whose run it is (bb7dc #589 M1 / M2) ----------
+
+fn run(event: Option<&str>, branch: Option<&str>, prs: Option<&[u64]>) -> serde_json::Value {
+    let mut r = json!({"id": 1, "head_sha": HEAD});
+    if let Some(e) = event {
+        r["event"] = json!(e);
+    }
+    if let Some(b) = branch {
+        r["head_branch"] = json!(b);
+    }
+    if let Some(p) = prs {
+        r["pull_requests"] = json!(p.iter().map(|n| json!({"number": n})).collect::<Vec<_>>());
+    }
+    r
+}
+
+#[test]
+fn run_counts_main_push_only() {
+    let main = Context::MainPush;
+    assert!(run_counts(&run(Some("push"), Some("main"), None), &main));
+    // M1: a PR-only SHA, another branch's push, missing fields: not a main precedent
+    assert!(!run_counts(
+        &run(Some("pull_request"), Some("main"), Some(&[7])),
+        &main
+    ));
+    assert!(!run_counts(&run(Some("push"), Some("feat/x"), None), &main));
+    assert!(!run_counts(&run(None, Some("main"), None), &main));
+    assert!(!run_counts(&run(Some("push"), None, None), &main));
+    assert!(!run_counts(
+        &run(Some("workflow_dispatch"), Some("main"), None),
+        &main
+    ));
+}
+
+#[test]
+fn run_counts_this_pr_only() {
+    let pr = Context::Pr {
+        number: 7,
+        head_ref: "feat/x".into(),
+    };
+    assert!(run_counts(
+        &run(Some("pull_request"), Some("feat/x"), Some(&[7])),
+        &pr
+    ));
+    assert!(run_counts(
+        &run(Some("pull_request"), Some("feat/x"), Some(&[8, 7])),
+        &pr
+    ));
+    // M2: another PR's run of the same head, a missing link, another branch, a push
+    assert!(!run_counts(
+        &run(Some("pull_request"), Some("feat/x"), Some(&[8])),
+        &pr
+    ));
+    assert!(!run_counts(
+        &run(Some("pull_request"), Some("feat/x"), Some(&[])),
+        &pr
+    ));
+    assert!(!run_counts(
+        &run(Some("pull_request"), Some("feat/x"), None),
+        &pr
+    ));
+    assert!(!run_counts(
+        &run(Some("pull_request"), Some("feat/y"), Some(&[7])),
+        &pr
+    ));
+    assert!(!run_counts(
+        &run(Some("push"), Some("feat/x"), Some(&[7])),
+        &pr
+    ));
+    assert!(!run_counts(&run(None, Some("feat/x"), Some(&[7])), &pr));
+}
+
+/// M2 end to end: PR 7's only attempt is red; PR 8 built the same head and went green.
+/// That green run is not PR 7's re-run, so PR 7's red is not "suspected flaky".
+#[test]
+fn m2_another_prs_green_run_of_the_same_head_is_not_a_rerun() {
+    let mut m = gh_map(1);
+    m.0.insert(
+        "repos/o/r/actions/runs?head_sha=h1&per_page=100&page=1".into(),
+        json!({"total_count": 2, "workflow_runs": [
+            {"id": 1, "head_sha": HEAD, "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 7}]},
+            {"id": 2, "head_sha": HEAD, "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/y", "pull_requests": [{"number": 8}]}
+        ]})
+        .to_string(),
+    );
+    m.0.insert(
+        "repos/o/r/actions/runs/2/attempts/1/jobs?per_page=100&page=1".into(),
+        json!({"total_count": 1, "jobs": [
+            {"id": 21, "name": "test (ubuntu-latest, 3.12)", "conclusion": "success",
+             "steps": [{"name": "Python suite", "conclusion": "success", "number": 5}]}
+        ]})
+        .to_string(),
+    );
+    let f = gather(&m, R, Some(7), "").expect("gather");
+    assert!(f.attempts.iter().all(|a| a.run_id == 1), "{:?}", f.attempts);
+    let (verdict, reason) = one(&f, &prior("other", "py:aib/tests/test-x.py"));
+    assert_ne!(verdict, "suspected_flaky");
+    assert_eq!(reason, "no_green_rerun");
+}
+
+/// M1 end to end: main mode on a SHA that only PRs built records nothing; the same SHA
+/// pushed to main is read.
+#[test]
+fn m1_main_mode_reads_only_main_push_runs() {
+    let mut m = gh_map(1);
+    m.0.insert(
+        "repos/o/r/commits/h1".into(),
+        json!({"sha": HEAD, "parents": [{"sha": "p0"}]}).to_string(),
+    );
+    let f = gather(&m, R, None, HEAD).expect("gather");
+    assert!(
+        f.attempts.is_empty(),
+        "PR runs read as main: {:?}",
+        f.attempts
+    );
+    m.0.insert(
+        "repos/o/r/actions/runs?head_sha=h1&per_page=100&page=1".into(),
+        json!({"total_count": 1, "workflow_runs": [
+            {"id": 1, "head_sha": HEAD, "path": ".github/workflows/ci.yml", "run_attempt": 2,
+             "event": "push", "head_branch": "main"}
+        ]})
+        .to_string(),
+    );
+    let f = gather(&m, R, None, HEAD).expect("gather");
+    assert_eq!(f.attempts.len(), 2);
 }
 
 #[test]

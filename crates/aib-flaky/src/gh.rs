@@ -76,7 +76,44 @@ fn steps(j: &Value) -> Vec<Step> {
         .unwrap_or_default()
 }
 
-fn attempts(src: &dyn Source, repo: &str, head: &str) -> Result<Vec<JobAttempt>, String> {
+/// Whose CI a run of this head is (bb7dc #589 M1 / M2). The same SHA can be built by a
+/// main push, another branch's push and any number of PRs; only the runs of the context
+/// being judged count, and a run that does not state its context is left out (fail-closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Context {
+    /// main push mode: `event` push on `head_branch` main (M1: a PR-only or other-branch
+    /// SHA must not be recorded as a main precedent).
+    MainPush,
+    /// PR mode: a `pull_request` run from the PR's head branch whose `pull_requests` names
+    /// the PR (M2: another PR's green run of the same head is not this PR's re-run).
+    Pr { number: u64, head_ref: String },
+}
+
+/// Does this workflow run belong to `ctx`? Missing fields = no.
+pub fn run_counts(r: &Value, ctx: &Context) -> bool {
+    let event = r.get("event").and_then(Value::as_str);
+    let branch = r.get("head_branch").and_then(Value::as_str);
+    match ctx {
+        Context::MainPush => event == Some("push") && branch == Some("main"),
+        Context::Pr { number, head_ref } => {
+            event == Some("pull_request")
+                && branch == Some(head_ref.as_str())
+                && r.get("pull_requests")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| {
+                        a.iter()
+                            .any(|p| p.get("number").and_then(Value::as_u64) == Some(*number))
+                    })
+        }
+    }
+}
+
+fn attempts(
+    src: &dyn Source,
+    repo: &str,
+    head: &str,
+    ctx: &Context,
+) -> Result<Vec<JobAttempt>, String> {
     let runs = paged(
         src,
         &format!("repos/{repo}/actions/runs?head_sha={head}"),
@@ -84,7 +121,7 @@ fn attempts(src: &dyn Source, repo: &str, head: &str) -> Result<Vec<JobAttempt>,
     )?;
     let mut out: Vec<JobAttempt> = vec![];
     for r in &runs {
-        if r.get("head_sha").and_then(Value::as_str) != Some(head) {
+        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {
             continue;
         }
         let id = r.get("id").and_then(Value::as_u64).ok_or("run: no id")?;
@@ -183,25 +220,35 @@ fn head_rust(src: &dyn Source, repo: &str, head: &str) -> Option<RustMap> {
 
 /// PR mode (`pr` = Some) or main push mode (`sha` given, `pr` = None).
 pub fn gather(src: &dyn Source, repo: &str, pr: Option<u64>, sha: &str) -> Result<Facts, String> {
-    let (head, base, changed) = match pr {
+    let (head, base, changed, ctx) = match pr {
         Some(n) => {
             let p = json(src, &format!("repos/{repo}/pulls/{n}"))?;
             let head = str_at(&p, "/head/sha")?.to_string();
             let base = str_at(&p, "/base/sha")?.to_string();
+            let head_ref = str_at(&p, "/head/ref")?.to_string();
             let count = p
                 .get("changed_files")
                 .and_then(Value::as_u64)
                 .ok_or("pull: no changed_files")?;
-            (head, base, pr_files(src, repo, n, count)?)
+            let files = pr_files(src, repo, n, count)?;
+            (
+                head,
+                base,
+                files,
+                Context::Pr {
+                    number: n,
+                    head_ref,
+                },
+            )
         }
         None => {
             let c = json(src, &format!("repos/{repo}/commits/{sha}"))?;
             let head = str_at(&c, "/sha")?.to_string();
             let base = str_at(&c, "/parents/0/sha").unwrap_or("").to_string();
-            (head, base, vec![])
+            (head, base, vec![], Context::MainPush)
         }
     };
-    let attempts = attempts(src, repo, &head)?;
+    let attempts = attempts(src, repo, &head, &ctx)?;
     let fps: BTreeSet<String> = attempts
         .iter()
         .filter_map(|a| a.log.as_deref())
