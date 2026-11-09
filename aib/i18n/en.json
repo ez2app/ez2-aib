@@ -5027,6 +5027,8 @@
   "aib.secret.dest_local": "this Mac's key store",
   "aib.secret.btn_ok": "Save",
   "aib.secret.btn_cancel": "Cancel",
+  "aib.secret.btn_generate": "Generate & copy",
+  "aib.secret.generated_hint": "A new {n}-character password is in the field and on the clipboard. Save it in your password manager first, then press \"{ok}\"; press again for another one.",
   "aib.secret.no_gui_hint": "Could not open the input window (this terminal is not in a graphical session, which is common for an AI seat's shell). Please run the same line yourself in the Claude Code input box, starting with ! (one line, no space before the !).",
   "aib.cf.touchid_reason": "aib: approve a temporary Cloudflare key: {zone} {perms} {ttl} → {host}",
   "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write can change the whole domain's security settings (SSL mode / AOP / security level).",

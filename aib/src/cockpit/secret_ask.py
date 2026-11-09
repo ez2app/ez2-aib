@@ -99,6 +99,37 @@ try {
 JSON.stringify(out);
 """
 
+# 11-09 Andy「自己新訂一組 24 字以上的 root 密碼,要有一個隨機產生合規的按鈕,按下去產生在對應的欄位上給我送出,也要有一個複製鈕」:
+# --generate 時視窗多一顆「產生並複製」:在視窗裡用 arc4random 產 GEN_LEN 字(大小寫 / 數字 / 符號各至少一個,去掉 l I O 0 1),
+# 寫進剪貼簿、重開同一個視窗把值放進(遮住的)欄位,提示先存進密碼管理器再按「儲存」。值一樣只走 osascript stdout,不進 argv。
+GEN_LEN = 28
+JXA_GEN = r"""
+ObjC.import("stdlib");
+var app = Application.currentApplication();
+app.includeStandardAdditions = true;
+function rnd(n) { return $.arc4random_uniform(n); }
+function gen() {
+  var L = "abcdefghijkmnopqrstuvwxyz", U = "ABCDEFGHJKLMNPQRSTUVWXYZ", D = "23456789", S = "-_.!@#%^*+=";
+  var all = L + U + D + S, out = [L, U, D, S].map(function (c) { return c[rnd(c.length)]; });
+  while (out.length < __GEN_LEN__) out.push(all[rnd(all.length)]);
+  for (var i = out.length - 1; i > 0; i--) { var j = rnd(i + 1); var t = out[i]; out[i] = out[j]; out[j] = t; }
+  return out.join("");
+}
+var out, def = "", hint = "";
+try {
+  app.activate();
+  while (true) {
+    var r = app.displayDialog(__PROMPT__ + hint, {withTitle: __TITLE__, defaultAnswer: def, hiddenAnswer: true,
+      buttons: [__CANCEL__, __GEN__, __OK__], defaultButton: __OK__, cancelButton: __CANCEL__, givingUpAfter: __WAIT__});
+    if (r.gaveUp) { out = {ok: false, why: "timeout"}; break; }
+    if (r.buttonReturned === __GEN__) { def = gen(); app.setTheClipboardTo(def); hint = "\n\n" + __GEN_HINT__; continue; }
+    out = {ok: true, nonce: __NONCE__, value: r.textReturned}; break;
+  }
+} catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error",
+                     code: (e && e.errorNumber !== undefined) ? String(e.errorNumber) : ""}; }
+JSON.stringify(out);
+"""
+
 
 def _t(key, args=None):
     import i18n_lib
@@ -131,18 +162,23 @@ def check_format(name, value):
     return None
 
 
-def build_script(prompt, title, nonce, wait=WAIT_S):
-    """字串一律 json.dumps 放進 JXA:引號、換行、反斜線都只是字。"""
-    return (JXA.replace("__PROMPT__", json.dumps(prompt)).replace("__TITLE__", json.dumps(title))
-               .replace("__OK__", json.dumps(_t("aib.secret.btn_ok"))).replace("__CANCEL__", json.dumps(_t("aib.secret.btn_cancel")))
+def build_script(prompt, title, nonce, wait=WAIT_S, generate=False):
+    """字串一律 json.dumps 放進 JXA:引號、換行、反斜線都只是字。generate=True 用三顆鈕的版本(多「產生並複製」)。"""
+    ok = _t("aib.secret.btn_ok")
+    src = (JXA_GEN.replace("__GEN__", json.dumps(_t("aib.secret.btn_generate"))).replace("__GEN_LEN__", str(int(GEN_LEN)))
+                  .replace("__GEN_HINT__", json.dumps(_t("aib.secret.generated_hint", {"n": str(GEN_LEN), "ok": ok})))
+           if generate else JXA)
+    return (src.replace("__PROMPT__", json.dumps(prompt)).replace("__TITLE__", json.dumps(title))
+               .replace("__OK__", json.dumps(ok)).replace("__CANCEL__", json.dumps(_t("aib.secret.btn_cancel")))
                .replace("__NONCE__", json.dumps(nonce)).replace("__WAIT__", str(int(wait))))
 
 
-def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False):
-    """彈一次遮字輸入框。回 {"ok": bool, "why": str, "value"?: str}。raw=True ⇒ value 原樣(不砍頭尾空白,站點密碼用)。"""
+def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False, generate=False):
+    """彈一次遮字輸入框。回 {"ok": bool, "why": str, "value"?: str}。raw=True ⇒ value 原樣(不砍頭尾空白,站點密碼用)。
+    generate=True ⇒ 多一顆「產生並複製」鈕(--generate)。"""
     nonce = secrets.token_hex(16)
     try:
-        r = run([OSASCRIPT, "-l", "JavaScript", "-"], input=build_script(prompt, title, nonce, wait),
+        r = run([OSASCRIPT, "-l", "JavaScript", "-"], input=build_script(prompt, title, nonce, wait, generate=generate),
                 capture_output=True, text=True, timeout=wait + 15)
     except subprocess.TimeoutExpired:
         return {"ok": False, "why": "timeout"}
@@ -165,13 +201,15 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False):
     return {"ok": False, "why": str(out.get("why") or "failed")}
 
 
-def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None):
+def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, generate=False):
     """問到一個格式對的值。回 (value, why);value None = 沒拿到。"""
     title = _t("aib.secret.dialog_title", {"name": name})
     base = _t("aib.secret.dialog_prompt", {"name": name, "dest": dest})
     prompt = base
     for _ in range(TRIES):
         if platform == "darwin":
+            if generate and ask is None:  # --generate:三顆鈕的視窗;不動下一行(33e28 刀測 K6c 以它當錨)
+                ask = lambda p, t: dialog(p, t, raw=keeps_exact(name), generate=True)  # noqa: E731
             res = (ask or (lambda p, t: dialog(p, t, raw=keeps_exact(name))))(prompt, title)
             if not res.get("ok"):
                 return None, res.get("why") or "failed"
@@ -291,6 +329,7 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     ap.add_argument("--push")
     ap.add_argument("--owner")
     ap.add_argument("--remote-only", action="store_true")
+    ap.add_argument("--generate", action="store_true", help="視窗多一顆「產生並複製」:產 %d 字合規密碼進欄位與剪貼簿" % GEN_LEN)
     a = ap.parse_args(argv)
     res = {"ok": False, "name": a.name, "file": None, "fingerprint": None, "checked": False, "pushed": None, "why": None}
 
@@ -323,7 +362,7 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["why"] = "remote_only_needs_push"
         return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
-    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
+    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
     if value is None:
         res["why"] = why
         if why == "no_gui":
@@ -373,7 +412,7 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
         res["why"] = "not_mac"
         return done(2)
     dest = _t("aib.secret.dest_se")
-    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
+    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
     if value is None:
         res["why"] = why
         if why == "no_gui":
