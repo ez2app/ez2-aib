@@ -22,7 +22,11 @@ impl Source for GhCli {
             .output()
             .map_err(|e| format!("gh: {e}"))?;
         if !out.status.success() {
-            return Err(format!("gh api {path}: rc {:?} {}", out.status.code(), String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(format!(
+                "gh api {path}: rc {:?} {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -37,24 +41,33 @@ pub struct FileSource {
 
 impl FileSource {
     pub fn open(dir: &std::path::Path) -> Result<Self, String> {
-        let raw = std::fs::read_to_string(dir.join("index.json")).map_err(|e| format!("offline index: {e}"))?;
+        let raw = std::fs::read_to_string(dir.join("index.json"))
+            .map_err(|e| format!("offline index: {e}"))?;
         let v: Value = serde_json::from_str(&raw).map_err(|e| format!("offline index: {e}"))?;
         let obj = v.as_object().ok_or("offline index: not an object")?;
         let mut index = BTreeMap::new();
         for (k, f) in obj {
-            let f = f.as_str().ok_or("offline index: file name must be a string")?;
+            let f = f
+                .as_str()
+                .ok_or("offline index: file name must be a string")?;
             if f.contains('/') || f.starts_with('.') {
                 return Err(format!("offline index: bad file name {f}"));
             }
             index.insert(k.clone(), f.to_string());
         }
-        Ok(Self { dir: dir.to_path_buf(), index })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            index,
+        })
     }
 }
 
 impl Source for FileSource {
     fn get(&self, path: &str) -> Result<String, String> {
-        let f = self.index.get(path).ok_or_else(|| format!("offline: not recorded: {path}"))?;
+        let f = self
+            .index
+            .get(path)
+            .ok_or_else(|| format!("offline: not recorded: {path}"))?;
         std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("offline {f}: {e}"))
     }
 }
@@ -71,12 +84,18 @@ pub fn paged(src: &dyn Source, base: &str, key: &str) -> Result<Vec<Value>, Stri
     let mut total = None;
     for page in 1..=50 {
         let v = json(src, &format!("{base}{sep}per_page=100&page={page}"))?;
-        let t = v.get("total_count").and_then(Value::as_u64).ok_or_else(|| format!("{base}: no total_count"))?;
+        let t = v
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{base}: no total_count"))?;
         if total.is_some_and(|x| x != t) {
             return Err(format!("{base}: total_count changed while paging"));
         }
         total = Some(t);
-        let arr = v.get(key).and_then(Value::as_array).ok_or_else(|| format!("{base}: no {key}"))?;
+        let arr = v
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{base}: no {key}"))?;
         items.extend(arr.iter().cloned());
         if items.len() as u64 >= t || arr.is_empty() {
             break;
@@ -90,16 +109,28 @@ pub fn paged(src: &dyn Source, base: &str, key: &str) -> Result<Vec<Value>, Stri
 }
 
 fn runs(src: &dyn Source, repo: &str, sha: &str, event: &str) -> Result<Vec<Run>, String> {
-    let items = paged(src, &format!("repos/{repo}/actions/runs?head_sha={sha}&event={event}"), "workflow_runs")?;
+    let items = paged(
+        src,
+        &format!("repos/{repo}/actions/runs?head_sha={sha}&event={event}"),
+        "workflow_runs",
+    )?;
     let mut out = vec![];
     for it in &items {
         let mut r = run_from_json(it).ok_or_else(|| "unreadable run".to_string())?;
         if it.get("head_sha").and_then(Value::as_str) != Some(sha) {
             continue;
         }
-        let jobs = paged(src, &format!("repos/{repo}/actions/runs/{}/attempts/{}/jobs", r.id, r.run_attempt), "jobs")?;
+        let jobs = paged(
+            src,
+            &format!(
+                "repos/{repo}/actions/runs/{}/attempts/{}/jobs",
+                r.id, r.run_attempt
+            ),
+            "jobs",
+        )?;
         for j in &jobs {
-            r.jobs.push(job_from_json(j).ok_or_else(|| "unreadable job".to_string())?);
+            r.jobs
+                .push(job_from_json(j).ok_or_else(|| "unreadable job".to_string())?);
         }
         out.push(r);
     }
@@ -110,7 +141,11 @@ fn runs(src: &dyn Source, repo: &str, sha: &str, event: &str) -> Result<Vec<Run>
 /// (judge turns that into a reason); list reads that fail make the whole thing an error.
 pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
     let c = json(src, &format!("repos/{repo}/commits/{sha}"))?;
-    let main_sha = c.get("sha").and_then(Value::as_str).ok_or("commit: no sha")?.to_string();
+    let main_sha = c
+        .get("sha")
+        .and_then(Value::as_str)
+        .ok_or("commit: no sha")?
+        .to_string();
     let main_tree = c
         .pointer("/commit/tree/sha")
         .and_then(Value::as_str)
@@ -119,7 +154,11 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
     let parents: Vec<String> = c
         .get("parents")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|p| p.get("sha").and_then(Value::as_str).map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p.get("sha").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let mut f = Facts {
         repo: repo.into(),
@@ -135,7 +174,11 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
     }
     f.cand_runs = runs(src, repo, &parents[1], "pull_request")?;
     let wanted = |r: &Run| f.main_runs.iter().any(|m| m.path == r.path);
-    let latest: Vec<u64> = crate::latest_per_path(&f.cand_runs).values().filter(|r| wanted(r)).map(|r| r.id).collect();
+    let latest: Vec<u64> = crate::latest_per_path(&f.cand_runs)
+        .values()
+        .filter(|r| wanted(r))
+        .map(|r| r.id)
+        .collect();
     for r in f.main_runs.iter_mut() {
         for j in r.jobs.iter_mut() {
             if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {

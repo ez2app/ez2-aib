@@ -19,7 +19,10 @@ fn steps(real: bool) -> Vec<(String, Option<String>)> {
     let sk = Some("skipped".to_string());
     vec![
         ("Set up job".into(), ok.clone()),
-        ("cell not run on this PR".into(), if real { sk.clone() } else { ok.clone() }),
+        (
+            "cell not run on this PR".into(),
+            if real { sk.clone() } else { ok.clone() },
+        ),
         ("smoke test".into(), if real { ok.clone() } else { sk }),
         ("Complete job".into(), ok),
     ]
@@ -66,14 +69,44 @@ fn base() -> Facts {
         main_sha: MAIN.into(),
         main_tree: TREE.into(),
         parents: vec![P1.into(), P2.into()],
-        main_runs: vec![run(1, CI, "push", T0, vec![job(11, "smoke (ubuntu-latest, 3.12)", T0 + 10, 1800, UB, None)])],
-        cand_runs: vec![run(2, CI, "pull_request", pr_t, vec![job(21, "smoke (ubuntu-latest, 3.12)", pr_t + 10, 1790, UB, Some(TESTED))])],
+        main_runs: vec![run(
+            1,
+            CI,
+            "push",
+            T0,
+            vec![job(
+                11,
+                "smoke (ubuntu-latest, 3.12)",
+                T0 + 10,
+                1800,
+                UB,
+                None,
+            )],
+        )],
+        cand_runs: vec![run(
+            2,
+            CI,
+            "pull_request",
+            pr_t,
+            vec![job(
+                21,
+                "smoke (ubuntu-latest, 3.12)",
+                pr_t + 10,
+                1790,
+                UB,
+                Some(TESTED),
+            )],
+        )],
         tested_trees: BTreeMap::from([(TESTED.to_string(), TREE.to_string())]),
     }
 }
 
 fn reasons(v: &Verdict) -> String {
-    v.cells.iter().flat_map(|c| c.reasons.clone()).collect::<Vec<_>>().join(" | ")
+    v.cells
+        .iter()
+        .flat_map(|c| c.reasons.clone())
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 #[test]
@@ -94,7 +127,11 @@ fn knife_same_tree_different_workflow_file() {
     f.cand_runs[0].path = ".github/workflows/aibd.yml".into();
     let v = judge(&f);
     assert_eq!(v.state, "not_reusable");
-    assert!(reasons(&v).starts_with("no_candidate_run"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).starts_with("no_candidate_run"),
+        "{}",
+        reasons(&v)
+    );
     assert_eq!(v.save_minutes, None);
 }
 
@@ -114,7 +151,11 @@ fn knife_same_tree_different_event_path_printed_not_run() {
     f.cand_runs[0].jobs[0].steps = steps(false);
     let v = judge(&f);
     assert_eq!(v.state, "not_reusable");
-    assert!(reasons(&v).contains("steps_differ: step 2"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).contains("steps_differ: step 2"),
+        "{}",
+        reasons(&v)
+    );
 }
 
 #[test]
@@ -123,7 +164,11 @@ fn knife_empty_run_too_short() {
     let j = &mut f.cand_runs[0].jobs[0];
     j.completed_at = Some(j.started_at.unwrap() + 3);
     let v = judge(&f);
-    assert!(reasons(&v).contains("too_short: PR job ran 3 s"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).contains("too_short: PR job ran 3 s"),
+        "{}",
+        reasons(&v)
+    );
     assert_eq!(v.state, "not_reusable");
 }
 
@@ -133,7 +178,11 @@ fn knife_wrong_attempt_latest_attempt_failed() {
     f.cand_runs[0].run_attempt = 2;
     f.cand_runs[0].jobs[0].conclusion = Some("failure".into());
     let v = judge(&f);
-    assert!(reasons(&v).contains("candidate_not_success") && reasons(&v).contains("attempt 2"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).contains("candidate_not_success") && reasons(&v).contains("attempt 2"),
+        "{}",
+        reasons(&v)
+    );
 }
 
 #[test]
@@ -145,13 +194,20 @@ fn knife_newer_run_failed_older_green_is_not_used() {
     newer.jobs[0].conclusion = Some("failure".into());
     f.cand_runs.push(newer);
     let v = judge(&f);
-    assert!(reasons(&v).contains("candidate_not_success"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).contains("candidate_not_success"),
+        "{}",
+        reasons(&v)
+    );
 }
 
 #[test]
 fn knife_tree_differs_base_moved() {
     let mut f = base();
-    f.tested_trees.insert(TESTED.into(), "1111111111111111111111111111111111111111".into());
+    f.tested_trees.insert(
+        TESTED.into(),
+        "1111111111111111111111111111111111111111".into(),
+    );
     let v = judge(&f);
     assert!(reasons(&v).contains("tree_differs"), "{}", reasons(&v));
 }
@@ -198,7 +254,14 @@ fn main_unfinished_waits_and_non_merge_is_named() {
 #[test]
 fn partial_reuse_shows_no_minutes() {
     let mut f = base();
-    f.main_runs[0].jobs.push(job(12, "smoke (macos-latest, 3.9)", T0 + 10, 3000, "macos-15-arm64 20261028.1", None));
+    f.main_runs[0].jobs.push(job(
+        12,
+        "smoke (macos-latest, 3.9)",
+        T0 + 10,
+        3000,
+        "macos-15-arm64 20261028.1",
+        None,
+    ));
     let v = judge(&f);
     assert_eq!(v.state, "partial");
     assert_eq!(v.save_minutes, None);
@@ -209,7 +272,10 @@ fn shadow_false_green_is_flagged_when_main_itself_failed() {
     let mut f = base();
     f.main_runs[0].jobs[0].conclusion = Some("failure".into());
     let v = judge(&f);
-    assert_eq!(v.shadow_false_green, vec![format!("{CI} / smoke (ubuntu-latest, 3.12)")]);
+    assert_eq!(
+        v.shadow_false_green,
+        vec![format!("{CI} / smoke (ubuntu-latest, 3.12)")]
+    );
 }
 
 #[test]
@@ -225,10 +291,17 @@ fn parsers_read_real_log_shapes() {
     assert_eq!(parse_image(log).as_deref(), Some(UB));
     assert_eq!(parse_tested_sha(log).as_deref(), Some(TESTED));
     let two = format!("{log}x +{}:refs/remotes/pull/567/merge\n", "a".repeat(40));
-    assert_eq!(parse_tested_sha(&two), None, "two different fetched commits = unknown");
+    assert_eq!(
+        parse_tested_sha(&two),
+        None,
+        "two different fetched commits = unknown"
+    );
     assert_eq!(parse_image("no group here"), None);
     assert_eq!(parse_time("2026-11-09T04:20:16Z"), Some(1_794_198_016));
-    assert_eq!(parse_time("2026-11-09T04:20:16.123+00:00"), Some(1_794_198_016));
+    assert_eq!(
+        parse_time("2026-11-09T04:20:16.123+00:00"),
+        Some(1_794_198_016)
+    );
     assert_eq!(parse_time("2026-11-09 04:20:16"), None);
     assert_eq!(day_key(1_794_198_016, 8), "2026-11-09");
     assert_eq!(day_key(1_794_198_016 - 5 * 3600, 0), "2026-11-08");
@@ -246,7 +319,10 @@ fn day_line_last_line_per_commit_wins() {
         "garbage".to_string(),
     ];
     let line = day_line(&lines);
-    assert!(line.starts_with("今天 1 次可沿用、估少等 30 分(判了 1 次"), "{line}");
+    assert!(
+        line.starts_with("今天 1 次可沿用、估少等 30 分(判了 1 次"),
+        "{line}"
+    );
     assert!(line.contains("帳本壞行 1"), "{line}");
 }
 
@@ -254,20 +330,35 @@ struct Fake(HashMap<String, String>);
 
 impl Source for Fake {
     fn get(&self, path: &str) -> Result<String, String> {
-        self.0.get(path).cloned().ok_or_else(|| format!("404 {path}"))
+        self.0
+            .get(path)
+            .cloned()
+            .ok_or_else(|| format!("404 {path}"))
     }
 }
 
 #[test]
 fn knife_missing_page_is_an_error_not_fewer_runs() {
     let mut m = HashMap::new();
-    m.insert("x?per_page=100&page=1".to_string(), r#"{"total_count":150,"jobs":[{"id":1}]}"#.to_string());
-    m.insert("x?per_page=100&page=2".to_string(), r#"{"total_count":150,"jobs":[]}"#.to_string());
+    m.insert(
+        "x?per_page=100&page=1".to_string(),
+        r#"{"total_count":150,"jobs":[{"id":1}]}"#.to_string(),
+    );
+    m.insert(
+        "x?per_page=100&page=2".to_string(),
+        r#"{"total_count":150,"jobs":[]}"#.to_string(),
+    );
     let e = paged(&Fake(m), "x", "jobs").unwrap_err();
     assert!(e.starts_with("missing_page"), "{e}");
     let mut m = HashMap::new();
-    m.insert("x?per_page=100&page=1".to_string(), r#"{"total_count":2,"jobs":[{"id":1}]}"#.to_string());
-    m.insert("x?per_page=100&page=2".to_string(), r#"{"total_count":2,"jobs":[{"id":2}]}"#.to_string());
+    m.insert(
+        "x?per_page=100&page=1".to_string(),
+        r#"{"total_count":2,"jobs":[{"id":1}]}"#.to_string(),
+    );
+    m.insert(
+        "x?per_page=100&page=2".to_string(),
+        r#"{"total_count":2,"jobs":[{"id":2}]}"#.to_string(),
+    );
     assert_eq!(paged(&Fake(m), "x", "jobs").unwrap().len(), 2);
 }
 
@@ -290,26 +381,63 @@ fn facts_end_to_end_from_api_shapes() {
     let mut put = |k: String, v: String| {
         m.insert(k, v);
     };
-    put(format!("repos/{REPO}/commits/{MAIN}"), format!(r#"{{"sha":"{MAIN}","commit":{{"tree":{{"sha":"{TREE}"}}}},"parents":[{{"sha":"{P1}"}},{{"sha":"{P2}"}}]}}"#));
+    put(
+        format!("repos/{REPO}/commits/{MAIN}"),
+        format!(
+            r#"{{"sha":"{MAIN}","commit":{{"tree":{{"sha":"{TREE}"}}}},"parents":[{{"sha":"{P1}"}},{{"sha":"{P2}"}}]}}"#
+        ),
+    );
     put(
         format!("repos/{REPO}/actions/runs?head_sha={MAIN}&event=push&per_page=100&page=1"),
-        format!(r#"{{"total_count":1,"workflow_runs":[{}]}}"#, runj(1, MAIN, "push", "2026-11-09T04:20:16Z", "2026-11-09T04:51:00Z")),
+        format!(
+            r#"{{"total_count":1,"workflow_runs":[{}]}}"#,
+            runj(
+                1,
+                MAIN,
+                "push",
+                "2026-11-09T04:20:16Z",
+                "2026-11-09T04:51:00Z"
+            )
+        ),
     );
     put(
         format!("repos/{REPO}/actions/runs/1/attempts/1/jobs?per_page=100&page=1"),
-        format!(r#"{{"total_count":1,"jobs":[{}]}}"#, jobj(11, "2026-11-09T04:20:27Z", "2026-11-09T04:50:27Z")),
+        format!(
+            r#"{{"total_count":1,"jobs":[{}]}}"#,
+            jobj(11, "2026-11-09T04:20:27Z", "2026-11-09T04:50:27Z")
+        ),
     );
     put(
         format!("repos/{REPO}/actions/runs?head_sha={P2}&event=pull_request&per_page=100&page=1"),
-        format!(r#"{{"total_count":1,"workflow_runs":[{}]}}"#, runj(2, P2, "pull_request", "2026-11-09T02:53:03Z", "2026-11-09T03:24:00Z")),
+        format!(
+            r#"{{"total_count":1,"workflow_runs":[{}]}}"#,
+            runj(
+                2,
+                P2,
+                "pull_request",
+                "2026-11-09T02:53:03Z",
+                "2026-11-09T03:24:00Z"
+            )
+        ),
     );
     put(
         format!("repos/{REPO}/actions/runs/2/attempts/1/jobs?per_page=100&page=1"),
-        format!(r#"{{"total_count":1,"jobs":[{}]}}"#, jobj(21, "2026-11-09T02:53:16Z", "2026-11-09T03:23:20Z")),
+        format!(
+            r#"{{"total_count":1,"jobs":[{}]}}"#,
+            jobj(21, "2026-11-09T02:53:16Z", "2026-11-09T03:23:20Z")
+        ),
     );
     put(format!("repos/{REPO}/actions/jobs/11/logs"), log(""));
-    put(format!("repos/{REPO}/actions/jobs/21/logs"), log(&format!("x fetch origin +{TESTED}:refs/remotes/pull/567/merge\n")));
-    put(format!("repos/{REPO}/git/commits/{TESTED}"), format!(r#"{{"tree":{{"sha":"{TREE}"}}}}"#));
+    put(
+        format!("repos/{REPO}/actions/jobs/21/logs"),
+        log(&format!(
+            "x fetch origin +{TESTED}:refs/remotes/pull/567/merge\n"
+        )),
+    );
+    put(
+        format!("repos/{REPO}/git/commits/{TESTED}"),
+        format!(r#"{{"tree":{{"sha":"{TREE}"}}}}"#),
+    );
     let f = facts(&Fake(m.clone()), REPO, MAIN).unwrap();
     let v = judge(&f);
     assert_eq!(v.state, "reusable", "{}", reasons(&v));
@@ -317,9 +445,15 @@ fn facts_end_to_end_from_api_shapes() {
     // the tested commit cannot be read => not reuse (never "unreadable means fine")
     m.remove(&format!("repos/{REPO}/git/commits/{TESTED}"));
     let v = judge(&facts(&Fake(m.clone()), REPO, MAIN).unwrap());
-    assert!(reasons(&v).contains("tested_tree_unknown"), "{}", reasons(&v));
+    assert!(
+        reasons(&v).contains("tested_tree_unknown"),
+        "{}",
+        reasons(&v)
+    );
     // a list read failing is an error (recorded as unknown by the CLI)
-    m.remove(&format!("repos/{REPO}/actions/runs/2/attempts/1/jobs?per_page=100&page=1"));
+    m.remove(&format!(
+        "repos/{REPO}/actions/runs/2/attempts/1/jobs?per_page=100&page=1"
+    ));
     assert!(facts(&Fake(m), REPO, MAIN).is_err());
 }
 
@@ -332,8 +466,14 @@ fn offline_file_source_reads_only_what_was_recorded() {
     std::fs::write(d.join("index.json"), r#"{"repos/x/commits/y":"a"}"#).unwrap();
     let f = FileSource::open(&d).unwrap();
     assert_eq!(f.get("repos/x/commits/y").unwrap(), "{\"ok\":1}");
-    assert!(f.get("repos/x/commits/z").unwrap_err().contains("not recorded"));
+    assert!(f
+        .get("repos/x/commits/z")
+        .unwrap_err()
+        .contains("not recorded"));
     std::fs::write(d.join("index.json"), r#"{"p":"../etc/passwd"}"#).unwrap();
-    assert!(FileSource::open(&d).is_err(), "file names may not leave the directory");
+    assert!(
+        FileSource::open(&d).is_err(),
+        "file names may not leave the directory"
+    );
     std::fs::remove_dir_all(&d).unwrap();
 }

@@ -28,11 +28,27 @@ struct Args {
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
-    let mut a = Args { cmd: String::new(), repo: String::new(), sha: String::new(), ledger: None, tz: 8, limit: 10, date: None, offline: None };
+    let mut a = Args {
+        cmd: String::new(),
+        repo: String::new(),
+        sha: String::new(),
+        ledger: None,
+        tz: 8,
+        limit: 10,
+        date: None,
+        offline: None,
+    };
     let mut it = argv.iter();
-    a.cmd = it.next().cloned().ok_or("missing command (judge | recent | day)")?;
+    a.cmd = it
+        .next()
+        .cloned()
+        .ok_or("missing command (judge | recent | day)")?;
     while let Some(k) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| format!("{k} needs a value"));
+        let mut val = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{k} needs a value"))
+        };
         match k.as_str() {
             "--repo" => a.repo = val()?,
             "--sha" => a.sha = val()?,
@@ -48,7 +64,10 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn record(a: &Args, v: &Verdict) -> Result<(), String> {
@@ -58,7 +77,11 @@ fn record(a: &Args, v: &Verdict) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("ledger: {e}"))?;
         let day = day_key(v.main_created_at.unwrap_or_else(now), a.tz);
         let p = dir.join(format!("{day}.jsonl"));
-        let mut fh = std::fs::OpenOptions::new().create(true).append(true).open(&p).map_err(|e| format!("ledger: {e}"))?;
+        let mut fh = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .map_err(|e| format!("ledger: {e}"))?;
         writeln!(fh, "{line}").map_err(|e| format!("ledger: {e}"))?;
     }
     Ok(())
@@ -115,7 +138,11 @@ fn run(argv: &[String]) -> i32 {
     match a.cmd.as_str() {
         "judge" if !a.repo.is_empty() && !a.sha.is_empty() => judge_one(&a, src, &a.sha.clone()),
         "recent" if !a.repo.is_empty() => {
-            let body = match src.get(&format!("repos/{}/commits?sha=main&per_page={}", a.repo, a.limit.clamp(1, 100))) {
+            let body = match src.get(&format!(
+                "repos/{}/commits?sha=main&per_page={}",
+                a.repo,
+                a.limit.clamp(1, 100)
+            )) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("aib-cireuse: {e}");
@@ -124,13 +151,22 @@ fn run(argv: &[String]) -> i32 {
             };
             let shas: Vec<String> = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
-                .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|c| c.get("sha")?.as_str().map(str::to_string)).collect()))
+                .and_then(|v| {
+                    v.as_array().map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.get("sha")?.as_str().map(str::to_string))
+                            .collect()
+                    })
+                })
                 .unwrap_or_default();
             if shas.is_empty() {
                 eprintln!("aib-cireuse: no commits read");
                 return 1;
             }
-            shas.iter().map(|s| judge_one(&a, src, s)).max().unwrap_or(0)
+            shas.iter()
+                .map(|s| judge_one(&a, src, s))
+                .max()
+                .unwrap_or(0)
         }
         "day" => {
             let Some(dir) = &a.ledger else {
@@ -145,7 +181,9 @@ fn run(argv: &[String]) -> i32 {
             0
         }
         _ => {
-            eprintln!("usage: aib-cireuse judge --repo R --sha S | recent --repo R | day --ledger DIR");
+            eprintln!(
+                "usage: aib-cireuse judge --repo R --sha S | recent --repo R | day --ledger DIR"
+            );
             2
         }
     }

@@ -129,14 +129,25 @@ fn verdict(f: &Facts, state: &str, note: &str) -> Verdict {
 
 pub fn judge(f: &Facts) -> Verdict {
     if f.parents.len() != 2 {
-        return verdict(f, "not_merge", "not a two-parent merge commit: no PR-tested tree to compare");
+        return verdict(
+            f,
+            "not_merge",
+            "not a two-parent merge commit: no PR-tested tree to compare",
+        );
     }
     let mains = latest_per_path(&f.main_runs);
     if mains.is_empty() {
         return verdict(f, "unknown", "no push run for this commit");
     }
-    if let Some(r) = mains.values().find(|r| r.status != "completed" || r.jobs.iter().any(|j| j.status != "completed")) {
-        return verdict(f, "wait", &format!("main run {} ({}) has not finished", r.id, r.path));
+    if let Some(r) = mains
+        .values()
+        .find(|r| r.status != "completed" || r.jobs.iter().any(|j| j.status != "completed"))
+    {
+        return verdict(
+            f,
+            "wait",
+            &format!("main run {} ({}) has not finished", r.id, r.path),
+        );
     }
     let cands = latest_per_path(&f.cand_runs);
     let mut cells = vec![];
@@ -153,17 +164,30 @@ pub fn judge(f: &Facts) -> Verdict {
         .collect();
     let all = !cells.is_empty() && cells.iter().all(|c| c.reusable);
     let any = cells.iter().any(|c| c.reusable);
-    v.state = if all { "reusable" } else if any { "partial" } else { "not_reusable" }.into();
+    v.state = if all {
+        "reusable"
+    } else if any {
+        "partial"
+    } else {
+        "not_reusable"
+    }
+    .into();
     if all {
         let start = mains.values().filter_map(|r| r.run_started_at).min();
         let end = mains.values().filter_map(|r| r.updated_at).max();
         if let (Some(a), Some(b)) = (start, end) {
-            if b >= a && mains.values().all(|r| r.run_started_at.is_some() && r.updated_at.is_some()) {
+            if b >= a
+                && mains
+                    .values()
+                    .all(|r| r.run_started_at.is_some() && r.updated_at.is_some())
+            {
                 v.save_minutes = Some(((b - a) as f64 / 60.0 * 10.0).round() / 10.0);
             }
         }
         if v.save_minutes.is_none() {
-            v.note = "every cell could reuse, but main's wall clock is unreadable: no minutes shown".into();
+            v.note =
+                "every cell could reuse, but main's wall clock is unreadable: no minutes shown"
+                    .into();
         }
     }
     v.cells = cells;
@@ -181,25 +205,37 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         cand_job_id: None,
     };
     let Some(cr) = cand else {
-        c.reasons.push("no_candidate_run: the PR head has no pull_request run of this workflow file".into());
+        c.reasons.push(
+            "no_candidate_run: the PR head has no pull_request run of this workflow file".into(),
+        );
         return c;
     };
     if cr.status != "completed" {
-        c.reasons.push(format!("candidate_not_completed: run {} is {}", cr.id, cr.status));
+        c.reasons.push(format!(
+            "candidate_not_completed: run {} is {}",
+            cr.id, cr.status
+        ));
         return c;
     }
     if cr.head_repo != f.repo {
-        c.reasons.push(format!("fork: candidate run comes from {}", cr.head_repo));
+        c.reasons
+            .push(format!("fork: candidate run comes from {}", cr.head_repo));
     }
     let same: Vec<&Job> = cr.jobs.iter().filter(|j| j.name == mj.name).collect();
     let cj = match same.as_slice() {
         [one] => *one,
         [] => {
-            c.reasons.push(format!("no_candidate_job: run {} attempt {} has no job named so", cr.id, cr.run_attempt));
+            c.reasons.push(format!(
+                "no_candidate_job: run {} attempt {} has no job named so",
+                cr.id, cr.run_attempt
+            ));
             return c;
         }
         _ => {
-            c.reasons.push(format!("ambiguous_job: {} jobs share this name", same.len()));
+            c.reasons.push(format!(
+                "ambiguous_job: {} jobs share this name",
+                same.len()
+            ));
             return c;
         }
     };
@@ -215,28 +251,47 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     }
     match cj.completed_at {
         Some(done) if m.created_at - done <= MAX_AGE_S => {}
-        Some(done) => c.reasons.push(format!("older_than_24h: finished {} h before main's run", (m.created_at - done) / 3600)),
+        Some(done) => c.reasons.push(format!(
+            "older_than_24h: finished {} h before main's run",
+            (m.created_at - done) / 3600
+        )),
         None => c.reasons.push("candidate_time_unknown".into()),
     }
     match cj.tested_sha.as_deref() {
-        None => c.reasons.push("tested_sha_unknown: no checkout line in the PR job log".into()),
+        None => c
+            .reasons
+            .push("tested_sha_unknown: no checkout line in the PR job log".into()),
         Some(sha) => match f.tested_trees.get(sha) {
-            None => c.reasons.push(format!("tested_tree_unknown: commit {} unreadable", short(sha))),
+            None => c.reasons.push(format!(
+                "tested_tree_unknown: commit {} unreadable",
+                short(sha)
+            )),
             Some(t) if *t == f.main_tree => {}
-            Some(t) => c.reasons.push(format!("tree_differs: PR tested tree {} != main tree {}", short(t), short(&f.main_tree))),
+            Some(t) => c.reasons.push(format!(
+                "tree_differs: PR tested tree {} != main tree {}",
+                short(t),
+                short(&f.main_tree)
+            )),
         },
     }
     match (cj.image.as_deref(), mj.image.as_deref()) {
         (Some(a), Some(b)) if a == b => {}
         (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
-        _ => c.reasons.push("image_unknown: runner image unreadable in a log".into()),
+        _ => c
+            .reasons
+            .push("image_unknown: runner image unreadable in a log".into()),
     }
     if cj.steps != mj.steps {
-        c.reasons.push(format!("steps_differ: {}", first_step_diff(&cj.steps, &mj.steps)));
+        c.reasons.push(format!(
+            "steps_differ: {}",
+            first_step_diff(&cj.steps, &mj.steps)
+        ));
     }
     match (cj.seconds(), mj.seconds()) {
         (Some(a), Some(b)) if (a as f64) >= MIN_DURATION_RATIO * b as f64 => {}
-        (Some(a), Some(b)) => c.reasons.push(format!("too_short: PR job ran {a} s, main ran {b} s")),
+        (Some(a), Some(b)) => c
+            .reasons
+            .push(format!("too_short: PR job ran {a} s, main ran {b} s")),
         _ => c.reasons.push("duration_unknown".into()),
     }
     c.reusable = c.reasons.is_empty();
@@ -251,7 +306,12 @@ fn first_step_diff(a: &[(String, Option<String>)], b: &[(String, Option<String>)
     let n = a.len().max(b.len());
     for i in 0..n {
         if a.get(i) != b.get(i) {
-            return format!("step {}: PR {} / main {}", i + 1, fmt(a.get(i)), fmt(b.get(i)));
+            return format!(
+                "step {}: PR {} / main {}",
+                i + 1,
+                fmt(a.get(i)),
+                fmt(b.get(i))
+            );
         }
     }
     "same".into()
@@ -266,11 +326,24 @@ fn short(s: &str) -> &str {
 /// "2026-11-09T04:20:16Z" (or with fractional seconds / +00:00) -> unix seconds.
 pub fn parse_time(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let num = |a: usize, z: usize| s.get(a..z)?.parse::<i64>().ok();
-    let (y, mo, d, h, mi, se) = (num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let (y, mo, d, h, mi, se) = (
+        num(0, 4)?,
+        num(5, 7)?,
+        num(8, 10)?,
+        num(11, 13)?,
+        num(14, 16)?,
+        num(17, 19)?,
+    );
     let rest = &s[19..];
     let rest = rest.trim_start_matches(|ch: char| ch == '.' || ch.is_ascii_digit());
     if !(rest == "Z" || rest == "+00:00") {
@@ -320,11 +393,15 @@ pub fn run_from_json(v: &Value) -> Option<Run> {
         event: s(v, "event"),
         status: s(v, "status"),
         conclusion: os(v, "conclusion"),
-        run_attempt: u32::try_from(v.get("run_attempt").and_then(Value::as_u64).unwrap_or(1)).unwrap_or(1),
+        run_attempt: u32::try_from(v.get("run_attempt").and_then(Value::as_u64).unwrap_or(1))
+            .unwrap_or(1),
         created_at: t(v, "created_at")?,
         run_started_at: t(v, "run_started_at"),
         updated_at: t(v, "updated_at"),
-        head_repo: v.get("head_repository").map(|h| s(h, "full_name")).unwrap_or_default(),
+        head_repo: v
+            .get("head_repository")
+            .map(|h| s(h, "full_name"))
+            .unwrap_or_default(),
         jobs: vec![],
     })
 }
@@ -333,7 +410,11 @@ pub fn job_from_json(v: &Value) -> Option<Job> {
     let steps = v
         .get("steps")
         .and_then(Value::as_array)
-        .map(|a| a.iter().map(|st| (s(st, "name"), os(st, "conclusion"))).collect())
+        .map(|a| {
+            a.iter()
+                .map(|st| (s(st, "name"), os(st, "conclusion")))
+                .collect()
+        })
         .unwrap_or_default();
     Some(Job {
         id: v.get("id")?.as_u64()?,
@@ -393,7 +474,12 @@ pub fn parse_tested_sha(log: &str) -> Option<String> {
             if before.len() >= 41 {
                 let cand = &before[before.len() - 40..];
                 let plus = before.as_bytes()[before.len() - 41];
-                if plus == b'+' && cand.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) && !found.iter().any(|x| x == cand) {
+                if plus == b'+'
+                    && cand
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    && !found.iter().any(|x| x == cand)
+                {
                     found.push(cand.to_string());
                 }
             }
@@ -447,7 +533,10 @@ pub fn day_line(lines: &[String]) -> String {
         if s(v, "state") == "reusable" {
             minutes += v.get("save_minutes").and_then(Value::as_f64).unwrap_or(0.0);
         }
-        fg += v.get("shadow_false_green").and_then(Value::as_array).map_or(0, Vec::len);
+        fg += v
+            .get("shadow_false_green")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
     }
     let g = |k: &str| count.get(k).copied().unwrap_or(0);
     let mut out = format!(
