@@ -339,6 +339,27 @@ fn probe_in(prefix: &[String], me: &Path, kind: &str, ip: IpAddr, port: u16) -> 
 
 // ---------------------------------------------------------------- commands
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// FNV-1a 64 (hex) of the trimmed `/etc/machine-id`, or `"unknown"`; the id itself never
+/// leaves the host, the hash is enough to tell two hosts' receipts apart.
+fn machine_id_fingerprint() -> String {
+    let Ok(text) = fs::read_to_string("/etc/machine-id") else {
+        return "unknown".to_owned();
+    };
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.trim().bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 struct RunArgs {
     plan: String,
     host: IpAddr,
@@ -394,6 +415,8 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
     let cells = validate_plan(&plan)?;
     let fnv = plan_fingerprint(&plan);
     let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let started = unix_now();
+    let machine = machine_id_fingerprint();
     let host_ns = if a.external {
         String::new()
     } else {
@@ -439,7 +462,13 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         );
         results.push(json!({"id": c.id, "from": c.from.tag(), "kind": c.kind, "ip": c.ip.to_string(), "port": c.port, "open": open, "ms": ms}));
     }
-    let report = json!({"plan_fnv": fnv, "host": a.host.to_string(), "results": results});
+    // ebb36 #568 r2 L3: say which machine and when (FNV-1a 64 of /etc/machine-id, not the id
+    // itself; unix seconds). judge() does not check these; the receipt carries them.
+    let report = json!({
+        "plan_fnv": fnv, "host": a.host.to_string(), "results": results,
+        "runner": {"machine_id_fnv": machine, "started": started, "finished": unix_now(), "external": a.external,
+                   "tool": format!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"))}
+    });
     write_or_print(
         &a.out,
         &report,
@@ -488,10 +517,17 @@ pub fn merge_reports(reports: &[Value]) -> Result<Value, String> {
         }
     }
     merged.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    let runners: Vec<Value> = reports
+        .iter()
+        .filter_map(|r| r.get("runner").cloned())
+        .collect();
     let mut m = Map::new();
     m.insert("plan_fnv".into(), json!(fnv));
     m.insert("host".into(), json!(host));
     m.insert("results".into(), Value::Array(merged));
+    if !runners.is_empty() {
+        m.insert("runners".into(), Value::Array(runners));
+    }
     Ok(Value::Object(m))
 }
 
@@ -807,6 +843,20 @@ mod tests {
             parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}=x=y\n")).unwrap(),
             format!("{pw}=x=y")
         );
+    }
+
+    #[test]
+    fn h8_merge_keeps_runner_blocks_and_fingerprint_is_not_the_id() {
+        let r1 = json!({"plan_fnv": "f", "host": "h", "results": [{"id": "a", "open": true}], "runner": {"machine_id_fnv": "x", "started": 1, "finished": 2}});
+        let r2 = json!({"plan_fnv": "f", "host": "h", "results": [{"id": "b", "open": true}], "runner": {"machine_id_fnv": "y", "started": 3, "finished": 4}});
+        let m = merge_reports(&[r1, r2]).unwrap();
+        assert_eq!(m["runners"].as_array().unwrap().len(), 2);
+        let fp = machine_id_fingerprint();
+        assert!(fp == "unknown" || (fp.len() == 16 && fp.bytes().all(|b| b.is_ascii_hexdigit())));
+        if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
+            assert_ne!(fp, id.trim(), "the raw id must not leave the host");
+        }
+        assert!(unix_now() > 1_700_000_000);
     }
 
     #[test]
