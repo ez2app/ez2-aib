@@ -291,9 +291,12 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
         cursor = next;
         let events = c.request(
             "GET",
-            &format!("/api/v1/events?cursor={event_cursor}&limit=500"),
+            &format!("/api/v1/events?cursor={event_cursor}&limit=500&aggregate_id={session}"),
             None,
         )?;
+        if events.get("filter_applied").and_then(Value::as_bool) != Some(true) {
+            return Err("server does not support filtered session events".into());
+        }
         let items = events
             .get("events")
             .and_then(Value::as_array)
@@ -306,9 +309,10 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
             return Err("event cursor did not advance".into());
         }
         for event in items {
-            if event.get("aggregate_id").and_then(Value::as_str) == Some(session) {
-                eprintln!("event: {event}");
+            if event.get("aggregate_id").and_then(Value::as_str) != Some(session) {
+                return Err("server did not filter session events".into());
             }
+            eprintln!("event: {event}");
         }
         event_cursor = event_next;
         if stdout_closed && stderr_closed && entries.len() < 500 && items.len() < 500 {
@@ -325,6 +329,8 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                     _ => Err(format!("unrecognized session state: {status}")),
                 };
             }
+        } else if !(stdout_closed && stderr_closed) && !entries.is_empty() {
+            terminal_seen = None;
         } else if !(stdout_closed && stderr_closed) {
             let state = session_state(c, session)?;
             let status = state
@@ -648,21 +654,22 @@ mod tests {
         let page = r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":2}"#;
         let (c, server) = fake(vec![
             page,
-            r#"{"events":[],"next_cursor":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
             r#"{"state":"exited"}"#,
         ]);
         execute(&c, &["watch", "session_1"]).unwrap();
         let requests = server.join().unwrap();
         assert!(requests[0]
             .starts_with("GET /api/v1/sessions/session_1/output?after=0&limit=500 HTTP/1.1"));
-        assert!(requests[1].starts_with("GET /api/v1/events?cursor=0&limit=500 HTTP/1.1"));
+        assert!(requests[1]
+            .starts_with("GET /api/v1/events?cursor=0&limit=500&aggregate_id=session_1 HTTP/1.1"));
         assert!(requests[2].starts_with("GET /api/v1/sessions/session_1 HTTP/1.1"));
     }
     #[test]
     fn interrupted_history_with_unclosed_streams_is_not_success() {
         let (c, server) = fake(vec![
             r#"{"output":[],"next":0}"#,
-            r#"{"events":[],"next_cursor":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
             r#"{"state":"interrupted"}"#,
         ]);
         assert!(execute(&c, &["watch", "session_1"]).is_err());
@@ -672,12 +679,50 @@ mod tests {
     fn watch_reports_unclosed_streams_after_terminal_grace() {
         let (c, server) = fake(vec![
             r#"{"output":[],"next":0}"#,
-            r#"{"events":[],"next_cursor":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
             r#"{"state":"exited"}"#,
         ]);
         let error = watch_with_grace(&c, "session_1", Duration::ZERO).unwrap_err();
         assert!(error.contains("output streams did not close"));
         assert_eq!(server.join().unwrap().len(), 3);
+    }
+    #[test]
+    fn watch_drains_output_before_checking_the_terminal_grace() {
+        let (c, server) = fake(vec![
+            r#"{"output":[{"type":"session.output","payload":{"stream":"stdout","line":"first"}}],"next":1}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":3}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"exited"}"#,
+        ]);
+        watch_with_grace(&c, "session_1", Duration::ZERO).unwrap();
+        assert_eq!(server.join().unwrap().len(), 5);
+    }
+    #[test]
+    fn output_after_terminal_observed_resets_idle_grace() {
+        let (c, server) = fake(vec![
+            r#"{"output":[],"next":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"exited"}"#,
+            r#"{"output":[{"type":"session.output","payload":{"stream":"stdout","line":"late"}}],"next":1}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":3}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"exited"}"#,
+        ]);
+        watch_with_grace(&c, "session_1", Duration::from_millis(1)).unwrap();
+        assert_eq!(server.join().unwrap().len(), 8);
+    }
+    #[test]
+    fn watch_rejects_an_old_server_without_filter_confirmation() {
+        let (c, server) = fake(vec![
+            r#"{"output":[],"next":0}"#,
+            r#"{"events":[],"next_cursor":0}"#,
+        ]);
+        assert!(watch_with_grace(&c, "session_1", Duration::ZERO)
+            .unwrap_err()
+            .contains("filtered session events"));
+        assert_eq!(server.join().unwrap().len(), 2);
     }
     #[test]
     fn rejects_nonlocal_id() {
