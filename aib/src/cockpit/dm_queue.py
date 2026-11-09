@@ -1454,6 +1454,9 @@ def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, e
         item["claim_id"] = None
     elif to == "read":
         item["read_at"] = now
+        if item.get("delivered_at") is None and frm != "done" and cls != "human":   # 本人在收件匣看 ≠ 送進席位
+            item["delivered_at"] = now        # #552 G2:queued → read 跳過 delivered,讀到了就是送到了
+            item["delivered_via"] = "read"    # 延遲統計要分開算的話認這欄
         if frm == "done":
             for k in ("done_at", "done_evidence", "done_kind", "done_why", "consolidated_into"):
                 item.pop(k, None)
@@ -1472,6 +1475,9 @@ def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, e
             item["done_why"] = why.strip()[:500]
         if item.get("read_at") is None:
             item["read_at"] = now
+        if item.get("delivered_at") is None:
+            item["delivered_at"] = item["read_at"]   # #552 G2:G2 之前讀過的舊列,結案時以讀的時間補
+            item["delivered_via"] = "read"
     elif to == "archived":
         item["archived_at"] = now
         item["archived_why"] = why
