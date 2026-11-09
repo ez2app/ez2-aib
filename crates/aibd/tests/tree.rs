@@ -61,6 +61,7 @@ fn lineage() -> Arc<Lineage> {
 fn spec_lineage(mode: &str, session: &str) -> SpawnSpec {
     SpawnSpec {
         lineage: Some(lineage()),
+        inject: None,
         ..spec(mode, session)
     }
 }
@@ -73,11 +74,49 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         args: vec![mode.into()],
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
-        session_id: session.to_string(),
+        env_clear: false,
+        // the marker sweep matches `AIBD_SESSION=<id>` across every same-user
+        // process: a fixed id let another test run on this machine (a full
+        // suite next to a single test, or parallel copies) find and stop this
+        // run's fixture before its first line (a63ab 11-09 "JSON EOF")
+        session_id: format!("{session}-{}", std::process::id()),
         watch_forks,
+        discard_output: false, // these tests read the fixture's stdout
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
+        inject: None,
     }
+}
+
+/// `tree-platform` / `tree-plain` fork once the go file exists. Started this
+/// way, the fork happens after `spawn_tree` returned, so the fork watcher is
+/// already on the root: under load the fork could otherwise come before the
+/// watch (forks_seen 0, the exiting parent unreadable). The returned guard
+/// gives the go and removes the file.
+struct Go(std::path::PathBuf);
+
+impl Go {
+    fn give(&self) {
+        std::fs::write(&self.0, b"go").unwrap();
+    }
+}
+
+impl Drop for Go {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn spawn_after_watch(mode: &str, session: &str) -> (TreeHandle, Go) {
+    let go =
+        Go(std::env::temp_dir().join(format!("aib-fixture-go-{}-{session}", std::process::id())));
+    let _ = std::fs::remove_file(&go.0);
+    let mut s = spec_lineage(mode, session);
+    s.env
+        .push(("AIB_FIXTURE_GO".into(), go.0.clone().into_os_string()));
+    let h = spawn_tree(&s).unwrap();
+    go.give();
+    (h, go)
 }
 
 fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
@@ -89,12 +128,25 @@ fn lines(h: &mut TreeHandle) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The fixture's first stdout line as JSON. A closed stdout with no line
+/// (a63ab 11-09: "JSON EOF", 1 in 5 under heavy load) is said as what it is,
+/// with how the fixture ended, instead of a bare serde EOF.
 fn first_line(h: &mut TreeHandle) -> serde_json::Value {
     let out = h.take_stdout().unwrap();
     let mut r = BufReader::new(out);
     let mut l = String::new();
-    r.read_line(&mut l).unwrap();
-    serde_json::from_str(&l).unwrap()
+    let n = r.read_line(&mut l);
+    if matches!(n, Ok(0)) {
+        let root = h.root_pid();
+        let exit = h.wait_root(Duration::from_secs(2));
+        panic!(
+            "fixture {root} closed stdout before its first line (killed or crashed); \
+             root exit within 2 s: {exit:?} (Some(-1) = by a signal)"
+        );
+    }
+    let l = l.trim_end();
+    serde_json::from_str(l)
+        .unwrap_or_else(|e| panic!("fixture's first line is not JSON ({e}): {l:?}"))
 }
 
 /// Independent check with ps(1): pids that are still running (not zombies).
@@ -292,10 +344,96 @@ fn reused_pid_with_other_start_time_is_never_signalled() {
     bystander.wait().unwrap();
 }
 
+/// `/bin/sh` that starts `sleep 60`, prints its pid and exits 0.3 s later
+/// (so the fork watcher records the child: `/bin/sleep`'s environment cannot
+/// be read, a known macOS blind spot): the root is gone, its grandchild is
+/// still in the group.
+fn sh_root_exits(session: &str) -> (TreeHandle, u32) {
+    let mut h = spawn_tree(&SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 60 & echo $!; sleep 0.3; exit 0".into()],
+        ..spec_watch("unused", session, true)
+    })
+    .unwrap();
+    let out = h.take_stdout().unwrap();
+    let mut l = String::new();
+    BufReader::new(out).read_line(&mut l).unwrap();
+    let gc: u32 = l.trim().parse().unwrap();
+    assert!(
+        h.root_watch().wait(Duration::from_secs(5)).is_some(),
+        "root did not exit"
+    );
+    (h, gc)
+}
+
+fn ps_stat(pid: u32) -> String {
+    let o = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// bb7dc H1: after the root exits by itself it stays unreaped (a zombie we
+/// hold) until the last signal, so the group signal is provably ours; only
+/// then is it reaped.
+#[cfg(target_os = "macos")]
+#[test]
+fn h1_the_root_stays_unreaped_until_the_group_signal_then_is_reaped() {
+    let (mut h, gc) = sh_root_exits("s-h1-keep");
+    let root = h.root_pid();
+    assert!(
+        ps_stat(root).starts_with('Z'),
+        "root {root} was reaped early: {:?}",
+        ps_stat(root)
+    );
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    assert!(
+        rep.steps.iter().any(|s| s.signal == "SIGTERM(group)"),
+        "{:?}",
+        rep.steps
+    );
+    assert_eq!(still_running(&[gc]), Vec::<u32>::new(), "{rep:?}");
+    assert_eq!(ps_stat(root), "", "root {root} not reaped after the stop");
+    assert_eq!(h.root_end().and_then(|e| e.code), Some(0));
+}
+
+/// bb7dc H1: the root was reaped by someone else (here: this test, as
+/// another handler would): the group number is no longer provably ours, so
+/// no group signal, the loss is latched and reported; the recorded
+/// grandchild is still stopped by its own checked pid.
+#[cfg(target_os = "macos")]
+#[test]
+fn h1_a_root_reaped_elsewhere_gets_no_group_signal_and_is_reported() {
+    let (mut h, gc) = sh_root_exits("s-h1-lost");
+    let root = h.root_pid();
+    let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(root as i32), None);
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    let again = h.cleanup(Duration::from_millis(300)).unwrap();
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    assert!(
+        rep.steps.iter().all(|s| !s.signal.ends_with("(group)")),
+        "group signal after the root was reaped elsewhere: {:?}",
+        rep.steps
+    );
+    assert!(rep.known_gaps.contains(&"root_identity_lost"), "{rep:?}");
+    assert_ne!(rep.clean_status(), "clean");
+    assert!(
+        again.steps.iter().all(|s| !s.signal.ends_with("(group)")),
+        "latch: {:?}",
+        again.steps
+    );
+    assert_eq!(still_running(&[gc]), Vec::<u32>::new(), "{rep:?}");
+}
+
 /// 043dd #510 H3: when nothing proves the root's group number is still ours
 /// (root recorded with another start time = "its pid is someone else's now",
 /// no checked member left in that group), no group signal goes out; the
-/// checked single pids are still stopped.
+/// checked single pids are still stopped. Not on macOS: there the root is
+/// kept unreaped (H1), so its pid cannot be someone else's; the macOS form
+/// is `h1_a_root_reaped_elsewhere_gets_no_group_signal_and_is_reported`.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn no_group_signal_when_the_group_number_is_not_provably_ours() {
     let mut h = spawn_tree(&spec_watch("tree", "s-tree-h3", false)).unwrap();
@@ -351,7 +489,7 @@ fn second_cancel_is_a_clean_no_op() {
 #[test]
 fn fork_watcher_catches_reparented_platform_binary() {
     assert!(lineage().enabled(), "self-check failed: {:?}", lineage());
-    let mut h = spawn_tree(&spec_lineage("tree-platform", "s-tree-platform")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-platform", "s-tree-platform");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -402,7 +540,7 @@ fn fork_watcher_catches_reparented_platform_binary() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_watched_process_with_a_readable_marker_stays_found_by_watch() {
-    let mut h = spawn_tree(&spec_lineage("tree-plain", "s-tree-plain")).unwrap();
+    let (mut h, _go) = spawn_after_watch("tree-plain", "s-tree-plain");
     let v = first_line(&mut h);
     assert_eq!(v["type"], "ready", "{v}");
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -496,7 +634,9 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
                 .into(),
         ],
         lineage: Some(lineage()),
+        inject: None,
         watch_forks: false,
+        discard_output: false,
         ..spec("complete", "s-env-cleared")
     })
     .unwrap();
@@ -576,6 +716,7 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     let l = Arc::new(Lineage::from_selfcheck(Arc::new(f), Ok(())));
     let mut h = spawn_tree(&SpawnSpec {
         lineage: Some(l),
+        inject: None,
         ..spec("tree", "s-tree-incomplete")
     })
     .unwrap();
@@ -584,4 +725,74 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// bb7dc #544 High: a start that fails after `spawn()` succeeded. The shell
+/// starts a long `sleep` in its group and waits for it, so without a stop
+/// the root would live ~60 s.
+fn group_members(pgid: u32) -> String {
+    let o = Command::new("pgrep")
+        .args(["-g", &pgid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+fn failing_start(
+    session: &str,
+    at: aibd::platform::tree::Inject,
+) -> (aibd::platform::tree::StartFailed, std::time::Instant) {
+    use aibd::platform::tree::{start_tree, StartFailedOr};
+    let t = std::time::Instant::now();
+    let r = start_tree(&SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 60 & wait".into()],
+        inject: Some(at),
+        ..spec_watch("unused", session, true)
+    });
+    match r {
+        Err(StartFailedOr::Started(f)) => (f, t),
+        Err(StartFailedOr::NotStarted(e)) => panic!("reported as not started: {e}"),
+        Ok(_) => panic!("the injected failure did not fail"),
+    }
+}
+
+/// Under control (the handle exists, for every failure point): the failure
+/// stops the tree like a DELETE, every signal through the H1 checks, and
+/// reports `left_running` exactly when that stop does not release a slot.
+/// The root is reaped too (no zombie left behind).
+fn a_late_failure_is_stopped(session: &str, at: aibd::platform::tree::Inject) {
+    let (f, _) = failing_start(session, at);
+    let root = f.root();
+    let t = std::time::Instant::now();
+    let fail = aibd::platform::session_unix::settle_failed_start(f);
+    assert!(t.elapsed() < Duration::from_secs(10), "not stopped");
+    assert!(
+        still_running(&[root]).is_empty(),
+        "root {root} still running"
+    );
+    assert_eq!(group_members(root), "", "group {root} not empty");
+    assert_eq!(ps_stat(root), "", "root {root} left as a zombie");
+    assert!(
+        fail.left_running.is_none() || fail.left_running == Some(root),
+        "{fail:?}"
+    );
+}
+
+/// No root-exit thread (bb7dc #544 c5603b91): still a handle, never a raw
+/// group kill; the handle reaps the root itself.
+#[test]
+fn a_root_wait_failure_is_stopped_through_the_handle() {
+    a_late_failure_is_stopped("s-fail-rootwait", aibd::platform::tree::Inject::RootWait);
+}
+
+#[test]
+fn a_system_failure_after_spawn_stops_the_tree() {
+    a_late_failure_is_stopped("s-fail-system", aibd::platform::tree::Inject::System);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_fork_watch_failure_after_spawn_stops_the_tree() {
+    a_late_failure_is_stopped("s-fail-watch", aibd::platform::tree::Inject::ForkWatch);
 }

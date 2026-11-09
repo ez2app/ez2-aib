@@ -100,10 +100,13 @@ def changed_files(repo, base, runner=run):
     return sorted(files)
 
 
-# Paths that make the Rust checks apply are read from the repo's own `.github/workflows/aibd.yml`
-# (`on.pull_request.paths`, the filter the PR CI applies), never copied by hand: when aibd.yml gains a path,
-# prepr follows it. Any `.rs` file and any `Cargo.toml` count as Rust as well.
+# Paths that make the Rust checks apply are read from the repo, never copied by hand:
+#   1. `aib/tools/release/docs_only.py` RUST_CI_PATHS — since 11-09 the one list aibd.yml's `changes` job uses
+#      (aibd.yml runs on every PR and decides there; 1ced7 #538, Andy "Rust 兩格改成必過");
+#   2. else the repo's `.github/workflows/aibd.yml` `on.pull_request.paths` (older trees / other repos).
+# Any `.rs` file and any `Cargo.toml` count as Rust as well.
 AIBD_WORKFLOW = ".github/workflows/aibd.yml"
+RUST_CI_LIST = "aib/tools/release/docs_only.py"
 # Only when a repo has no aibd.yml (or it cannot be parsed): the bare minimum, and the report says so.
 FALLBACK_RUST_PATHS = ("Cargo.toml", "Cargo.lock", "crates/**")
 
@@ -159,8 +162,30 @@ def glob_re(pattern):
     return re.compile("^%s$" % out)
 
 
+def rust_ci_list(repo):
+    """RUST_CI_PATHS from docs_only.py, read as a literal (never imported / run); [] if absent or unreadable."""
+    import ast
+    try:
+        with open(os.path.join(repo, RUST_CI_LIST), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "RUST_CI_PATHS" for t in node.targets):
+            try:
+                val = ast.literal_eval(node.value)
+            except ValueError:
+                return []
+            if isinstance(val, (tuple, list)) and all(isinstance(x, str) and x for x in val):
+                return list(val)
+    return []
+
+
 def rust_paths(repo):
     """(patterns, where they came from) for `repo`."""
+    listed = rust_ci_list(repo)
+    if listed:
+        return tuple(listed), RUST_CI_LIST + " RUST_CI_PATHS"
     try:
         with open(os.path.join(repo, AIBD_WORKFLOW), encoding="utf-8") as f:
             paths = workflow_paths(f.read())
@@ -216,6 +241,26 @@ def windows_split(metadata):
     return sorted(ok), excluded
 
 
+def windows_fakecc_item(repo, members, ver, runner=run):
+    """Clippy for the Windows target of the members that build C, with the fake MSVC compiler
+    (scripts/dev/fakecc-msvc.sh: writes empty outputs, compiles nothing). Check only: nothing is linked or run, so
+    a pass says "Windows clippy (fakecc) green; tests still need CI" and never more. A missing fake is not_run."""
+    name = "rust clippy (%s, fakecc)" % WINDOWS_TARGET
+    fake = os.path.join(repo, "scripts", "dev", "fakecc-msvc.sh")
+    if not os.access(fake, os.X_OK):
+        return item(1, name, "not_run", "%s missing or not executable" % fake, version=ver)
+    cmd = ["cargo", "clippy"]
+    for m in members:
+        cmd += ["-p", m]
+    cmd += ["--target", WINDOWS_TARGET, "--all-targets", "--locked", "--", "-D", "warnings"]
+    env = dict(os.environ, CC_x86_64_pc_windows_msvc=fake, AR_x86_64_pc_windows_msvc=fake,
+               CARGO_TARGET_DIR=os.path.join(repo, "target-wincheck.noindex"))
+    rc, o = runner(cmd, repo, env)
+    st = "pass" if rc == 0 else "fail" if rc is not None else "not_run"
+    scope = "only " + ", ".join(members) + "; type check + clippy with a fake C compiler, tests still need CI Windows"
+    return item(1, name, st, "" if rc is not None else o, scope, ver, rc, cmd, o)
+
+
 def rust_items(repo, run_tests, runner=run):
     out = []
     rc, ver = runner(["cargo", "--version"], repo)
@@ -252,12 +297,14 @@ def rust_items(repo, run_tests, runner=run):
         else:
             scope = "only " + ", ".join(ok)
             if excluded:
-                scope += "; excluded (C build, see CI Windows): " + ", ".join(
+                scope += "; members that build C are covered by the fakecc item: " + ", ".join(
                     "%s (%s)" % (k, "+".join(v)) for k, v in sorted(excluded.items()))
             cmd = ["cargo", "clippy"]
             for m in ok:
                 cmd += ["-p", m]
             one(name, cmd + ["--target", WINDOWS_TARGET, "--all-targets", "--locked", "--", "-D", "warnings"], scope)
+            if excluded:
+                out.append(windows_fakecc_item(repo, sorted(excluded), ver, runner))
     if run_tests:
         one("cargo test", ["cargo", "test", "--workspace", "--locked", "--no-fail-fast"], "workspace")
     else:

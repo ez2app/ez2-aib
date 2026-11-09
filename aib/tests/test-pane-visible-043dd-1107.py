@@ -13,7 +13,8 @@ V1 真 tmux:沒 client ⇒ 兩窗都看不見;client 看 a ⇒ a 見 b 不見;�
 V2 等待中切到 b ⇒ 3 秒內醒(退避 10 秒),鉤子有掛
 V2b 障礙:判看不見之後、掛鉤之前切回 ⇒ 不睡滿(讀基準後重判接住)
 V2c 障礙:掛鉤之後、讀基準之前切回 ⇒ 不睡滿
-V2d 等待中 b→a 來回切(最後狀態與基準相同)⇒ 仍醒來(事件序號,不是比內容)
+V2d 等待中 b→a 來回切(最後狀態與基準相同)⇒ 仍醒來(事件序號,不是比內容),且事件檔變長(鉤子附加不覆寫;
+    只看叫醒時覆寫的清空空隙會讓 K6 時紅時綠)
 V3 量不到一律當看得見:tmux 失敗 / 空 / 不是數字 ⇒ rc0
 V4 訊號檔路徑有 tmux 會解析的字元 / 不是絕對路徑 ⇒ 不掛鉤子、照退避等完
 V5 戰情室主迴圈用 pane_wait_if_hidden(第一幀照畫),不再用只看附著的 pane_wait_if_detached
@@ -29,7 +30,7 @@ V8h 撤登只刪指向自己的;V9 4770 保留(docs/tmux-hook-indexes.md + 掃 s
 V10b 掛上後被外部蓋掉 ⇒ 等到逾時記 wake_timeout(不重查所有權);V10c 事件叫醒記 wake_event
 S1–S5 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 / 交給被測 bash 的 TMUX ⇒ 一律拒跑、tmux 一次都沒執行
 刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
-K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;
+K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;K6b 覆寫且清空空隙拉長 ⇒ V2d(事件檔要變長);
 K7 鉤子內容改成各艙不同(直寫自己的訊號檔,r3 寫法)⇒ V8b;K10 拿掉讀回 ⇒ V8;K11 拿掉寫入條件 ⇒ V8e;
 K12 登記名退回「/ 換 _」⇒ V8f;K13 清理不再確認 ⇒ V8g;K14 撤登不確認是自己的 ⇒ V8h;K15 不記退回輪詢 ⇒ V10;K16 不記逾時 ⇒ V10b;K17 不記事件喚醒 ⇒ V10c;
 K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
@@ -184,6 +185,15 @@ class RealTmux(Base):
         out, took = self.wait_hidden(self.pb, action=flip)
         self.assertIn("rc=0", out, out)
         self.assertLess(took, 3.0, "b→a 來回切沒叫醒(%.1f 秒)\n%s" % (took, out))
+        # 鉤子要「附加」:事件檔得變長。只看叫醒不夠 —— 改成覆寫(>)時,等待端偶爾剛好在
+        # 「清空後、寫入前」讀到 0 位元組 ≠ 基準 1,照樣被叫醒(K6 在 ubuntu 3.9 沒砍出紅,11-09 2240e)。
+        ev, n, deadline = self.state / ".panevis.ev", 0, time.time() + 2.0
+        while time.time() < deadline:
+            n = len(ev.read_bytes()) if ev.exists() else 0
+            if n > 1:
+                break
+            time.sleep(0.05)
+        self.assertGreater(n, 1, "事件檔沒變長(鉤子是覆寫不是附加?)長度 %d" % n)
 
     def test_v2e_reattach_wakes(self):
         # 真的 client-attached:沒人附著時等待,中途附著 ⇒ 3 秒內醒(退避 10 秒)
@@ -606,6 +616,10 @@ KNIVES = [
      "  pane_wait_if_detached && continue\n",
      "src/cockpit/warroom-board.sh", "Static.test_v5_warroom_uses_hidden"),
     ("K6", '&& printf . >> \\"\\$r\\"; done 2>/dev/null; :\'"', '&& printf . > \\"\\$r\\"; done 2>/dev/null; :\'"',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
+    # K6b:覆寫且把「清空 → 寫入」的空隙拉到 0.3 秒 ⇒ 等待端必定讀到 0 位元組而被叫醒;只看叫醒的舊 V2d 會綠(11-09 ubuntu 3.9 K6 時紅時綠的根因)
+    ("K6b", '&& printf . >> \\"\\$r\\"; done 2>/dev/null; :\'"',
+     '&& { : > \\"\\$r\\"; sleep 0.3; printf . > \\"\\$r\\"; }; done 2>/dev/null; :\'"',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
     ("K7", '  local tgt="$PANE_VIS_REG/*.reg"', '  local tgt="$PANE_VIS_SIG"',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v8b_two_cabins_race_idempotent"),
