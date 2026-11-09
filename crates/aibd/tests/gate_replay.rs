@@ -453,14 +453,10 @@ async fn the_gate_in_order() {
 
 /// G1 regression (gate finding, a63ab: "連開 10 次 claude 都開得了"): with ONE slot, ten
 /// fake providers in a row (each forks a child that ends at once, then ends) all start,
-/// and each gives its slot back. On macOS this is the G1 bug today (the stop is
-/// `stop_unconfirmed` / `fork_watch_child_unreadable`, the slot stays held, the second
-/// start is `too_many_sessions`), so it is ignored there until a9136's fix
-/// (`feat/aibd-g1-esrch-a9136`) lands; that PR removes the `ignore`.
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "G1 open: macOS keeps the slot of a provider whose child ended unread"
-)]
+/// and each gives its slot back. Before G1 this failed on macOS (the stop was
+/// `stop_unconfirmed` / `fork_watch_child_unreadable`, the slot stayed held, the second
+/// start was `too_many_sessions`). G1 is on main since #602 (preview.4), so it runs on
+/// macOS too (043dd #601 L1: with the ignore it ran nowhere, aibd.yml has no Linux cell).
 #[tokio::test(flavor = "multi_thread")]
 async fn ten_providers_in_a_row_on_one_slot() {
     let tmp = tempfile::tempdir().unwrap();
