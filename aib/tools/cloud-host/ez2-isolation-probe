@@ -1,67 +1,245 @@
 #!/usr/bin/env python3
-"""ez2-isolation-probe — 在 Proxmox 宿主上執行 aib_cloud::isolation 產的探測清單(I/O 殼;Rust 端只規劃與判定)。
+"""ez2-isolation-probe — 在 Proxmox 宿主(或公網對照機)上執行 aib_cloud::isolation 產的探測清單。
+I/O 殼:Rust 端只規劃(probe_plan)與判定(judge);這裡只做連線握手並記 true / false。
 
-用法:ez2-isolation-probe <plan.json> [--out results.json]
-  plan.json = [{"id","from":"host"|"ct:<id>"|"external","kind":"tcp"|"dns"|"icmp","ip","port","expect"}, …]
-  from=host  → 直接在宿主跑;from=ct:N → nsenter 進 CT N 的 network namespace(用宿主的工具,不碰 CT 檔案);
-  from=external → 略過(由別的機器跑再合併)。
-  tcp:bash /dev/tcp 3 秒;dns:dig +time=2 @ip;icmp:ping -c1 -W2。只記 open 真假與毫秒,不送任何內容。
-輸出:[{"id","open":bool,"ms":int,"from","kind","ip","port"}],給 Rust judge()。
+用法:
+  ez2-isolation-probe run   <plan.json> --host <宿主公網 IP> [--out report.json] [--external]
+  ez2-isolation-probe merge <report.json> <report.json> … --out merged.json
+
+plan.json = [{"id","from":"host"|"ct:<id>"|"external","kind":"tcp"|"dns"|"icmp","ip","port","expect"}, …]
+  先整份驗證(白名單:id 字元、from 形式、kind、ip 真能解析、port 範圍、expect、id 不重複),有一格不合就整份不跑。
+  from=host     → 在這台機器直接跑。
+  from=ct:N     → `lxc-info -n N -p -H` 取 CT init pid,`nsenter -t pid -n` 進它的 network namespace;
+                  先驗 nsenter 落地的 netns inode == /proc/<pid>/ns/net 且 != 宿主自己的,錯一個就停。
+  from=external → 預設略過;帶 --external 時只跑這些(在 EU01 等公網機跑),其他略過。
+  tcp:3 秒 connect(python socket,ip/port 走 argv 不經 shell);dns:dig +time=2 @ip;icmp:ping -c1 -W2。
+  只記 open 真假與毫秒,不送任何內容;所有子程序都是參數陣列,沒有 shell 字串。
+輸出(給 Rust judge()):{"plan_fnv": FNV-1a 64 of json.dumps(plan, sort_keys=True, separators=(",",":")),
+  "host": <--host>, "results": [{"id","from","kind","ip","port","open","ms"}, …]}
+merge:plan_fnv 與 host 必須全部相同、id 不得重複,否則拒絕。
 """
-import json, subprocess, sys, time
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import time
 
-def ct_init_pid(ct):
-    lxc = subprocess.run(["pgrep", "-f", f"lxc-start.*-n {ct}(\\s|$)"], capture_output=True, text=True).stdout.split()
-    if not lxc:
-        raise SystemExit(f"ct {ct} not running")
-    kids = subprocess.run(["pgrep", "-P", lxc[0]], capture_output=True, text=True).stdout.split()
-    if not kids:
-        raise SystemExit(f"ct {ct}: init pid not found")
-    return kids[0]
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+CT_RE = re.compile(r"^ct:([1-9][0-9]{0,8})$")
+KINDS = ("tcp", "dns", "icmp")
+EXPECTS = ("open", "blocked", "closed")
+TCP_SNIPPET = (
+    "import socket,sys\n"
+    "s=socket.create_connection((sys.argv[1],int(sys.argv[2])),3)\n"
+    "s.close()\n"
+)
 
-def probe(ns_prefix, kind, ip, port):
+
+def die(msg, rc=2):
+    print(f"ez2-isolation-probe: {msg}", file=sys.stderr)
+    raise SystemExit(rc)
+
+
+def fnv1a64(data: bytes) -> str:
+    h = 0xCBF29CE484222325
+    for b in data:
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def plan_fingerprint(plan) -> str:
+    return fnv1a64(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode())
+
+
+def validate_plan(plan):
+    if not isinstance(plan, list) or not plan:
+        die("plan is not a non-empty array")
+    seen = set()
+    for i, c in enumerate(plan):
+        if not isinstance(c, dict):
+            die(f"plan[{i}] is not an object")
+        extra = set(c) - {"id", "from", "kind", "ip", "port", "expect"}
+        if extra:
+            die(f"plan[{i}] has unknown keys {sorted(extra)}")
+        cid = c.get("id")
+        if not isinstance(cid, str) or not ID_RE.match(cid):
+            die(f"plan[{i}] id {cid!r} not in [a-z0-9-]")
+        if cid in seen:
+            die(f"duplicate id {cid}")
+        seen.add(cid)
+        src = c.get("from")
+        if src not in ("host", "external") and not (isinstance(src, str) and CT_RE.match(src)):
+            die(f"{cid}: from {src!r} must be host | ct:<id> | external")
+        if c.get("kind") not in KINDS:
+            die(f"{cid}: kind {c.get('kind')!r} not in {KINDS}")
+        try:
+            ipaddress.ip_address(c.get("ip"))
+        except ValueError:
+            die(f"{cid}: ip {c.get('ip')!r} is not an address")
+        port = c.get("port")
+        if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
+            die(f"{cid}: port {port!r} out of range")
+        if c["kind"] == "icmp" and port != 0:
+            die(f"{cid}: icmp cell must have port 0")
+        if c["kind"] != "icmp" and port == 0:
+            die(f"{cid}: {c['kind']} cell needs a port")
+        if c.get("expect") not in EXPECTS:
+            die(f"{cid}: expect {c.get('expect')!r} not in {EXPECTS}")
+
+
+def run_argv(argv, timeout):
+    """Run an argument list with no shell; True when it exits 0 within the timeout."""
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+    except FileNotFoundError as e:
+        die(f"{argv[0]}: {e}")
+
+
+def ct_init_pid(ct: str) -> int:
+    r = subprocess.run(["lxc-info", "-n", ct, "-p", "-H"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    pid = r.stdout.strip()
+    if r.returncode != 0 or not pid.isdigit() or int(pid) <= 1:
+        die(f"ct {ct}: lxc-info gave no init pid ({r.stderr.strip() or r.stdout.strip() or 'not running'})")
+    return int(pid)
+
+
+def ns_prefix_for(ct: str, host_netns: str) -> list:
+    """Build the nsenter prefix for a CT and prove it lands in that CT's netns."""
+    pid = ct_init_pid(ct)
+    want = os.readlink(f"/proc/{pid}/ns/net")
+    if want == host_netns:
+        die(f"ct {ct}: init pid {pid} shares the host network namespace")
+    prefix = ["nsenter", "-t", str(pid), "-n", "--"]
+    r = subprocess.run(prefix + ["readlink", "/proc/self/ns/net"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    got = r.stdout.strip()
+    if r.returncode != 0 or got != want:
+        die(f"ct {ct}: nsenter landed in {got!r}, expected {want!r}")
+    return prefix
+
+
+def probe(prefix: list, kind: str, ip: str, port: int):
     if kind == "tcp":
-        cmd = ns_prefix + ["timeout", "3", "bash", "-c", f"exec 3<>/dev/tcp/{ip}/{port}"]
+        argv = prefix + ["timeout", "4", sys.executable, "-I", "-c", TCP_SNIPPET, ip, str(port)]
+        t = 6
     elif kind == "dns":
-        cmd = ns_prefix + ["timeout", "4", "dig", "+short", "+time=2", "+tries=1", f"@{ip}", "example.com"]
-    elif kind == "icmp":
-        cmd = ns_prefix + ["ping", "-c", "1", "-W", "2", ip]
+        argv = prefix + ["timeout", "4", "dig", "+short", "+time=2", "+tries=1", "@" + ip, "example.com"]
+        t = 6
     else:
-        raise SystemExit(f"unknown kind {kind}")
+        argv = prefix + ["ping", "-c", "1", "-W", "2", "--", ip]
+        t = 5
     t0 = time.monotonic()
-    rc = subprocess.run(cmd, capture_output=True, text=True).returncode
-    return rc == 0, int((time.monotonic() - t0) * 1000)
+    ok = run_argv(argv, t)
+    return ok, int((time.monotonic() - t0) * 1000)
 
-def main(argv):
-    if not argv:
-        print(__doc__); return 2
-    plan = json.load(open(argv[0]))
-    out_path = argv[argv.index("--out") + 1] if "--out" in argv else None
-    pids = {}
+
+def cmd_run(args):
+    if not args or args[0].startswith("--"):
+        die("run needs <plan.json>")
+    plan_path, args = args[0], args[1:]
+    host = out = None
+    external = False
+    while args:
+        a = args.pop(0)
+        if a == "--host" and args:
+            host = args.pop(0)
+        elif a == "--out" and args:
+            out = args.pop(0)
+        elif a == "--external":
+            external = True
+        else:
+            die(f"unknown argument {a}")
+    if host is None:
+        die("--host <public ip> is required (judge() refuses a report without it)")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        die(f"--host {host!r} is not an address")
+    with open(plan_path, encoding="utf-8") as f:
+        plan = json.load(f)
+    validate_plan(plan)
+    fnv = plan_fingerprint(plan)
+
+    host_netns = os.readlink("/proc/self/ns/net") if not external else ""
+    prefixes = {}
     results = []
     for c in plan:
         src = c["from"]
-        if src == "external":
+        if external != (src == "external"):
             continue
-        if src == "host":
+        if src in ("host", "external"):
             prefix = []
-        elif src.startswith("ct:"):
-            ct = src[3:]
-            pids.setdefault(ct, ct_init_pid(ct))
-            prefix = ["nsenter", "-t", pids[ct], "-n", "--"]
         else:
-            raise SystemExit(f"unknown from {src}")
-        open_, ms = probe(prefix, c["kind"], c["ip"], c["port"])
-        results.append({"id": c["id"], "open": open_, "ms": ms, "from": src, "kind": c["kind"], "ip": c["ip"], "port": c["port"]})
-        flag = "OPEN " if open_ else "closed"
-        mark = "ok" if (open_ == (c.get("expect") == "open")) else "!!"
-        print(f"{mark} {flag} {c['id']:38s} {src:8s} {c['kind']}://{c['ip']}:{c['port']} {ms}ms", file=sys.stderr)
-    text = json.dumps(results, indent=1)
-    if out_path:
-        open(out_path, "w").write(text)
+            ct = CT_RE.match(src).group(1)
+            if ct not in prefixes:
+                prefixes[ct] = ns_prefix_for(ct, host_netns)
+            prefix = prefixes[ct]
+        is_open, ms = probe(prefix, c["kind"], c["ip"], c["port"])
+        results.append({"id": c["id"], "from": src, "kind": c["kind"], "ip": c["ip"], "port": c["port"], "open": is_open, "ms": ms})
+        mark = "ok" if is_open == (c["expect"] == "open") else "!!"
+        print(f"{mark} {'OPEN  ' if is_open else 'closed'} {c['id']:34s} {src:9s} {c['kind']}://{c['ip']}:{c['port']} {ms}ms", file=sys.stderr)
+    report = {"plan_fnv": fnv, "host": host, "results": results}
+    text = json.dumps(report, indent=1)
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        print(f"{len(results)} results → {out} (plan_fnv {fnv})", file=sys.stderr)
     else:
         print(text)
     return 0
+
+
+def cmd_merge(args):
+    out = None
+    paths = []
+    while args:
+        a = args.pop(0)
+        if a == "--out" and args:
+            out = args.pop(0)
+        else:
+            paths.append(a)
+    if len(paths) < 2:
+        die("merge needs at least two reports")
+    reports = []
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            reports.append(json.load(f))
+    base = reports[0]
+    merged = {"plan_fnv": base.get("plan_fnv"), "host": base.get("host"), "results": []}
+    seen = set()
+    for p, r in zip(paths, reports):
+        if r.get("plan_fnv") != merged["plan_fnv"] or r.get("host") != merged["host"]:
+            die(f"{p}: plan_fnv / host differ from {paths[0]}")
+        for x in r.get("results", []):
+            if x["id"] in seen:
+                die(f"{p}: duplicate result {x['id']}")
+            seen.add(x["id"])
+            merged["results"].append(x)
+    merged["results"].sort(key=lambda x: x["id"])
+    text = json.dumps(merged, indent=1)
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        print(f"{len(merged['results'])} results → {out}", file=sys.stderr)
+    else:
+        print(text)
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 2
+    if argv[0] == "run":
+        return cmd_run(argv[1:])
+    if argv[0] == "merge":
+        return cmd_merge(argv[1:])
+    die(f"unknown command {argv[0]}")
+
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

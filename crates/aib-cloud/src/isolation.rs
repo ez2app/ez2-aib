@@ -410,8 +410,41 @@ pub fn probe_plan(cells: &[Cell]) -> Value {
 /// executed (`json.dumps(plan, sort_keys=True, separators=(",", ":"))`), so a report is
 /// matched to exactly this plan. It binds, it does not sign.
 pub fn plan_fingerprint(plan: &Value) -> String {
-    let text = serde_json::to_string(plan).unwrap_or_default();
+    let mut text = String::new();
+    canonical(plan, &mut text);
     fnv1a64(text.as_bytes())
+}
+
+/// Compact JSON with object keys sorted, independent of serde_json's map type / features
+/// (`preserve_order` anywhere in the workspace would otherwise change the fingerprint).
+fn canonical(v: &Value, out: &mut String) {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                out.push(':');
+                canonical(&m[*k], out);
+            }
+            out.push('}');
+        }
+        Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canonical(x, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
+    }
 }
 
 fn fnv1a64(bytes: &[u8]) -> String {
@@ -737,5 +770,22 @@ mod tests {
         let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
         assert!(!rc.ok());
         assert!(rc.missing.contains(&"site-110-egress6-443".to_string()));
+    }
+
+    #[test]
+    fn i9_fingerprint_matches_the_python_runner() {
+        // ez2-isolation-probe computes FNV-1a 64 over json.dumps(plan, sort_keys=True,
+        // separators=(",", ":")); this value was produced by that code for this plan, with the
+        // keys deliberately given out of order here.
+        let plan = json!([
+            {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "135.181.75.90", "from": "external"},
+            {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 443, "expect": "open"},
+            {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 8006, "expect": "blocked"},
+            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
+        ]);
+        assert_eq!(plan_fingerprint(&plan), "52240dcf9134f54d");
+        let mut other = plan.clone();
+        other[3]["port"] = json!(5353);
+        assert_ne!(plan_fingerprint(&other), "52240dcf9134f54d");
     }
 }
