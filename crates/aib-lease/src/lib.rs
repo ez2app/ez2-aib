@@ -305,9 +305,13 @@ pub fn mutex(paths: &Paths) -> Result<Mutex, String> {
     if let Some(d) = lock.parent() {
         fs::create_dir_all(d).map_err(|e| format!("{}: {e}", lock.display()))?;
     }
+    // read + write, not append: Windows LockFileEx needs GENERIC_READ or GENERIC_WRITE,
+    // and an append-only handle has neither (CI windows: every lock failed, rc 3)
     let fh = OpenOptions::new()
         .create(true)
-        .append(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
         .open(&lock)
         .map_err(|e| format!("{}: {e}", lock.display()))?;
     fh.lock().map_err(|e| format!("{}: {e}", lock.display()))?;
