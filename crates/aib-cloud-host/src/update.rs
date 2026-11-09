@@ -79,9 +79,12 @@ pub fn valid_repo(r: &str) -> bool {
     let Some((owner, name)) = r.split_once('/') else {
         return false;
     };
+    // c477a #612: "." / ".." are made of allowed characters but become path traversal in the
+    // URL (github.com/../b/… normalises elsewhere); GitHub names cannot start with '.' anyway.
     let ok = |s: &str| {
         !s.is_empty()
             && s.len() <= 100
+            && !s.starts_with('.')
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
     };
@@ -418,7 +421,8 @@ mod tests {
         assert!(valid_repo("ez2app/ez2-aib"));
         assert!(valid_repo("a.b/c_d-e"));
         for bad in [
-            "", "ez2app", "/x", "x/", "a/b/c", "a b/c", "a/b?x=1", "../b",
+            "", "ez2app", "/x", "x/", "a/b/c", "a b/c", "a/b?x=1", "../b", "./b", "a/..", "a/.",
+            ".x/b", "a/.y",
         ] {
             assert!(!valid_repo(bad), "{bad:?}");
         }
