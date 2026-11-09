@@ -583,6 +583,20 @@ fn the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch() 
     let mut inc_short = inc.clone();
     inc_short.closes = vec![closing(&old_short, &["H1"])];
     blocked(vec![old_short, inc_short], "old list shorter than H + M");
+    // bb7dc 4f95e78b H1: ids that repeat, are empty, or are the wrong kind
+    for (ids, why) in [
+        (vec!["H1", "H1"], "repeated"),
+        (vec!["H1", ""], "empty"),
+        (vec!["H1", "M1"], "an M for an H"),
+        (vec!["H1", "H2", "L1"], "not H / M"),
+        (vec!["H1", "H"], "no number"),
+    ] {
+        let mut odd = review("bb7dc", Q5, false, [2, 0, 0, 0], None);
+        odd.findings = Known::Known(ids.iter().map(|x| s(x)).collect());
+        let mut inc_odd = inc.clone();
+        inc_odd.closes = vec![closing(&odd, &["H1", "H2", "H", "M1", "L1", ""])];
+        blocked(vec![odd, inc_odd], why);
+    }
     // a different reviewer closes them
     let mut other = inc.clone();
     other.by = Known::Known(s("1ced7"));

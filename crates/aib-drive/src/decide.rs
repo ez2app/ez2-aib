@@ -574,7 +574,7 @@ fn closed_by_increment(old: &ReviewLine, others: &[&ReviewLine], commits: &[Sha]
     let Known::Known(raised) = &old.findings else {
         return false;
     };
-    if raised.len() as u64 != u64::from(old.counts[0]) + u64::from(old.counts[1]) {
+    if !findings_match(raised, old.counts) {
         return false;
     }
     others.iter().any(|r| {
@@ -589,6 +589,19 @@ fn closed_by_increment(old: &ReviewLine, others: &[&ReviewLine], commits: &[Sha]
                         .is_some_and(|closed| raised.iter().all(|f| closed.contains(f)))
             })
     })
+}
+
+/// The H / M ids match the counts: each non-empty, none repeated, as many
+/// `H…` as H and as many `M…` as M, nothing else (bb7dc 4f95e78b H1:
+/// `[H1, H1]` for H 2 let one closed `H1` close both).
+fn findings_match(raised: &[String], counts: [u32; 4]) -> bool {
+    let unique: BTreeSet<&str> = raised.iter().map(String::as_str).collect();
+    let of = |k: char| raised.iter().filter(|f| f.starts_with(k)).count() as u64;
+    unique.len() == raised.len()
+        && raised.iter().all(|f| f.len() > 1)
+        && of('H') == u64::from(counts[0])
+        && of('M') == u64::from(counts[1])
+        && of('H') + of('M') == raised.len() as u64
 }
 
 fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
