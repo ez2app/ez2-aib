@@ -38,11 +38,13 @@ impl Drop for Own {
     }
 }
 
-/// A listed file without any execute bit: it resolves and passes the gate, then exec
-/// fails (the "a failed start gives its slot back" case).
+/// A listed native file (a copy of `/bin/true`) without any execute bit: it resolves and
+/// passes the gate, then exec fails (the "a failed start gives its slot back" case).
 fn not_executable(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
     let f = dir.join("not-executable");
-    std::fs::write(&f, b"plain data\n").unwrap();
+    std::fs::copy("/bin/true", &f).unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
     f
 }
 
@@ -645,6 +647,43 @@ async fn m1_gate_refuses_shells_and_npm_installs_over_http() {
         let (c, s) = d.call("GET", "/api/v1/sessions", None);
         assert_eq!(c, 200);
         assert_eq!(s["sessions"].as_array().map(Vec::len), Some(0), "{s}");
+        // 1ced7 #593 M2: the first layer's refusals are audited too
+        let body = serde_json::json!({"argv": ["/bin/sleep", "1"], "env": {"DYLD_INSERT_LIBRARIES": "sk-DYLD-SECRET"}})
+            .to_string();
+        let (c, s) = d.call("POST", "/api/v1/sessions", Some(&body));
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("env_not_allowed")),
+            "{s}"
+        );
+        let (c, s) = d.post(&["sleep", "1"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("invalid_request")),
+            "{s}"
+        );
+        let (c, evs) = d.call("GET", "/api/v1/events?limit=500", None);
+        assert_eq!(c, 200);
+        let mut codes: Vec<&str> = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.spawn_rejected")
+            .map(|e| e["payload"]["code"].as_str().unwrap())
+            .collect();
+        codes.sort_unstable();
+        // program_not_allowed folded twice into one record; provider, env, argv[0] one each
+        assert_eq!(
+            codes,
+            [
+                "env_not_allowed",
+                "invalid_request",
+                "program_not_allowed",
+                "provider_install_unsupported"
+            ],
+            "{evs}"
+        );
+        assert!(!evs.to_string().contains("sk-DYLD-SECRET"), "{evs}");
         // the gate is what refused them: a listed native program still starts
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "{s}");

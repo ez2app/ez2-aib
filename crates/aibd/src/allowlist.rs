@@ -116,37 +116,125 @@ pub const REJECT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60
 
 /// Folds repeated rejections (a63ab 19:23: one record per token + code per minute, with a
 /// count, so a loop of bad requests cannot flood the event table or the log).
-/// Open windows: (token id, code) ⇒ (window start, rejections in it).
-type OpenWindows = std::collections::HashMap<(String, &'static str), (Instant, u64)>;
-
+///
+/// The first rejection of a key opens a window and is written. Later ones inside the
+/// window are only counted. When the window closes, the count is written by the flush
+/// ([`RejectLog::close`], armed once per window, `session.reject_flush` timer), by the
+/// next rejection of that key (whichever comes first), or at shutdown
+/// ([`RejectLog::drain`]). So the total is never lost, except in a crash during the
+/// window (1ced7 #593 M1).
 #[derive(Debug, Default)]
 pub struct RejectLog {
-    open: std::sync::Mutex<OpenWindows>,
+    open: std::sync::Mutex<Windows>,
+}
+
+/// Open windows by (token_id, code).
+type Windows = std::collections::HashMap<(String, &'static str), Window>;
+
+#[derive(Debug)]
+struct Window {
+    start: Instant,
+    folded: u64,
+    /// The program of the last folded rejection (already made safe by the caller).
+    program: String,
+}
+
+/// What [`RejectLog::note`] asks the caller to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note {
+    /// Write a record now; `folded_before` = rejections folded since the last record.
+    Write { folded_before: u64 },
+    /// Counted only. `arm` = this window's start when this is its first folded
+    /// rejection: arm one flush for the window's end.
+    Folded { arm: Option<Instant> },
 }
 
 impl RejectLog {
-    /// `now` is the clock (injected: tests pass their own instants). `Some(n)`: write a
-    /// record now; `n` = rejections of this key folded since its last record and not
-    /// written. `None`: folded into the open window.
-    pub fn note(&self, now: Instant, token_id: &str, code: &'static str) -> Option<u64> {
-        let mut m = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        match m.get_mut(&(token_id.to_owned(), code)) {
-            Some((start, n)) if now.saturating_duration_since(*start) < REJECT_WINDOW => {
-                *n += 1;
-                None
+    fn map(&self) -> std::sync::MutexGuard<'_, Windows> {
+        self.open.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `now` is the clock (injected: tests pass their own instants). A clock that goes
+    /// back never opens a new window.
+    pub fn note(&self, now: Instant, token_id: &str, code: &'static str, program: &str) -> Note {
+        let mut m = self.map();
+        let key = (token_id.to_owned(), code);
+        match m.get_mut(&key) {
+            Some(w) if now.saturating_duration_since(w.start) < REJECT_WINDOW => {
+                w.folded += 1;
+                program.clone_into(&mut w.program);
+                Note::Folded {
+                    arm: (w.folded == 1).then_some(w.start),
+                }
             }
-            Some((start, n)) => {
-                let folded = *n;
-                *start = now;
-                *n = 0;
-                Some(folded)
+            Some(w) => {
+                let folded_before = w.folded;
+                *w = Window {
+                    start: now,
+                    folded: 0,
+                    program: program.to_owned(),
+                };
+                Note::Write { folded_before }
             }
             None => {
-                m.insert((token_id.to_owned(), code), (now, 0));
-                Some(0)
+                m.insert(
+                    key,
+                    Window {
+                        start: now,
+                        folded: 0,
+                        program: program.to_owned(),
+                    },
+                );
+                Note::Write { folded_before: 0 }
             }
         }
     }
+
+    /// The window that opened at `start` has closed: end it and hand back what it folded
+    /// (`None` when nothing was folded, or a later rejection already wrote the count and
+    /// opened a new window).
+    pub fn close(
+        &self,
+        token_id: &str,
+        code: &'static str,
+        start: Instant,
+    ) -> Option<(u64, String)> {
+        let mut m = self.map();
+        let key = (token_id.to_owned(), code);
+        if m.get(&key).map(|w| w.start) != Some(start) {
+            return None;
+        }
+        let w = m.remove(&key)?;
+        (w.folded > 0).then_some((w.folded, w.program))
+    }
+
+    /// Shutdown: every window that still holds a count, as (token_id, code, folded, program).
+    pub fn drain(&self) -> Vec<(String, &'static str, u64, String)> {
+        let mut m = self.map();
+        m.drain()
+            .filter(|(_, w)| w.folded > 0)
+            .map(|((t, c), w)| (t, c, w.folded, w.program))
+            .collect()
+    }
+}
+
+/// A program name as the audit record and the log may show it: at most 64 characters,
+/// control characters escaped (`\u{a}`), so a crafted `argv[0]` cannot forge a log line
+/// (1ced7 #593 L3). An ellipsis marks a cut.
+pub fn audit_name(s: &str) -> String {
+    let mut out = String::new();
+    for (n, c) in s.chars().enumerate() {
+        if n == 64 {
+            out.push('…');
+            break;
+        }
+        if c.is_control() {
+            out.push_str(&c.escape_unicode().to_string());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Shells, interpreters and launchers (springboards: they run any program or code they are
@@ -258,6 +346,43 @@ const INTERPRETERS: &[&str] = &[
     "caffeinate",
     "arch",
     "find",
+    // more springboards (1ced7 #593 L2): each can run a command it is given
+    "ssh",
+    "tmux",
+    "screen",
+    "make",
+    "git",
+    "vi",
+    "vim",
+    "nvim",
+    "emacs",
+    "less",
+    "more",
+    "man",
+    "sed",
+    "tar",
+    "rsync",
+    "npx",
+    "npm",
+    "pnpm",
+    "yarn",
+    "uv",
+    "uvx",
+    "pip",
+    "pipx",
+    "xcrun",
+    "sandbox",
+    "dtrace",
+    "systemd",
+    "runas",
+    "schtasks",
+    "at",
+    "strace",
+    "ltrace",
+    "gdb",
+    "lldb",
+    "valgrind",
+    "parallel",
 ];
 
 /// The file name names a shell, interpreter or launcher. A name that is not UTF-8 counts
@@ -287,6 +412,19 @@ pub enum Kind {
     Node,
 }
 
+/// Executable formats recognised as native (1ced7 #593 L1: positive, not "anything that
+/// is not a script"): Mach-O (32 / 64, both byte orders, fat), ELF, PE (`MZ`).
+const NATIVE_MAGIC: &[&[u8]] = &[
+    b"\xfe\xed\xfa\xce",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+    b"\x7fELF",
+    b"MZ",
+];
+
 pub fn kind_of(real: &Path, head: &[u8]) -> Kind {
     let names_node = |b: &[u8]| {
         String::from_utf8_lossy(b)
@@ -297,19 +435,8 @@ pub fn kind_of(real: &Path, head: &[u8]) -> Kind {
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some("js" | "mjs" | "cjs") => return Kind::Node,
-        Some(
-            "cmd" | "bat" | "ps1" | "vbs" | "vbe" | "wsf" | "jse" | "py" | "pyw" | "sh" | "rb"
-            | "pl",
-        ) => {
-            return if names_node(head) {
-                Kind::Node
-            } else {
-                Kind::Script
-            }
-        }
-        _ => {}
+    if matches!(ext.as_deref(), Some("js" | "mjs" | "cjs")) {
+        return Kind::Node;
     }
     if head.starts_with(b"#!") {
         let line = head.split(|c| *c == b'\n').next().unwrap_or(head);
@@ -319,7 +446,16 @@ pub fn kind_of(real: &Path, head: &[u8]) -> Kind {
             Kind::Script
         };
     }
-    Kind::Native
+    if NATIVE_MAGIC.iter().any(|m| head.starts_with(m)) {
+        return Kind::Native;
+    }
+    // anything else runs through some interpreter (a .cmd shim, a text file `execvp`
+    // would hand to /bin/sh, …)
+    if names_node(head) {
+        Kind::Node
+    } else {
+        Kind::Script
+    }
 }
 
 fn name_ok(n: &str) -> bool {
@@ -516,6 +652,11 @@ mod tests {
             "/x/msiexec.exe",
             "/x/regsvr32.exe",
             "/usr/bin/ksh93",
+            "/usr/bin/sandbox-exec",
+            "/bin/systemd-run",
+            "/usr/bin/git",
+            "/usr/bin/vim",
+            "/usr/local/bin/npx",
         ] {
             assert!(is_interpreter(Path::new(n)), "{n}");
         }
@@ -539,18 +680,57 @@ mod tests {
         let log = RejectLog::default();
         let t0 = Instant::now();
         let at = |s: u64| t0 + std::time::Duration::from_secs(s);
-        assert_eq!(log.note(at(0), "startup", "program_not_allowed"), Some(0));
-        assert_eq!(log.note(at(1), "startup", "program_not_allowed"), None);
-        assert_eq!(log.note(at(59), "startup", "program_not_allowed"), None);
+        let p = "program_not_allowed";
+        let w0 = Note::Write { folded_before: 0 };
+        assert_eq!(log.note(at(0), "startup", p, "a"), w0);
+        assert_eq!(
+            log.note(at(1), "startup", p, "b"),
+            Note::Folded { arm: Some(at(0)) }
+        );
+        assert_eq!(
+            log.note(at(59), "startup", p, "c"),
+            Note::Folded { arm: None }
+        );
         // another code or another token is another key
-        assert_eq!(log.note(at(2), "startup", "env_not_allowed"), Some(0));
-        assert_eq!(log.note(at(2), "pair_1", "program_not_allowed"), Some(0));
-        // the window closes at 60 s: a new record that says how many were folded
-        assert_eq!(log.note(at(60), "startup", "program_not_allowed"), Some(2));
-        assert_eq!(log.note(at(61), "startup", "program_not_allowed"), None);
-        assert_eq!(log.note(at(200), "startup", "program_not_allowed"), Some(1));
+        assert_eq!(log.note(at(2), "startup", "env_not_allowed", "a"), w0);
+        assert_eq!(log.note(at(2), "pair_1", p, "a"), w0);
+        // the flush at the window's end writes the count and the last program
+        assert_eq!(log.close("startup", p, at(0)), Some((2, "c".to_string())));
+        assert_eq!(log.close("startup", p, at(0)), None);
+        // nothing folded: nothing to write
+        assert_eq!(log.close("startup", "env_not_allowed", at(2)), None);
+        // a rejection after a late flush: the rejection writes the count itself …
+        assert_eq!(log.note(at(100), "startup", p, "a"), w0);
+        assert_eq!(
+            log.note(at(101), "startup", p, "a"),
+            Note::Folded { arm: Some(at(100)) }
+        );
+        assert_eq!(
+            log.note(at(160), "startup", p, "a"),
+            Note::Write { folded_before: 1 }
+        );
+        // … and the late flush of the old window then finds nothing
+        assert_eq!(log.close("startup", p, at(100)), None);
         // a clock that goes back never opens a new window
-        assert_eq!(log.note(at(100), "startup", "program_not_allowed"), None);
+        assert_eq!(
+            log.note(at(150), "startup", p, "a"),
+            Note::Folded { arm: Some(at(160)) }
+        );
+        // shutdown hands back every window that still holds a count
+        let mut left = log.drain();
+        left.sort();
+        assert_eq!(left, [("startup".to_string(), p, 1, "a".to_string())]);
+        assert!(log.drain().is_empty());
+    }
+
+    #[test]
+    fn audit_names_are_short_and_escaped() {
+        assert_eq!(audit_name("claude"), "claude");
+        assert_eq!(audit_name("a\nb\u{1b}"), "a\\u{a}b\\u{1b}");
+        let long = "x".repeat(100);
+        let got = audit_name(&long);
+        assert_eq!(got.chars().count(), 65);
+        assert!(got.ends_with('…'));
     }
 
     #[test]
@@ -568,7 +748,12 @@ mod tests {
         assert_eq!(k("/x/run", b"#!/bin/sh\necho node"), Kind::Script);
         assert_eq!(k("/x/run.ps1", b"Write-Host hi"), Kind::Script);
         assert_eq!(k("/x/claude", b"\xcf\xfa\xed\xfe node"), Kind::Native);
-        assert_eq!(k("/x/claude", b""), Kind::Native);
+        assert_eq!(k("/x/claude", b"\x7fELF\x02"), Kind::Native);
+        assert_eq!(k("/x/ping.exe", b"MZ\x90\x00"), Kind::Native);
+        assert_eq!(k("/x/fat", b"\xca\xfe\xba\xbe"), Kind::Native);
+        // L1: not recognised ⇒ not native (an empty or plain text file would go to sh)
+        assert_eq!(k("/x/claude", b""), Kind::Script);
+        assert_eq!(k("/x/claude", b"echo hi\n"), Kind::Script);
     }
 
     #[test]
