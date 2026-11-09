@@ -91,14 +91,57 @@ mod imp {
         kq.kevent(&[ev], &mut [], None).is_ok()
     }
 
+    /// DIAGNOSTIC ONLY (branch diag/midexit-a9136, never a PR): one JSON line
+    /// per failed child listing, to $AIB_PROCWATCH_DIAG.
+    fn diag(p: u32, pre: i32, e: &std::io::Error) {
+        let Ok(path) = std::env::var("AIB_PROCWATCH_DIAG") else { return };
+        let after = Errno::last_raw();
+        let alive = start_time(p).is_some();
+        Errno::clear();
+        let pre2 = Errno::last_raw();
+        let again = pids_by_type(ProcFilter::ByParentProcess { ppid: p });
+        let again_s = match &again {
+            Ok(v) => format!("ok:{}", v.len()),
+            Err(x) => format!("err:{}", x.raw_os_error().unwrap_or(-1)),
+        };
+        // independent of PPID_ONLY: every pid whose bsdinfo ppid is p
+        let mut by_scan = 0u32;
+        let mut scan_ok = true;
+        match pids_by_type(ProcFilter::All) {
+            Ok(all) => {
+                for q in all {
+                    if q == 0 {
+                        continue;
+                    }
+                    if let Ok(b) = pidinfo::<BSDInfo>(q as i32, 0) {
+                        if b.pbi_ppid == p {
+                            by_scan += 1;
+                        }
+                    }
+                }
+            }
+            Err(_) => scan_ok = false,
+        }
+        let line = format!(
+            "{{\"ppid\":{p},\"errno_before\":{pre},\"err\":{},\"errno_after\":{after},\"alive\":{alive},\"recheck_errno_before\":{pre2},\"recheck\":\"{again_s}\",\"children_by_scan\":{by_scan},\"scan_ok\":{scan_ok}}}\n",
+            e.raw_os_error().unwrap_or(-1)
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+
     /// Record and watch every not-yet-known descendant of `parent`.
     fn adopt(kq: &Kqueue, sh: &Shared, parent: u32) {
         let mut stack = vec![parent];
         while let Some(p) = stack.pop() {
             let pstart = lock(sh).seen.get(&p).copied();
+            let pre = Errno::last_raw();
             let kids = match pids_by_type(ProcFilter::ByParentProcess { ppid: p }) {
                 Ok(k) => k,
-                Err(_) => {
+                Err(e) => {
+                    diag(p, pre, &e);
                     lock(sh).stats.list_failures += 1;
                     continue;
                 }
