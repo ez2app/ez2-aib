@@ -133,3 +133,27 @@ commands through the same gates.
   in the last 7 days.
 * `~/.ez2-aib/state/lease/classify-long.txt` (`AIB_LEASE_CLASSIFY_LONG`): one entry per line;
   a fingerprint containing it is long. Nothing in any file makes a run short.
+
+## `aib-lease insert` — one short, light run next to a shared long holder (D4, off by default)
+
+```sh
+aib-lease insert acquire --owner 043dd --what "cargo clippy -p x" --run-id R --pid $$ --hard-timeout-s 600
+aib-lease insert release --run-id R
+```
+
+DECISION-d4-insert-043dd-1110 (on DECISION-test-classify v1.1 item 5). The slot
+`<lease>.insert.json` is read and written only under the lease's own lock, so the checks and
+taking the slot are one critical section:
+
+* the machine opted in (`<lease>.insert-enabled`; until every lease entry on it is this crate,
+  the 1.x `aib lease acquire` and test_entry's small batches cannot see the slot) ⇒ else
+  `insert_disabled`;
+* a lease is held by a live holder that is **not** exclusive ⇒ else `no_long_holder` (take the
+  lease itself) / `holder_exclusive`;
+* nobody in the queue has waited 30 min ⇒ else `long_waiter`;
+* the slot is free (its pid dead; a live pid keeps it even past its hard timeout) ⇒ else
+  `insert_taken`.
+
+An exclusive `acquire` waits for a running insert (`insert_running`). Hard timeout 300–900 s
+(max(p90 × 2, 5 min), at most 15 min). An unreadable record fails closed. rc 0 / 4 / 3 / 2 as
+for `acquire`.
