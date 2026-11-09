@@ -3,7 +3,10 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## Unreleased (preview.2)
+## 0.2.0-preview.2 — unreleased
+
+- `/api/v1/sessions`: start, list, query and stop a program; stop takes the whole process tree
+  (macOS process group, Windows Job). Details and limits: the preview.2 release notes.
 
 - Sessions API (token only, loopback only): `POST /api/v1/sessions` starts a program in its own process
   group (absolute `argv[0]`, no PATH lookup; stdin / stdout / stderr are the null device, no output
@@ -19,7 +22,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
     known limit (UNVERIFIED).
   - Events: `session.started` (argv[0] file name + count only), `session.exited`, `session.killed`,
     `session.stop_unconfirmed`. env is never returned, logged or stored.
-  - Windows: not wired yet (refused as `spawn_failed` / `unsupported_platform`).
+  - Windows: sessions run in a Job Object and a stop takes the whole Job (`killed` only when the Job
+    emptied and every handle signaled); `aibd selfcheck` `process_management` is still `not_wired`.
 - `aibd selfcheck`: `process_management` now really starts and stops one small tree (a shell with a
   child) and reports that stop's own answer. The stop comes only once the child reported it started
   (at most 3 s); if it never does, the row is `unverified` with reason `child_not_started`. macOS: no survivor seen = `unverified` with the reason
@@ -27,7 +31,7 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `not_wired` (no Windows check tree yet; the POSIX one is never tried there, even once Windows
   sessions are wired).
 
-## 0.2.0-preview.1 — unreleased
+## 0.2.0-preview.1 — 2026-11-09
 
 Preview build, not signed, does not replace the Python `aib`.
 
