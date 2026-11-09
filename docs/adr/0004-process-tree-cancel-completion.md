@@ -200,3 +200,122 @@ and the "periodic scans cost CPU" consequence.
   the gate. A miss is reported as `tree_not_clean`, never as a clean cancel.
 - The same watchers provide the descendant count for the B1 gate ("count only aibd's own
   descendants"); the count carries the same proxy caveat.
+
+## Update 2026-11-09 (Windows Job Object in `aib-sys`, DECISION-8 item 2 / DECISION-11 / DECISION-21)
+
+Windows section drafted by @043dd, merged here by @a9136 and checked against the code on
+`main` (`crates/aib-sys/src/job.rs`, `crates/aib-sys/tests/windows.rs`,
+`scripts/check-win-job-knives.sh`). What is on `main` came in with #492, #535 and #539
+(references below are `file:line` at `main` d018516c). The aibd session adapter on
+Windows is #543, still a draft: those points are marked **(#543)** and are not a decision
+until it merges. Status: CI-windows (GitHub
+`windows-latest`); desktop behaviour is UNVERIFIED.
+
+- **Where.** `aib-sys::job` is the only place with `unsafe` for this (`windows-sys
+  =0.61.2`, the feature list is checked by `aib-xtask deps`).
+- **Start.** `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP`, then `AssignProcessToJobObject`,
+  then resume the single thread. If the assign or the resume fails, or the process does
+  not have exactly one thread, the process is terminated and reaped and the spawn fails.
+  A CLI never runs outside its job, not even for a moment.
+- **Job limits.** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `BREAKAWAY_OK` and
+  `SILENT_BREAKAWAY_OK` are never set, so `CREATE_BREAKAWAY_FROM_JOB` from inside the tree
+  is refused (tested). A breakaway allowed by an *outer* job is outside this guarantee
+  (see "Update 2026-11-07 (performance budget)").
+- **J0 (DECISION-21).** `aib-sys` can put the calling process into its own job with
+  `KILL_ON_JOB_CLOSE`, no breakaway and a non-inheritable handle; session jobs are then
+  nested in it. aibd adopts J0 first thing in `main`, before the runtime and before any
+  child exists, and refuses to start if it cannot (`crates/aibd/src/main.rs:42`).
+- **Identity.** `(pid, creation time)`, with the creation time from `GetProcessTimes`
+  (FILETIME, 100 ns). The ppid is never read. Membership is re-checked with
+  `IsProcessInJob`, so a reused pid outside the job is never reported as a member.
+- **Member list.** A list that is still too short after the retries is
+  `SysError::Incomplete`, never a short list.
+- **Waiting.** The job is associated with an I/O completion port; aibd waits for
+  `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` and re-checks the active count after every message
+  (a queued "zero" from before a later spawn does not count). If the port cannot be
+  attached it polls every 20 ms and reports `wait_mode = poll`.
+- **What "clean" means.** Unchanged: `Report::clean_status()` gives `clean` only with
+  proven containment and complete lineage (DECISION-23); everything else is
+  `tree_not_clean` or `unverified` with a reason. On Windows the settle rule is on `main`
+  (`KillReport::all_gone`, `crates/aib-sys/src/settle.rs:41`); the session stop that uses
+  it is **(#543)**: `Clean` only when the job emptied **and** every member handle opened
+  before `TerminateJobObject` has signalled; survivors ⇒
+  `TreeNotClean`; an error ⇒ `Unverified("job_error:<tag>")`.
+- **Cancel on Windows.** Replaces "Windows: go straight to step 3" in section 2.
+  - `aib-sys` can send `CTRL_BREAK_EVENT` to the CLI's group, only while the root is a
+    current job member; pid 0 (everything on the console) is refused. Without a console
+    shared with aibd, or under ConPTY, the result is `Unsupported`. A graceful stop under
+    ConPTY belongs to the PTY layer (`\x03` on input), not to the job.
+  - The session stop **(#543)** has no TERM step at all: a hidden aibd or a service has
+    no console to share. `grace` only widens the wait. Then `TerminateJobObject`, one
+    bounded wait for the job to empty, and the check above. No `taskkill /T`; no pid
+    outside the job is touched.
+- **aibd crash = the sessions it runs end (DECISION-11 B).** When aibd dies the kernel
+  closes its handles, the job's last handle goes with them, and `KILL_ON_JOB_CLOSE` ends
+  every process still in the job. This is deliberate: aibd holds the CLIs' stdio / PTY, and
+  a CLI that outlives aibd cannot be reattached; it would only keep spending or editing
+  files unattended. After a restart only what is in the event log comes back; a process is
+  never "reattached". Tested in CI by ending an owner with `TerminateProcess` (no destructor
+  runs) and requiring its grandchild to be gone within 10 s. macOS has no such kernel
+  guarantee (next update, last point).
+- **Not the same as closing the UI.** Closing the web UI or a terminal does not close the
+  job; only aibd ending, or a cancel, does.
+- **Knives in CI** (`scripts/check-win-job-knives.sh`; each must turn its named test red):
+  `no-suspended`, `no-terminate`, `breakaway-ok`, `no-kill-on-close`,
+  `assign-fail-no-kill`, `resume-fail-no-kill`, `trust-the-kill`, `break-an-exited-root`,
+  `break-a-non-root`, `no-clear-last-error`, `record-after-resume`, `j0-no-adopt`,
+  `j0-inheritable`, `j0-breakaway-ok`.
+- **UNVERIFIED:** real AI CLIs started inside a job; `CTRL_BREAK` under ConPTY and without a
+  console; jobs the CLI nests itself (`TotalProcesses` coverage, raised by @bb7dc); the
+  whole of #543 on a real machine.
+
+## Update 2026-11-09 (sessions preview.2 on macOS: #544, #546, #549)
+
+The rules the sessions API follows on macOS. The numbers in brackets are the preview.2
+decision list (a63ab, 2026-11-09).
+
+- **Never `clean` on macOS** (DECISION-23). A stop is `tree_not_clean` (a recorded process
+  still runs) or `unverified` with a reason code. The API reports it as
+  `stop_unconfirmed`, with the reason and the survivors.
+- **H1: the root is kept unreaped.** The root is looked at with `waitid(WNOWAIT)`
+  (`aib-sys` M5, #522) and reaped only after the last signal, so its pid cannot be reused
+  while aibd still signals the group. A group signal goes out only after
+  `root_is_our_unreaped_child()` confirms the group is still ours; when the root's
+  identity cannot be proven (someone else reaped it), no group signal is sent and
+  `root_identity_lost` is recorded as a gap. The stop is then `tree_not_clean` if a
+  recorded process is seen still running (survivors are checked first,
+  `Report::clean_status()`), otherwise `unverified` with that reason.
+- **The slot.** A stop frees the session's slot only when it saw no survivor in what it
+  could observe and its result is on the allow list below. This is not a proof that the
+  whole tree is gone, nor a resource-isolation guarantee: `observed_clean` still has its
+  blind spots (`Report::blind_spots()`, `BLIND_SPOTS_UNCONTAINED` in
+  `crates/aibd/src/platform/tree.rs`: `exec_after_creator_exit`, `env_cleared`,
+  `fork_watch_miss`, `uid_changed`).
+  `Stop::releases_slot()` = `clean`, or `unverified` with a reason in
+  `SLOT_RELEASING_REASONS` (today only `observed_clean`), and no survivor. Anything else
+  keeps the slot; a second DELETE runs the stop again (H2) [6, 7, 8].
+- **Background re-check** [9]. A stop ending `candidates_unreadable` with no survivor is
+  re-checked in the background for at most 30 s (`session.slot_rescan` timer, every 2 s):
+  - The window is one absolute end. Each pass runs on its own thread with the grace that
+    still fits, and is waited for only until that end.
+  - A pass that has not answered by then ends the re-check with
+    `session.slot_held {reason: rescan_pass_timeout}`, slot kept. Its late result is
+    recorded and never frees the slot.
+  - `observed_clean` frees the slot (`session.slot_released`); a survivor, a DELETE or the
+    shutdown ends the re-check. Other reasons are not re-checked: another pass would not
+    change them.
+- **A start that fails after spawn** [11, 12]. The tree handle always comes back and the
+  tree is stopped (TERM, then 2 s, then KILL). If that stop does not free the slot, the
+  slot stays held (`left_running`) and the tree is kept to be stopped again at shutdown.
+- **Shutdown** [10, 13]. One cap of 10 s for everything:
+  - Set `shutting` (new POSTs get 503).
+  - Stop every live session, each on its own thread.
+  - Wait for in-flight starts to finish.
+  - Stop the kept trees from failed starts, all in parallel under the same deadline.
+    Trees not confirmed by then are logged with `(pid, start time)`, never as stopped.
+- **`aibd selfcheck`** (contract §6). `process_management` really starts and stops one small
+  tree, but only after the tree's child has reported it started; otherwise the row is
+  `unverified` / `child_not_started`. The row is never better than the stop's own answer.
+- **`aibd` killed with `kill -9`** [15]. On macOS its sessions' processes are left running.
+  This is a known limit, stated as such; Windows covers it with `KILL_ON_JOB_CLOSE`
+  (previous update, UNVERIFIED on a real machine).

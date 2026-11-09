@@ -120,6 +120,23 @@ LAYOUT = (
      "Hetzner Robot webservice 使用者(Settings → Web service and app settings)。給 aib 啟用 Rescue / 重置用;不是 Cloud API token、不是主機 root。",
      (("HETZNER_ROBOT_USER", "Robot webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
       ("HETZNER_ROBOT_PASS", "Robot webservice 密碼", "cloud-host", "host-rescue", False))),
+    # 11-09 @33e28(f1fae 派 b118,代管節點):Proxmox VE 的 API token,讓 aib 自己開 / 管 VM,token 不經對話。
+    #   值是 PVE 的整串「使用者@realm!token 名=密鑰(UUID)」,也就是 Authorization: PVEAPIToken= 後面那段;建議用 aib@pve 的
+    #   privsep token(只給要用的權限,root@ 的 token 當場拒)。多台:PVE_API_TOKEN_<主機代號>。
+    #   只有 PVE_API_ 開頭落這檔(NO_SEGMENT_PREFIX_FILES;PVE_ROOT_PASSWORD 這類回 unknown_name,要另開一格),
+    #   PVE_API_ 開頭一律套 token 形狀(secret_ask SHAPE_PREFIX,打錯的 PVE_API_TOKN 也擋)。
+    #   只走 aib secret ask(彈窗 + Touch ID)寫;缺值不補填(NO_FILL_FILES:不發 LINE 請人貼);格式不對當場重問(secret_ask SHAPE)。
+    ("pve.env", "pve-api", "type",
+     "Proxmox VE API token(建議 aib@pve 的 privsep token)。一行 PVE_API_TOKEN=使用者@realm!token名=UUID;多台加 _<主機代號>。不是 root 密碼,也不收 root@ 的 token。",
+     (("PVE_API_TOKEN", "PVE API token(使用者@realm!token名=UUID)", "cloud-host", "pve-api", False),)),
+    # 11-09 @33e28(b118):代管站的資料庫密碼與 WordPress 管理員密碼。命名規則:WPSITE_<種類>_<站點代號>,
+    #   站點代號 = 大寫英數與底線(例 WPSITE_DB_PASSWORD_SHOP1、WPSITE_ADMIN_PASSWORD_SHOP1);前綴 WPSITE_ 都落這檔。
+    #   不寫主機 / 客戶名進名冊(開源倉);缺值不補填(密碼不經 LINE)。
+    #   值原樣保存:頭尾有空白(含換行)當場重問,不默默砍掉(secret_ask EXACT_VALUE_PREFIXES,#545 L2)。
+    ("wpsite.env", "wpsite", "type",
+     "代管站點的密碼。一站一組:WPSITE_DB_PASSWORD_<站點代號>(資料庫)、WPSITE_ADMIN_PASSWORD_<站點代號>(WordPress 管理員)。密碼頭尾不能是空白。",
+     (("WPSITE_DB_PASSWORD", "站點資料庫密碼(實際名字加 _<站點代號>)", "cloud-host", "site-creds", False),
+      ("WPSITE_ADMIN_PASSWORD", "站點 WordPress 管理員密碼(實際名字加 _<站點代號>)", "cloud-host", "site-creds", False))),
     ("payment.env", "payment", "type",
      "收款。定 provider 後才填。",
      (("STRIPE_SECRET_KEY", "Stripe 密鑰", "payment", "payment", False),
@@ -286,7 +303,8 @@ CUSTOMER_FIRST_BATCH = (
 # 只登記完整平台前綴、不登記行名第一段的檔:10-29 @aeb40(#416 R1 L1)PIXEL_ 整段會被 pixel-claude.env 吃掉,
 #   像素工坊之後的別的秘密(PIXEL_GROK_…)會默默寫進 claude 專用 token 檔;不登記 ⇒ 那些名字回 unknown_name,要另開一格。
 #   新的 pixel-* 檔(例 pixel-grok.env)也要加進來:這是檔名清單,沒列的那一檔會改登記 PIXEL_、整段又被它吃掉(@aeb40 #425 L1)。
-NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env")   # 11-08 #528 M1(ebb36):HETZNER_CLOUD_… 不能落進 Robot 檔
+NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env")   # 11-08 #528 M1(ebb36):HETZNER_CLOUD_… 不能落進 Robot 檔;
+#   11-09 #545 L1(ebb36):pve.env 只收 PVE_API_ 開頭,PVE_ROOT_PASSWORD 這類要另開一格
 
 
 def _name_maps():
@@ -317,7 +335,7 @@ REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAI
 #   由名冊決定、不靠呼叫端旗標(呼叫端另可 secret(name, fill=False),兩者取「不補填」)
 NO_FILL_NAMES = ("PIXEL_CLAUDE_OAUTH_TOKEN",)
 # 依檔判斷:落到這些檔的名字(PIXEL_CLAUDE_OAUTH_TOKEN_2 這類前綴名)也一律不補填(@aeb40 #425 L2:只認完整名會漏)
-NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env")   # 11-08 #528 H2(ebb36):Robot 密碼缺值絕不發 LINE 補填
+NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env", "wpsite.env")   # 11-08 #528 H2(ebb36):Robot 密碼缺值絕不發 LINE 補填;11-09 b118:PVE token、站點密碼同
 
 
 def no_fill(name):

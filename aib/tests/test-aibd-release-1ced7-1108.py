@@ -15,6 +15,12 @@ R7 先 draft → verify 全綠 → 才 publish(PATCH draft=false、make_latest=f
 R8 draft 一律用 release id + API 找(建立後依 tag_name + draft 濾出恰一筆 id 傳下去;verify 用 asset API 下載、publish 用 id PATCH / 讀回),
    不靠 gh 用 tag 找 draft 的後備查找(a63ab 11-08 22:00:那條路沒實測)
    (11-08 三家深審 SUMMARY-deep-launch 第 1 點:verify 紅永不公開)
+R9 build 與 verify 都跑 API 冒煙(scripts/aibd-api-smoke.py)與 sessions 冒煙(scripts/aibd-sessions-smoke.py,11-09 起 --require(定案 #19);
+   verify 的冒煙在沒權杖的執行步、用 checkout 拿腳本,執行檔仍來自 draft)(a63ab 11-09 PLAN-preview2)
+R10 draft 步驟實跑(假 gh / 假 sleep,11-09 run 42573353508:create 後列表 0.6 秒還是空的 ⇒ 整步紅):
+   列表先空兩次再出現 ⇒ 重試後 rc 0、傳出 id;一直空 ⇒ 6 次後 rc 1、不傳 id;兩筆 ⇒ 不重試、rc 1;
+   列表讀失敗 ⇒ 不重試、rc ≠ 0;用 id 讀回 draft=false / 附檔數不對 ⇒ rc 1。刀(改抽出的步驟文字):
+   K1 拿掉重試 ⇒ 先空後有那格紅;K2 拿掉讀回比對 ⇒ draft=false 那格紅;K3 多筆也重試 ⇒ 兩筆那格紅(多睡)
 D1 安裝說明(英 / 繁中):先對 SHA256SUMS 才執行、寫明沒簽章、標草稿(對客字要 Andy 看)
 D2 macOS 指令實跑(假 curl、暫存 HOME):sha 對 ⇒ 裝好、跑兩次;sha 不符 / SHA256SUMS 沒這行 / 下載失敗 / 下載失敗但留著上次的舊檔 ⇒ 沒裝、沒執行
    (bb7dc 11-08 High:舊稿分行寫,sha 失敗仍 chmod / mv / 執行)
@@ -149,6 +155,118 @@ class Static(unittest.TestCase):
         self.assertIn('-H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid"', v)
 
 
+    def test_r9_api_and_sessions_smoke_in_build_and_verify(self):
+        b, v = job("build"), job("verify")
+        self.assertIn('-I scripts/aibd-api-smoke.py "dist/${NAME}"', b)
+        self.assertIn('-I scripts/aibd-sessions-smoke.py --require "dist/${NAME}"', b)  # 定案 #19:API 合了 ⇒ 必過
+        self.assertLess(b.index("selfcheck rc 0"), b.index("aibd-api-smoke.py"))
+        self.assertLess(b.index("aibd-sessions-smoke.py"), b.index("upload-artifact"), "冒煙沒過不准上傳")
+        dl, run = v.split("- name: run what was uploaded")
+        self.assertIn('-I ../scripts/aibd-api-smoke.py "./$NAME"', run, "冒煙跑的是從 draft 下載的那份")
+        self.assertIn('-I ../scripts/aibd-sessions-smoke.py --require "./$NAME"', run)  # 定案 #19
+        self.assertNotIn("GH_TOKEN", run)
+        self.assertLess(v.index("uses: actions/checkout@v4"), v.index("gh api"), "checkout 會清工作區:要在下載之前")
+        self.assertIn('- "scripts/aibd-*-smoke.py"', T, "改冒煙腳本的 PR 也要跑這支 workflow")
+        for script in ("aibd-api-smoke.py", "aibd-sessions-smoke.py"):
+            with self.subTest(script=script):
+                self.assertTrue((ROOT / "scripts" / script).is_file(), "workflow 叫的腳本要在倉裡:%s" % script)
+
+
+FAKE_GH = r"""#!/bin/bash
+# 假 gh:列表第 N 次呼叫回 $FAKE/list.N(沒有就回 list.default;檔內容 = --jq 之後的 TSV,可放 'FAIL' 讓它 rc 1)
+#   create 記一筆;用 id 讀單筆回 $FAKE/one。每次呼叫記到 $FAKE/calls。
+echo "$*" >> "$FAKE/calls"
+if [ "$1 $2" = "release create" ]; then touch "$FAKE/created"; exit 0; fi
+case "$*" in
+  *"--paginate repos/"*"/releases?per_page=100"*)
+    n=$(( $(cat "$FAKE/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE/n"
+    f="$FAKE/list.$n"; [ -f "$f" ] || f="$FAKE/list.default"
+    if [ "$(cat "$f")" = FAIL ]; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$f"; exit 0;;
+  *"repos/"*"/releases/"*) cat "$FAKE/one"; exit 0;;
+esac
+echo "fake gh: unexpected $*" >&2; exit 9
+"""
+
+
+class DraftRun(unittest.TestCase):
+    TAG = "aibd-v0.2.0-preview.9"
+    LINE = "77\taibd-v0.2.0-preview.9\ttrue\n"
+
+    def run_step(self, lists, one="draft=true tag=aibd-v0.2.0-preview.9 assets=3", script=None):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            fake, work = d / "fake", d / "work"
+            fake.mkdir()
+            (work / "docs" / "aibd").mkdir(parents=True)
+            (work / "docs" / "aibd" / "RELEASE-NOTES-0.2.0-preview.9.md").write_text("notes\n", encoding="utf-8")
+            (fake / "gh").write_text(FAKE_GH, encoding="utf-8")
+            (fake / "sleep").write_text('#!/bin/bash\necho "$1" >> "$FAKE/sleeps"\n', encoding="utf-8")
+            for f in ("gh", "sleep"):
+                (fake / f).chmod(0o755)
+            (fake / "list.default").write_text("", encoding="utf-8")
+            for n, body in lists.items():
+                (fake / ("list.%s" % n)).write_text(body, encoding="utf-8")
+            (fake / "one").write_text(one + "\n", encoding="utf-8")
+            out = d / "out"
+            env = dict(os.environ, FAKE=str(fake), PATH="%s:%s" % (fake, os.environ.get("PATH", "")), TAG=self.TAG,
+                       VERSION="0.2.0-preview.9", GH_REPO="o/r", EXPECTED_FILES="2", GITHUB_OUTPUT=str(out))
+            r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script or step_script("draft", "mk")],
+                               cwd=str(work), env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            sleeps = len((fake / "sleeps").read_text().split()) if (fake / "sleeps").exists() else 0
+            got = out.read_text(encoding="utf-8") if out.exists() else ""
+        return r.returncode, got, sleeps, r.stdout + r.stderr
+
+    def test_r10a_listed_late_is_retried(self):
+        rc, got, sleeps, log = self.run_step({2: "", 3: "", 4: self.LINE})   # 呼叫 1 = 建立前查舊的
+        self.assertEqual(rc, 0, log)
+        self.assertIn("release_id=77", got)
+        self.assertEqual(sleeps, 2, log)
+        self.assertIn("not listed yet (try 1/6", log)
+
+    def test_r10b_never_listed_is_red_without_id(self):
+        rc, got, sleeps, log = self.run_step({})
+        self.assertEqual(rc, 1, log)
+        self.assertIn("expected exactly one draft", log)
+        self.assertNotIn("release_id", got)
+        self.assertEqual(sleeps, 5, "6 次查、中間等 5 次")
+
+    def test_r10c_two_drafts_stop_at_once(self):
+        two = self.LINE + "78\taibd-v0.2.0-preview.9\ttrue\n"
+        rc, got, sleeps, log = self.run_step({2: two})
+        self.assertEqual((rc, sleeps), (1, 0), log)
+        self.assertNotIn("release_id", got)
+
+    def test_r10d_list_read_failure_is_not_retried_as_empty(self):
+        rc, got, sleeps, log = self.run_step({2: "FAIL"})
+        self.assertNotEqual(rc, 0, log)
+        self.assertEqual(sleeps, 0, log)
+        self.assertNotIn("release_id", got)
+
+    def test_r10e_read_back_must_be_a_draft_with_all_files(self):
+        for one in ("draft=false tag=aibd-v0.2.0-preview.9 assets=3", "draft=true tag=aibd-v0.2.0-preview.9 assets=2",
+                    "draft=true tag=aibd-v0.2.0-preview.8 assets=3"):
+            with self.subTest(one=one):
+                rc, got, sleeps, log = self.run_step({2: self.LINE}, one=one)
+                self.assertEqual(rc, 1, log)
+                self.assertIn("reads back as", log)
+                self.assertNotIn("release_id", got)
+
+    def test_r10_knives_on_the_step_text(self):
+        s = step_script("draft", "mk")
+        k1 = re.sub(r"(?s)ids=\"\"\nfor try in .*?done\n", "ids=$(rel_ids true)\n", s)
+        k2 = s.replace('[ "$got" = "$want" ] ||', 'true ||')
+        k3 = s.replace('[ -n "$ids" ] && break', '[ "$(printf \'%s\\n\' "$ids" | grep -c .)" = 1 ] && break')
+        for tag, ks in (("K1", k1), ("K2", k2), ("K3", k3)):
+            self.assertNotEqual(ks, s, "%s 錨沒中,刀沒落" % tag)
+        rc, _, _, _ = self.run_step({2: "", 3: self.LINE}, script=k1)
+        self.assertEqual(rc, 1, "K1 拿掉重試應該在『先空後有』紅")
+        rc, _, _, _ = self.run_step({2: self.LINE}, one="draft=false tag=aibd-v0.2.0-preview.9 assets=3", script=k2)
+        self.assertEqual(rc, 0, "K2 拿掉讀回比對 ⇒ draft=false 會被放過(證明 R10e 咬得到)")
+        rc, _, sleeps, _ = self.run_step({2: self.LINE + "78\taibd-v0.2.0-preview.9\ttrue\n"}, script=k3)
+        self.assertEqual(sleeps, 5, "K3 多筆也重試 ⇒ 會多睡(R10c 斷言 sleeps 0 咬得到)")
+
+
 @unittest.skipUnless(sys.version_info >= (3, 11), "meta uses tomllib (Python 3.11+, as on ubuntu-latest)")
 class Meta(unittest.TestCase):
     def run_meta(self, version, ref_type, ref_name):
@@ -196,6 +314,34 @@ class Docs(unittest.TestCase):
                 i_check, i_run = t.index("shasum -a 256 -c"), t.index("--version")
                 self.assertLess(i_check, i_run, "先對雜湊才執行")
 
+    def test_d6_install_and_notes_follow_the_workspace_version(self):
+        # aibd-release.yml drafts from docs/aibd/RELEASE-NOTES-${VERSION}.md and stops without it
+        self.assertTrue((ROOT / "docs" / "aibd" / ("RELEASE-NOTES-%s.md" % CUR)).exists(), CUR)
+        self.assertIn("RELEASE-NOTES-%s.md" % CUR, NOTES, "新版說明檔要加進 NOTES(和 docs_only.py DOC_EXCLUDE)")
+        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-%s.md" % CUR):
+            with self.subTest(f=f):
+                sh = block(f, "sh")
+                ps = block(f, "powershell")
+                self.assertIn("\nV=%s\n" % CUR, "\n" + sh, "macOS 區塊 V= 要跟 Cargo.toml 一樣")
+                self.assertIn('$V = "%s"' % CUR, ps, "Windows 區塊 $V 要跟 Cargo.toml 一樣")
+
+
+
+# INSTALL follows the workspace version; each release-notes file pins the version in its own name
+CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
+# 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
+# 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
+NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md")
+PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
+
+
+def ver_of(f):
+    m = re.match(r"RELEASE-NOTES-(.+)\.md$", f)
+    return m.group(1) if m else CUR
+
+
+def name_of(f):
+    return "aibd-%s-aarch64-apple-darwin" % ver_of(f)
 
 
 def block(f, lang):
@@ -211,9 +357,8 @@ for a in "$@"; do case "$a" in -*) ;; *) n=${a##*/}; [ -f "$SRC/$n" ] || exit 22
 
 @unittest.skipUnless(shutil.which("shasum") and shutil.which("bash"), "needs shasum + bash")
 class InstallRuns(unittest.TestCase):
-    NAME = "aibd-0.2.0-preview.1-aarch64-apple-darwin"
-
     def run_block(self, f, sums, stale=False):
+        NAME = name_of(f)
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             home, src, fbin = d / "home", d / "src", d / "fbin"
@@ -222,22 +367,26 @@ class InstallRuns(unittest.TestCase):
             mark = d / "ran.log"
             if stale:      # last attempt left an old binary + old SHA256SUMS in ~/Downloads and an old install
                 old = "#!/bin/sh\necho \"stale $*\" >> %s\n" % shlex.quote(str(mark))
-                (home / "Downloads" / self.NAME).write_text(old, encoding="utf-8")
+                (home / "Downloads" / NAME).write_text(old, encoding="utf-8")
                 (home / "Downloads" / "SHA256SUMS").write_text(
-                    "%s  %s\n" % (hashlib.sha256(old.encode()).hexdigest(), self.NAME), encoding="utf-8")
+                    "%s  %s\n" % (hashlib.sha256(old.encode()).hexdigest(), NAME), encoding="utf-8")
                 (home / ".local" / "bin").mkdir(parents=True)
                 (home / ".local" / "bin" / "aibd").write_text("old install\n", encoding="utf-8")
-            exe = src / self.NAME
+            exe = src / NAME
             if sums != "no-binary":
                 exe.write_text("#!/bin/sh\necho \"$*\" >> %s\n" % shlex.quote(str(mark)), encoding="utf-8")
             good = hashlib.sha256(exe.read_bytes()).hexdigest() if exe.exists() else "0" * 64
-            lines = {"ok": "%s  %s\n" % (good, self.NAME), "no-binary": "%s  %s\n" % (good, self.NAME),
-                     "bad": "%s  %s\n" % ("f" * 64, self.NAME), "missing": "%s  aibd-other\n" % good}[sums]
+            lines = {"ok": "%s  %s\n" % (good, NAME), "no-binary": "%s  %s\n" % (good, NAME),
+                     "bad": "%s  %s\n" % ("f" * 64, NAME), "missing": "%s  aibd-other\n" % good}[sums]
             (src / "SHA256SUMS").write_text(lines, encoding="utf-8")
             (fbin / "curl").write_text(FAKE_CURL, encoding="utf-8")
             (fbin / "curl").chmod(0o755)
             env = dict(os.environ, HOME=str(home), SRC=str(src), PATH="%s:%s" % (fbin, os.environ.get("PATH", "")))
-            r = subprocess.run(["bash", "-c", block(f, "sh")], env=env, capture_output=True, text=True, timeout=60)
+            here = set(os.listdir("."))
+            # run where a user pastes it (~/Downloads holds the stale files); never in the repo / test cwd
+            r = subprocess.run(["bash", "-c", block(f, "sh")], env=env, cwd=str(home / "Downloads"),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(set(os.listdir(".")) - here, set(), "安裝段的下載檔不准落在測試的 cwd")
             inst = home / ".local" / "bin" / "aibd"
             installed = inst.exists() and inst.read_text(encoding="utf-8") != "old install\n"
             ran = mark.read_text(encoding="utf-8").split("\n")[:-1] if mark.exists() else []
@@ -261,16 +410,21 @@ class InstallRuns(unittest.TestCase):
                 self.assertEqual(ran, [], "舊檔不准被執行\n" + log)
 
     def test_d2_release_notes_block_too(self):
-        rc, inst, ran, log = self.run_block("RELEASE-NOTES-0.2.0-preview.1.md", "bad")
-        self.assertNotEqual(rc, 0, log)
-        self.assertFalse(inst, log)
-        self.assertEqual(ran, [], log)
+        for f in NOTES:
+            with self.subTest(f=f, case="ok"):
+                rc, inst, ran, log = self.run_block(f, "ok")
+                self.assertEqual((rc, inst, ran), (0, True, ["--version", "selfcheck"]), log)
+            with self.subTest(f=f, case="bad"):
+                rc, inst, ran, log = self.run_block(f, "bad")
+                self.assertNotEqual(rc, 0, log)
+                self.assertFalse(inst, log)
+                self.assertEqual(ran, [], log)
 
 
 
 class InstallZshPaste(unittest.TestCase):
     def test_d4_no_comments_in_sh_blocks(self):
-        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+        for f in PASTED:
             with self.subTest(f=f):
                 for n, ln in enumerate(block(f, "sh").splitlines(), 1):
                     code = re.sub(r'"[^"]*"', '""', ln)       # 引號裡的 # 不算(例:網址片段)
@@ -278,7 +432,7 @@ class InstallZshPaste(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("zsh"), "needs zsh (macOS Terminal's default shell)")
     def test_d5_interactive_zsh_paste_sets_v_and_f(self):
-        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+        for f in PASTED:
             with self.subTest(f=f):
                 lines = block(f, "sh").splitlines()
                 setup = []                                   # 開頭的設定行(NAME=...),到第一個指令為止
@@ -294,13 +448,13 @@ class InstallZshPaste(unittest.TestCase):
                 out = r.stdout + r.stderr
                 got = re.search(r"@@V=\[(.*?)\] F=\[(.*?)\]", out)
                 self.assertIsNotNone(got, out)
-                self.assertEqual(got.group(1), "0.2.0-preview.1", "V 變空 = 互動 zsh 把 # 當指令\n" + out)
-                self.assertEqual(got.group(2), "aibd-0.2.0-preview.1-aarch64-apple-darwin", out)
+                self.assertEqual(got.group(1), ver_of(f), "V 變空 = 互動 zsh 把 # 當指令\n" + out)
+                self.assertEqual(got.group(2), name_of(f), out)
                 self.assertNotIn("command not found", out)
 
 class InstallWindowsOrder(unittest.TestCase):
     def test_d3(self):
-        for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.1.md"):
+        for f in PASTED:
             with self.subTest(f=f):
                 b = block(f, "powershell")
                 lines = [ln.strip() for ln in b.splitlines() if ln.strip()]

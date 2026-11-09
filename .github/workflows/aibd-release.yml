@@ -16,6 +16,7 @@ on:
     paths:
       - ".github/workflows/aibd-release.yml"
       - "docs/aibd/**"
+      - "scripts/aibd-*-smoke.py"
 permissions:
   contents: read
 concurrency:
@@ -117,6 +118,17 @@ jobs:
           echo "--version: $out"
           [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
           if "$bin" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::$NAME selfcheck exited $rc"; exit 1; fi
+      - name: API smoke (health / metrics / events, token, Host guard)
+        shell: bash
+        run: |
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I scripts/aibd-api-smoke.py "dist/${NAME}"; then echo "API smoke pass"; else rc=$?; echo "::error::API smoke rc $rc"; exit 1; fi
+      - name: sessions smoke (open a program with a grandchild, DELETE, whole tree gone; required)
+        shell: bash
+        run: |
+          # 11-09 a63ab:sessions API 已合(#544)⇒ --require:沒有 sessions 端點就紅(定案 #19)
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I scripts/aibd-sessions-smoke.py --require "dist/${NAME}"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::sessions smoke rc $rc"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
@@ -171,9 +183,22 @@ jobs:
           [ -f "$notes" ] || { echo "::error::$notes is missing (release notes are reviewed by a human before tagging)"; exit 1; }
           gh release create "$TAG" --draft --prerelease --latest=false --verify-tag \
             --title "aibd $VERSION (preview)" --notes-file "$notes" dist/aibd-* dist/SHA256SUMS
-          ids=$(rel_ids true)
+          # 11-09 14:32 run 42573353508:create 印出草稿網址 0.6 秒後,列表還是空的(GitHub 列表最終一致)⇒ 整步紅。
+          #   只在「一筆都沒有」時重試(最多 6 次、每次等 3 秒);多於一筆立刻停;列表讀失敗照樣整步停(pipefail + -e)。
+          #   找到後用 id 讀回單筆:要 draft=true、tag 對、附檔數 = 執行檔 + SHA256SUMS,才往下傳。
+          ids=""
+          for try in 1 2 3 4 5 6; do
+            ids=$(rel_ids true)
+            [ -n "$ids" ] && break
+            [ "$try" = 6 ] && break
+            echo "draft for $TAG not listed yet (try $try/6; the releases list is eventually consistent) — retry in 3 s"
+            sleep 3
+          done
           [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || { echo "::error::expected exactly one draft for $TAG, got: '$ids'"; exit 1; }
-          echo "draft release id: $ids"
+          got=$(gh api "repos/$GH_REPO/releases/$ids" --jq '"draft=\(.draft) tag=\(.tag_name) assets=\(.assets | length)"')
+          want="draft=true tag=$TAG assets=$((EXPECTED_FILES + 1))"
+          [ "$got" = "$want" ] || { echo "::error::release $ids reads back as '$got', want '$want'"; exit 1; }
+          echo "draft release id: $ids ($got)"
           echo "release_id=$ids" >> "$GITHUB_OUTPUT"
 
   verify:
@@ -196,6 +221,9 @@ jobs:
       PLAT: ${{ matrix.plat }}
       ARCH: ${{ matrix.arch }}
     steps:
+      - uses: actions/checkout@v4          # only for scripts/aibd-*-smoke.py; the binary still comes from the draft
+        with:
+          persist-credentials: false
       - name: download from the draft and check SHA256SUMS
         shell: bash
         env:
@@ -228,6 +256,10 @@ jobs:
           echo "--version: $out"
           [ "$out" = "aibd $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aibd $VERSION $PLAT'"; exit 1; }
           if "./$NAME" selfcheck; then echo "selfcheck rc 0"; else rc=$?; echo "::error::uploaded $NAME selfcheck exited $rc"; exit 1; fi
+          PY=$(command -v python3 || command -v python)
+          if "$PY" -I ../scripts/aibd-api-smoke.py "./$NAME"; then echo "API smoke pass"; else rc=$?; echo "::error::uploaded $NAME API smoke rc $rc"; exit 1; fi
+          # sessions:--require(定案 #19)— 端點不在就紅
+          if "$PY" -I ../scripts/aibd-sessions-smoke.py --require "./$NAME"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::uploaded $NAME sessions smoke rc $rc"; exit 1; fi
 
   publish:
     needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private

@@ -18,13 +18,28 @@ acceptance baseline until the Rust path replaces it end to end.
 cargo test -p aib-cloud
 ```
 
-## `aib_cloud::isolation` (M0 item 4, 11-09)
+## `aib_cloud::isolation` (M0 item 4, 11-09; r2 after ebb36's review)
 
 The 4.4.1 §5 isolation matrix as data: from a host topology (host, Edge CT, site CTs,
-tailnet, public probe targets) it derives every cell (who probes what, TCP / DNS / ICMP,
-open or blocked) and gives every *blocked* cell a *control* cell that proves the target
-is alive — a timeout alone is never a pass. `probe_plan()` is the job list for the
-host-side runner `aib/tools/cloud-host/ez2-isolation-probe` (joins each CT's network
-namespace); `judge()` turns its results into a pass / fail / missing receipt.
-`tests/fixtures/isolation-eu02-1109*.json` is EU02's recorded run: 51 / 51 cells pass
-(48 from the host with a hostile twin CT restored from backup, 3 from EU01).
+tailnet, peer host, public probe targets, IPv6) it derives every cell (who probes what,
+TCP / DNS / ICMP, open / blocked / closed). Every *blocked* cell names a *control* cell
+with the **same target ip:port and protocol** from an allowed source, so a timeout alone
+is never a pass; `check_matrix()` asserts that invariant and unique ids. `probe_plan()`
+is the job list for the host-side runner `aib/tools/cloud-host/ez2-isolation-probe`
+(validates the plan against a whitelist, joins each CT's network namespace via
+`lxc-info` + `nsenter` and verifies the namespace it landed in); `judge()` accepts only a
+report bound to this exact plan (`plan_fnv`) and host, checks every result's
+from / kind / ip / port against its cell, and returns a pass / fail / missing receipt.
+`tests/fixtures/isolation-eu02-*.json` is EU02's recorded run (sites CT 110 + 112, the
+3 public cells measured from EU01).
+
+## `aib_cloud::r2token` (M-R1b, 11-09)
+
+Planning logic for the per-host Cloudflare R2 backup token (4.4.1 §10.1; Andy:
+"key 從 EU01 取得,再彈出生物辨識"): validates bucket / host alias / egress IPv4 /
+zone / destination / rclone remote, derives the approval facts, the token policy
+(one bucket, Item Read + Item Write, one `/32`) and the remote job spec from the
+same values, judges the five-check verification report and strips secret-looking
+keys before anything prints. Still no I/O: the ssh pipeline and the Touch ID gate
+stay in the Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) until the
+Rust shell lands with the ADR.

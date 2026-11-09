@@ -1,9 +1,12 @@
-//! macOS M1–M4 through libproc. Every `unsafe` block is one FFI call with
+//! macOS M1–M4 through libproc, M5 through `waitid`. Every `unsafe` block is one FFI call with
 //! its own SAFETY note (`clippy::undocumented_unsafe_blocks` and
 //! `multiple_unsafe_ops_per_block` are denied for this crate).
 
 use crate::list::read_pid_list;
-use crate::{check_struct_read, BsdInfo, ProcessInfo, SysError, UniqueIds};
+use crate::{
+    check_struct_read, exit_state_from, BsdInfo, ChildExit, ExitState, ProcessInfo, SysError,
+    UniqueIds,
+};
 use libc::{c_int, c_void};
 use std::mem::{size_of, MaybeUninit};
 
@@ -174,6 +177,123 @@ fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32
         }
         usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
     })
+}
+
+/// M5: one `waitid(P_PID, pid, WEXITED | WNOWAIT | extra)`. Never reaps.
+fn waitid_nowait(pid: u32, extra: c_int) -> Result<ExitState, SysError> {
+    let id = libc::id_t::try_from(pid_arg(pid)?).map_err(|_| SysError::BadPid)?;
+    let mut si = MaybeUninit::<libc::siginfo_t>::zeroed();
+    clear_errno();
+    // SAFETY: `si` is a live, writable, correctly sized and aligned
+    // `siginfo_t`; `waitid` writes at most one `siginfo_t` into it.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            id,
+            si.as_mut_ptr(),
+            libc::WEXITED | libc::WNOWAIT | extra,
+        )
+    };
+    if rc != 0 {
+        let e = SysError::from_errno(errno());
+        // say why when it is our own setting (043dd / a63ab #522 M1)
+        if e == SysError::NotChild && matches!(sigchld(), Ok(s) if !s.keeps_zombies()) {
+            return Err(SysError::ChildrenAutoReaped);
+        }
+        return Err(e);
+    }
+    // SAFETY: `si` started all-zero (a valid `siginfo_t`: integers, padding
+    // and a null pointer) and the kernel only wrote a valid one over it.
+    let si = unsafe { si.assume_init() };
+    exit_state_from(pid, si.si_pid, si.si_code, si.si_status)
+}
+
+impl ChildExit for Macos {
+    fn peek(&self, pid: u32) -> Result<ExitState, SysError> {
+        waitid_nowait(pid, libc::WNOHANG)
+    }
+
+    fn wait_exit(&self, pid: u32) -> Result<ExitState, SysError> {
+        loop {
+            match waitid_nowait(pid, 0) {
+                Err(SysError::Os(e)) if e == libc::EINTR => continue,
+                Ok(ExitState::Running) => return Err(SysError::Unknown), // blocking waitid never says "running"
+                r => return r,
+            }
+        }
+    }
+}
+
+/// How this process treats `SIGCHLD`: M5's premise (ADR 0008 rule 3, 043dd
+/// #522 M1). Ignored (`SIG_IGN`) or `SA_NOCLDWAIT` ⇒ the kernel reaps exited
+/// children at once, so M5 only ever sees `ECHILD` and every group stop is
+/// unverified. Both are inherited across `exec`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sigchld {
+    /// `SIG_DFL`: exited children stay zombies until reaped.
+    Default,
+    /// A handler without `SA_NOCLDWAIT`: zombies stay too.
+    Handled,
+    /// `SIG_IGN`: auto-reaped.
+    Ignored,
+    /// `SA_NOCLDWAIT`: auto-reaped.
+    NoChildWait,
+}
+
+impl Sigchld {
+    /// `true` when exited children are kept for us to look at (M5 works).
+    pub fn keeps_zombies(self) -> bool {
+        matches!(self, Sigchld::Default | Sigchld::Handled)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sigchld::Default => "default",
+            Sigchld::Handled => "handled",
+            Sigchld::Ignored => "ignored",
+            Sigchld::NoChildWait => "no_child_wait",
+        }
+    }
+}
+
+/// Read the current `SIGCHLD` disposition without changing it.
+pub fn sigchld() -> Result<Sigchld, SysError> {
+    let mut old = MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: a null new action only reads; `old` is a live, writable
+    // `sigaction` the kernel fills.
+    let rc = unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), old.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    // SAFETY: zero-initialised, then written by the kernel.
+    let old = unsafe { old.assume_init() };
+    Ok(if old.sa_sigaction == libc::SIG_IGN {
+        Sigchld::Ignored
+    } else if old.sa_flags & libc::SA_NOCLDWAIT != 0 {
+        Sigchld::NoChildWait
+    } else if old.sa_sigaction == libc::SIG_DFL {
+        Sigchld::Default
+    } else {
+        Sigchld::Handled
+    })
+}
+
+/// Set `SIGCHLD` back to `SIG_DFL` (no flags) when it does not keep zombies;
+/// returns what it was. A handler that keeps zombies is left alone.
+pub fn sigchld_keep_zombies() -> Result<Sigchld, SysError> {
+    let was = sigchld()?;
+    if was.keeps_zombies() {
+        return Ok(was);
+    }
+    let sa = MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: an all-zero `sigaction` is valid: SIG_DFL, empty mask, no flags.
+    let sa = unsafe { sa.assume_init() };
+    // SAFETY: `sa` is a valid `sigaction`; the old action is not needed.
+    let rc = unsafe { libc::sigaction(libc::SIGCHLD, &sa, std::ptr::null_mut()) };
+    if rc != 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    Ok(was)
 }
 
 #[cfg(test)]
