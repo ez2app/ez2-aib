@@ -709,11 +709,230 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
     Ok(u8::from(!all.is_empty()))
 }
 
+// ---------------------------------------------------------------- site suspend / resume / restore (P2)
+
+const EDGE_CT: &str = "101";
+const CADDYFILE: &str = "/etc/caddy/Caddyfile";
+const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
+
+fn load_site(code: &str, records_dir: &str) -> Result<aib_cloud::site::SiteSpec, String> {
+    let path = format!("{records_dir}/{code}.json");
+    let text = fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let rec: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("{path}: {e}"))
+}
+
+fn edge_caddyfile() -> Result<String, String> {
+    let mut cmd = Command::new("pct");
+    cmd.args(["exec", EDGE_CT, "--", "cat", CADDYFILE]);
+    run_capture(&mut cmd, Duration::from_secs(15))
+}
+
+/// Push a new Caddyfile to the Edge: backup → write → `caddy validate` → reload. On a failed
+/// validation the backup is restored and nothing is reloaded.
+fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
+    let stamp = unix_now();
+    let backup = format!("{CADDYFILE}.bak-{stamp}");
+    let mut cp = Command::new("pct");
+    cp.args(["exec", EDGE_CT, "--", "cp", "-a", CADDYFILE, &backup]);
+    run_capture(&mut cp, Duration::from_secs(15))?;
+    let tmp = format!("/tmp/aib-cloud-host-caddyfile-{stamp}");
+    fs::write(&tmp, text).map_err(|e| format!("{tmp}: {e}"))?;
+    let mut push = Command::new("pct");
+    push.args(["push", EDGE_CT, &tmp, CADDYFILE, "--perms", "0644"]);
+    let pushed = run_capture(&mut push, Duration::from_secs(20));
+    let _ = fs::remove_file(&tmp);
+    pushed?;
+    let mut val = Command::new("pct");
+    val.args([
+        "exec", EDGE_CT, "--", "caddy", "validate", "--config", CADDYFILE,
+    ]);
+    if let Err(e) = run_capture(&mut val, Duration::from_secs(30)) {
+        let mut undo = Command::new("pct");
+        undo.args(["exec", EDGE_CT, "--", "cp", "-a", &backup, CADDYFILE]);
+        let _ = run_capture(&mut undo, Duration::from_secs(15));
+        return Err(format!(
+            "caddy validate failed, Caddyfile restored from {backup}: {e}"
+        ));
+    }
+    let mut reload = Command::new("pct");
+    reload.args(["exec", EDGE_CT, "--", "systemctl", "reload", "caddy"]);
+    run_capture(&mut reload, Duration::from_secs(30))?;
+    Ok(backup)
+}
+
+fn site_args(args: &[String]) -> Result<(String, String, Vec<String>), String> {
+    let code = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or("needs <site code>")?
+        .clone();
+    let mut records = "/var/lib/ez2-cloud/sites".to_owned();
+    let mut rest = Vec::new();
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        if a == "--records" {
+            records = it.next().ok_or("--records needs a dir")?.clone();
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    Ok((code, records, rest))
+}
+
+/// `site suspend <code>`: the Edge answers every request for the site with the suspension
+/// page (503); the CT keeps running. `site resume <code>` puts the normal block back.
+fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
+    use aib_cloud::site::{
+        caddy_block_is_suspended, caddy_block_suspended, caddy_block_upstream, caddy_swap_block,
+    };
+    let (code, records, rest) = site_args(args)?;
+    if !rest.is_empty() {
+        return Err(format!("unknown arguments {rest:?}"));
+    }
+    let spec = load_site(&code, &records)?;
+    let current = edge_caddyfile()?;
+    let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
+    if now == suspend {
+        eprintln!(
+            "{code} already {}",
+            if suspend { "suspended" } else { "live" }
+        );
+        return Ok(0);
+    }
+    let block = if suspend {
+        caddy_block_suspended(&spec, SUSPENDED_PAGE)
+    } else {
+        caddy_block_upstream(&spec, &spec.ip())
+    };
+    let next = caddy_swap_block(&current, &code, &block).map_err(|e| e.to_string())?;
+    let backup = edge_apply_caddyfile(&next)?;
+    eprintln!(
+        "{code} {} (Edge Caddyfile backup {backup})",
+        if suspend {
+            "suspended: 503 + suspension page"
+        } else {
+            "resumed: proxy to CT"
+        }
+    );
+    Ok(0)
+}
+
+/// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch]`:
+/// blue-green — restore the backup as a new CT beside the live one, apply the site's limits,
+/// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
+/// is left running for comparison (deleting it is a separate, human-approved step).
+fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
+    use aib_cloud::site::{
+        caddy_block_upstream, caddy_swap_block, desired_firewall, restore_plan, FW_GROUP,
+    };
+    let (code, records, rest) = site_args(args)?;
+    let (mut backup, mut ct, mut ip, mut switch) = (None, None, None, false);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--backup" => backup = Some(it.next().ok_or("--backup needs a path")?.clone()),
+            "--ct" => {
+                ct = Some(
+                    it.next()
+                        .ok_or("--ct needs an id")?
+                        .parse::<u32>()
+                        .map_err(|_| "--ct must be a number")?,
+                )
+            }
+            "--ip" => {
+                ip = Some(
+                    it.next()
+                        .ok_or("--ip needs the last octet")?
+                        .parse::<u8>()
+                        .map_err(|_| "--ip must be 0-255")?,
+                )
+            }
+            "--switch" => switch = true,
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let spec = load_site(&code, &records)?;
+    let plan = restore_plan(
+        &spec,
+        backup.as_deref().ok_or("--backup required")?,
+        ct.ok_or("--ct required")?,
+        ip.ok_or("--ip required")?,
+    )
+    .map_err(|e| e.to_string())?;
+    let new_ct = ct.unwrap_or(0).to_string();
+    let mut probe = Command::new("pct");
+    probe.args(["status", &new_ct]);
+    if run_capture(&mut probe, Duration::from_secs(10)).is_ok() {
+        return Err(format!("CT {new_ct} already exists; pick another id"));
+    }
+    for step in &plan {
+        if step.id == "verify" {
+            break;
+        }
+        let mut cmd = Command::new(&step.argv[0]);
+        cmd.args(&step.argv[1..]);
+        eprintln!("→ {}", step.argv.join(" "));
+        run_capture(&mut cmd, Duration::from_secs(900))
+            .map_err(|e| format!("step {}: {e}", step.id))?;
+        if step.id == "set" {
+            let fw = format!("/etc/pve/firewall/{new_ct}.fw");
+            if !Path::new(&fw).exists() {
+                fs::write(&fw, desired_firewall(FW_GROUP)).map_err(|e| format!("{fw}: {e}"))?;
+            }
+        }
+    }
+    // wait for the site inside the new CT
+    let verify = plan
+        .iter()
+        .find(|s| s.id == "verify")
+        .ok_or("no verify step")?;
+    let mut code_seen = String::new();
+    for _ in 0..30 {
+        let mut cmd = Command::new(&verify.argv[0]);
+        cmd.args(&verify.argv[1..]);
+        if let Ok(out) = run_capture(&mut cmd, Duration::from_secs(20)) {
+            code_seen = out.trim().to_owned();
+            if code_seen == "200" {
+                break;
+            }
+        }
+        // pause 2 s between checks via a child (ADR 0005: this CLI has no timer registry; see wait_with_timeout)
+        if let Ok(mut pause) = Command::new("sleep").arg("2").spawn() {
+            let _ = wait_with_timeout(&mut pause, Duration::from_secs(5));
+        }
+    }
+    if code_seen != "200" {
+        return Err(format!(
+            "new CT {new_ct} answers {code_seen:?}, not 200; Edge not switched"
+        ));
+    }
+    eprintln!(
+        "new CT {new_ct} up and answering 200 for {}",
+        spec.primary()
+    );
+    if switch {
+        let new_ip = format!("10.77.0.{}", ip.unwrap_or(0));
+        let current = edge_caddyfile()?;
+        let next = caddy_swap_block(&current, &code, &caddy_block_upstream(&spec, &new_ip))
+            .map_err(|e| e.to_string())?;
+        let backup_file = edge_apply_caddyfile(&next)?;
+        eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
+        eprintln!("remember: update {records}/{code}.json (ct, ip) so drift and backups follow the new CT");
+    } else {
+        eprintln!("not switched (--switch to point the Edge at it)");
+    }
+    Ok(0)
+}
+
 pub fn main(args: &[String]) -> Result<u8, String> {
     match args.first().map(String::as_str) {
         Some("site") => match args.get(1).map(String::as_str) {
             Some("drift") => cmd_site_drift(&args[2..]),
-            _ => Err("site needs drift".to_owned()),
+            Some("suspend") => cmd_site_suspend(&args[2..], true),
+            Some("resume") => cmd_site_suspend(&args[2..], false),
+            Some("restore") => cmd_site_restore(&args[2..]),
+            _ => Err("site needs drift | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
@@ -730,7 +949,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json]".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
     }
 }
 

@@ -482,6 +482,202 @@ pub fn drift(
     Ok(out)
 }
 
+// ---------------------------------------------------------------- Edge block, suspend / resume, blue-green restore (P2)
+// The Edge Caddyfile keeps one block per site, tagged `# site:<code>` on the line before the
+// host line and closed by a `}` at column 0. These functions render the three shapes a block
+// can take and swap one for another in the file text; the host shell pushes the result,
+// validates it with caddy and reloads. Pure text here, so the exact bytes are tested.
+
+/// Marker line that precedes a site's block in the Caddyfile.
+pub fn caddy_marker(code: &str) -> String {
+    alloc::format!("# site:{code}")
+}
+
+/// The normal block: proxy to the site CT at `upstream_ip` (the spec's own IP, or the new CT's
+/// during a blue-green restore). Carries the white-label import (WL-1).
+pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
+    alloc::format!(
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\tencode zstd gzip\n\treverse_proxy {ip}:80 {{\n\t\theader_up X-Real-IP {{remote_host}}\n\t}}\n}}\n",
+        marker = caddy_marker(&spec.code),
+        hosts = spec.hosts.join(" "),
+        ip = upstream_ip
+    )
+}
+
+/// The suspended block: every request gets the suspension page (HTTP 503, `Retry-After`,
+/// no caching), nothing reaches the CT. The page file lives on the Edge; its wording is the
+/// customer-facing text Andy decides (§14 P2), this only wires it.
+pub fn caddy_block_suspended(spec: &SiteSpec, page_path: &str) -> String {
+    alloc::format!(
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# suspended\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
+        marker = caddy_marker(&spec.code),
+        hosts = spec.hosts.join(" "),
+        dir = page_path.rsplit_once('/').map_or("/srv/errors", |(d, _)| d),
+        file = page_path.rsplit_once('/').map_or(page_path, |(_, f)| f)
+    )
+}
+
+/// Replace the site's block in a Caddyfile with `new_block`. The block runs from the marker
+/// line to the first line that is exactly `}` after it. Errors if the marker is missing or
+/// appears twice, or the block never closes.
+pub fn caddy_swap_block(caddyfile: &str, code: &str, new_block: &str) -> Result<String, Error> {
+    let marker = caddy_marker(code);
+    let lines: Vec<&str> = caddyfile.lines().collect();
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim_end() == marker)
+        .map(|(i, _)| i)
+        .collect();
+    let start = match starts.as_slice() {
+        [i] => *i,
+        [] => {
+            return Err(Error::Observed(alloc::format!(
+                "Caddyfile has no block for {code}"
+            )))
+        }
+        _ => {
+            return Err(Error::Observed(alloc::format!(
+                "Caddyfile has {} blocks for {code}",
+                starts.len()
+            )))
+        }
+    };
+    let end = lines[start..]
+        .iter()
+        .position(|l| *l == "}")
+        .map(|o| start + o)
+        .ok_or_else(|| Error::Observed(alloc::format!("block for {code} never closes")))?;
+    let mut out = String::new();
+    for l in &lines[..start] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(new_block.trim_end_matches('\n'));
+    out.push('\n');
+    for l in &lines[end + 1..] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Is the site's block currently the suspended shape?
+pub fn caddy_block_is_suspended(caddyfile: &str, code: &str) -> Result<bool, Error> {
+    let marker = caddy_marker(code);
+    let lines: Vec<&str> = caddyfile.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_end() == marker)
+        .ok_or_else(|| Error::Observed(alloc::format!("Caddyfile has no block for {code}")))?;
+    let end = lines[start..]
+        .iter()
+        .position(|l| *l == "}")
+        .map_or(lines.len(), |o| start + o);
+    Ok(lines[start..end].iter().any(|l| l.trim() == "# suspended"))
+}
+
+/// Blue-green restore: bring the backup up as a **new** CT with a **new** internal IP next to
+/// the running one, then point the Edge at it; the old CT stays until someone deletes it
+/// (that delete is L2). Validated: new id / ip differ from the live ones and from the
+/// template / edge; backup path is a vzdump archive name.
+pub fn restore_plan(
+    spec: &SiteSpec,
+    backup_path: &str,
+    new_ct: u32,
+    new_ip_last: u8,
+) -> Result<Vec<Step>, Error> {
+    if new_ct == spec.ct
+        || !(100..=999_999_999).contains(&new_ct)
+        || new_ct == TEMPLATE_CT
+        || new_ct == EDGE_CT
+    {
+        return Err(Error::CtId(new_ct));
+    }
+    if new_ip_last == spec.ip_last || !(3..=249).contains(&new_ip_last) {
+        return Err(Error::Ip(alloc::format!("{NET}{new_ip_last}")));
+    }
+    let name = backup_path.rsplit('/').next().unwrap_or("");
+    if !backup_path.starts_with('/')
+        || !name.starts_with("vzdump-lxc-")
+        || !(name.ends_with(".tar.zst") || name.ends_with(".tar.gz") || name.ends_with(".tar"))
+        || backup_path.contains("..")
+    {
+        return Err(Error::Observed(alloc::format!(
+            "backup path refused: {backup_path}"
+        )));
+    }
+    let l = &spec.limits;
+    let ct = alloc::format!("{new_ct}");
+    let net0 =
+        alloc::format!("name=eth0,bridge=vmbr1,ip={NET}{new_ip_last}/24,gw=10.77.0.1,firewall=1");
+    Ok(alloc::vec![
+        Step {
+            id: "restore",
+            argv: argv(&[
+                "pct",
+                "restore",
+                &ct,
+                backup_path,
+                "--storage",
+                "local-lvm",
+                "--unprivileged",
+                "1",
+                "--hostname",
+                &spec.code
+            ]),
+            idempotent: "refuse if <ct> exists"
+        },
+        Step {
+            id: "set",
+            argv: argv(&[
+                "pct",
+                "set",
+                &ct,
+                "--net0",
+                &net0,
+                "--onboot",
+                "1",
+                "--cores",
+                &alloc::format!("{}", l.cores),
+                "--memory",
+                &alloc::format!("{}", l.memory_mb),
+                "--swap",
+                &alloc::format!("{}", l.swap_mb),
+                "--cpulimit",
+                &l.cpulimit_str(),
+            ]),
+            idempotent: "re-apply",
+        },
+        Step {
+            id: "start",
+            argv: argv(&["pct", "start", &ct]),
+            idempotent: "skip if running"
+        },
+        Step {
+            id: "verify",
+            argv: argv(&[
+                "pct",
+                "exec",
+                &ct,
+                "--",
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-m",
+                "8",
+                "-w",
+                "%{http_code}",
+                "-H",
+                &alloc::format!("Host: {}", spec.primary()),
+                "http://127.0.0.1/"
+            ]),
+            idempotent: "read-only; want 200"
+        },
+    ])
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -837,5 +1033,96 @@ mod tests {
             "empty config is unreadable, not clean"
         );
         assert!(drift(&site2(), "garbage", Some(&fw)).is_err());
+    }
+
+    #[test]
+    fn s7_caddy_blocks_and_swap() {
+        let sp = site2();
+        let up = caddy_block_upstream(&sp, &sp.ip());
+        assert!(
+            up.starts_with("# site:site2\neu02-site2.ez2.site {\n\timport ez2_whitelabel\n"),
+            "{up}"
+        );
+        assert!(up.contains("reverse_proxy 10.77.0.12:80 {") && up.ends_with("}\n"));
+        let sus = caddy_block_suspended(&sp, "/srv/errors/suspended.html");
+        assert!(
+            sus.contains("# suspended")
+                && sus.contains("root * /srv/errors")
+                && sus.contains("rewrite * /suspended.html")
+                && sus.contains("status 503")
+        );
+        assert!(
+            !sus.contains("reverse_proxy"),
+            "a suspended site must not reach the CT"
+        );
+        let file = alloc::format!("# global\n{{\n\temail x@y\n}}\n\n{}\n# site:other\nother.example {{\n\treverse_proxy 10.77.0.20:80\n}}\n", up);
+        // swap to suspended and back
+        let swapped = caddy_swap_block(&file, "site2", &sus).unwrap();
+        assert!(caddy_block_is_suspended(&swapped, "site2").unwrap());
+        assert!(!caddy_block_is_suspended(&swapped, "other").unwrap());
+        assert!(
+            swapped.contains("# site:other\nother.example {"),
+            "other block untouched"
+        );
+        assert_eq!(swapped.matches("# site:site2").count(), 1);
+        let back = caddy_swap_block(&swapped, "site2", &up).unwrap();
+        assert_eq!(back, file);
+        // blue-green: same hosts, new upstream
+        let green =
+            caddy_swap_block(&file, "site2", &caddy_block_upstream(&sp, "10.77.0.22")).unwrap();
+        assert!(green.contains("reverse_proxy 10.77.0.22:80") && !green.contains("10.77.0.12"));
+        // errors
+        assert!(caddy_swap_block(&file, "nope", &up).is_err());
+        assert!(
+            caddy_swap_block(&alloc::format!("{file}{up}"), "site2", &up).is_err(),
+            "two markers"
+        );
+        assert!(caddy_swap_block("# site:site2\nx {\n\tnever closes\n", "site2", &up).is_err());
+    }
+
+    #[test]
+    fn s8_restore_plan_is_blue_green_and_validated() {
+        let sp = site2();
+        let p = restore_plan(
+            &sp,
+            "/var/lib/vz/dump/vzdump-lxc-112-2026_11_09-03_00_01.tar.zst",
+            212,
+            22,
+        )
+        .unwrap();
+        assert_eq!(p[0].argv[..3], ["pct", "restore", "212"]);
+        assert!(
+            p[0].argv.contains(&"--unprivileged".to_string())
+                && p[0].argv.contains(&"site2".to_string())
+        );
+        assert!(p[1]
+            .argv
+            .iter()
+            .any(|a| a == "name=eth0,bridge=vmbr1,ip=10.77.0.22/24,gw=10.77.0.1,firewall=1"));
+        assert!(p[1].argv.contains(&"--cpulimit".to_string()));
+        assert_eq!(p[2].argv, ["pct", "start", "212"]);
+        assert!(p[3].argv.iter().any(|a| a == "Host: eu02-site2.ez2.site"));
+        for st in &p {
+            for a in &st.argv {
+                assert!(!a.contains(';') && !a.contains('|'), "{a}");
+            }
+        }
+        let b = "/var/lib/vz/dump/vzdump-lxc-112-x.tar.zst";
+        assert!(restore_plan(&sp, b, 112, 22).is_err(), "same ct");
+        assert!(restore_plan(&sp, b, 212, 12).is_err(), "same ip");
+        assert!(restore_plan(&sp, b, 900, 22).is_err(), "template id");
+        assert!(restore_plan(&sp, b, 212, 2).is_err(), "edge ip");
+        assert!(
+            restore_plan(&sp, "vzdump-lxc-112.tar.zst", 212, 22).is_err(),
+            "relative path"
+        );
+        assert!(
+            restore_plan(&sp, "/var/lib/vz/dump/../../etc/passwd", 212, 22).is_err(),
+            "traversal"
+        );
+        assert!(
+            restore_plan(&sp, "/var/lib/vz/dump/other.tar.zst", 212, 22).is_err(),
+            "not a vzdump name"
+        );
     }
 }
