@@ -125,8 +125,11 @@ pub const REJECT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60
 /// window (1ced7 #593 M1).
 #[derive(Debug, Default)]
 pub struct RejectLog {
-    open: std::sync::Mutex<std::collections::HashMap<(String, &'static str), Window>>,
+    open: std::sync::Mutex<Windows>,
 }
+
+/// Open windows by (token_id, code).
+type Windows = std::collections::HashMap<(String, &'static str), Window>;
 
 #[derive(Debug)]
 struct Window {
@@ -147,9 +150,7 @@ pub enum Note {
 }
 
 impl RejectLog {
-    fn map(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<(String, &'static str), Window>> {
+    fn map(&self) -> std::sync::MutexGuard<'_, Windows> {
         self.open.lock().unwrap_or_else(|e| e.into_inner())
     }
 
