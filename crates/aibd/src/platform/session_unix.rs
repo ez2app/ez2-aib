@@ -21,8 +21,9 @@ fn exit_of(e: RootEnd) -> Exit {
     match (e.code, e.signal) {
         (Some(c), _) => Exit::Code(c),
         (None, Some(n)) => Exit::Signal(signal_name(n)),
-        // M5 could not read it (root_identity_lost): no status to report
-        (None, None) => Exit::Code(-1),
+        // M5 could not read it (root_identity_lost): no status to report,
+        // and none made up (043dd #544 Medium: this was Exit::Code(-1))
+        (None, None) => Exit::Unknown,
     }
 }
 
@@ -214,6 +215,32 @@ pub fn keep_as_leftover_for_test(h: TreeHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 043dd #544 Medium: a root whose status M5 could not read is Unknown,
+    /// never a made-up code.
+    #[test]
+    fn an_unreadable_root_end_is_unknown_not_minus_one() {
+        let e = exit_of(RootEnd {
+            code: None,
+            signal: None,
+        });
+        assert_eq!(e, Exit::Unknown);
+        assert_eq!((e.code(), e.signal()), (None, None));
+        assert_eq!(
+            exit_of(RootEnd {
+                code: Some(3),
+                signal: None
+            }),
+            Exit::Code(3)
+        );
+        assert_eq!(
+            exit_of(RootEnd {
+                code: None,
+                signal: Some(9)
+            }),
+            Exit::Signal("SIGKILL".into())
+        );
+    }
 
     fn stop(status: StopStatus, survivors: Vec<u32>) -> Stop {
         Stop {
