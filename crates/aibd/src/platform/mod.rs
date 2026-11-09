@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use lifecycle::{Lifecycle, Step};
 
 #[cfg(target_os = "macos")]
+pub mod exit_watch;
+#[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod check_tree;
 pub mod lifecycle;
