@@ -7,6 +7,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Exact `Origin` values allowed (scheme://host:port). Empty = none.
     pub allowed_origins: Vec<String>,
+    /// Running sessions allowed at once (`AIBD_MAX_SESSIONS`, 1–64, default 8).
+    pub max_sessions: usize,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -19,9 +21,13 @@ pub enum ConfigError {
     NoDataDir,
     #[error("AIBD_ALLOWED_ORIGINS entry is not an origin (scheme://host[:port]): {0}")]
     BadOrigin(String),
+    #[error("AIBD_MAX_SESSIONS must be 1-64, got {0}")]
+    BadMaxSessions(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:47770";
+pub const DEFAULT_MAX_SESSIONS: usize = 8;
+pub const MAX_SESSIONS_LIMIT: usize = 64;
 
 pub fn parse_bind(s: &str) -> Result<SocketAddr, ConfigError> {
     let a: SocketAddr = s.parse().map_err(|_| ConfigError::BadBind(s.to_string()))?;
@@ -69,10 +75,18 @@ impl Config {
             })
             .transpose()?
             .unwrap_or_default();
+        let max_sessions = match get("AIBD_MAX_SESSIONS") {
+            None => DEFAULT_MAX_SESSIONS,
+            Some(v) => match v.trim().parse::<usize>() {
+                Ok(n) if (1..=MAX_SESSIONS_LIMIT).contains(&n) => n,
+                _ => return Err(ConfigError::BadMaxSessions(v)),
+            },
+        };
         Ok(Config {
             bind,
             data_dir,
             allowed_origins,
+            max_sessions,
         })
     }
 }
