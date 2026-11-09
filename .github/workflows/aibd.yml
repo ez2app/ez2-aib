@@ -460,6 +460,30 @@ jobs:
             '            if audit {' \
             '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
             deny_listed_env_is_refused_and_audited_on_both_routes
+      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
+      - name: aib-release trial knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-release/src/trial.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-release --locked --test trial "$3"; }
+          # T1 pairwise conflicts are not recorded: no stacking hint
+          tk '                Ok(m) if !m.clean() => rep.pairs.push(Pair {' \
+             '                Ok(m) if !m.clean() && false => rep.pairs.push(Pair { // knife' \
+             two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first
+          # T2 a reported head with a different tree still passes (A9)
+          tk '        && rep.expect.as_ref().is_none_or(|e| e.matches);' \
+             '        && rep.expect.as_ref().is_none_or(|e| e.matches || true); // knife' \
+             a_reported_head_whose_tree_is_not_the_stack_lists_the_files_that_differ
+          # T3 an `integ/` integration branch passes
+          tk '        && rep.prefixes.iter().all(|p| p.refused.is_none())' \
+             '        && rep.prefixes.iter().all(|p| p.refused.is_none() || true) // knife' \
+             integration_branches_must_be_int_slash
+          # T4 the merge runs in the repository: its objects, config and drivers
+          tk '            .scratch_git(&args)' \
+             '            .src_git(&args) // knife: merge in the repository itself' \
+             heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -470,6 +494,30 @@ jobs:
             echo "== run $i/5"
             cargo test -q -p aib-sys --locked || exit 1
           done
+      # DIAG-win-session-flake (a9136 11-09): the three "failed root open"
+      # session tests used to wait for "2 active processes", which cmd +
+      # conhost can reach before ping exists. They now wait for PING.EXE.
+      # No Windows machine here: 20 runs in a row, one test at a time, all
+      # 20 must pass; every run is printed, a red one with its member list.
+      - name: aib-sys session failed-open tests (Windows) 20x
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u -o pipefail
+          cargo test -q -p aib-sys --locked --lib --no-run
+          pass=0
+          for i in $(seq 1 20); do
+            # a filter that matches nothing is green too: require all 3 ran
+            if cargo test -p aib-sys --locked --lib session::tests::a_failed_root_open \
+                 -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/failed-open.log" \
+               && grep -q "test result: ok. 3 passed" "$RUNNER_TEMP/failed-open.log"; then
+              pass=$((pass + 1)); echo "== run $i/20 ok"
+            else
+              echo "== run $i/20 FAILED"
+            fi
+          done
+          echo "session failed-open: $pass/20 passed"
+          test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
@@ -501,6 +549,11 @@ jobs:
           k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+          # DIAG-win-session-flake: the tests really wait for ping; an image
+          # that never comes must turn them red in hold_members
+          k2 '    const AWAITED_IMAGE: &str = "PING.EXE";' \
+            '    const AWAITED_IMAGE: &str = "NOPE.EXE"; // knife: wait for nothing real' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
