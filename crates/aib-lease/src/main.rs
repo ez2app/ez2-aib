@@ -9,6 +9,8 @@
 //!   aib-lease heartbeat --run-id ID
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
 //!   aib-lease classify --host H [--step CMD]... [-- CMD ARGS...]   (D7, see `aib_lease::classify`)
+//!   aib-lease insert acquire --owner O --what W --run-id ID --pid P --hard-timeout-s S   (D4, off by default)
+//!   aib-lease insert release --run-id ID
 //!   global: --now EPOCH (fixtures)
 //!
 //! `--host` is the machine the holder process runs on. Another machine ⇒ `--heartbeat-s` is
@@ -19,6 +21,7 @@
 //! 2 usage (or: the pid given is already gone), 3 lease files unreadable (fail closed),
 //! 4 held by someone else / queue ahead / heartbeat for a record that is gone. Judge by rc.
 
+use aib_lease::insert::{insert_acquire, insert_release, InsertArgs};
 use aib_lease::{
     acquire, heartbeat, queue_add, queue_list, AcquireArgs, Holder, Outcome, Paths, QueueAddArgs,
     SysProbe, RC_USAGE,
@@ -37,6 +40,7 @@ struct Args {
     all: bool,
     cwd: Option<String>,
     notify: Option<String>,
+    hard_timeout_s: Option<i64>,
 }
 
 fn int(k: &str, v: String) -> Result<i64, String> {
@@ -63,6 +67,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--ttl" => a.ttl = Some(int(k, val()?)?),
             "--cwd" => a.cwd = Some(val()?),
             "--notify" => a.notify = Some(val()?),
+            "--hard-timeout-s" => a.hard_timeout_s = Some(int(k, val()?)?),
             "--exclusive" => a.exclusive = true,
             "--priority" => a.priority = true,
             "--all" => a.all = true,
@@ -124,7 +129,22 @@ fn run(a: &Args) -> Result<Outcome, String> {
             need(a, &["--run-id"])?;
             Ok(heartbeat(&paths, &p, now, &a.holder.run_id))
         }
-        _ => Err("command: acquire | queue add | queue list | heartbeat".into()),
+        ["insert", "acquire"] => {
+            need(a, &["--owner", "--what", "--run-id"])?;
+            let args = InsertArgs {
+                holder: a.holder.clone(),
+                hard_timeout_s: a.hard_timeout_s.ok_or("--hard-timeout-s is required")?,
+            };
+            Ok(insert_acquire(&paths, &p, now, &args))
+        }
+        ["insert", "release"] => {
+            need(a, &["--run-id"])?;
+            Ok(insert_release(&paths, &p, now, &a.holder.run_id))
+        }
+        _ => Err(
+            "command: acquire | queue add | queue list | heartbeat | insert acquire | insert release"
+                .into(),
+        ),
     }
 }
 
