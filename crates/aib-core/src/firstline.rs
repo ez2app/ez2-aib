@@ -73,12 +73,20 @@ impl Review<'_> {
     }
 
     /// A pass with no high or medium finding left (a `通過` with M > 0 is a
-    /// contradiction the merge chain must not resolve on its own).
+    /// contradiction the merge chain must not resolve on its own). This looks
+    /// at the review alone: a merge must use [`Review::mergeable_at`].
     pub fn mergeable(&self) -> bool {
         self.conforms()
             && self.verdict == Verdict::Pass
             && self.counts.high == 0
             && self.counts.medium == 0
+    }
+
+    /// [`Review::mergeable`] and reviewed at `head` (the PR's head now). The
+    /// only check a merge may use: a review of an older head never merges a
+    /// newer one (a9136 c3d2f112 L1).
+    pub fn mergeable_at(&self, head: &str) -> bool {
+        self.head == head && self.mergeable()
     }
 }
 
@@ -181,8 +189,11 @@ fn scope(s: &str) -> Scope<'_> {
     Scope::Other(s)
 }
 
-/// Only the first line of `text` (a whole file may be passed).
+/// Only the first line of `text` (a whole file may be passed). A leading
+/// byte order mark, which some editors write, is not part of the label
+/// (a9136 c3d2f112 L2).
 fn first(text: &str) -> &str {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines().next().unwrap_or("").trim_end_matches('\r')
 }
 
@@ -219,9 +230,11 @@ pub fn parse_verify(text: &str) -> Result<Verify<'_>, FirstLineError> {
     if host.is_empty() || host.contains(' ') {
         return Err(FirstLineError::Field("機: "));
     }
-    // 沒驗 is last; its list may itself hold spaces, so split at the last marker
+    // 沒驗 is last and its list runs to the end of the line: split at the first
+    // marker, so a list that itself mentions ` 沒驗: ` is kept whole (a shorter
+    // list would hide a skipped check; a9136 c3d2f112 N2)
     let at = rest
-        .rfind(" 沒驗: ")
+        .find(" 沒驗: ")
         .ok_or(FirstLineError::Field("沒驗: "))?;
     let samples = rest[..at].trim();
     let not_checked = rest[at + " 沒驗: ".len()..].trim();
@@ -392,6 +405,34 @@ mod tests {
         );
         let swapped = std::format!("結論: 通過 H/M/L/N: 0/0/0/0 頭: {B} 範圍: 全文");
         assert!(parse_review(&swapped).is_err());
+    }
+
+    #[test]
+    fn a_merge_uses_the_head_the_review_was_for() {
+        let line = review("全文");
+        let r = parse_review(&line).unwrap();
+        assert!(r.mergeable());
+        assert!(r.mergeable_at(B));
+        assert!(
+            !r.mergeable_at(A),
+            "a review of an older head merged a newer one"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_part_of_the_label() {
+        let file = std::format!("\u{feff}{}\n", review("全文"));
+        assert_eq!(parse_review(&file).unwrap().head, B);
+        let v = std::format!("\u{feff}驗收: 通過 頭: {B} 機: m 樣本: s 沒驗: 無");
+        assert_eq!(parse_verify(&v).unwrap().head, B);
+    }
+
+    #[test]
+    fn a_skipped_list_that_mentions_the_marker_is_kept_whole() {
+        let line = std::format!("驗收: 通過 頭: {B} 機: m 樣本: s 沒驗: Windows 沒驗: 版 Linux");
+        let v = parse_verify(&line).unwrap();
+        assert_eq!(v.samples, "s");
+        assert_eq!(v.not_checked, Some("Windows 沒驗: 版 Linux"));
     }
 
     #[test]
