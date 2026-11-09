@@ -228,7 +228,7 @@ until it merges. Status: CI-windows (GitHub
 - **Job limits.** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `BREAKAWAY_OK` and
   `SILENT_BREAKAWAY_OK` are never set, so `CREATE_BREAKAWAY_FROM_JOB` from inside the tree
   is refused (tested). A breakaway allowed by an *outer* job is outside this guarantee
-  (see "Update 2026-11-07 (performance budget)").
+  (see "Update 2026-11-07 (performance budget, ADR 0005)").
 - **J0 (DECISION-21).** `aib-sys` can put the calling process into its own job with
   `KILL_ON_JOB_CLOSE`, no breakaway and a non-inheritable handle; session jobs are then
   nested in it. aibd adopts J0 first thing in `main`, before the runtime and before any
