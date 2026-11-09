@@ -111,7 +111,7 @@ impl Limits {
         let frac = self.cpulimit_x100 % 100;
         if frac == 0 {
             alloc::format!("{whole}")
-        } else if frac % 10 == 0 {
+        } else if frac.is_multiple_of(10) {
             alloc::format!("{whole}.{}", frac / 10)
         } else {
             alloc::format!("{whole}.{frac:02}")
