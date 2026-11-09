@@ -47,7 +47,8 @@ class NodeWrap(unittest.TestCase):
             for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
                 subprocess.run(["git", "-C", str(repo)] + a, check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
             tenv = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE", "NODE_OPTIONS")}
-            tenv.update({"HOME": str(Path(td) / "home"), "EZ2_AIB_LOCALE": "en"})
+            # 接頭只在追蹤時掛上:一支也要追蹤,不然 W1 空過、K1 咬不到(11-09 起預設不到 100 支不追蹤)
+            tenv.update({"HOME": str(Path(td) / "home"), "EZ2_AIB_LOCALE": "en", "AIB_TEST_TRACE_MIN": "0"})
             (Path(td) / "home").mkdir()
             p = subprocess.run([sys.executable, str(ROOT / "tools" / "verify" / "test_entry.py"), "--repo", str(repo),
                                 "tests/t_wrap.test.mjs"], cwd=str(repo), env=tenv, capture_output=True, text=True,
