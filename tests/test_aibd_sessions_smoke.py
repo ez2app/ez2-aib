@@ -39,11 +39,12 @@ def smoke_args(fake, start=None, marker=None):
 
 FAKE = textwrap.dedent('''\
     #!%(py)s
-    import json, os, signal, subprocess, sys, threading
+    import os, sys
+    if os.environ["FAKE_MODE"] == "hang":   # first thing, before the heavier imports: a busy runner is slow to start
+        import time; sys.stderr.write("fake: still booting\\n"); sys.stderr.flush(); time.sleep(60)
+    import json, signal, subprocess, threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     MODE = os.environ["FAKE_MODE"]
-    if MODE == "hang":
-        import time; sys.stderr.write("fake: still booting\\n"); sys.stderr.flush(); time.sleep(60)
     data = os.environ["AIBD_DATA_DIR"]; run = os.path.join(data, "run"); os.makedirs(run)
     tok = os.path.join(run, "token"); open(tok, "w").write("t0k")
     json.dump({"pid": os.getpid()}, open(os.path.join(run, "aibd.json"), "w"))
@@ -138,12 +139,15 @@ class SessionsSmoke(unittest.TestCase):
 
     def test_the_two_limits_are_separate_flags(self):
         src = SMOKE.read_text(encoding="utf-8")
-        self.assertIn("wait_for(lambda: os.path.exists(marker), marker_timeout)", src)
+        self.assertTrue("wait_for(lambda: os.path.exists(marker), marker_timeout)" in src,
+                        "the marker wait must use marker_timeout, not the start-up timeout")
 
     def test_a_start_that_never_came_says_why(self):
-        rc, res, log = self.run_smoke("hang", start="1")
+        # 5 s, not 1: on a busy Mac Pro 13 (6e2af994) the fake had not written its stderr line after 1 s.
+        # The fake sleeps 60 s, so the start still never comes; 5 s only gives its first line time to land.
+        rc, res, log = self.run_smoke("hang", start="5")
         self.assertEqual((rc, res.get("started"), res.get("start_wait_s"), res.get("alive_at_timeout")),
-                         (1, False, 1.0, True), log)
+                         (1, False, 5.0, True), log)
         self.assertIn("fake: still booting", res.get("err_tail") or [], log)
 
     def test_absent_is_a_named_skip(self):
