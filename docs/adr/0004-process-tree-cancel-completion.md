@@ -352,6 +352,19 @@ stale-errno case), `crates/aibd/src/lineage.rs`
 (`an_unread_gone_child_widens_the_orphan_candidates`), and `crates/aibd/tests/sessions.rs`
 (`g1_*`, macOS). Knives G1a–G1e are in `.github/workflows/aibd.yml`.
 
+**A setuid child (1ced7 desktop check, 043dd THREAT-G1-setuid, 2026-11-09).** A real `claude`
+ended `fork_watch_child_unreadable` 10 times out of 10. It runs `/bin/ps`, which is setuid root, and
+M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
+- Its start time is now read through `sysctl(KERN_PROC_PID)` (`kp_proc.p_starttime`, the same
+  `p_start`, `aib-sys` `start_sec_sysctl`, length checked). The process is then followed like any
+  other child: watched, and its children listed. No blind spot is added and the wide-rule flag is
+  not set.
+- The fallback is used only for a process running as another uid (`PROC_PIDT_SHORTBSDINFO`). A
+  same-uid process that refuses M2, or a fallback that fails, stays `fork_watch_child_unreadable`.
+- The fallback is self-checked once per aibd process: sysctl must equal M2 on aibd itself.
+  Otherwise the fallback is off.
+- Descendants running as root stay in `uid_changed`.
+
 **What this does not fix (043dd review, measured on a desktop Mac, 2026-11-09).**
 - macOS does not let another process read the environment of Apple platform binaries.
   On a desktop with a login session and Spotlight, launchd starts such services all the
