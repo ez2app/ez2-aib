@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -362,13 +363,39 @@ fn start_fallback(pid: u32) -> Result<u64, SysError> {
     }
 }
 
-/// G1 (043dd M1): the session's coalition, if the root is in aibd's own.
-/// A child starts in its parent's coalition, so a root that reads otherwise
-/// (or cannot be read) means the private read is not to be trusted here.
-fn session_coalition(root: u32) -> Option<u64> {
-    let me = coalition_of(std::process::id()).ok()?;
-    let r = coalition_of(root).ok()?;
-    (me == r).then_some(r)
+/// Set once a root read as a coalition other than aibd's: the private read
+/// is not trusted again for the rest of this process.
+static COALITION_DISTRUSTED: AtomicBool = AtomicBool::new(false);
+
+/// G1 (043dd M1): the session's coalition, or `None` = no filter (the rule
+/// before). `root` is read right after spawn; see [`coalition_rule`].
+fn session_coalition(root: Result<u64, SysError>) -> Option<u64> {
+    let me = coalition_of(std::process::id());
+    let (filter, distrust) = coalition_rule(me, root, COALITION_DISTRUSTED.load(Ordering::Relaxed));
+    if distrust {
+        COALITION_DISTRUSTED.store(true, Ordering::Relaxed);
+    }
+    filter
+}
+
+/// The self-check of a private interface. A child starts in its parent's
+/// coalition, so a root read as different means the read is not to be
+/// trusted: no filter, now and for the rest of this aibd. A root that ended
+/// before it could be read (an instant program: Pro 13 11-09 13:35,
+/// `printenv` held its slot on `AddressBookSourceSync`) does not disprove
+/// it: aibd's own coalition is used. aibd's own unread (or 0) = no filter.
+/// Returns (filter, distrust from now on).
+fn coalition_rule(
+    me: Result<u64, SysError>,
+    root: Result<u64, SysError>,
+    distrusted: bool,
+) -> (Option<u64>, bool) {
+    match (me, root) {
+        _ if distrusted => (None, false),
+        (Err(_) | Ok(0), _) => (None, false),
+        (Ok(m), Ok(r)) if r != m => (None, true),
+        (Ok(m), _) => (Some(m), false),
+    }
 }
 
 fn coalition_of(pid: u32) -> Result<u64, SysError> {
@@ -518,6 +545,8 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     imp::new_group(&mut c);
     let mut child = c.spawn().map_err(StartFailedOr::NotStarted)?;
     let root = child.id();
+    // read at once: an instant program is gone before anything else runs
+    let root_coalition = coalition_of(root);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let exit = Arc::new(RootExit::default());
@@ -549,7 +578,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         uniques: BTreeMap::new(),
         lineage_incomplete: false,
         unread_gone: false,
-        coalition: None,
+        coalition: session_coalition(root_coalition),
         gaps: BTreeSet::new(),
         m1_cache: M1Cache::default(),
         #[cfg(target_os = "macos")]
@@ -579,7 +608,6 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     refresh(&mut sys, false);
     if let Some(p) = sys.process(Pid::from_u32(root)) {
         h.known.insert(root, p.start_time());
-        h.coalition = session_coalition(root);
         #[cfg(target_os = "macos")]
         if spec.watch_forks {
             let w = injected(spec, Inject::ForkWatch).and_then(|()| {
@@ -1396,6 +1424,27 @@ mod tests {
         );
     }
 
+    /// G1 self-check: a root read as aibd's own turns the filter on; one
+    /// gone before it was read uses aibd's own; one read as another
+    /// coalition turns it off for good; aibd's own unread = off.
+    #[test]
+    fn the_coalition_self_check() {
+        let gone = || Err(SysError::Gone);
+        assert_eq!(coalition_rule(Ok(481), Ok(481), false), (Some(481), false));
+        assert_eq!(coalition_rule(Ok(481), gone(), false), (Some(481), false));
+        assert_eq!(
+            coalition_rule(Ok(481), Err(SysError::PermissionDenied), false),
+            (Some(481), false)
+        );
+        assert_eq!(coalition_rule(Ok(481), Ok(75991), false), (None, true));
+        assert_eq!(coalition_rule(Ok(481), Ok(481), true), (None, false));
+        assert_eq!(
+            coalition_rule(Err(SysError::Unknown), Ok(481), false),
+            (None, false)
+        );
+        assert_eq!(coalition_rule(Ok(0), Ok(0), false), (None, false));
+    }
+
     /// G1: a root started by aibd is in aibd's coalition (macOS), so the
     /// filter is on; elsewhere it stays off.
     #[test]
@@ -1404,7 +1453,7 @@ mod tests {
             .arg("5")
             .spawn()
             .unwrap();
-        let got = session_coalition(c.id());
+        let got = session_coalition(coalition_of(c.id()));
         let _ = c.kill();
         let _ = c.wait();
         assert_eq!(got.is_some(), cfg!(target_os = "macos"));

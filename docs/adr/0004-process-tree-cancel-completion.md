@@ -401,9 +401,15 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   to launchd. launchd starts each service it launches in a coalition of its own. On the
   measured desktop, 77 of 88 new same-uid `ppid` 1 processes in an hour were in another
   coalition than the shell aibd ran under; the session's own re-parented orphan was not.
-- At start aibd reads its own coalition and the root's (`PROC_PIDCOALITIONINFO`, a private
-  `proc_pidinfo` flavor). Only when both are read and equal does the filter turn on for
-  that session: this is the self-check of the private interface.
+- Right after spawn aibd reads the root's coalition (`PROC_PIDCOALITIONINFO`, a private
+  `proc_pidinfo` flavor) and its own. This is the self-check of the private interface:
+  - equal ⇒ the filter is on for that session;
+  - the root read as another coalition ⇒ no filter, and none again for the rest of that
+    aibd process (the read is not trusted);
+  - the root already gone (an instant program; Mac Pro 13 2026-11-09: `printenv` held its
+    slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
+    coalition is used;
+  - aibd's own not readable ⇒ no filter.
 - A candidate whose environment cannot be read, and whose coalition is read as different
   from the session's, is let go (`stop.candidates.other_coalition`, pid + name, same
   16-entry limit with `other_coalition_more`). It is not
