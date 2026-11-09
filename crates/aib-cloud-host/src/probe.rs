@@ -25,7 +25,7 @@ use aib_cloud::isolation::plan_fingerprint;
 use serde_json::{json, Map, Value};
 
 const KINDS: [&str; 3] = ["tcp", "dns", "icmp"];
-const EXPECTS: [&str; 3] = ["open", "blocked", "closed"];
+const EXPECTS: [&str; 4] = ["open", "blocked", "closed", "observe"]; // observe = recorded, never judged (#587 L1)
 const TCP_TIMEOUT: Duration = Duration::from_secs(3);
 const DNS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -446,7 +446,7 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
             }
         };
         let ms = t0.elapsed().as_millis() as u64;
-        let mark = if open == (c.expect == "open") {
+        let mark = if c.expect == "observe" || open == (c.expect == "open") {
             "ok"
         } else {
             "!!"
@@ -816,6 +816,16 @@ mod tests {
         for (tag, plan) in bad {
             assert!(validate_plan(&plan).is_err(), "{tag}: accepted");
         }
+        // observe cells (recorded, never judged) are a valid expectation
+        assert!(validate_plan(&json!([cell(
+            "site-110-to-peerhost-443",
+            "ct:110",
+            "tcp",
+            "136.243.105.110",
+            443,
+            "observe"
+        )]))
+        .is_ok());
         // ipv6 is an address too
         assert!(validate_plan(&json!([cell(
             "v6",
