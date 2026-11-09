@@ -214,9 +214,13 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
         return Err(bad("argv must have 1-64 items"));
     }
     let mut total = 0usize;
-    for a in &argv {
-        if a.is_empty() || a.len() > MAX_ARG_BYTES || a.contains('\0') {
-            return Err(bad("each argv item must be 1-4096 bytes without NUL"));
+    // a63ab 20:32: argv[0] must be non-empty; later items may be empty (claude needs
+    // `--setting-sources ""`) and are passed to the child as they are.
+    for (i, a) in argv.iter().enumerate() {
+        if (i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES || a.contains('\0') {
+            return Err(bad(
+                "argv[0] must be non-empty; each argv item at most 4096 bytes without NUL",
+            ));
         }
         total += a.len();
     }
@@ -1578,7 +1582,8 @@ mod tests {
             serde_json::json!([]),
             serde_json::json!(["true"]),
             serde_json::json!(["./x"]),
-            serde_json::json!([ECHO_ABS, ""]),
+            serde_json::json!([""]),
+            serde_json::json!(["", "x"]),
             serde_json::json!([ECHO_ABS, "a\u{0}b"]),
             serde_json::json!(vec![ECHO_ABS; 65]),
             serde_json::json!([ECHO_ABS, "x".repeat(4097)]),
@@ -1586,6 +1591,10 @@ mod tests {
             let e = v(serde_json::json!({ "argv": bad_argv })).unwrap_err();
             assert_eq!(e.0, ErrorCode::InvalidRequest, "{bad_argv}");
         }
+        // a63ab 20:32: empty items after argv[0] are kept as they are, in place
+        let r =
+            v(serde_json::json!({"argv": [ECHO_ABS, "--setting-sources", "", "x", ""]})).unwrap();
+        assert_eq!(r.argv, [ECHO_ABS, "--setting-sources", "", "x", ""]);
         let many: Vec<String> = std::iter::once(ECHO_ABS.to_owned())
             .chain(std::iter::repeat_n("y".repeat(4000), 9))
             .collect();

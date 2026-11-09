@@ -798,6 +798,39 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     d.shutdown().await;
 }
 
+/// a63ab 20:32: an empty argument after argv[0] (claude `--setting-sources ""`) is
+/// accepted and reaches the child as an empty argument, in its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_arguments_reach_the_child_as_they_are() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let v = view(&d);
+    let f = tmp.path().join("args");
+    let script = format!(
+        "printf '[%s]' \"$#\" \"$@\" > {}.tmp && mv {0}.tmp {0}",
+        f.display()
+    );
+    let body = serde_json::json!({
+        "argv": ["/bin/sh", "-c", script, "sh", "--setting-sources", "", "x", ""]
+    })
+    .to_string();
+    let (c, s) = blocking!(v, |v| v.d().call("POST", "/api/v1/sessions", Some(&body)));
+    assert_eq!(c, 201, "{s}");
+    let f2 = f.clone();
+    let got = blocking!(v, |_v| {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(x) = std::fs::read_to_string(&f2) {
+                break x;
+            }
+            assert!(Instant::now() < end, "the child never wrote its arguments");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    assert_eq!(got, "[4][--setting-sources][][x][]");
+    d.shutdown().await;
+}
+
 static ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A start that is slow (it signals it began, waits, then really starts).
