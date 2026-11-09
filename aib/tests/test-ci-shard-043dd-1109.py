@@ -57,6 +57,11 @@ class Base(unittest.TestCase):
         (self.repo / "aib" / "tests").mkdir(parents=True)
         (self.repo / "tests").mkdir()
 
+    def env(self):
+        """ci_shard 的暫存(每支的記錄檔)落在這格自己的資料夾:被硬殺時留下的也跟著 rmtree 掉。"""
+        (self.d / "tmp").mkdir(exist_ok=True)
+        return dict(os.environ, TMPDIR=str(self.d / "tmp"))
+
     def put(self, rel, text):
         p = self.repo / rel
         p.write_text(text, encoding="utf-8")
@@ -65,7 +70,7 @@ class Base(unittest.TestCase):
     def run_shard(self, *extra, timeout=120):
         out = self.d / "res.json"
         r = subprocess.run([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--results", str(out)] + list(extra),
-                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=self.env())
         res = json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
         return r, res
 
@@ -138,7 +143,7 @@ class C(Base):
         out = self.d / "res.json"
         p = subprocess.Popen([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--jobs", "2",
                               "--results", str(out)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                             stdin=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, env=self.env())
         self.addCleanup(lambda: p.poll() is None and p.kill())
         end = time.time() + 30
         while len(os.listdir(started)) < 2 and time.time() < end:
@@ -173,7 +178,7 @@ class C(Base):
         self.put("aib/tests/test-s2.py", "# aib: ci-serial\nimport sys\nsys.exit(0)\n")
         self.put("aib/tests/test-ok.py", "# aib: ci-parallel-ok\n# mentions pgrep in a string only\nimport sys\nsys.exit(0)\n")
         r = subprocess.run([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--list"],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, env=self.env())
         kinds = dict(reversed(ln.split(" ", 1)) for ln in r.stdout.split("\n") if ln)
         self.assertEqual(kinds["aib/tests/test-s1.py"], "serial")
         self.assertEqual(kinds["aib/tests/test-s2.py"], "serial")
