@@ -180,8 +180,14 @@ pub fn check_argv(
             .map_or(0, |d| d.as_nanos())
     ));
     let _ = std::fs::remove_file(&marker);
+    // One session id per check, never per process: the stop's marker sweep
+    // (ADR 0004 layer 3) adopts every process carrying `AIBD_SESSION=<id>`,
+    // so two checks sharing an id would stop each other's trees (#579 CI:
+    // a concurrent test's stop took this tree's background child).
+    static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let spec = Spec {
-        id: format!("selfcheck-{}", std::process::id()),
+        id: format!("selfcheck-{}-{n}", std::process::id()),
         argv: {
             argv.push(marker.to_string_lossy().into_owned());
             argv
