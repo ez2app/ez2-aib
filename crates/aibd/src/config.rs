@@ -33,8 +33,25 @@ pub enum ConfigError {
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:47770";
-pub const DEFAULT_MAX_SESSIONS: usize = 8;
+/// The most the default running limit can be (ADR 0005 §5: at most 4 for now; 8 is the
+/// stress-test target, set with `AIBD_MAX_SESSIONS`, not a default).
+pub const DEFAULT_MAX_SESSIONS: usize = 4;
+/// The least the default running limit can be, also used when the memory size cannot be
+/// read.
+pub const MIN_DEFAULT_SESSIONS: usize = 2;
+/// Memory one live CLI is budgeted (ADR 0005 §5: 500 MB, taken as MiB).
+pub const SESSION_MEMORY_BUDGET: u64 = 500 * 1024 * 1024;
 pub const MAX_SESSIONS_LIMIT: usize = 64;
+
+/// ADR 0005 §5: `clamp(floor(physical memory × 0.5 ÷ 500 MB), 2, 4)`; unknown memory ⇒ 2.
+pub fn default_max_sessions(physical_memory: Option<u64>) -> usize {
+    match physical_memory {
+        Some(m) => usize::try_from(m / 2 / SESSION_MEMORY_BUDGET)
+            .unwrap_or(usize::MAX)
+            .clamp(MIN_DEFAULT_SESSIONS, DEFAULT_MAX_SESSIONS),
+        None => MIN_DEFAULT_SESSIONS,
+    }
+}
 
 pub fn parse_bind(s: &str) -> Result<SocketAddr, ConfigError> {
     let a: SocketAddr = s.parse().map_err(|_| ConfigError::BadBind(s.to_string()))?;
@@ -84,7 +101,7 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
         let max_sessions = match get("AIBD_MAX_SESSIONS") {
-            None => DEFAULT_MAX_SESSIONS,
+            None => default_max_sessions(crate::platform::physical_memory()),
             Some(v) => match v.trim().parse::<usize>() {
                 Ok(n) if (1..=MAX_SESSIONS_LIMIT).contains(&n) => n,
                 _ => return Err(ConfigError::BadMaxSessions(v)),
@@ -157,6 +174,16 @@ mod tests {
             Config::from_lookup(get, Some("/x".into())).unwrap_err(),
             ConfigError::SessionPolicy(crate::allowlist::PolicyError::NotAbsolute)
         );
+    }
+
+    #[test]
+    fn the_default_limit_follows_memory_between_2_and_4() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(default_max_sessions(None), 2);
+        assert_eq!(default_max_sessions(Some(GIB)), 2); // 1 session's worth, raised to 2
+        assert_eq!(default_max_sessions(Some(3 * GIB)), 3);
+        assert_eq!(default_max_sessions(Some(8 * GIB)), 4); // 8, capped at 4
+        assert_eq!(default_max_sessions(Some(u64::MAX)), 4);
     }
 
     #[test]
