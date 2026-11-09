@@ -27,7 +27,8 @@ fn s(x: &str) -> String {
 
 fn review(by: &str, head: &str, pass: bool, counts: [u32; 4], from: Option<&str>) -> ReviewLine {
     ReviewLine {
-        by: s(by),
+        by: Known::Known(s(by)),
+        evidence: format!("REVIEW-{by}-{head}"),
         head: s(head),
         pass,
         counts,
@@ -37,7 +38,8 @@ fn review(by: &str, head: &str, pass: bool, counts: [u32; 4], from: Option<&str>
 
 fn verify(by: &str, kind: &str, head: &str, pass: bool, not_checked: Option<&str>) -> VerifyLine {
     VerifyLine {
-        by: s(by),
+        by: Known::Known(s(by)),
+        evidence: format!("VERIFY-{kind}-{by}-{head}"),
         kind: s(kind),
         head: s(head),
         pass,
@@ -97,6 +99,7 @@ fn snap(prs: Vec<Pr>) -> Snapshot {
         },
         freeze: Known::Known(None),
         required_cells: Known::Known(vec![s("rust (macos-latest)")]),
+        rules_version: Known::Known(s("RULES-seats-aib2 r42")),
         merge_slot_free: Known::Known(true),
         busy_seats: BTreeSet::new(),
         prs,
@@ -169,9 +172,9 @@ fn g1_a_failed_acceptance_waits_for_the_captains_ruling_on_this_head() {
 
 /// The queue PR: bb7dc reviewed up to 6f2ffc25, 043dd reviewed
 /// 967111ff..f6500f85. Nobody reviewed 967111ff itself: no merge, and the
-/// last non-author reviewer is asked for 6f2ffc25..head. Once someone reviews
-/// 6f2ffc25..967111ff (even a failing review: its findings were fixed in
-/// the next increment), the chain reaches the head and it merges.
+/// last non-author reviewer is asked for 6f2ffc25..head. A failing review
+/// of 6f2ffc25..967111ff does not join the chain (bb7dc 121b1cbf H2); a
+/// passing one does, and then it merges.
 #[test]
 fn queue_an_unreviewed_middle_commit_blocks_and_asks_for_exactly_that_range() {
     let mut p = pr(605, Q4);
@@ -193,6 +196,9 @@ fn queue_an_unreviewed_middle_commit_blocks_and_asks_for_exactly_that_range() {
 
     p.reviews
         .push(review("043dd", Q3, false, [0, 2, 3, 1], Some(Q2)));
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    p.reviews
+        .push(review("bb7dc", Q3, true, [0, 0, 1, 0], Some(Q2)));
     assert_eq!(merges(&decide(&snap(vec![p]))), vec![(605, s(Q4))]);
 }
 
@@ -309,7 +315,7 @@ fn integration_prs_need_the_int_prefix_and_unmoved_originals() {
 #[test]
 fn every_unknown_blocks_the_merge() {
     type Spoil = fn(&mut Pr, &mut Snapshot);
-    let spoil: [(&str, Spoil); 8] = [
+    let spoil: [(&str, Spoil); 9] = [
         ("authors", |p, _| {
             p.authors = Known::Unknown(s("no seat map"))
         }),
@@ -326,6 +332,9 @@ fn every_unknown_blocks_the_merge() {
             sn.merge_slot_free = Known::Unknown(s("lock"))
         }),
         ("freeze", |_, sn| sn.freeze = Known::Unknown(s("rules"))),
+        ("rules", |_, sn| {
+            sn.rules_version = Known::Unknown(s("rules"))
+        }),
     ];
     for (what, f) in spoil {
         let mut p = pr(607, G1);
@@ -334,8 +343,7 @@ fn every_unknown_blocks_the_merge() {
         sn.prs = vec![p];
         assert!(merges(&decide(&sn)).is_empty(), "{what}");
     }
-    // an empty required list is "no cells required", not unknown; but a
-    // required cell with no result is not a pass
+    // a required cell with no result is not a pass
     let mut p = pr(607, G1);
     p.cells = Known::Known(vec![]);
     assert!(merges(&decide(&snap(vec![p]))).is_empty());
@@ -475,9 +483,74 @@ fn who_can_rule() {
 fn only_a_conforming_first_line_becomes_a_review() {
     use aib_core::firstline::parse_review;
     let ok = format!("結論: 通過 頭: {Q6} H/M/L/N: 0/0/0/0 範圍: 增量 {Q5}..{Q6}");
-    let r = ReviewLine::from_parsed("1ced7", &parse_review(&ok).unwrap()).unwrap();
+    let r = ReviewLine::from_parsed(Known::Known(s("1ced7")), "R1", &parse_review(&ok).unwrap())
+        .unwrap();
     assert_eq!(r.from.as_deref(), Some(Q5));
     assert!(r.mergeable_at(Q6) && !r.mergeable_at(Q5));
     let short = format!("結論: 通過 頭: {Q6} H/M/L/N: 0/0/0/0 範圍: 增量 cd33802b..766fa8f6");
-    assert!(ReviewLine::from_parsed("1ced7", &parse_review(&short).unwrap()).is_none());
+    assert!(ReviewLine::from_parsed(
+        Known::Known(s("1ced7")),
+        "R2",
+        &parse_review(&short).unwrap()
+    )
+    .is_none());
+}
+
+/// bb7dc 121b1cbf H1: an empty required list is unknown, not "all green".
+#[test]
+fn an_empty_required_list_merges_nothing() {
+    let mut sn = snap(vec![pr(607, G1)]);
+    sn.required_cells = Known::Known(vec![]);
+    assert!(merges(&decide(&sn)).is_empty());
+}
+
+/// bb7dc 121b1cbf H2: a full review of an older head that failed, plus an
+/// incremental pass of the new commit, does not cover the branch.
+#[test]
+fn a_failed_full_review_plus_a_passing_increment_is_not_a_merge() {
+    let mut p = pr(605, Q6);
+    p.commits = Known::Known(vec![s(Q5), s(Q6)]);
+    for counts in [[0, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0]] {
+        let pass = counts == [0, 0, 0, 0];
+        p.reviews = vec![
+            review("043dd", Q5, !pass, counts, None),
+            review("043dd", Q6, true, [0, 0, 0, 0], Some(Q5)),
+        ];
+        if pass {
+            // the failing variant: verdict 不通過 with nothing counted
+            p.reviews[0].pass = false;
+        }
+        assert!(
+            merges(&decide(&snap(vec![p.clone()]))).is_empty(),
+            "{counts:?}"
+        );
+    }
+    p.reviews[0] = review("043dd", Q5, true, [0, 0, 2, 1], None);
+    assert_eq!(merges(&decide(&snap(vec![p]))), vec![(605, s(Q6))]);
+}
+
+/// bb7dc 121b1cbf M1: a writer the snapshot could not verify (a file name's
+/// claim) is never a non-author; the merge carries what it relied on.
+#[test]
+fn an_unverified_reviewer_does_not_count_and_the_merge_names_its_evidence() {
+    let mut p = pr(607, G1);
+    p.reviews[0].by = Known::Unknown(s("file name only"));
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    let mut p = pr(607, G1);
+    p.needs_verify = vec![s("g1")];
+    p.verifies = vec![VerifyLine {
+        by: Known::Unknown(s("file name only")),
+        ..verify("1ced7", "g1", G1, true, None)
+    }];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    p.verifies[0].by = Known::Known(s("1ced7"));
+    let out = decide(&snap(vec![p]));
+    let Some(Intent::Merge { pre }) = out.iter().find(|i| i.is_shared_write()) else {
+        panic!("{out:#?}")
+    };
+    assert_eq!(pre.rules_version, "RULES-seats-aib2 r42");
+    assert_eq!(pre.reviews, vec![format!("REVIEW-043dd-{G1}")]);
+    assert_eq!(pre.verifies, vec![format!("VERIFY-g1-1ced7-{G1}")]);
+    assert_eq!(pre.runs, vec![(s("rust (macos-latest)"), 42)]);
 }

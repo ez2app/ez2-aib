@@ -23,6 +23,12 @@ use std::collections::BTreeSet;
 pub type Sha = String;
 pub type Seat = String;
 
+/// A writer verified as someone who authored none of the commits. An
+/// unverified writer (`Unknown`) never counts (fail closed).
+fn trusted_non_author(by: &Known<Seat>, authors: &BTreeSet<Seat>) -> bool {
+    matches!(by, Known::Known(s) if !authors.contains(s))
+}
+
 /// A value the snapshot layer read in full, or why it could not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Known<T> {
@@ -54,8 +60,12 @@ pub struct Snapshot {
     pub roles: Roles,
     /// `Known(None)` = no freeze; `Known(Some(tag))` = frozen until that tag.
     pub freeze: Known<Option<String>>,
-    /// Required check names, read from the rules on main.
+    /// Required check names, read from the rules on main. An empty list is
+    /// treated as unknown (bb7dc 121b1cbf H1): nothing merges on it.
     pub required_cells: Known<Vec<String>>,
+    /// The version of the rules on main the snapshot read (bound into
+    /// [`Pre`]); unknown = nothing merges.
+    pub rules_version: Known<String>,
     /// The merge lock is free and the gap since the last merge has passed.
     pub merge_slot_free: Known<bool>,
     /// Seats that should not get new work now (unread urgent mail, or a
@@ -168,8 +178,12 @@ pub struct TrialHit {
 /// A conforming review first line (RULES §1), owned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewLine {
-    /// Claimed by the file name; not an identity.
-    pub by: Seat,
+    /// Who wrote it: `Known` only when the snapshot layer verified the
+    /// writer (B8 ledger record); a file name's claim is `Unknown`. Only a
+    /// `Known` non-author counts (bb7dc 121b1cbf M1).
+    pub by: Known<Seat>,
+    /// The review record's id / digest: bound into [`Pre`].
+    pub evidence: String,
     pub head: Sha,
     pub pass: bool,
     /// H / M / L / N.
@@ -181,12 +195,13 @@ pub struct ReviewLine {
 impl ReviewLine {
     /// Only a line that follows §1 in full becomes a `ReviewLine`; anything
     /// else is left out (the snapshot layer notes it and nudges the author).
-    pub fn from_parsed(by: &str, r: &Review<'_>) -> Option<Self> {
+    pub fn from_parsed(by: Known<Seat>, evidence: &str, r: &Review<'_>) -> Option<Self> {
         if !r.conforms() {
             return None;
         }
         Some(Self {
-            by: by.to_owned(),
+            by,
+            evidence: evidence.to_owned(),
             head: r.head.to_owned(),
             pass: r.verdict == Verdict::Pass,
             counts: [r.counts.high, r.counts.medium, r.counts.low, r.counts.nit],
@@ -197,16 +212,23 @@ impl ReviewLine {
         })
     }
 
-    /// Pass with no high or medium finding, for exactly this head.
+    /// Pass with no high or medium finding (whatever head).
+    pub fn passes(&self) -> bool {
+        self.pass && self.counts[0] == 0 && self.counts[1] == 0
+    }
+
+    /// [`ReviewLine::passes`], for exactly this head.
     pub fn mergeable_at(&self, head: &str) -> bool {
-        self.head == head && self.pass && self.counts[0] == 0 && self.counts[1] == 0
+        self.head == head && self.passes()
     }
 }
 
 /// An acceptance first line, owned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyLine {
-    pub by: Seat,
+    /// As [`ReviewLine::by`].
+    pub by: Known<Seat>,
+    pub evidence: String,
     /// From the file name: `VERIFY-<kind>-…`.
     pub kind: String,
     pub head: Sha,
@@ -216,9 +238,10 @@ pub struct VerifyLine {
 }
 
 impl VerifyLine {
-    pub fn from_parsed(by: &str, kind: &str, v: &Verify<'_>) -> Self {
+    pub fn from_parsed(by: Known<Seat>, evidence: &str, kind: &str, v: &Verify<'_>) -> Self {
         Self {
-            by: by.to_owned(),
+            by,
+            evidence: evidence.to_owned(),
             kind: kind.to_owned(),
             head: v.head.to_owned(),
             pass: v.verdict == Verdict::Pass,
@@ -319,6 +342,13 @@ pub struct Pre {
     pub base_head: Sha,
     /// The freeze must still be off.
     pub freeze_off: bool,
+    /// The rules version the decision was made on.
+    pub rules_version: String,
+    /// Evidence ids of the verified reviews / acceptance runs it relied on.
+    pub reviews: Vec<String>,
+    pub verifies: Vec<String>,
+    /// Every cell result it saw: (name, run id).
+    pub runs: Vec<(String, u64)>,
 }
 
 /// Never produce the same action twice (journal key).
@@ -438,17 +468,41 @@ impl Gate {
     }
 }
 
-fn pre(pr: &Pr, freeze_off: bool) -> Pre {
+fn pre(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Pre {
+    let mut reviews: Vec<String> = pr
+        .reviews
+        .iter()
+        .filter(|r| matches!(r.by, Known::Known(_)))
+        .map(|r| r.evidence.clone())
+        .collect();
+    reviews.sort();
+    let mut verifies: Vec<String> = pr
+        .verifies
+        .iter()
+        .filter(|v| matches!(v.by, Known::Known(_)))
+        .map(|v| v.evidence.clone())
+        .collect();
+    verifies.sort();
+    let mut runs: Vec<(String, u64)> = pr
+        .cells
+        .get()
+        .map(|c| c.iter().map(|c| (c.name.clone(), c.run)).collect())
+        .unwrap_or_default();
+    runs.sort();
     Pre {
         pr: pr.number,
         head: pr.head.clone(),
         base_head: pr.base_head.clone(),
         freeze_off,
+        rules_version: s.rules_version.get().cloned().unwrap_or_default(),
+        reviews,
+        verifies,
+        runs,
     }
 }
 
-/// D12 / D13: how far `base..head` is covered by a chain of conforming
-/// reviews from non-authors. A full review at head X covers every commit up
+/// D12 / D13: how far `base..head` is covered by a chain of passing
+/// reviews (no H / M) from verified non-authors. A full review at head X covers every commit up
 /// to X; an incremental review `from..to` extends the chain only if `from`
 /// is already covered. Returns the index of the last covered commit.
 fn covered_to(commits: &[Sha], reviews: &[&ReviewLine]) -> Option<usize> {
@@ -479,7 +533,7 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
         blocked: false,
         out: Vec::new(),
     };
-    let p = pre(pr, freeze_off);
+    let p = pre(s, pr, freeze_off);
 
     // D2 a new head: old reviews / acceptance are stale, old runs give way
     if let Some(old) = pr.prev_head.as_ref().filter(|o| **o != pr.head) {
@@ -602,6 +656,11 @@ fn gate_cells(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         g.block();
         return;
     };
+    if required.is_empty() {
+        g.note(n, "required cell list is empty: treated as unknown");
+        g.block();
+        return;
+    }
     for name in required {
         let mine: Vec<&Cell> = cells.iter().filter(|c| c.name == *name).collect();
         let [c] = mine.as_slice() else {
@@ -672,10 +731,13 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         g.block();
         return;
     };
+    if pr.reviews.iter().any(|r| matches!(r.by, Known::Unknown(_))) {
+        g.note(n, "a review's writer is not verified: it does not count");
+    }
     let others: Vec<&ReviewLine> = pr
         .reviews
         .iter()
-        .filter(|r| !authors.contains(&r.by))
+        .filter(|r| trusted_non_author(&r.by, authors))
         .collect();
     let at_head: Vec<&&ReviewLine> = others.iter().filter(|r| r.head == pr.head).collect();
     if at_head.iter().any(|r| !r.mergeable_at(&pr.head)) {
@@ -684,7 +746,9 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         return;
     }
     let last = commits.len().checked_sub(1);
-    let covered = covered_to(commits, &others);
+    // bb7dc 121b1cbf H2: only reviews that pass with no H / M make the chain
+    let chain: Vec<&ReviewLine> = others.iter().copied().filter(|r| r.passes()).collect();
+    let covered = covered_to(commits, &chain);
     if last.is_some() && covered == last && !at_head.is_empty() {
         return;
     }
@@ -693,8 +757,8 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         .reviews
         .iter()
         .rev()
-        .find(|r| !authors.contains(&r.by))
-        .map(|r| r.by.clone())
+        .find(|r| trusted_non_author(&r.by, authors))
+        .and_then(|r| r.by.get().cloned())
         .or_else(|| pr.reviewer.clone().filter(|r| !authors.contains(r)));
     let Some(to) = to else {
         g.note(n, "no reviewer to ask");
@@ -726,7 +790,7 @@ fn gate_verifies(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
             .verifies
             .iter()
             .filter(|v| v.kind == *kind && holds(&v.head))
-            .filter(|v| authors.is_some_and(|a| !a.contains(&v.by)))
+            .filter(|v| authors.is_some_and(|a| trusted_non_author(&v.by, a)))
             .collect();
         if lines.is_empty() {
             g.block();
@@ -779,7 +843,8 @@ pub fn decide(s: &Snapshot) -> Vec<Intent> {
             false
         }
     };
-    let slot_free = matches!(s.merge_slot_free, Known::Known(true));
+    let slot_free = matches!(s.merge_slot_free, Known::Known(true))
+        && matches!(s.rules_version, Known::Known(_));
     let mut prs: Vec<&Pr> = s.prs.iter().collect();
     prs.sort_by(|a, b| {
         b.blocks_release
@@ -799,7 +864,7 @@ pub fn decide(s: &Snapshot) -> Vec<Intent> {
         }
         if !blocked && freeze_off && slot_free {
             out.push(Intent::Merge {
-                pre: pre(pr, freeze_off),
+                pre: pre(s, pr, freeze_off),
             });
         }
     }
