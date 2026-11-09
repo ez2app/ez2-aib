@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# aib-cloud-host:the Linux binary that runs on the Proxmox host (EU02). Built here as a static
+# musl executable so it runs on any x86_64 Linux without a toolchain on the host (Andy 11-09:
+# every new tool is Rust;the host has no cargo). Download the artifact and scp it to the host.
+name: cloud-host
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "crates/aib-cloud-host/**"
+      - "crates/aib-cloud/**"
+      - ".github/workflows/cloud-host.yml"
+      - "Cargo.lock"
+permissions:
+  contents: read
+concurrency:
+  group: cloud-host-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux-musl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add "$TARGET"
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools >/dev/null
+      - name: test (host crate, native)
+        run: cargo test -p aib-cloud-host --locked
+      - name: build (static)
+        run: cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+      - name: smoke
+        run: |
+          bin="target/$TARGET/release/aib-cloud-host"
+          file "$bin" | tee /dev/stderr | grep -q "statically linked" || { echo "::error::not static"; exit 1; }
+          "$bin" --version
+          mkdir -p dist && cp "$bin" "dist/aib-cloud-host-${GITHUB_SHA::8}-$TARGET"
+          sha256sum dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aib-cloud-host-${{ env.TARGET }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

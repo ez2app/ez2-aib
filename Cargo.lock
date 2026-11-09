@@ -26,6 +26,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-cloud-host"
+version = "0.2.0-preview.2"
+dependencies = [
+ "aib-cloud",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-core"
 version = "0.2.0-preview.2"
 dependencies = [
