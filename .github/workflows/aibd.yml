@@ -253,6 +253,14 @@ jobs:
             "holds_slot = 1 OR state = 'pending'" "holds_slot = 1 -- knife" \
             --expect-fail pending_and_running_are_interrupted_with_previous_state_and_process_flag \
             -- cargo test -p aib-store --locked --test sessions pending_and_running_are_interrupted_with_previous_state_and_process_flag
+          # Q6 (043dd 11-10 M1) a session leaving the queue is not gated again
+          qk '            let argv = match self.regate(&q) {' \
+            '            let argv = match Ok::<Vec<String>, ErrorCode>(q.rec.argv.clone()) { // knife' \
+            a_queued_session_is_gated_again_when_it_leaves_the_queue
+          # Q7 (043dd M2) a pending session does not say what it waits for
+          qk '                rec.queue = Some(self.queue_view(&g, i + 1));' \
+            '                let _ = self.queue_view(&g, i + 1); // knife' \
+            a_pending_session_shows_its_place_and_who_holds_the_slots
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \

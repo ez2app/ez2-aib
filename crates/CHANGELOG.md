@@ -13,7 +13,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   waiting ones end `interrupted` (`ended_by: shutdown`); after a crash the next start marks
   a stored `pending` session `interrupted` (`previous_state: pending`,
   `processes_may_remain: false`). A queued start that cannot start ends `failed`
-  (`ended_by: spawn_failed`). The default running limit is now
+  (`ended_by: spawn_failed`); one the M1 gate refuses when it leaves the queue (it runs again
+  on the `argv[0]` asked for) ends `failed` (`ended_by: policy_refused`). `GET` of a pending
+  session has `queue {position, slots, held_by: [{id, state, reason}], held_unknown}`. Known
+  limit: slots kept by unconfirmed stops are not given back by time, so the queue can stand
+  still; `held_by` shows which. The default running limit is now
   `clamp(floor(physical memory × 0.5 ÷ 500 MiB), 2, 4)`; `AIBD_MAX_SESSIONS` (1–64) is for
   stress tests.
 - **M1 security gate, `POST /api/v1/sessions` (breaking):** only programs and env names on an

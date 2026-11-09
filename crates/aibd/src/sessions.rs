@@ -161,6 +161,31 @@ pub struct Session {
     /// not show the tree is gone (H2 whitelist). DELETE again to re-check.
     pub holds_slot: bool,
     pub stop: Option<StopView>,
+    /// While `pending` (043dd M2): its place in the queue now (1 = next), and
+    /// the sessions holding the slots it waits for. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<QueueView>,
+}
+
+/// Where a pending session stands (GET only; computed when read).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct QueueView {
+    pub position: usize,
+    pub slots: usize,
+    /// Every session holding a slot: id, state and, for a stop that kept
+    /// the slot, its reason (`candidates_unreadable` ...). A slot whose
+    /// process could not be confirmed after a failed start has no session
+    /// and shows in `held_unknown`.
+    pub held_by: Vec<SlotHolder>,
+    pub held_unknown: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SlotHolder {
+    pub id: String,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// A validated POST body.
@@ -389,6 +414,11 @@ struct Entry {
 /// memory only (never stored, never returned).
 struct Queued {
     rec: Session,
+    /// `argv[0]` as the request gave it, before the M1 gate resolved it:
+    /// the gate runs again at dequeue (043dd M2-1 / ADR 0003: every spawn
+    /// resolves the real path again). `None` = started without the gate
+    /// (tests calling [`Sessions::start`] directly).
+    asked: Option<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
     /// Next event sequence (`session.queued` was 1).
@@ -409,6 +439,8 @@ struct Inner {
     /// (`SpawnFail::left_running`): their slots stay taken (H2, 043dd #539).
     held_unknown: usize,
     shutting: bool,
+    /// A dequeue thread is running (043dd L1: one at a time).
+    dequeuing: bool,
     next_order: u64,
 }
 
@@ -425,6 +457,9 @@ pub struct Sessions {
     rescan_window: Mutex<(Duration, Duration)>,
     /// M1 gate rejections, folded per token + code per minute.
     rejections: allowlist::RejectLog,
+    /// The M1 gate, run again when a queued session leaves the queue.
+    /// Set by the server ([`Sessions::set_policy`]); `None` = no re-check.
+    policy: Mutex<Option<Arc<SessionPolicy>>>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -491,8 +526,15 @@ impl Sessions {
             default_cwd,
             rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
             rejections: allowlist::RejectLog::default(),
+            policy: Mutex::new(None),
             me: me.clone(),
         })
+    }
+
+    /// The M1 policy the queue re-checks a waiting session against when it
+    /// leaves the queue (the same one the POST gate used).
+    pub fn set_policy(&self, p: Arc<SessionPolicy>) {
+        *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
 
     /// Test hook: a shorter background re-check window (and, since test
@@ -522,10 +564,10 @@ impl Sessions {
             .get(id)
             .map(|e| e.rec.clone())
             .or_else(|| {
-                g.queue
-                    .iter()
-                    .find(|q| q.rec.id == id)
-                    .map(|q| q.rec.clone())
+                let i = g.queue.iter().position(|q| q.rec.id == id)?;
+                let mut rec = g.queue[i].rec.clone();
+                rec.queue = Some(self.queue_view(&g, i + 1));
+                Some(rec)
             })
             .or_else(|| {
                 g.ended
@@ -533,6 +575,32 @@ impl Sessions {
                     .find(|(_, s)| s.id == id)
                     .map(|(_, s)| s.clone())
             })
+    }
+
+    /// 043dd M2: what a pending session waits for, so a queue that does not
+    /// move says why (a stop that kept its slot shows its reason).
+    fn queue_view(&self, g: &Inner, position: usize) -> QueueView {
+        let mut held_by: Vec<(u64, SlotHolder)> = g
+            .live
+            .iter()
+            .map(|(id, e)| {
+                (
+                    e.order,
+                    SlotHolder {
+                        id: id.clone(),
+                        state: e.rec.state,
+                        reason: e.rec.stop.as_ref().and_then(|s| s.reason.clone()),
+                    },
+                )
+            })
+            .collect();
+        held_by.sort_by_key(|(o, _)| *o);
+        QueueView {
+            position,
+            slots: self.max,
+            held_by: held_by.into_iter().map(|(_, h)| h).collect(),
+            held_unknown: g.held_unknown,
+        }
     }
 
     /// Running slots in use (live + reserved), for tests and metrics.
@@ -560,6 +628,18 @@ impl Sessions {
         seat_id: Option<String>,
         req: Request,
     ) -> Result<Session, ApiError> {
+        self.start_gated(seat_id, req, None)
+    }
+
+    /// POST after the M1 gate: `asked` is `argv[0]` as the request gave it
+    /// (before [`admit`] resolved it), kept so the gate runs again if the
+    /// session has to wait (043dd M2-1).
+    pub fn start_gated(
+        self: &Arc<Self>,
+        seat_id: Option<String>,
+        req: Request,
+        asked: Option<String>,
+    ) -> Result<Session, ApiError> {
         let id = new_id("s_").map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
         {
             let mut g = lock(&self.inner);
@@ -577,7 +657,11 @@ impl Sessions {
                         format!("{} sessions running and {MAX_QUEUE} waiting", self.max),
                     ));
                 }
-                return Ok(self.enqueue(&mut g, id, seat_id, req));
+                let rec = self.enqueue(&mut g, id, seat_id, req, asked);
+                // 043dd L2: a free slot with a queue (its dequeue thread could
+                // not start) must not wait for the next slot change
+                self.kick(&mut g);
+                return Ok(rec);
             }
             g.reserved += 1; // H3: the slot is ours before anything starts
         }
@@ -592,7 +676,14 @@ impl Sessions {
     }
 
     /// Put a session in the queue (the caller holds the lock and checked the bound).
-    fn enqueue(&self, g: &mut Inner, id: String, seat_id: Option<String>, req: Request) -> Session {
+    fn enqueue(
+        &self,
+        g: &mut Inner,
+        id: String,
+        seat_id: Option<String>,
+        req: Request,
+        asked: Option<String>,
+    ) -> Session {
         let order = g.next_order;
         g.next_order += 1;
         let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
@@ -610,6 +701,7 @@ impl Sessions {
             ended_by: None,
             holds_slot: false,
             stop: None,
+            queue: None,
         };
         let position = g.queue.len() + 1;
         self.write(
@@ -626,6 +718,7 @@ impl Sessions {
         tracing::info!(session = %id, position, "session queued");
         g.queue.push_back(Queued {
             rec: rec.clone(),
+            asked,
             cwd,
             env: req.env,
             seq: 2,
@@ -657,7 +750,7 @@ impl Sessions {
                     g.held_unknown += 1;
                 } else {
                     // the slot is free again: the next waiting one may start
-                    self.kick(&g);
+                    self.kick(&mut g);
                 }
                 let mut payload = serde_json::json!({"id": id, "tag": f.tag});
                 if let Some(pid) = f.left_running {
@@ -681,6 +774,7 @@ impl Sessions {
                         ended_by: Some("spawn_failed"),
                         holds_slot: f.left_running.is_some(),
                         stop: None,
+                        queue: None,
                     };
                     self.write(&rec, seq, "session.spawn_failed", payload);
                     g.ended.push_front((order, rec));
@@ -722,6 +816,7 @@ impl Sessions {
             ended_by: None,
             holds_slot: true,
             stop: None,
+            queue: None,
         };
         let exit_wait = run.exit_wait();
         let output = run.take_output();
@@ -793,8 +888,10 @@ impl Sessions {
 
     /// A slot may have come back: start waiting sessions on their own thread
     /// (the caller holds the lock). Nothing to do with an empty queue.
-    fn kick(&self, g: &Inner) {
-        if g.queue.is_empty() || g.shutting {
+    fn kick(&self, g: &mut Inner) {
+        // 043dd L1: one dequeue thread at a time; a running one re-reads the
+        // queue and the free slots after every start, so it sees this change
+        if g.queue.is_empty() || g.shutting || g.dequeuing {
             return;
         }
         let Some(me) = self.me.upgrade() else {
@@ -803,9 +900,10 @@ impl Sessions {
         let spawned = std::thread::Builder::new()
             .name("aibd-session-dequeue".into())
             .spawn(move || me.dequeue());
-        if spawned.is_err() {
-            // the next slot change kicks again
-            tracing::warn!("could not start the dequeue thread");
+        match spawned {
+            Ok(_) => g.dequeuing = true,
+            // the next slot change or POST kicks again
+            Err(_) => tracing::warn!("could not start the dequeue thread"),
         }
     }
 
@@ -816,23 +914,84 @@ impl Sessions {
             let q = {
                 let mut g = lock(&self.inner);
                 if g.shutting || g.live.len() + g.reserved + g.held_unknown >= self.max {
+                    g.dequeuing = false; // under the lock that checked: a kick after this starts a new one
                     return;
                 }
                 let Some(q) = g.queue.pop_front() else {
+                    g.dequeuing = false;
                     return;
                 };
                 g.reserved += 1;
                 q
             };
+            let argv = match self.regate(&q) {
+                Ok(argv) => argv,
+                Err(code) => {
+                    self.refuse_queued(q, code);
+                    continue;
+                }
+            };
             let spec = Spec {
                 id: q.rec.id.clone(),
-                argv: q.rec.argv.clone(),
+                argv,
                 cwd: q.cwd,
                 env: q.env,
             };
             // errors are recorded on the session itself (`failed`)
             let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));
         }
+    }
+
+    /// 043dd M2-1 (ADR 0003: every spawn resolves the real path again): the
+    /// M1 gate once more on what the request asked for, now that the session
+    /// leaves the queue. The argv to start (with `argv[0]` resolved again), or
+    /// the refusal's code (audited as at the POST).
+    fn regate(&self, q: &Queued) -> Result<Vec<String>, ErrorCode> {
+        let policy = self
+            .policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (Some(p), Some(asked)) = (policy, q.asked.as_ref()) else {
+            return Ok(q.rec.argv.clone());
+        };
+        let mut argv = q.rec.argv.clone();
+        argv[0] = asked.clone();
+        let req = Request {
+            argv,
+            cwd: None,
+            env: q.env.clone(),
+        };
+        match admit(req, &p) {
+            Ok(r) => Ok(r.argv),
+            Err(r) => {
+                self.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
+                Err(r.error.0)
+            }
+        }
+    }
+
+    /// A queued session the gate refused at dequeue: it ends `failed`
+    /// (`ended_by: policy_refused`), its reserved slot is given back, and the
+    /// next one may start.
+    fn refuse_queued(&self, q: Queued, code: ErrorCode) {
+        let mut g = lock(&self.inner);
+        g.reserved -= 1;
+        self.cv.notify_all();
+        let mut rec = q.rec;
+        rec.state = "failed";
+        rec.ended_at = Some(now_rfc3339());
+        rec.ended_by = Some("policy_refused");
+        let id = rec.id.clone();
+        tracing::warn!(session = %id, code = code.as_str(), "queued session refused by the M1 gate at start");
+        self.write(
+            &rec,
+            q.seq,
+            "session.spawn_failed",
+            serde_json::json!({"id": id, "tag": "policy_refused", "code": code.as_str()}),
+        );
+        g.ended.push_front((q.order, rec));
+        g.ended.truncate(KEEP_ENDED);
     }
 
     /// Mark a live session as being stopped; `None` if it is not live or a
@@ -925,7 +1084,7 @@ impl Sessions {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
-            self.kick(&g);
+            self.kick(&mut g);
         } else if worth_rescanning(&stop) && !g.shutting {
             // nothing known alive, but the stop could not look everywhere
             // (candidates_unreadable): re-check in the background
@@ -1527,11 +1686,12 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
 
 /// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
 /// is audited.
-async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
+async fn gate(st: &AppState, req: Request) -> Result<(Request, Option<String>), ApiError> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
+    let asked = req.argv.first().cloned();
     let run = move || {
-        admit(req, &policy).map_err(|r| {
+        admit(req, &policy).map(|r| (r, asked)).map_err(|r| {
             audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
@@ -1557,12 +1717,12 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let req = match gate(&st, req).await {
+    let (req, asked) = match gate(&st, req).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start(req)).await {
+    match tokio::task::spawn_blocking(move || s.start_gated(None, req, asked)).await {
         Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
@@ -1593,12 +1753,12 @@ pub async fn create_for_seat(
     }
     // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
     // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
-    let req = match gate(&st, req).await {
+    let (req, asked) = match gate(&st, req).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
+    match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
         Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),

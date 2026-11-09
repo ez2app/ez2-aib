@@ -255,6 +255,71 @@ async fn a_cancelled_queued_session_never_starts() {
     d.shutdown().await;
 }
 
+/// 043dd M2-1 (ADR 0003: every spawn resolves the real path again): the M1
+/// gate runs again when a session leaves the queue. A listed program that was
+/// swapped for an unlisted one while the session waited is refused then:
+/// `failed` / `policy_refused`, never started, and the slot goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_session_is_gated_again_when_it_leaves_the_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let link = bin.path().join("prog");
+    std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+    let mut d = start(dir.path(), 1).await;
+    let (_, a) = d.post(SLEEP).await;
+    let a = a["id"].as_str().unwrap().to_string();
+    let body = json!({"argv": [link.to_str().unwrap(), "60"]}).to_string();
+    let (code, q) = d.post(&body).await;
+    assert_eq!(code, 202, "the gate passed it while /bin/sleep: {q}");
+    let q = q["id"].as_str().unwrap().to_string();
+    // while it waits, the path now leads to a program that is not listed
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("/bin/cat", &link).unwrap();
+    d.call("DELETE", &format!("/api/v1/sessions/{a}?grace_ms=0"), None)
+        .await;
+    let v = d.until(&q, &["failed", "running"]).await;
+    assert_eq!(v["state"], "failed", "{v}");
+    assert_eq!(v["ended_by"], "policy_refused", "{v}");
+    let evs = d.events().await;
+    assert_eq!(started_seq(&evs, &q), None, "an unlisted program started");
+    assert!(
+        evs.iter().any(|e| e["type"] == "session.spawn_rejected"
+            && e["payload"]["code"] == "program_not_allowed"),
+        "the refusal is audited: {evs:?}"
+    );
+    // the slot went on: the next start runs
+    let (code, n) = d.post(QUICK).await;
+    assert_eq!(code, 201, "{n}");
+    d.shutdown().await;
+}
+
+/// 043dd M2-2: a pending session says where it stands and what holds the
+/// slots (a stop that kept its slot shows its reason), not only `pending`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_session_shows_its_place_and_who_holds_the_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path(), 1).await;
+    let (_, a) = d.post(SLEEP).await;
+    let a = a["id"].as_str().unwrap().to_string();
+    let (_, q1) = d.post(QUICK).await;
+    let (_, q2) = d.post(QUICK).await;
+    let (q1, q2) = (q1["id"].as_str().unwrap(), q2["id"].as_str().unwrap());
+    let v = d.state(q2).await;
+    assert_eq!(v["queue"]["position"], 2, "{v}");
+    assert_eq!(v["queue"]["slots"], 1, "{v}");
+    assert_eq!(v["queue"]["held_by"][0]["id"], a.as_str(), "{v}");
+    assert_eq!(v["queue"]["held_by"][0]["state"], "running", "{v}");
+    // a cancel ahead of it moves it up
+    d.call("DELETE", &format!("/api/v1/sessions/{q1}"), None)
+        .await;
+    assert_eq!(d.state(q2).await["queue"]["position"], 1);
+    // a session that is not pending has no queue view
+    assert!(d.state(&a).await.get("queue").is_none());
+    d.call("DELETE", &format!("/api/v1/sessions/{a}?grace_ms=0"), None)
+        .await;
+    d.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_queue_is_bounded_and_the_waiting_end_interrupted_at_shutdown() {
     let dir = tempfile::tempdir().unwrap();
