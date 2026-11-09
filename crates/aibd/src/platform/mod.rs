@@ -9,6 +9,7 @@ use lifecycle::{Lifecycle, Step};
 
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
+pub mod check_tree;
 pub mod lifecycle;
 pub mod session;
 #[cfg(unix)]
