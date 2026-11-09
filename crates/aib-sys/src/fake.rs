@@ -232,6 +232,97 @@ impl crate::ChildExit for FakeChildExit {
     }
 }
 
+/// An in-memory [`crate::ThermalInfo`] (T1 / T2): you set what each call returns, including
+/// any [`SysError`], and it counts the calls. Starts as "nothing measured"
+/// ([`SysError::Unsupported`] for both).
+#[derive(Debug)]
+pub struct FakeThermal {
+    st: Mutex<ThermalState>,
+}
+
+#[derive(Debug)]
+struct ThermalState {
+    die: Result<crate::DieTemps, SysError>,
+    pressure: Result<i64, SysError>,
+    die_calls: usize,
+    pressure_calls: usize,
+}
+
+impl Default for FakeThermal {
+    fn default() -> Self {
+        Self {
+            st: Mutex::new(ThermalState {
+                die: Err(SysError::Unsupported),
+                pressure: Err(SysError::Unsupported),
+                die_calls: 0,
+                pressure_calls: 0,
+            }),
+        }
+    }
+}
+
+impl FakeThermal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn st(&self) -> MutexGuard<'_, ThermalState> {
+        self.st.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What T1 returns from now on.
+    pub fn set_die(&self, r: Result<crate::DieTemps, SysError>) {
+        self.st().die = r;
+    }
+
+    /// What T2 returns from now on.
+    pub fn set_pressure(&self, r: Result<i64, SysError>) {
+        self.st().pressure = r;
+    }
+
+    /// `(T1 calls, T2 calls)` so far.
+    pub fn calls(&self) -> (usize, usize) {
+        let st = self.st();
+        (st.die_calls, st.pressure_calls)
+    }
+}
+
+impl crate::ThermalInfo for FakeThermal {
+    fn die_temps(&self) -> Result<crate::DieTemps, SysError> {
+        let mut st = self.st();
+        st.die_calls += 1;
+        st.die.clone()
+    }
+
+    fn pressure(&self) -> Result<i64, SysError> {
+        let mut st = self.st();
+        st.pressure_calls += 1;
+        st.pressure.clone()
+    }
+}
+
+#[cfg(test)]
+mod thermal_tests {
+    use super::FakeThermal;
+    use crate::{DieTemps, SysError, ThermalInfo};
+
+    #[test]
+    fn fake_thermal_returns_what_was_set_and_counts() {
+        let f = FakeThermal::new();
+        assert_eq!(f.die_temps(), Err(SysError::Unsupported));
+        let d = DieTemps {
+            max: 91.0,
+            avg: 80.0,
+            n: 4,
+        };
+        f.set_die(Ok(d));
+        f.set_pressure(Err(SysError::Implausible));
+        assert_eq!(f.die_temps(), Ok(d));
+        assert_eq!(f.pressure(), Err(SysError::Implausible));
+        assert_eq!(f.calls(), (2, 1));
+    }
+}
+
 #[cfg(test)]
 mod child_exit_tests {
     use super::FakeChildExit;

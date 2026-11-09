@@ -180,6 +180,41 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+          # KT4 aib-sys T1 (R1, a63ab / a9136): a private SPI symbol that is missing taken as found
+          python3 -I scripts/knife.py crates/aib-sys/src/thermal_macos.rs \
+            '    if p.is_null() {' \
+            '    if p.is_null() && false { // knife' \
+            --expect-fail missing_spi_symbols_are_spi_missing_not_a_crash \
+            -- cargo test -p aib-sys --locked --lib thermal_macos::
+      # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
+      # OS. Each knife breaks one rule and must turn its own test red.
+      - name: aib-sys thermal knives
+        if: env.RUN == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          tt() { python3 -I scripts/knife.py crates/aib-sys/src/thermal.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-sys --locked --lib "thermal::tests::$3"; }
+          # KT1 a Get-rule object (CFArrayGetValueAtIndex) released ⇒ double free on the real OS
+          tt '        let Some(service) = api.at(services.r, i) else {' \
+            $'        let _k = api.at(services.r, i).map(|s| Owned::new(api, s)); // knife\n        let Some(service) = api.at(services.r, i) else {' \
+            walk_reads_tdie_and_releases_only_create_copy_results
+          # KT2 an implausible reading skipped instead of failing the read
+          tt '            return Err(SysError::Implausible);' \
+            '            continue; // knife' \
+            t1_implausible_value_is_an_error_not_skipped
+          # KT3 no tdie sensor read as a (NaN) reading instead of Unsupported
+          tt '    if seen.is_empty() {' \
+            '    if seen.is_empty() && false { // knife' \
+            t1_no_tdie_is_unsupported_not_cool
+          # KT5 a T2 level above 4 accepted
+          tt '        Ok(v) if v <= PRESSURE_MAX => Ok(v),' \
+            '        Ok(v) => Ok(v), // knife' \
+            t2_levels
+          # KT6 Create / Copy results never released (leak on every round)
+          tt '        self.api.release(self.r);' \
+            '        let _ = (self.api, self.r); // knife' \
+            walk_releases_on_every_error_path
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its

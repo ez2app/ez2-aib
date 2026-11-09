@@ -332,3 +332,51 @@ fn m5_wait_retries_when_a_signal_interrupts_it() {
     assert_eq!(t.join().unwrap().unwrap(), ExitState::Signaled(9));
     c.wait().unwrap();
 }
+
+// ---- T1 / T2 (R1 thermal protection) ----------------------------------------------------------
+
+/// T1 on the real machine. Apple Silicon must give a plausible reading (this is the check that
+/// the private signatures are right: a wrong one would be undefined behaviour, not a red test,
+/// so it must have passed here before aibd uses T1). Intel has no `PMU tdie` sensors and must
+/// say `Unsupported` (or `SpiMissing` if IOKit lacks the symbols), never a number.
+#[test]
+fn t1_die_temps_real() {
+    let r = aib_sys::ThermalInfo::die_temps(&Macos);
+    if cfg!(target_arch = "aarch64") {
+        let d = r.unwrap();
+        assert!(d.n >= 1, "{d:?}");
+        assert!(d.max > 0.0 && d.max < 150.0, "{d:?}");
+        assert!(d.avg > 0.0 && d.avg <= d.max, "{d:?}");
+        eprintln!("T1: max {:.2} avg {:.2} n {}", d.max, d.avg, d.n);
+    } else {
+        assert!(
+            matches!(r, Err(SysError::Unsupported | SysError::SpiMissing)),
+            "{r:?}"
+        );
+    }
+    // repeated reads keep working (nothing over-released on the first one)
+    for _ in 0..20 {
+        let again = aib_sys::ThermalInfo::die_temps(&Macos);
+        assert_eq!(again.is_ok(), cfg!(target_arch = "aarch64"), "{again:?}");
+    }
+}
+
+/// T2 on the real machine: a level in `0..=4`.
+#[test]
+fn t2_pressure_real() {
+    let p = aib_sys::ThermalInfo::pressure(&Macos).unwrap();
+    assert!((0..=4).contains(&p), "{p}");
+    eprintln!("T2: pressure level {p}");
+}
+
+/// The start-up check passes where T1 is usable and reports a tag where it is not.
+#[test]
+fn t1_selfcheck_real() {
+    match aib_sys::thermal::selfcheck_t1(&Macos) {
+        Ok(d) => assert!(d.n >= 1),
+        Err(e) => {
+            assert!(!cfg!(target_arch = "aarch64"), "{e:?}");
+            assert!(["unsupported", "spi_missing"].contains(&e.tag()));
+        }
+    }
+}
