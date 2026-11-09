@@ -992,7 +992,11 @@ mod tests {
         let unmeasured = parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0 0", "00ff").unwrap();
         assert_eq!((unmeasured.user_s, unmeasured.maxrss), (None, None));
         assert_eq!(unmeasured.chrome_seen, Some(false));
-        assert_eq!(parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0", "00ff"), None, "nine fields");
+        assert_eq!(
+            parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0", "00ff"),
+            None,
+            "nine fields"
+        );
         assert_eq!(parse_stat("AIB_LEASE_STAT 00ff 1 2", "00ff"), None);
     }
 
