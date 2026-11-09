@@ -261,6 +261,12 @@ jobs:
           qk '                rec.queue = Some(self.queue_view(&g, i + 1));' \
             '                let _ = self.queue_view(&g, i + 1); // knife' \
             a_pending_session_shows_its_place_and_who_holds_the_slots
+          # Q8 (043dd f6500f85 L1) a dequeue thread that panics leaves the queue stopped
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if std::thread::panicking() {' \
+            '        if std::thread::panicking() && false { // knife' \
+            --expect-fail sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue \
+            -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \

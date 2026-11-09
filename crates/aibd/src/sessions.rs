@@ -493,6 +493,20 @@ fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 043dd f6500f85 L1: a dequeue thread that panics must not leave
+/// `dequeuing` set, or no kick would ever start another and the queue would
+/// stand still. A normal return clears it itself, under the lock that saw
+/// nothing to do; this only acts while unwinding.
+struct DequeueGuard<'a>(&'a Mutex<Inner>);
+
+impl Drop for DequeueGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            lock(self.0).dequeuing = false;
+        }
+    }
+}
+
 impl Sessions {
     /// `default_cwd` (`<data dir>/sessions`) must exist.
     pub fn new(
@@ -910,6 +924,7 @@ impl Sessions {
     /// Start waiting sessions, oldest first, while slots are free. Each slot
     /// is reserved under the lock before its spawn (H3, as a POST).
     fn dequeue(self: &Arc<Self>) {
+        let _guard = DequeueGuard(&self.inner);
         loop {
             let q = {
                 let mut g = lock(&self.inner);
@@ -1900,6 +1915,28 @@ pub async fn method_not_allowed() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 043dd f6500f85 L1: a dequeue thread that panics clears `dequeuing`
+    /// (the next kick starts a new one); a normal drop leaves it to the
+    /// loop, which clears it under its own lock.
+    #[test]
+    fn a_dequeue_thread_that_panics_does_not_stop_the_queue() {
+        let m = Arc::new(Mutex::new(Inner {
+            dequeuing: true,
+            ..Inner::default()
+        }));
+        let m2 = m.clone();
+        let r = std::thread::spawn(move || {
+            let _g = DequeueGuard(&m2);
+            panic!("dequeue thread panics");
+        })
+        .join();
+        assert!(r.is_err());
+        assert!(!lock(&m).dequeuing, "a panic left the queue stopped");
+        lock(&m).dequeuing = true;
+        drop(DequeueGuard(&m));
+        assert!(lock(&m).dequeuing, "a normal end is the loop's to clear");
+    }
 
     // absolute on the platform the test runs on (validation only, nothing
     // is started): "/bin/true" is not absolute on Windows
