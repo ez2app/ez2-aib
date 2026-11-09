@@ -25,8 +25,8 @@ tailnet, peer host, public probe targets, IPv6) it derives every cell (who probe
 TCP / DNS / ICMP, open / blocked / closed). Every *blocked* cell names a *control* cell
 with the **same target ip:port and protocol** from an allowed source, so a timeout alone
 is never a pass; `check_matrix()` asserts that invariant and unique ids. `probe_plan()`
-is the job list for the host-side runner `aib/tools/cloud-host/ez2-isolation-probe`
-(validates the plan against a whitelist, joins each CT's network namespace via
+is the job list for the host-side runner `aib-cloud-host probe run` (crate `aib-cloud-host`;
+validates the plan against a whitelist, joins each CT's network namespace via
 `lxc-info` + `nsenter` and verifies the namespace it landed in); `judge()` accepts only a
 report bound to this exact plan (`plan_fnv`) and host, checks every result's
 from / kind / ip / port against its cell, and returns a pass / fail / missing receipt.

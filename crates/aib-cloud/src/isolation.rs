@@ -10,7 +10,7 @@
 //! address at all (MariaDB on the LAN address, rpcbind on the host); they need no
 //! control because the expectation is the absence of the service, not a firewall.
 //!
-//! The probes are I/O and run on the host (`ez2-isolation-probe`); the runner reports
+//! The probes are I/O and run on the host (`aib-cloud-host probe run`); the runner reports
 //! `{plan_fnv, host, results[]}` and [`judge`] checks the report against **this**
 //! plan (fingerprint + host) and **every result against its cell** (source, kind,
 //! address, port — #568 r1 M1) before deciding pass / fail / missing. Cells the
@@ -1463,10 +1463,11 @@ mod tests {
     }
 
     #[test]
-    fn i9_fingerprint_matches_the_python_runner() {
-        // ez2-isolation-probe computes FNV-1a 64 over json.dumps(plan, sort_keys=True,
-        // separators=(",", ":")); this value was produced by that code for this plan, with the
-        // keys deliberately given out of order here.
+    fn i9_fingerprint_is_fnv1a64_of_canonical_json() {
+        // Pinned value: FNV-1a 64 over the canonical form (keys sorted, no spaces), produced by
+        // the retired Python runner (json.dumps(plan, sort_keys=True, separators=(",", ":")))
+        // for this plan; aib-cloud-host must keep matching it so old EU02 receipts stay valid.
+        // Keys deliberately given out of order here.
         let plan = json!([
             {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "135.181.75.90", "from": "external"},
             {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 443, "expect": "open"},

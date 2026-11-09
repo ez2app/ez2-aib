@@ -65,7 +65,7 @@ fn eu02_plan_prints_when_asked() {
 #[test]
 fn eu02_recorded_report_passes() {
     let Some(report) = fixture("isolation-eu02-1109.json") else {
-        eprintln!("no fixture yet: tests/fixtures/isolation-eu02-1109.json (run ez2-isolation-probe on EU02)");
+        eprintln!("no fixture yet: tests/fixtures/isolation-eu02-1109.json (run aib-cloud-host probe run on EU02)");
         return;
     };
     let cells = matrix(&eu02()).expect("matrix");

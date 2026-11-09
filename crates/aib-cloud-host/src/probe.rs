@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Execute an `aib_cloud::isolation` probe plan on a Proxmox host (or a public vantage
 //! point) and write the report `judge()` accepts. Rust rewrite of the Python runner
-//! `aib/tools/cloud-host/ez2-isolation-probe` (#568 r2 M2 rules kept one for one):
+//! `ez2-isolation-probe` (retired 11-09 after this binary re-ran the full EU02 matrix with
+//! the same `plan_fnv` and identical cells; #568 r2 M2 rules kept one for one):
 //!
 //! * the whole plan is validated against a whitelist first (id charset, `from` shape,
 //!   kind, ip parses, port range, expect, unique ids); one bad cell and nothing runs;
@@ -244,7 +245,7 @@ fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitS
     wait_with_timeout(&mut child, timeout)
 }
 
-fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
+pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -656,11 +657,12 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             }
             _ => Err("probe needs run | merge | one | netns".to_owned()),
         },
+        Some("self-update") => crate::update::main(&args[1..]),
         Some("--version") => {
-            println!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file>".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | self-update <version> [--dest f] [--repo owner/name] [--base-url u] | --version".to_owned()),
     }
 }
 

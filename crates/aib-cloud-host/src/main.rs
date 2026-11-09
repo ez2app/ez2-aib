@@ -6,6 +6,9 @@
 //! aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 //! aib-cloud-host probe one   <tcp|dns|icmp> <ip> <port>      (internal: runs inside a CT netns)
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
+//! aib-cloud-host root-password apply <file>
+//! aib-cloud-host self-update <version> [--dest f] [--repo owner/name] [--base-url u]
+//! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
 //! ```
 //!
 //! `plan.json` is `aib_cloud::isolation::probe_plan()`; the report is what
@@ -14,6 +17,7 @@
 //! `nsenter -t <init pid> -n` after proving the namespace it lands in is that container's.
 
 mod probe;
+mod update;
 
 use std::process::ExitCode;
 
