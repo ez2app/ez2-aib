@@ -135,6 +135,25 @@ impl Daemon {
         }
     }
 
+    /// GET a session: the status code and body (a 404 is an answer, not an error).
+    pub fn session_raw(&self, id: &str) -> Result<(u16, Value), String> {
+        self.client
+            .call("GET", &format!("/api/v1/sessions/{id}"), None)
+    }
+
+    /// The events of one aggregate (oldest first, at most 500).
+    pub fn events_for(&self, id: &str) -> Result<Vec<Value>, String> {
+        let (c, v) = self.client.call(
+            "GET",
+            &format!("/api/v1/events?cursor=0&limit=500&aggregate_id={id}"),
+            None,
+        )?;
+        match v["events"].as_array() {
+            Some(a) if c == 200 => Ok(a.clone()),
+            _ => Err(format!("GET events {id}: {c} {v}")),
+        }
+    }
+
     pub fn stop_session(&self, id: &str) -> Result<(u16, Value), String> {
         self.client
             .call("DELETE", &format!("/api/v1/sessions/{id}"), None)

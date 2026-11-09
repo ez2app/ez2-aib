@@ -1,11 +1,14 @@
 //! `aib-verify queue`: the session queue acceptance (a63ab 11-10 00:06, a9136's queue,
 //! ADR 0005 §5) on one aibd with one slot. Five checks, in order, each one row:
 //!
-//! - Q1 `202`: with the slot taken, a POST is 202 `pending`, pid 0;
-//! - Q2 auto-start: when the holder ends, the waiting one starts by itself;
+//! - Q1 `202`: with the slot taken, a POST is 202 `pending`, pid 0, and its GET
+//!   shows `queue {position, slots, held_by}`;
+//! - Q2 auto-start: when the holder ends, the waiting one starts by itself, and
+//!   `aibd ctl watch` on it kept waiting through `pending`;
 //! - Q3 cancel: DELETE of a waiting one is `cancelled` and it never started;
 //! - Q4 full: with [`MAX_QUEUE`] waiting, the next POST is 429 `session_queue_full`;
-//! - Q5 restart: waiting ones at shutdown are `interrupted` after a restart.
+//! - Q5 restart: waiting ones at shutdown have `session.interrupted` (from
+//!   `pending`, never started) in their events; GET is 404 by design.
 //!
 //! The holder is `aib-fixture-tree smoke-tree <marker> <stop>`: it runs until the
 //! stop file exists, on every platform. rc 0 通過 / 1 不通過 / 2 usage / 3 could not run.
@@ -223,14 +226,38 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
     let a = id_of(&a)?;
     let (argv_b, stop_b) = holder(o, &dir, "b");
     let (c, b) = d.start_session(&seat, &argv_b)?;
-    let q1 = c == 202 && b["state"] == "pending" && b["pid"] == 0;
+    let pending = c == 202 && b["state"] == "pending" && b["pid"] == 0;
+    let b = id_of(&b)?;
+    // a9136 11-10: GET of a pending session says where it stands and who holds the slot
+    let view = d.session(&b).unwrap_or_default();
+    let qv = &view["queue"];
+    let q1 =
+        pending && qv["position"] == 1 && qv["slots"] == 1 && qv["held_by"][0]["id"] == a.as_str();
     checks.push(check(
         "Q1",
-        "202 state=pending pid=0",
-        format!("{c} {}", short(&b)),
+        "202 state=pending pid=0;GET 帶 queue{position 1, slots 1, held_by[0]=佔著的那個}",
+        format!(
+            "{c} pending={pending};GET queue position={} slots={} held_by[0]={}(佔著的 {a})",
+            qv["position"], qv["slots"], qv["held_by"][0]["id"]
+        ),
         q1,
     ));
-    let b = id_of(&b)?;
+    // `aibd ctl watch` on the pending one must keep waiting (not end on `pending`)
+    let watch_log = dir.join("ctl-watch.log");
+    let wout = std::fs::File::create(&watch_log).map_err(|e| format!("ctl watch log: {e}"))?;
+    let werr = wout
+        .try_clone()
+        .map_err(|e| format!("ctl watch log: {e}"))?;
+    let mut watch = std::process::Command::new(&o.bin)
+        .args(["ctl", "watch", &b])
+        .env("AIBD_DATA_DIR", dir.join("data"))
+        .stdin(std::process::Stdio::null())
+        .stdout(wout)
+        .stderr(werr)
+        .spawn()
+        .map_err(|e| format!("ctl watch: {e}"))?;
+    std::thread::sleep(Duration::from_secs(2));
+    let watch_waiting_pending = matches!(watch.try_wait(), Ok(None));
 
     // Q2: the holder ends ⇒ the waiting one starts by itself (pid > 0)
     std::fs::write(&stop_a, b"").map_err(|e| format!("stop file: {e}"))?;
@@ -239,22 +266,40 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
         v["state"] == "running" && v["pid"].as_u64().is_some_and(|p| p > 0)
     });
     let a_end = d.session(&a).map(|v| short(&v)).unwrap_or_default();
+    let watch_still = matches!(watch.try_wait(), Ok(None));
+    let watch_ok = watch_waiting_pending && watch_still;
+    let watch_note = format!(
+        "ctl watch:pending 時{}、開跑後{}(log {})",
+        if watch_waiting_pending {
+            "還在等"
+        } else {
+            "已退出"
+        },
+        if watch_still {
+            "還在跟"
+        } else {
+            "已退出"
+        },
+        watch_log.display()
+    );
+    let _ = watch.kill();
+    let _ = watch.wait();
     match &started {
         Ok(v) => checks.push(check(
             "Q2",
-            "前一個結束後,排隊的自己開(running、pid>0)",
+            "前一個結束後,排隊的自己開(running、pid>0);ctl watch 在 pending 時不退出",
             format!(
-                "{:.1} 秒後 {};前一個 {a_end}",
+                "{:.1} 秒後 {};前一個 {a_end};{watch_note}",
                 t0.elapsed().as_secs_f64(),
                 short(v)
             ),
-            true,
+            watch_ok,
         )),
         Err(last) => checks.push(check(
             "Q2",
-            "前一個結束後,排隊的自己開(running、pid>0)",
+            "前一個結束後,排隊的自己開(running、pid>0);ctl watch 在 pending 時不退出",
             format!(
-                "{} 秒內沒開:{};前一個 {a_end}",
+                "{} 秒內沒開:{};前一個 {a_end};{watch_note}",
                 10 + SLOT_WAIT.as_secs(),
                 short(last)
             ),
@@ -312,20 +357,31 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
     drop(d);
     let _ = std::fs::write(&stop_b, b"");
     let d2 = Daemon::restart(&o.bin, &dir, &pol, 1, "aibd-restart.log")?;
-    let mut states = Vec::new();
+    // An ended session of the last run is not a session of this aibd (GET 404,
+    // as aibd's own test a_session_left_pending_by_a_crash_...); what it became
+    // is in its events: `session.interrupted` from `pending`, never started.
+    let mut seen = Vec::new();
+    let mut ok = !probe.is_empty();
     for id in &probe {
-        states.push(
-            d2.session(id)
-                .map(|v| v["state"].as_str().unwrap_or("-").to_string())
-                .unwrap_or_else(|e| e),
-        );
+        let (get, _) = d2.session_raw(id)?;
+        let evs = d2.events_for(id)?;
+        let intr = evs.iter().find(|e| e["type"] == "session.interrupted");
+        let started = evs.iter().any(|e| e["type"] == "session.started");
+        let prev = intr.map_or("-", |e| {
+            e["payload"]["previous_state"].as_str().unwrap_or("-")
+        });
+        let reason = intr.map_or("-", |e| e["payload"]["reason"].as_str().unwrap_or("-"));
+        ok &= intr.is_some() && prev == "pending" && !started;
+        seen.push(format!(
+            "{id}: GET {get}、interrupted={} previous_state={prev} reason={reason} started={started}",
+            intr.is_some()
+        ));
     }
-    let q5 = !probe.is_empty() && states.iter().all(|s| s == "interrupted");
     checks.push(check(
         "Q5",
-        "重啟後,關機時還在排的都是 interrupted",
-        format!("抽 {} 個:{}", probe.len(), states.join(", ")),
-        q5,
+        "重啟後,關機時還在排的都有 session.interrupted(previous_state=pending)、沒開過",
+        format!("抽 {} 個:{}", probe.len(), seen.join(";")),
+        ok,
     ));
     drop(d2);
     Ok(())
