@@ -186,31 +186,26 @@ jobs:
       - name: installed entry point
         if: env.RUN_CELL == 'true'
         run: aib || test $? -eq 2
-      - name: smoke test
-        if: env.RUN_CELL == 'true'
-        run: python -m unittest discover -s tests -v
-      - name: core safety tests (each file on its own, like aib test does)
+      - name: Python suite, sharded (aib/tests + tests/, each file on its own; ci_shard.py)
+        # 11-09 S4(043dd,計畫 PLAN-release-tooling 9.2 第 1 項):原本 unittest discover + for 迴圈逐支跑(macOS 3.12 約 55 + 9 分)。
+        #   現在同一台 runner 分份並行、慢的先排,碰程序表 / 固定 port 的留到最後串行;每支照舊自成一組、最多 600 秒,
+        #   多給一個全新 HOME + TMPDIR(跟 aib test 同一套)。跑到的名字要跟磁碟上逐名相等,漏 / 重複 / 中斷都紅。
         if: env.RUN_CELL == 'true'
         shell: bash
         run: |
           python -m pip install pytest
           git config --global user.name ci && git config --global user.email ci@example.com
-          rc=0
-          for f in aib/tests/test-*.py; do
-            # 每支最多 10 分鐘(macOS 沒有 timeout 指令 ⇒ 用 python 包);逾時印出是哪一支，整格照樣跑完其他支
-            echo "::group::$f"
-            python - "$f" <<'PY' || { echo "::error::$f failed or hung"; rc=1; }
-          import os, signal, subprocess, sys
-          p = subprocess.Popen([sys.executable, sys.argv[1]], start_new_session=True)   # 自成一組 ⇒ 逾時連它開的子行程一起收
-          try:
-              sys.exit(p.wait(timeout=600))
-          except subprocess.TimeoutExpired:
-              os.killpg(p.pid, signal.SIGKILL); p.wait()
-              print("::error::%s still running after 600 s (killed with its children)" % sys.argv[1]); sys.exit(124)
-          PY
-            echo "::endgroup::"
-          done
-          exit $rc
+          python aib/tools/verify/ci_shard.py --repo . --results "$RUNNER_TEMP/ci-shard.json" --durations-out "$RUNNER_TEMP/ci-durations.json"
+      - name: keep shard results (per-test rc + seconds)
+        if: always() && env.RUN_CELL == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-${{ matrix.os }}-${{ matrix.python }}-attempt${{ github.run_attempt }}   # 重跑同一個 run 不撞名(1ced7 #571 r1)
+          path: |
+            ${{ runner.temp }}/ci-shard.json
+            ${{ runner.temp }}/ci-durations.json
+          if-no-files-found: warn
+          retention-days: 14
   # 10-12:「全新電腦」—— 空的家目錄、沒有任何設定,照 README 的一行安裝裝起來,再跑新用戶最先會打的指令。
   #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
   fresh-machine:
