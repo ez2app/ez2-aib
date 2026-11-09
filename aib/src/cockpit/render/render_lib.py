@@ -4212,8 +4212,10 @@ def render_ai_list_with_map(data, width=DEFAULT_PANE_W - 1):
                                            False, _tok, "change-brain-menu"))
                     elif _pf:
                         _tok = "[%s]" % _labels["brain_change"]
+                        # a63ab 11-09:中文名不是路徑 ⇒ 從尾端讓位(同專案標題);uid 路徑才從前面截
                         _attr_rows.append((ATTR_ICONS["brain"], "%s %s" % (_pf, _tok),
-                                           True, _tok, "change-brain-menu"))
+                                           not ai.get("persona_folder_is_title"), _tok,
+                                           "change-brain-menu"))
                     else:
                         _tok = "[%s]" % _labels["brain_bind"]
                         _attr_rows.append((ATTR_ICONS["brain"], "%s %s" % (_labels["unbound"], _tok),

@@ -710,7 +710,8 @@ _CTRL_RE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # clean_text 與人格取值搬到 seat_persona.py:艦長列也要顯示人格,兩處各留
 # 一份等值判斷不算同源(交接單第三節 (B) 硬性條件)。此處只 import,不重寫。
 from seat_persona import (  # noqa: E402
-    clean_text, display_entry, folder_of, load_display, persona_of,
+    clean_text, display_entry, folder_of, folder_title, load_display, persona_of,
+    vault_dir as persona_vault_dir,
     project_title_of)
 # ❓未編制判定(the maintainer 08-15 直令):判準全在 seat_status,本檔只呼叫不重寫
 # ——守衛(seat_guard.py)與本面板共用同一份,否則遲早分岔成「面板說未編制、
@@ -1344,6 +1345,16 @@ _session_dirs = session_dirs(_proj)
 # 幀內讀一次:每席各讀一次會在 24 席上做 24 次 IO,而且中途換檔
 # 會讓同一幀裡不同席讀到不同版本。缺檔=空 dict,顯示層照舊降級。
 _display = load_display()
+_persona_vault_memo = []
+
+
+def _persona_vault():
+    """vault 只問一次(要匯入 route_register);沒有綁資料夾的席不會走到這裡。"""
+    if not _persona_vault_memo:
+        _persona_vault_memo.append(persona_vault_dir())
+    return _persona_vault_memo[0]
+
+
 for path in sorted(glob.glob(os.path.join(seats_dir, 'w*.json'))):
     base = os.path.basename(path)
     try:
@@ -1414,6 +1425,8 @@ for path in sorted(glob.glob(os.path.join(seats_dir, 'w*.json'))):
     # 24 份席位檔今天一個都沒有那個欄位,那條路徑實質是死的。
     persona = persona_of(rec, _display)
     persona_folder = folder_of(rec, _display)
+    # a63ab 11-09:uid 路徑換成 labels.json 的中文名,查不到才畫路徑
+    persona_folder_title = folder_title(persona_folder, _persona_vault()) if persona_folder else ''
     project_title = project_title_of(rec)
     if rec.get('persona_card') is not None and not persona:
         note('seat persona_card invalid, hidden: %s' % base)
@@ -1595,7 +1608,8 @@ for path in sorted(glob.glob(os.path.join(seats_dir, 'w*.json'))):
                           .get('persona_source'),
         # 三行制第三行的 📁(設計正本 docs/reports/three-line-rows-
         # 20260815/)。全文給到這裡,截到幾欄由畫的人決定。
-        'persona_folder': persona_folder,
+        'persona_folder': persona_folder_title or persona_folder,
+        'persona_folder_is_title': bool(persona_folder_title),
         # 09-29 a seat:席位綁的專案卡標題(席位檔 project_uid/project_title);🧠 那一行優先畫它。
         'project_title': project_title,
         # L2-03:綁定入口的目標席(rowmap spans 帶 seat)。與第一行 @五碼同源;
