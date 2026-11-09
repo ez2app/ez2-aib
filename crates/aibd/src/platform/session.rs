@@ -432,6 +432,7 @@ mod tests {
             orphan_candidates_extra: 1,
             candidates_unreadable: vec![9, 11],
             candidates_unreadable_comm: vec!["mdworker_shared".into(), "followupd".into()],
+            candidates_complete: true,
             ..Report::default()
         };
         let s = Stop::from_report(&r);
