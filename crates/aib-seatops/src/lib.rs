@@ -7,6 +7,19 @@ use std::path::{Path, PathBuf};
 
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+fn valid_relay_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|name| name.strip_prefix("RELAY-dm-"))
+        .and_then(|s| s.strip_suffix(".txt"))
+        .is_some_and(|core| {
+            !core.is_empty()
+                && core
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub id: String,
@@ -63,22 +76,13 @@ pub fn prepare_from_paths(
         if !path.is_absolute() {
             return Err("invalid relay pointer");
         }
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or("invalid relay name")?;
-        let core = name
-            .strip_prefix("RELAY-dm-")
-            .and_then(|s| s.strip_suffix(".txt"))
-            .ok_or("invalid relay name")?;
-        if core.is_empty()
-            || !core
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        {
+        if !valid_relay_name(path) {
             return Err("invalid relay name");
         }
         let resolved = std::fs::canonicalize(path).map_err(|_| "relay unread")?;
+        if !valid_relay_name(&resolved) {
+            return Err("invalid relay target name");
+        }
         let parent = resolved
             .parent()
             .ok_or("relay outside permitted directory")?;
@@ -140,7 +144,7 @@ pub fn prepare(
         Some(b) => std::str::from_utf8(b).map_err(|_| "invalid relay")?,
         None => "",
     };
-    if !message.contains(needle) && !relay.contains(needle) {
+    if !(if needs_relay { relay } else { message }).contains(needle) {
         return Err("expect mismatch");
     }
     let mut h = Sha256::new();
@@ -217,6 +221,17 @@ mod tests {
             prepare(MSG, Some(b"wrong"), "q_1234567890abcdef", 2, "specific").unwrap_err(),
             "expect mismatch"
         );
+        assert_eq!(
+            prepare(
+                MSG,
+                Some(b"actual content"),
+                "q_1234567890abcdef",
+                2,
+                "RELAY-dm-x"
+            )
+            .unwrap_err(),
+            "expect mismatch"
+        );
         assert!(prepare(MSG, Some(b"specific"), "q_1234567890abcdef", 2, "specific").is_ok());
     }
     #[test]
@@ -290,5 +305,34 @@ mod tests {
             "unique marker"
         )
         .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_symlink_to_non_relay_file_is_refused() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("private.txt");
+        let relay = dir.path().join("RELAY-dm-alias.txt");
+        std::fs::write(&private, "unique marker").unwrap();
+        symlink(&private, &relay).unwrap();
+        let item = dir.path().join("item.json");
+        let msg = format!("長訊已落檔(13 位元組),請讀:{}", relay.display());
+        std::fs::write(
+            &item,
+            serde_json::json!({"id":"q_1234567890abcdef","rev":2,"msg":msg}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            prepare_from_paths(
+                &item,
+                &[dir.path().to_path_buf()],
+                "q_1234567890abcdef",
+                2,
+                "unique marker"
+            )
+            .unwrap_err(),
+            "invalid relay target name"
+        );
     }
 }
