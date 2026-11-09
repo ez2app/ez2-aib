@@ -14,9 +14,10 @@ G4 沒帶 -v 的舊輸出(只有 ok 行)⇒ None(不猜)
 G5 _go_command 帶 -v
 G6(要 go)套件兩支都 t.Skip ⇒ aib test rc 4、印「all 2 cells skipped」
 G7(要 go)一過一跳 ⇒ rc 0、印「1 cells skipped」
-G8(要 go)同一份再跑一次(Go 測試快取命中、重播輸出)⇒ 仍是沒驗
+G8(要 go)同一份再跑一次:先證快取已熱(直接跑同一條 go test -v 有 (cached)),aib 再跑 reused=False、仍是沒驗
 刀(複本 + run_guarded):K1 拿掉 -v ⇒ G5 紅;K2 子測試也算(縮排照收)⇒ G3 紅;K3 不數 SKIP ⇒ G1 紅
 """
+import json
 import os
 import shutil
 import subprocess
@@ -104,9 +105,9 @@ class RealGo(unittest.TestCase):
         for x in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
             subprocess.run(["git", "-C", str(self.repo)] + x, check=True, capture_output=True, env=self.env, stdin=subprocess.DEVNULL)
 
-    def _aib(self):
+    def _aib(self, *extra):
         return subprocess.run([sys.executable, str(ROOT / "tools" / "verify" / "test_entry.py"), "--repo", str(self.repo),
-                               "calc/a_test.go", "calc/b_test.go"],
+                               *extra, "calc/a_test.go", "calc/b_test.go"],
                               cwd=str(self.repo), env=self.env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
 
     def test_g6_all_skip_package_is_not_green(self):
@@ -124,10 +125,27 @@ class RealGo(unittest.TestCase):
         self.assertIn("1 cells skipped", out, out[-2000:])
 
     def test_g8_go_cache_replay_is_still_unverified(self):
+        """bb7dc #581:要證明第二次真的是 Go 快取重播,不只是兩次都 rc 4。
+        1) aib 跑第一次(rc 4);2) 用 aib 同一份 GOCACHE(runner 在這個環境問 `go env GOCACHE`)直接跑同一條
+        `go test -v ./calc` ⇒ 輸出要有 "(cached)",證明快取已熱;3) aib --json 再跑 ⇒ reused 是 False
+        (aib 這邊真的叫了 go,不是自己沿用),rc 仍 4、列在 unverified。"""
         self._put(SKIP_A, SKIP_B)
         first = self._aib()
-        again = self._aib()
-        self.assertEqual((first.returncode, again.returncode), (4, 4), (again.stdout + again.stderr)[-2000:])
+        self.assertEqual(first.returncode, 4, (first.stdout + first.stderr)[-2000:])
+        cache = subprocess.run([GO, "env", "GOCACHE"], capture_output=True, text=True, env=self.env,
+                               stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+        self.assertTrue(cache, "go env GOCACHE 讀不到")
+        direct = subprocess.run(["env", "GOCACHE=" + cache, GO, "test", "-v", "./calc"], cwd=str(self.repo),
+                                capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL, timeout=300)
+        self.assertIn("(cached)", direct.stdout, direct.stdout + direct.stderr)
+        self.assertEqual(direct.stdout.count("--- SKIP: "), 2, direct.stdout)
+        again = self._aib("--json")
+        self.assertEqual(again.returncode, 4, (again.stdout + again.stderr)[-2000:])
+        data = json.loads(again.stdout.strip().splitlines()[-1])
+        self.assertTrue(data["tests"], data)
+        self.assertTrue(all(t["reused"] is False for t in data["tests"]), data["tests"])
+        names = {u["name"] for u in data["unverified"]}
+        self.assertTrue(names & {"calc/a_test.go", "calc/b_test.go"}, data)
 
 
 KNIVES = [
