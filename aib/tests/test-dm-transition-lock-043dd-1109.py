@@ -10,7 +10,12 @@ T3 別的行程握著轉移鎖 ⇒ 逾時回 reason=lock_timeout(不丟例外,#5
 T4 同執行緒重入(鎖內再叫同席 _transition)⇒ 不自鎖死。
 T5 排空器 claim_next 跟席位 queued → read 搶同一封(a9136 #552 r1 M1 重現改寫,讀完睡 0.5 秒)⇒
    領信也在轉移鎖裡:領不到(信已是 read),不會出現「領走了、又被蓋回 read」;跑 3 輪。
-刀(複本 + run_guarded):K1 把轉移鎖換成空的 ⇒ T1 紅;K2 claim_next 不拿轉移鎖 ⇒ T5 紅。
+T6 同 T5,但排空器走 claim_id(真排空器 _drain_seat_once 與「立刻送出」用的那條;a9136 #552 r2 M1')。
+T7 hold_item(先寫 hold_rc 再轉 hold)跟席位 queued → read 搶(hold 那邊讀完睡 0.5 秒)⇒
+   讀信回 ok 的話已讀一定還在(read_at 沒被舊整封蓋掉;#552 r2 L4);跑 3 輪。
+T8 不存在的席:claim_id / claim_result / unclaim / hold_item 不建資料夾(r2 N2)。
+刀(複本 + run_guarded):K1 把轉移鎖換成空的 ⇒ T1 紅;K2 claim_next 不拿轉移鎖 ⇒ T5 紅;
+K3 claim_id 不拿轉移鎖 ⇒ T6 紅;K4 hold_item 不拿轉移鎖 ⇒ T7 紅。
 刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import json
@@ -173,21 +178,63 @@ CLAIMER = textwrap.dedent("""
     end = time.time() + 20
     while not os.path.exists(sys.argv[3]) and time.time() < end:
         time.sleep(0.005)
-    it = Q.claim_next(sys.argv[2])
+    if sys.argv[4] == "id":
+        it = Q.claim_id(sys.argv[2], sys.argv[5])
+    else:
+        it = Q.claim_next(sys.argv[2])
     print(json.dumps({"claimed": (it or {}).get("id")}))
+""")
+
+# hold 那邊:第一次讀到這封就放 mark、睡 0.5 秒(撐開「讀 → 寫 hold_rc」的窗口),再寫回、轉 hold。
+HOLDER2 = textwrap.dedent("""
+    import json, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    seat, iid, mark = sys.argv[2], sys.argv[3], sys.argv[4]
+    orig = Q._load_item
+    n = [0]
+    def slow(*a, **k):
+        it = orig(*a, **k)
+        if a[1] == iid:
+            n[0] += 1
+            if n[0] == 1:
+                open(mark, "w").close()
+                time.sleep(0.5)
+        return it
+    Q._load_item = slow
+    it = Q.hold_item(seat, iid, "test", rc=3)
+    print(json.dumps({"held": bool(it)}))
+""")
+
+READER2 = textwrap.dedent("""
+    import json, os, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    seat, iid, mark = sys.argv[2], sys.argv[3], sys.argv[4]
+    end = time.time() + 20
+    while not os.path.exists(mark) and time.time() < end:
+        time.sleep(0.005)
+    r = Q._transition(seat, iid, "read", "seat:" + seat)
+    print(json.dumps({"ok": r["ok"], "reason": r["reason"]}))
 """)
 
 
 class ClaimRace(Base):
     def test_t5_claim_vs_read(self):
+        self._claim_vs_read("next")
+
+    def test_t6_claim_id_vs_read(self):
+        self._claim_vs_read("id")
+
+    def _claim_vs_read(self, how):
         for rnd in range(3):
-            seat = "cccc%d" % rnd
+            seat = ("cccc%d" if how == "next" else "dddd%d") % rnd
             iid = Q.enqueue(seat, "race %d" % rnd, "@bbbbb", sender_kind="seat", sender_seat="bbbbb",
                             sender_source="pane_pid_chain", env=self.env, now=NOW)["id"]
             mark = str(self.d / ("loaded-%d" % rnd))
             pa = subprocess.Popen([sys.executable, "-B", "-c", READER, str(COCKPIT), seat, iid, mark],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
-            pb = subprocess.Popen([sys.executable, "-B", "-c", CLAIMER, str(COCKPIT), seat, mark],
+            pb = subprocess.Popen([sys.executable, "-B", "-c", CLAIMER, str(COCKPIT), seat, mark, how, iid],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
             (oa, ea), (ob, eb) = pa.communicate(timeout=60), pb.communicate(timeout=60)
             self.assertEqual((pa.returncode, pb.returncode), (0, 0), ea + eb)
@@ -199,6 +246,32 @@ class ClaimRace(Base):
             self.assertIsNone(b["claimed"], "讀信先拿到鎖,排空器應該看到 read、領不到:%r" % b)
             self.assertEqual(final, "read")
 
+    def test_t7_hold_vs_read(self):
+        for rnd in range(3):
+            seat = "eeee%d" % rnd
+            iid = Q.enqueue(seat, "hold race %d" % rnd, "@bbbbb", sender_kind="seat", sender_seat="bbbbb",
+                            sender_source="pane_pid_chain", env=self.env, now=NOW)["id"]
+            mark = str(self.d / ("hold-%d" % rnd))
+            ph = subprocess.Popen([sys.executable, "-B", "-c", HOLDER2, str(COCKPIT), seat, iid, mark],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
+            pr = subprocess.Popen([sys.executable, "-B", "-c", READER2, str(COCKPIT), seat, iid, mark],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
+            (oh, eh), (orr, er) = ph.communicate(timeout=60), pr.communicate(timeout=60)
+            self.assertEqual((ph.returncode, pr.returncode), (0, 0), eh + er)
+            rd = json.loads(orr.strip().splitlines()[-1])
+            it = Q._load_item(seat, iid, self.env)
+            if rd["ok"]:
+                self.assertIsNotNone(it.get("read_at"),
+                                     "第 %d 輪:讀信回 ok,可是已讀被 hold_item 的舊整封蓋掉了(%s)" % (rnd, it.get("status")))
+
+    def test_t8_missing_seat_no_dir(self):
+        for fn in (lambda: Q.claim_id("zzzzz", "q_0000000000000000", env=self.env),
+                   lambda: Q.claim_result("zzzzz", "q_0000000000000000", env=self.env),
+                   lambda: Q.unclaim("zzzzz", "q_0000000000000000", env=self.env),
+                   lambda: Q.hold_item("zzzzz", "q_0000000000000000", "x", env=self.env)):
+            fn()
+            self.assertFalse(Q.seat_dir("zzzzz", self.env).exists())
+
 
 KNIVES = [
     ("K1 拿掉轉移鎖", "src/cockpit/dm_queue.py",
@@ -209,6 +282,14 @@ KNIVES = [
      "    with _seat_transition_lock(seat, env):\n        return _claim_next_unlocked(",
      "    with contextlib.nullcontext():\n        return _claim_next_unlocked(",
      "ClaimRace.test_t5_claim_vs_read"),
+    ("K3 claim_id 不拿轉移鎖", "src/cockpit/dm_queue.py",
+     "    with _seat_transition_lock(seat, env):\n        return _claim_id_unlocked(",
+     "    with contextlib.nullcontext():\n        return _claim_id_unlocked(",
+     "ClaimRace.test_t6_claim_id_vs_read"),
+    ("K4 hold_item 不拿轉移鎖", "src/cockpit/dm_queue.py",
+     "    with _seat_transition_lock(seat, env):\n        return _hold_item_unlocked(",
+     "    with contextlib.nullcontext():\n        return _hold_item_unlocked(",
+     "ClaimRace.test_t7_hold_vs_read"),
 ]
 
 

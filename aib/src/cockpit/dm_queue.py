@@ -1320,8 +1320,10 @@ _TRANSITION_HELD = threading.local()
 def _seat_transition_lock(seat, env=None, timeout_s=None):
     """每席一把轉移鎖(11-09 #552 G1):rev 檢查 → 讀 → 改 → 寫整段在鎖內,本人與背景 worker 不再互蓋。
     鎖獨立的 transition.lock 檔(不是目錄):裡面的 _write_item / _order_remove 還要拿目錄鎖,鎖目錄會自己鎖死。
-    鎖順序固定「轉移鎖 → 目錄鎖」;claim_next 只拿目錄鎖、不拿轉移鎖 ⇒ 不會反向。
-    同一執行緒重入(回條路徑再叫同席 _transition)只記深度不再 flock;逾時丟 AtomicWriteError(與寫檔失敗同一類)。"""
+    鎖順序固定「(deliver 鎖 →)轉移鎖 → 目錄鎖」,不反向:claim_next / claim_id / claim_result / unclaim / hold_item
+    也整段在這把鎖裡(#552 r1 M1、r2 M1' / L4),排空器持 deliver 鎖再來拿。
+    同一執行緒重入(回條路徑再叫同席 _transition、claim_result 內叫 claim_id)只記深度不再 flock;
+    逾時丟 TransitionLockTimeout(AtomicWriteError 的子類):_transition / claim_result 轉成 reason=lock_timeout。"""
     d = seat_dir(seat, env)
     d.mkdir(parents=True, exist_ok=True)
     path = str(d / TRANSITION_LOCK)
@@ -5124,8 +5126,14 @@ def _claim_next_unlocked(seat, env=None, now=None):
 def claim_result(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
     """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
     把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
-    with _seat_transition_lock(seat, env):
+    if not seat_dir(seat, env).is_dir():          # 不替不存在的席建資料夾(r2 N2);rev_check 回 not_found
         return _claim_result_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+    try:
+        with _seat_transition_lock(seat, env):
+            return _claim_result_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+    except TransitionLockTimeout:                  # r2 N3:CLI claim-id 不再 traceback
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
 
 
 def _claim_result_unlocked(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
@@ -5152,6 +5160,16 @@ def _claimable_by_id(seat, item_id, env=None):
 
 
 def claim_id(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
+    """#552 r2 M1'(a9136):真排空器 _drain_seat_once 與待審框「立刻送出」走這條 ⇒ 也整段在轉移鎖裡,
+    不然席位 queued → read 照樣能把 claimed 蓋回 read。排空器持 deliver 鎖再進來:deliver → 轉移 → 目錄,不反向;
+    claim_result 內叫它是重入。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
+    with _seat_transition_lock(seat, env):
+        return _claim_id_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+
+
+def _claim_id_unlocked(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
     """領指定一封(立刻送出)。已被別人領走則失敗。if_rev 不符 ⇒ 不領;沒 if_rev 走程式庫寬鬆預設(CLI/殼才封閉)。"""
     now = int(time.time() if now is None else now)
     claimed = []
@@ -5200,6 +5218,8 @@ def claim_id(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
 def unclaim(seat, item_id, env=None, attempts=None):
     """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
     把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
     with _seat_transition_lock(seat, env):
         return _unclaim_unlocked(seat, item_id, env=env, attempts=attempts)
 
@@ -5218,7 +5238,16 @@ def _unclaim_unlocked(seat, item_id, env=None, attempts=None):
 
 
 def hold_item(seat, item_id, why, rc=None, env=None, now=None):
-    """轉待人處理:不再被 claim / drain;只有人 delete 或 requeue。"""
+    """轉待人處理:不再被 claim / drain;只有人 delete 或 requeue。
+    #552 r2 L4(a9136):先寫 hold_rc 再轉 hold 是兩次寫 ⇒ 整段在轉移鎖裡,不然中間夾一個席位 queued → read,
+    第一次寫回的舊整封會把已讀蓋掉(chat_pair phone_revoked、global_inbox 陌生人對 queued 的信叫這裡)。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
+    with _seat_transition_lock(seat, env):
+        return _hold_item_unlocked(seat, item_id, why, rc=rc, env=env, now=now)
+
+
+def _hold_item_unlocked(seat, item_id, why, rc=None, env=None, now=None):
     item = _load_item(seat, item_id, env)
     if not item:
         return None
@@ -6446,7 +6475,11 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd == "claim-next":
-        item = claim_next(args.seat, env=env)
+        try:
+            item = claim_next(args.seat, env=env)
+        except TransitionLockTimeout:              # r2 N3:這一拍領不到 = 沒得領(rc 3),下一拍再來
+            _print_json({"id": None, "reason": "lock_timeout", "message": TRANSITION_REASON["lock_timeout"]})
+            return 3
         _print_json(item or {"id": None})
         return 0 if item else 3
 
