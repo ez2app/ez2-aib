@@ -9,6 +9,7 @@
 //! | M2 | `proc_pidinfo(pid, PROC_PIDTBSDINFO)` | declared, **no stability promise** (`libproc.h`: "private interfaces") |
 //! | M3 | `proc_listpids(PROC_PPID_ONLY, ppid)` | declared, no stability promise |
 //! | M4 | `proc_listallpids` | declared, no stability promise |
+//! | M5 | `waitid(P_PID, pid, WEXITED \| WNOWAIT [\| WNOHANG])` | **public POSIX** (`sys/wait.h`); own children only |
 //!
 //! Rules that callers rely on:
 //!
@@ -28,6 +29,15 @@
 //!   result that means "this process no longer exists"; permission errors and
 //!   unknown failures are different variants. A list that does not fit after
 //!   retries is [`SysError::Incomplete`], never a truncated list.
+//! - **M5 looks, it never reaps.** [`ChildExit`] tells whether our own child
+//!   has exited while leaving it a zombie, so its pid and process group
+//!   number cannot be reused until the one real `wait()` after every signal
+//!   (ADR 0008 rule 3, same rule as `proc_group` in Python, #509). The result
+//!   counts only when the kernel's `si_pid` is the asked pid. `ECHILD` is
+//!   [`SysError::NotChild`] (not ours, or already reaped elsewhere), never
+//!   "gone". Measured on macOS 15.7.9: M1 and M2 return [`SysError::Gone`]
+//!   for our own **unreaped zombie**, which still holds its pid ⇒ for our own
+//!   child "Gone" from M1 / M2 does not mean the pid is free; ask M5.
 //! - **PID reuse is narrowed, not removed.** Between an identity check and
 //!   `kill()` there is still a short window; macOS has no pidfd.
 //!
@@ -48,7 +58,7 @@ pub mod session;
 pub mod settle;
 
 #[cfg(target_os = "macos")]
-pub use macos::Macos;
+pub use macos::{sigchld, sigchld_keep_zombies, Macos, Sigchld};
 
 /// M1: `p_uniqueid` / `p_puniqueid`. `parent_unique` is the creator's unique
 /// id and survives re-parenting (measured, not documented by Apple).
@@ -100,6 +110,16 @@ pub enum SysError {
     /// The pid does not fit the OS type (above `i32::MAX`).
     #[error("pid out of range")]
     BadPid,
+    /// `ECHILD` from M5: not our child, or already reaped by someone else.
+    /// Not "gone": whoever reaped it may be about to reuse the pid.
+    #[error("not a child of this process, or already reaped")]
+    NotChild,
+    /// `ECHILD` from M5 while `SIGCHLD` is ignored / `SA_NOCLDWAIT`: the
+    /// kernel reaps our children at once, so M5 can never see them (ADR 0008
+    /// rule 3 premise). Like `NotChild`, nothing may be signalled; unlike it,
+    /// the cause is ours to fix (`sigchld_keep_zombies`).
+    #[error("SIGCHLD is ignored: the kernel reaped the child (ADR 0008 rule 3)")]
+    ChildrenAutoReaped,
     /// A spawn failed with `cause` after the process existed, and the
     /// process could not be confirmed gone within the bound. It may still
     /// exist: the caller must report it, never treat it as cleaned up.
@@ -114,6 +134,7 @@ impl SysError {
             0 => SysError::Unknown,
             3 => SysError::Gone,                  // ESRCH
             1 | 13 => SysError::PermissionDenied, // EPERM, EACCES
+            10 => SysError::NotChild,             // ECHILD
             e => SysError::Os(e),
         }
     }
@@ -129,6 +150,8 @@ impl SysError {
             SysError::Unknown => "unknown",
             SysError::Unsupported => "unsupported",
             SysError::BadPid => "bad_pid",
+            SysError::NotChild => "not_child",
+            SysError::ChildrenAutoReaped => "children_auto_reaped",
             SysError::NotReaped { .. } => "not_reaped",
         }
     }
@@ -163,6 +186,50 @@ pub trait ProcessInfo: Send + Sync {
     fn all_pids(&self) -> Result<Vec<u32>, SysError>;
 }
 
+/// M5 result for one of our own children, read without reaping it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitState {
+    /// Still running (only from [`ChildExit::peek`]).
+    Running,
+    /// Exited with this status; still a zombie, not reaped.
+    Exited(i32),
+    /// Killed by this signal; still a zombie, not reaped.
+    Signaled(i32),
+}
+
+/// M5 behind one interface (real: [`Macos`]; tests: [`fake::FakeChildExit`]).
+/// Neither call ever reaps: the caller's single `wait()` does that, after
+/// every signal it means to send has been sent.
+pub trait ChildExit: Send + Sync {
+    /// Has our child `pid` exited? Never blocks.
+    fn peek(&self, pid: u32) -> Result<ExitState, SysError>;
+    /// Block until our child `pid` has exited (`EINTR` is retried). Never
+    /// returns [`ExitState::Running`].
+    fn wait_exit(&self, pid: u32) -> Result<ExitState, SysError>;
+}
+
+/// Turn one `waitid` result into an [`ExitState`]. `si_pid == 0` with
+/// `WNOHANG` = still running; any other pid than `pid` is not trusted
+/// (a63ab #509: the result counts only for the target).
+pub fn exit_state_from(
+    pid: u32,
+    si_pid: i32,
+    si_code: i32,
+    si_status: i32,
+) -> Result<ExitState, SysError> {
+    if si_pid == 0 {
+        return Ok(ExitState::Running);
+    }
+    if u32::try_from(si_pid).ok() != Some(pid) {
+        return Err(SysError::Unknown);
+    }
+    match si_code {
+        1 => Ok(ExitState::Exited(si_status)),       // CLD_EXITED
+        2 | 3 => Ok(ExitState::Signaled(si_status)), // CLD_KILLED, CLD_DUMPED
+        _ => Err(SysError::Unknown),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +241,20 @@ mod tests {
         assert_eq!(SysError::from_errno(13), SysError::PermissionDenied);
         assert_eq!(SysError::from_errno(0), SysError::Unknown);
         assert_eq!(SysError::from_errno(22), SysError::Os(22));
+        assert_eq!(SysError::from_errno(10), SysError::NotChild);
+        assert_eq!(SysError::NotChild.tag(), "not_child");
+    }
+
+    #[test]
+    fn exit_state_counts_only_for_the_asked_pid() {
+        assert_eq!(exit_state_from(42, 0, 0, 0), Ok(ExitState::Running));
+        assert_eq!(exit_state_from(42, 42, 1, 7), Ok(ExitState::Exited(7)));
+        assert_eq!(exit_state_from(42, 42, 2, 9), Ok(ExitState::Signaled(9)));
+        assert_eq!(exit_state_from(42, 42, 3, 6), Ok(ExitState::Signaled(6)));
+        assert_eq!(exit_state_from(42, 43, 1, 0), Err(SysError::Unknown));
+        assert_eq!(exit_state_from(42, -1, 1, 0), Err(SysError::Unknown));
+        // stopped / continued / trapped are not exits
+        assert_eq!(exit_state_from(42, 42, 5, 19), Err(SysError::Unknown));
     }
 
     #[test]

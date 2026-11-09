@@ -19,16 +19,40 @@ pub enum ErrorCode {
     NotFound,
     /// Anything unexpected; details only in the server log.
     Internal,
+    /// Request body or a field broke the contract (the message names the field, never its value).
+    InvalidRequest,
+    /// A session `env` key is on the deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`).
+    EnvNotAllowed,
+    /// Request body larger than the endpoint allows.
+    PayloadTooLarge,
+    /// No session with that id (or it fell out of the recent list).
+    SessionNotFound,
+    /// The running-session limit is reached.
+    TooManySessions,
+    /// The program could not be started (not found, not executable, bad cwd).
+    SpawnFailed,
+    /// aibd is stopping and takes no new sessions.
+    ShuttingDown,
+    /// The route exists but not with this method.
+    MethodNotAllowed,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 6] = [
+    pub const ALL: [ErrorCode; 14] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
         ErrorCode::TokenInUrl,
         ErrorCode::NotFound,
         ErrorCode::Internal,
+        ErrorCode::InvalidRequest,
+        ErrorCode::EnvNotAllowed,
+        ErrorCode::PayloadTooLarge,
+        ErrorCode::SessionNotFound,
+        ErrorCode::TooManySessions,
+        ErrorCode::SpawnFailed,
+        ErrorCode::ShuttingDown,
+        ErrorCode::MethodNotAllowed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -39,6 +63,14 @@ impl ErrorCode {
             ErrorCode::TokenInUrl => "token_in_url",
             ErrorCode::NotFound => "not_found",
             ErrorCode::Internal => "internal",
+            ErrorCode::InvalidRequest => "invalid_request",
+            ErrorCode::EnvNotAllowed => "env_not_allowed",
+            ErrorCode::PayloadTooLarge => "payload_too_large",
+            ErrorCode::SessionNotFound => "session_not_found",
+            ErrorCode::TooManySessions => "too_many_sessions",
+            ErrorCode::SpawnFailed => "spawn_failed",
+            ErrorCode::ShuttingDown => "shutting_down",
+            ErrorCode::MethodNotAllowed => "method_not_allowed",
         }
     }
 
@@ -50,6 +82,13 @@ impl ErrorCode {
             ErrorCode::TokenInUrl => 400,
             ErrorCode::NotFound => 404,
             ErrorCode::Internal => 500,
+            ErrorCode::InvalidRequest | ErrorCode::EnvNotAllowed => 400,
+            ErrorCode::PayloadTooLarge => 413,
+            ErrorCode::SessionNotFound => 404,
+            ErrorCode::TooManySessions => 429,
+            ErrorCode::SpawnFailed => 422,
+            ErrorCode::ShuttingDown => 503,
+            ErrorCode::MethodNotAllowed => 405,
         }
     }
 }

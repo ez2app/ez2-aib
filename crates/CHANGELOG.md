@@ -3,6 +3,24 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
+## Unreleased (preview.2)
+
+- Sessions API (token only, loopback only): `POST /api/v1/sessions` starts a program in its own process
+  group (absolute `argv[0]`, no PATH lookup; stdin / stdout / stderr are the null device, no output
+  is kept), `GET /api/v1/sessions[/{id}]`, `DELETE /api/v1/sessions/{id}?grace_ms=` stops the whole
+  recorded tree and answers after the stop.
+  - End states are honest: `exited` / `killed` only for a proven-clean stop; on macOS (never provable)
+    a session ends `stop_unconfirmed` with the reason, survivors and blind spots. A session with a known
+    survivor keeps its slot and a second DELETE stops it again.
+  - At most 8 running at once (`AIBD_MAX_SESSIONS`, 1–64); the slot is reserved before the start.
+  - When the root exits by itself, what it left is stopped once.
+  - `aibd` stopping (Ctrl-C or SIGTERM) refuses new sessions and stops every running one first
+    (10 s cap). If aibd itself is killed (`kill -9`, crash), macOS cannot stop what it started:
+    known limit (UNVERIFIED).
+  - Events: `session.started` (argv[0] file name + count only), `session.exited`, `session.killed`,
+    `session.stop_unconfirmed`. env is never returned, logged or stored.
+  - Windows: not wired yet (refused as `spawn_failed` / `unsupported_platform`).
+
 ## 0.2.0-preview.1 — unreleased
 
 Preview build, not signed, does not replace the Python `aib`.

@@ -23,6 +23,7 @@ fn cfg(dir: &Path) -> Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
+        max_sessions: aibd::config::DEFAULT_MAX_SESSIONS,
     }
 }
 

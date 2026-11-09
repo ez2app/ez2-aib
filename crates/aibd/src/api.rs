@@ -2,6 +2,7 @@
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
 use axum::extract::{Query, State};
@@ -18,6 +19,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     /// M1 lineage, decided once at start-up by the self-check.
     pub lineage: Arc<Lineage>,
+    /// Sessions API state (preview.2).
+    pub sessions: Arc<crate::sessions::Sessions>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
@@ -25,6 +28,18 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/events", get(events))
         .route("/api/v1/metrics", get(metrics))
+        .route(
+            "/api/v1/sessions",
+            get(sessions::list)
+                .post(sessions::create)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/sessions/{id}",
+            get(sessions::get_one)
+                .delete(sessions::delete_one)
+                .fallback(sessions::method_not_allowed),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(

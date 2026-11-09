@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod session;
+#[cfg(unix)]
+pub mod session_unix;
 #[cfg(windows)]
 pub mod session_windows;
 pub mod tree;
@@ -20,6 +22,117 @@ use unix as imp;
 pub mod windows;
 #[cfg(windows)]
 use windows as imp;
+
+/// How exited children are kept (ADR 0008 rule 3 premise, 043dd #522 M1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildReaping {
+    /// Exited children stay zombies until we reap them (M5 can look).
+    Keeps(&'static str),
+    /// The kernel reaps them at once (`SIGCHLD` ignored / `SA_NOCLDWAIT`).
+    AutoReaps(&'static str),
+    /// Could not read it.
+    Unreadable(String),
+    /// Not a question on this platform (Windows keeps a HANDLE instead).
+    Unsupported,
+}
+
+/// Read the `SIGCHLD` disposition (macOS); changes nothing.
+pub fn child_reaping() -> ChildReaping {
+    #[cfg(target_os = "macos")]
+    {
+        match aib_sys::sigchld() {
+            Ok(s) if s.keeps_zombies() => ChildReaping::Keeps(s.as_str()),
+            Ok(s) => ChildReaping::AutoReaps(s.as_str()),
+            Err(e) => ChildReaping::Unreadable(e.tag().to_owned()),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ChildReaping::Unsupported
+    }
+}
+
+/// At server start: an inherited ignored `SIGCHLD` is set back to default so
+/// our children stay lookable until we reap them. Returns what it was when it
+/// had to change it.
+pub fn keep_child_zombies() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        match aib_sys::sigchld_keep_zombies() {
+            Ok(was) if !was.keeps_zombies() => Some(was.as_str()),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// The platform's session starter (`session::SpawnFn`).
+pub fn default_spawn() -> session::SpawnFn {
+    #[cfg(unix)]
+    {
+        session_unix::spawn
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: 043dd's `session_windows::spawn` (J0 + Job per session)
+        // lands separately; until then every start is refused honestly.
+        unsupported_spawn
+    }
+}
+
+#[cfg(not(unix))]
+fn unsupported_spawn(
+    _: &session::Spec,
+    _: Option<std::sync::Arc<crate::lineage::Lineage>>,
+) -> Result<Box<dyn session::Running>, session::SpawnFail> {
+    Err(session::SpawnFail {
+        tag: "unsupported_platform".into(),
+        left_running: None,
+    })
+}
+
+/// Stop the trees left by failed starts once more, all within `deadline`
+/// (aibd is ending; bb7dc #544). Returns the roots not confirmed gone, as
+/// (pid, recorded start time).
+/// Windows: none are kept here.
+pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
+    #[cfg(unix)]
+    {
+        session_unix::stop_leftovers(deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = deadline;
+        Vec::new()
+    }
+}
+
+/// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a
+/// plain `kill` still collects every session, D11).
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
 
 /// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
 /// Windows `%APPDATA%\Ez2\AIB\data` (CI-windows). Never the 1.x `~/.ez2-aib`.

@@ -25,9 +25,19 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
     );
     (
         router(
-            AppState {
-                store: Arc::new(store),
-                lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
+            {
+                let store = Arc::new(store);
+                AppState {
+                    sessions: aibd::sessions::Sessions::new(
+                        store.clone(),
+                        None,
+                        aibd::platform::default_spawn(),
+                        8,
+                        std::env::temp_dir(),
+                    ),
+                    store,
+                    lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
+                }
             },
             Arc::new(cfg),
         ),

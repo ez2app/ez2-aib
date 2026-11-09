@@ -66,9 +66,7 @@ async fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+    let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {
         // Port and file locations only; the token value is never printed.
         println!(
@@ -95,7 +93,12 @@ fn selfcheck(json: bool) -> ExitCode {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
         .map_err(|e| e.to_string());
     let lineage = aibd::lineage::Lineage::detect();
-    let rows = aibd::selfcheck::rows(cfg, &lineage, std::env::consts::OS);
+    let rows = aibd::selfcheck::rows(
+        cfg,
+        &lineage,
+        &platform::child_reaping(),
+        std::env::consts::OS,
+    );
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
     } else {
