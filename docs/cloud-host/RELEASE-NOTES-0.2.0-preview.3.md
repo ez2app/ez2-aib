@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- DRAFT(11-09 4542e):對客 / 對維運的字,打 tag 前 Andy 先看。 -->
-# aib-cloud-host 0.2.0-preview.2(預覽版)
+# aib-cloud-host 0.2.0-preview.3(預覽版)
 
 > Ez2 Managed Cloud 宿主端工具的第一個正式發布。它在 Proxmox 宿主(EU02)上跑,是 `aib-cloud` 規劃與判定邏輯的 I/O 殼;一個靜態執行檔,主機不用裝任何工具鏈。
 
@@ -15,13 +15,13 @@
 ## 檔案
 | 平台 | 檔案 |
 |---|---|
-| Linux x86_64(靜態 musl;Proxmox VE 8 / Debian 12 實測) | `aib-cloud-host-0.2.0-preview.2-x86_64-unknown-linux-musl` |
+| Linux x86_64(靜態 musl;Proxmox VE 8 / Debian 12 實測) | `aib-cloud-host-0.2.0-preview.3-x86_64-unknown-linux-musl` |
 
 沒有簽章;`SHA256SUMS` 與檔案在同一個 release 頁,證明的是「下載的就是 CI 建的」。
 
 ## 第一次裝(宿主上以 root 整段貼)
 ```sh
-V=0.2.0-preview.2; F=aib-cloud-host-$V-x86_64-unknown-linux-musl
+V=0.2.0-preview.3; F=aib-cloud-host-$V-x86_64-unknown-linux-musl
 B=https://github.com/ez2app/ez2-aib/releases/download/cloud-host-v$V
 cd /root && curl -fsSL --proto '=https' --tlsv1.2 -O "$B/$F" && curl -fsSL --proto '=https' --tlsv1.2 -O "$B/SHA256SUMS" \
   && grep " $F\$" SHA256SUMS | sha256sum -c - && install -m 0755 "$F" /usr/local/sbin/aib-cloud-host \

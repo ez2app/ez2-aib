@@ -139,7 +139,9 @@ The descendant counts on both OSes are **proxies until measured** (see ADR 0004 
   to go through; the error message must say how.
 - Negative: the event paths need OS calls that safe wrappers do not cover (Windows Job
   Object messages; macOS `proc_pidinfo` flavor 17). Decided (DECISION-1, 2026-11-07): all
-  such FFI lives in one crate, `aib-sys`. Only aibd's platform module may depend on it;
+  such FFI lives in one crate, `aib-sys`. Only aibd's platform module may depend on it
+  (amended by DECISION-10 B, 2026-11-08: also `aib-procwatch` for its child listing, and
+  `aib-forkcount` only through aib-procwatch, which keeps aib-sys types private);
   `aib-core` and `aib-store` must not (checked on the `cargo metadata` dependency graph,
   with knives). Every other crate stays `forbid(unsafe_code)`; `aib-sys` uses
   `deny(unsafe_op_in_unsafe_fn)`, a SAFETY note on every unsafe block, Rust-only types at

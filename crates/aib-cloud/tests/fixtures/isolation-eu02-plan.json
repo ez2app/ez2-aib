@@ -48,6 +48,14 @@
     "expect": "blocked"
   },
   {
+    "id": "edge-101-to-hostpub-22",
+    "from": "ct:101",
+    "kind": "tcp",
+    "ip": "135.181.75.90",
+    "port": 22,
+    "expect": "blocked"
+  },
+  {
     "id": "edge-101-to-tailnet",
     "from": "ct:101",
     "kind": "icmp",
@@ -344,6 +352,14 @@
     "expect": "blocked"
   },
   {
+    "id": "site-110-to-peerhost-443",
+    "from": "ct:110",
+    "kind": "tcp",
+    "ip": "136.243.105.110",
+    "port": 443,
+    "expect": "open"
+  },
+  {
     "id": "site-110-to-site-112-22",
     "from": "ct:110",
     "kind": "tcp",
@@ -486,6 +502,14 @@
     "ip": "136.243.105.110",
     "port": 22,
     "expect": "blocked"
+  },
+  {
+    "id": "site-112-to-peerhost-443",
+    "from": "ct:112",
+    "kind": "tcp",
+    "ip": "136.243.105.110",
+    "port": 443,
+    "expect": "open"
   },
   {
     "id": "site-112-to-site-110-22",
