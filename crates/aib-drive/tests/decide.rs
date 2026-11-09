@@ -33,6 +33,7 @@ fn review(by: &str, head: &str, pass: bool, counts: [u32; 4], from: Option<&str>
         pass,
         counts,
         from: from.map(s),
+        closes: vec![],
     }
 }
 
@@ -527,6 +528,45 @@ fn a_failed_full_review_plus_a_passing_increment_is_not_a_merge() {
     }
     p.reviews[0] = review("043dd", Q5, true, [0, 0, 2, 1], None);
     assert_eq!(merges(&decide(&snap(vec![p]))), vec![(605, s(Q6))]);
+}
+
+/// D20 (a63ab 11-10 02:02, tonight's coalition / decide flow): an old head
+/// that failed plus an increment that passes is full coverage only when the
+/// same reviewer wrote both and the increment lists each old H / M closed.
+#[test]
+fn the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch() {
+    let mut p = pr(605, Q6);
+    p.commits = Known::Known(vec![s(Q5), s(Q6)]);
+    let old = review("bb7dc", Q5, false, [1, 1, 0, 0], None);
+    let mut inc = review("bb7dc", Q6, true, [0, 0, 0, 0], Some(Q5));
+    inc.closes = vec![old.evidence.clone()];
+    p.reviews = vec![old.clone(), inc.clone()];
+    assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(605, s(Q6))]);
+
+    // the increment does not list the old findings
+    p.reviews = vec![
+        old.clone(),
+        review("bb7dc", Q6, true, [0, 0, 0, 0], Some(Q5)),
+    ];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // a different reviewer closes them
+    let mut other = inc.clone();
+    other.by = Known::Known(s("1ced7"));
+    p.reviews = vec![old.clone(), other];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // the old writer is not verified
+    let mut unverified = old.clone();
+    unverified.by = Known::Unknown(s("file name only"));
+    p.reviews = vec![unverified, inc.clone()];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // the closing increment itself leaves a medium
+    let mut leaves = inc.clone();
+    leaves.counts = [0, 1, 0, 0];
+    p.reviews = vec![old, leaves];
+    assert!(merges(&decide(&snap(vec![p]))).is_empty());
 }
 
 /// bb7dc 121b1cbf M1: a writer the snapshot could not verify (a file name's

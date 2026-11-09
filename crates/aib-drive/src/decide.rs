@@ -190,6 +190,11 @@ pub struct ReviewLine {
     pub counts: [u32; 4],
     /// `None` = 全文; `Some(from)` = 增量 from..head.
     pub from: Option<Sha>,
+    /// Evidence ids of earlier reviews whose every H / M this review lists,
+    /// one by one, as closed. Set by the snapshot layer from the body; the
+    /// first line cannot say it. See [`closed_by_increment`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closes: Vec<String>,
 }
 
 impl ReviewLine {
@@ -209,6 +214,7 @@ impl ReviewLine {
                 Scope::Incremental { from, .. } => Some(from.to_owned()),
                 Scope::Full | Scope::Other(_) => None,
             },
+            closes: Vec::new(),
         })
     }
 
@@ -527,6 +533,23 @@ fn covered_to(commits: &[Sha], reviews: &[&ReviewLine]) -> Option<usize> {
     }
 }
 
+/// D20 (a63ab 11-10 02:02): a review that did not pass at an old head is
+/// closed by an incremental pass `old..new` only when the same verified
+/// writer wrote both and the increment lists each old H / M as closed
+/// (`closes` names the old review). A different reviewer, or an increment
+/// that does not list them, leaves the old review failed.
+fn closed_by_increment(old: &ReviewLine, others: &[&ReviewLine]) -> bool {
+    let Known::Known(writer) = &old.by else {
+        return false;
+    };
+    others.iter().any(|r| {
+        r.passes()
+            && r.by.get() == Some(writer)
+            && r.from.as_ref() == Some(&old.head)
+            && r.closes.contains(&old.evidence)
+    })
+}
+
 fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
     let n = pr.number;
     let mut g = Gate {
@@ -746,8 +769,13 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         return;
     }
     let last = commits.len().checked_sub(1);
-    // bb7dc 121b1cbf H2: only reviews that pass with no H / M make the chain
-    let chain: Vec<&ReviewLine> = others.iter().copied().filter(|r| r.passes()).collect();
+    // bb7dc 121b1cbf H2: only reviews that pass with no H / M make the chain,
+    // plus (D20) an old failed one its own writer closed in an increment
+    let chain: Vec<&ReviewLine> = others
+        .iter()
+        .copied()
+        .filter(|r| r.passes() || closed_by_increment(r, &others))
+        .collect();
     let covered = covered_to(commits, &chain);
     if last.is_some() && covered == last && !at_head.is_empty() {
         return;
