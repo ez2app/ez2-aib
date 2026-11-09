@@ -43,11 +43,18 @@ fn main() -> ExitCode {
     let _kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
         Step::Done(Ok(g)) => Some(g),
         Step::Done(Err(tag)) => {
-            tracing::error!(error = tag, "j0: cannot put aibd in its Job; refusing to start");
+            tracing::error!(
+                error = tag,
+                "j0: cannot put aibd in its Job; refusing to start"
+            );
             return ExitCode::from(1);
         }
         Step::Unsupported { step, why } => {
-            tracing::warn!(step = step.name(), why, "kill on exit: not on this platform yet");
+            tracing::warn!(
+                step = step.name(),
+                why,
+                "kill on exit: not on this platform yet"
+            );
             None
         }
         Step::NotApplicable { .. } => None,
