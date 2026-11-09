@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import fcntl
 import hashlib
@@ -19,6 +20,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1304,9 +1306,72 @@ def _order_remove(seat, item_id, env=None):
         _delete_view(seat, env)
 
 
+TRANSITION_LOCK = "transition.lock"
+TRANSITION_LOCK_TIMEOUT_S = 10.0
+_TRANSITION_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _seat_transition_lock(seat, env=None, timeout_s=None):
+    """每席一把轉移鎖(11-09 #552 G1):rev 檢查 → 讀 → 改 → 寫整段在鎖內,本人與背景 worker 不再互蓋。
+    鎖獨立的 transition.lock 檔(不是目錄):裡面的 _write_item / _order_remove 還要拿目錄鎖,鎖目錄會自己鎖死。
+    鎖順序固定「轉移鎖 → 目錄鎖」;claim_next 只拿目錄鎖、不拿轉移鎖 ⇒ 不會反向。
+    同一執行緒重入(回條路徑再叫同席 _transition)只記深度不再 flock;逾時丟 AtomicWriteError(與寫檔失敗同一類)。"""
+    d = seat_dir(seat, env)
+    d.mkdir(parents=True, exist_ok=True)
+    path = str(d / TRANSITION_LOCK)
+    held = getattr(_TRANSITION_HELD, "paths", None)
+    if held is None:
+        held = _TRANSITION_HELD.paths = {}
+    if held.get(path):
+        held[path] += 1
+        try:
+            yield
+        finally:
+            held[path] -= 1
+        return
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.monotonic() + (TRANSITION_LOCK_TIMEOUT_S if timeout_s is None else timeout_s)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise AJ.AtomicWriteError("轉移鎖失敗:%s" % exc.__class__.__name__)
+                if time.monotonic() >= deadline:
+                    raise AJ.AtomicWriteError("轉移鎖逾時:可能有別的行程卡在改這一席的信")
+                time.sleep(0.01)
+        held[path] = 1
+        try:
+            yield
+        finally:
+            held.pop(path, None)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+
+
 def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
                 if_rev=None, no_rev_check=None, expect_status=None):
-    """狀態機的唯一入口(接口 §2)。回 {ok, reason, rev, item, message}。
+    """狀態機的唯一入口(接口 §2)。整段在 _seat_transition_lock 裡跑;回條(可能慢)放鎖外。
+    ★ 還原刀錨:test-dm-transition-lock-043dd-1109.py 把這把鎖換成空的 ⇒ 兩個行程搶結同一封,T1 必紅。"""
+    with _seat_transition_lock(seat, env):
+        out = _transition_locked(seat, item_id, to, actor, env=env, now=now, why=why, evidence=evidence,
+                                 if_rev=if_rev, no_rev_check=no_rev_check, expect_status=expect_status)
+    after = out.pop("_after", None)
+    if after:
+        _global_delivery_for_transition(*after)
+    return out
+
+
+def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
+                       if_rev=None, no_rev_check=None, expect_status=None):
+    """狀態機本體(接口 §2;只由 _transition 在轉移鎖內呼叫)。回 {ok, reason, rev, item, message}。
     不在 TRANSITIONS 上的 (from,to,actor類別) 一律拒;seat 類還要是收件席本人;done 要存在的憑據路徑;
     准與拒都寫一行 audit.jsonl。離開 ACTIVE_STATUSES 就從 order.json 拿掉(檔留著當歷史)。
     ★ 還原刀錨:test-dm-queue-v2-70.py 把 TRANSITIONS 刪一列,對應合法轉移那格必紅。"""
@@ -1437,9 +1502,10 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     extra = {"evidence": item.get("done_evidence")} if to == "done" else {}   # 看板抽查子代理結案用(0.1.61)
     _audit(seat, env, ts=now, id=item_id, **{"from": frm}, to=to, actor=actor, ok=True,
            reason="ok", rev=item_rev(item), why=why, **extra)
+    out = {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
     if item.get("global"):
-        _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now)
-    return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
+        out["_after"] = (item, frm, to, cls, why, seat, env, now)   # 回條放鎖外送(_transition 收)
+    return out
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")

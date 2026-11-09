@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""dm 狀態轉移整段同鎖(#552 G1,043dd 11-09;a63ab 11:05「要有並發反例 + 刀」)。
+全在暫存狀態根 + 暫存 HOME 跑;不送真 dm、不碰 ~/.ez2-aib。
+
+T1 兩個真行程同時結同一封(讀完都先睡 0.3 秒把窗口撐開)⇒ 恰好一個 ok、另一個 transition;
+   audit 只有一筆 ok 的 done;跑 3 輪。
+T2 同席兩封各自結 ⇒ 兩個都 ok(鎖不擋不相干的信)。
+T3 別的行程握著轉移鎖 ⇒ 逾時丟 AtomicWriteError,信不變。
+T4 同執行緒重入(鎖內再叫同席 _transition)⇒ 不自鎖死。
+刀(複本 + run_guarded):K1 把轉移鎖換成空的 ⇒ T1 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+COCKPIT = ROOT / "src" / "cockpit"
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(COCKPIT))
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
+
+import atomic_json as AJ  # noqa: E402
+import dm_queue as Q  # noqa: E402
+
+SEAT = "aaaaa"
+ME = "seat:" + SEAT
+NOW = 1792930000
+
+# 子行程:等 go 檔出現才動手;_load_item 讀完睡 0.3 秒(沒鎖時兩邊都會讀到 read)。
+CHILD = textwrap.dedent("""
+    import json, os, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    seat, iid, go, tag = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+    orig = Q._load_item
+    def slow(*a, **k):
+        it = orig(*a, **k)
+        time.sleep(0.3)
+        return it
+    Q._load_item = slow
+    end = time.time() + 20
+    while not os.path.exists(go) and time.time() < end:
+        time.sleep(0.005)
+    r = Q._transition(seat, iid, "done", "seat:" + seat, why="race " + tag)
+    print(json.dumps({"ok": r["ok"], "reason": r["reason"]}))
+""")
+
+HOLDER = textwrap.dedent("""
+    import os, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    with Q._seat_transition_lock(sys.argv[2]):
+        open(sys.argv[3], "w").close()
+        time.sleep(float(sys.argv[4]))
+""")
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="aib-dm-tlock-")).resolve()
+        self.addCleanup(shutil.rmtree, str(self.d), True)
+        self.env = {"EZ2_AIB_STATE_ROOT": str(self.d / "state"), "HOME": str(self.d / "home"),
+                    "EZ2_AIB_LOCALE": "zh-TW"}
+        (self.d / "home").mkdir()
+        p = mock.patch.dict(os.environ, self.env)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def read_item(self, msg):
+        it = Q.record(SEAT, msg, "agent:offhub", status="delivered", env=self.env, now=NOW, rc=None)
+        r = Q._transition(SEAT, it["id"], "read", ME, env=self.env, now=NOW)
+        self.assertTrue(r["ok"], r)
+        return it["id"]
+
+    def child_env(self):
+        e = dict(os.environ)
+        e.update(self.env)
+        return e
+
+
+class Race(Base):
+    def test_t1_race_one_winner(self):
+        for rnd in range(3):
+            iid = self.read_item("通知 第 %d 輪" % rnd)
+            go = self.d / ("go-%d" % rnd)
+            procs = [subprocess.Popen([sys.executable, "-B", "-c", CHILD, str(COCKPIT), SEAT, iid, str(go), t],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                      env=self.child_env())
+                     for t in ("a", "b")]
+            time.sleep(0.5)          # 兩個都 import 完、在等 go
+            go.touch()
+            outs = []
+            for p in procs:
+                so, se = p.communicate(timeout=60)
+                self.assertEqual(p.returncode, 0, se)
+                outs.append(json.loads(so.strip().splitlines()[-1]))
+            oks = [o for o in outs if o["ok"]]
+            self.assertEqual(len(oks), 1, "第 %d 輪:兩個行程都結成功 = 後寫蓋先寫 %r" % (rnd, outs))
+            self.assertEqual([o["reason"] for o in outs if not o["ok"]], ["transition"], outs)
+            done = [r for r in Q.audit_rows(SEAT, self.env)
+                    if r.get("id") == iid and r.get("to") == "done" and r.get("ok")]
+            self.assertEqual(len(done), 1, done)
+            self.assertEqual(Q._load_item(SEAT, iid, self.env)["status"], "done")
+
+    def test_t2_independent_items_both_ok(self):
+        a, b = self.read_item("甲"), self.read_item("乙")
+        self.assertTrue(Q._transition(SEAT, a, "done", ME, env=self.env, why="x")["ok"])
+        self.assertTrue(Q._transition(SEAT, b, "done", ME, env=self.env, why="y")["ok"])
+
+    def test_t3_held_lock_times_out(self):
+        iid = self.read_item("丙")
+        ready = self.d / "held"
+        p = subprocess.Popen([sys.executable, "-B", "-c", HOLDER, str(COCKPIT), SEAT, str(ready), "3"],
+                             env=self.child_env())
+        self.addCleanup(p.wait, 30)
+        end = time.time() + 20
+        while not ready.exists() and time.time() < end:
+            time.sleep(0.01)
+        self.assertTrue(ready.exists())
+        with mock.patch.object(Q, "TRANSITION_LOCK_TIMEOUT_S", 0.2):
+            with self.assertRaises(AJ.AtomicWriteError):
+                Q._transition(SEAT, iid, "done", ME, env=self.env, why="z")
+        self.assertEqual(Q._load_item(SEAT, iid, self.env)["status"], "read")
+
+    def test_t4_reentrant_same_thread(self):
+        iid = self.read_item("丁")
+        with mock.patch.object(Q, "TRANSITION_LOCK_TIMEOUT_S", 1.0):
+            with Q._seat_transition_lock(SEAT, self.env):
+                r = Q._transition(SEAT, iid, "done", ME, env=self.env, why="w")
+        self.assertTrue(r["ok"], r)
+
+
+KNIVES = [
+    ("K1 拿掉轉移鎖", "src/cockpit/dm_queue.py",
+     "    with _seat_transition_lock(seat, env):\n        out = _transition_locked(",
+     "    with contextlib.nullcontext():\n        out = _transition_locked(",
+     "Race.test_t1_race_one_winner"),
+]
+
+
+class Knife(unittest.TestCase):
+    def test_knives(self):
+        name = Path(__file__).name
+        for tag, rel, needle, repl, target in KNIVES:
+            with self.subTest(tag):
+                with knife_copy(ROOT, rel, needle, repl, tests=(name,)) as root:
+                    r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
+                                    max_procs=40, timeout=180)
+                self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
+                self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
+                self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
+
+
+if __name__ == "__main__":
+    unittest.main()
