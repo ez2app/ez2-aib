@@ -41,3 +41,24 @@ scripts/dev/wincheck.sh --changed origin/main    # runs unless nothing aibd buil
 `aib prepr` runs the same for the members that build C (item `rust clippy (x86_64-pc-windows-msvc, fakecc)`).
 Target dir `target-wincheck.noindex/`. Exit 0 green or skipped, 1 red, 2 not verified (target missing).
 It is a type check only: say "Windows clippy (fakecc) green; tests still need CI", never "Windows green".
+
+## Session stop wording (macOS)
+
+| aibd sessions API | aib-core `Outcome` | 字 / Label |
+|---|---|---|
+| `state: killed` | `state: Interrupted`, `reason: tree_unverified` | 已停止 / Stopped |
+| `state: exited` | — | 已結束 / Exited |
+| `stop.status: unverified`, `stop.reason: observed_clean` (`killed` or `exited`) | `tree_unverified: observed_clean` | 未完全確認(看得到的都已收掉)/ Not fully verified (everything visible was cleaned up) |
+| `stop.status: unverified`, any other `stop.reason` | `tree_unverified`: any other value | not covered by this wording |
+
+> **已停止**:這個程式是被你(或 aibd)中途停掉的,不是自己跑完結束。
+>
+> **已結束**:這個程式自己跑完結束了,不是被停掉的。
+>
+> **未完全確認(看得到的都已收掉)**:aibd 已經把看得到的子程式全部收掉。macOS 不提供完整的程式親子紀錄,所以沒辦法百分之百保證沒有漏掉的,因此標成「未完全確認」。一般使用不用處理;要確定的話可以重開機或用活動監視器看一下。
+
+> **Stopped**: the program was stopped partway (by you or by aibd), not finished on its own.
+>
+> **Exited**: the program finished on its own; it was not stopped.
+>
+> **Not fully verified (everything visible was cleaned up)**: aibd stopped every child process it could see. macOS does not provide a complete process lineage, so aibd cannot guarantee nothing was missed and marks this "not fully verified". Usually no action is needed; to be certain, check Activity Monitor or restart.
