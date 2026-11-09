@@ -5986,5 +5986,15 @@
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
   "aib.cloud_robot.touchid_apply": "aib:Hetzner サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(Hetzner Robot rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(Hetzner Robot rescue / reset)",
+  "aib.test.one_saved": "⏱ aib で今回 {saved} 短縮({without} → {actual})",
+  "aib.test.one_nosave": "⏱ 今回は短縮なし",
+  "aib.test.one_nosave_all": "⏱ 今回は短縮なし({n} 本すべて再実行:{why})",
+  "aib.test.one_first": "⏱ 初回実行。次回から時間を短縮します",
+  "aib.test.one_s": "{n} 秒",
+  "aib.test.one_m": "{m} 分",
+  "aib.test.one_ms": "{m} 分 {s} 秒",
+  "aib.test.one_h": "{h} 時間",
+  "aib.test.one_hm": "{h} 時間 {m} 分",
+  "aib.test.one_nosave_one": "⏱ 今回は短縮なし(再実行:{why})"
 }

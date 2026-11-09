@@ -5986,5 +5986,15 @@
   "aib.gameworld.start_failed": "로비를 시작할 수 없습니다(함장실 플러그인이 올바른 결과를 주지 않음). 좌석에는 영향이 없습니다.",
   "aib.gameworld.not_switched": "로비가 {target}(으)로 전환되지 않았습니다. 현재 {actual}입니다. 좌석에는 영향이 없습니다.",
   "aib.cloud_robot.touchid_apply": "aib: Hetzner 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
-  "aib.approve_gate.cat.host_rescue": "호스트 구조(Hetzner Robot rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "호스트 구조(Hetzner Robot rescue / reset)",
+  "aib.test.one_saved": "⏱ aib 덕분에 이번에 {saved} 절약({without} → {actual})",
+  "aib.test.one_nosave": "⏱ 이번에는 절약된 시간 없음",
+  "aib.test.one_nosave_all": "⏱ 이번에는 절약된 시간 없음({n}개 모두 다시 실행: {why})",
+  "aib.test.one_first": "⏱ 첫 실행입니다. 다음부터 시간이 절약됩니다",
+  "aib.test.one_s": "{n}초",
+  "aib.test.one_m": "{m}분",
+  "aib.test.one_ms": "{m}분 {s}초",
+  "aib.test.one_h": "{h}시간",
+  "aib.test.one_hm": "{h}시간 {m}분",
+  "aib.test.one_nosave_one": "⏱ 이번에는 절약된 시간 없음(다시 실행: {why})"
 }

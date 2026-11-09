@@ -468,6 +468,36 @@ def versus_lines(vs, before, who=None, causes=None, required=None):
     return out
 
 
+def short_dur(seconds):
+    """一行省時用的時長:60 秒內「4.9 秒」、一小時內「1 分 20 秒」、以上「2 小時 5 分」。"""
+    s = max(0.0, float(seconds or 0))
+    if s < 60:
+        return T("one_s", {"n": "%.1f" % s})
+    if s < 3600:
+        m, r = divmod(int(round(s)), 60)
+        return T("one_m", {"m": m}) if r == 0 else T("one_ms", {"m": m, "s": r})
+    h, r = divmod(int(round(s / 60)), 60)
+    return T("one_h", {"h": h}) if r == 0 else T("one_hm", {"h": h, "m": r})
+
+
+def oneline(vs, before, causes=None):
+    """Andy 11-09 23:1x:「直接用簡單的幾行字,告訴用戶少多少時間就好」⇒ 預設只印一行(他選的「一行版」)。
+    省到(過 SAVED_MIN 門檻)⇒ 省多少(沒有 aib → 這次);第一次跑 ⇒ 下次開始省;其他 ⇒ 沒省到,全部重跑時附主因。
+    細節(排隊拆解、沿用幾支、累計、💡 建議)在 aib test --verbose。"""
+    if vs["without_s"] <= 0:
+        return []
+    if not before and not vs["reused"]:
+        return [T("one_first")]
+    pct = 100.0 * vs["saved_s"] / vs["without_s"]
+    if vs["with_s"] <= vs["without_s"] and vs["saved_s"] >= SAVED_MIN_S and pct >= SAVED_MIN_PCT:
+        return [T("one_saved", {"saved": short_dur(vs["saved_s"]), "without": short_dur(vs["without_s"]),
+                                "actual": short_dur(vs["with_s"])})]
+    if causes and not vs["reused"] and vs["ran"]:
+        why = re.sub(r"\(\d+\)$", "", causes[0])
+        return [T("one_nosave_all" if vs["ran"] > 1 else "one_nosave_one", {"n": vs["ran"], "why": why})]
+    return [T("one_nosave")]
+
+
 def rerun_causes(tests, top=3):
     """這一輪實跑的那幾支「為什麼不能沿用」:原因白話(支數),多的在前。"""
     # 10-14 公開版新用戶走查:以前只拿 why 去翻、不帶 detail ⇒ 新機器第一次跑(index-degraded:no-rows-files)
@@ -1976,6 +2006,7 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--resume", default=None, metavar="NAME")
     ap.add_argument("--why", action="store_true")
+    ap.add_argument("--verbose", action="store_true")    # 11-09 Andy:省時摘要預設一行;要看 🧮 樹狀 + 💡 建議加這個
     ap.add_argument("--estimate", action="store_true")
     ap.add_argument("--cells", action="store_true")
     ap.add_argument("--jobs", type=int, default=None)          # 10-08:同時跑幾份(--all 預設 min(4, 核心數);1 = 一支一支跑)
@@ -2216,13 +2247,20 @@ def _main_run(repo, names, a, live, started, lease, mem):
         except Exception:  # noqa: BLE001
             pass
         req = []
-        lines = versus_lines(vs, record_versus(repo, vs) if vs["without_s"] > 0 else [], who=_who(repo),
-                             causes=rerun_causes(res["tests"]), required=req)
-        advice = _advice(res["tests"], lease, a, prev_actions) if lines else []
-        for ln in lines + advice:
+        before = record_versus(repo, vs) if vs["without_s"] > 0 else []
+        causes = rerun_causes(res["tests"])
+        lines = versus_lines(vs, before, who=_who(repo), causes=causes, required=req)
+        advice = _advice(res["tests"], lease, a, prev_actions) if lines else []   # 照算:下一輪要檢查有沒有照做
+        if a.verbose:
+            show, need = lines + advice, req
+            extra = summary_extra(vs, res["tests"]) if lines else []
+        else:      # Andy 11-09:預設一行,只講少多少時間;回報要貼的也就這一行
+            show = oneline(vs, before, causes) if lines else []
+            need, extra = list(show), []
+        for ln in show:
             print(ln)
-        step_summary(lines + (summary_extra(vs, res["tests"]) if lines else []))
-        shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh), tree=(lines + advice) or None, required=req or None,
+        step_summary(show + extra)
+        shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh), tree=show or None, required=need or None,
                             next_actions=_LAST_ADVICE.get("acts"))
     sk = [(r["name"], skipped_cells(r.get("output"))) for r in res["tests"] if r["rc"] == 0]
     sk = [(n, c) for n, c in sk if c]

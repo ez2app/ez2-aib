@@ -5986,5 +5986,15 @@
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
   "aib.cloud_robot.touchid_apply": "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}",
-  "aib.approve_gate.cat.host_rescue": "Host rescue (Hetzner Robot rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "Host rescue (Hetzner Robot rescue / reset)",
+  "aib.test.one_saved": "⏱ aib saved you {saved} this time ({without} → {actual})",
+  "aib.test.one_nosave": "⏱ No time saved this time",
+  "aib.test.one_nosave_all": "⏱ No time saved this time ({n} had to run again: {why})",
+  "aib.test.one_first": "⏱ First run; time savings start next time",
+  "aib.test.one_s": "{n} s",
+  "aib.test.one_m": "{m} min",
+  "aib.test.one_ms": "{m} min {s} s",
+  "aib.test.one_h": "{h} h",
+  "aib.test.one_hm": "{h} h {m} min",
+  "aib.test.one_nosave_one": "⏱ No time saved this time (it had to run again: {why})"
 }
