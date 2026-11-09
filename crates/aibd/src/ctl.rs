@@ -321,11 +321,14 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 .get("state")
                 .and_then(Value::as_str)
                 .ok_or("session state missing")?;
-            if status != "running" {
+            // ADR 0005 §5 queue (bb7dc 11-09): `pending` = queued, keep waiting
+            if status != "running" && status != "pending" {
                 println!("{state}");
                 return match status {
                     "exited" | "killed" => Ok(()),
-                    "interrupted" | "stop_unconfirmed" => Err(format!("session ended as {status}")),
+                    "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" => {
+                        Err(format!("session ended as {status}"))
+                    }
                     _ => Err(format!("unrecognized session state: {status}")),
                 };
             }
@@ -337,13 +340,17 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 .get("state")
                 .and_then(Value::as_str)
                 .ok_or("session state missing")?;
-            if status == "interrupted" || status == "stop_unconfirmed" {
+            if matches!(
+                status,
+                "interrupted" | "stop_unconfirmed" | "cancelled" | "failed"
+            ) {
                 println!("{state}");
                 return Err(format!(
                     "session ended as {status} before both output streams closed"
                 ));
             }
-            if status == "running" {
+            // a queued session (ADR 0005 §5) has no output yet: no grace runs
+            if status == "running" || status == "pending" {
                 terminal_seen = None;
             } else if matches!(status, "exited" | "killed") {
                 let since = *terminal_seen.get_or_insert_with(Instant::now);
@@ -665,6 +672,44 @@ mod tests {
             .starts_with("GET /api/v1/events?cursor=0&limit=500&aggregate_id=session_1 HTTP/1.1"));
         assert!(requests[2].starts_with("GET /api/v1/sessions/session_1 HTTP/1.1"));
     }
+    /// ADR 0005 §5 queue (bb7dc 11-09): a queued session is waited for
+    /// with no grace, then watched as usual once it runs.
+    #[test]
+    fn watch_keeps_waiting_while_the_session_is_queued() {
+        let closed = r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":2}"#;
+        let (c, server) = fake(vec![
+            r#"{"output":[],"next":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"pending"}"#,
+            closed,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"exited"}"#,
+        ]);
+        watch_with_grace(&c, "session_1", Duration::ZERO).unwrap();
+        assert_eq!(server.join().unwrap().len(), 6);
+    }
+
+    /// ... and a queued session that was cancelled or failed to start is
+    /// an error, never success.
+    #[test]
+    fn a_cancelled_or_failed_queued_session_is_not_success() {
+        for end in ["cancelled", "failed"] {
+            let st: &'static str = if end == "cancelled" {
+                r#"{"state":"cancelled"}"#
+            } else {
+                r#"{"state":"failed"}"#
+            };
+            let (c, server) = fake(vec![
+                r#"{"output":[],"next":0}"#,
+                r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+                st,
+            ]);
+            let e = watch(&c, "session_1").unwrap_err();
+            assert!(e.contains(end), "{e}");
+            assert_eq!(server.join().unwrap().len(), 3);
+        }
+    }
+
     #[test]
     fn interrupted_history_with_unclosed_streams_is_not_success() {
         let (c, server) = fake(vec![
