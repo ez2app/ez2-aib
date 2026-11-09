@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import fcntl
 import hashlib
@@ -19,6 +20,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -199,6 +201,7 @@ ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping"
 TRANSITION_REASON = {
     "ok": "",
     "transition": "這個狀態不能這樣改",
+    "lock_timeout": "這一席的信正被別的程式改著(等了 10 秒還沒放),這次沒改;稍後再試一次",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
     "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / 完整 PR 網址 https://github.com/ez2app/…/pull/N;夾在說明文字裡也可以,只寫 #N 不算),或用 --why 寫結案理由",
@@ -1304,9 +1307,88 @@ def _order_remove(seat, item_id, env=None):
         _delete_view(seat, env)
 
 
+class TransitionLockTimeout(AJ.AtomicWriteError):
+    """轉移鎖等超過 TRANSITION_LOCK_TIMEOUT_S(別的行程握著這一席的鎖)。_transition 轉成 reason=lock_timeout,不往外丟。"""
+
+
+TRANSITION_LOCK = "transition.lock"
+TRANSITION_LOCK_TIMEOUT_S = 10.0
+_TRANSITION_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _seat_transition_lock(seat, env=None, timeout_s=None):
+    """每席一把轉移鎖(11-09 #552 G1):rev 檢查 → 讀 → 改 → 寫整段在鎖內,本人與背景 worker 不再互蓋。
+    鎖獨立的 transition.lock 檔(不是目錄):裡面的 _write_item / _order_remove 還要拿目錄鎖,鎖目錄會自己鎖死。
+    鎖順序固定「(deliver 鎖 →)轉移鎖 → 目錄鎖」,不反向:claim_next / claim_id / claim_result / unclaim / hold_item
+    也整段在這把鎖裡(#552 r1 M1、r2 M1' / L4),排空器持 deliver 鎖再來拿。
+    同一執行緒重入(回條路徑再叫同席 _transition、claim_result 內叫 claim_id)只記深度不再 flock;
+    逾時丟 TransitionLockTimeout(AtomicWriteError 的子類):_transition / claim_result 轉成 reason=lock_timeout。"""
+    d = seat_dir(seat, env)
+    d.mkdir(parents=True, exist_ok=True)
+    path = str(d / TRANSITION_LOCK)
+    held = getattr(_TRANSITION_HELD, "paths", None)
+    if held is None:
+        held = _TRANSITION_HELD.paths = {}
+    if held.get(path):
+        held[path] += 1
+        try:
+            yield
+        finally:
+            held[path] -= 1
+        return
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.monotonic() + (TRANSITION_LOCK_TIMEOUT_S if timeout_s is None else timeout_s)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise AJ.AtomicWriteError("轉移鎖失敗:%s" % exc.__class__.__name__)
+                if time.monotonic() >= deadline:
+                    raise TransitionLockTimeout("轉移鎖逾時:可能有別的行程卡在改這一席的信")
+                time.sleep(0.01)
+        held[path] = 1
+        try:
+            yield
+        finally:
+            held.pop(path, None)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+
+
 def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
                 if_rev=None, no_rev_check=None, expect_status=None):
-    """狀態機的唯一入口(接口 §2)。回 {ok, reason, rev, item, message}。
+    """狀態機的唯一入口(接口 §2)。整段在 _seat_transition_lock 裡跑;回條(可能慢)放鎖外。
+    ★ 還原刀錨:test-dm-transition-lock-043dd-1109.py 把這把鎖換成空的 ⇒ 兩個行程搶結同一封,T1 必紅。"""
+    # #552 r1 L2:證據查證(可能叫 git,每個候選最多 10 秒)只看席 + 證據字串、跟信的狀態無關 ⇒ 在拿鎖之前算
+    ev_ref = evidence_ref(seat, evidence, env) if to == "done" else None
+    try:
+        with _seat_transition_lock(seat, env):
+            out = _transition_locked(seat, item_id, to, actor, env=env, now=now, why=why, evidence=evidence,
+                                     if_rev=if_rev, no_rev_check=no_rev_check, expect_status=expect_status,
+                                     _ev_ref=ev_ref)
+    except TransitionLockTimeout:
+        # #552 r1 L3:CLI / hook 都拿到一般的拒絕,不是 traceback;信沒動
+        _audit(seat, env, ts=int(time.time() if now is None else now), id=item_id, to=to, actor=actor, ok=False,
+               reason="lock_timeout")
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
+    after = out.pop("_after", None)
+    if after:
+        _global_delivery_for_transition(*after)
+    return out
+
+
+def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
+                       if_rev=None, no_rev_check=None, expect_status=None, _ev_ref=None):
+    """狀態機本體(接口 §2;只由 _transition 在轉移鎖內呼叫)。回 {ok, reason, rev, item, message}。
     不在 TRANSITIONS 上的 (from,to,actor類別) 一律拒;seat 類還要是收件席本人;done 要存在的憑據路徑;
     准與拒都寫一行 audit.jsonl。離開 ACTIVE_STATUSES 就從 order.json 拿掉(檔留著當歷史)。
     ★ 還原刀錨:test-dm-queue-v2-70.py 把 TRANSITIONS 刪一列,對應合法轉移那格必紅。"""
@@ -1371,7 +1453,7 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     if to == "done":
         # 10-13 S7-1(the maintainer 准;kimi / grok / gpt 三家都說「只收存在的檔」是進行中只進不出的主因):
         #   證據收 檔案 / 本席寄出的回信 id / 查得到的 commit;都不是但有 why ⇒ 憑理由結案(另記 done_kind=reason)。
-        done_kind, done_ref = evidence_ref(seat, evidence, env)
+        done_kind, done_ref = _ev_ref if _ev_ref is not None else evidence_ref(seat, evidence, env)
         if done_kind is None:
             if isinstance(why, str) and why.strip():
                 done_kind = "reason"
@@ -1389,6 +1471,9 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         item["claim_id"] = None
     elif to == "read":
         item["read_at"] = now
+        if item.get("delivered_at") is None and frm != "done" and cls != "human":   # 本人在收件匣看 ≠ 送進席位
+            item["delivered_at"] = now        # #552 G2:queued → read 跳過 delivered,讀到了就是送到了
+            item["delivered_via"] = "read"    # 延遲統計要分開算的話認這欄
         if frm == "done":
             for k in ("done_at", "done_evidence", "done_kind", "done_why", "consolidated_into"):
                 item.pop(k, None)
@@ -1407,6 +1492,9 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
             item["done_why"] = why.strip()[:500]
         if item.get("read_at") is None:
             item["read_at"] = now
+        if item.get("delivered_at") is None:
+            item["delivered_at"] = item["read_at"]   # #552 G2:G2 之前讀過的舊列,結案時以讀的時間補
+            item["delivered_via"] = "read"
     elif to == "archived":
         item["archived_at"] = now
         item["archived_why"] = why
@@ -1437,9 +1525,10 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     extra = {"evidence": item.get("done_evidence")} if to == "done" else {}   # 看板抽查子代理結案用(0.1.61)
     _audit(seat, env, ts=now, id=item_id, **{"from": frm}, to=to, actor=actor, ok=True,
            reason="ok", rev=item_rev(item), why=why, **extra)
+    out = {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
     if item.get("global"):
-        _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now)
-    return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
+        out["_after"] = (item, frm, to, cls, why, seat, env, now)   # 回條放鎖外送(_transition 收)
+    return out
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -2483,16 +2572,16 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             else:
                 rec.pop("stalled_at", None)
             TR.write(path, rec)
-    if not tidy_on and auto_on and why in ("rewake", "triage-stalled"):
-        # 叫過、ACK 窗過了、本席沒動作 ⇒ 不再只是再叫,起背景整理(只擬不結);回合中 ⇒ 延後(SPEC v2 §2.1)
-        if in_turn:
-            r2 = dict(rec)
-            r2["headless"] = {"state": "deferred", "why": "seat-busy", "at": now, "next_at": now + 60}
-            TR.write(path, r2)
-            auto = "headless-deferred:seat-busy"
-        else:
-            auto = _triage_headless_auto(seat, rec, path, env, now)
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned}
+    if not tidy_on and auto_on and (why in ("rewake", "triage-stalled") or (in_turn and (normal or why == "waiting-pickup"))):
+        # 叫過、ACK 窗過了、本席沒動作 ⇒ 不再只是再叫,起背景整理(只擬不結)。
+        # 流程優化 7b(Andy 11-09 06:0x「dm 能在 >=2 封時，立刻必定由子 ai 先處理…而不用等」):
+        #   本席在回合中(UserPromptSubmit 比 Stop 晚)⇒ 貼進輸入框它要等回合結束才看得到，所以不再延後(舊:seat-busy)、
+        #   也不先叫醒等 ACK(叫過還在等它接 = waiting-pickup 也一樣:05:33 那批就卡在這)—— 門檻到了(待審 ≥2 /
+        #   進行中 ≥2)就當下起背景整理。上限照舊(長工作 / 每日 / 每小時 /
+        #   全機名額 / 負載 / 記憶體 / 同一批只一次),背景整理只擬不結、跳過本席 15 分內讀過的(SEAT_READ_SKIP_S)。
+        auto = _triage_headless_auto(seat, rec, path, env, now)
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned,
+                **({"in_turn": True} if in_turn else {})}
     if not normal:
         if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
             rec = dict(rec)
@@ -2518,8 +2607,13 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if busy:
+        if not tidy_on and auto_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
+            # 7b:畫面在動(沒有回合邊界紀錄的引擎，例如 Codex)也不等忙滿 30 分 —— 當下起背景整理，上限同上
+            auto = _triage_headless_auto(seat, rec, path, env, now)
+            return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "busy": why or "busy"}
         if not tidy_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
             # 審查 M5:死窗 / 問不到窗 / 登記表對不上 ≠ 在忙,不替關掉的席起背景整理
+            # triage_auto=off:0.1.62 舊行為(忙滿 HEADLESS_AFTER_S 才起)
             started = _triage_headless_maybe(seat, rec, path, env, now, probe)
             if started:
                 return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "headless-started"}
@@ -4978,6 +5072,15 @@ def _stale_claim(item, now):
 
 
 def claim_next(seat, env=None, now=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    if not seat_dir(seat, env).is_dir():
+        return None               # 沒這一席就沒信可領;別為了拿鎖替它建資料夾
+    with _seat_transition_lock(seat, env):
+        return _claim_next_unlocked(seat, env=env, now=now)
+
+
+def _claim_next_unlocked(seat, env=None, now=None):
     """領一封。兩人同時領不到同一封。"""
     now = int(time.time() if now is None else now)
     d = seat_dir(seat, env)
@@ -5021,6 +5124,19 @@ def claim_next(seat, env=None, now=None):
 
 
 def claim_result(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    if not seat_dir(seat, env).is_dir():          # 不替不存在的席建資料夾(r2 N2);rev_check 回 not_found
+        return _claim_result_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+    try:
+        with _seat_transition_lock(seat, env):
+            return _claim_result_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+    except TransitionLockTimeout:                  # r2 N3:CLI claim-id 不再 traceback
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
+
+
+def _claim_result_unlocked(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
     """領指定一封,回三態 {ok, reason, rev, item}:ok / no_rev / rev_mismatch / not_found / busy(已被領走或不在序裡)。
     no_rev_check=None ⇒ 當 True(程式庫寬鬆預設;CLI/殼明傳 False 才封閉)。"""
     if no_rev_check is None:
@@ -5044,6 +5160,16 @@ def _claimable_by_id(seat, item_id, env=None):
 
 
 def claim_id(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
+    """#552 r2 M1'(a9136):真排空器 _drain_seat_once 與待審框「立刻送出」走這條 ⇒ 也整段在轉移鎖裡,
+    不然席位 queued → read 照樣能把 claimed 蓋回 read。排空器持 deliver 鎖再進來:deliver → 轉移 → 目錄,不反向;
+    claim_result 內叫它是重入。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
+    with _seat_transition_lock(seat, env):
+        return _claim_id_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+
+
+def _claim_id_unlocked(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
     """領指定一封(立刻送出)。已被別人領走則失敗。if_rev 不符 ⇒ 不領;沒 if_rev 走程式庫寬鬆預設(CLI/殼才封閉)。"""
     now = int(time.time() if now is None else now)
     claimed = []
@@ -5090,6 +5216,15 @@ def claim_id(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
 
 
 def unclaim(seat, item_id, env=None, attempts=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
+    with _seat_transition_lock(seat, env):
+        return _unclaim_unlocked(seat, item_id, env=env, attempts=attempts)
+
+
+def _unclaim_unlocked(seat, item_id, env=None, attempts=None):
     item = _load_item(seat, item_id, env)
     if not item:
         return None
@@ -5103,7 +5238,16 @@ def unclaim(seat, item_id, env=None, attempts=None):
 
 
 def hold_item(seat, item_id, why, rc=None, env=None, now=None):
-    """轉待人處理:不再被 claim / drain;只有人 delete 或 requeue。"""
+    """轉待人處理:不再被 claim / drain;只有人 delete 或 requeue。
+    #552 r2 L4(a9136):先寫 hold_rc 再轉 hold 是兩次寫 ⇒ 整段在轉移鎖裡,不然中間夾一個席位 queued → read,
+    第一次寫回的舊整封會把已讀蓋掉(chat_pair phone_revoked、global_inbox 陌生人對 queued 的信叫這裡)。"""
+    if not seat_dir(seat, env).is_dir():
+        return None
+    with _seat_transition_lock(seat, env):
+        return _hold_item_unlocked(seat, item_id, why, rc=rc, env=env, now=now)
+
+
+def _hold_item_unlocked(seat, item_id, why, rc=None, env=None, now=None):
     item = _load_item(seat, item_id, env)
     if not item:
         return None
@@ -5784,6 +5928,8 @@ def main(argv=None, env=None):
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
+    ts_.add_argument("--latency", action="store_true", help="印背景整理「第 2 封入列 → 整理稿寫出」秒數 p50 / p95(#552 G4)")
+    ts_.add_argument("--since-hours", type=float, default=None, help="--latency 只看最近幾小時")
     tl = sub.add_parser("triage-lock")              # 整理子代理開工前自願登記(每席同時 1 個;只是協調,不是防線)
     tl.add_argument("--seat", default=None)
     tl.add_argument("--by", default=None)
@@ -6060,6 +6206,11 @@ def main(argv=None, env=None):
 
     if args.cmd == "triage-status":
         import dm_triage_agent as TA
+        if args.latency:
+            import dm_triage_headless as TH
+            since = time.time() - args.since_hours * 3600 if args.since_hours else None
+            _print_json(TH.latency_stats(env=env, seat=args.seat, since=since))
+            return 0
         _print_json(TA.status(env=env, seat=args.seat))
         return 0
 
@@ -6324,7 +6475,11 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd == "claim-next":
-        item = claim_next(args.seat, env=env)
+        try:
+            item = claim_next(args.seat, env=env)
+        except TransitionLockTimeout:              # r2 N3:這一拍領不到 = 沒得領(rc 3),下一拍再來
+            _print_json({"id": None, "reason": "lock_timeout", "message": TRANSITION_REASON["lock_timeout"]})
+            return 3
         _print_json(item or {"id": None})
         return 0 if item else 3
 

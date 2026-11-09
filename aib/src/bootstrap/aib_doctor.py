@@ -573,7 +573,8 @@ def check_dm_latency(state_root, repo_root, env=None, now=None):
         items, errors = Q._all_items(seat, env=env, with_errors=True)
         bad += len(errors)
         dl = [int(i["delivered_at"]) - int(i["sent_at"]) for i in items
-              if i.get("delivered_at") is not None and i.get("sent_at") is not None]
+              if i.get("delivered_at") is not None and i.get("sent_at") is not None
+              and i.get("delivered_via") != "read"]   # #552 G2:讀的時候才補的送達時間 = 讀信時間,不算送達延遲
         rd = [int(i["read_at"]) - int(i["sent_at"]) for i in items
               if i.get("read_at") is not None and i.get("sent_at") is not None]
         unread = [int(i["sent_at"]) for i in items
