@@ -90,6 +90,12 @@ aib-lease run --host 100.116.110.31 --owner 043dd \
 * On the other Mac, one bash: unpack → `aib lease acquire … --pid $$` → **nothing runs unless
   rc 0** → `EXIT` trap releases the lease, stops a running step's process tree and removes the
   tree → each step as its own `bash -c`, every rc printed; a failing step does not stop the rest.
+* The lease is `--exclusive` (the run is being measured, small `aib test` batches wait);
+  `--shared` asks without it.
+* A dropped ssh sends no HUP (no tty): the remote side writes a beat line every 5 s, and the
+  failed write stops the step, releases the lease and cleans up. Stopping a step reaches only
+  processes still in its tree; one that left it (re-parented to launchd, as Chrome for Testing
+  helpers do) is not stopped.
 * cargo builds into `~/.cache/aib-lease/<seat>/target` on that Mac (`AIB_LEASE_TARGET_ROOT`),
   so a short step is not a cold build every time.
 * **ttl (D6):** no `--ttl` ⇒ p90 × 1.5 of earlier runs of the same steps on the same host from
@@ -100,6 +106,6 @@ aib-lease run --host 100.116.110.31 --owner 043dd \
   command with secret-looking values masked, start / end, secs, rc, user / sys CPU s and max RSS
   (`/usr/bin/time -l`), highest CPU % of its process tree (sampled once a second). Stat lines
   carry a per-run nonce, so a step's own output cannot pass for them. A failed write warns and
-  never changes the exit code.
+  never changes the exit code. The file is created 0600 (masking is best effort).
 * Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
   bad rev · 73 remote unpack · 75 lease not granted (nothing ran).

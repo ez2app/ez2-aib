@@ -55,6 +55,12 @@ fn world() -> World {
          [ -n \"${FAKE_SSH_FAIL:-}\" ] && { echo 'ssh: connect: timed out' >&2; exit 255; }\n\
          while [ \"$1\" != \"--\" ]; do shift; done; shift\n\
          echo \"host=$1\" >> \"$FAKE_LOG\"; shift\n\
+         if [ -n \"${FAKE_SSH_DROP:-}\" ]; then\n\
+           # the connection drops after a few lines: the reader goes away, the remote\n\
+           # side keeps running with a closed stdout (no tty, so no HUP)\n\
+           /bin/sh -c \"$1\" | head -n \"$FAKE_SSH_DROP\" >/dev/null\n\
+           echo 'client_loop: send disconnect: Broken pipe' >&2; exit 255\n\
+         fi\n\
          exec /bin/sh -c \"$1\"\n",
     );
     let aib = t.join("fake-aib");
@@ -95,7 +101,8 @@ fn run(w: &World, extra_env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
         .env("OUT", &w.out)
         .env("AIB_LEASE_HISTORY", &w.history)
         .env_remove("FAKE_LEASE_RC")
-        .env_remove("FAKE_SSH_FAIL");
+        .env_remove("FAKE_SSH_FAIL")
+        .env_remove("FAKE_SSH_DROP");
     for (k, v) in extra_env {
         c.env(k, v);
     }
@@ -164,6 +171,7 @@ fn a_granted_lease_runs_every_step_reports_each_rc_and_releases() {
     let rel = l.find("aib lease release --run-id 043dd-run-").unwrap();
     assert!(acq < rel, "{l}");
     assert!(l.contains("--ttl 600 --pid "), "{l}");
+    assert!(l.contains(" --exclusive"), "measured runs are exclusive: {l}");
     assert!(
         leftovers(&w).is_empty(),
         "remote tree and script removed: {:?}",
@@ -323,4 +331,75 @@ fn usage_errors_are_two() {
     assert_eq!(rc, 2, "no steps: {out}");
     let (rc, _) = run(&w, &[], &["--ttl", "abc", "--step", "true"]);
     assert_eq!(rc, 2);
+}
+
+fn alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn read_pid(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap_or_default().trim().to_string()
+}
+
+fn wait_for(what: &str, f: impl Fn() -> bool) {
+    for _ in 0..300 {
+        if f() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// The step starts two sleeps and writes their pids, then the pid of the remote script's
+/// shell (its parent, or its grandparent under /usr/bin/time).
+const TWO_SLEEPS: &str = "sleep 60 & echo $! > \"$OUT.a\"; sleep 61 & echo $! > \"$OUT.b\"; \
+p=$PPID; case \"$(ps -o comm= -p $p)\" in *time) p=$(ps -o ppid= -p $p | tr -d ' ');; esac; \
+echo $p > \"$OUT.p\"; wait";
+
+/// 2240e L3: the remote script stopped halfway (TERM) ends the step's whole tree, releases
+/// the lease and removes the tree it unpacked.
+#[test]
+fn a_remote_script_stopped_halfway_kills_the_step_tree_and_releases() {
+    let w = world();
+    let out = w.out.clone();
+    let killer = std::thread::spawn(move || {
+        let p = PathBuf::from(format!("{}.p", out.display()));
+        wait_for("the step to start", || !read_pid(&p).is_empty());
+        let s = Command::new("kill")
+            .args(["-TERM", &read_pid(&p)])
+            .status()
+            .unwrap();
+        assert!(s.success());
+    });
+    let (rc, out) = run(&w, &[], &["--step", TWO_SLEEPS]);
+    killer.join().unwrap();
+    assert_ne!(rc, 0, "{out}");
+    assert_ne!(rc, 1, "a stopped run is not a step result: {out}");
+    let a = read_pid(&PathBuf::from(format!("{}.a", w.out.display())));
+    let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
+    wait_for("both sleeps to end", || !alive(&a) && !alive(&b));
+    assert!(log(&w).contains("aib lease release --run-id 043dd-run-"), "{}", log(&w));
+    assert!(leftovers(&w).is_empty(), "{:?}", leftovers(&w));
+}
+
+/// 2240e L2: the connection drops (no tty, no HUP) right after the step header (line 3:
+/// host marker, host line, step header): the beat line fails to write, the
+/// remote script stops the step and releases instead of holding the lease to the end.
+#[test]
+fn a_dropped_connection_stops_the_remote_side_and_releases() {
+    let w = world();
+    let (rc, out) = run(&w, &[("FAKE_SSH_DROP", "3")], &["--step", TWO_SLEEPS]);
+    assert_eq!(rc, 3, "{out}");
+    let a = PathBuf::from(format!("{}.a", w.out.display()));
+    wait_for("the step to start", || !read_pid(&a).is_empty());
+    let a = read_pid(&a);
+    let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
+    wait_for("both sleeps to end", || !alive(&a) && !alive(&b));
+    wait_for("the release", || log(&w).contains("aib lease release --run-id 043dd-run-"));
+    wait_for("the remote tree to go", || leftovers(&w).is_empty());
+    assert_eq!(history(&w)[0]["outcome"], "connect");
 }

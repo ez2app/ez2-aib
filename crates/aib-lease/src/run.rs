@@ -100,6 +100,9 @@ pub struct RunSpec {
     pub ttl_source: String,
     /// Required for a ttl of an hour or more (D6): why it is that long.
     pub long_reason: Option<String>,
+    /// Ask for the lease with `--exclusive` (default): this run is being measured (D5), so
+    /// small `aib test` batches must not run next to it. `--shared` turns it off.
+    pub exclusive: bool,
     pub steps: Vec<String>,
     /// The remote `aib` command (tests point it at a fake).
     pub remote_aib: String,
@@ -209,6 +212,7 @@ pub fn remote_script(spec: &RunSpec) -> String {
     let q = shell_quote;
     let n = spec.steps.len();
     let mark = format!("AIB_LEASE_STAT {}", spec.nonce);
+    let beat = format!("AIB_LEASE_BEAT {}", spec.nonce);
     let mut s = String::new();
     s += "set -uo pipefail\n";
     s += &format!("rid={}\n", q(&spec.rid));
@@ -220,16 +224,21 @@ pub fn remote_script(spec: &RunSpec) -> String {
     s += &format!("echo \"AIB_LEASE_HOST {} $(hostname)\"\n", spec.nonce);
     s += &format!("export PATH=\"{}:$PATH\"\n", spec.remote_path);
     s += &format!(
-        "\"$aib_bin\" lease acquire --owner {} --what {} --run-id \"$rid\" --ttl {} --pid $$\n",
+        "\"$aib_bin\" lease acquire --owner {} --what {} --run-id \"$rid\" --ttl {} --pid $${}\n",
         q(&spec.owner),
         q(&spec.what),
-        spec.ttl
+        spec.ttl,
+        if spec.exclusive { " --exclusive" } else { "" }
     );
     s += "lrc=$?\n";
     s += "if [ \"$lrc\" -ne 0 ]; then echo \"aib-lease: lease not granted (rc $lrc), nothing ran\"; rm -rf \"$d\"; exit 75; fi\n";
     s += "cpid=\n";
     s += "trap 'stop_step; \"$aib_bin\" lease release --run-id \"$rid\" >/dev/null 2>&1; rm -rf \"$d\" \"$d.time\"' EXIT\n";
     s += "trap 'exit 130' HUP INT TERM\n";
+    // 2240e L2: without a tty a dropped ssh sends no HUP; the next write to the closed pipe
+    // is what notices. A beat line every 5 s makes that write happen (a SIGPIPE ignored on
+    // entry cannot be trapped, so the failed echo exits as well).
+    s += "trap 'exit 141' PIPE\n";
     s += "cd \"$d\" || exit 73\n";
     // one cargo target folder per seat per machine (043dd ANS-test-classify, DECISION v1.1):
     // a fresh folder per run would make every cargo step a cold build
@@ -254,7 +263,9 @@ pub fn remote_script(spec: &RunSpec) -> String {
             q(step)
         );
         s += "cpid=$!; peak=0\n";
-        s += "while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${c:-0}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; sleep 1; done\n";
+        s += &format!(
+            "t=0; while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${{c:-0}}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; sleep 1; t=$((t+1)); [ $((t % 5)) -ne 0 ] || echo \"{beat}\" 2>/dev/null || exit 141; done\n"
+        );
         s += "wait \"$cpid\"; r=$?; cpid=; s1=$(date +%s)\n";
         s += "set -- -1 -1 -1; if [ -s \"$d.time\" ]; then set -- $(awk '{for(i=1;i<NF;i++){if($(i+1)==\"user\")u=$i; if($(i+1)==\"sys\")y=$i}} /maximum resident set size/{m=$1} END{printf \"%s %s %s\", (u==\"\"?-1:u), (y==\"\"?-1:y), (m==\"\"?-1:m)}' \"$d.time\"); fi\n";
         s += &format!("echo \"{mark} {k} $s0 $s1 $r $1 $2 $3 $peak\"\n");
@@ -444,6 +455,7 @@ pub fn history_line(
         "ttl": spec.ttl,
         "ttl_source": spec.ttl_source,
         "long_reason": spec.long_reason,
+        "exclusive": spec.exclusive,
         "steps": steps,
     })
 }
@@ -502,15 +514,19 @@ pub fn append_history(path: &Path, line: &Value) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600); // the commands are masked best effort only (2240e N2)
+    }
+    let mut f = o.open(path)?;
     f.write_all(format!("{line}\n").as_bytes())
 }
 
 const USAGE: &str = "usage: aib-lease run --host HOST [--jump HOST] [--repo DIR] [--rev REV] \
-[--ttl SECS [--long REASON]] [--owner SEAT] [--what TEXT] [--step CMD]... [-- CMD ARGS...]\n\
+[--ttl SECS [--long REASON]] [--shared] [--owner SEAT] [--what TEXT] [--step CMD]... [-- CMD ARGS...]\n\
 no --ttl: p90 x 1.5 of the same steps on the same host from history (none: 900 s), at most 1800; \
 --ttl 3600 or more needs --long REASON\n\
 exit: 0 all steps passed, 1 a step failed, 2 usage, 3 ssh, 4 git archive, 73 remote unpack, \
@@ -552,6 +568,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     let mut rev = "HEAD".to_string();
     let mut ttl: Option<u32> = None;
     let mut long_reason = None;
+    let mut exclusive = true;
     let mut owner = std::env::var("AIB_LEASE_OWNER").ok();
     let mut what = None;
     let mut steps = Vec::new();
@@ -586,6 +603,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                 );
             }
             "--long" => long_reason = Some(val()?),
+            "--shared" => exclusive = false,
             "--owner" => owner = Some(val()?),
             "--what" => what = Some(val()?),
             "--step" => steps.push(val()?),
@@ -626,6 +644,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             ttl,
             ttl_source: ttl_source.to_string(),
             long_reason,
+            exclusive,
             steps,
             remote_aib,
             remote_path,
@@ -726,6 +745,7 @@ fn execute(a: &Args) -> Ran {
         }
     };
     let host_mark = format!("AIB_LEASE_HOST {} ", a.spec.nonce);
+    let beat = format!("AIB_LEASE_BEAT {}", a.spec.nonce);
     if let Some(out) = child.stdout.take() {
         let stdout = std::io::stdout();
         for line in BufReader::new(out).lines() {
@@ -734,6 +754,8 @@ fn execute(a: &Args) -> Ran {
                 ran.stats.push(st);
             } else if let Some(h) = line.strip_prefix(&host_mark) {
                 ran.host = Some(h.trim().to_string());
+            } else if line == beat {
+                // the remote side checking that this end is still here
             } else {
                 let mut o = stdout.lock();
                 let _ = writeln!(o, "{line}");
@@ -814,6 +836,7 @@ mod tests {
             ttl: 2400,
             ttl_source: "given".into(),
             long_reason: None,
+            exclusive: true,
             steps: vec!["cargo test -p aibd".into(), "echo 'a b'".into()],
             remote_aib: "aib".into(),
             remote_path: DEFAULT_REMOTE_PATH.into(),
@@ -841,9 +864,19 @@ mod tests {
         let first_step = s.find("bash -c 'cargo test -p aibd'").unwrap();
         assert!(acquire < gate && gate < trap && trap < first_step, "{s}");
         assert!(
-            s.contains("--pid $$"),
-            "the lease is tied to this shell: {s}"
+            s.contains("--pid $$ --exclusive\n"),
+            "the lease is tied to this shell, exclusive by default (2240e L1): {s}"
         );
+        assert!(
+            s.contains("echo \"AIB_LEASE_BEAT 00ff\" 2>/dev/null || exit 141"),
+            "a dropped connection is noticed (2240e L2): {s}"
+        );
+        assert!(s.contains("trap 'exit 141' PIPE"), "{s}");
+        let mut shared = spec();
+        shared.exclusive = false;
+        let s = remote_script(&shared);
+        assert!(s.contains("--pid $$\n") && !s.contains("--exclusive"), "{s}");
+        let s = remote_script(&spec());
         assert!(s.contains("--what 'it'\\''s a test'"), "{s}");
         assert!(s.contains("bash -c 'echo '\\''a b'\\'''"), "{s}");
         assert!(s.contains("echo \"AIB_LEASE_STAT 00ff 2 $s0"), "{s}");
