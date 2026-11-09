@@ -58,6 +58,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-lease"
+version = "0.2.0-preview.4"
+dependencies = [
+ "base64",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-procwatch"
 version = "0.2.0-preview.4"
 dependencies = [
