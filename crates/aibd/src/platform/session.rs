@@ -38,19 +38,24 @@ pub enum Exit {
     Code(i32),
     /// POSIX only: the signal name, e.g. `SIGKILL`. Windows never uses it.
     Signal(String),
+    /// The root is over for us but its status cannot be told: macOS M5 could
+    /// not read it because the root's identity was lost (reaped elsewhere).
+    /// No code and no signal go on the wire (`exit_code: null`), never a made-up
+    /// `-1` (043dd #544 Medium); the stop says why (`root_identity_lost`).
+    Unknown,
 }
 
 impl Exit {
     pub fn code(&self) -> Option<i32> {
         match self {
             Exit::Code(c) => Some(*c),
-            Exit::Signal(_) => None,
+            Exit::Signal(_) | Exit::Unknown => None,
         }
     }
 
     pub fn signal(&self) -> Option<&str> {
         match self {
-            Exit::Code(_) => None,
+            Exit::Code(_) | Exit::Unknown => None,
             Exit::Signal(s) => Some(s),
         }
     }
