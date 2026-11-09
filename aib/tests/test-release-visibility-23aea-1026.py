@@ -77,7 +77,7 @@ class Preflight(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         fast = workflow.index("- name: fast release metadata preflight")
         self.assertLess(fast, workflow.index("- name: install (pip)"))
-        self.assertLess(fast, workflow.index("- name: core safety tests"))
+        self.assertLess(fast, workflow.index("- name: Python suite, sharded"))   # 11-09 S4:原本的 core safety tests 迴圈改成 ci_shard.py
 
 
 class Probe(unittest.TestCase):

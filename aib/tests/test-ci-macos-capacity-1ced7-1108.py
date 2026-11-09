@@ -179,19 +179,19 @@ def job_text(name):
 
 
 def field(job, key):
-    return re.search(r"(?m)^    %s: (.*)$" % key if key != "RUN_CELL" else r"(?m)^      RUN_CELL: (.*)$",
+    return re.search(r"(?m)^      %s: (.*)$" % key if key in ("RUN_CELL", "YIELDED") else r"(?m)^    %s: (.*)$" % key,
                      job_text(job)).group(1)
 
 
 def ctx_for(event="pull_request", action="synchronize", draft=False, base="main", head="feat/x", labels=(),
-            stale="false", os="macos-latest", python="3.12", changes=None, number=7, docs_only="false", rust_only="false", light=None):
+            label=None, stale="false", os="macos-latest", python="3.12", changes=None, number=7, docs_only="false", rust_only="false", light=None):
     if light is None:  # 照 ci.yml docs job:light = docs_only 或 rust_only(#538)
         light = "true" if "true" in (docs_only, rust_only) else "false"
     pr = {"number": number, "draft": draft, "labels": [{"name": n} for n in labels], "base": {"ref": base}}
     gh = {"event_name": event, "workflow": "ci", "run_id": 99, "sha": "abc", "ref": "refs/heads/main",
           "head_ref": head if event == "pull_request" else "", "base_ref": base if event == "pull_request" else "",
           "event": {"action": action, "pull_request": pr if event == "pull_request" else None,
-                    "changes": changes}}
+                    "changes": changes, "label": {"name": label} if label else None}}
     return {"github": gh, "matrix": {"os": os, "python": python},
             "needs": {"tip": {"result": "success", "outputs": {"stale": stale}},
                       "docs": {"result": "success", "outputs": {"docs_only": docs_only, "rust_only": rust_only,
@@ -246,6 +246,33 @@ class MacosCells(unittest.TestCase):
         self.assert_cells(set(self.SMOKE_MAC), True, draft=True, labels=("full-ci",))
         self.assert_cells(set(self.SMOKE_MAC), True, base="other", labels=("full-ci",), head="feat/y")
 
+    LABELLED = {"action": "labeled", "label": "in-integ", "labels": ("in-integ",)}
+
+    def test_only_the_in_integ_labelling_run_skips_macos(self):
+        # 11-09 S2(bb7dc #572 第 1 點):只有「貼 in-integ」觸發的那輪不跑 macOS;ubuntu 照跑
+        for kw in ({}, {"labels": ("full-ci", "in-integ")}, {"draft": True}):
+            with self.subTest(kw=kw):
+                kw = {**self.LABELLED, **kw}
+                self.assert_cells(set(), False, **kw)
+                for py in self.SMOKE_MAC:
+                    self.assertEqual(cell("smoke", os="ubuntu-latest", python=py, **kw)[1], True)
+                self.assertEqual(cell("fresh-machine", os="ubuntu-latest", **kw), ("ubuntu-latest", True))
+
+    def test_the_label_left_on_a_pr_changes_nothing_afterwards(self):
+        # 貼標後推新頭 / reopened / 貼別的標籤:跟沒貼一樣(標籤留著也不壓 macOS)
+        on = ("in-integ",)
+        self.assert_cells({"3.12"}, False, labels=on)                                    # synchronize
+        self.assert_cells({"3.12"}, False, labels=on, action="reopened")
+        self.assert_cells({"3.12"}, False, labels=on, action="ready_for_review")
+        self.assert_cells(set(self.SMOKE_MAC), True, labels=("full-ci",) + on, action="labeled", label="full-ci")
+        self.assert_cells(set(self.SMOKE_MAC), True, event="push")
+
+    def test_integration_and_release_prs_ignore_in_integ(self):
+        for h in ("int/x", "release/v0.2.1"):
+            with self.subTest(h=h):
+                self.assert_cells(set(self.SMOKE_MAC), True, head=h, **self.LABELLED)
+                self.assert_cells(set(self.SMOKE_MAC), True, head=h, labels=("in-integ",))
+
     def test_int_and_release_prs_run_everything_when_ready(self):
         for h in ("int/x", "release/v0.1.70"):
             with self.subTest(h=h):
@@ -297,9 +324,11 @@ def fired(job, **kw):
     """這個情境下,沒跑的格子會印哪幾步(只看帶 if 的說明步驟)。"""
     c = ctx_for(**kw)
     run = truthy(ev(field(job, "RUN_CELL"), c))
-    c["env"] = {"RUN_CELL": "true" if run else "false"}
+    c["env"] = {"RUN_CELL": "true" if run else "false",
+                "YIELDED": "true" if truthy(ev(field(job, "YIELDED"), c)) else "false"}
     return [n for n, cond in steps(job)
-            if cond and ("RUN_CELL != 'true'" in cond or cond == "needs.docs.outputs.light == 'true'")
+            if cond and ("RUN_CELL != 'true'" in cond or "YIELDED == 'true'" in cond
+                         or cond == "needs.docs.outputs.light == 'true'")
             and truthy(ev(cond, c))]
 
 
@@ -330,6 +359,25 @@ class SkipMessages(unittest.TestCase):
                                  ("smoke", "ubuntu-latest", "3.12")):
                 with self.subTest(light=light, kw=kw, job=job, os=os_, py=py):
                     self.assertEqual(fired(job, os=os_, python=py, **light, **kw), [self.DOCS])
+
+    YIELD = "macOS cell yielded to the integration PR (not a verdict)"
+
+    def test_the_labelling_run_says_not_a_verdict_and_never_green(self):
+        lab = {"action": "labeled", "label": "in-integ", "labels": ("in-integ",)}
+        for job, py in (("fresh-machine", "3.12"), ("smoke", "3.12"), ("smoke", "3.9")):
+            with self.subTest(job=job, py=py):
+                self.assertEqual(fired(job, python=py, **lab), [self.YIELD])
+                # ubuntu 格、不是那一下、整合 PR:都不印
+                self.assertEqual(fired(job, os="ubuntu-latest", python=py, **lab), [])
+                self.assertNotIn(self.YIELD, fired(job, python=py, labels=("in-integ",)))
+                self.assertNotIn(self.YIELD, fired(job, python=py, head="int/x", **lab))
+        # 只改文件的 PR:照舊只印「只改文件」
+        self.assertEqual(fired("smoke", python="3.12", light="true", **lab), [self.DOCS])
+        # 那一步一定 exit 1(判紅,不是綠的說明)
+        for job in ("smoke", "fresh-machine"):
+            t = job_text(job)
+            i = t.index("- name: " + self.YIELD)
+            self.assertIn("exit 1", t[i:i + 600], job)
 
     def test_cells_that_run_print_no_skip_message(self):
         self.assertEqual(fired("smoke", python="3.12"), [])
