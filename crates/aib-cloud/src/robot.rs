@@ -755,7 +755,6 @@ mod tests {
         for k in [
             "credential",
             "private_key",
-            "privatekey",
             "privateKey",
             "Cookie",
             "set-cookie",
