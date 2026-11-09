@@ -93,7 +93,9 @@ impl SessionTree {
     /// root), so the caller can stop the same identity again later (a9136 /
     /// a63ab #555: aibd's shutdown sweep). `None` = nothing held (nothing
     /// started, confirmed gone, or the root never got into its Job).
-    pub fn spawn_or_leftover(spec: &Spec) -> Result<SessionTree, (SpawnError, Option<Leftover>)> {
+    pub fn spawn_or_leftover(
+        spec: &Spec,
+    ) -> Result<SessionTree, (SpawnError, Option<Box<Leftover>>)> {
         Self::spawn_keep(
             spec,
             |pid, _| Process::open(pid),
@@ -119,7 +121,7 @@ impl SessionTree {
         open: impl FnOnce(u32, &Job) -> Result<Process, SysError>,
         terminate: impl FnMut(&Job) -> Result<(), SysError>,
         limit: Duration,
-    ) -> Result<SessionTree, (SpawnError, Option<Leftover>)> {
+    ) -> Result<SessionTree, (SpawnError, Option<Box<Leftover>>)> {
         let (program, args) = spec
             .argv
             .split_first()
@@ -188,7 +190,7 @@ impl SessionTree {
                         pid,
                         start,
                     };
-                    return Err((SpawnError::Spawn(e), Some(left)));
+                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));
                 }
                 drop(job); // only now; KILL_ON_JOB_CLOSE stays the backstop
                 return Err((SpawnError::Spawn(e), None));

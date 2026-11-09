@@ -143,7 +143,7 @@ jobs:
             a_failed_root_open_kills_and_confirms_the_whole_tree
           k2 '                    Ok(k) if k.all_gone() => e,' '                    Ok(_) => e, // knife: trust any report' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
-          k2 '                    return Err((SpawnError::Spawn(e), Some(left)));' \
+          k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
       - name: aibd Windows session adapter knives (Windows)
@@ -167,7 +167,7 @@ jobs:
           k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    std::thread::sleep(timeout.max(IDLE_MAX)); // knife: unbounded' \
             an_unanswered_root_wait_pauses_before_none_and_is_bounded
           # a9136 #555 Medium: failed starts not confirmed gone are kept and swept / listed at shutdown
-          k '        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(l),' \
+          k '        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(*l),' \
             '        (Some(_), Some(l)) => drop(l), // knife: not kept' \
             a_kept_failed_start_is_stopped_by_the_shutdown_sweep
           k '        (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),' \

@@ -202,9 +202,9 @@ static UNHELD: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// Keep what a failed start may have left running (`left_running` is what the
 /// API reports and what keeps the slot).
 #[doc(hidden)]
-pub fn keep(left_running: Option<u32>, left: Option<Leftover>) {
+pub fn keep(left_running: Option<u32>, left: Option<Box<Leftover>>) {
     match (left_running, left) {
-        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(l),
+        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(*l),
         (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),
         // confirmed gone: dropping it closes its (empty) Job
         (None, _) => {}
@@ -310,7 +310,7 @@ mod tests {
             .filter_map(|m| Process::open(m.pid).ok())
             .collect();
         assert!(held.len() >= 2, "root and ping not both held");
-        keep(Some(root), Some(Leftover::from_tree_for_test(t)));
+        keep(Some(root), Some(Box::new(Leftover::from_tree_for_test(t))));
         // kept = still running until the sweep (a drop would close its Job)
         assert!(
             held.iter()
