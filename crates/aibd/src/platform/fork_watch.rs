@@ -11,7 +11,12 @@
 //! the moment it is recorded, while it is still alive. That is what lets a
 //! later pass link a grandchild re-parented to launchd back to a creator
 //! that has since exited. A creator that exits before it is ever recorded
-//! cannot be linked (stated blind spot).
+//! cannot be linked (stated blind spot). Nor can a process that execs after
+//! its creator exited: its `p_puniqueid` becomes launchd's (1), measured 10/10
+//! on macOS 15.7.9 (`exec_after_creator_exit`, ADR 0004). With the fork watch
+//! alone, a short-lived middle process was missed in about 1 run in 3 under a
+//! parallel test load. So a process that is already gone (ESRCH) when it is
+//! first read says nothing about its children.
 //!
 //! Level: VERIFIED-mac for the shapes in `tests/tree.rs`. Whether every
 //! short-lived descendant and every `posix_spawn` is seen is **pending

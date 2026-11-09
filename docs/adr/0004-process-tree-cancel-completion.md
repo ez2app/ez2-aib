@@ -168,7 +168,13 @@ and the "periodic scans cost CPU" consequence.
   the call lives in the `aib-sys` crate, see ADR 0005 Consequences).
   - Observation, not yet a guarantee: on macOS 15.7.9, after a process was re-parented to
     launchd its `p_puniqueid` (from `proc_pidinfo` flavor `PROC_PIDUNIQIDENTIFIERINFO`)
-    still held the original parent's `p_uniqueid` in 3 of 3 PoC runs. That unique ids are
+    still held the original parent's `p_uniqueid` in 3 of 3 PoC runs. **Corrected
+    2026-11-08 (a9136):** that holds only while the process does not exec again. A
+    process that execs *after* its creator exited gets launchd's id (1) as
+    `p_puniqueid` (10 of 10 runs; 10 of 10 kept the creator when the exec came first).
+    `p_uniqueid` itself does not change. This is the `exec_after_creator_exit` blind
+    spot (see "Update 2026-11-09 (sessions preview.2 on macOS)", the slot), pinned by
+    `crates/aib-sys/tests/macos.rs`. That unique ids are
     not reused is an XNU implementation property we rely on, **not** a documented
     contract. Both are hypotheses until the fixture and a real-machine run confirm them,
     and they are re-checked on every major macOS version (capability table; versions not
