@@ -168,7 +168,12 @@ fn an_exclusive_acquire_waits_for_a_running_insert() {
             ..AcquireArgs::default()
         },
     );
-    assert_eq!((o.rc, result(&o)), (RC_HELD, "insert_running"), "{:?}", o.out);
+    assert_eq!(
+        (o.rc, result(&o)),
+        (RC_HELD, "insert_running"),
+        "{:?}",
+        o.out
+    );
     assert_eq!(o.out["insert"]["run_id"], "short-1");
     // a shared one may come next to it
     let o = acquire(
@@ -247,7 +252,10 @@ fn no_holder_means_take_the_lease_itself() {
     assert_eq!((o.rc, result(&o)), (RC_HELD, "no_long_holder"));
     long(&ps, &p, false);
     p.kill(LONG_PID);
-    assert_eq!(result(&ins(&ps, &p, T0, "short-1", SHORT_PID)), "no_long_holder");
+    assert_eq!(
+        result(&ins(&ps, &p, T0, "short-1", SHORT_PID)),
+        "no_long_holder"
+    );
 }
 
 #[test]

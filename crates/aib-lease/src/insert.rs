@@ -136,7 +136,11 @@ pub fn insert_acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &InsertArgs) ->
     let Some(cur) = cur.filter(|c| !is_expired(c, now, p)) else {
         return deny("no_long_holder", json!({}));
     };
-    if cur.get("exclusive").and_then(Value::as_bool).unwrap_or(false) {
+    if cur
+        .get("exclusive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return deny("holder_exclusive", json!({"holder": holder_view(&cur)}));
     }
     if let Some(e) = queue_live(paths, now, p)
