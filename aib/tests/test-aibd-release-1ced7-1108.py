@@ -218,6 +218,7 @@ class Docs(unittest.TestCase):
     def test_d6_install_and_notes_follow_the_workspace_version(self):
         # aibd-release.yml drafts from docs/aibd/RELEASE-NOTES-${VERSION}.md and stops without it
         self.assertTrue((ROOT / "docs" / "aibd" / ("RELEASE-NOTES-%s.md" % CUR)).exists(), CUR)
+        self.assertIn("RELEASE-NOTES-%s.md" % CUR, NOTES, "新版說明檔要加進 NOTES(和 docs_only.py DOC_EXCLUDE)")
         for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-%s.md" % CUR):
             with self.subTest(f=f):
                 sh = block(f, "sh")
@@ -229,7 +230,9 @@ class Docs(unittest.TestCase):
 
 # INSTALL follows the workspace version; each release-notes file pins the version in its own name
 CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
-NOTES = tuple(sorted({"RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-%s.md" % CUR}))
+# 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
+# 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
+NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md")
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
 
 
