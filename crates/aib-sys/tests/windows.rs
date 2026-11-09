@@ -22,6 +22,8 @@ const MARKER: &str = "AIB_SYS_MARKER";
 const OUT: &str = "AIB_SYS_OUT";
 /// `CREATE_BREAKAWAY_FROM_JOB`.
 const BREAKAWAY: u32 = 0x0100_0000;
+/// `CREATE_NEW_CONSOLE`.
+const NEW_CONSOLE: u32 = 0x0000_0010;
 
 fn helper_cmd(mode: &str) -> Command {
     let mut c = Command::new(std::env::current_exe().unwrap());
@@ -117,6 +119,48 @@ fn helper() {
             std::thread::sleep(Duration::from_secs(120));
         }
         // J0 allows no breakaway: a child asking for it must fail loudly
+        // the ctrl_break refusals, each in this helper's own console (see
+        // `in_own_console`): a send that a knife lets through cannot reach
+        // the test runner or the CI shell
+        "break-grandchild" => {
+            let job = Job::new().unwrap();
+            let (mut cmd, out) = reporting("tree");
+            let mut mid = job.spawn(&mut cmd).unwrap();
+            let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
+            let _reap = Reap::open(gpid);
+            let g = job
+                .members()
+                .unwrap()
+                .into_iter()
+                .find(|m| m.pid == gpid)
+                .expect("grandchild is a member");
+            let r = job.ctrl_break(g);
+            say(&format!("BREAK {r:?}"));
+            job.terminate(1).unwrap();
+            let _ = job.wait_empty(Duration::from_secs(10));
+            let _ = mid.wait();
+        }
+        "break-stale" => {
+            let job = Job::new().unwrap();
+            let mut root = None;
+            let mut c = job
+                .spawn_recorded(helper_cmd("none-such").stdout(Stdio::null()), |m| {
+                    root = Some(m);
+                    Ok(())
+                })
+                .unwrap();
+            let root = root.unwrap();
+            let other = Member {
+                created_100ns: root.created_100ns + 1,
+                ..root
+            };
+            let foreign = job.ctrl_break(other);
+            c.wait().unwrap(); // the helper exits at once in this mode
+            let emptied = job.wait_empty(Duration::from_secs(10)).unwrap();
+            // exited but still openable while std holds the handle
+            let exited = job.ctrl_break(root);
+            say(&format!("BREAK {foreign:?} {emptied} {exited:?}"));
+        }
         "j0-breakaway" => {
             let _j0 = Job::adopt_current().unwrap();
             match helper_cmd("sleep")
@@ -417,51 +461,40 @@ fn ctrl_break_only_reaches_members() {
     );
 }
 
+/// Run a `break-*` helper in its own console and return its `BREAK` report.
+///
+/// Why (a63ab / bb7dc #554, 043dd 11-09): `GenerateConsoleCtrlEvent` with a
+/// pid that is not a live process-group id is delivered to EVERY process on
+/// the console. When a knife removes a refusal, the send used to hit cargo,
+/// the test runner and the CI shell: the whole knife step ended 0xC000013A
+/// (CTRL_C_EXIT) and the later knives never ran. In its own console only the
+/// helper and its tree can be hit; a helper killed that way never reports,
+/// which is a red test, as it should be.
+fn in_own_console(mode: &str) -> String {
+    let (mut cmd, out) = reporting(mode);
+    let mut h = cmd.creation_flags(NEW_CONSOLE).spawn().unwrap();
+    let _reap = Reap::open(h.id());
+    let r = read_tagged(&mut h, &out, "BREAK ");
+    let _ = h.wait();
+    r
+}
+
 /// A member that is in the Job but was not started by it (a grandchild:
 /// its pid is not a group id we created) is refused before any send.
 #[test]
 fn ctrl_break_refuses_a_member_it_did_not_start() {
-    let job = Job::new().unwrap();
-    let (mut cmd, out) = reporting("tree");
-    let mut mid = job.spawn(&mut cmd).unwrap();
-    let gpid: u32 = read_tagged(&mut mid, &out, "GPID ").parse().unwrap();
-    let _reap = Reap::open(gpid);
-    let g = job
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.pid == gpid)
-        .expect("grandchild is a member");
-    assert_eq!(job.ctrl_break(g), Err(SysError::BadPid));
-    job.terminate(1).unwrap();
-    assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
-    let _ = mid.wait();
+    assert_eq!(in_own_console("break-grandchild"), "Err(BadPid)");
 }
 
 /// #492 review point 2: the identity is fixed before sending. A root this
 /// Job started but with the wrong creation time is not ours; a root that
 /// has exited is refused (its pid, the group id, may be reused), so nothing
 /// is sent and the caller terminates.
+/// (Run in its own console, see [`in_own_console`].)
 #[test]
 fn ctrl_break_refuses_a_stale_or_foreign_identity() {
-    let job = Job::new().unwrap();
-    let mut root = None;
-    let mut c = job
-        .spawn_recorded(helper_cmd("none-such").stdout(Stdio::null()), |m| {
-            root = Some(m);
-            Ok(())
-        })
-        .unwrap();
-    let root = root.unwrap();
-    let other = Member {
-        created_100ns: root.created_100ns + 1,
-        ..root
-    };
-    assert_eq!(job.ctrl_break(other), Err(SysError::BadPid));
-    c.wait().unwrap(); // the helper exits at once in this mode
-    assert!(job.wait_empty(Duration::from_secs(10)).unwrap());
-    // exited but still openable while std holds the handle; refused either way
-    assert!(matches!(job.ctrl_break(root), Err(SysError::Gone)));
+    // foreign identity refused; the Job emptied; the exited root refused
+    assert_eq!(in_own_console("break-stale"), "Err(BadPid) true Err(Gone)");
 }
 
 #[test]
