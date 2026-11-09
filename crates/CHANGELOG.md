@@ -16,6 +16,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   - Unlisted env names answer `400 env_not_allowed`.
   - The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) still applies and cannot be listed.
   - `signer` is recorded, not checked yet (M2).
+  - Only recognised native formats run (Mach-O / ELF / PE magic).
+  - Every refusal, including deny-listed env names and a relative `argv[0]`, writes a
+    `session.spawn_rejected` audit event (aggregate `security`) plus a warn line. These are
+    folded per token + code per minute. The folded count is written by the new operation
+    timer `session.reject_flush` or at shutdown.
   - Not a defence against a same-user process: ADR 0003 "Update 2026-11-09" lists the known
     gaps.
 - `aib-fixture-tree smoke-tree` / `smoke-wait`: a portable native program for the sessions smoke.

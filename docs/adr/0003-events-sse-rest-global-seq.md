@@ -142,6 +142,17 @@ Four rulings (a63ab 11-09 19:12 / 19:14 / 19:15, Andy approved 19:1x):
    is followed. M1 records `signer` and does not check it. From M2 the signer decides, so a
    versioned path change does not matter.
 
+A file counts as native only if its magic number is recognised: Mach-O, ELF or PE.
+Anything else is a script and is refused.
+
+Every refusal is audited, including the first layer's (`validate`: deny-listed env names,
+a relative `argv[0]`). The audit writes the event `session.spawn_rejected` (aggregate type
+`security`; payload exactly `code`, `program`, `token_id`, `at`, `folded_before`) and one warn
+line. `program` is a file name cut to 64 characters, with control characters escaped.
+Records are folded per token + code per minute. The folded count is written when the window
+closes (operation timer `session.reject_flush`) or at shutdown. Only a crash during the
+window loses it.
+
 Env names are on the same file's `env` list. Anything else answers `env_not_allowed`.
 The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) cannot be listed. Refusals happen
 before anything starts. They take no slot, write no event, and name the setting, never a
