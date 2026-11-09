@@ -1458,10 +1458,18 @@ mod tests {
     /// filter is on; elsewhere it stays off.
     #[test]
     fn a_root_started_here_turns_the_coalition_filter_on_only_on_macos() {
-        let mut c = std::process::Command::new("/bin/sleep")
-            .arg("5")
-            .spawn()
-            .unwrap();
+        // a program that waits ~5 s on each platform (no /bin/sleep on Windows)
+        let mut cmd = if cfg!(windows) {
+            let mut w = std::process::Command::new("cmd");
+            w.args(["/C", "ping", "-n", "6", "127.0.0.1"])
+                .stdout(std::process::Stdio::null());
+            w
+        } else {
+            let mut u = std::process::Command::new("/bin/sleep");
+            u.arg("5");
+            u
+        };
+        let mut c = cmd.spawn().unwrap();
         let got = session_coalition(coalition_of(c.id()));
         let _ = c.kill();
         let _ = c.wait();
