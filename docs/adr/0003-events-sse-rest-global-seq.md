@@ -145,5 +145,10 @@ Four rulings (a63ab 11-09 19:12 / 19:14 / 19:15, Andy approved 19:1x):
 Env names are on the same file's `env` list. Anything else answers `env_not_allowed`.
 The fixed deny list (`AIBD_*`, `DYLD_*`, `LD_*`, `PATH`) cannot be listed. Refusals happen
 before anything starts. They take no slot, write no event, and name the setting, never a
-value from the request. Gaps that remain: a file swapped between the check and exec (P8)
-is not caught.
+value from the request. Gaps that remain:
+- A file swapped between the check and exec (P8) is not caught.
+- **The child inherits aibd's whole environment, minus `AIBD_*`** (`platform::session::child_env`).
+  That includes any other variable in aibd's environment, API keys among them. The caller
+  cannot add to it beyond the `env` list, and cannot pass `PATH`. Narrowing it to a fixed
+  list (PATH / HOME / USER / LOGNAME / LANG / TMPDIR, plus what claude / codex are measured
+  to need) is a separate change after preview.3 (a63ab 11-09 19:55).
