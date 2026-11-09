@@ -484,14 +484,18 @@ class Markdown(unittest.TestCase):
                  prepr.item(10, "timeout without proc_group", "warn", "a.py:3 uses | pipes\nand lines"),
                  prepr.item(2, "aib test --changed", "fail", "red", rc=1)]
         md = prepr.markdown("origin/main", ["a.py"], items, True)
-        self.assertIn("**FAILED**, 1 warning(s)", md)
+        self.assertIn("**FAILED**, 1 not run, 1 warning(s) (not_run and warn are not green)", md)
         self.assertIn("| 1 | rust fmt | pass | 0 | workspace |", md)
         self.assertIn("| 1 | cargo test | not_run |  | needs --run-tests (take the lease first); workspace |", md)
         self.assertIn("| 2 | aib test --changed | fail | 1 | red |", md)
         self.assertIn("uses \\| pipes and lines |", md)   # one row: no line break, pipe escaped
         self.assertEqual(len([l for l in md.splitlines() if l.startswith("| ")]), 1 + len(items))
         self.assertIn("not_run and warn are not green.", md)
-        self.assertIn("**no failures**", prepr.markdown("b", None, items[:2], False))
+        # 1ced7 #558 M1: what did not run is in the first line, never a bare "no failures"
+        first = prepr.markdown("b", None, items[:2], False).splitlines()[0]
+        self.assertIn("**not all run**, 1 not run (not_run and warn are not green)", first)
+        self.assertNotIn("no failures", first)
+        self.assertIn("**no failures**", prepr.markdown("b", None, items[:1], False))
 
     def test_md_and_json_cannot_be_asked_together(self):
         with tempfile.TemporaryFile("w+") as err:

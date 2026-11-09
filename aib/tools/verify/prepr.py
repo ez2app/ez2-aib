@@ -535,11 +535,15 @@ def md_cell(text):
 
 def markdown(base, files, items, failed):
     """The summary to paste into a PR description (DECISION-14 #2): one row per item with its real exit code.
-    It says the same as the plain output and never more: not_run / warn stay visible, nothing is folded."""
+    It says less than the plain output (no output tail, version or command), never more. The first line counts
+    what did not run as plainly as what failed (1ced7 #558 M1): "no failures" alone would read as all green."""
     warned = sum(i["status"] == "warn" for i in items)
-    out = ["`aib prepr` (base `%s`, %s changed file(s)): **%s**%s" % (
-        base, "?" if files is None else len(files), "FAILED" if failed else "no failures",
-        ", %d warning(s)" % warned if warned else ""), "",
+    not_run = sum(i["status"] == "not_run" for i in items)
+    verdict = "FAILED" if failed else "not all run" if not_run else "no failures"
+    counts = "".join((", %d not run" % not_run if not_run else "", ", %d warning(s)" % warned if warned else ""))
+    out = ["`aib prepr` (base %s, %s changed file(s)): **%s**%s%s" % (
+        md_cell(base), "?" if files is None else len(files), verdict, counts,
+        " (not_run and warn are not green)" if not_run or warned else ""), "",
         "| # | item | status | rc | reason / scope |", "|---|---|---|---|---|"]
     for i in items:
         why = "; ".join(x for x in (i["reason"], i["scope"]) if x)
