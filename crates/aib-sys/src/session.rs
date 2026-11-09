@@ -85,7 +85,16 @@ pub struct SessionTree {
 impl SessionTree {
     /// Start `spec` inside a new Job. stdin / stdout / stderr are null.
     pub fn spawn(spec: &Spec) -> Result<SessionTree, SpawnError> {
-        Self::spawn_with(
+        Self::spawn_or_leftover(spec).map_err(|(e, _)| e)
+    }
+
+    /// [`spawn`](Self::spawn), and when the failure is `NotReaped` with the
+    /// tree still in its Job, that tree as a [`Leftover`] (Job + unwaited
+    /// root), so the caller can stop the same identity again later (a9136 /
+    /// a63ab #555: aibd's shutdown sweep). `None` = nothing held (nothing
+    /// started, confirmed gone, or the root never got into its Job).
+    pub fn spawn_or_leftover(spec: &Spec) -> Result<SessionTree, (SpawnError, Option<Leftover>)> {
+        Self::spawn_keep(
             spec,
             |pid, _| Process::open(pid),
             |j| j.terminate(1),
@@ -95,14 +104,27 @@ impl SessionTree {
 
     /// [`spawn`](Self::spawn) with the root open and the Job terminate
     /// injectable (tests) and the confirm limit.
+    #[cfg(test)]
     pub(crate) fn spawn_with(
         spec: &Spec,
         open: impl FnOnce(u32, &Job) -> Result<Process, SysError>,
         terminate: impl FnMut(&Job) -> Result<(), SysError>,
         limit: Duration,
     ) -> Result<SessionTree, SpawnError> {
-        let (program, args) = spec.argv.split_first().ok_or(SpawnError::NoProgram)?;
-        let job = Job::new().map_err(SpawnError::Job)?;
+        Self::spawn_keep(spec, open, terminate, limit).map_err(|(e, _)| e)
+    }
+
+    pub(crate) fn spawn_keep(
+        spec: &Spec,
+        open: impl FnOnce(u32, &Job) -> Result<Process, SysError>,
+        terminate: impl FnMut(&Job) -> Result<(), SysError>,
+        limit: Duration,
+    ) -> Result<SessionTree, (SpawnError, Option<Leftover>)> {
+        let (program, args) = spec
+            .argv
+            .split_first()
+            .ok_or((SpawnError::NoProgram, None))?;
+        let job = Job::new().map_err(|e| (SpawnError::Job(e), None))?;
         let mut cmd = Command::new(program);
         cmd.args(args)
             .stdin(Stdio::null())
@@ -117,7 +139,10 @@ impl SessionTree {
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
-        let mut child = job.spawn(&mut cmd).map_err(SpawnError::Spawn)?;
+        // a NotReaped here = the root never got into the Job: nothing to hold
+        let mut child = job
+            .spawn(&mut cmd)
+            .map_err(|e| (SpawnError::Spawn(e), None))?;
         let pid = child.id();
         // the unwaited `child` pins the pid, so this handle is the root's;
         // it stays valid (and readable) after the root exits
@@ -130,6 +155,12 @@ impl SessionTree {
                 // (the Job count drops before the handles do: 1ced7 #543 CI).
                 // Anything unconfirmed is NotReaped and keeps its slot
                 // (definition #11).
+                // its start time, read before the kill (the Job may stop
+                // listing it), for the shutdown report
+                let start = job
+                    .members()
+                    .ok()
+                    .and_then(|m| m.iter().find(|m| m.pid == pid).map(|m| m.created_100ns));
                 let mut term = terminate;
                 let k = kill_tree(
                     &mut Ops {
@@ -147,8 +178,20 @@ impl SessionTree {
                         cause: Box::new(e),
                     },
                 };
+                if let SysError::NotReaped { .. } = e {
+                    // keep the Job and the unwaited root: the caller stops
+                    // this same identity again (dropping it closes the Job,
+                    // KILL_ON_JOB_CLOSE)
+                    let left = Leftover {
+                        job,
+                        child,
+                        pid,
+                        start,
+                    };
+                    return Err((SpawnError::Spawn(e), Some(left)));
+                }
                 drop(job); // only now; KILL_ON_JOB_CLOSE stays the backstop
-                return Err(SpawnError::Spawn(e));
+                return Err((SpawnError::Spawn(e), None));
             }
         };
         Ok(SessionTree {
@@ -204,6 +247,54 @@ impl SessionTree {
 
 // Dropping a SessionTree drops its Job: KILL_ON_JOB_CLOSE kills whatever is
 // left, so a session can never outlive the struct that owns it.
+
+/// A start that failed `NotReaped` with its tree still in its Job
+/// ([`SessionTree::spawn_or_leftover`]): the Job and the unwaited root (which
+/// pins the pid), so a later stop hits this identity and no other. Dropping
+/// it closes the Job (KILL_ON_JOB_CLOSE).
+#[derive(Debug)]
+pub struct Leftover {
+    job: Job,
+    child: Child,
+    pid: u32,
+    start: Option<u64>,
+}
+
+impl Leftover {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The root's creation time (FILETIME 100 ns) if it could be read.
+    pub fn start_100ns(&self) -> Option<u64> {
+        self.start
+    }
+
+    /// The same proof as [`SessionTree::kill`].
+    pub fn kill(&mut self, limit: Duration) -> Result<KillReport, SysError> {
+        kill_tree(
+            &mut Ops {
+                job: &self.job,
+                child: &mut self.child,
+                pid: self.pid,
+                term: None,
+            },
+            limit,
+        )
+    }
+
+    /// Test hook (aibd): hold a running tree as if its start had failed.
+    #[doc(hidden)]
+    pub fn from_tree_for_test(t: SessionTree) -> Leftover {
+        let start = t.root.created_100ns().ok();
+        Leftover {
+            job: t.job,
+            child: t.child,
+            pid: t.pid,
+            start,
+        }
+    }
+}
 
 /// The Windows calls behind [`crate::settle::kill_tree`].
 /// Terminates a session Job (injectable in tests).
@@ -355,7 +446,7 @@ mod tests {
     fn a_failed_root_open_whose_child_outlives_the_root_is_not_reaped() {
         let held = RefCell::new(Vec::new());
         let root_pid = RefCell::new(0u32);
-        let r = SessionTree::spawn_with(
+        let r = SessionTree::spawn_keep(
             &tree_spec(),
             |pid, j| {
                 *root_pid.borrow_mut() = pid;
@@ -369,8 +460,25 @@ mod tests {
             },
             Duration::from_millis(800),
         );
+        let Err((e, left)) = r else {
+            panic!("must not start")
+        };
+        // the tree is handed back, and a later stop of it confirms it gone
+        let mut left = left.expect("NotReaped with its Job must hand the tree back");
+        assert_eq!(left.pid(), *root_pid.borrow());
+        assert!(left.start_100ns().is_some(), "start time not read");
+        let k = left.kill(Duration::from_secs(5)).expect("kill");
+        let gone: Vec<bool> = held
+            .borrow()
+            .iter()
+            .map(|p| p.wait(Duration::ZERO) == Ok(true))
+            .collect();
         cleanup(&held);
-        let Err(e) = r else { panic!("must not start") };
+        assert!(k.all_gone(), "{k:?}");
+        assert!(
+            gone.iter().all(|g| *g),
+            "a member outlived the later stop: {gone:?}"
+        );
         assert!(e.may_have_left_running(), "slot released: {e:?}");
         match e {
             SpawnError::Spawn(SysError::NotReaped { pid, .. }) => {

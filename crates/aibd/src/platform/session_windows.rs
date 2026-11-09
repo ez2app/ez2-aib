@@ -21,11 +21,11 @@
 //!
 //! UNVERIFIED on a real machine until the stage-0 laptop run (a63ab plan).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aib_sys::job::Process;
-use aib_sys::session::{KillReport, SessionTree, SpawnError};
+use aib_sys::session::{KillReport, Leftover, SessionTree, SpawnError};
 use aib_sys::SysError;
 
 use super::session::{
@@ -182,15 +182,163 @@ pub fn spawn(spec: &Spec, _lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runn
         env: child_env(spec, std::env::vars_os()),
         clear_env: true,
     };
-    SessionTree::spawn(&sys)
+    SessionTree::spawn_or_leftover(&sys)
         .map(|t| Box::new(WinSession(t)) as Box<dyn Running>)
-        .map_err(|e| spawn_fail(&e))
+        .map_err(|(e, left)| {
+            let f = spawn_fail(&e);
+            keep(f.left_running, left);
+            f
+        })
+}
+
+/// Failed starts not confirmed gone, with their Job (a9136 / a63ab #555,
+/// the Windows side of #544 D4): stopped again when aibd ends.
+static LEFTOVERS: Mutex<Vec<Leftover>> = Mutex::new(Vec::new());
+
+/// Failed starts not confirmed gone whose root never got into a Job: nothing
+/// to stop them with, so the shutdown sweep can only list them (never silent).
+static UNHELD: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Keep what a failed start may have left running (`left_running` is what the
+/// API reports and what keeps the slot).
+#[doc(hidden)]
+pub fn keep(left_running: Option<u32>, left: Option<Leftover>) {
+    match (left_running, left) {
+        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(l),
+        (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),
+        // confirmed gone: dropping it closes its (empty) Job
+        (None, _) => {}
+    }
+}
+
+/// Stop every kept tree once more (aibd is ending), all at once and all
+/// within ONE absolute `deadline` (as `session_unix::stop_leftovers`, #544
+/// D4): each gets its own thread and the same proof as a DELETE. Returns the
+/// roots not confirmed gone by then, as (pid, creation time), plus every
+/// root that was never held (time unknown); never reports them clean.
+pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
+    let mut out: Vec<(u32, Option<u64>)> = UNHELD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|p| (*p, None))
+        .collect();
+    let left = std::mem::take(&mut *LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()));
+    if !left.is_empty() {
+        let limit = deadline.saturating_duration_since(std::time::Instant::now());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut waiting = std::collections::BTreeSet::new();
+        for mut l in left {
+            let root = (l.pid(), l.start_100ns());
+            waiting.insert(root);
+            let tx = tx.clone();
+            // a thread that cannot start drops its tree (KILL_ON_JOB_CLOSE)
+            // unconfirmed: it stays in `waiting` and is reported
+            let _ = std::thread::Builder::new()
+                .name("aibd-leftover-stop".into())
+                .spawn(move || {
+                    let ok = matches!(l.kill(limit), Ok(k) if k.all_gone());
+                    if !ok {
+                        LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(l);
+                    }
+                    let _ = tx.send((root, ok));
+                });
+        }
+        drop(tx);
+        while !waiting.is_empty() {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            // One wake-up per answer, or at the deadline: not a periodic timer
+            // (ADR 0005 named exception, as `session_unix::stop_leftovers`).
+            #[allow(clippy::disallowed_methods)]
+            let got = rx.recv_timeout(left);
+            match got {
+                Ok((root, ok)) => {
+                    waiting.remove(&root);
+                    if !ok {
+                        out.push(root);
+                    }
+                }
+                Err(_) => break, // the deadline, or every thread gone
+            }
+        }
+        out.extend(waiting);
+    }
+    out.sort_unstable();
+    out
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// The two sweep tests share LEFTOVERS / UNHELD: one at a time, or one
+    /// test's sweep stops the other's kept tree.
+    static SWEEP: Mutex<()> = Mutex::new(());
+
+    /// `cmd` (root) that starts `ping` (a grandchild) and stays.
+    fn ping_tree() -> SessionTree {
+        let spec = aib_sys::session::Spec {
+            argv: ["cmd", "/C", "ping -n 60 127.0.0.1 >NUL"]
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
+            ..Default::default()
+        };
+        let t = SessionTree::spawn(&spec).unwrap();
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while t.active().unwrap_or(0) < 2 {
+            assert!(std::time::Instant::now() < end, "ping never started");
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        t
+    }
+
+    /// a9136 #555 Medium: a failed start that kept its slot is kept (not
+    /// dropped) and stopped by the shutdown sweep; confirmed ones are not
+    /// reported.
+    #[test]
+    fn a_kept_failed_start_is_stopped_by_the_shutdown_sweep() {
+        let _g = SWEEP.lock().unwrap_or_else(|e| e.into_inner());
+        let t = ping_tree();
+        let root = t.pid();
+        let held: Vec<Process> = t
+            .members()
+            .unwrap()
+            .iter()
+            .filter_map(|m| Process::open(m.pid).ok())
+            .collect();
+        assert!(held.len() >= 2, "root and ping not both held");
+        keep(Some(root), Some(Leftover::from_tree_for_test(t)));
+        // kept = still running until the sweep (a drop would close its Job)
+        assert!(
+            held.iter()
+                .all(|p| p.wait(Duration::from_millis(300)) == Ok(false)),
+            "the kept tree did not stay running"
+        );
+        let out = stop_leftovers(std::time::Instant::now() + Duration::from_secs(10));
+        assert!(
+            !out.iter().any(|(p, _)| *p == root),
+            "confirmed tree reported: {out:?}"
+        );
+        assert!(
+            held.iter().all(|p| p.wait(Duration::ZERO) == Ok(true)),
+            "a member survived the sweep"
+        );
+    }
+
+    /// A root that never got into a Job cannot be stopped: the shutdown sweep
+    /// lists it (through the platform entry aibd calls), never silent.
+    #[test]
+    fn an_unheld_failed_start_is_listed_at_shutdown() {
+        let _g = SWEEP.lock().unwrap_or_else(|e| e.into_inner());
+        let pid = u32::MAX - 41; // never a real pid: only listed
+        keep(Some(pid), None);
+        let out =
+            crate::platform::stop_leftovers(std::time::Instant::now() + Duration::from_secs(1));
+        assert!(out.contains(&(pid, None)), "{out:?}");
+    }
 
     fn report(members: &[u32], emptied: bool, survivors: &[u32]) -> Result<KillReport, SysError> {
         Ok(KillReport {

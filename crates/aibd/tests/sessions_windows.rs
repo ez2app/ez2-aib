@@ -109,8 +109,18 @@ fn call(
 }
 
 impl Daemon {
-    async fn call(&self, method: &str, path: &str, body: Option<String>) -> (u16, serde_json::Value) {
-        let (a, t, m, p) = (self.addr, self.token.clone(), method.to_owned(), path.to_owned());
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> (u16, serde_json::Value) {
+        let (a, t, m, p) = (
+            self.addr,
+            self.token.clone(),
+            method.to_owned(),
+            path.to_owned(),
+        );
         tokio::task::spawn_blocking(move || call(a, &t, &m, &p, body.as_deref()))
             .await
             .unwrap()
@@ -124,7 +134,9 @@ impl Daemon {
     async fn wait_state(&self, id: &str, not: &str) -> serde_json::Value {
         let end = Instant::now() + Duration::from_secs(20);
         loop {
-            let (c, s) = self.call("GET", &format!("/api/v1/sessions/{id}"), None).await;
+            let (c, s) = self
+                .call("GET", &format!("/api/v1/sessions/{id}"), None)
+                .await;
             assert_eq!(c, 200, "{s}");
             if s["state"] != not {
                 return s;
@@ -205,7 +217,11 @@ async fn delete_stops_the_grandchild_and_confirms_the_tree() {
     ]);
     assert!(!gone_within(&gc, Duration::ZERO), "grandchild ended early");
     let (code, s) = d
-        .call("DELETE", &format!("/api/v1/sessions/{id}?grace_ms=500"), None)
+        .call(
+            "DELETE",
+            &format!("/api/v1/sessions/{id}?grace_ms=500"),
+            None,
+        )
         .await;
     assert_eq!(code, 200, "{s}");
     assert!(
@@ -213,7 +229,10 @@ async fn delete_stops_the_grandchild_and_confirms_the_tree() {
         "grandchild {} still running after DELETE answered: {s}",
         gc.pid()
     );
-    assert!(gone_within(&root, Duration::ZERO), "root still running: {s}");
+    assert!(
+        gone_within(&root, Duration::ZERO),
+        "root still running: {s}"
+    );
     assert_eq!(s["state"], "killed", "{s}");
     assert_eq!(s["ended_by"], "api");
     assert_eq!(s["stop"]["status"], "clean", "{s}");
@@ -260,7 +279,10 @@ async fn aibd_shutdown_stops_every_session() {
         assert_eq!(code, 201, "{s}");
         gcs.push(grandchild(&f).await);
     }
-    let _own = Own(gcs.iter().map(|p| Process::open(p.pid()).unwrap()).collect());
+    let _own = Own(gcs
+        .iter()
+        .map(|p| Process::open(p.pid()).unwrap())
+        .collect());
     let data = d.data.clone();
     d.shutdown().await;
     for gc in &gcs {
