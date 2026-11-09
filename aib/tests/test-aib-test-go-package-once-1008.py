@@ -107,6 +107,27 @@ class GoOnce(unittest.TestCase):
         self.assertNotIn("Shadow resume: enabled", out, out[-2000:])
         self.assertEqual(len(re.findall(r"^--- .*calc/\w+_test\.go", p.stderr, re.M)), 1, p.stderr[-3000:])
 
+    def test_o6_traced_and_small_behave_the_same(self):
+        """11-09 a63ab:同一批(一綠一紅、同一個 Go 套件)開追蹤跑一次、不開追蹤跑一次 ⇒ 結束碼、合計那行、
+        「同一個 Go 套件」列、go 失敗輸出印幾次都一樣。規則只寫一處(GoOnce),兩條路不准分岔。"""
+        (self.repo / "calc" / "b_test.go").write_text(BAD, encoding="utf-8")
+        self._commit()
+
+        def look(trace_min):
+            self.env["AIB_TEST_TRACE_MIN"] = trace_min
+            p = self._aib("calc/a_test.go", "calc/b_test.go")
+            out = p.stdout + p.stderr
+            total = re.findall(r"\d+ tests: \d+ green, \d+ red", p.stdout)
+            return (p.returncode, total, len(re.findall(r"same Go package", out)),
+                    len(re.findall(r"^--- .*calc/\w+_test\.go", p.stderr, re.M))), out
+
+        traced, out_t = look("0")
+        small, out_s = look("100")
+        self.assertIn("Shadow resume: enabled", out_t, out_t[-1500:])
+        self.assertNotIn("Shadow resume: enabled", out_s, out_s[-1500:])
+        self.assertEqual(traced, small, "開追蹤:\n%s\n---- 不開:\n%s" % (out_t[-1500:], out_s[-1500:]))
+        self.assertEqual(traced[0], 1)
+
 
 class Knives(unittest.TestCase):
     def _red(self, rel, needle, repl, cell):
@@ -120,7 +141,7 @@ class Knives(unittest.TestCase):
 
     @unittest.skipUnless(GO, "沒有 go")
     def test_k1_no_reuse_reds_o1(self):
-        self._red("tools/verify/test_entry.py", "            if gk is not None and gk in go_done:\n", "            if False:\n",
+        self._red("tools/verify/test_entry.py", "\n            row = go_once.same(name)\n", "\n            row = None\n",
                   "GoOnce.test_o1_one_run_per_package")
 
     @unittest.skipUnless(GO, "沒有 go")
@@ -130,8 +151,20 @@ class Knives(unittest.TestCase):
 
     @unittest.skipUnless(GO, "沒有 go")
     def test_k3_small_batch_without_grouping_reds_o5(self):
-        self._red("tools/verify/test_entry.py", "                if gk is not None and gk in go_plain:\n", "                if False:\n",
+        self._red("tools/verify/test_entry.py", "\n                row = go_once.same(name)\n", "\n                row = None\n",
                   "GoOnce.test_o5_small_batch_also_runs_a_package_once")
+
+    @unittest.skipUnless(GO, "沒有 go")
+    def test_k4_small_path_diverges_reds_o6(self):
+        # 只有不追蹤那條不合併 ⇒ 兩條路行為不一樣 ⇒ o6 必紅
+        self._red("tools/verify/test_entry.py", "\n                row = go_once.same(name)\n", "\n                row = None\n",
+                  "GoOnce.test_o6_traced_and_small_behave_the_same")
+
+    @unittest.skipUnless(GO, "沒有 go")
+    def test_k5_shared_rule_broken_reds_o1(self):
+        # 共用規則本身壞掉(永遠不沿用)⇒ 追蹤那條的 o1 紅(o5 同理)
+        self._red("tools/verify/test_entry.py", "        if first is None:\n            return None\n", "        return None\n",
+                  "GoOnce.test_o1_one_run_per_package")
 
 
 if __name__ == "__main__":

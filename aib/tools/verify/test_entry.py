@@ -1131,6 +1131,27 @@ def _unmet_needs(repo, name):
     return [c for c in _needs_of(repo, name) if _need_met(repo, c) is False]
 
 
+class GoOnce:
+    """同一個 Go 套件這一批只跑一次(10-08 pflag 實測:32 個測試檔同一個套件 ⇒ 以前 go test 同一包跑 32 次)。
+    11-09 a63ab #565:每次都要成立的規則抽成一處,追蹤 / 不追蹤(小批、退回)兩條路都呼叫,不准各寫一份。
+    same(name) ⇒ 這一批已跑過同套件 ⇒ 回一列沿用那次的結果(不算實跑、紅綠跟那次一樣);否則 None。
+    ran(name, row) ⇒ 記下這支實跑的結果給同套件後面的用。"""
+
+    def __init__(self):
+        self.done = {}
+
+    def same(self, name):
+        first = self.done.get(runner.go_package_key(name) or "\0")
+        if first is None:
+            return None
+        return dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"], baseline_s=None, slow=False)
+
+    def ran(self, name, row):
+        gk = runner.go_package_key(name)
+        if gk is not None and gk not in self.done:
+            self.done[gk] = row
+
+
 def _unverified(name, unmet):
     """缺條件 ⇒ 每個條件寫成「這台缺 X」;別種沒驗(全部跳過、一支都沒收集到)的原因自己寫,不冠「這台缺」(10-08)。"""
     return {"name": name, "rc": None, "unverified": True, "needs": [T("need_missing", {"what": c}) for c in unmet], "reused": False,
@@ -1665,7 +1686,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 live("gate_fail", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})
         if not gate.get("ok"):
             resumed_ok = set()      # 10-15 A1:自檢沒過 ⇒ 算不出環境指紋、讀不了作廢列 ⇒ 不接續(整批照跑)
-            go_plain = {}           # 11-09 a63ab #565:小批 / 退回也要「同一個 Go 套件只跑一次」(以前只在追蹤那條)
+            go_once = GoOnce()      # 11-09 a63ab #565:小批 / 退回也要「同一個 Go 套件只跑一次」(以前只在追蹤那條)
             for name in tests:
                 if name in resumed_ok:
                     if live is not None:
@@ -1678,20 +1699,18 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     if live is not None:
                         live("unverified", {"test": name, "what": " ".join(results[-1]["needs"])})
                     continue
-                gk = runner.go_package_key(name)
-                if gk is not None and gk in go_plain:
-                    first = go_plain[gk]
-                    results.append(dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"]))
+                row = go_once.same(name)
+                if row is not None:
+                    results.append(row)
                     if live is not None:
-                        live("same_package", {"test": name, "name": first["name"]})
+                        live("same_package", {"test": name, "name": row["same_package"]})
                     continue
                 if live is not None:
                     live("start_plain" if small else "start_fallback", {"test": name})
                 runner.wait_for_memory(None if live is None else (lambda g: live("mem_wait", {"limit": "%.1f" % g})))
                 with _own_home(repo, env, name) as tenv:
                     results.append(_mark_all_skipped(dict(runner._run_one(repo, name, tenv, timeout=timeout), reused=False)))
-                if gk is not None:
-                    go_plain[gk] = results[-1]
+                go_once.ran(name, results[-1])
                 _tree_guard(repo, tree_base, results[-1], live)
                 if live is not None:
                     _live_done(live, results[-1])
@@ -1733,7 +1752,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
         offset = _pool_size(pool)
         started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ran_names = []
-        go_done = {}                       # Go 套件 ⇒ 這一批跑那個套件的結果(同一套件只跑一次)
+        go_once = GoOnce()                 # Go 套件 ⇒ 這一批跑那個套件的結果(同一套件只跑一次;小批那條呼叫同一個)
         overheads = []                     # 這一批每支的「牆鐘 − 紀錄耗時」,給即時計時器補準備時間
         for name in tests:
             if name in resumed_ok:
@@ -1769,15 +1788,12 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                                              "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                              "verdict": "reuse", "why": why})
                 continue
-            gk = runner.go_package_key(name)
-            if gk is not None and gk in go_done:
-                # 10-08(pflag 實測:32 個測試檔同一個套件 ⇒ 以前 go test 同一包跑 32 次):同一套件這一批已經跑過 ⇒ 用那次的結果。
-                #   不算實跑(紀錄池沒有它的列,不進 ran_names);紅綠跟那次一樣(同一個 go test ./pkg)。
-                first = go_done[gk]
-                results.append(dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"],
-                                    baseline_s=None, slow=False))
+            row = go_once.same(name)
+            if row is not None:
+                # 同一套件這一批已經跑過 ⇒ 用那次的結果;不算實跑(紀錄池沒有它的列,不進 ran_names)。規則在 GoOnce。
+                results.append(row)
                 if live is not None:
-                    live("same_package", {"test": name, "name": first["name"]})
+                    live("same_package", {"test": name, "name": row["same_package"]})
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
                                              "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
@@ -1811,8 +1827,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                                          "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                          "verdict": "must-run", "why": why, "detail": str(detail or "")[:200]})
             ran_names.append(name)
-            if gk is not None:
-                go_done[gk] = results[-1]
+            go_once.ran(name, results[-1])
         # Step 2's second half: count what really landed in the pool, not what _traced_run said it did.
         here = str(repo)
         landed = {r.get("test") for r in _pool_rows_after(pool, offset, here)
