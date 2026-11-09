@@ -5018,6 +5018,8 @@
   "aib.secret.why.newline": "裡面有換行",
   "aib.secret.why.bad_prefix": "應該是 {prefix} 開頭",
   "aib.secret.why.bad_shape": "格式應該是 {shape}",
+  "aib.secret.why.edge_space": "頭尾有空白;站點密碼會原樣保存,請拿掉頭尾空白或換一組",
+  "aib.secret.why.root_token": "這是 root 的 token,權限是整台主機;請改用 aib@pve 的 privsep token",
   "aib.secret.touchid_reason": "aib:把金鑰 {name} 存到 {dest}",
   "aib.secret.dest_local": "這台 Mac 的金鑰櫃",
   "aib.secret.btn_ok": "儲存",

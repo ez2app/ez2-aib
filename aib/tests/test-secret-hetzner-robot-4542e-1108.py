@@ -139,7 +139,7 @@ class Knives(unittest.TestCase):
 
     def test_k3_segment_prefix_removed(self):
         with knife_copy(REPO, "src/bootstrap/aib_secrets.py",
-                        'NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env")', 'NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env",)') as tree:
+                        'NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env")', 'NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "pve.env")') as tree:
             m = self._mod(tree)
             self.assertEqual(m.file_for_name("HETZNER_CLOUD_TOKEN"), "hetzner-robot.env")   # 刀下去就吃進去 ⇒ H3 會紅
 
