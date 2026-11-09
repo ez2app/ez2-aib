@@ -43,6 +43,18 @@ TRIES = 3
 MAX_LEN = 4096
 # 認得格式的才擋;其他名字只擋空值、換行、過長
 PREFIX = {"ANTHROPIC_API_KEY": "sk-ant-"}
+# 整串形狀(前綴不夠描述的):名字本身或「名字_<代號>」都套。11-09 b118:PVE token = 使用者@realm!token名=UUID
+SHAPE = {"PVE_API_TOKEN": (re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9._-]{1,64}![A-Za-z0-9._-]{1,64}="
+                                      r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"),
+                           "user@realm!tokenid=UUID")}
+
+
+def shape_for(name):
+    """回 (regex, 說明) 或 None。PVE_API_TOKEN_NODE2 這類加代號的名字也套 PVE_API_TOKEN 的形狀。"""
+    for base, spec in SHAPE.items():
+        if name == base or (isinstance(name, str) and name.startswith(base + "_")):
+            return spec
+    return None
 CHECKS = {"ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1/models",
                                 lambda v: {"x-api-key": v, "anthropic-version": "2023-06-01"})}
 _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
@@ -88,6 +100,9 @@ def check_format(name, value):
     want = PREFIX.get(name)
     if want and not value.startswith(want):
         return "bad_prefix"
+    shape = shape_for(name)
+    if shape and not shape[0].fullmatch(value):
+        return "bad_shape"
     return None
 
 
@@ -147,7 +162,7 @@ def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None):
         bad = check_format(name, value)
         if bad is None:
             return value, None
-        prompt = _t("aib.secret.dialog_retry", {"why": _t("aib.secret.why." + bad, {"prefix": PREFIX.get(name, "")})}) + "\n\n" + base
+        prompt = _t("aib.secret.dialog_retry", {"why": _t("aib.secret.why." + bad, {"prefix": PREFIX.get(name, ""), "shape": (shape_for(name) or ("", ""))[1]})}) + "\n\n" + base
     return None, "bad_format"
 
 
