@@ -5027,6 +5027,8 @@
   "aib.secret.dest_local": "這台 Mac 的金鑰櫃",
   "aib.secret.btn_ok": "儲存",
   "aib.secret.btn_cancel": "取消",
+  "aib.secret.btn_generate": "產生並複製",
+  "aib.secret.generated_hint": "已產生 {n} 字的新密碼,放進欄位並複製到剪貼簿了。先存進你的密碼管理器,再按「{ok}」送出;要換一組再按一次。",
   "aib.secret.no_gui_hint": "叫不出輸入視窗(這個終端機不在圖形畫面裡,AI 席的 shell 常這樣)。請本人在 Claude Code 輸入框用 ! 開頭自己跑同一行(一整行、! 前面不要空格)。",
   "aib.cf.touchid_reason": "aib:核准 Cloudflare 臨時金鑰:{zone} {perms} {ttl} → {host}",
   "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write 可改整個網域的安全設定(SSL 模式 / AOP / 安全等級)。",

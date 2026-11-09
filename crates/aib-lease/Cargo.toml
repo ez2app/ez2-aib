@@ -1,0 +1,18 @@
+[package]
+name = "aib-lease"
+description = "Host lease for a holder on another machine: queue add / acquire take --host + the holder's pid + --heartbeat-s; liveness is the heartbeat, not a local kill -0. Reads and writes the 1.x lease files (host_lease.py format)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.23"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
