@@ -875,7 +875,10 @@ mod tests {
         let mut shared = spec();
         shared.exclusive = false;
         let s = remote_script(&shared);
-        assert!(s.contains("--pid $$\n") && !s.contains("--exclusive"), "{s}");
+        assert!(
+            s.contains("--pid $$\n") && !s.contains("--exclusive"),
+            "{s}"
+        );
         let s = remote_script(&spec());
         assert!(s.contains("--what 'it'\\''s a test'"), "{s}");
         assert!(s.contains("bash -c 'echo '\\''a b'\\'''"), "{s}");

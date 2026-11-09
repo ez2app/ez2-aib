@@ -171,7 +171,10 @@ fn a_granted_lease_runs_every_step_reports_each_rc_and_releases() {
     let rel = l.find("aib lease release --run-id 043dd-run-").unwrap();
     assert!(acq < rel, "{l}");
     assert!(l.contains("--ttl 600 --pid "), "{l}");
-    assert!(l.contains(" --exclusive"), "measured runs are exclusive: {l}");
+    assert!(
+        l.contains(" --exclusive"),
+        "measured runs are exclusive: {l}"
+    );
     assert!(
         leftovers(&w).is_empty(),
         "remote tree and script removed: {:?}",
@@ -341,7 +344,10 @@ fn alive(pid: &str) -> bool {
 }
 
 fn read_pid(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap_or_default().trim().to_string()
+    std::fs::read_to_string(p)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 #[allow(clippy::disallowed_methods)] // ADR 0005 named exception: test pacing (a bounded poll for a pid file or a process to end)
@@ -383,7 +389,11 @@ fn a_remote_script_stopped_halfway_kills_the_step_tree_and_releases() {
     let a = read_pid(&PathBuf::from(format!("{}.a", w.out.display())));
     let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
     wait_for("both sleeps to end", || !alive(&a) && !alive(&b));
-    assert!(log(&w).contains("aib lease release --run-id 043dd-run-"), "{}", log(&w));
+    assert!(
+        log(&w).contains("aib lease release --run-id 043dd-run-"),
+        "{}",
+        log(&w)
+    );
     assert!(leftovers(&w).is_empty(), "{:?}", leftovers(&w));
 }
 
@@ -400,7 +410,9 @@ fn a_dropped_connection_stops_the_remote_side_and_releases() {
     let a = read_pid(&a);
     let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
     wait_for("both sleeps to end", || !alive(&a) && !alive(&b));
-    wait_for("the release", || log(&w).contains("aib lease release --run-id 043dd-run-"));
+    wait_for("the release", || {
+        log(&w).contains("aib lease release --run-id 043dd-run-")
+    });
     wait_for("the remote tree to go", || leftovers(&w).is_empty());
     assert_eq!(history(&w)[0]["outcome"], "connect");
 }
