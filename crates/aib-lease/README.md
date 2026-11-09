@@ -86,7 +86,11 @@ aib-lease run --host 100.116.110.31 --owner 043dd \
 
 * Sends `git archive <rev>` (default HEAD; uncommitted changes are not sent, it warns) on ssh's
   stdin; the remote script goes as a base64 argument. ssh always has `ForwardAgent=no`,
-  `ClearAllForwardings=yes`, `BatchMode=yes`.
+  `ClearAllForwardings=yes`, `BatchMode=yes`, and `ServerAliveInterval=15` /
+  `ServerAliveCountMax=4`: a network that vanishes without a FIN / RST ends the local ssh after
+  about a minute (rc 3). The remote side stops when its next write fails (the beat line every
+  5 s); on a silent loss that is when the remote TCP gives up, so the lease may stay a few
+  minutes longer, still tied to that shell.
 * On the other Mac, one bash: unpack → `aib lease acquire … --pid $$` → **nothing runs unless
   rc 0** → `EXIT` trap releases the lease, stops a running step's process tree and removes the
   tree → each step as its own `bash -c`, every rc printed; a failing step does not stop the rest.

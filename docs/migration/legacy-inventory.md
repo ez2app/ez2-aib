@@ -257,3 +257,31 @@ local API call.
 3. The hard ports are 3.3 (process trees on Windows) and 3.6 (human presence on
    Windows). Both are UNVERIFIED-desktop until someone runs them on a Windows machine.
 4. Most file locks disappear into SQLite transactions.
+
+## 待取代(1.x 凍結需求)
+
+1.x Python is frozen: bug fixes only, no new behaviour (RULES-seats-aib2 §9). Behaviour
+changes that were proposed for 1.x and closed under the freeze are recorded here so the
+Rust replacement picks them up. Each entry links the closed PR; its test file is the
+acceptance list (port the cases, keep the knives). Owner = who writes the Rust version.
+
+| ID | Need | Closed PR | Acceptance (from the PR's tests) | Target | Owner |
+|----|------|-----------|-----------------------------------|--------|-------|
+| R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | `aib/tests/test-cooldown-reap-authority-34d15-1103.py`: 30 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
+
+### R1 — cooldown reap authority
+
+Why: 2026-11-03 on andymini a single sensor reading ≥ 90°C killed every running test.
+
+- A spike is not reaped (A1); sustained heat is, with the reason logged first (A2, A10);
+  short or broken streaks restart the count (A3, A4).
+- Thermal pressure reaps at once (A5); pressure 0 or unreadable is ignored (A6); no history
+  falls back to the instant reading (A7), using the average when present, else the max (A8, A18).
+- 85°C only blocks new work (A9); load alone never reaps (A11).
+- History: a held lock means no history (A14a); concurrent writers keep samples (A14b); a slow
+  writer does not overwrite a newer low sample (A14c); gaps fall back or restart (A15, A15b);
+  two samples across a pause are not sustained (A16); panels at the same moment are one sample
+  (A16b); bad shape, NaN or a corrupt file count as no history (A17, A17b).
+- Reaping still happens when logging fails or stderr is broken (A19, A19b).
+- Unfinished records are reported (A20), not double counted (A20b), not cleared by dry-run
+  (A20c); summary (A21); pressure parsing (A12); i18n in four languages (A13).
