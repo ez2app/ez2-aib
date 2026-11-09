@@ -11,7 +11,8 @@ publish.workspace = true
 workspace = true
 
 # M-R1 (ADR draft aib-cloud, 4542e 11-09): no network, no secrets, no process API.
-# serde_json is already a workspace dependency (aibd, aib-fixture-tree); it is only
-# used to mask API replies before anything prints them.
+# The crate is `#![no_std]` + alloc (#532 r3 M1, ebb36): the compiler refuses std::net /
+# std::fs / std::process / std::env / std::io outright. serde_json therefore runs in its
+# alloc-only mode; it is used to build request bodies and mask replies before printing.
 [dependencies]
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }

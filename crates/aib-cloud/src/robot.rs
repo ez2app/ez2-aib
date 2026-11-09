@@ -15,6 +15,9 @@
 //! - [`mask`] hides every secret-looking key and any `user:pw@` URL userinfo
 //!   before a reply or error can be printed.
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 
 /// The only host this crate will ever address. Not configurable on purpose.
@@ -72,7 +75,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 /// A Hetzner server number: 1–10 ASCII digits, no leading zero. Checked
 /// character by character (`is_ascii_digit`), so `３１０` or `٣١` are refused
@@ -445,13 +448,22 @@ pub fn mask(value: &mut serde_json::Value) {
 /// string (#532 r2 L1: a message quoting two URLs used to leak the second one).
 /// Returns `None` when no URL carries userinfo.
 pub fn mask_userinfo(s: &str) -> Option<String> {
+    // The authority ends at the first path / query / fragment character, whitespace or
+    // common punctuation (#532 r3 L1: a host-only URL followed by a newline, tab, comma or
+    // '>' must not swallow the next URL's scheme).
+    const AUTHORITY_END: &[char] = &[
+        '/', '?', '#', ',', ';', '<', '>', '"', '\'', '(', ')', '[', ']', '{', '}', '`', '|', '\\',
+    ];
+    fn ends_authority(c: char) -> bool {
+        c.is_whitespace() || AUTHORITY_END.contains(&c)
+    }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     let mut changed = false;
     while let Some(scheme_end) = rest.find("://") {
         let (head, after) = rest.split_at(scheme_end + 3);
         out.push_str(head);
-        let host_end = after.find(['/', '?', '#', ' ']).unwrap_or(after.len());
+        let host_end = after.find(ends_authority).unwrap_or(after.len());
         let authority = &after[..host_end];
         if let Some(at) = authority.rfind('@') {
             out.push_str("***:***@");
@@ -473,6 +485,7 @@ pub fn mask_userinfo(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use serde_json::json;
 
     const FP: &str = "aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:bb";
@@ -739,6 +752,20 @@ mod tests {
             Some("https://***:***@a/ https://***:***@b/".to_owned())
         );
         assert_eq!(mask_userinfo("https://a/ and https://b/"), None);
+        // #532 r3 L1 (ebb36 probe): host-only URL followed by newline / tab / comma / '>'.
+        for sep in ["\n", "\t", ",", ">"] {
+            let input = format!("https://a.example{sep}https://u:hunter2@b.example/y");
+            let got = mask_userinfo(&input).unwrap_or_default();
+            assert!(!got.contains("hunter2"), "{input:?} leaked: {got:?}");
+            assert_eq!(
+                got,
+                format!("https://a.example{sep}https://***:***@b.example/y")
+            );
+        }
+        assert_eq!(
+            mask_userinfo("<https://a.example>https://u:hunter2@b.example/y"),
+            Some("<https://a.example>https://***:***@b.example/y".to_owned())
+        );
     }
 
     // #532 r2 L1: key names the first round missed.

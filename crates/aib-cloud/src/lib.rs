@@ -28,4 +28,15 @@
 //! p.path = "/reset/7654321".to_owned();
 //! ```
 
+// #532 r3 M1 (ebb36): "no I/O" is enforced by the compiler, not by a word list. Without
+// `std` there is no network, file system, process, environment or stdin to reach for;
+// `alloc` gives String / Vec / format!. tests/boundary.rs only keeps the few text checks
+// the compiler cannot make: no way back to std, nothing pulled in from outside src/ at
+// compile time (path attributes, file inclusion, build-time environment), no build script.
+#![no_std]
+#[macro_use]
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
 pub mod robot;

@@ -11,51 +11,75 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Allowed `[dependencies]` of aib-cloud: name → exact version requirement.
-const ALLOWED: &[(&str, &str)] = &[("serde_json", "\"1.0.154\"")];
+const ALLOWED: &[(&str, &str)] = &[(
+    "serde_json",
+    "{ version = \"1.0.154\", default-features = false, features = [\"alloc\"] }",
+)];
 
-/// `std` paths that would let this crate do I/O or read the environment. Matched on
-/// the whitespace-stripped source (comments included on purpose: a reviewer should
-/// not have to wonder), so `std :: net` and line breaks do not hide them.
-const FORBIDDEN_STD: &[&str] = &[
-    "std::net",
-    "std::process",
-    "std::fs",
-    "std::env",
-    "std::os::unix::net",
-    "std::os::windows",
-    "tokio::",
-    "libc::",
+/// What the compiler cannot check once the crate is `#![no_std]` (#532 r3 M1, ebb36):
+/// ways to bring `std` back or to pull code / values from outside `src/` at compile
+/// time. Matched on the whitespace-stripped source, comments included on purpose.
+const FORBIDDEN_FORMS: &[&str] = &[
+    "externcrate",  // any `extern crate` other than the two allowed spellings below
+    "#[path",       // N4: `#[path = "../x.rs"] mod m;` reads a file outside src/
+    "include!",     // N5: `include!("../x.rs")`
+    "include_str!", //     same idea, as a string
+    "include_bytes!",
+    "env!", // N6: `env!` / `option_env!` bake build-time environment into the binary
 ];
 
-/// Spellings that would let a grouped `use` or a crate alias reach the same modules
-/// without ever writing `std::net` (#532 r2 M1, ebb36 knives B2b–B2d). The crate is
-/// small enough to simply forbid them.
-const FORBIDDEN_FORMS: &[&str] = &["std::{", "externcrate", "::std::{"];
+/// The only `extern crate` lines a `#![no_std]` crate needs: `alloc` for String / Vec, and
+/// `std` for the unit-test harness only (`#[cfg(test)]` code never ships).
+const ALLOWED_EXTERN: &[&str] = &[
+    "#[macro_use]externcratealloc;",
+    "#[cfg(test)]externcratestd;",
+];
 
-/// `Some(reason)` when a source text breaks the no-I/O promise. Whitespace is removed
-/// first so neither spacing nor line breaks can split a forbidden path.
-fn io_violation(text: &str) -> Option<String> {
-    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    for needle in FORBIDDEN_STD {
-        if compact.contains(needle) {
-            return Some(format!("用了 {needle}"));
-        }
-    }
-    for form in FORBIDDEN_FORMS {
-        if compact.contains(form) {
-            return Some(format!(
-                "用了被禁的寫法 {form}(分組 use / crate 別名會繞過路徑比對)"
-            ));
-        }
-    }
-    None
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// `[lints] workspace = true` must stay in the manifest: the FFI-socket knife (B2f) is
-/// stopped only by the workspace `unsafe_code = "forbid"` lint.
+/// `Some(reason)` when a source text breaks the no-I/O promise in a way the compiler
+/// would not catch. Whitespace is removed first so spacing / line breaks cannot split a
+/// forbidden form; `option_env!` is covered because it contains `env!`.
+fn io_violation(text: &str) -> Option<String> {
+    let mut c = compact(text);
+    for ok in ALLOWED_EXTERN {
+        c = c.replace(ok, "");
+    }
+    FORBIDDEN_FORMS
+        .iter()
+        .find(|f| c.contains(*f))
+        .map(|f| format!("用了 {f}(no_std 之外的逃生口)"))
+}
+
+/// lib.rs must opt out of `std`; that is what turns every I/O path into a compile error.
+fn declares_no_std(lib_rs: &str) -> bool {
+    compact(lib_rs).contains("#![no_std]")
+}
+
+/// Manifest lines that count: comments (`#…`) are dropped first (#532 r3 N11), then the
+/// rest is whitespace-stripped (N10: `build="x"` without spaces).
+fn manifest_compact(manifest: &str) -> String {
+    manifest
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// `[lints] workspace = true` must stay in the manifest (as a real table, not a comment):
+/// the FFI-socket knife (B2f) is stopped only by the workspace `unsafe_code = "forbid"` lint.
 fn lints_inherit_workspace(manifest: &str) -> bool {
-    let compact: String = manifest.chars().filter(|c| !c.is_whitespace()).collect();
-    compact.contains("[lints]workspace=true")
+    manifest_compact(manifest).contains("[lints]workspace=true")
+}
+
+/// Any `build = …` key, however spaced, means a build script.
+fn has_build_key(manifest: &str) -> bool {
+    manifest_compact(manifest).contains("build=")
 }
 
 fn root() -> PathBuf {
@@ -145,12 +169,19 @@ fn core_and_store_do_not_depend_on_cloud() {
     }
 }
 
-// #532 M4: "no I/O" also means no std::net / std::process / std::fs / std::env in src/,
-// no grouped `std::{…}` or `extern crate` alias that could hide them, and no build script.
+// #532 M4 / r3 M1: "no I/O" is a compiler guarantee (`#![no_std]`), plus the few text checks
+// the compiler cannot make: no way back to std, nothing pulled from outside src/ at compile
+// time, no build script, and the workspace lints (unsafe_code = forbid) still inherited.
 #[test]
 fn cloud_sources_do_no_io() {
+    let src = crate_dir("aib-cloud").join("src");
+    let lib = fs::read_to_string(src.join("lib.rs")).expect("lib.rs");
+    assert!(
+        declares_no_std(&lib),
+        "aib-cloud/src/lib.rs 要有 #![no_std](#532 r3 M1:I/O 由編譯器擋)"
+    );
     let mut files = Vec::new();
-    rust_sources(&crate_dir("aib-cloud").join("src"), &mut files);
+    rust_sources(&src, &mut files);
     assert!(!files.is_empty());
     for f in files {
         let text = fs::read_to_string(&f).expect("source");
@@ -159,7 +190,10 @@ fn cloud_sources_do_no_io() {
         }
     }
     let m = manifest("aib-cloud");
-    assert!(!m.contains("build ="), "aib-cloud 不准有 build script");
+    assert!(
+        !has_build_key(&m),
+        "aib-cloud 不准有 build script(任何寫法的 build=)"
+    );
     assert!(
         !crate_dir("aib-cloud").join("build.rs").exists(),
         "aib-cloud 不准有 build.rs"
@@ -168,34 +202,62 @@ fn cloud_sources_do_no_io() {
         lints_inherit_workspace(&m),
         "aib-cloud 的 Cargo.toml 要留著 [lints] workspace = true(unsafe FFI 靠它擋,#532 r2 M1)"
     );
+    assert!(
+        manifest_compact(&m).contains("default-features=false"),
+        "serde_json 要 default-features = false(alloc-only),不然 std 從依賴回來"
+    );
 }
 
-// #532 r2 M1 knives B2b–B2e: the checker itself must catch the bypasses, independent of
-// what the real sources currently contain.
+// #532 r2/r3 M1 knives: the text checker must catch every escape hatch the compiler cannot,
+// independent of what the real sources currently contain. (N1 `use std as q`, N2 `use std::*`,
+// N3 macro `std::$m`, N7 `std::os::unix::fs`, N9 `std::io::stdin` and the old B2b–B2e are now
+// compile errors under `#![no_std]`; they need no text rule.)
 #[test]
-fn io_checker_catches_grouped_use_alias_env_and_spacing() {
-    let samples = [
-        ("B2b 分組 use", "use core::fmt;\nuse std::{net::TcpStream};\npub fn leak() { let _ = TcpStream::connect(\"127.0.0.1:1\"); }"),
-        ("B2c 分組 use 別名", "use std::{fs as f, process as p};\npub fn leak() { let _ = f::read(\"/etc/hosts\"); let _ = p::Command::new(\"true\").status(); }"),
-        ("B2d extern crate 別名", "extern crate std as s;\npub fn leak() { let _ = s::net::TcpStream::connect(\"127.0.0.1:1\"); }"),
-        ("B2e std::env", "pub fn leak() -> Option<String> { std::env::var(\"HETZNER_ROBOT_PASS\").ok() }"),
-        ("空白拆開", "pub fn leak() { let _ = std :: net\n:: TcpStream::connect(\"127.0.0.1:1\"); }"),
-        ("絕對路徑分組", "use ::std::{fs};"),
-        ("直接寫", "fn f() { std::process::Command::new(\"true\"); }"),
+fn io_checker_catches_escape_hatches() {
+    let caught = [
+        ("extern crate std", "extern crate std;\npub fn leak() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }"),
+        ("extern crate 別名(B2d)", "extern crate std as s;\npub fn leak() { let _ = s::net::TcpStream::connect(\"127.0.0.1:1\"); }"),
+        ("extern crate 拆空白", "extern\n  crate   std;"),
+        ("N4 #[path] 讀 src 外", "#[path = \"../knife_evil.rs\"]\npub mod knife_evil;"),
+        ("N4 #[path 拆空白", "# [ path = \"../x.rs\" ] mod m;"),
+        ("N5 include!", "include!(\"../knife_inc.rs\");"),
+        ("N5b include_str!", "const X: &str = include_str!(\"../secret.txt\");"),
+        ("N5c include_bytes!", "const X: &[u8] = include_bytes!(\"../secret.bin\");"),
+        ("N6 option_env!", "pub fn leak() -> Option<&'static str> { option_env!(\"HETZNER_ROBOT_PASS\") }"),
+        ("N6b env!", "const P: &str = env!(\"HETZNER_ROBOT_PASS\");"),
     ];
-    for (name, src) in samples {
+    for (name, src) in caught {
         assert!(io_violation(src).is_some(), "{name} 沒被抓到");
     }
-    for ok in [
-        "use core::fmt;\nuse serde_json::Value;",
-        "// the standard network module is not used here",
-        "fn x() -> std::fmt::Result { Ok(()) }",
-    ] {
+    let fine = [
+        "#[macro_use]\nextern crate alloc;\n#[cfg(test)]\nextern crate std;\npub mod robot;",
+        "use core::fmt;\nuse alloc::string::String;\nuse serde_json::Value;",
+        "// the standard network module is not used here; `std::net` would not compile under no_std",
+        "fn x() -> core::fmt::Result { Ok(()) }",
+        "let environment = 1; // the word env alone is fine",
+    ];
+    for ok in fine {
         assert_eq!(io_violation(ok), None, "{ok:?} 不該被抓");
     }
+    assert!(declares_no_std("//! doc\n#![no_std]\nextern crate alloc;"));
+    assert!(declares_no_std("#! [ no_std ]"));
+    assert!(!declares_no_std("//! says no_std in a comment only"));
+    // manifest: N10 `build="x"` without spaces, N11 `[lints]` only inside a comment
+    assert!(has_build_key(
+        "[package]\nname = \"x\"\nbuild=\"knife/gen.rs\"\n"
+    ));
+    assert!(has_build_key("[package]\nbuild = \"build.rs\"\n"));
+    assert!(!has_build_key(
+        "[package]\nname = \"x\"\n# build = \"no\"\n"
+    ));
     assert!(lints_inherit_workspace(
         "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n"
     ));
-    assert!(!lints_inherit_workspace("[package]\nname = \"x\"\n"));
+    assert!(!lints_inherit_workspace(
+        "[package]\nname = \"x\"\n# [lints] workspace = true\n"
+    ));
+    assert!(!lints_inherit_workspace(
+        "[package]\nname = \"x\"\n#[lints]\n#workspace = true\n"
+    ));
     assert!(!lints_inherit_workspace("[lints]\nworkspace = false\n"));
 }
