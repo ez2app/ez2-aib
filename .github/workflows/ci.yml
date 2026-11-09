@@ -144,13 +144,15 @@ jobs:
         python: ["3.9", "3.12", "3.14"]
     # 沒輪到的 macOS 格子改在 ubuntu 上印說明:格子名字照矩陣(還是 smoke (macos-latest, …)),不必排 macOS 的隊。
     #   這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改。
+    # 11-09 S2(a63ab PLAN v3 9.2 #2):貼了 in-integ = 這張 PR 已收進整合 PR、由整合那輪跑 macOS ⇒ 這張的 macOS 格不跑
+    #   (比 full-ci 優先);標籤由 aib-release yield 在核對精確頭碼 + 整合 CI 已建立之後才貼。
     # 11-07:ubuntu-latest 換成 26.04 後 setup-python 找不到 3.9 ⇒ 只有 (ubuntu-latest, 3.9) 這格改跑 ubuntu-24.04;
     #   格子名字仍照矩陣(main 必過清單不變),pyproject 下限 3.9 不改。
-    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.light != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
+    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && (matrix.os != 'macos-latest' || !contains(github.event.pull_request.labels.*.name, 'in-integ')) && needs.docs.outputs.light != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
     env:
       # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
       #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
-      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.light != 'true' }}
+      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && (matrix.os != 'macos-latest' || !contains(github.event.pull_request.labels.*.name, 'in-integ')) && needs.docs.outputs.light != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
@@ -163,7 +165,7 @@ jobs:
 
       - name: cell not run on this PR
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.light != 'true'
-        run: echo "::notice::macOS ${{ matrix.python }} not run on this PR — PRs run macOS 3.12 only, and only when ready for review (not draft); 3.9/3.14 run on main, int/*, release/*; label full-ci to run every cell"
+        run: echo "::notice::macOS ${{ matrix.python }} not run on this PR — PRs run macOS 3.12 only, and only when ready for review (not draft); 3.9/3.14 run on main, int/*, release/*; label full-ci to run every cell; a PR labelled in-integ leaves macOS to its integration PR"
       - name: macOS cell skipped, main moved on (macos_unverified)
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.light != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no macOS ${{ matrix.python }} result of its own"
@@ -229,10 +231,11 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     # 11-08 DECISION-24:macOS 格在一般 PR 不跑(比照 smoke 3.9 / 3.14:main、int/*、release/*、full-ci 才跑),
     #   草稿也不跑;這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改
-    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) || needs.docs.outputs.light == 'true') && 'ubuntu-latest' || matrix.os }}
+    # 11-09 S2:貼了 in-integ(已收進整合 PR)也不跑 macOS,同 smoke
+    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft) && !contains(github.event.pull_request.labels.*.name, 'in-integ')))) || needs.docs.outputs.light == 'true') && 'ubuntu-latest' || matrix.os }}
     env:
       # 同上:main 已前進 / 這張 PR 不輪 macOS ⇒ 這輪的 macOS 格只印原因、不跑(這條件跟 runs-on 同一句,改一邊要一起改)
-      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) && needs.docs.outputs.light != 'true' }}
+      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft) && !contains(github.event.pull_request.labels.*.name, 'in-integ')))) && needs.docs.outputs.light != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
@@ -245,7 +248,7 @@ jobs:
       # 跳過原因三選一、各印各的:只改文件(上面)/ 這張 PR 不輪 macOS / main 已前進(bb7dc #512 審:PR 跳過不能印成 main moved on)
       - name: macOS cell not run on this PR
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.light != 'true'
-        run: echo "::notice::fresh-machine on macOS runs on main, int/*, release/* or PRs labelled full-ci (not on drafts)"
+        run: echo "::notice::fresh-machine on macOS runs on main, int/*, release/* or PRs labelled full-ci (not on drafts, not when labelled in-integ)"
       - name: macOS cell skipped, main moved on (macos_unverified)
         if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.light != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no fresh-machine macOS result of its own"

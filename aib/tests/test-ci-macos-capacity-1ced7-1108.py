@@ -246,6 +246,18 @@ class MacosCells(unittest.TestCase):
         self.assert_cells(set(self.SMOKE_MAC), True, draft=True, labels=("full-ci",))
         self.assert_cells(set(self.SMOKE_MAC), True, base="other", labels=("full-ci",), head="feat/y")
 
+    def test_in_integ_label_leaves_macos_to_the_integration_pr(self):
+        # 11-09 S2(a63ab PLAN v3 9.2 #2):in-integ = 已收進整合 PR,macOS 一律不跑(比 full-ci、int/* 優先);ubuntu 照跑
+        for kw in ({}, {"labels": ("full-ci", "in-integ")}, {"head": "int/x"}, {"action": "labeled"}):
+            with self.subTest(kw=kw):
+                kw = {"labels": ("in-integ",), **kw}
+                self.assert_cells(set(), False, **kw)
+                for py in self.SMOKE_MAC:
+                    self.assertEqual(cell("smoke", os="ubuntu-latest", python=py, **kw)[1], True)
+                self.assertEqual(cell("fresh-machine", os="ubuntu-latest", **kw), ("ubuntu-latest", True))
+        # main 推送沒有 PR 標籤 ⇒ 不受影響
+        self.assert_cells(set(self.SMOKE_MAC), True, event="push")
+
     def test_int_and_release_prs_run_everything_when_ready(self):
         for h in ("int/x", "release/v0.1.70"):
             with self.subTest(h=h):
