@@ -224,6 +224,18 @@ jobs:
             '                cut = cut && false; // knife' \
             --expect-fail an_over_long_line_is_cut_and_the_next_line_still_arrives \
             -- cargo test -p aibd --locked --test session_output an_over_long_line_is_cut_and_the_next_line_still_arrives
+          # S7 (1ced7 #591 L1) the key is never recorded: a retry creates a second seat
+          python3 -I scripts/knife.py crates/aib-store/src/seats.rs \
+            '                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",' \
+            '                     SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE 0", // knife' \
+            --expect-fail a_retry_with_the_same_key_gets_the_first_seat_and_creates_nothing \
+            -- cargo test -p aibd --locked --test seats a_retry_with_the_same_key_gets_the_first_seat_and_creates_nothing
+          # S8 (1ced7 #591 L1) a key it cannot read is taken as no key
+          python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+            '        Err(bad("Idempotency-Key must be 1-128 of A-Z a-z 0-9 - _ . :"))' \
+            '        Ok(None) // knife' \
+            --expect-fail seats::tests::keys \
+            -- cargo test -p aibd --locked --lib seats::tests::keys
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
