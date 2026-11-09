@@ -299,9 +299,10 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
             "Q2",
             "前一個結束後,排隊的自己開(running、pid>0);ctl watch 在 pending 時不退出",
             format!(
-                "{} 秒內沒開:{};前一個 {a_end};{watch_note}",
+                "{} 秒內沒開:{}(GET queue.held_by={});前一個 {a_end};{watch_note}",
                 10 + SLOT_WAIT.as_secs(),
-                short(last)
+                short(last),
+                last["queue"]["held_by"]
             ),
             false,
         )),
@@ -330,10 +331,14 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
         ));
     }
 
-    // Q4: MAX_QUEUE waiting ⇒ the next is 429 session_queue_full
+    // Q4: MAX_QUEUE waiting ⇒ the next is 429 session_queue_full. The bound
+    // counts every waiting one: if Q2's session never started (a slot kept by
+    // a stop that could not look everywhere, the G1 residual) it is still in
+    // the queue and takes one place.
+    let already = usize::from(d.session(&b).is_ok_and(|v| v["state"] == "pending"));
     let mut waiting = Vec::new();
     let mut odd = None;
-    for i in 0..MAX_QUEUE {
+    for i in 0..MAX_QUEUE - already {
         let (argv, _) = holder(o, &dir, &format!("q{i}"));
         let (c, v) = d.start_session(&seat, &argv)?;
         if c != 202 {
@@ -348,7 +353,13 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
     checks.push(check(
         "Q4",
         "排滿 64 個後,下一個 429 session_queue_full",
-        odd.unwrap_or_else(|| format!("{} 個 202 後:{c} {}", waiting.len(), v["code"])),
+        odd.unwrap_or_else(|| {
+            format!(
+                "{} 個 202 後(之前已在排 {already} 個):{c} {}",
+                waiting.len(),
+                v["code"]
+            )
+        }),
         full,
     ));
 
