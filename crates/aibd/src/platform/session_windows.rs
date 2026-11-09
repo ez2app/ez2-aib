@@ -337,6 +337,10 @@ mod tests {
         keep(Some(pid), None);
         let out =
             crate::platform::stop_leftovers(std::time::Instant::now() + Duration::from_secs(1));
+        // through the platform entry: listed, never `NoneLeft` (a9136 parity)
+        let crate::platform::lifecycle::Swept::Unconfirmed(out) = out else {
+            panic!("an unheld root must be listed: {out:?}")
+        };
         assert!(out.contains(&(pid, None)), "{out:?}");
     }
 

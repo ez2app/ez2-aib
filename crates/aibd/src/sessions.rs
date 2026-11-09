@@ -908,10 +908,13 @@ impl Sessions {
         let reserved = g.reserved;
         drop(g);
         // same deadline as everything else here (bb7dc #544 310cf95c D4)
-        let leftovers = crate::platform::stop_leftovers(deadline);
-        if !leftovers.is_empty() || reserved > 0 {
+        // `Swept` has no empty value for "could not look": Unsupported is
+        // reported like an unconfirmed tree (platform parity, a9136 11-09)
+        let swept = crate::platform::stop_leftovers(deadline);
+        if swept.unconfirmed() > 0 || reserved > 0 {
             tracing::warn!(
-                left_running = ?leftovers,
+                left_running = ?swept,
+                unconfirmed = swept.unconfirmed(),
                 reserved,
                 "trees of failed starts not confirmed gone by the shutdown cap, or starts still in flight"
             );
