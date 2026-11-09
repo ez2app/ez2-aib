@@ -224,6 +224,12 @@ jobs:
             '    // knife: no owner-only database file' \
             --expect-fail output_lines_are_events_and_read_back_after_a_restart \
             -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S11 (a63ab 20:0x) the policy file accepts unknown fields: `interpreters_ok` from a file
+          python3 -I scripts/knife.py crates/aibd/src/allowlist.rs \
+            $'#[serde(deny_unknown_fields)]\nstruct PolicyFile {' \
+            $'// knife: unknown fields accepted\nstruct PolicyFile {' \
+            --expect-fail allowlist::tests::the_file_is_checked_field_by_field \
+            -- cargo test -p aibd --locked --lib allowlist::tests::the_file_is_checked_field_by_field
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // came from #592 and the gate from #593; neither saw the other).\n    let policy = st.session_policy.clone();' \
