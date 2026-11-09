@@ -173,6 +173,15 @@ def build_script(prompt, title, nonce, wait=WAIT_S, generate=False):
                .replace("__NONCE__", json.dumps(nonce)).replace("__WAIT__", str(int(wait))))
 
 
+def clear_clipboard(run=subprocess.run):
+    """--generate 把產生的密碼放進剪貼簿;同帳號任何程式(含 AI)都讀得到,所以視窗關掉(不論成敗)就清掉。
+    本人在按「儲存」前已存進密碼管理器;清不掉只記 False,不影響結果。"""
+    try:
+        return run(["pbcopy"], input=b"", capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired, TypeError):
+        return False
+
+
 def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False, generate=False):
     """彈一次遮字輸入框。回 {"ok": bool, "why": str, "value"?: str}。raw=True ⇒ value 原樣(不砍頭尾空白,站點密碼用)。
     generate=True ⇒ 多一顆「產生並複製」鈕(--generate)。"""
@@ -363,6 +372,8 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+    if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿,不論按了儲存還是取消(產生過的值在上面)
+        res["clipboard_cleared"] = clear_clipboard()
     if value is None:
         res["why"] = why
         if why == "no_gui":
@@ -413,6 +424,8 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
         return done(2)
     dest = _t("aib.secret.dest_se")
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+    if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿,不論按了儲存還是取消(產生過的值在上面)
+        res["clipboard_cleared"] = clear_clipboard()
     if value is None:
         res["why"] = why
         if why == "no_gui":

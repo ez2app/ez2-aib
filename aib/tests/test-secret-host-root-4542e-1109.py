@@ -111,6 +111,25 @@ class HostRoot(unittest.TestCase):
         bad = SA.dialog("p", "t", run=lambda cmd, input=None, **kw: type("R", (), {"stdout": json.dumps({"ok": True, "nonce": "0" * 32, "value": "x"}), "returncode": 0})(), generate=True)
         self.assertEqual(bad["why"], "nonce_mismatch")
 
+    def test_r5_clipboard_cleared_after_generate(self):
+        """產生的密碼進了剪貼簿(同帳號 AI 也讀得到)⇒ 視窗一關就 pbcopy 清空;清不掉回 False,不影響結果。"""
+        calls = []
+
+        def run(cmd, input=None, **kw):
+            calls.append((cmd, input))
+            return type("R", (), {"returncode": 0})()
+        self.assertTrue(SA.clear_clipboard(run=run))
+        self.assertEqual(calls, [(["pbcopy"], b"")])
+        self.assertFalse(SA.clear_clipboard(run=lambda *a, **k: (_ for _ in ()).throw(OSError("no pbcopy"))))
+        # ask_cmd with --generate: the dialog closes (here: value refused three times ⇒ bad_format) and the
+        # clipboard is cleared right after the dialog, before any later refusal
+        out = io.StringIO()
+        rc = SA.ask_cmd(["PVE_API_TOKEN", "--generate"], env=dict(self.env), platform="darwin", ask=lambda p, t, **kw: {"ok": True, "why": "ok", "value": "x" * 28},
+                        touchid=lambda r: {"ok": True}, touchid_available=lambda: True, out=out, ssh_run=lambda *a, **k: self.fail("不該碰 ssh"))
+        res = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertEqual((rc, res["why"]), (2, "bad_format"))
+        self.assertIn("clipboard_cleared", res)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
