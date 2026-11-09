@@ -156,3 +156,60 @@ jobs:
           k '        self.job.terminate(1)' '        Ok(()) // knife: no terminate'
           k '        self.job.terminate(1)' \
             '        self.child.kill().map_err(|_| SysError::Unknown) // knife: root only'
+          # 1ced7 #543 High: a root whose handle cannot be opened after the spawn is
+          # "not started" only once the root is gone AND the Job is empty
+          k2() { python3 -I scripts/knife.py crates/aib-sys/src/session.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-sys --locked --lib session::; }
+          k2 '                let mut term = terminate;' \
+            '                let mut term = |_: &Job| Ok::<(), SysError>(()); let _ = terminate; // knife: no kill' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
+          k2 '                    Ok(k) if k.all_gone() => e,' '                    Ok(_) => e, // knife: trust any report' \
+            a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+          k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
+            '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
+            a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+      - name: aibd Windows session adapter knives (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # session_windows.rs maps aib-sys results to the shared stop: clean only
+        # when the Job emptied AND every handle signaled; a not-reaped spawn keeps its pid.
+        run: |
+          set -eu
+          k() { python3 -I scripts/knife.py crates/aibd/src/platform/session_windows.rs "$1" "$2" \
+                  --expect-fail "$3" -- cargo test -p aibd --locked --lib platform::session_windows; }
+          k '            let status = if k.all_gone() {' '            let status = if k.survivors.is_empty() {' \
+            a_job_that_did_not_empty_is_never_clean
+          k '        SpawnError::Spawn(SysError::NotReaped { pid, .. }) => Some(*pid),' \
+            '        SpawnError::Spawn(SysError::NotReaped { .. }) => None,' \
+            a_spawn_not_confirmed_gone_keeps_its_pid
+          k '                _ => idle(timeout),' '                _ => Some(Exit::Code(0)), // knife: unreadable is an exit' \
+            a_root_wait_or_exit_code_error_is_never_an_exit
+          k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    let _ = timeout.min(IDLE_MAX); // knife: no pause' \
+            an_unanswered_root_wait_pauses_before_none_and_is_bounded
+          k '    std::thread::sleep(timeout.min(IDLE_MAX));' '    std::thread::sleep(timeout.max(IDLE_MAX)); // knife: unbounded' \
+            an_unanswered_root_wait_pauses_before_none_and_is_bounded
+          # a9136 #555 Medium: failed starts not confirmed gone are kept and swept / listed at shutdown
+          k '        (Some(_), Some(l)) => LEFTOVERS.lock().unwrap_or_else(|e| e.into_inner()).push(*l),' \
+            '        (Some(_), Some(l)) => drop(l), // knife: not kept' \
+            a_kept_failed_start_is_stopped_by_the_shutdown_sweep
+          k '        (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),' \
+            '        (Some(_), None) => {} // knife: silent' \
+            an_unheld_failed_start_is_listed_at_shutdown
+          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
+            '        session_windows::stop_leftovers(deadline)' \
+            '        { let _ = deadline; Vec::new() } // knife: Windows sweeps nothing' \
+            --expect-fail an_unheld_failed_start_is_listed_at_shutdown \
+            -- cargo test -p aibd --locked --lib platform::session_windows
+      - name: aibd Windows sessions wiring knife (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # default_spawn must be session_windows::spawn (a63ab 11-09: unwired,
+        # every POST was 422 unsupported_platform). The knife puts the refusal
+        # back; the real-aibd test must turn red.
+        run: |
+          set -eu
+          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
+            '        session_windows::spawn' \
+            '        |_: &session::Spec, _| Err(session::SpawnFail { tag: "unsupported_platform".into(), left_running: None }) // knife: not wired' \
+            --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
+            -- cargo test -p aibd --locked --test sessions_windows

@@ -10,6 +10,8 @@ pub mod fork_watch;
 pub mod session;
 #[cfg(unix)]
 pub mod session_unix;
+#[cfg(windows)]
+pub mod session_windows;
 pub mod tree;
 
 #[cfg(unix)]
@@ -73,15 +75,18 @@ pub fn default_spawn() -> session::SpawnFn {
     {
         session_unix::spawn
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Windows: 043dd's `session_windows::spawn` (J0 + Job per session)
-        // lands separately; until then every start is refused honestly.
+        // J0 + one Job per session (043dd #543).
+        session_windows::spawn
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         unsupported_spawn
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_spawn(
     _: &session::Spec,
     _: Option<std::sync::Arc<crate::lineage::Lineage>>,
@@ -95,13 +100,17 @@ fn unsupported_spawn(
 /// Stop the trees left by failed starts once more, all within `deadline`
 /// (aibd is ending; bb7dc #544). Returns the roots not confirmed gone, as
 /// (pid, recorded start time).
-/// Windows: none are kept here.
+/// Windows: (pid, Job creation time); a root never held is listed with `None`.
 pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
     #[cfg(unix)]
     {
         session_unix::stop_leftovers(deadline)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        session_windows::stop_leftovers(deadline)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = deadline;
         Vec::new()
