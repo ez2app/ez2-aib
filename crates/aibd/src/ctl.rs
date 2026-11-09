@@ -225,10 +225,17 @@ fn session_state(c: &Client, session: &str) -> Result<Value, String> {
 }
 
 fn watch(c: &Client, session: &str) -> Result<(), String> {
+    watch_with_grace(c, session, Duration::from_secs(5))
+}
+
+// This is a short-lived interactive client, not a recurring daemon timer (ADR 0005).
+#[allow(clippy::disallowed_methods)]
+fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), String> {
     let session = id(session)?;
     let mut cursor = 0_i64;
     let mut event_cursor = 0_i64;
     let (mut stdout_closed, mut stderr_closed) = (false, false);
+    let mut terminal_seen: Option<Instant> = None;
     loop {
         let page = c.request(
             "GET",
@@ -318,11 +325,27 @@ fn watch(c: &Client, session: &str) -> Result<(), String> {
                     _ => Err(format!("unrecognized session state: {status}")),
                 };
             }
-        } else if entries.is_empty() && !(stdout_closed && stderr_closed) {
+        } else if !(stdout_closed && stderr_closed) {
             let state = session_state(c, session)?;
-            if state.get("state").and_then(Value::as_str) == Some("interrupted") {
+            let status = state
+                .get("state")
+                .and_then(Value::as_str)
+                .ok_or("session state missing")?;
+            if status == "interrupted" || status == "stop_unconfirmed" {
                 println!("{state}");
-                return Err("session was interrupted before both output streams closed".into());
+                return Err(format!(
+                    "session ended as {status} before both output streams closed"
+                ));
+            }
+            if status == "running" {
+                terminal_seen = None;
+            } else if matches!(status, "exited" | "killed") {
+                let since = *terminal_seen.get_or_insert_with(Instant::now);
+                if since.elapsed() >= grace {
+                    return Err("output streams did not close after session ended".into());
+                }
+            } else {
+                return Err(format!("unrecognized session state: {status}"));
             }
         }
         if entries.len() < 500 && items.len() < 500 {
@@ -470,6 +493,14 @@ fn policy_init() -> Result<(), String> {
             eprintln!("{name}: Team ID unavailable");
             continue;
         };
+        let expected = if name == "claude" {
+            "Q6L2SF6YDW"
+        } else {
+            "2DC432GLL2"
+        };
+        if team != expected {
+            eprintln!("{name}: observed Team ID {team} differs from previously observed {expected}; verify the executable before using it");
+        }
         programs.push(json!({"name": name, "path": candidate.to_string_lossy(), "signer": team}));
     }
     if programs.is_empty() {
@@ -635,6 +666,17 @@ mod tests {
             r#"{"state":"interrupted"}"#,
         ]);
         assert!(execute(&c, &["watch", "session_1"]).is_err());
+        assert_eq!(server.join().unwrap().len(), 3);
+    }
+    #[test]
+    fn watch_reports_unclosed_streams_after_terminal_grace() {
+        let (c, server) = fake(vec![
+            r#"{"output":[],"next":0}"#,
+            r#"{"events":[],"next_cursor":0}"#,
+            r#"{"state":"exited"}"#,
+        ]);
+        let error = watch_with_grace(&c, "session_1", Duration::ZERO).unwrap_err();
+        assert!(error.contains("output streams did not close"));
         assert_eq!(server.join().unwrap().len(), 3);
     }
     #[test]
