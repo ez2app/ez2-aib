@@ -47,6 +47,7 @@
   "actor_missing",
   "evidence",
   "im_room_only",
+  "lock_timeout",
   "not_found",
   "ok",
   "transition"
