@@ -607,8 +607,78 @@ fn cmd_root_password(args: &[String]) -> Result<u8, String> {
     Ok(0)
 }
 
+// ---------------------------------------------------------------- site drift (outline #18)
+
+/// `site drift [--records <dir>] [--json]`: for every `<dir>/*.json` record (written by
+/// `site create`), rebuild the spec, read `pct config <ct>` and `/etc/pve/firewall/<ct>.fw`,
+/// and print every difference (`aib_cloud::site::drift`). Exit 0 = every CT exactly as
+/// declared, 1 = drift found, 2 = could not read something (never silently clean).
+fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
+    use aib_cloud::site::{drift, spec_from_record};
+    let mut dir = "/var/lib/ez2-cloud/sites".to_owned();
+    let mut as_json = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--records" => dir = it.next().ok_or("--records needs a dir")?.clone(),
+            "--json" => as_json = true,
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let mut names: Vec<std::path::PathBuf> = fs::read_dir(&dir)
+        .map_err(|e| format!("{dir}: {e}"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        return Err(format!("{dir}: no site records"));
+    }
+    let mut all: Vec<Value> = Vec::new();
+    let mut checked = 0u32;
+    for path in &names {
+        let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rec: Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let spec = spec_from_record(&rec).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut cmd = Command::new("pct");
+        cmd.args(["config", &spec.ct.to_string()]);
+        let cfg = run_capture(&mut cmd, Duration::from_secs(15))?;
+        let fw = fs::read_to_string(format!("/etc/pve/firewall/{}.fw", spec.ct)).ok();
+        let d = drift(&spec, &cfg, fw.as_deref()).map_err(|e| format!("ct {}: {e}", spec.ct))?;
+        checked += 1;
+        for x in &d {
+            if !as_json {
+                eprintln!(
+                    "!! ct {} {}: want {:?} got {:?}",
+                    x.ct, x.key, x.want, x.got
+                );
+            }
+            all.push(x.to_json());
+        }
+        if d.is_empty() && !as_json {
+            eprintln!("ok ct {} ({}) as declared", spec.ct, spec.code);
+        }
+    }
+    let doc = json!({"checked": checked, "drift": all, "ok": all.is_empty()});
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+        );
+    } else {
+        eprintln!("{checked} CTs checked, {} drift", all.len());
+    }
+    Ok(u8::from(!all.is_empty()))
+}
+
 pub fn main(args: &[String]) -> Result<u8, String> {
     match args.first().map(String::as_str) {
+        Some("site") => match args.get(1).map(String::as_str) {
+            Some("drift") => cmd_site_drift(&args[2..]),
+            _ => Err("site needs drift".to_owned()),
+        },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
             Some("run") => cmd_run(&args[2..]),
@@ -624,7 +694,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file>".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json]".to_owned()),
     }
 }
 
