@@ -1284,3 +1284,83 @@ fn a_recheck_whose_stop_hangs_still_ends_within_its_window_and_keeps_the_slot() 
         t.elapsed()
     );
 }
+
+/// 043dd #544 Medium: the root's identity was lost (M5 could not read its
+/// status). The root-exit stop still runs, but the record and the event carry
+/// `exit_code: null`, never a made-up -1, and the stop says why.
+struct LostRoot;
+
+struct LostAtOnce;
+
+impl aibd::platform::session::ExitWait for LostAtOnce {
+    fn wait(&self, _: Duration) -> Option<aibd::platform::session::Exit> {
+        Some(aibd::platform::session::Exit::Unknown)
+    }
+}
+
+impl aibd::platform::session::Running for LostRoot {
+    fn pid(&self) -> u32 {
+        999_993
+    }
+    fn try_exit(&mut self) -> std::io::Result<Option<aibd::platform::session::Exit>> {
+        Ok(Some(aibd::platform::session::Exit::Unknown))
+    }
+    fn exit_wait(&self) -> std::sync::Arc<dyn aibd::platform::session::ExitWait> {
+        std::sync::Arc::new(LostAtOnce)
+    }
+    fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
+        use aibd::platform::session::{Stop, StopStatus};
+        Stop {
+            status: StopStatus::Unverified("root_identity_lost".into()),
+            survivors: vec![],
+            tree_size: 1,
+            signals: vec![],
+            blind_spots: vec![],
+        }
+    }
+}
+
+fn lost_root_spawn(
+    _: &aibd::platform::session::Spec,
+    _: Option<std::sync::Arc<aibd::lineage::Lineage>>,
+) -> Result<Box<dyn aibd::platform::session::Running>, aibd::platform::session::SpawnFail> {
+    Ok(Box::new(LostRoot))
+}
+
+#[test]
+fn a_root_whose_identity_was_lost_has_no_exit_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        lost_root_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let rec = s.start(one_req()).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(5), || s
+            .get(&rec.id)
+            .is_some_and(|g| g.ended_by.is_some())),
+        "the root-exit stop never ran: {:?}",
+        s.get(&rec.id)
+    );
+    let got = s.get(&rec.id).unwrap();
+    assert_eq!(got.ended_by, Some("root_exit"), "{got:?}");
+    assert_eq!(got.exit_code, None, "a made-up exit code: {got:?}");
+    assert_eq!(got.signal, None, "{got:?}");
+    assert_eq!(got.state, "stop_unconfirmed", "{got:?}");
+    assert_eq!(
+        got.stop.as_ref().and_then(|v| v.reason.as_deref()),
+        Some("root_identity_lost"),
+        "{got:?}"
+    );
+    let ev = store
+        .events_after(0, 100)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.aggregate_id == rec.id && e.event_type == "session.stop_unconfirmed")
+        .expect("no stop event");
+    assert!(ev.payload["exit_code"].is_null(), "{}", ev.payload);
+}
