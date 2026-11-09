@@ -1,5 +1,7 @@
-//! `aib-xtask deps [--manifest-path P]`: only `aibd` may depend on `aib-sys`
-//! (API list v0.2, section 9). The one crate with `unsafe` OS calls must not
+//! `aib-xtask deps [--manifest-path P]`: only `aibd` and `aib-procwatch` may
+//! depend on `aib-sys` (API list v0.2, section 9; DECISION-10 B added
+//! aib-procwatch for its child listing), and `aib-forkcount` may reach it only
+//! through aib-procwatch ([`SYS_VIA`]). The one crate with `unsafe` OS calls must not
 //! leak into aib-core, aib-store or any other crate, directly, through a
 //! dev / build / target-specific dependency, under a renamed key, or through
 //! another workspace crate.
@@ -14,7 +16,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SYS_CRATE: &str = "aib-sys";
-pub const SYS_ALLOWED: &[&str] = &["aibd"];
+pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch"];
+
+/// `(crate, through)`: `crate` may reach aib-sys, but only through `through`
+/// (a path that avoids `through` is still refused). DECISION-10 B: the
+/// measurement tool uses aib-procwatch, which keeps aib-sys types private.
+pub const SYS_VIA: &[(&str, &str)] = &[("aib-forkcount", "aib-procwatch")];
 
 /// One allowed dependency of aib-sys: `(name, target, version req, features)`.
 /// Kind is always normal (no dev / build dependencies); `features` sorted.
@@ -120,8 +127,13 @@ fn graph(meta: &Value) -> BTreeMap<String, BTreeSet<String>> {
     g
 }
 
-/// The chain from `from` to aib-sys, if any (e.g. `["aib-store", "x", "aib-sys"]`).
-fn path_to_sys(g: &BTreeMap<String, BTreeSet<String>>, from: &str) -> Option<Vec<String>> {
+/// The chain from `from` to aib-sys that does not pass through any crate in
+/// `avoid`, if any (e.g. `["aib-store", "x", "aib-sys"]`).
+fn path_to_sys(
+    g: &BTreeMap<String, BTreeSet<String>>,
+    from: &str,
+    avoid: &[&str],
+) -> Option<Vec<String>> {
     let mut stack = vec![vec![from.to_owned()]];
     let mut seen = BTreeSet::new();
     while let Some(path) = stack.pop() {
@@ -130,6 +142,9 @@ fn path_to_sys(g: &BTreeMap<String, BTreeSet<String>>, from: &str) -> Option<Vec
             continue;
         }
         for d in g.get(&last).into_iter().flatten() {
+            if avoid.contains(&d.as_str()) {
+                continue;
+            }
             let mut next = path.clone();
             next.push(d.clone());
             if d == SYS_CRATE {
@@ -149,11 +164,21 @@ pub fn check(meta: &Value) -> Vec<String> {
         if name == SYS_CRATE || SYS_ALLOWED.contains(&name.as_str()) {
             continue;
         }
-        if let Some(path) = path_to_sys(&g, name) {
+        let via: Vec<&str> = SYS_VIA
+            .iter()
+            .filter(|(c, _)| *c == name)
+            .map(|(_, t)| *t)
+            .collect();
+        if let Some(path) = path_to_sys(&g, name, &via) {
             errs.push(format!(
-                "`{name}` depends on {SYS_CRATE} ({}); only {} may",
+                "`{name}` depends on {SYS_CRATE} ({}); only {} may{}",
                 path.join(" -> "),
-                SYS_ALLOWED.join(", ")
+                SYS_ALLOWED.join(", "),
+                if via.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (`{name}` only through {})", via.join(", "))
+                }
             ));
         }
     }
@@ -206,6 +231,42 @@ mod tests {
             e.iter()
                 .any(|l| l.contains("aib-store -> aib-procwatch -> aib-sys")),
             "{e:?}"
+        );
+    }
+
+    #[test]
+    fn forkcount_may_reach_sys_only_through_procwatch() {
+        let ok = meta(vec![
+            pkg("aib-forkcount", &["aib-procwatch"]),
+            pkg("aib-procwatch", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert!(check(&ok).is_empty(), "{:?}", check(&ok));
+        // directly: refused
+        let direct = meta(vec![
+            pkg("aib-forkcount", &["aib-procwatch", "aib-sys"]),
+            pkg("aib-procwatch", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        let e = check(&direct);
+        assert!(
+            e.iter().any(
+                |l| l.contains("`aib-forkcount` depends on aib-sys (aib-forkcount -> aib-sys)")
+            ),
+            "{e:?}"
+        );
+        // through aibd (not its permitted route): refused
+        let other = meta(vec![
+            pkg("aib-forkcount", &["aibd"]),
+            pkg("aibd", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert!(
+            check(&other)
+                .iter()
+                .any(|l| l.contains("aib-forkcount -> aibd -> aib-sys")),
+            "{:?}",
+            check(&other)
         );
     }
 

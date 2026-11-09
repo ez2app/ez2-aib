@@ -1,231 +1,240 @@
 {
- "plan_fnv": "aa3e3290f7d10cc6",
+ "plan_fnv": "a9bbfb4a8e25dde1",
  "host": "135.181.75.90",
  "results": [
   {
+   "from": "ct:101",
    "id": "edge-101-egress-22",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3044,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:101",
    "id": "edge-101-egress-443",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 40,
    "open": true,
-   "ms": 42
+   "port": 443
   },
   {
+   "from": "ct:101",
    "id": "edge-101-egress6-443",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "2606:4700:4700::1111",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 20,
    "open": false,
-   "ms": 24
+   "port": 443
   },
   {
+   "from": "ct:101",
    "id": "edge-101-self-22",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 19
+   "port": 22
   },
   {
+   "from": "ct:101",
    "id": "edge-101-to-hostint-22",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:101",
    "id": "edge-101-to-hostint-8006",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 3023,
    "open": false,
-   "ms": 3029
+   "port": 8006
   },
   {
+   "from": "ct:101",
+   "id": "edge-101-to-hostpub-22",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
    "id": "edge-101-to-tailnet",
-   "from": "ct:101",
-   "kind": "icmp",
    "ip": "100.120.222.46",
-   "port": 0,
+   "kind": "icmp",
+   "ms": 2037,
    "open": false,
-   "ms": 2002
+   "port": 0
   },
   {
+   "from": "ct:101",
    "id": "edge-to-site-110-22",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3030
+   "port": 22
   },
   {
+   "from": "ct:101",
    "id": "edge-to-site-110-80",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 19
+   "port": 80
   },
   {
+   "from": "ct:101",
    "id": "edge-to-site-112-22",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:101",
    "id": "edge-to-site-112-80",
-   "from": "ct:101",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 19
+   "port": 80
   },
   {
+   "from": "host",
    "id": "host-egress-22",
-   "from": "host",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 23,
    "open": true,
-   "ms": 42
+   "port": 22
   },
   {
+   "from": "host",
    "id": "host-egress-443",
-   "from": "host",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 23,
    "open": true,
-   "ms": 41
+   "port": 443
   },
   {
+   "from": "host",
    "id": "host-egress-80",
-   "from": "host",
-   "kind": "tcp",
    "ip": "151.101.2.132",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 5,
    "open": true,
-   "ms": 24
+   "port": 80
   },
   {
+   "from": "host",
    "id": "host-egress-dns",
-   "from": "host",
-   "kind": "dns",
    "ip": "1.1.1.1",
-   "port": 53,
+   "kind": "dns",
+   "ms": 1,
    "open": true,
-   "ms": 13
+   "port": 53
   },
   {
+   "from": "host",
    "id": "host-egress6-443",
-   "from": "host",
-   "kind": "tcp",
    "ip": "2606:4700:4700::1111",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 1,
    "open": true,
-   "ms": 19
+   "port": 443
   },
   {
+   "from": "host",
    "id": "host-hostint-111-closed",
-   "from": "host",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 111,
+   "kind": "tcp",
+   "ms": 0,
    "open": false,
-   "ms": 23
+   "port": 111
   },
   {
+   "from": "host",
    "id": "host-tailnet-icmp",
-   "from": "host",
-   "kind": "icmp",
    "ip": "100.120.222.46",
-   "port": 0,
+   "kind": "icmp",
+   "ms": 20,
    "open": true,
-   "ms": 1
+   "port": 0
   },
   {
+   "from": "host",
    "id": "host-to-edge-101-80",
-   "from": "host",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 80
   },
   {
+   "from": "host",
    "id": "host-to-hostint-22",
-   "from": "host",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 22
   },
   {
+   "from": "host",
    "id": "host-to-hostint-3128",
-   "from": "host",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 3128,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 3128
   },
   {
+   "from": "host",
    "id": "host-to-hostint-8006",
-   "from": "host",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 8006
   },
   {
+   "from": "host",
    "id": "host-to-hostpub-22",
-   "from": "host",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 22
   },
   {
+   "from": "host",
    "id": "host-to-hostpub-8006",
-   "from": "host",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 0,
    "open": true,
-   "ms": 18
+   "port": 8006
   },
   {
-   "id": "host-to-peerhost-22",
    "from": "host",
-   "kind": "tcp",
+   "id": "host-to-peerhost-22",
    "ip": "136.243.105.110",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 35,
    "open": true,
-   "ms": 54
+   "port": 22
   },
   {
    "id": "public-host-22",
@@ -234,7 +243,7 @@
    "ip": "135.181.75.90",
    "port": 22,
    "open": true,
-   "ms": 64
+   "ms": 59
   },
   {
    "id": "public-host-443",
@@ -252,331 +261,349 @@
    "ip": "135.181.75.90",
    "port": 8006,
    "open": false,
-   "ms": 3114
+   "ms": 3117
   },
   {
+   "from": "ct:110",
    "id": "site-110-egress-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3044,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-egress-443",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 40,
    "open": true,
-   "ms": 42
+   "port": 443
   },
   {
+   "from": "ct:110",
    "id": "site-110-egress-80",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "151.101.2.132",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 25
+   "port": 80
   },
   {
+   "from": "ct:110",
    "id": "site-110-egress-dns",
-   "from": "ct:110",
-   "kind": "dns",
    "ip": "1.1.1.1",
-   "port": 53,
+   "kind": "dns",
+   "ms": 20,
    "open": true,
-   "ms": 14
+   "port": 53
   },
   {
+   "from": "ct:110",
    "id": "site-110-egress6-443",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "2606:4700:4700::1111",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 20,
    "open": false,
-   "ms": 24
+   "port": 443
   },
   {
+   "from": "ct:110",
    "id": "site-110-lan-3306-closed",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 3306,
+   "kind": "tcp",
+   "ms": 20,
    "open": false,
-   "ms": 24
+   "port": 3306
   },
   {
+   "from": "ct:110",
    "id": "site-110-self-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 19
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-edge-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-edge-80",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 3003,
    "open": false,
-   "ms": 3029
+   "port": 80
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-hostint-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-hostint-3128",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 3128,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3029
+   "port": 3128
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-hostint-8006",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 3003,
    "open": false,
-   "ms": 3028
+   "port": 8006
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-hostpub-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-hostpub-8006",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3028
+   "port": 8006
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-peerhost-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "136.243.105.110",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:110",
+   "id": "site-110-to-peerhost-443",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:110",
    "id": "site-110-to-site-112-22",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3026
+   "port": 22
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-site-112-80",
-   "from": "ct:110",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3029
+   "port": 80
   },
   {
+   "from": "ct:110",
    "id": "site-110-to-tailnet",
-   "from": "ct:110",
-   "kind": "icmp",
    "ip": "100.120.222.46",
-   "port": 0,
+   "kind": "icmp",
+   "ms": 2037,
    "open": false,
-   "ms": 2003
+   "port": 0
   },
   {
+   "from": "ct:112",
    "id": "site-112-egress-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3063,
    "open": false,
-   "ms": 3029
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-egress-443",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "140.82.121.4",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 40,
    "open": true,
-   "ms": 42
+   "port": 443
   },
   {
+   "from": "ct:112",
    "id": "site-112-egress-80",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "151.101.2.132",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 25
+   "port": 80
   },
   {
+   "from": "ct:112",
    "id": "site-112-egress-dns",
-   "from": "ct:112",
-   "kind": "dns",
    "ip": "1.1.1.1",
-   "port": 53,
+   "kind": "dns",
+   "ms": 20,
    "open": true,
-   "ms": 14
+   "port": 53
   },
   {
+   "from": "ct:112",
    "id": "site-112-egress6-443",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "2606:4700:4700::1111",
-   "port": 443,
+   "kind": "tcp",
+   "ms": 20,
    "open": false,
-   "ms": 24
+   "port": 443
   },
   {
+   "from": "ct:112",
    "id": "site-112-lan-3306-closed",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 3306,
+   "kind": "tcp",
+   "ms": 20,
    "open": false,
-   "ms": 24
+   "port": 3306
   },
   {
+   "from": "ct:112",
    "id": "site-112-self-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.12",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 20,
    "open": true,
-   "ms": 18
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-edge-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-edge-80",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.2",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 3006,
    "open": false,
-   "ms": 3028
+   "port": 80
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-hostint-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-hostint-3128",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 3128,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3029
+   "port": 3128
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-hostint-8006",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.1",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3029
+   "port": 8006
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-hostpub-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3029
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-hostpub-8006",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "135.181.75.90",
-   "port": 8006,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3028
+   "port": 8006
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-peerhost-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "136.243.105.110",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3004,
    "open": false,
-   "ms": 3029
+   "port": 22
   },
   {
+   "from": "ct:112",
+   "id": "site-112-to-peerhost-443",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:112",
    "id": "site-112-to-site-110-22",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 22,
+   "kind": "tcp",
+   "ms": 3005,
    "open": false,
-   "ms": 3029
+   "port": 22
   },
   {
+   "from": "ct:112",
    "id": "site-112-to-site-110-80",
-   "from": "ct:112",
-   "kind": "tcp",
    "ip": "10.77.0.10",
-   "port": 80,
+   "kind": "tcp",
+   "ms": 3003,
    "open": false,
-   "ms": 3028
+   "port": 80
   },
   {
-   "id": "site-112-to-tailnet",
    "from": "ct:112",
-   "kind": "icmp",
+   "id": "site-112-to-tailnet",
    "ip": "100.120.222.46",
-   "port": 0,
+   "kind": "icmp",
+   "ms": 2036,
    "open": false,
-   "ms": 2003
+   "port": 0
   }
  ]
 }

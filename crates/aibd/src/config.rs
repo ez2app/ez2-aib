@@ -1,6 +1,8 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
+pub use crate::allowlist::SessionPolicy;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
@@ -9,6 +11,9 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     /// Running sessions allowed at once (`AIBD_MAX_SESSIONS`, 1–64, default 8).
     pub max_sessions: usize,
+    /// Programs and env names a session may use (M1 gate, `AIBD_SESSION_POLICY`).
+    /// Default: nothing may be started.
+    pub session_policy: SessionPolicy,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -23,6 +28,8 @@ pub enum ConfigError {
     BadOrigin(String),
     #[error("AIBD_MAX_SESSIONS must be 1-64, got {0}")]
     BadMaxSessions(String),
+    #[error(transparent)]
+    SessionPolicy(#[from] crate::allowlist::PolicyError),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:47770";
@@ -55,7 +62,8 @@ fn parse_origin(s: &str) -> Result<String, ConfigError> {
 }
 
 impl Config {
-    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS` through `get`
+    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS` and
+    /// `AIBD_SESSION_POLICY` (a file, read now) through `get`
     /// (injected so tests never touch the real environment).
     pub fn from_lookup(
         get: impl Fn(&str) -> Option<String>,
@@ -82,11 +90,16 @@ impl Config {
                 _ => return Err(ConfigError::BadMaxSessions(v)),
             },
         };
+        let session_policy = match get("AIBD_SESSION_POLICY") {
+            None => SessionPolicy::default(),
+            Some(v) => crate::allowlist::from_path(&v)?,
+        };
         Ok(Config {
             bind,
             data_dir,
             allowed_origins,
             max_sessions,
+            session_policy,
         })
     }
 }
@@ -133,6 +146,17 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn session_policy_unset_allows_nothing_and_a_bad_file_stops_start() {
+        let c = Config::from_lookup(|_| None, Some("/x".into())).unwrap();
+        assert_eq!(c.session_policy, SessionPolicy::default());
+        let get = |k: &str| (k == "AIBD_SESSION_POLICY").then(|| "relative.json".to_string());
+        assert_eq!(
+            Config::from_lookup(get, Some("/x".into())).unwrap_err(),
+            ConfigError::SessionPolicy(crate::allowlist::PolicyError::NotAbsolute)
+        );
     }
 
     #[test]

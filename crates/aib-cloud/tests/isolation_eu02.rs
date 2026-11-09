@@ -35,12 +35,14 @@ fn eu02() -> Topology {
     }
 }
 
-fn fixture(name: &str) -> Option<serde_json::Value> {
+/// Fixtures are committed evidence: a missing file or broken JSON is a failure, never a
+/// silent skip (ebb36 r2 L1).
+fn fixture(name: &str) -> serde_json::Value {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
-    let text = fs::read_to_string(p).ok()?;
-    serde_json::from_str(&text).ok()
+    let text = fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: not JSON: {e}", p.display()))
 }
 
 #[test]
@@ -55,19 +57,18 @@ fn eu02_plan_prints_when_asked() {
         println!("PLAN_FNV {}", plan_fingerprint(&plan));
     }
     let n = plan.as_array().expect("array").len();
-    assert!(n >= 60, "{n} cells");
+    assert!(n >= 66, "{n} cells");
     // the plan the runner is given must be exactly the one judge() will accept
-    if let Some(committed) = fixture("isolation-eu02-plan.json") {
-        assert_eq!(committed, plan, "tests/fixtures/isolation-eu02-plan.json is stale: regenerate with AIB_CLOUD_PRINT_PLAN=1");
-    }
+    let committed = fixture("isolation-eu02-plan.json");
+    assert_eq!(
+        committed, plan,
+        "tests/fixtures/isolation-eu02-plan.json is stale: regenerate with AIB_CLOUD_PRINT_PLAN=1"
+    );
 }
 
 #[test]
 fn eu02_recorded_report_passes() {
-    let Some(report) = fixture("isolation-eu02-1109.json") else {
-        eprintln!("no fixture yet: tests/fixtures/isolation-eu02-1109.json (run ez2-isolation-probe on EU02)");
-        return;
-    };
+    let report = fixture("isolation-eu02-1109.json");
     let cells = matrix(&eu02()).expect("matrix");
     // external cells were measured from EU01 and merged in, so they are required here
     let rc = judge(&cells, HOST_PUBLIC, &report, true).expect("judge");
@@ -90,9 +91,7 @@ fn eu02_recorded_report_passes() {
 
 #[test]
 fn eu02_report_for_another_plan_is_refused() {
-    let Some(mut report) = fixture("isolation-eu02-1109.json") else {
-        return;
-    };
+    let mut report = fixture("isolation-eu02-1109.json");
     // a report recorded against a topology with one site fewer must not judge this matrix
     report["plan_fnv"] = serde_json::Value::String("0000000000000000".to_owned());
     let cells = matrix(&eu02()).expect("matrix");

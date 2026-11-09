@@ -4,14 +4,17 @@
 //! every request; accept the startup token only as `Authorization: Bearer`;
 //! reject tokens in URLs; send no CORS headers; never log headers or queries.
 
+pub mod allowlist;
 pub mod api;
 pub mod config;
 pub mod guard;
 pub mod lineage;
 pub mod platform;
 pub mod runtime;
+pub mod seats;
 pub mod selfcheck;
 pub mod server;
+pub mod session_output;
 pub mod sessions;
 pub mod timers;
 pub mod token;
