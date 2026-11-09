@@ -87,7 +87,23 @@ pub async fn run(
             .unwrap_or_else(|_| crate::lineage::Lineage::disabled("failed:selfcheck_panicked")),
     );
     tracing::info!(lineage = %lineage.status(), "lineage self-check");
-    let app = api::router(AppState { store, lineage }, guard_cfg);
+    let sessions_dir = dirs.data_dir().join("sessions");
+    platform::create_private_dir(&sessions_dir)?;
+    let sessions = crate::sessions::Sessions::new(
+        store.clone(),
+        Some(lineage.clone()),
+        platform::default_spawn(),
+        cfg.max_sessions,
+        sessions_dir,
+    );
+    let app = api::router(
+        AppState {
+            store,
+            lineage,
+            sessions: sessions.clone(),
+        },
+        guard_cfg,
+    );
     tracing::info!(%addr, "aibd listening");
     on_started(Started {
         addr,
@@ -95,6 +111,14 @@ pub async fn run(
         run_info_path: run_info_path.clone(),
     });
 
+    // D11: on shutdown, first stop every session (new POSTs get 503 while
+    // this runs, GET still answers), then close the server.
+    let sweep = sessions.clone();
+    let shutdown = async move {
+        shutdown.await;
+        tracing::info!("aibd stopping: stopping sessions");
+        let _ = tokio::task::spawn_blocking(move || sweep.shutdown_all()).await;
+    };
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await;
