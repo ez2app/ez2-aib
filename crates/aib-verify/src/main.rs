@@ -6,6 +6,10 @@
 //!
 //! "沒驗" lists what this run did not cover; a skipped check is never a pass.
 
+// An acceptance tool polls aibd and waits on processes by design; the ADR 0005
+// timer rule (registered timers, no bare sleep) is for aibd itself.
+#![allow(clippy::disallowed_methods)]
+
 mod daemon;
 mod g1;
 mod http;

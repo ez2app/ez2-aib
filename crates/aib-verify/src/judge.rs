@@ -92,8 +92,7 @@ impl Row {
 
     /// Copy what aibd reported for the session (GET /api/v1/sessions/{id}).
     pub fn fill(&mut self, v: &Value) {
-        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-        self.state = s("state");
+        self.state = v["state"].as_str().unwrap_or_default().to_string();
         self.holds_slot = v["holds_slot"].as_bool();
         let stop = &v["stop"];
         self.reason = stop["reason"].as_str().unwrap_or_default().to_string();
