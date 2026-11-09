@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Sessions smoke for a built aibd: open a program that has a grandchild, DELETE it, check the whole tree is gone.
 
-    python3 -I scripts/aibd-sessions-smoke.py PATH/TO/aibd[.exe] [--require] [--timeout S]
+    python3 -I scripts/aibd-sessions-smoke.py PATH/TO/aibd[.exe] [--require] [--timeout S] [--marker-timeout S]
+  --timeout S         how long to wait for aibd's start-up line (default 20)
+  --marker-timeout S  how long the started program may take to write its marker (default 20; bb7dc #537:
+                      a separate limit, so a wider start-up wait never widens this check)
 
 a63ab PLAN-preview2-usable-today (1ced7, 11-09). Same script on macOS and Windows (release build + verify jobs).
 
@@ -197,7 +200,7 @@ def wait_for(pred, seconds, step=0.1):
     return pred()
 
 
-def smoke(exe, require, timeout):
+def smoke(exe, require, timeout, marker_timeout=20.0):
     res = {"exe": os.path.basename(exe)}
     work = tempfile.mkdtemp(prefix="aibd-sessions-smoke-")
     out_path, err_path = os.path.join(work, "out.txt"), os.path.join(work, "err.txt")
@@ -241,7 +244,8 @@ def smoke(exe, require, timeout):
         res["session_id"], res["session_pid"] = sid, spid
         if code != 201 or not isinstance(sid, str) or not sid or not isinstance(spid, int):
             return res, False
-        res["marker"] = wait_for(lambda: os.path.exists(marker), timeout)
+        res["marker"] = wait_for(lambda: os.path.exists(marker), marker_timeout)
+        res["marker_wait_s"] = marker_timeout
         if res["marker"]:
             with open(marker, encoding="utf-8") as f:
                 child, grand = (int(x) for x in f.read().split())
@@ -301,23 +305,25 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     require = "--require" in argv
     argv = [a for a in argv if a != "--require"]
-    timeout = 20.0
-    if "--timeout" in argv:
-        i = argv.index("--timeout")
-        try:
-            timeout = float(argv[i + 1])
-        except (IndexError, ValueError):
-            print("aibd-sessions-smoke: --timeout needs seconds")
-            return 2
-        del argv[i:i + 2]
+    limits = {"--timeout": 20.0, "--marker-timeout": 20.0}
+    for flag in limits:
+        if flag in argv:
+            i = argv.index(flag)
+            try:
+                limits[flag] = float(argv[i + 1])
+            except (IndexError, ValueError):
+                print("aibd-sessions-smoke: %s needs seconds" % flag)
+                return 2
+            del argv[i:i + 2]
+    timeout, marker_timeout = limits["--timeout"], limits["--marker-timeout"]
     if len(argv) != 1:
-        print("usage: aibd-sessions-smoke.py PATH/TO/aibd [--require] [--timeout S]")
+        print("usage: aibd-sessions-smoke.py PATH/TO/aibd [--require] [--timeout S] [--marker-timeout S]")
         return 2
     exe = os.path.abspath(argv[0])
     if not os.path.isfile(exe):
         print("aibd-sessions-smoke: no such file: %s" % exe)
         return 2
-    res, ok = smoke(exe, require, timeout)
+    res, ok = smoke(exe, require, timeout, marker_timeout)
     res["pass"] = bool(ok)
     print(("SKIP sessions API absent " if res.get("skipped") else "") + json.dumps(res, ensure_ascii=False))
     return 0 if ok else 1

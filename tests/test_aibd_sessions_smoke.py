@@ -8,6 +8,8 @@ A fake aibd (python http server; prints the same start-up line, token file and r
   unconfirmed  killpg; stop_unconfirmed + tree_not_clean, survivors [1] => rc 1 (believe aibd's own report)
   otherreason  killpg; stop_unconfirmed + unverified/lineage_unavailable => rc 1 (only observed_clean counts)
   killedunv    killpg; killed + unverified                      => rc 1 (killed needs clean)
+  slowmarker   like good, but the program starts FAKE_DELAY s late => its marker comes after --marker-timeout => rc 1
+               (bb7dc #537 11722db7: the wider start-up wait must not widen the marker wait)
 The smoke never signals a pid itself (bb7dc #537 High 1): leftovers exit on the stop file; the test checks they did.
 POSIX only (the fake uses process groups); Windows is covered by the release job running the real aibd.
 """
@@ -52,7 +54,10 @@ FAKE = textwrap.dedent('''\
             if MODE == "absent": return self.send(404, {"error": "not_found"})
             if not self.authed(): return self.send(401)
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            p = subprocess.Popen(body["argv"], cwd=body.get("cwd"), start_new_session=True)
+            argv = body["argv"]
+            if MODE == "slowmarker":
+                argv = ["/bin/sh", "-c", 'sleep "$FAKE_DELAY"; exec "$@"', "sh"] + argv
+            p = subprocess.Popen(argv, cwd=body.get("cwd"), start_new_session=True)
             S["s1"] = p
             self.send(201, {"id": "s1", "pid": p.pid, "started_at": 0})
         def do_GET(self):
@@ -67,6 +72,7 @@ FAKE = textwrap.dedent('''\
             p.wait()
             ans = {
                 "good": ("stop_unconfirmed", {"status": "unverified", "reason": "observed_clean", "survivors": []}),
+                "slowmarker": ("stop_unconfirmed", {"status": "unverified", "reason": "observed_clean", "survivors": []}),
                 "clean": ("killed", {"status": "clean", "survivors": []}),
                 "leaky": ("killed", {"status": "clean", "survivors": []}),
                 "unconfirmed": ("stop_unconfirmed", {"status": "tree_not_clean", "survivors": [1]}),
@@ -84,17 +90,32 @@ FAKE = textwrap.dedent('''\
 
 @unittest.skipUnless(os.name == "posix", "fake aibd uses process groups")
 class SessionsSmoke(unittest.TestCase):
-    def run_smoke(self, mode, *extra, start=START):
+    def run_smoke(self, mode, *extra, start=START, marker="15", delay="0"):
         with tempfile.TemporaryDirectory() as d:
             fake = Path(d) / "aibd"
             fake.write_text(FAKE, encoding="utf-8")
             fake.chmod(0o755)
-            r = subprocess.run([sys.executable, "-I", str(SMOKE), str(fake), "--timeout", start] + list(extra),
-                               env=dict(os.environ, FAKE_MODE=mode), capture_output=True, text=True,
+            r = subprocess.run([sys.executable, "-I", str(SMOKE), str(fake), "--timeout", start, "--marker-timeout", marker]
+                               + list(extra), env=dict(os.environ, FAKE_MODE=mode, FAKE_DELAY=delay), capture_output=True, text=True,
                                timeout=2 * float(start) + 90)
         line = (r.stdout.strip().splitlines() or [""])[-1]
         res = json.loads(line[line.index("{"):]) if "{" in line else {}
         return r.returncode, res, r.stdout + r.stderr
+
+    def test_a_late_marker_is_red_even_with_a_wide_start_wait(self):
+        """bb7dc #537:啟動等很久(START,預設 60)也不准順便把 marker 的等待放寬;marker 晚於 --marker-timeout ⇒ 紅。"""
+        rc, res, log = self.run_smoke("slowmarker", marker="1", delay="3")
+        self.assertEqual((rc, res.get("started"), res.get("marker"), res.get("marker_wait_s")), (1, True, False, 1.0), log)
+        self.assertGreater(float(START), 3, "這支要在啟動等待 > 延遲時才分得出兩個時限")
+
+    def test_a_late_marker_inside_its_limit_is_still_green(self):
+        """正向對照:同一個 slowmarker,marker 時限比延遲長 ⇒ 綠(證明上面那支紅是時限造成的，不是假 aibd 壞)。"""
+        rc, res, log = self.run_smoke("slowmarker", marker="15", delay="1")
+        self.assertEqual((rc, res.get("marker"), res.get("pass")), (0, True, True), log)
+
+    def test_the_two_limits_are_separate_flags(self):
+        src = SMOKE.read_text(encoding="utf-8")
+        self.assertIn("wait_for(lambda: os.path.exists(marker), marker_timeout)", src)
 
     def test_a_start_that_never_came_says_why(self):
         rc, res, log = self.run_smoke("hang", start="1")
