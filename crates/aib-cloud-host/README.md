@@ -32,7 +32,7 @@ version in `Cargo.toml`) makes workflow `cloud-host` build the static `x86_64-un
 file, smoke it, write `SHA256SUMS`, create a **draft** pre-release, download from that draft and
 run the file again (including `self-update` against the draft's files over `file://`), and only
 then publish it as a pre-release (never "latest"). Release notes
-`docs/cloud-host/RELEASE-NOTES-<version>.md` must exist (a human reads them before tagging).
+`docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-<version>.md` must exist (a human reads them before tagging).
 A push or PR touching the crates still uploads a 14-day CI artifact, for trying a build that is
 not a release.
 

@@ -11,7 +11,7 @@
 #        `self-update` against the draft's files over file:// (the host's upgrade path, end to end, no network)
 #     ⇒ only when verify is green:publish the draft as a pre-release (never "latest") and read it back.
 #   A red verify leaves the draft unpublished for good (same rule as aibd-release.yml).
-# Release notes docs/cloud-host/RELEASE-NOTES-<version>.md must exist:a human reads them before tagging.
+# Release notes docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-<version>.md must exist:a human reads them before tagging.
 # Nothing is signed;SHA256SUMS proves the download is what CI built.
 name: cloud-host
 on:
@@ -67,7 +67,7 @@ jobs:
             if ! printf '%s\n' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[1-9][0-9]*)?$'; then
               echo "::error::$ver is not X.Y.Z or X.Y.Z-preview.N"; exit 1
             fi
-            [ -f "docs/cloud-host/RELEASE-NOTES-$ver.md" ] || { echo "::error::docs/cloud-host/RELEASE-NOTES-$ver.md is missing (release notes are read by a human before tagging)"; exit 1; }
+            [ -f "docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-$ver.md" ] || { echo "::error::docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-$ver.md is missing (release notes are read by a human before tagging)"; exit 1; }
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -170,7 +170,7 @@ jobs:
           if [ -n "$old" ]; then
             echo "::error::release(s) for $TAG already exist (ids: $old; maybe a draft from a red run) — not touching them; a new version gets a new tag"; exit 1
           fi
-          notes="docs/cloud-host/RELEASE-NOTES-${VERSION}.md"
+          notes="docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-${VERSION}.md"
           [ -f "$notes" ] || { echo "::error::$notes is missing"; exit 1; }
           gh release create "$TAG" --draft --prerelease --latest=false --verify-tag \
             --title "aib-cloud-host $VERSION" --notes-file "$notes" dist/aib-cloud-host-* dist/SHA256SUMS
