@@ -159,9 +159,25 @@ class HostRoot(unittest.TestCase):
         rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"],
                                    lambda p, t, **kw: {"ok": False, "why": "cancel", "generated": True, "cleared": True})
         self.assertEqual((res["clipboard"], res["clipboard_cleared"], cleared), ("cleared", True, []))
-        # a dialog stub without the flags (older shape) counts as "returned, not generated"
-        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: {"ok": False, "why": "cancel"})
-        self.assertEqual((res["clipboard"], cleared), ("not_generated", []))
+        # 1ced7 #610 M1:a result WITHOUT the flags is not "the window came back" — Python timeout,
+        # osascript dead, unreadable output — so the conservative clear must run (value unknown)
+        for stub in ({"ok": False, "why": "cancel"}, {"ok": False, "why": "timeout"}, {"ok": False, "why": "osascript_failed"}, {"ok": False, "why": "unreadable"}):
+            rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, _s=stub, **kw: dict(_s))
+            self.assertEqual((res["clipboard"], cleared), ("cleared", [None]), str(stub))
+        # the real dialog() on a subprocess timeout returns no flags either (REPRO-610-m1)
+        import subprocess as _sp
+        r = SA.dialog("p", "t", run=lambda cmd, input=None, **kw: (_ for _ in ()).throw(_sp.TimeoutExpired(cmd, 1)), generate=True)
+        self.assertEqual(r["why"], "timeout"); self.assertNotIn("generated", r)
+        # 1ced7 #610 L1:cleared follows the LAST round that pressed generate; a later round that did not
+        # press it leaves the verdict alone (round 1 generated + cleared, bad value → round 2 cancel)
+        seq = iter([{"ok": True, "why": "ok", "value": "short", "generated": True, "cleared": True},
+                    {"ok": False, "why": "cancel", "generated": False, "cleared": False}])
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq))
+        self.assertEqual((res["why"], res["clipboard"], cleared), ("cancel", "cleared", []))
+        seq2 = iter([{"ok": True, "why": "ok", "value": "short", "generated": True, "cleared": True},
+                     {"ok": False, "why": "cancel", "generated": True, "cleared": False}])
+        rc, res, cleared = harness(["PVE_API_TOKEN", "--generate"], lambda p, t, **kw: next(seq2))
+        self.assertEqual((res["clipboard"], cleared), ("kept", []))
         # dialog() passes the JXA flags through on every parsed path
         mk = lambda d: (lambda cmd, input=None, **kw: type("R", (), {"stdout": json.dumps(d), "returncode": 0, "stderr": ""})())  # noqa: E731
         r = SA.dialog("p", "t", run=mk({"ok": False, "why": "cancel", "generated": True, "cleared": True}), generate=True)

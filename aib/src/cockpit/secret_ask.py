@@ -248,8 +248,9 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False, generate=F
 
 def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, generate=False, state=None):
     """問到一個格式對的值。回 (value, why);value None = 沒拿到。
-    state(dict,可選):視窗正常回來就填 returned=True、generated(任一次按過產生)、cleared(最後一次視窗關掉時清掉了產生值),
-    給 ask_cmd 決定剪貼簿怎麼收尾(1ced7 #588 L8 / L9)。"""
+    state(dict,可選):視窗帶著旗標回來才填 returned=True;generated = 任一輪按過產生;cleared = 最後一輪有按產生的那次
+    關窗時有沒有把產生值清掉(1ced7 #588 L8 / L9;#610 M1 / L1)。沒旗標(逾時、osascript 死、讀不懂)⇒ returned 不設,
+    ask_cmd 走保守清。"""
     title = _t("aib.secret.dialog_title", {"name": name})
     base = _t("aib.secret.dialog_prompt", {"name": name, "dest": dest})
     prompt = base
@@ -258,10 +259,13 @@ def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, genera
             if generate and ask is None:  # --generate:三顆鈕的視窗;不動下一行(33e28 刀測 K6c 以它當錨)
                 ask = lambda p, t: dialog(p, t, raw=keeps_exact(name), generate=True)  # noqa: E731
             res = (ask or (lambda p, t: dialog(p, t, raw=keeps_exact(name))))(prompt, title)
-            if state is not None:
+            if state is not None and "generated" in res:
+                # 1ced7 #610 M1:只有視窗真的回來(帶旗標)才算 returned;逾時 / osascript 死 / 讀不懂沒有旗標,
+                # 不算,留給 settle_clipboard 走保守清。L1:cleared 以「最後一次有按產生的那輪」為準,沒按產生的那輪不動它。
                 state["returned"] = True
-                state["generated"] = bool(state.get("generated")) or res.get("generated") is True
-                state["cleared"] = res.get("cleared") is True
+                if res.get("generated") is True:
+                    state["generated"] = True
+                    state["cleared"] = res.get("cleared") is True
             if not res.get("ok"):
                 return None, res.get("why") or "failed"
             raw = res["value"]
@@ -370,7 +374,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
 def settle_clipboard(res, state, clipboard=None):
     """--generate 視窗關了之後剪貼簿怎麼收尾(1ced7 #588 L8 / L9):
     視窗正常回來 ⇒ 清不清已由 JXA 比對「剪貼簿 == 最後一次產生的值」決定(值不出 JXA);沒按過產生就一律不碰本人的剪貼簿(L9)。
-    視窗沒正常回來(中斷 / 逾時砍掉 / osascript 死)⇒ 不知道有沒有產生過,保守清一次(L5)。
+    視窗沒帶旗標回來(中斷 / Python 逾時 / osascript 死 / 輸出讀不懂)⇒ 不知道有沒有產生過,保守清一次(L5;#610 M1)。
     res["clipboard"] 是代碼(契約):cleared / kept(產生過、但剪貼簿已是別的東西,不動)/ not_generated / clear_failed;
     res["clipboard_cleared"] 保留布林。"""
     if state.get("returned"):
