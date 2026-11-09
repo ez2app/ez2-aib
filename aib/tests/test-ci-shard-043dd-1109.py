@@ -13,9 +13,11 @@ C6 串行組:內容有 pgrep / 檔頭 `# aib: ci-serial` ⇒ 串行;`# aib: ci-p
 C7 真的並行:4 支各睡 1.5 秒、--jobs 4 ⇒ 牆鐘 < 4 秒。
 C8 每支自己的 HOME(不是 runner 的 HOME,彼此不同)。
 C9 ci.yml 的 smoke 格改呼叫 ci_shard.py、舊的逐支迴圈不在了;結果 artifact 名字帶 run_attempt(重跑不撞名)。
+C11 git 身分照舊讀得到、但不靠 GIT_* 變數(1ced7 #571 r2 N1:GIT_CONFIG_GLOBAL 讓影子量測判 git-env):
+    runner HOME 的 .gitconfig 複製進每支自己的 HOME;子測試看不到 GIT_CONFIG_GLOBAL,git config --global 讀得到。
 C10 零支不算綠(1ced7 #571 r1 必修):兩根都空 / 只有一根空 / --repo 指到不存在的路徑 ⇒ rc 1、列 empty。
 刀(複本 + run_guarded):K1 漏測(收集少一支)⇒ C1 紅;K2 重複測 ⇒ C1 紅;K3 子程序非零記成綠 ⇒ C2 紅;
-K4 收到中斷不停 ⇒ C5 紅;K5 只比總數(同數不同名放過)⇒ C4 紅;K6 拿掉空根檢查 ⇒ C10 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 收到中斷不停 ⇒ C5 紅;K5 只比總數(同數不同名放過)⇒ C4 紅;K6 拿掉空根檢查 ⇒ C10 紅;K7 改回設 GIT_CONFIG_GLOBAL ⇒ C11 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import json
 import os
@@ -241,6 +243,28 @@ class C(Base):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("全綠", r.stdout)
 
+    def test_c11_git_identity_without_git_env(self):
+        home = self.d / "runner-home"
+        home.mkdir()
+        (home / ".gitconfig").write_text("[user]\n\tname = ci-shard-t\n\temail = t@example.com\n", encoding="utf-8")
+        self.put("aib/tests/test-git.py", textwrap.dedent("""
+            import os, subprocess, sys
+            bad = sorted(k for k in os.environ if k.startswith("GIT_CONFIG"))
+            if bad:
+                sys.exit("GIT_CONFIG* set: %r" % bad)
+            name = subprocess.run(["git", "config", "--global", "user.name"], capture_output=True, text=True).stdout.strip()
+            if name != "ci-shard-t":
+                sys.exit("git identity not found: %r" % name)
+        """))
+        self.root_ok()
+        out = self.d / "res.json"
+        env = dict(self.env(), HOME=str(home))
+        env.pop("GIT_CONFIG_GLOBAL", None)
+        r = subprocess.run([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--results", str(out)],
+                           capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, env=env)
+        res = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr + json.dumps(res.get("problems"), ensure_ascii=False))
+
 
 KNIVES = [
     ("K1 漏測", "tools/verify/ci_shard.py",
@@ -263,6 +287,10 @@ KNIVES = [
     ("K6 拿掉空根檢查", "tools/verify/ci_shard.py",
      "        if not names:      #", "        if False:      #",
      "C.test_c10_zero_tests_is_red"),
+    ("K7 改回 GIT_CONFIG_GLOBAL", "tools/verify/ci_shard.py",
+     '                    shutil.copyfile(self.gitconfig, os.path.join(env["HOME"], ".gitconfig"))\n',
+     '                    env["GIT_CONFIG_GLOBAL"] = self.gitconfig\n',
+     "C.test_c11_git_identity_without_git_env"),
 ]
 
 

@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -129,7 +130,12 @@ class Runner:
         rc, timed_out = None, False
         with self.te._own_home(self.repo, dict(os.environ), name) as env:
             if self.gitconfig:
-                env["GIT_CONFIG_GLOBAL"] = self.gitconfig
+                # 1ced7 #571 r2 N1:不設 GIT_CONFIG_GLOBAL —— 那是指到治具外的 GIT_* 路徑,影子追蹤器會判
+                # untracked:git-env(test-shadow-reuse-holes g2 在 ubuntu 三格紅)。複製進這支自己的 HOME。
+                try:
+                    shutil.copyfile(self.gitconfig, os.path.join(env["HOME"], ".gitconfig"))
+                except OSError:
+                    pass
             with open(log_path, "w", encoding="utf-8") as fh:
                 with self.lock:
                     if self.stopping:
