@@ -2,22 +2,27 @@
 //!
 //! When an integration PR takes over original PRs, the originals' queued /
 //! running CI runs are cancelled so the integration PR gets the macOS
-//! runners, and each original gets the `in-integ` label (its later pushes
-//! skip the macOS cells, ci.yml). Only cancels, never marks anything green.
+//! runners, and each original gets the `in-integ` label. ci.yml reacts only
+//! to the labelling event itself (that one run skips macOS and its macOS
+//! cells fail as "not a verdict"); the label has no effect on later pushes,
+//! on re-opens or on integration PRs. Only cancels, never marks anything
+//! green.
 //!
 //! Before touching an original, every one of these must hold (else that PR
 //! is skipped, or everything is refused, with the reason):
-//! - the integration PR is open, and its CI for its current head has started
-//!   (each required workflow has a `pull_request` run that was not cancelled);
+//! - the integration PR is open, its head is a full SHA, and each required
+//!   workflow file has a `pull_request` run on that head that is not
+//!   cancelled and that GitHub ties to the integration PR alone ([`owner`]);
 //! - the original is open, its head is EXACTLY the full SHA the caller says
-//!   was integrated (no prefix match: an empty or short prefix matched every
-//!   head in the old shell script), and that SHA is contained in the
+//!   was integrated (no prefix match), and that SHA is contained in the
 //!   integration head (GitHub compare: identical or ahead);
-//! - only runs of that SHA, from `pull_request` events, not yet completed.
+//! - only its own unfinished runs ([`Owner::Ours`]); a run on the same commit
+//!   that cannot be tied to one PR makes the original UNKNOWN.
 //!
-//! A read that fails is UNKNOWN for that PR (or refuses the whole yield when
-//! it is the integration PR's), never "nothing to cancel". A cancel that
-//! fails is reported as failed, never as yielded.
+//! All of it is checked again right before every write ([`apply`]). A read
+//! that fails is UNKNOWN (or refuses the whole yield when it is the
+//! integration PR's), never "nothing to cancel"; any UNKNOWN stops the whole
+//! batch. A cancel that fails is reported as failed, never as yielded.
 
 use std::fmt;
 
@@ -28,6 +33,11 @@ pub struct Pull {
     /// `open` or `closed`.
     pub state: String,
     pub head_sha: String,
+    /// The head branch name (`head.ref`).
+    pub head_ref: String,
+    /// The head repository (`head.repo.full_name`); `None` when GitHub has
+    /// none (deleted fork).
+    pub head_repo: Option<String>,
     pub labels: Vec<String>,
 }
 
@@ -35,18 +45,64 @@ pub struct Pull {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub id: u64,
-    /// Workflow name (`ci`, `aibd`, ...).
-    pub name: String,
+    /// Workflow file (`.github/workflows/ci.yml`): the identity; the display
+    /// name can be shared by two files.
+    pub path: String,
     pub event: String,
     /// `queued`, `in_progress`, `waiting`, `requested`, `pending`, `completed`.
     pub status: String,
     pub conclusion: Option<String>,
     pub head_sha: String,
+    pub head_branch: String,
+    pub head_repo: Option<String>,
+    /// The PR numbers GitHub attaches to the run (`pull_requests[].number`).
+    /// Empty for fork PRs, and more than one when one branch heads several
+    /// PRs: both mean the run cannot be tied to one PR.
+    pub prs: Vec<u64>,
 }
 
 impl Run {
     fn not_completed(&self) -> bool {
         self.status != "completed"
+    }
+}
+
+/// Whose run is it? (bb7dc #572 point 2: a SHA alone does not say, two PRs
+/// can share a head commit.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// A `pull_request` run of this PR at its current head: same SHA, same
+    /// head branch and repository, and GitHub ties it to this PR only.
+    Ours,
+    /// Certainly not this PR's (another event, SHA, branch, repository or PR).
+    Others,
+    /// Same SHA, branch and repository, but GitHub ties it to no PR or to
+    /// several: cannot tell.
+    Unbound,
+}
+
+pub fn owner(r: &Run, p: &Pull) -> Owner {
+    if r.event != "pull_request"
+        || r.head_sha != p.head_sha
+        || r.head_branch != p.head_ref
+        || r.head_repo != p.head_repo
+    {
+        return Owner::Others;
+    }
+    match r.prs.as_slice() {
+        [n] if *n == p.number => Owner::Ours,
+        [] => Owner::Unbound,
+        l if l.contains(&p.number) => Owner::Unbound,
+        _ => Owner::Others,
+    }
+}
+
+/// `ci` → `.github/workflows/ci.yml`; a path is kept as given.
+pub fn workflow_path(w: &str) -> String {
+    if w.contains('/') {
+        w.to_owned()
+    } else {
+        format!(".github/workflows/{w}.yml")
     }
 }
 
@@ -87,7 +143,8 @@ pub struct Request {
     pub integ: u64,
     /// (original PR number, the full head SHA that was integrated)
     pub originals: Vec<(u64, String)>,
-    /// Workflows the integration PR must have started (default: `ci`).
+    /// Workflow files the integration PR must have started (default:
+    /// `.github/workflows/ci.yml`; see [`workflow_path`]).
     pub need_workflows: Vec<String>,
     pub label: String,
 }
@@ -153,6 +210,11 @@ fn integ_gate(gh: &dyn Github, req: &Request) -> Gate {
             why: format!("integ_not_open:{}", p.state),
         };
     }
+    if !is_full_sha(&p.head_sha) {
+        return Gate::Refused {
+            why: "integ_head_not_a_full_sha".into(),
+        };
+    }
     let runs = match gh.runs_for(&p.head_sha) {
         Ok(r) => r,
         Err(e) => {
@@ -162,17 +224,19 @@ fn integ_gate(gh: &dyn Github, req: &Request) -> Gate {
         }
     };
     for wf in &req.need_workflows {
-        let started = runs.iter().any(|r| {
-            r.head_sha == p.head_sha
-                && r.event == "pull_request"
-                && &r.name == wf
-                && r.conclusion.as_deref() != Some("cancelled")
-        });
-        if !started {
-            return Gate::Refused {
-                why: format!("integ_ci_not_started:{wf}"),
-            };
+        let wf = workflow_path(wf);
+        let live = |r: &&Run| r.path == wf && r.conclusion.as_deref() != Some("cancelled");
+        let owners: Vec<Owner> = runs.iter().filter(live).map(|r| owner(r, &p)).collect();
+        if owners.contains(&Owner::Ours) {
+            continue;
         }
+        let why = if owners.contains(&Owner::Unbound) {
+            // a run that may be another PR's proves nothing about this one
+            format!("integ_ci_unbound:{wf}")
+        } else {
+            format!("integ_ci_not_started:{wf}")
+        };
+        return Gate::Refused { why };
     }
     Gate::Ready { head: p.head_sha }
 }
@@ -208,11 +272,15 @@ fn decide(gh: &dyn Github, req: &Request, integ_head: &str, n: u64, want: &str) 
         Ok(r) => r,
         Err(e) => return unknown(format!("runs_unreadable:{e}")),
     };
-    let cancel = runs
-        .iter()
-        .filter(|r| r.head_sha == want && r.event == "pull_request" && r.not_completed())
-        .map(|r| r.id)
-        .collect();
+    let mut cancel = Vec::new();
+    for r in runs.iter().filter(|r| r.not_completed()) {
+        match owner(r, &p) {
+            Owner::Ours => cancel.push(r.id),
+            Owner::Others => {}
+            // it may be another PR's run on the same commit: do not touch
+            Owner::Unbound => return unknown(format!("run_unbound:{}", r.id)),
+        }
+    }
     Verdict::Yield {
         cancel,
         add_label: !p.labels.iter().any(|l| l == &req.label),
@@ -245,38 +313,92 @@ pub fn plan(gh: &dyn Github, req: &Request) -> Plan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
     pub number: u64,
-    /// `added`, `already`, `failed:<err>`, or `-` (not yielded).
+    /// `added`, `already`, `failed:<err>`, `aborted:<why>` (a fresh check
+    /// before it failed: not added), or `added_head_moved:<sha>`.
     pub label: String,
-    /// (run id, `cancelled` | `already_done` | `failed:<err>`)
+    /// (run id, `cancelled` | `already_done` | `failed:<err>` |
+    /// `aborted:<why>` | `left:not_cancellable_now`)
     pub runs: Vec<(u64, String)>,
 }
 
 impl Applied {
     pub fn failed(&self) -> bool {
-        self.label.starts_with("failed") || self.runs.iter().any(|(_, s)| s.starts_with("failed"))
+        let bad = |s: &str| {
+            s.starts_with("failed") || s.starts_with("aborted") || s.starts_with("added_head_moved")
+        };
+        bad(&self.label) || self.runs.iter().any(|(_, s)| bad(s))
     }
 }
 
-fn cancel_one(gh: &dyn Github, id: u64) -> (u64, String) {
-    let s = match gh.cancel_run(id) {
+/// bb7dc #572 point 3: plan and apply are separate reads, so before every
+/// side effect the whole check runs again (integration PR open, same head,
+/// its CI still ours and not cancelled; the original open, at `want`,
+/// contained, its runs tied to it). The fresh cancel list, or why not.
+fn fresh(gh: &dyn Github, req: &Request, head: &str, d: &Decision) -> Result<Vec<u64>, String> {
+    match integ_gate(gh, req) {
+        Gate::Ready { head: h } if h == head => {}
+        Gate::Ready { head: h } => return Err(format!("integ_head_moved:{h}")),
+        Gate::Refused { why } => return Err(why),
+    }
+    match decide(gh, req, head, d.number, &d.want) {
+        Verdict::Yield { cancel, .. } => Ok(cancel),
+        Verdict::Skip { why } | Verdict::Unknown { why } => Err(why),
+    }
+}
+
+fn cancel_one(gh: &dyn Github, id: u64) -> String {
+    match gh.cancel_run(id) {
         Ok(Cancelled::Cancelled) => "cancelled".to_owned(),
         Ok(Cancelled::AlreadyDone) => "already_done".to_owned(),
         Err(e) => format!("failed:{e}"),
-    };
-    (id, s)
+    }
 }
 
-/// Carry out a plan. Only `Yield` verdicts are touched; a refused gate does
-/// nothing. The label goes first, then each run is cancelled; one failure
-/// does not stop the others, and is reported.
+/// Cancel each id after a fresh check; the first failed check stops the
+/// rest of this PR (state moved under us: nothing more is safe).
+fn cancel_checked(
+    gh: &dyn Github,
+    req: &Request,
+    head: &str,
+    d: &Decision,
+    ids: &[u64],
+    out: &mut Applied,
+) {
+    for id in ids {
+        match fresh(gh, req, head, d) {
+            Err(why) => {
+                out.runs.push((*id, format!("aborted:{why}")));
+                return;
+            }
+            Ok(now) if !now.contains(id) => out.runs.push((*id, "left:not_cancellable_now".into())),
+            Ok(_) => out.runs.push((*id, cancel_one(gh, *id))),
+        }
+    }
+}
+
+/// Carry out a plan. Nothing is done when the gate refused, or when any
+/// original is UNKNOWN (one batch, one answer: rerun when GitHub answers;
+/// deliberate Skips do not stop the others).
 ///
-/// ci.yml also runs on `labeled`, so adding the label starts one more run on
-/// the same SHA. After a label was added, `settle` runs (the caller waits for
-/// GitHub to create that run), the runs of the same SHA are read again, and
-/// any unfinished `pull_request` run not seen before is cancelled too, with
-/// the same rules (same exact SHA, already shown to be in the integration).
-pub fn apply(gh: &dyn Github, plan: &Plan, label: &str, settle: &dyn Fn()) -> Vec<Applied> {
-    if !matches!(plan.gate, Gate::Ready { .. }) {
+/// Per original: fresh check → label (if missing) → read the head again
+/// (a push between the check and the label: report, cancel nothing) →
+/// each run cancelled after its own fresh check. ci.yml also runs on
+/// `labeled`, so when a label was added `settle` runs (the caller waits for
+/// GitHub to create that run) and the fresh cancel list is applied once more.
+///
+/// GitHub has no compare-and-swap for any of this: a change between the last
+/// fresh check and the write itself is not caught here. The label cannot
+/// make a head green (ci.yml only reacts to the labelling event itself, and
+/// that run's macOS cells fail as "not a verdict").
+pub fn apply(gh: &dyn Github, req: &Request, plan: &Plan, settle: &dyn Fn()) -> Vec<Applied> {
+    let Gate::Ready { head } = &plan.gate else {
+        return Vec::new();
+    };
+    if plan
+        .decisions
+        .iter()
+        .any(|d| matches!(d.verdict, Verdict::Unknown { .. }))
+    {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -285,49 +407,62 @@ pub fn apply(gh: &dyn Github, plan: &Plan, label: &str, settle: &dyn Fn()) -> Ve
         let Verdict::Yield { cancel, add_label } = &d.verdict else {
             continue;
         };
-        let label = if *add_label {
-            match gh.add_label(d.number, label) {
-                Ok(()) => {
-                    relabelled.push(out.len());
-                    "added".to_owned()
-                }
-                Err(e) => format!("failed:{e}"),
-            }
-        } else {
-            "already".to_owned()
-        };
-        let runs = cancel.iter().map(|id| cancel_one(gh, *id)).collect();
-        out.push(Applied {
+        let mut a = Applied {
             number: d.number,
-            label,
-            runs,
-        });
+            label: "already".into(),
+            runs: Vec::new(),
+        };
+        if *add_label {
+            if let Err(why) = fresh(gh, req, head, d) {
+                a.label = format!("aborted:{why}");
+                out.push(a);
+                continue;
+            }
+            a.label = match gh.add_label(d.number, &req.label) {
+                Ok(()) => "added".into(),
+                Err(e) => format!("failed:{e}"),
+            };
+            if a.label == "added" {
+                match gh.pull(d.number) {
+                    Ok(p) if p.head_sha == d.want => relabelled.push(out.len()),
+                    Ok(p) => {
+                        // pushed between the check and the label: the label's
+                        // run is on the new head; leave every run alone
+                        a.label = format!("added_head_moved:{}", p.head_sha);
+                        out.push(a);
+                        continue;
+                    }
+                    Err(e) => {
+                        a.label = format!("added_head_moved:unreadable:{e}");
+                        out.push(a);
+                        continue;
+                    }
+                }
+            }
+        }
+        cancel_checked(gh, req, head, d, cancel, &mut a);
+        out.push(a);
     }
     if relabelled.is_empty() {
         return out;
     }
     settle();
     for i in relabelled {
-        let want = &plan
-            .decisions
-            .iter()
-            .find(|d| d.number == out[i].number)
-            .map(|d| d.want.clone())
-            .unwrap_or_default();
+        let Some(d) = plan.decisions.iter().find(|d| d.number == out[i].number) else {
+            continue;
+        };
+        if out[i].runs.iter().any(|(_, s)| s.starts_with("aborted")) {
+            // already stopped: the state moved, nothing more is safe here
+            continue;
+        }
         let seen: Vec<u64> = out[i].runs.iter().map(|(id, _)| *id).collect();
-        match gh.runs_for(want) {
-            Ok(runs) => {
-                for r in runs.iter().filter(|r| {
-                    &r.head_sha == want
-                        && r.event == "pull_request"
-                        && r.not_completed()
-                        && !seen.contains(&r.id)
-                }) {
-                    out[i].runs.push(cancel_one(gh, r.id));
-                }
+        match fresh(gh, req, head, d) {
+            Ok(now) => {
+                let new: Vec<u64> = now.into_iter().filter(|id| !seen.contains(id)).collect();
+                cancel_checked(gh, req, head, d, &new, &mut out[i]);
             }
             // the label's own run may still be going: say so
-            Err(e) => out[i].runs.push((0, format!("failed:recheck:{e}"))),
+            Err(why) => out[i].runs.push((0, format!("failed:recheck:{why}"))),
         }
     }
     out

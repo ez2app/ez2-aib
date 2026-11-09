@@ -109,7 +109,7 @@ fn main() {
     let plan = yield_integ::plan(&gh, &args.req);
     let applied = args
         .apply
-        .then(|| yield_integ::apply(&gh, &plan, &args.req.label, &settle));
+        .then(|| yield_integ::apply(&gh, &args.req, &plan, &settle));
     println!("{}", yield_integ::to_json(&plan, applied.as_deref()));
     std::process::exit(yield_integ::exit_code(
         &plan,

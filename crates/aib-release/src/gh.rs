@@ -63,13 +63,36 @@ fn s(v: &Value, k: &str) -> Result<String, GhError> {
         .ok_or_else(|| GhError(format!("missing:{k}")))
 }
 
+fn repo_of(v: &Value, k: &str) -> Option<String> {
+    v.get(k)
+        .and_then(|r| r.get("full_name"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// `path` may come as `.github/workflows/ci.yml@refs/...`: keep the file.
+fn workflow_file(path: &str) -> String {
+    path.split('@').next().unwrap_or(path).to_owned()
+}
+
 fn run_of(v: &Value) -> Result<Run, GhError> {
+    let prs = v
+        .get("pull_requests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| GhError("missing:pull_requests".into()))?
+        .iter()
+        .map(|p| {
+            p.get("number")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| GhError("missing:pull_requests.number".into()))
+        })
+        .collect::<Result<Vec<u64>, GhError>>()?;
     Ok(Run {
         id: v
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| GhError("missing:id".into()))?,
-        name: s(v, "name")?,
+        path: workflow_file(&s(v, "path")?),
         event: s(v, "event")?,
         status: s(v, "status")?,
         conclusion: v
@@ -77,6 +100,9 @@ fn run_of(v: &Value) -> Result<Run, GhError> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         head_sha: s(v, "head_sha")?,
+        head_branch: s(v, "head_branch")?,
+        head_repo: repo_of(v, "head_repository"),
+        prs,
     })
 }
 
@@ -97,6 +123,8 @@ impl Github for GhCli {
             number,
             state: s(&v, "state")?,
             head_sha: s(head, "sha")?,
+            head_ref: s(head, "ref")?,
+            head_repo: repo_of(head, "repo"),
             labels,
         })
     }
@@ -166,5 +194,33 @@ mod tests {
         );
         assert_eq!(http_code("error connecting to api.github.com"), "?");
         assert_eq!(http_code("(HTTP abc)"), "?");
+    }
+
+    #[test]
+    fn a_run_carries_its_pr_branch_repo_and_workflow_file() {
+        let v: Value = serde_json::from_str(
+            r#"{"id": 7, "name": "ci", "path": ".github/workflows/ci.yml@refs/pull/9/merge",
+                "event": "pull_request", "status": "queued", "conclusion": null,
+                "head_sha": "abc", "head_branch": "feat/x",
+                "head_repository": {"full_name": "o/r"},
+                "pull_requests": [{"number": 9}, {"number": 10}]}"#,
+        )
+        .unwrap_or_default();
+        let r = run_of(&v).map_err(|e| e.0);
+        assert_eq!(
+            r.as_ref().map(|r| r.path.as_str()),
+            Ok(".github/workflows/ci.yml")
+        );
+        assert_eq!(r.as_ref().map(|r| r.prs.clone()), Ok(vec![9, 10]));
+        assert_eq!(
+            r.as_ref().map(|r| r.head_repo.clone()),
+            Ok(Some("o/r".into()))
+        );
+        // no pull_requests field at all: refused, not "no PR"
+        let mut v = v;
+        if let Some(o) = v.as_object_mut() {
+            o.remove("pull_requests");
+        }
+        assert!(run_of(&v).is_err());
     }
 }
