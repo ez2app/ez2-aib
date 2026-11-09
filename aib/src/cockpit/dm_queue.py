@@ -201,6 +201,7 @@ ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping"
 TRANSITION_REASON = {
     "ok": "",
     "transition": "這個狀態不能這樣改",
+    "lock_timeout": "這一席的信正被別的程式改著(等了 10 秒還沒放),這次沒改;稍後再試一次",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
     "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / 完整 PR 網址 https://github.com/ez2app/…/pull/N;夾在說明文字裡也可以,只寫 #N 不算),或用 --why 寫結案理由",
@@ -1306,6 +1307,10 @@ def _order_remove(seat, item_id, env=None):
         _delete_view(seat, env)
 
 
+class TransitionLockTimeout(AJ.AtomicWriteError):
+    """轉移鎖等超過 TRANSITION_LOCK_TIMEOUT_S(別的行程握著這一席的鎖)。_transition 轉成 reason=lock_timeout,不往外丟。"""
+
+
 TRANSITION_LOCK = "transition.lock"
 TRANSITION_LOCK_TIMEOUT_S = 10.0
 _TRANSITION_HELD = threading.local()
@@ -1341,7 +1346,7 @@ def _seat_transition_lock(seat, env=None, timeout_s=None):
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise AJ.AtomicWriteError("轉移鎖失敗:%s" % exc.__class__.__name__)
                 if time.monotonic() >= deadline:
-                    raise AJ.AtomicWriteError("轉移鎖逾時:可能有別的行程卡在改這一席的信")
+                    raise TransitionLockTimeout("轉移鎖逾時:可能有別的行程卡在改這一席的信")
                 time.sleep(0.01)
         held[path] = 1
         try:
@@ -1360,9 +1365,19 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
                 if_rev=None, no_rev_check=None, expect_status=None):
     """狀態機的唯一入口(接口 §2)。整段在 _seat_transition_lock 裡跑;回條(可能慢)放鎖外。
     ★ 還原刀錨:test-dm-transition-lock-043dd-1109.py 把這把鎖換成空的 ⇒ 兩個行程搶結同一封,T1 必紅。"""
-    with _seat_transition_lock(seat, env):
-        out = _transition_locked(seat, item_id, to, actor, env=env, now=now, why=why, evidence=evidence,
-                                 if_rev=if_rev, no_rev_check=no_rev_check, expect_status=expect_status)
+    # #552 r1 L2:證據查證(可能叫 git,每個候選最多 10 秒)只看席 + 證據字串、跟信的狀態無關 ⇒ 在拿鎖之前算
+    ev_ref = evidence_ref(seat, evidence, env) if to == "done" else None
+    try:
+        with _seat_transition_lock(seat, env):
+            out = _transition_locked(seat, item_id, to, actor, env=env, now=now, why=why, evidence=evidence,
+                                     if_rev=if_rev, no_rev_check=no_rev_check, expect_status=expect_status,
+                                     _ev_ref=ev_ref)
+    except TransitionLockTimeout:
+        # #552 r1 L3:CLI / hook 都拿到一般的拒絕,不是 traceback;信沒動
+        _audit(seat, env, ts=int(time.time() if now is None else now), id=item_id, to=to, actor=actor, ok=False,
+               reason="lock_timeout")
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
     after = out.pop("_after", None)
     if after:
         _global_delivery_for_transition(*after)
@@ -1370,7 +1385,7 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
 
 
 def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
-                       if_rev=None, no_rev_check=None, expect_status=None):
+                       if_rev=None, no_rev_check=None, expect_status=None, _ev_ref=None):
     """狀態機本體(接口 §2;只由 _transition 在轉移鎖內呼叫)。回 {ok, reason, rev, item, message}。
     不在 TRANSITIONS 上的 (from,to,actor類別) 一律拒;seat 類還要是收件席本人;done 要存在的憑據路徑;
     准與拒都寫一行 audit.jsonl。離開 ACTIVE_STATUSES 就從 order.json 拿掉(檔留著當歷史)。
@@ -1436,7 +1451,7 @@ def _transition_locked(seat, item_id, to, actor, env=None, now=None, why=None, e
     if to == "done":
         # 10-13 S7-1(the maintainer 准;kimi / grok / gpt 三家都說「只收存在的檔」是進行中只進不出的主因):
         #   證據收 檔案 / 本席寄出的回信 id / 查得到的 commit;都不是但有 why ⇒ 憑理由結案(另記 done_kind=reason)。
-        done_kind, done_ref = evidence_ref(seat, evidence, env)
+        done_kind, done_ref = _ev_ref if _ev_ref is not None else evidence_ref(seat, evidence, env)
         if done_kind is None:
             if isinstance(why, str) and why.strip():
                 done_kind = "reason"
@@ -5055,6 +5070,15 @@ def _stale_claim(item, now):
 
 
 def claim_next(seat, env=None, now=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    if not seat_dir(seat, env).is_dir():
+        return None               # 沒這一席就沒信可領;別為了拿鎖替它建資料夾
+    with _seat_transition_lock(seat, env):
+        return _claim_next_unlocked(seat, env=env, now=now)
+
+
+def _claim_next_unlocked(seat, env=None, now=None):
     """領一封。兩人同時領不到同一封。"""
     now = int(time.time() if now is None else now)
     d = seat_dir(seat, env)
@@ -5098,6 +5122,13 @@ def claim_next(seat, env=None, now=None):
 
 
 def claim_result(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    with _seat_transition_lock(seat, env):
+        return _claim_result_unlocked(seat, item_id, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+
+
+def _claim_result_unlocked(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
     """領指定一封,回三態 {ok, reason, rev, item}:ok / no_rev / rev_mismatch / not_found / busy(已被領走或不在序裡)。
     no_rev_check=None ⇒ 當 True(程式庫寬鬆預設;CLI/殼明傳 False 才封閉)。"""
     if no_rev_check is None:
@@ -5167,6 +5198,13 @@ def claim_id(seat, item_id, env=None, now=None, if_rev=None, no_rev_check=None):
 
 
 def unclaim(seat, item_id, env=None, attempts=None):
+    """#552 r1 M1(a9136 實跑重現 3/3):整段在轉移鎖裡 —— 不然席位 queued → read 的「讀 → 寫」可以夾住它,
+    把排空器剛領走的 claimed 蓋回 read。鎖順序照舊「轉移鎖 → 目錄鎖」。"""
+    with _seat_transition_lock(seat, env):
+        return _unclaim_unlocked(seat, item_id, env=env, attempts=attempts)
+
+
+def _unclaim_unlocked(seat, item_id, env=None, attempts=None):
     item = _load_item(seat, item_id, env)
     if not item:
         return None

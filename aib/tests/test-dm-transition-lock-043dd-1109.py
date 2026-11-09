@@ -6,9 +6,12 @@
 T1 兩個真行程同時結同一封(讀完都先睡 0.3 秒把窗口撐開)⇒ 恰好一個 ok、另一個 transition;
    audit 只有一筆 ok 的 done;跑 3 輪。
 T2 同席兩封各自結 ⇒ 兩個都 ok(鎖不擋不相干的信)。
-T3 別的行程握著轉移鎖 ⇒ 逾時丟 AtomicWriteError,信不變。
+T3 別的行程握著轉移鎖 ⇒ 逾時回 reason=lock_timeout(不丟例外,#552 r1 L3)、audit 記一筆、信不變。
 T4 同執行緒重入(鎖內再叫同席 _transition)⇒ 不自鎖死。
-刀(複本 + run_guarded):K1 把轉移鎖換成空的 ⇒ T1 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+T5 排空器 claim_next 跟席位 queued → read 搶同一封(a9136 #552 r1 M1 重現改寫,讀完睡 0.5 秒)⇒
+   領信也在轉移鎖裡:領不到(信已是 read),不會出現「領走了、又被蓋回 read」;跑 3 輪。
+刀(複本 + run_guarded):K1 把轉移鎖換成空的 ⇒ T1 紅;K2 claim_next 不拿轉移鎖 ⇒ T5 紅。
+刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import json
 import os
@@ -30,7 +33,6 @@ sys.path.insert(0, str(COCKPIT))
 from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
-import atomic_json as AJ  # noqa: E402
 import dm_queue as Q  # noqa: E402
 
 SEAT = "aaaaa"
@@ -129,9 +131,12 @@ class Race(Base):
             time.sleep(0.01)
         self.assertTrue(ready.exists())
         with mock.patch.object(Q, "TRANSITION_LOCK_TIMEOUT_S", 0.2):
-            with self.assertRaises(AJ.AtomicWriteError):
-                Q._transition(SEAT, iid, "done", ME, env=self.env, why="z")
+            r = Q._transition(SEAT, iid, "done", ME, env=self.env, why="z")
+        self.assertEqual((r["ok"], r["reason"]), (False, "lock_timeout"), r)
+        self.assertTrue(r["message"])
         self.assertEqual(Q._load_item(SEAT, iid, self.env)["status"], "read")
+        last = [x for x in Q.audit_rows(SEAT, self.env) if x.get("id") == iid][-1]
+        self.assertEqual((last["ok"], last["reason"]), (False, "lock_timeout"))
 
     def test_t4_reentrant_same_thread(self):
         iid = self.read_item("丁")
@@ -141,11 +146,69 @@ class Race(Base):
         self.assertTrue(r["ok"], r)
 
 
+READER = textwrap.dedent("""
+    import json, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    seat, iid, mark = sys.argv[2], sys.argv[3], sys.argv[4]
+    orig = Q._load_item
+    n = [0]
+    def slow(*a, **k):
+        it = orig(*a, **k)
+        if a[1] == iid:
+            n[0] += 1
+            if n[0] == 2:          # 第 1 次是 rev_check 的,第 2 次是 _transition_locked 要改的那份
+                open(mark, "w").close()
+                time.sleep(0.5)
+        return it
+    Q._load_item = slow
+    r = Q._transition(seat, iid, "read", "seat:" + seat)
+    print(json.dumps({"ok": r["ok"], "reason": r["reason"]}))
+""")
+
+CLAIMER = textwrap.dedent("""
+    import json, os, sys, time
+    sys.path.insert(0, sys.argv[1])
+    import dm_queue as Q
+    end = time.time() + 20
+    while not os.path.exists(sys.argv[3]) and time.time() < end:
+        time.sleep(0.005)
+    it = Q.claim_next(sys.argv[2])
+    print(json.dumps({"claimed": (it or {}).get("id")}))
+""")
+
+
+class ClaimRace(Base):
+    def test_t5_claim_vs_read(self):
+        for rnd in range(3):
+            seat = "cccc%d" % rnd
+            iid = Q.enqueue(seat, "race %d" % rnd, "@bbbbb", sender_kind="seat", sender_seat="bbbbb",
+                            sender_source="pane_pid_chain", env=self.env, now=NOW)["id"]
+            mark = str(self.d / ("loaded-%d" % rnd))
+            pa = subprocess.Popen([sys.executable, "-B", "-c", READER, str(COCKPIT), seat, iid, mark],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
+            pb = subprocess.Popen([sys.executable, "-B", "-c", CLAIMER, str(COCKPIT), seat, mark],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.child_env())
+            (oa, ea), (ob, eb) = pa.communicate(timeout=60), pb.communicate(timeout=60)
+            self.assertEqual((pa.returncode, pb.returncode), (0, 0), ea + eb)
+            a, b = json.loads(oa.strip().splitlines()[-1]), json.loads(ob.strip().splitlines()[-1])
+            final = Q._load_item(seat, iid, self.env)["status"]
+            self.assertTrue(a["ok"], a)
+            self.assertFalse(b["claimed"] and final == "read",
+                             "第 %d 輪:排空器領走了(%s),又被席位讀信蓋回 read" % (rnd, b))
+            self.assertIsNone(b["claimed"], "讀信先拿到鎖,排空器應該看到 read、領不到:%r" % b)
+            self.assertEqual(final, "read")
+
+
 KNIVES = [
     ("K1 拿掉轉移鎖", "src/cockpit/dm_queue.py",
-     "    with _seat_transition_lock(seat, env):\n        out = _transition_locked(",
-     "    with contextlib.nullcontext():\n        out = _transition_locked(",
+     "        with _seat_transition_lock(seat, env):\n            out = _transition_locked(",
+     "        with contextlib.nullcontext():\n            out = _transition_locked(",
      "Race.test_t1_race_one_winner"),
+    ("K2 claim_next 不拿轉移鎖", "src/cockpit/dm_queue.py",
+     "    with _seat_transition_lock(seat, env):\n        return _claim_next_unlocked(",
+     "    with contextlib.nullcontext():\n        return _claim_next_unlocked(",
+     "ClaimRace.test_t5_claim_vs_read"),
 ]
 
 
