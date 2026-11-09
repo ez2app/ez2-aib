@@ -65,7 +65,8 @@ fn selfcheck_json_lists_every_row_and_process_management_is_a_real_run() {
             "{row}"
         );
     } else {
-        // Windows: not wired until 043dd #543
+        // Windows: not_wired even once sessions are wired (#543): there is
+        // no Windows check tree yet, and /bin/sh must not be tried there
         assert_eq!(pm, "not_wired");
     }
     assert_eq!(status("config"), "ok");

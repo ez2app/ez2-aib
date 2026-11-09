@@ -24,7 +24,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   child) and reports that stop's own answer. The stop comes only once the child reported it started
   (at most 3 s); if it never does, the row is `unverified` with reason `child_not_started`. macOS: no survivor seen = `unverified` with the reason
   (e.g. `observed_clean`), never `ok`; a survivor = `failed:tree_not_clean` (exit code 1). Windows:
-  `not_wired` until sessions are wired there.
+  `not_wired` (no Windows check tree yet; the POSIX one is never tried there, even once Windows
+  sessions are wired).
 
 ## 0.2.0-preview.1 — unreleased
 
