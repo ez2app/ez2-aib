@@ -137,6 +137,33 @@ fn has_build_key(manifest: &str) -> bool {
     manifest_compact(manifest).contains("build=")
 }
 
+/// A target table (`[lib]`, `[[bin]]`, `[[example]]`, `[[test]]`, `[[bench]]`) may not set
+/// `path`: `[lib] path = "src/root2.rs"` swaps the crate root for a file without
+/// `#![no_std]` and brings all of std back (#566 M1, ebb36). Tables are found on the
+/// comment-stripped, whitespace-stripped manifest; `path=` anywhere inside such a table
+/// (up to the next `[`) is refused. Any `[[bin]]` / `[[example]]` table at all is refused
+/// too: this crate ships a library only.
+fn manifest_target_path_violation(manifest: &str) -> Option<String> {
+    let c = manifest_compact(manifest);
+    for table in ["[[bin]]", "[[example]]"] {
+        if c.contains(table) {
+            return Some(format!("有 {table}(aib-cloud 只出 library)"));
+        }
+    }
+    for table in ["[lib]", "[[test]]", "[[bench]]"] {
+        let mut from = 0;
+        while let Some(i) = c[from..].find(table) {
+            let start = from + i + table.len();
+            let end = c[start..].find('[').map_or(c.len(), |e| start + e);
+            if c[start..end].contains("path=") {
+                return Some(format!("{table} 設了 path=(可以換掉 crate 根)"));
+            }
+            from = start;
+        }
+    }
+    None
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -261,6 +288,13 @@ fn cloud_sources_do_no_io() {
         manifest_compact(&m).contains("default-features=false"),
         "serde_json 要 default-features = false(alloc-only),不然 std 從依賴回來"
     );
+    if let Some(why) = manifest_target_path_violation(&m) {
+        panic!("aib-cloud/Cargo.toml {why}(#566 M1:target path 能換掉 #![no_std] 的 crate 根)");
+    }
+    assert!(
+        !crate_dir("aib-cloud").join("src").join("bin").exists(),
+        "aib-cloud 不准有 src/bin/(自動變 binary target,繞過 lib.rs 的 #![no_std];#566 M1)"
+    );
 }
 
 // #532 r2/r3 M1 knives: the text checker must catch every escape hatch the compiler cannot,
@@ -329,6 +363,30 @@ fn io_checker_catches_escape_hatches() {
     assert_eq!(strip_comments("a // x\nb /* y\nz */ c"), "a \nb  c");
     assert_eq!(strip_comments("a /* 1 /* 2 */ 3 */ b"), "a  b");
     assert_eq!(strip_comments("a /* never closed"), "a ");
+    // #566 M1: target tables that can swap the crate root
+    for bad in [
+        "[package]\nname = \"x\"\n\n[lib]\npath = \"src/root2.rs\"\n",
+        "[package]\nname = \"x\"\n[lib]\nname=\"y\"\n  path=\"../evil.rs\"\n[dependencies]\n",
+        "[lib]\n# comment\npath = \"src/other.rs\"\n",
+        "[[bin]]\nname = \"tool\"\npath = \"src/tool.rs\"\n",
+        "[[bin]]\nname = \"tool\"\n",
+        "[[example]]\nname = \"e\"\n",
+        "[[test]]\nname = \"t\"\npath = \"../t.rs\"\n",
+        "[[bench]]\nname = \"b\"\npath = \"../b.rs\"\n",
+    ] {
+        assert!(
+            manifest_target_path_violation(bad).is_some(),
+            "{bad:?} 沒被抓到"
+        );
+    }
+    for ok in [
+        "[package]\nname = \"x\"\n\n[lib]\nname = \"aib_cloud\"\n\n[dependencies]\nserde_json = \"1\"\n",
+        "[package]\nname = \"x\"\n# [lib] path = \"src/root2.rs\" (comment)\n[lints]\nworkspace = true\n",
+        "[[test]]\nname = \"boundary\"\nharness = true\n",
+        "[package]\nname = \"x\"\n[dependencies]\nfoo = { path = \"../foo\" }\n",
+    ] {
+        assert_eq!(manifest_target_path_violation(ok), None, "{ok:?} 不該被抓");
+    }
     // manifest: N10 `build="x"` without spaces, N11 `[lints]` only inside a comment
     assert!(has_build_key(
         "[package]\nname = \"x\"\nbuild=\"knife/gen.rs\"\n"
