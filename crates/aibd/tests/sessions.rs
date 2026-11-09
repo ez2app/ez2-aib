@@ -730,8 +730,12 @@ async fn events_never_carry_env_or_the_full_argv() {
     d.shutdown().await;
 }
 
-/// a63ab ruling 3: stdin / stdout / stderr are the null device, never
-/// inherited from aibd; the request env is applied and AIBD_SESSION set.
+/// a63ab ruling 3: nothing is inherited from aibd. stdin is the null
+/// device; since preview.3 C stdout / stderr are pipes that aibd reads into
+/// `session.output` events (so what the child prints lands in its own output,
+/// never on aibd's stdout / stderr); the request env is applied and
+/// AIBD_SESSION set. Windows still starts with three null handles
+/// (UNVERIFIED, see the Windows tests).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let tmp = tempfile::tempdir().unwrap();
@@ -739,7 +743,7 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let v = view(&d);
     let f = tmp.path().join("out");
     let script = format!(
-        "r=; for n in 0 1 2; do if [ -c /dev/fd/$n ]; then r=\"$r $n chr\"; else r=\"$r $n other\"; fi; done; echo \"$r\" > {f}; env >> {f}",
+        "r=; for n in 0 1 2; do if [ -c /dev/fd/$n ]; then r=\"$r $n chr\"; elif [ -p /dev/fd/$n ]; then r=\"$r $n pipe\"; else r=\"$r $n other\"; fi; done; echo \"$r\" > {f}; env >> {f}; echo to-stdout; echo to-stderr >&2",
         f = f.display()
     );
     let body = serde_json::json!({"argv": ["/bin/sh", "-c", script], "env": {"MY_VAR": "one"}})
@@ -750,14 +754,47 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let id2 = id.clone();
     blocking!(v, |v| wait_state(&v.d(), &id2, "running"));
     let out = std::fs::read_to_string(&f).unwrap();
-    for n in 0..3 {
+    assert!(
+        out.contains(" 0 chr"),
+        "stdin is not the null device: {out}"
+    );
+    for n in 1..3 {
         assert!(
-            out.contains(&format!("{n} chr")),
-            "fd {n} is not the null device: {out}"
+            out.contains(&format!(" {n} pipe")),
+            "fd {n} is not aibd's output pipe: {out}"
         );
     }
     assert!(out.contains("MY_VAR=one"), "{out}");
     assert!(out.contains(&format!("AIBD_SESSION={id}")), "{out}");
+    // what the child printed is in its own output, one line per stream
+    let id3 = id.clone();
+    let items = blocking!(v, |v| {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (c, s) = v
+                .d()
+                .call("GET", &format!("/api/v1/sessions/{id3}/output"), None);
+            assert_eq!(c, 200, "{s}");
+            let items = s["output"].as_array().unwrap().clone();
+            let closed = items
+                .iter()
+                .filter(|e| e["type"] == "session.output_closed")
+                .count();
+            if closed == 2 {
+                break items;
+            }
+            assert!(Instant::now() < end, "streams not closed: {s}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    for (stream, line) in [("stdout", "to-stdout"), ("stderr", "to-stderr")] {
+        assert!(
+            items.iter().any(|e| e["type"] == "session.output"
+                && e["payload"]["stream"] == stream
+                && e["payload"]["line"] == line),
+            "{stream} line missing: {items:?}"
+        );
+    }
     d.shutdown().await;
 }
 
