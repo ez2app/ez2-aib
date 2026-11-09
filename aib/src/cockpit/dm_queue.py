@@ -5019,6 +5019,17 @@ def purge_test(env=None, dry_run=False):
 
 
 def edit_result(seat, item_id, msg=None, priority=None, env=None, if_rev=None, no_rev_check=None):
+    """Serialize revision check, read and write with transitions on this seat."""
+    try:
+        with _seat_transition_lock(seat, env):
+            return _edit_result_locked(seat, item_id, msg=msg, priority=priority, env=env,
+                                       if_rev=if_rev, no_rev_check=no_rev_check)
+    except TransitionLockTimeout:
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
+
+
+def _edit_result_locked(seat, item_id, msg=None, priority=None, env=None, if_rev=None, no_rev_check=None):
     """改內容,回三態 {ok, reason, rev, item}。內容真的變了才 rev+1(34 尺 A5)。
     ★ no_rev_check=None ⇒ 當 True(程式庫呼叫的寬鬆預設):34 尺 A5 與既有格不帶 if_rev 呼叫 Q.edit;
       fail-closed 的邊界放在 CLI `edit`(要 --if-rev 或顯式 --no-rev-check)與殼(priority/body 回呼帶 rev)——

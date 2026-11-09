@@ -97,6 +97,46 @@ class Base(unittest.TestCase):
 
 
 class Race(Base):
+    def test_edit_and_close_cannot_overwrite_each_other(self):
+        iid = self.read_item("original body")
+        rev = Q.item_rev(Q._load_item(SEAT, iid, self.env))
+        ready = self.d / "edit-has-read"
+        code = textwrap.dedent('''
+            import json, sys, time
+            sys.path.insert(0, sys.argv[1])
+            import dm_queue as Q
+            orig = Q._load_item
+            calls = [0]
+            def pause(*a, **k):
+                item = orig(*a, **k)
+                calls[0] += 1
+                if calls[0] == 2:
+                    open(sys.argv[4], "w").close()
+                    time.sleep(1)
+                return item
+            Q._load_item = pause
+            result = Q.edit_result(sys.argv[2], sys.argv[3], msg="updated body", if_rev=int(sys.argv[5]), no_rev_check=False)
+            print(json.dumps({"ok": result["ok"], "reason": result["reason"]}))
+        ''')
+        p = subprocess.Popen([sys.executable, "-B", "-c", code, str(COCKPIT), SEAT, iid,
+                              str(ready), str(rev)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=self.child_env())
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        deadline = time.monotonic() + 20
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready.exists(), "edit did not reach the read barrier")
+        closed = Q._transition(SEAT, iid, "done", ME, env=self.env, why="race",
+                               if_rev=rev, no_rev_check=False)
+        out, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertTrue(json.loads(out.strip().splitlines()[-1])["ok"])
+        self.assertFalse(closed["ok"], closed)
+        item = Q._load_item(SEAT, iid, self.env)
+        self.assertEqual(item["msg"], "updated body")
+        self.assertEqual(item["status"], "read")
+        self.assertEqual(Q.item_rev(item), rev + 1)
+
     def test_t1_race_one_winner(self):
         for rnd in range(3):
             iid = self.read_item("通知 第 %d 輪" % rnd)
