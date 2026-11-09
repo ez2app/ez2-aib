@@ -116,9 +116,12 @@ pub const REJECT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60
 
 /// Folds repeated rejections (a63ab 19:23: one record per token + code per minute, with a
 /// count, so a loop of bad requests cannot flood the event table or the log).
+/// Open windows: (token id, code) ⇒ (window start, rejections in it).
+type OpenWindows = std::collections::HashMap<(String, &'static str), (Instant, u64)>;
+
 #[derive(Debug, Default)]
 pub struct RejectLog {
-    open: std::sync::Mutex<std::collections::HashMap<(String, &'static str), (Instant, u64)>>,
+    open: std::sync::Mutex<OpenWindows>,
 }
 
 impl RejectLog {

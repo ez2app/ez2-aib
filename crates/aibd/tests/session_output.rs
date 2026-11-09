@@ -7,6 +7,7 @@
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
+use aibd::allowlist::{Program, SessionPolicy};
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use serde_json::{json, Value};
@@ -14,6 +15,20 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+/// The programs these tests start (`/bin/sh` is an interpreter, so
+/// `interpreters_ok`, which only Rust code can set).
+fn policy() -> SessionPolicy {
+    SessionPolicy {
+        programs: vec![Program {
+            name: "sh".into(),
+            path: "/bin/sh".into(),
+            signer: None,
+        }],
+        env: vec![],
+        interpreters_ok: true,
+    }
+}
 
 struct Daemon {
     addr: SocketAddr,
@@ -30,6 +45,7 @@ async fn start(dir: &Path) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: 2,
+        session_policy: policy(),
     };
     let h = tokio::spawn(async move {
         server::run(

@@ -198,7 +198,7 @@ jobs:
             the_same_key_with_another_request_is_a_conflict_and_writes_nothing
           # S2 the seat is written without its event
           sk '            insert_event(&tx, &event)?;' \
-            '            // knife: no event' \
+            '            let _ = (insert_event, &event); // knife: no event (keeps the import used)' \
             a_seat_and_its_event_survive_a_restart
           # S3 a session still holding a slot is not interrupted at start (only `running` ones)
           python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
@@ -218,6 +218,12 @@ jobs:
             '        discard_output: true, // knife' \
             --expect-fail output_lines_are_events_and_read_back_after_a_restart \
             -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            $'    // came from #592 and the gate from #593; neither saw the other).\n    let policy = st.session_policy.clone();' \
+            $'    // came from #592 and the gate from #593; neither saw the other).\n    let policy = crate::allowlist::SessionPolicy { programs: vec![crate::allowlist::Program { name: "echo".into(), path: "/bin/echo".into(), signer: None }], env: vec![], interpreters_ok: true }; // knife' \
+            --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
+            -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
           # S6 an over-long line is not marked as cut
           python3 -I scripts/knife.py crates/aibd/src/session_output.rs \
             '                cut = true;' \

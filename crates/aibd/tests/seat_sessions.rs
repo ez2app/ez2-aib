@@ -7,6 +7,7 @@
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
+use aibd::allowlist::{Program, SessionPolicy};
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use serde_json::{json, Value};
@@ -14,6 +15,20 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+/// The programs these tests start (`/bin/sh` is an interpreter, so
+/// `interpreters_ok`, which only Rust code can set).
+fn policy() -> SessionPolicy {
+    SessionPolicy {
+        programs: vec![Program {
+            name: "sh".into(),
+            path: "/bin/sh".into(),
+            signer: None,
+        }],
+        env: vec![],
+        interpreters_ok: true,
+    }
+}
 
 struct Daemon {
     addr: SocketAddr,
@@ -30,6 +45,7 @@ async fn start(dir: &Path) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: 2,
+        session_policy: policy(),
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -300,6 +316,46 @@ async fn an_unknown_seat_starts_nothing() {
         (code, v["code"].as_str()),
         (400, Some("invalid_request")),
         "{v}"
+    );
+    d.shutdown().await;
+}
+
+/// The seat route has the same M1 gate as `POST /api/v1/sessions` (f1fae
+/// integ preview.3: #592's route and #593's gate had not seen each other).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_seat_route_refuses_an_unlisted_program_and_records_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let seat = d.seat("dev").await;
+    let (code, v) = d
+        .call(
+            "POST",
+            &format!("/api/v1/seats/{seat}/sessions"),
+            Some(r#"{"argv": ["/bin/echo", "should-not-run"]}"#),
+        )
+        .await;
+    assert_eq!(
+        (code, v["code"].as_str()),
+        (403, Some("program_not_allowed")),
+        "{v}"
+    );
+    assert!(
+        !v.to_string().contains("/bin/echo"),
+        "echoes the request: {v}"
+    );
+    let (_, list) = d
+        .call("GET", &format!("/api/v1/seats/{seat}/sessions"), None)
+        .await;
+    assert_eq!(list["sessions"], json!([]), "nothing was started: {list}");
+    let (_, ev) = d
+        .call("GET", "/api/v1/events?cursor=0&limit=500", None)
+        .await;
+    let evs = ev["events"].as_array().unwrap();
+    assert!(!evs.iter().any(|e| e["type"] == "session.started"), "{ev}");
+    assert!(
+        evs.iter().any(|e| e["type"] == "session.spawn_rejected"
+            && e["payload"]["code"] == "program_not_allowed"),
+        "{ev}"
     );
     d.shutdown().await;
 }
