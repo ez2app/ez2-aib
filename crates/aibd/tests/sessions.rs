@@ -1662,3 +1662,39 @@ fn a_root_whose_identity_was_lost_has_no_exit_code() {
         .expect("no stop event");
     assert!(ev.payload["exit_code"].is_null(), "{}", ev.payload);
 }
+
+/// 1ced7 #593 L2: a folded refusal arms one flush thread that waits up to a
+/// minute for its window to close. While it waits it must not hold the
+/// sessions (and with them the store) alive: after a shutdown the store is
+/// released at once, not up to 61 s later.
+#[test]
+fn a_waiting_reject_flush_does_not_keep_the_sessions_alive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        never_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let before = std::sync::Arc::strong_count(&s);
+    let t0 = Instant::now();
+    let code = aib_core::ErrorCode::ProgramNotAllowed;
+    // the first is written, the second is folded and arms the flush thread
+    s.record_rejection(t0, "startup", code, "x");
+    s.record_rejection(t0, "startup", code, "x");
+    // let the flush thread start and reach its wait
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        std::sync::Arc::strong_count(&s),
+        before,
+        "the waiting flush thread holds the sessions"
+    );
+    let w = std::sync::Arc::downgrade(&s);
+    drop(s);
+    assert!(
+        w.upgrade().is_none(),
+        "sessions still alive after the last owner dropped them"
+    );
+}
