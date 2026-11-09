@@ -106,9 +106,25 @@ pub fn check_process_management(
     spawn: SpawnFn,
     lineage: Option<Arc<Lineage>>,
 ) -> Result<Checked, SpawnFail> {
-    use crate::platform::lifecycle::{Current, Lifecycle, Step};
+    use crate::platform::lifecycle::{CheckTree, Current, Lifecycle, Step};
     match <Current as Lifecycle>::check_tree() {
-        Step::Done(script) => check_tree(spawn, lineage, script, CHILD_WAIT),
+        Step::Done(CheckTree::Shell(script)) => check_tree(spawn, lineage, script, CHILD_WAIT),
+        // aibd itself (Windows): the same handshake, through the same spawn
+        Step::Done(CheckTree::SelfExec) => match std::env::current_exe() {
+            Ok(exe) => check_argv(
+                spawn,
+                lineage,
+                vec![
+                    exe.to_string_lossy().into_owned(),
+                    crate::platform::check_tree::ROOT_ARG.into(),
+                ],
+                CHILD_WAIT,
+            ),
+            Err(_) => Err(SpawnFail {
+                tag: "current_exe_unreadable".into(),
+                left_running: None,
+            }),
+        },
         // The check tree is a POSIX shell (`/bin/sh`): started on Windows it
         // would fail as `enoent` and turn the row (and selfcheck's exit code)
         // red for a missing check, not a broken process manager. Not started
@@ -135,6 +151,23 @@ pub fn check_tree(
     script: &str,
     wait: Duration,
 ) -> Result<Checked, SpawnFail> {
+    check_argv(
+        spawn,
+        lineage,
+        vec!["/bin/sh".into(), "-c".into(), script.into(), "sh".into()],
+        wait,
+    )
+}
+
+/// Start `argv` + the marker path as the check tree and stop it once its
+/// child wrote its pid to the marker, or after `wait`.
+#[doc(hidden)]
+pub fn check_argv(
+    spawn: SpawnFn,
+    lineage: Option<Arc<Lineage>>,
+    mut argv: Vec<String>,
+    wait: Duration,
+) -> Result<Checked, SpawnFail> {
     let marker = std::env::temp_dir().join(format!(
         "aibd-selfcheck-{}-{}.child",
         std::process::id(),
@@ -145,13 +178,10 @@ pub fn check_tree(
     let _ = std::fs::remove_file(&marker);
     let spec = Spec {
         id: format!("selfcheck-{}", std::process::id()),
-        argv: vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            script.into(),
-            "sh".into(),
-            marker.to_string_lossy().into_owned(),
-        ],
+        argv: {
+            argv.push(marker.to_string_lossy().into_owned());
+            argv
+        },
         cwd: std::env::temp_dir(),
         env: Vec::new(),
     };
@@ -495,9 +525,9 @@ mod tests {
         assert_eq!(label(fail("os_1", Some(9))), "failed:spawn_left_running");
     }
 
-    /// Without a check tree for the platform the spawn is never called (a
-    /// wired Windows spawn would get `/bin/sh` and fail as `enoent`).
-    #[cfg(not(unix))]
+    /// Without a check tree for the platform the spawn is never called
+    /// (Windows has one since a9136 11-09: aibd itself).
+    #[cfg(not(any(unix, windows)))]
     #[test]
     fn no_check_tree_is_not_wired_and_never_spawns() {
         fn must_not_spawn(

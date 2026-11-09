@@ -159,10 +159,18 @@ pub static SELFCHECK_CHILD_WAIT: Timer = Timer::operation(
     "wait for the selfcheck tree's child to report it started, before stopping the tree (bb7dc #549)",
 );
 
+pub static SELFCHECK_LEAF_LIFE: Timer = Timer::operation(
+    "selfcheck.leaf_life",
+    secs(30),
+    secs(30),
+    "the self-exec check tree's child stays for the stop to meet, then ends by itself (one wake-up; a9136 11-09)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
+    &SELFCHECK_LEAF_LIFE,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
