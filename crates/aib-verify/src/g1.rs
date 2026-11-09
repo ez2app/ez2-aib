@@ -428,7 +428,7 @@ fn row_json(r: &Row) -> Value {
     })
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::process::Command::new("/bin/hostname")
         .arg("-s")
         .output()

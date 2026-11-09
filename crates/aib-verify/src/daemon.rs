@@ -24,12 +24,33 @@ impl Daemon {
         policy: &Value,
         max_sessions: u32,
     ) -> Result<Daemon, String> {
+        let _ = std::fs::remove_dir_all(dir.join("data"));
+        Daemon::start_on(bin, dir, policy, max_sessions, "aibd.log")
+    }
+
+    /// The same `dir/data` as a stopped one (a restart); the log is `dir/<log>`.
+    pub fn restart(
+        bin: &Path,
+        dir: &Path,
+        policy: &Value,
+        max_sessions: u32,
+        log: &str,
+    ) -> Result<Daemon, String> {
+        Daemon::start_on(bin, dir, policy, max_sessions, log)
+    }
+
+    fn start_on(
+        bin: &Path,
+        dir: &Path,
+        policy: &Value,
+        max_sessions: u32,
+        log_name: &str,
+    ) -> Result<Daemon, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let data = dir.join("data");
-        let _ = std::fs::remove_dir_all(&data);
         let pol = dir.join("policy.json");
         std::fs::write(&pol, policy.to_string()).map_err(|e| format!("{}: {e}", pol.display()))?;
-        let log = dir.join("aibd.log");
+        let log = dir.join(log_name);
         let out = File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
         let err = out.try_clone().map_err(|e| format!("log: {e}"))?;
         let mut child = Command::new(bin)

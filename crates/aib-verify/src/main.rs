@@ -10,11 +10,13 @@ mod daemon;
 mod g1;
 mod http;
 mod judge;
+mod queue;
 
 const USAGE: &str = "usage: aib-verify g1 --head <40 hex> --bin <abs aibd> --fixture <abs aib-fixture-tree> --out <dir>
                   [--baseline-bin <abs aibd of a known-broken head>]
                   [--claude <abs claude> [--claude-signer <team id>] [--claude-runs N]]
                   [--burst-runs N] [--stuck-runs N] [--host NAME]
+       aib-verify queue --head <40 hex> --bin <abs aibd> --fixture <abs aib-fixture-tree> --out <dir> [--host NAME]
 rc: 0 通過 / 1 不通過 / 2 usage / 3 could not run";
 
 fn main() {
@@ -28,6 +30,13 @@ fn dispatch(args: &[String]) -> i32 {
             Ok(o) => g1::run(&o),
             Err(e) => {
                 eprintln!("aib-verify g1: {e}\n{USAGE}");
+                2
+            }
+        },
+        Some("queue") => match queue::Opts::parse(&args[1..]) {
+            Ok(o) => queue::run(&o),
+            Err(e) => {
+                eprintln!("aib-verify queue: {e}\n{USAGE}");
                 2
             }
         },
