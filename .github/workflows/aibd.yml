@@ -254,6 +254,12 @@ jobs:
             '        Ok(None) // knife' \
             --expect-fail seats::tests::keys \
             -- cargo test -p aibd --locked --lib seats::tests::keys
+          # S12 (a63ab 20:32) an empty argument after argv[0] is refused again
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if (i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
+            '        if (a.is_empty() || i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
+            --expect-fail sessions::tests::argv_rules \
+            -- cargo test -p aibd --locked --lib sessions::tests::argv_rules
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
