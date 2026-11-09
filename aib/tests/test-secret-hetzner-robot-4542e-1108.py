@@ -132,7 +132,8 @@ class Knives(unittest.TestCase):
 
     def test_k2_no_fill_removed(self):
         with knife_copy(REPO, "src/bootstrap/aib_secrets.py",
-                        'NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env")', 'NO_FILL_FILES = ("pixel-claude.env",)') as tree:
+                        'NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env", "wpsite.env")',
+                        'NO_FILL_FILES = ("pixel-claude.env", "pve.env", "wpsite.env")') as tree:
             m = self._mod(tree)
             self.assertFalse(m.no_fill("HETZNER_ROBOT_PASS"))   # 刀下去就會補填 ⇒ H5 會紅
 

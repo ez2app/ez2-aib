@@ -12,5 +12,6 @@ pub mod platform;
 pub mod runtime;
 pub mod selfcheck;
 pub mod server;
+pub mod sessions;
 pub mod timers;
 pub mod token;

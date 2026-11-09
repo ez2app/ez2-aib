@@ -10,6 +10,9 @@
         只改文件時才跑:改到的 md 裡相對連結都在、不是空檔、換行是 LF;有刪除 / 改名時整份白名單跑連結檢查
     python3 aib/tools/release/docs_only.py md-tests
         列出 main 推送時會掃 .md 的測試(隱形字元等);只改文件時 docs job 逐支直接跑,不在這裡重寫
+    python3 aib/tools/release/docs_only.py rust-ci --event pull_request --base <sha> --head <sha>
+        給 aibd.yml 的 changes job:印 rust_ci=true|false。false = 沒動 Rust 路徑(RUST_CI_PATHS),
+        rust 兩格換 ubuntu 只印一行;main 推送 / 算不出來 / 0 個檔 / 動到 .github/** 一律 true(真跑)
     python3 aib/tools/release/docs_only.py rust-tests
         只改 Rust 時 docs job 逐支直接跑的 Python 測試:讀 crates/ 或 Cargo.* 的(RUST_READ_TESTS)+ 上面那份
 
@@ -49,6 +52,7 @@ DOC_EXCLUDE = (
     "docs/aibd/INSTALL.md",  # aib/tests/test-aibd-release-1ced7-1108.py D1 檢查(先對雜湊才執行、寫明沒簽章)
     "docs/aibd/INSTALL.zh-TW.md",  # 同上(D1、D2 實跑 macOS 指令、D3)
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.1.md",  # 同上(D2 實跑 macOS 指令、D3 Windows 順序);發版時 aibd-release.yml 也讀
+    "docs/aibd/RELEASE-NOTES-0.2.0-preview.2.md",  # 同上(D2–D6);preview.2 發版時 aibd-release.yml 讀
 )
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
@@ -57,6 +61,25 @@ MD_SCAN_TESTS = ("aib/tests/test-invisible-chars-d07f9-1021.py",)
 # Rust 範圍(rust_only 用):根目錄這兩個檔 + crates/ 底下任意深度。xtask/、migrations/、clippy.toml、
 # rust-toolchain.toml 雖然 aibd.yml 也看,但沒核實沒有 Python 讀 ⇒ 不算(寧可多跑)。
 RUST_FILES = ("Cargo.toml", "Cargo.lock")
+# aibd.yml 真跑 fmt / clippy / test 的路徑(11-09 Andy「Rust 兩格改成必過」,a63ab 派:aibd.yml 拿掉 paths 過濾,
+# 每張 PR 都觸發、這裡判斷要不要真跑)。原本寫在 aibd.yml 的 on.*.paths;現在這份是唯一正本,
+# prepr(aib/tools/verify/prepr.py)也讀這裡。只准兩種寫法:完整檔名、或「目錄/**」。
+RUST_CI_PATHS = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "clippy.toml",
+    "crates/**",
+    "xtask/**",
+    "migrations/**",
+    "scripts/check-core-purity.sh",
+    "scripts/check-sys-deps.sh",
+    "scripts/check-win-job-knives.sh",
+    # aibd.yml 的刀經過 knife.py(#535 / #543);之後加刀規格夾(043dd 提案 2)時也要加進來 ——
+    # 守門測試:aibd.yml 與它呼叫的 scripts/* 提到的 scripts/ 路徑都要在這份,不在就紅
+    "scripts/knife.py",
+    ".github/workflows/aibd.yml",
+)
 RUST_PREFIXES = ("crates/",)
 NEVER_LIGHT_PREFIXES = (".github/",)
 # 讀 crates/ 或 Cargo.* 的 Python 測試:只改 Rust 時 docs job 照這份直接跑(a63ab 11-09,比照 MD_SCAN_TESTS);
@@ -110,6 +133,35 @@ def rust_only(event, files):
     if not rust:
         return False, "no Rust file changed"
     return True, "all %d changed files are Rust (%d) or docs" % (len(files), len(rust))
+
+
+def in_rust_ci(path):
+    p = path.strip()
+    for pat in RUST_CI_PATHS:
+        if pat.endswith("/**"):
+            if p.startswith(pat[:-2]):
+                return True
+        elif p == pat:
+            return True
+    return False
+
+
+def rust_ci(event, files):
+    """(True = 真跑 Rust 兩格, 原因)。只有「確定沒動到 Rust 路徑」才 False;拿不準一律 True。"""
+    if event != "pull_request":
+        return True, "event %s is not a pull_request (main pushes always run the Rust cells)" % event
+    if files is None:
+        return True, "could not list the changed files; running the Rust cells"
+    files = [f for f in files if f.strip()]
+    if not files:
+        return True, "no changed files found; running the Rust cells"
+    gh = [f for f in files if any(f.strip().startswith(pre) for pre in NEVER_LIGHT_PREFIXES)]
+    if gh:
+        return True, "touches %s; running the Rust cells" % gh[0]
+    rust = [f for f in files if in_rust_ci(f)]
+    if rust:
+        return True, "%d changed file(s) on Rust paths (first: %s)" % (len(rust), rust[0])
+    return False, "none of the %d changed files is on a Rust path" % len(files)
 
 
 def rust_tests():
@@ -228,9 +280,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("md-tests")
     sub.add_parser("rust-tests")
+    rc_ = sub.add_parser("rust-ci")
+    rc_.add_argument("--event", required=True)
     d = sub.add_parser("decide")
     d.add_argument("--event", required=True)
-    for p in (d, sub.add_parser("check")):
+    for p in (d, rc_, sub.add_parser("check")):
         p.add_argument("--base", default="")
         p.add_argument("--head", default="")
         p.add_argument("--root", default=".")
@@ -240,6 +294,12 @@ def main(argv=None):
         return RC_OK
     if a.cmd == "rust-tests":
         print("\n".join(rust_tests()))
+        return RC_OK
+    if a.cmd == "rust-ci":
+        files = changed_files(a.root, a.base, a.head) if a.event == "pull_request" else []
+        run, why = rust_ci(a.event, files)
+        print("rust_ci=%s" % ("true" if run else "false"))
+        print("rust_ci: " + why, file=sys.stderr)
         return RC_OK
     if a.cmd == "decide":
         files = changed_files(a.root, a.base, a.head) if a.event == "pull_request" else []

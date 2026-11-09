@@ -31,7 +31,7 @@ fn version_prints_the_workspace_version_and_platform() {
 }
 
 #[test]
-fn selfcheck_json_lists_every_row_and_never_claims_process_management() {
+fn selfcheck_json_lists_every_row_and_process_management_is_a_real_run() {
     let o = aibd(&["selfcheck", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
     let rows = v.as_array().expect("array");
@@ -51,7 +51,24 @@ fn selfcheck_json_lists_every_row_and_never_claims_process_management() {
     ] {
         assert!(!status(name).is_empty(), "missing row {name}");
     }
-    assert_eq!(status("process_management"), "not_wired");
+    // contract §6: a real start + stop; never "ok" where a clean stop
+    // cannot be proven, never "not_wired" where sessions exist
+    let pm = status("process_management");
+    if cfg!(unix) {
+        assert_eq!(pm, "unverified", "{rows:?}");
+        let row = rows
+            .iter()
+            .find(|r| r["name"] == "process_management")
+            .unwrap();
+        assert!(
+            row["reason"].as_str().is_some_and(|r| !r.is_empty()),
+            "{row}"
+        );
+    } else {
+        // Windows: not_wired even once sessions are wired (#543): there is
+        // no Windows check tree yet, and /bin/sh must not be tried there
+        assert_eq!(pm, "not_wired");
+    }
     assert_eq!(status("config"), "ok");
     if cfg!(target_os = "macos") {
         // DECISION-23: never "ok" (clean) on macOS

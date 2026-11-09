@@ -34,6 +34,21 @@ fn main() -> ExitCode {
         }
     }
     init_tracing();
+    // DECISION-21 J0 (Windows): aibd puts itself in a KILL_ON_JOB_CLOSE Job
+    // before the runtime and before any child exists, and holds it until it
+    // exits. Every session Job is nested in J0, so if aibd dies for any reason
+    // the OS kills every tree it started. No "run unprotected" mode.
+    #[cfg(windows)]
+    let _j0 = match aib_sys::job::Job::adopt_current() {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(
+                error = e.tag(),
+                "j0: cannot put aibd in its Job; refusing to start"
+            );
+            return ExitCode::from(1);
+        }
+    };
     match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
         Err(e) => {
@@ -51,9 +66,7 @@ async fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+    let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {
         // Port and file locations only; the token value is never printed.
         println!(
@@ -79,12 +92,18 @@ async fn run() -> ExitCode {
 fn selfcheck(json: bool) -> ExitCode {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
         .map_err(|e| e.to_string());
-    let lineage = aibd::lineage::Lineage::detect();
+    let lineage = std::sync::Arc::new(aibd::lineage::Lineage::detect());
+    // contract §6: one real start + stop, with the same lineage a session uses
+    let process = aibd::selfcheck::process_row(&aibd::selfcheck::check_process_management(
+        platform::default_spawn(),
+        Some(lineage.clone()).filter(|l| l.enabled()),
+    ));
     let rows = aibd::selfcheck::rows(
         cfg,
         &lineage,
         &platform::child_reaping(),
         std::env::consts::OS,
+        process,
     );
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));

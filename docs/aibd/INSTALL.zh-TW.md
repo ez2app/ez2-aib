@@ -18,7 +18,7 @@ aibd 是 AIB 背景服務的 Rust 版本。**這是預覽版**:跟 Python 版 `a
 ## macOS
 
 ```sh
-V=0.2.0-preview.1
+V=0.2.0-preview.2
 F=aibd-$V-aarch64-apple-darwin
 B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V
 cd ~/Downloads \
@@ -37,7 +37,7 @@ cd ~/Downloads \
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$V = "0.2.0-preview.1"
+$V = "0.2.0-preview.2"
 $F = "aibd-$V-x86_64-pc-windows-msvc.exe"
 $B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
 $D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
