@@ -15,6 +15,12 @@
 //!   3.14 cells unless `full-ci` is set (PLAN-release-tooling 9.1, DECIDED
 //!   #24), which looks like a pass that never ran.
 //!
+//! It is a trial, not the merge itself: `.gitattributes` merge attributes
+//! (`merge=union`, `-merge`, `binary`) and merge drivers are not read, so a
+//! repository that uses them can get a different result from a real
+//! `git merge` (1ced7 68028506 N1). Needs git >= 2.38 (`merge-tree
+//! --write-tree`); an older git is an error, never a pass.
+//!
 //! Nothing is written to the repository and none of its config runs: the
 //! repository is only asked to resolve names (`rev-parse`); every merge runs
 //! in a throw-away bare repository that borrows the repository's objects as
@@ -319,9 +325,20 @@ pub fn to_json(rep: &Report) -> Value {
             "a": a, "b": b, "error": e,
         })).collect::<Vec<_>>(),
         "order": rep.order,
-        "blocked": rep.blocked.iter().map(|b| json!({
-            "ref": b.name, "conflicts": b.conflicts, "stack_on": b.stack_on,
-        })).collect::<Vec<_>>(),
+        "blocked": rep.blocked.iter().map(|b| {
+            // 1ced7 68028506 N2: say why when there is nobody to stack on
+            let why = if !b.stack_on.is_empty() {
+                None
+            } else if rep.heads.iter().any(|h| h.name == b.name && !h.onto_base.clean()) {
+                Some("needs_the_base_merged_first")
+            } else {
+                Some("conflicts_only_with_the_whole_stack")
+            };
+            json!({
+                "ref": b.name, "conflicts": b.conflicts, "stack_on": b.stack_on,
+                "stack_on_reason": why,
+            })
+        }).collect::<Vec<_>>(),
         "stacked_tree": rep.stacked_tree,
         "expect_tree": rep.expect.as_ref().map(|e| json!({
             "ref": e.name, "tree": e.tree, "match": e.matches, "diff": e.diff,

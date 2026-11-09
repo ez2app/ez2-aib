@@ -162,6 +162,7 @@ fn two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first() {
     let j = to_json(&rep);
     assert_eq!(j["verdict"], "not_ready");
     assert_eq!(j["blocked"][0]["stack_on"][0], "x");
+    assert!(j["blocked"][0]["stack_on_reason"].is_null());
 }
 
 #[test]
@@ -183,6 +184,10 @@ fn a_head_that_collides_with_the_base_needs_the_base_merged_first() {
         "nothing stacked to blame"
     );
     assert_eq!(to_json(&rep)["heads"][0]["onto_base"]["clean"], false);
+    assert_eq!(
+        to_json(&rep)["blocked"][0]["stack_on_reason"],
+        "needs_the_base_merged_first"
+    );
 }
 
 #[test]
