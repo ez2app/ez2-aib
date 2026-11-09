@@ -47,14 +47,34 @@ PREFIX = {"ANTHROPIC_API_KEY": "sk-ant-"}
 SHAPE = {"PVE_API_TOKEN": (re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9._-]{1,64}![A-Za-z0-9._-]{1,64}="
                                       r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"),
                            "user@realm!tokenid=UUID")}
+# 形狀跟著前綴走:PVE_API_ 開頭的名字(pve.env 只收這段,打錯的 PVE_API_TOKN 也落這檔)一律套 PVE token 的形狀(11-09 #545 L1 ebb36)
+SHAPE_PREFIX = {"PVE_API_": "PVE_API_TOKEN"}
+# root 的 token 權限是整台主機:拒,請改用 aib@pve 的 privsep token(#545 L3)
+ROOT_USER = {"PVE_API_TOKEN": re.compile(r"root@", re.I)}
+# 值要原樣保存、不 strip 的名字(站點密碼可以是任意字元):頭尾有空白 ⇒ 重問,不默默砍掉(#545 L2)
+EXACT_VALUE_PREFIXES = ("WPSITE_",)
+
+
+def _shape_base(name):
+    if not isinstance(name, str):
+        return None
+    for base in SHAPE:
+        if name == base or name.startswith(base + "_"):
+            return base
+    for pre, base in SHAPE_PREFIX.items():
+        if name.startswith(pre):
+            return base
+    return None
 
 
 def shape_for(name):
-    """回 (regex, 說明) 或 None。PVE_API_TOKEN_NODE2 這類加代號的名字也套 PVE_API_TOKEN 的形狀。"""
-    for base, spec in SHAPE.items():
-        if name == base or (isinstance(name, str) and name.startswith(base + "_")):
-            return spec
-    return None
+    """回 (regex, 說明) 或 None。PVE_API_TOKEN_NODE2 這類加代號的名字、其他 PVE_API_ 開頭的名字都套 PVE_API_TOKEN 的形狀。"""
+    base = _shape_base(name)
+    return SHAPE[base] if base else None
+
+
+def keeps_exact(name):
+    return isinstance(name, str) and name.startswith(EXACT_VALUE_PREFIXES)
 CHECKS = {"ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1/models",
                                 lambda v: {"x-api-key": v, "anthropic-version": "2023-06-01"})}
 _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
@@ -100,9 +120,14 @@ def check_format(name, value):
     want = PREFIX.get(name)
     if want and not value.startswith(want):
         return "bad_prefix"
+    if keeps_exact(name) and value != value.strip():
+        return "edge_space"
     shape = shape_for(name)
     if shape and not shape[0].fullmatch(value):
         return "bad_shape"
+    root = ROOT_USER.get(_shape_base(name) or "")
+    if root and root.match(value):
+        return "root_token"
     return None
 
 
@@ -113,8 +138,8 @@ def build_script(prompt, title, nonce, wait=WAIT_S):
                .replace("__NONCE__", json.dumps(nonce)).replace("__WAIT__", str(int(wait))))
 
 
-def dialog(prompt, title, run=subprocess.run, wait=WAIT_S):
-    """彈一次遮字輸入框。回 {"ok": bool, "why": str, "value"?: str}。"""
+def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False):
+    """彈一次遮字輸入框。回 {"ok": bool, "why": str, "value"?: str}。raw=True ⇒ value 原樣(不砍頭尾空白,站點密碼用)。"""
     nonce = secrets.token_hex(16)
     try:
         r = run([OSASCRIPT, "-l", "JavaScript", "-"], input=build_script(prompt, title, nonce, wait),
@@ -134,7 +159,7 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S):
     if out.get("ok") is not True and out.get("why") == "error" and str(out.get("code") or "") in NO_GUI_CODES:
         return {"ok": False, "why": "no_gui"}
     if out.get("ok") is True and out.get("nonce") == nonce and isinstance(out.get("value"), str):
-        return {"ok": True, "why": "ok", "value": out["value"].strip()}
+        return {"ok": True, "why": "ok", "value": out["value"] if raw else out["value"].strip()}
     if out.get("ok") is True:
         return {"ok": False, "why": "nonce_mismatch"}
     return {"ok": False, "why": str(out.get("why") or "failed")}
@@ -147,18 +172,20 @@ def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None):
     prompt = base
     for _ in range(TRIES):
         if platform == "darwin":
-            res = (ask or dialog)(prompt, title)
+            res = (ask or (lambda p, t: dialog(p, t, raw=keeps_exact(name))))(prompt, title)
             if not res.get("ok"):
                 return None, res.get("why") or "failed"
-            value = res["value"]
+            raw = res["value"]
         else:
             if not (isatty() if isatty else sys.stdin.isatty()):
                 return None, "no_tty"
             import getpass
             try:
-                value = (getpass_fn or getpass.getpass)(base + " ").strip()
+                raw = (getpass_fn or getpass.getpass)(base + " ")
             except (EOFError, KeyboardInterrupt):
                 return None, "cancel"
+        # 兩種平台同一套:一般金鑰砍頭尾空白;站點密碼原樣檢查,頭尾有空白就重問(#545 L2)
+        value = raw if keeps_exact(name) else raw.strip()
         bad = check_format(name, value)
         if bad is None:
             return value, None

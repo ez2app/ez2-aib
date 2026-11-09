@@ -6,7 +6,7 @@
 
 T1 叫過、ACK 窗過了、沒人接 ⇒ 起背景整理一次(draft、帶 actor / slot);同一批不再起
 T1b ACK 從本席上一次 Stop 起算(不是叫醒時刻)
-T2 回合中(最後一次 UserPromptSubmit 比 Stop 晚)⇒ deferred seat-busy;aib now 更新也把窗往後推
+T2 回合中(最後一次 UserPromptSubmit 比 Stop 晚)或畫面在動 + 到門檻 ⇒ 當下起背景整理(7b,不再 seat-busy 延後;上限照舊);\n   一封不起;off 不起;aib now 更新也把窗往後推(閒著的席)
 T3 每小時上限(預設 2;triage-quota 設定可改)⇒ deferred per-hour-cap + next_at
 T5 引擎不在 claude / codex ⇒ deferred engine-unsupported;T6 off ⇒ 不走自動那條(照舊再叫)
 M3 build_record 換批次保留 headless_log / headless_key / headless / woke_revs(r2 M)
@@ -146,17 +146,60 @@ class T1AutoStart(unittest.TestCase):
 
 
 class T2SeatBusy(unittest.TestCase):
-    def test_in_turn_defers(self):
+    """7b(Andy 11-09 06:0x「dm 能在 >=2 封時，立刻必定由子 ai 先處理…而不用等」;舊:回合中 ⇒ deferred seat-busy)。"""
+
+    def test_in_turn_starts_now_without_waiting_for_ack(self):
         out = HN.QBox(self).py(SETUP + (
-            "w0 = two()\n"
             "Q.mark_turn(%r, 'stop', env=env, now=t - 100)\n"
             "Q.mark_turn(%r, 'prompt', env=env, now=t - 90)\n"
-            "w1 = whys(tick(t + A + 5))\n"
-            "print(json.dumps({'w1': w1, 'n': len(spawned), 'h': tri().get('headless')}))\n") % (SEAT, SEAT))
-        self.assertEqual(out["w1"], ["headless-deferred:seat-busy"], out)
+            "w0 = two()\n"
+            "n0 = len(spawned)\n"
+            "w1 = whys(tick(t + 30))\n"
+            "print(json.dumps({'w0': w0, 'n0': n0, 'w1': w1, 'n': len(spawned), 'sp': spawned,\n"
+            "                  'h': tri().get('headless'), 'woke': tri().get('woke_at')}))\n") % (SEAT, SEAT))
+        self.assertEqual(out["w0"], ["headless-started"], "回合中 + 2 封 ⇒ 第一拍就起，不叫醒、不等 ACK:%r" % out)
+        self.assertEqual(out["n0"], 1, out)
+        self.assertTrue(out["sp"][0][2], "只擬不結:%r" % out)
+        self.assertIsNone(out["woke"], "沒有貼字叫醒(回合中貼了也看不到):%r" % out)
+        self.assertEqual(out["n"], 1, "同一批不再起:%r" % out)
+        self.assertEqual((out["h"] or {}).get("state"), "started", out)
+
+    def test_in_turn_one_letter_is_not_enough(self):
+        out = HN.QBox(self).py(SETUP + (
+            "Q.mark_turn(%r, 'prompt', env=env, now=t - 90)\n"
+            "put('只有一封', t - 50)\n"
+            "w0 = whys(tick(t))\n"
+            "print(json.dumps({'w0': w0, 'n': len(spawned)}))\n") % SEAT)
         self.assertEqual(out["n"], 0, out)
-        self.assertEqual((out["h"] or {}).get("why"), "seat-busy", out)
-        self.assertIsInstance((out["h"] or {}).get("next_at"), int, out)
+
+    def test_in_turn_still_obeys_the_hour_cap(self):
+        """也釘住:叫過一次(waiting-pickup)後回合中又來新信 ⇒ 不再等它接(05:33 那批就卡在這)。"""
+        out = HN.QBox(self).py(SETUP + (
+            "w0 = two()\n"                                   # 閒著:第一拍是叫醒，建好紀錄
+            "p = Q.triage_path(%r, env); r = tri(); r['headless_log'] = [t - 600, t - 300]; Q.TR.write(p, r)\n"
+            "Q.mark_turn(%r, 'prompt', env=env, now=t + 5)\n"
+            "put('第三件:新的一封', t + 10)\n"
+            "w1 = whys(tick(t + 20))\n"
+            "print(json.dumps({'w0': w0, 'w1': w1, 'n': len(spawned), 'h': tri().get('headless')}))\n") % (SEAT, SEAT))
+        self.assertEqual(out["n"], 0, out)
+        self.assertEqual(out["w1"], ["headless-deferred:per-hour-cap"], out)
+
+    def test_busy_screen_without_turn_marks_starts_now(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件', t - 50); put('第二件', t - 40)\n"
+            "w0 = whys(Q.triage_tick(env=env, now=t, hold_fn=lambda s, r: (True, 'moving'),\n"
+            "                         deliver_fn=lambda it: 0, force=True))\n"
+            "print(json.dumps({'w0': w0, 'n': len(spawned)}))\n"))
+        self.assertEqual(out["w0"], ["headless-started"], "畫面在動也不等 30 分:%r" % out)
+        self.assertEqual(out["n"], 1, out)
+
+    def test_off_in_turn_does_not_start(self):
+        out = HN.QBox(self).py(SETUP + (
+            "Q.triage_auto_switch('off', env=env)\n"
+            "Q.mark_turn(%r, 'prompt', env=env, now=t - 90)\n"
+            "w0 = two()\n"
+            "print(json.dumps({'w0': w0, 'n': len(spawned)}))\n") % SEAT)
+        self.assertEqual(out["n"], 0, "off ⇒ 舊行為:%r" % out)
 
     def test_now_update_pushes_window(self):
         out = HN.QBox(self).py(SETUP + (
@@ -490,12 +533,21 @@ class R2Seen(Tmp):
 
 
 KNIVES = [
-    ("A1", "src/cockpit/dm_queue.py", '    if not tidy_on and auto_on and why in ("rewake", "triage-stalled"):',
-     '    if False:', "T1AutoStart.test_starts_once_after_ack"),
+    ("A1", "src/cockpit/dm_queue.py",
+     '    if not tidy_on and auto_on and (why in ("rewake", "triage-stalled") or (in_turn and (normal or why == "waiting-pickup"))):',
+     '    if not tidy_on and auto_on and (in_turn and (normal or why == "waiting-pickup")):', "T1AutoStart.test_starts_once_after_ack"),
     ("A2", "src/cockpit/dm_queue.py", "        in_turn, ack_at = ack_base(seat, env) if auto_on else (False, None)",
      "        in_turn, ack_at = (False, None)", "T1AutoStart.test_ack_counts_from_stop"),
-    ("A3", "src/cockpit/dm_queue.py", "        if in_turn:\n            r2 = dict(rec)",
-     "        if False:\n            r2 = dict(rec)", "T2SeatBusy.test_in_turn_defers"),
+    ("A3", "src/cockpit/dm_queue.py", 'or (in_turn and (normal or why == "waiting-pickup"))):', 'or False):',
+     "T2SeatBusy.test_in_turn_starts_now_without_waiting_for_ack"),
+    ("A3d", "src/cockpit/dm_queue.py", '(normal or why == "waiting-pickup")', '(normal)',
+     "T2SeatBusy.test_in_turn_still_obeys_the_hour_cap"),
+    ("A3b", "src/cockpit/dm_queue.py",
+     "        if not tidy_on and auto_on and why not in (PANE_DEAD_WHY, \"no-screen\", SEAT_UNRESOLVED_WHY):",
+     "        if False:", "T2SeatBusy.test_busy_screen_without_turn_marks_starts_now"),
+    ("A3c", "src/cockpit/dm_queue.py", "        auto = _triage_headless_auto(seat, rec, path, env, now)\n        return {\"seat\": seat, \"batch\": rec.get(\"batch\"), \"woke\": False, \"why\": auto, \"cleaned\": cleaned,",
+     "        auto = 'headless-started'; SPAWN_HEADLESS(seat, 'claude', env, draft=True)\n        return {\"seat\": seat, \"batch\": rec.get(\"batch\"), \"woke\": False, \"why\": auto, \"cleaned\": cleaned,",
+     "T2SeatBusy.test_in_turn_still_obeys_the_hour_cap"),
     ("A4", "src/cockpit/dm_queue.py", "    marks = [v for v in (s_at, n_at) if v is not None]",
      "    marks = [v for v in (s_at,) if v is not None]", "T2SeatBusy.test_now_update_pushes_window"),
     ("A5", "src/cockpit/dm_triage_headless.py", "    if len(hour) >= int(per_hour):", "    if False:",

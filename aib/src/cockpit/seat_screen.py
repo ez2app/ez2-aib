@@ -1395,7 +1395,8 @@ def chart_dm(root, code, now):
         pass
     waits = []
     for d in mine:
-        base = d.get("delivered_at") or d.get("ts")
+        # #552 G2:delivered_via=read 的送達時間就是讀的那一刻 ⇒ 等待從入列(ts)算,不然一律變 0 分
+        base = d.get("ts") if d.get("delivered_via") == "read" else (d.get("delivered_at") or d.get("ts"))
         r = reads.get(d.get("id"))
         if base and r:
             m = (r - base) / 60

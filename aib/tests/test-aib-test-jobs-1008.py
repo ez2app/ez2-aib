@@ -63,7 +63,8 @@ class Sharded(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE", "AIB_TEST_JOBS", "AIB_TEST_SHARD")}
         self.env.update({"HOME": str(Path(self.td.name) / "home"), "EZ2_AIB_LOCALE": "en", "GIT_AUTHOR_NAME": "t",
-                         "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+                         "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                         "AIB_TEST_TRACE_MIN": "0"})   # 驗的是分份 + 追蹤:幾支也要追蹤(11-09 起預設不到 100 支不追蹤)
         (Path(self.td.name) / "home").mkdir()
         for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
             subprocess.run(["git", "-C", str(self.repo)] + a, check=True, capture_output=True, env=self.env, stdin=subprocess.DEVNULL)

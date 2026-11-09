@@ -1,0 +1,18 @@
+[package]
+name = "aib-cloud"
+description = "Ez2 Managed Cloud command surface: plan / apply / verify / recovery contracts for host operations (M-R1: pure planning logic, no I/O)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# M-R1 (ADR draft aib-cloud, 4542e 11-09): no network, no secrets, no process API.
+# The crate is `#![no_std]` + alloc (#532 r3 M1, ebb36): the compiler refuses std::net /
+# std::fs / std::process / std::env / std::io outright. serde_json therefore runs in its
+# alloc-only mode; it is used to build request bodies and mask replies before printing.
+[dependencies]
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
