@@ -237,7 +237,7 @@ jobs:
             '                let Some(q) = g.queue.pop_back() else { // knife' \
             a_full_limit_queues_and_the_waiting_start_in_arrival_order
           # Q2 a slot coming back starts nobody (no kick at the end of a stop)
-          qk $'            self.kick(&g);\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+          qk $'            self.kick(&mut g);\n        } else if worth_rescanning(&stop) && !g.shutting {' \
             $'            // knife: no kick\n        } else if worth_rescanning(&stop) && !g.shutting {' \
             a_full_limit_queues_and_the_waiting_start_in_arrival_order
           # Q3 the queue has no bound
