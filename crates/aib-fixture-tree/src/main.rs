@@ -23,6 +23,11 @@
 //!                 included, is readable), and its parent stays 300 ms so the
 //!                 fork watcher records it. Unix only.
 //!
+//! With AIB_FIXTURE_GO=<path>, `tree-platform` / `tree-plain` start nothing
+//! until that file exists (the test creates it once `spawn_tree` returned, so
+//! the fork watcher is on the root before the first fork). No go within
+//! 10 s ⇒ print {"type":"error","reason":"no_go"} and exit 3, never fork late.
+//!
 //! Every process exits by itself after AIB_FIXTURE_TTL seconds (default 60), so
 //! a failing test cannot leave processes behind for long.
 
@@ -42,6 +47,21 @@ fn ttl() -> Duration {
         .and_then(|v| v.parse().ok())
         .unwrap_or(60);
     Duration::from_secs(s)
+}
+
+/// Wait for AIB_FIXTURE_GO (when set). false = it never came.
+fn wait_go() -> bool {
+    let Ok(p) = std::env::var("AIB_FIXTURE_GO") else {
+        return true;
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if std::path::Path::new(&p).exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 fn ignore(sigs: &[i32]) {
@@ -163,6 +183,11 @@ fn main() {
             } else {
                 ("platform-parent", "platform-orphan")
             };
+            if !wait_go() {
+                let _ = std::fs::remove_dir_all(&piddir);
+                emit(serde_json::json!({"type": "error", "reason": "no_go"}));
+                std::process::exit(3);
+            }
             spawn_role(role, false, &piddir);
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut orphan = None;
