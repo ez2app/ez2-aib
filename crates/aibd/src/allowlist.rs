@@ -219,8 +219,9 @@ impl RejectLog {
 }
 
 /// A program name as the audit record and the log may show it: at most 64 characters,
-/// control characters escaped (`\u{a}`), so a crafted `argv[0]` cannot forge a log line
-/// (1ced7 #593 L3). An ellipsis marks a cut.
+/// control characters and invisible format characters escaped (`\u{a}`, `\u{202e}`), so
+/// a crafted `argv[0]` cannot forge a log line or show reversed text (1ced7 #593 L3, L1).
+/// An ellipsis marks a cut.
 pub fn audit_name(s: &str) -> String {
     let mut out = String::new();
     for (n, c) in s.chars().enumerate() {
@@ -228,13 +229,24 @@ pub fn audit_name(s: &str) -> String {
             out.push('…');
             break;
         }
-        if c.is_control() {
+        if c.is_control() || is_invisible_format(c) {
             out.push_str(&c.escape_unicode().to_string());
         } else {
             out.push(c);
         }
     }
     out
+}
+
+/// Characters that are not `is_control()` but still move or hide text in a terminal or a
+/// log viewer (1ced7 #593 L1): zero-width and direction marks (U+200B–U+200F), line and
+/// paragraph separators and direction embeddings / overrides (U+2028–U+202E), word
+/// joiner and direction isolates (U+2060–U+2069), and the byte order mark (U+FEFF).
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
+    )
 }
 
 /// Shells, interpreters and launchers (springboards: they run any program or code they are
@@ -727,6 +739,22 @@ mod tests {
     fn audit_names_are_short_and_escaped() {
         assert_eq!(audit_name("claude"), "claude");
         assert_eq!(audit_name("a\nb\u{1b}"), "a\\u{a}b\\u{1b}");
+        // 1ced7 #593 L1: format characters that are not control characters
+        for (c, esc) in [
+            ('\u{200b}', "\\u{200b}"),
+            ('\u{200f}', "\\u{200f}"),
+            ('\u{2028}', "\\u{2028}"),
+            ('\u{2029}', "\\u{2029}"),
+            ('\u{202e}', "\\u{202e}"),
+            ('\u{2066}', "\\u{2066}"),
+            ('\u{2069}', "\\u{2069}"),
+            ('\u{feff}', "\\u{feff}"),
+        ] {
+            assert_eq!(audit_name(&format!("a{c}b")), format!("a{esc}b"), "{esc}");
+        }
+        // neighbours that are plain text stay as they are
+        assert_eq!(audit_name("a\u{2027}b\u{2030}c"), "a\u{2027}b\u{2030}c");
+        assert_eq!(audit_name("cl\u{e9}ude"), "cl\u{e9}ude");
         let long = "x".repeat(100);
         let got = audit_name(&long);
         assert_eq!(got.chars().count(), 65);
