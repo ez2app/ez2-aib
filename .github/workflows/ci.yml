@@ -48,11 +48,17 @@ jobs:
   #   這裡先判斷(白名單、混合改動 / 算不出來 / main 推送一律 false),只改文件時順便做文件檢查;
   #   smoke / fresh-machine needs 這個 job:只改文件 ⇒ 換到 ubuntu 只印一行;這個 job 紅 ⇒ 6 格跟著紅(不改 ruleset 也擋得住合併)。
   #   判斷腳本優先用 base 那邊的版本(PR 改不到判斷本身);base 還沒有這支(第一次)才用這輪的。
+  # 11-09 Andy「只動 Rust 就跳過」(a63ab 派):只改 crates/**、Cargo.toml、Cargo.lock(+ 白名單文件)⇒ rust_only,
+  #   六格同樣換 ubuntu 只印一行(Rust 由 aibd.yml 測);讀 crates/ / Cargo.* 的 Python 測試在這裡逐支直接跑。
+  #   main 推送 / 混合 / 算不出來 / 動到 .github/** 一律 false;base 版判斷腳本還沒有 rust_only 時只會印 docs_only ⇒ false。
   docs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.d.outputs.docs_only }}
+      rust_only: ${{ steps.d.outputs.rust_only }}
+      # light = docs_only 或 rust_only:smoke / fresh-machine 只看這個
+      light: ${{ steps.d.outputs.light }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,11 +71,15 @@ jobs:
           tool=aib/tools/release/docs_only.py
           if [ -n "$BASE" ] && git show "$BASE:$tool" > "$RUNNER_TEMP/docs_only.py" 2>/dev/null; then tool="$RUNNER_TEMP/docs_only.py"; fi
           out=$(python3 "$tool" decide --event "$GITHUB_EVENT_NAME" --base "$BASE" --head "$HEAD") || out=docs_only=false
-          case "$out" in docs_only=true) ;; *) out=docs_only=false ;; esac
-          echo "$out" >> "$GITHUB_OUTPUT"
-          echo "$out"
-      - name: docs check (only when the change is docs-only)
-        if: steps.d.outputs.docs_only == 'true'
+          # 只認整行 docs_only=true / rust_only=true;其他(含舊版腳本只印一行、印錯)一律 false
+          docs=false; rust=false
+          case $'\n'"$out"$'\n' in *$'\n'docs_only=true$'\n'*) docs=true ;; esac
+          case $'\n'"$out"$'\n' in *$'\n'rust_only=true$'\n'*) rust=true ;; esac
+          if [ "$docs" = true ]; then rust=false; fi
+          light=false; if [ "$docs" = true ] || [ "$rust" = true ]; then light=true; fi
+          printf 'docs_only=%s\nrust_only=%s\nlight=%s\n' "$docs" "$rust" "$light" | tee -a "$GITHUB_OUTPUT"
+      - name: docs check (only when the change is docs-only or Rust-only; checks the changed docs)
+        if: steps.d.outputs.light == 'true'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -78,15 +88,41 @@ jobs:
       #   只改文件時這裡逐支直接跑同一支,不自己重寫那些檢查(約 20 秒)
       - name: tests main runs over .md files
         if: steps.d.outputs.docs_only == 'true'
+        # bb7dc #538 High:清單先取出來、驗 rc 與非空、每支檔案要在;任何一項不對就紅(不能零支跑完當綠)
         run: |
-          rc=0
-          for t in $(python3 aib/tools/release/docs_only.py md-tests); do
+          list=$(python3 aib/tools/release/docs_only.py md-tests) || { echo "::error::docs_only.py md-tests failed (rc $?)"; exit 1; }
+          [ -n "$list" ] || { echo "::error::docs_only.py md-tests printed no test: refusing to pass with nothing run"; exit 1; }
+          rc=0; n=0
+          for t in $list; do
+            [ -f "$t" ] || { echo "::error::$t is listed but missing"; rc=1; continue; }
             echo "::group::$t"; python3 "$t" || { echo "::error::$t failed"; rc=1; }; echo "::endgroup::"
+            n=$((n + 1))
           done
+          echo "ran $n test file(s)"
+          # bb7dc #538 b5ea0e7d:只有空白 / tab 的清單 [ -n ] 會過、迴圈 0 次 ⇒ 一定要真的跑到至少一支
+          [ "$n" -gt 0 ] || { echo "::error::no listed test ran (the list was blank or every file was missing)"; exit 1; }
           exit $rc
-      - name: not docs-only
-        if: steps.d.outputs.docs_only != 'true'
-        run: echo "::notice::not a docs-only change; smoke / fresh-machine run as usual"
+      # a63ab 11-09:只改 Rust 時,讀 crates/ / Cargo.* 的 Python 測試(清單在 docs_only.py RUST_READ_TESTS,守門測試管名單)
+      #   + 掃 .md 的那份,逐支直接跑同一支
+      - name: Python tests that read crates/ or Cargo.* (only when the change is Rust-only)
+        if: steps.d.outputs.rust_only == 'true'
+        # bb7dc #538 High:清單先取出來、驗 rc 與非空、每支檔案要在;任何一項不對就紅(不能零支跑完當綠)
+        run: |
+          list=$(python3 aib/tools/release/docs_only.py rust-tests) || { echo "::error::docs_only.py rust-tests failed (rc $?)"; exit 1; }
+          [ -n "$list" ] || { echo "::error::docs_only.py rust-tests printed no test: refusing to pass with nothing run"; exit 1; }
+          rc=0; n=0
+          for t in $list; do
+            [ -f "$t" ] || { echo "::error::$t is listed but missing"; rc=1; continue; }
+            echo "::group::$t"; python3 "$t" || { echo "::error::$t failed"; rc=1; }; echo "::endgroup::"
+            n=$((n + 1))
+          done
+          echo "ran $n test file(s)"
+          # bb7dc #538 b5ea0e7d:只有空白 / tab 的清單 [ -n ] 會過、迴圈 0 次 ⇒ 一定要真的跑到至少一支
+          [ "$n" -gt 0 ] || { echo "::error::no listed test ran (the list was blank or every file was missing)"; exit 1; }
+          exit $rc
+      - name: not docs-only nor Rust-only
+        if: steps.d.outputs.light != 'true'
+        run: echo "::notice::not a docs-only or Rust-only change; smoke / fresh-machine run as usual"
   smoke:
     needs: [tip, docs]
     # 11-08 PROPOSAL-19:docs 紅 / 被跳過時也要跑到下面那一步把格子判紅(不然必過格只會卡在等待)
@@ -110,26 +146,26 @@ jobs:
     #   這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改。
     # 11-07:ubuntu-latest 換成 26.04 後 setup-python 找不到 3.9 ⇒ 只有 (ubuntu-latest, 3.9) 這格改跑 ubuntu-24.04;
     #   格子名字仍照矩陣(main 必過清單不變),pyproject 下限 3.9 不改。
-    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.docs_only != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
+    runs-on: ${{ ((matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.light != 'true') && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
     env:
       # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
       #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
-      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.docs_only != 'true' }}
+      RUN_CELL: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os != 'macos-latest' || needs.tip.outputs.stale != 'true') && (matrix.os != 'macos-latest' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)) && needs.docs.outputs.light != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
         run: |
           echo "::error::tip=${{ needs.tip.result }} docs=${{ needs.docs.result }} — this required cell is red because an upstream job did not pass"
           exit 1
-      - name: docs-only change, nothing else to run
-        if: needs.docs.outputs.docs_only == 'true'
-        run: echo "::notice::docs-only change (see the docs job); this cell is not run"
+      - name: docs-only or Rust-only change, nothing else to run
+        if: needs.docs.outputs.light == 'true'
+        run: echo "::notice::docs-only=${{ needs.docs.outputs.docs_only }} rust-only=${{ needs.docs.outputs.rust_only }} change (see the docs job; Rust is tested by aibd.yml); this cell is not run"
 
       - name: cell not run on this PR
-        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.docs_only != 'true'
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.light != 'true'
         run: echo "::notice::macOS ${{ matrix.python }} not run on this PR — PRs run macOS 3.12 only, and only when ready for review (not draft); 3.9/3.14 run on main, int/*, release/*; label full-ci to run every cell"
       - name: macOS cell skipped, main moved on (macos_unverified)
-        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.docs_only != 'true'
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.light != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no macOS ${{ matrix.python }} result of its own"
       - uses: actions/checkout@v4
         if: env.RUN_CELL == 'true'
@@ -193,25 +229,25 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     # 11-08 DECISION-24:macOS 格在一般 PR 不跑(比照 smoke 3.9 / 3.14:main、int/*、release/*、full-ci 才跑),
     #   草稿也不跑;這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改
-    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) || needs.docs.outputs.docs_only == 'true') && 'ubuntu-latest' || matrix.os }}
+    runs-on: ${{ ((matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) || needs.docs.outputs.light == 'true') && 'ubuntu-latest' || matrix.os }}
     env:
       # 同上:main 已前進 / 這張 PR 不輪 macOS ⇒ 這輪的 macOS 格只印原因、不跑(這條件跟 runs-on 同一句,改一邊要一起改)
-      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) && needs.docs.outputs.docs_only != 'true' }}
+      RUN_CELL: ${{ !(matrix.os == 'macos-latest' && (needs.tip.outputs.stale == 'true' || !((github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || !github.event.pull_request.draft)))) && needs.docs.outputs.light != 'true' }}
     steps:
       - name: upstream jobs (tip / docs) must have passed
         if: needs.tip.result != 'success' || needs.docs.result != 'success'
         run: |
           echo "::error::tip=${{ needs.tip.result }} docs=${{ needs.docs.result }} — this required cell is red because an upstream job did not pass"
           exit 1
-      - name: docs-only change, nothing else to run
-        if: needs.docs.outputs.docs_only == 'true'
-        run: echo "::notice::docs-only change (see the docs job); this cell is not run"
+      - name: docs-only or Rust-only change, nothing else to run
+        if: needs.docs.outputs.light == 'true'
+        run: echo "::notice::docs-only=${{ needs.docs.outputs.docs_only }} rust-only=${{ needs.docs.outputs.rust_only }} change (see the docs job; Rust is tested by aibd.yml); this cell is not run"
       # 跳過原因三選一、各印各的:只改文件(上面)/ 這張 PR 不輪 macOS / main 已前進(bb7dc #512 審:PR 跳過不能印成 main moved on)
       - name: macOS cell not run on this PR
-        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.docs_only != 'true'
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale != 'true' && needs.docs.outputs.light != 'true'
         run: echo "::notice::fresh-machine on macOS runs on main, int/*, release/* or PRs labelled full-ci (not on drafts)"
       - name: macOS cell skipped, main moved on (macos_unverified)
-        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.docs_only != 'true'
+        if: env.RUN_CELL != 'true' && needs.tip.outputs.stale == 'true' && needs.docs.outputs.light != 'true'
         run: echo "::warning::macos_unverified — main moved on to ${{ needs.tip.outputs.head }}; this commit (${{ github.sha }}) has no fresh-machine macOS result of its own"
       - uses: actions/checkout@v4
         if: env.RUN_CELL == 'true'
