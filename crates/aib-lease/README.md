@@ -113,3 +113,27 @@ aib-lease run --host 100.116.110.31 --owner 043dd \
   never changes the exit code. The file is created 0600 (masking is best effort).
 * Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
   bad rev · 73 remote unpack · 75 lease not granted (nothing ran).
+
+## `aib-lease classify` — short or long, light or not (D7)
+
+```sh
+aib-lease classify --host 100.116.110.31 --step 'cargo test -p aibd --locked --test gate_replay'
+# {"class":"short","light":true,"may_go_ahead":true,"est_secs":70,"samples":3,...}
+```
+
+DECISION-test-classify v1.1 items 1–4, from the run history (`aib-lease run`) of the same
+steps on the same host. It only orders work: a short run still takes the lease and runs the same
+commands through the same gates.
+
+* Fingerprint: host + the steps as words; commit ids, `--rev` values and temp paths taken out.
+  Shell syntax (`;`, `|`, `&&`, `$`, redirections, globs) ⇒ no fingerprint ⇒ unknown.
+* Estimate from passing runs only (sum of step seconds, lease waiting not in it): 5 or more ⇒
+  p90 (nearest rank), fewer ⇒ max. Short ≤ 10 min, medium ≤ 20 min, long beyond. No history ⇒
+  unknown (scheduled as long), first estimate from the commands.
+* Always long: `aib test --all`, `--workspace`, `tools/test.js`, Chrome / CDP / e2e, a real AI
+  CLI, `--ignored` / `--include-ignored`.
+* Light = measured: every passing run peaked at ≤ 4 cores and ≤ 1 GiB; a missing number ⇒ not light.
+* `may_go_ahead` = short + light + not always-long + no run over 15 min (or `short_overrun`)
+  in the last 7 days.
+* `~/.ez2-aib/state/lease/classify-long.txt` (`AIB_LEASE_CLASSIFY_LONG`): one entry per line;
+  a fingerprint containing it is long. Nothing in any file makes a run short.

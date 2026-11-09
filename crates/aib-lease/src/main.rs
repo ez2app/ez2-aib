@@ -8,6 +8,7 @@
 //!   aib-lease queue list [--all]
 //!   aib-lease heartbeat --run-id ID
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
+//!   aib-lease classify --host H [--step CMD]... [-- CMD ARGS...]   (D7, see `aib_lease::classify`)
 //!   global: --now EPOCH (fixtures)
 //!
 //! `--host` is the machine the holder process runs on. Another machine ⇒ `--heartbeat-s` is
@@ -131,6 +132,9 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("run") {
         std::process::exit(i32::from(aib_lease::run::cli(&argv[1..])));
+    }
+    if argv.first().map(String::as_str) == Some("classify") {
+        std::process::exit(i32::from(aib_lease::classify::cli(&argv[1..])));
     }
     let o = match parse(&argv).and_then(|a| run(&a)) {
         Ok(o) => o,
