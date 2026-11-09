@@ -200,45 +200,70 @@ pub(crate) fn env_key_denied(k: &str) -> bool {
 /// Validate a POST body (contract §1). serde's own messages are never echoed:
 /// they can quote the offending value.
 pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
+    validate_audit(body).map_err(|i| i.err)
+}
+
+/// A refused POST body. `audit` = the first layer writes a `session.spawn_rejected`
+/// record for it. It is set where the refusal is made, never read back from the
+/// message (043dd #593 N1: rewording a message used to drop the record silently).
+pub(crate) struct Invalid {
+    pub err: ApiError,
+    pub audit: bool,
+}
+
+impl From<ApiError> for Invalid {
+    fn from(err: ApiError) -> Self {
+        Invalid { err, audit: false }
+    }
+}
+
+fn audited(err: ApiError) -> Invalid {
+    Invalid { err, audit: true }
+}
+
+/// [`validate`], also saying whether the refusal is audited (see [`Invalid`]).
+pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
     if body.len() > MAX_BODY {
-        return Err(ApiError::new(
-            ErrorCode::PayloadTooLarge,
-            "request body over 64 KiB",
-        ));
+        return Err(ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB").into());
     }
     let raw: RawRequest = serde_json::from_slice(body).map_err(|_| {
         bad("body must be a JSON object {argv: [string], cwd?: string, env?: {string: string}}")
     })?;
     let argv = raw.argv;
     if argv.is_empty() || argv.len() > MAX_ARGS {
-        return Err(bad("argv must have 1-64 items"));
+        return Err(bad("argv must have 1-64 items").into());
     }
     let mut total = 0usize;
-    for a in &argv {
-        if a.is_empty() || a.len() > MAX_ARG_BYTES || a.contains('\0') {
-            return Err(bad("each argv item must be 1-4096 bytes without NUL"));
+    // a63ab 20:32: argv[0] must be non-empty; later items may be empty (claude needs
+    // `--setting-sources ""`) and are passed to the child as they are.
+    for (i, a) in argv.iter().enumerate() {
+        if (i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES || a.contains('\0') {
+            return Err(bad(
+                "argv[0] must be non-empty; each argv item at most 4096 bytes without NUL",
+            )
+            .into());
         }
         total += a.len();
     }
     if total > MAX_ARGV_TOTAL {
-        return Err(bad("argv over 32 KiB in total"));
+        return Err(bad("argv over 32 KiB in total").into());
     }
     if !Path::new(&argv[0]).is_absolute() {
-        return Err(bad(ARGV0_RELATIVE));
+        return Err(audited(bad(ARGV0_RELATIVE)));
     }
     let cwd = match raw.cwd {
         None => None,
         Some(c) => {
             let p = PathBuf::from(&c);
             if c.contains('\0') || !p.is_absolute() || !p.is_dir() {
-                return Err(bad("cwd must be an existing absolute directory"));
+                return Err(bad("cwd must be an existing absolute directory").into());
             }
             Some(p)
         }
     };
     let env_in = raw.env.unwrap_or_default();
     if env_in.len() > MAX_ENV {
-        return Err(bad("env has more than 32 keys"));
+        return Err(bad("env has more than 32 keys").into());
     }
     let mut env = Vec::with_capacity(env_in.len());
     for (k, v) in env_in {
@@ -248,21 +273,19 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
             .iter()
             .any(|(e, _): &(String, String)| e.eq_ignore_ascii_case(&k))
         {
-            return Err(bad(
-                "env has the same key twice (keys are compared without case)",
-            ));
+            return Err(bad("env has the same key twice (keys are compared without case)").into());
         }
         if !env_key_ok(&k) {
-            return Err(bad("env key must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$"));
+            return Err(bad("env key must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$").into());
         }
         if env_key_denied(&k) {
-            return Err(ApiError::new(
+            return Err(audited(ApiError::new(
                 ErrorCode::EnvNotAllowed,
                 "env key not allowed (AIBD_*, DYLD_*, LD_*, PATH)",
-            ));
+            )));
         }
         if v.len() > MAX_ENV_VALUE || v.contains('\0') {
-            return Err(bad("env value must be at most 4096 bytes without NUL"));
+            return Err(bad("env value must be at most 4096 bytes without NUL").into());
         }
         env.push((k, v));
     }
@@ -1114,11 +1137,11 @@ impl Sessions {
     }
 
     /// One flush per window, at its end (`session.reject_flush`, an Operation timer that
-    /// lives at most one window).
+    /// lives at most one window). The thread holds only a `Weak` while it waits (1ced7
+    /// #593 L2): after a shutdown the store is not kept open for up to a minute; if the
+    /// sessions are gone when it wakes, it ends (the shutdown drain wrote the count).
     fn arm_reject_flush(&self, token_id: String, code: &'static str, start: Instant) {
-        let Some(me) = self.me.upgrade() else {
-            return;
-        };
+        let me = self.me.clone();
         let spawned = std::thread::Builder::new()
             .name("aibd-reject-flush".into())
             .spawn(move || {
@@ -1126,6 +1149,9 @@ impl Sessions {
                     .begin(Some(start + allowlist::REJECT_WINDOW));
                 while op.tick() {}
                 drop(op);
+                let Some(me) = me.upgrade() else {
+                    return;
+                };
                 if let Some((n, program)) = me.rejections.close(&token_id, code, start) {
                     me.write_rejection(code, &program, &token_id, n);
                 }
@@ -1255,10 +1281,10 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
             ))
         }
     };
-    match validate(&bytes) {
+    match validate_audit(&bytes) {
         Ok(r) => Ok(r),
-        Err(e) => {
-            if e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE {
+        Err(Invalid { err: e, audit }) => {
+            if audit {
                 let program = lenient_argv0_name(&bytes);
                 let audit = st.sessions.clone();
                 let code = e.0;
@@ -1551,6 +1577,46 @@ mod tests {
         assert!(!e.1.contains("OTHER") && !e.1.contains("SECRET"), "{}", e.1);
     }
 
+    /// 043dd #593 N1: which first-layer refusals are audited is decided where the
+    /// refusal is made (`Invalid::audit`), not from the message text. Exactly two are:
+    /// a denied env key and a relative argv[0].
+    #[test]
+    fn first_layer_audit_is_flagged_at_the_refusal_not_by_its_message() {
+        let audit = |j: serde_json::Value| match validate_audit(j.to_string().as_bytes()) {
+            Ok(_) => panic!("accepted: {j}"),
+            Err(i) => (i.err.0, i.audit),
+        };
+        let yes = [
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"DYLD_INSERT_LIBRARIES": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"PATH": "/x"}}),
+            serde_json::json!({"argv": ["true"]}),
+        ];
+        for j in yes {
+            assert!(audit(j.clone()).1, "not audited: {j}");
+        }
+        assert_eq!(
+            audit(serde_json::json!({"argv": [TRUE_ABS], "env": {"AIBD_X": "1"}})).0,
+            ErrorCode::EnvNotAllowed
+        );
+        let no = [
+            serde_json::json!({"argv": []}),
+            serde_json::json!({"argv": [""]}),
+            serde_json::json!({"argv": [TRUE_ABS, "a\u{0}b"]}),
+            serde_json::json!({"argv": [TRUE_ABS], "cwd": "relative"}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"1BAD": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"A": "x", "a": "y"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "extra": 1}),
+        ];
+        for j in no {
+            let (code, a) = audit(j.clone());
+            assert!(!a, "audited: {j}");
+            assert_eq!(code, ErrorCode::InvalidRequest, "{j}");
+        }
+        // `validate` keeps its old shape: the same error, without the flag
+        let e = validate(br#"{"argv": ["true"]}"#).unwrap_err();
+        assert_eq!(e.1, ARGV0_RELATIVE);
+    }
+
     #[test]
     fn m1_gate_empty_policy_allows_nothing() {
         let none = SessionPolicy::default();
@@ -1578,7 +1644,8 @@ mod tests {
             serde_json::json!([]),
             serde_json::json!(["true"]),
             serde_json::json!(["./x"]),
-            serde_json::json!([ECHO_ABS, ""]),
+            serde_json::json!([""]),
+            serde_json::json!(["", "x"]),
             serde_json::json!([ECHO_ABS, "a\u{0}b"]),
             serde_json::json!(vec![ECHO_ABS; 65]),
             serde_json::json!([ECHO_ABS, "x".repeat(4097)]),
@@ -1586,6 +1653,10 @@ mod tests {
             let e = v(serde_json::json!({ "argv": bad_argv })).unwrap_err();
             assert_eq!(e.0, ErrorCode::InvalidRequest, "{bad_argv}");
         }
+        // a63ab 20:32: empty items after argv[0] are kept as they are, in place
+        let r =
+            v(serde_json::json!({"argv": [ECHO_ABS, "--setting-sources", "", "x", ""]})).unwrap();
+        assert_eq!(r.argv, [ECHO_ABS, "--setting-sources", "", "x", ""]);
         let many: Vec<String> = std::iter::once(ECHO_ABS.to_owned())
             .chain(std::iter::repeat_n("y".repeat(4000), 9))
             .collect();

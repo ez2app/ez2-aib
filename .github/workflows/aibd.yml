@@ -275,6 +275,67 @@ jobs:
             '        Ok(None) // knife' \
             --expect-fail seats::tests::keys \
             -- cargo test -p aibd --locked --lib seats::tests::keys
+          # S12 (a63ab 20:32) an empty argument after argv[0] is refused again
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if (i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
+            '        if (a.is_empty() || i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
+            --expect-fail sessions::tests::argv_rules \
+            -- cargo test -p aibd --locked --lib sessions::tests::argv_rules
+      # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
+      # Each knife breaks one rule of the fork watcher / orphan check and must
+      # turn its own unit test red. Bindings stay used (-D warnings).
+      - name: G1 fork-watch knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          gk() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aibd --locked --lib "$4"; }
+          # G1a children listed through libproc again: a stale ESRCH reads as "cannot list"
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '    Macos.children(pid)' \
+            '    libproc::processes::pids_by_type(libproc::processes::ProcFilter::ByParentProcess { ppid: pid }).map_err(|_| SysError::Unknown) // knife' \
+            platform::fork_watch::tests::a_childless_process_lists_empty_even_with_a_stale_errno
+          # G1b a child gone before it was read is a gap again (the slot is never given back)
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '                    unread_gone.store(true, Ordering::Relaxed);' \
+            '                    gap(gaps, GAP_CHILD_UNREADABLE); let _ = unread_gone; // knife' \
+            platform::fork_watch::tests::a_child_gone_before_it_is_read_is_covered_by_lineage_not_a_gap
+          # G1c the orphan check is not widened: an orphan of an unread child is missed
+          gk crates/aibd/src/lineage.rs \
+            '                Ok(u) if u.unique > root_unique && wide && u.parent_unique > root_unique => {' \
+            '                Ok(u) if u.unique > root_unique && wide && false && u.parent_unique > root_unique => { // knife' \
+            lineage::tests::an_unread_gone_child_widens_the_orphan_candidates
+          # G1d a child we may not read (alive, other reason) treated as gone
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '                Err(SysError::Gone) if pr.lineage_on() => {' \
+            '                Err(SysError::Gone | SysError::PermissionDenied) if pr.lineage_on() => { // knife' \
+            platform::fork_watch::tests::a_child_unreadable_for_another_reason_stays_a_gap_with_lineage
+          # G1e the flag is reset on every pass (043dd 21:42 #1): a later clean pass narrows the check again
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '    let mut stack = vec![parent];' \
+            $'    let mut stack = vec![parent];\n    unread_gone.store(false, Ordering::Relaxed); // knife' \
+            platform::fork_watch::tests::unread_gone_is_latched_across_passes
+          # G1f (setuid /bin/ps, 043dd THREAT) no sysctl fallback: a setuid child is a gap again
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),' \
+            '        Err(SysError::PermissionDenied) if false => pr.start_other_uid(pid), // knife' \
+            platform::fork_watch::tests::a_setuid_child_is_read_through_the_fallback_and_followed
+          # G1g a failed fallback is let through (a made-up start time)
+          gk crates/aibd/src/platform/fork_watch.rs \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid),' \
+            '        Err(SysError::PermissionDenied) => pr.start_other_uid(pid).or(Ok(0)), // knife' \
+            platform::fork_watch::tests::a_refused_child_whose_fallback_fails_stays_a_gap
+          # G1h (043dd efbe548d M1) sysinfo's 0 for a setuid process taken as "gone"
+          gk crates/aibd/src/platform/tree.rs \
+            '    if seen_start != 0 {' \
+            '    if seen_start != 0 || start != 0 { // knife' \
+            platform::tree::tests::a_setuid_process_with_no_sysinfo_start_is_checked_through_the_fallback
+          # G1i an unverified process quietly dropped from "alive" (a false observed_clean)
+          gk crates/aibd/src/platform/tree.rs \
+            '    i != Ident::Gone' \
+            '    i == Ident::Running // knife' \
+            platform::tree::tests::an_unverified_process_still_counts_as_alive
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used

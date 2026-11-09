@@ -798,6 +798,39 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     d.shutdown().await;
 }
 
+/// a63ab 20:32: an empty argument after argv[0] (claude `--setting-sources ""`) is
+/// accepted and reaches the child as an empty argument, in its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_arguments_reach_the_child_as_they_are() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let v = view(&d);
+    let f = tmp.path().join("args");
+    let script = format!(
+        "printf '[%s]' \"$#\" \"$@\" > {}.tmp && mv {0}.tmp {0}",
+        f.display()
+    );
+    let body = serde_json::json!({
+        "argv": ["/bin/sh", "-c", script, "sh", "--setting-sources", "", "x", ""]
+    })
+    .to_string();
+    let (c, s) = blocking!(v, |v| v.d().call("POST", "/api/v1/sessions", Some(&body)));
+    assert_eq!(c, 201, "{s}");
+    let f2 = f.clone();
+    let got = blocking!(v, |_v| {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(x) = std::fs::read_to_string(&f2) {
+                break x;
+            }
+            assert!(Instant::now() < end, "the child never wrote its arguments");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    assert_eq!(got, "[4][--setting-sources][][x][]");
+    d.shutdown().await;
+}
+
 static ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A start that is slow (it signals it began, waits, then really starts).
@@ -1628,4 +1661,124 @@ fn a_root_whose_identity_was_lost_has_no_exit_code() {
         .find(|e| e.aggregate_id == rec.id && e.event_type == "session.stop_unconfirmed")
         .expect("no stop event");
     assert!(ev.payload["exit_code"].is_null(), "{}", ev.payload);
+}
+
+/// 1ced7 #593 L2: a folded refusal arms one flush thread that waits up to a
+/// minute for its window to close. While it waits it must not hold the
+/// sessions (and with them the store) alive: after a shutdown the store is
+/// released at once, not up to 61 s later.
+#[test]
+fn a_waiting_reject_flush_does_not_keep_the_sessions_alive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        never_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let before = std::sync::Arc::strong_count(&s);
+    let t0 = Instant::now();
+    let code = aib_core::ErrorCode::ProgramNotAllowed;
+    // the first is written, the second is folded and arms the flush thread
+    s.record_rejection(t0, "startup", code, "x");
+    s.record_rejection(t0, "startup", code, "x");
+    // let the flush thread start and reach its wait
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        std::sync::Arc::strong_count(&s),
+        before,
+        "the waiting flush thread holds the sessions"
+    );
+    let w = std::sync::Arc::downgrade(&s);
+    drop(s);
+    assert!(
+        w.upgrade().is_none(),
+        "sessions still alive after the last owner dropped them"
+    );
+}
+
+/// G1 (1ced7 gate, 11-09): a program that ends at once gives its slot back.
+/// With one slot, twenty in a row must all start (201) and each end
+/// `observed_clean` without holding the slot. printenv / `sleep 0` used to
+/// hit `fork_watch_list_failed` (libproc left a stale errno) or
+/// `fork_watch_child_unreadable` (a child gone before it was read).
+/// The real `claude` race is checked by 1ced7 on a CI-built aibd (10 runs).
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn g1_instant_programs_give_their_slot_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut policy = fixtures(tmp.path());
+    policy.programs.push(fx("printenv", "/usr/bin/printenv"));
+    let mut d = start_policy(tmp.path(), 1, policy).await;
+    let v = view(&d);
+    blocking!(v, |v| {
+        let d = v.d();
+        let runs: [&[&str]; 2] = [&["/usr/bin/printenv", "HOME"], &["/bin/sleep", "0"]];
+        for (i, argv) in runs.iter().cycle().take(20).enumerate() {
+            let (c, s) = d.post(argv);
+            assert_eq!(c, 201, "run {i}: {s}");
+            let id = s["id"].as_str().unwrap().to_owned();
+            let s = wait_state(&d, &id, "running");
+            assert_eq!(s["stop"]["reason"], "observed_clean", "run {i}: {s}");
+            assert_eq!(s["holds_slot"], false, "run {i}: {s}");
+        }
+    });
+    d.shutdown().await;
+}
+
+/// G1 / 043dd 20:42: the middle process forks and exits before it may be
+/// read; its child is re-parented to launchd. Whichever layer finds it (fork
+/// watcher, lineage, or the widened orphan check), the slot is never given
+/// back while that child still runs: either it was stopped, or the slot is
+/// held (a survivor, or `candidates_unreadable`). Never `clean` on macOS, and
+/// the report names `exec_after_creator_exit` (043dd 01318a34).
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn g1_a_child_of_an_unread_middle_is_never_let_go() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 1).await;
+    let v = view(&d);
+    let f = tmp.path().join("gc");
+    // root sh -> subshell (middle) starts sh in the background and exits at
+    // once; that sh writes its pid and execs sleep; the root exits
+    let script = format!(
+        "( /bin/sh -c 'echo $$ > {f}; exec /bin/sleep 30' & ) ; exit 0",
+        f = f.display()
+    );
+    let (id, gc) = blocking!(v, |v| {
+        let d = v.d();
+        let (c, s) = d.post(&["/bin/sh", "-c", &script]);
+        assert_eq!(c, 201, "{s}");
+        (s["id"].as_str().unwrap().to_owned(), read_pid(&f))
+    });
+    let _own = Own(vec![gc]);
+    let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
+    assert_ne!(s["stop"]["status"], "clean", "{s}");
+    assert!(
+        s["stop"]["blind_spots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b == "exec_after_creator_exit"),
+        "{s}"
+    );
+    if alive(gc) {
+        assert_eq!(
+            s["holds_slot"], true,
+            "slot given back, {gc} still runs: {s}"
+        );
+        let surv: Vec<u64> = s["stop"]["survivors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        assert!(
+            surv.contains(&u64::from(gc)) || s["stop"]["reason"] == "candidates_unreadable",
+            "{gc} neither a survivor nor an unreadable candidate: {s}"
+        );
+    }
+    d.shutdown().await;
 }
