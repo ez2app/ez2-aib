@@ -9,6 +9,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::Value;
 
 /// Allowed `[dependencies]` of aib-cloud: name → exact version requirement.
 const ALLOWED: &[(&str, &str)] = &[(
@@ -55,9 +58,11 @@ fn io_violation(text: &str) -> Option<String> {
         .map(|f| format!("用了 {f}(no_std 之外的逃生口)"))
 }
 
-/// Remove `//` line comments and `/* … */` block comments (string literals are not
-/// tracked: an inner attribute has to precede every item, so no string can sit in front
-/// of a real `#![no_std]`).
+/// Remove `//` line comments and `/* … */` block comments. Block comments nest in Rust
+/// (`/* /* */ still a comment */`), so the depth is counted (#532 r5 Y3). String literals
+/// are not tracked: an inner attribute has to precede every item, so no string can sit in
+/// front of a real `#![no_std]`; and [`declares_no_std`] only looks at the first non-empty
+/// line, so a string constant containing the text later in the file does not count (Y1).
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -73,21 +78,42 @@ fn strip_comments(text: &str) -> String {
         out.push_str(&rest[..cut]);
         if rest[cut..].starts_with("//") {
             rest = rest[cut..].find('\n').map_or("", |e| &rest[cut + e..]);
-        } else {
-            rest = rest[cut + 2..]
-                .find("*/")
-                .map_or("", |e| &rest[cut + 2 + e + 2..]);
+            continue;
         }
+        // block comment: walk forward counting nested `/*` and `*/` until depth returns to 0
+        let mut depth = 0usize;
+        let mut i = cut;
+        let bytes = rest.as_bytes();
+        let mut end = rest.len();
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                depth += 1;
+                i += 2;
+            } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        rest = &rest[end..];
     }
 }
 
-/// lib.rs must opt out of `std` for real: after comments are gone, one line has to be
-/// exactly `#![no_std]` (#532 r4 X2 / X7: a commented-out copy or `cfg_attr(test, no_std)`
-/// does not count). That is what turns every I/O path into a compile error.
+/// lib.rs must opt out of `std` for real: after comments are gone, the **first non-empty
+/// line** has to be exactly `#![no_std]` (#532 r4 X2 / X7, r5 Y1: a commented-out copy,
+/// `cfg_attr(test, no_std)` or the text inside a string constant later in the file does not
+/// count). That is what turns every I/O path into a compile error.
 fn declares_no_std(lib_rs: &str) -> bool {
     strip_comments(lib_rs)
         .lines()
-        .any(|l| l.trim() == "#![no_std]")
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| l == "#![no_std]")
 }
 
 /// Manifest lines that count: comments (`#…`) are dropped first (#532 r3 N11), then the
@@ -112,6 +138,163 @@ fn lints_inherit_workspace(manifest: &str) -> bool {
 /// Any `build = …` key, however spaced, means a build script.
 fn has_build_key(manifest: &str) -> bool {
     manifest_compact(manifest).contains("build=")
+}
+
+/// A target table (`[lib]`, `[[bin]]`, `[[example]]`, `[[test]]`, `[[bench]]`) may not set
+/// `path`: `[lib] path = "src/root2.rs"` swaps the crate root for a file without
+/// `#![no_std]` and brings all of std back (#566 M1, ebb36). Tables are found on the
+/// comment-stripped, whitespace-stripped manifest; `path=` anywhere inside such a table
+/// (up to the next `[`) is refused. Any `[[bin]]` / `[[example]]` table at all is refused
+/// too: this crate ships a library only.
+fn manifest_target_path_violation(manifest: &str) -> Option<String> {
+    let c = manifest_compact(manifest);
+    for table in ["[[bin]]", "[[example]]"] {
+        if c.contains(table) {
+            return Some(format!("有 {table}(aib-cloud 只出 library)"));
+        }
+    }
+    for table in ["[lib]", "[[test]]", "[[bench]]"] {
+        let mut from = 0;
+        while let Some(i) = c[from..].find(table) {
+            let start = from + i + table.len();
+            let end = c[start..].find('[').map_or(c.len(), |e| start + e);
+            if c[start..end].contains("path=") {
+                return Some(format!("{table} 設了 path=(可以換掉 crate 根)"));
+            }
+            from = start;
+        }
+    }
+    None
+}
+
+/// `cargo metadata` for a manifest, as JSON (offline; the crate under test has no network).
+/// `no_deps` keeps it to the workspace / crate itself.
+fn cargo_metadata(manifest: &Path, no_deps: bool) -> Value {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args([
+        "metadata",
+        "--format-version",
+        "1",
+        "--offline",
+        "--manifest-path",
+    ])
+    .arg(manifest);
+    if no_deps {
+        cmd.arg("--no-deps");
+    }
+    let out = cmd.output().expect("run cargo metadata");
+    assert!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("cargo metadata json")
+}
+
+/// What cargo will actually build for a package (#566 r2, ebb36): exactly one `lib`
+/// target whose source is `<crate>/src/lib.rs`, test targets only under `<crate>/tests/`,
+/// and no bin / example / bench / custom-build target however the manifest spells it
+/// (`[lib] path`, `lib = { path }`, `lib.path`, `["lib"]`, `"path" =`, `src/main.rs`,
+/// top-level `bin = [...]`, `build = …` in any form). Reading cargo's own view instead of
+/// the manifest text closes the whole class.
+fn target_violation(meta: &Value, pkg_name: &str, crate_dir: &Path) -> Option<String> {
+    let pkgs = meta["packages"].as_array()?;
+    let Some(pkg) = pkgs.iter().find(|p| p["name"] == pkg_name) else {
+        return Some(format!("package {pkg_name} not in metadata"));
+    };
+    let targets = pkg["targets"].as_array()?;
+    let canon = |p: &str| Path::new(p).canonicalize().ok();
+    let want_lib = canon(&crate_dir.join("src").join("lib.rs").to_string_lossy());
+    let tests_dir = canon(&crate_dir.join("tests").to_string_lossy());
+    let mut libs = 0;
+    for t in targets {
+        let name = t["name"].as_str().unwrap_or("?");
+        let src = t["src_path"].as_str().unwrap_or("");
+        for k in t["kind"].as_array()?.iter().filter_map(Value::as_str) {
+            match k {
+                "lib" => {
+                    libs += 1;
+                    if canon(src) != want_lib {
+                        return Some(format!(
+                            "lib target {name} is rooted at {src}, not src/lib.rs"
+                        ));
+                    }
+                }
+                "test" => {
+                    let ok =
+                        matches!((&tests_dir, canon(src)), (Some(d), Some(s)) if s.starts_with(d));
+                    if !ok {
+                        return Some(format!("test target {name} outside tests/: {src}"));
+                    }
+                }
+                other => {
+                    return Some(format!(
+                        "target kind {other} ({name}) is not allowed in aib-cloud"
+                    ))
+                }
+            }
+        }
+    }
+    if libs != 1 {
+        return Some(format!("{libs} lib targets, want exactly 1"));
+    }
+    None
+}
+
+/// Every dependency of the crate must resolve to a crates.io package: `[patch]` /
+/// `[replace]` pointing at a local or git crate shows up in Cargo.lock as a package of that
+/// name without a registry `source`. Read from the lockfile so it works offline without
+/// downloading the whole workspace graph.
+fn dependency_source_violation(lock: &str, dep_names: &[&str]) -> Option<String> {
+    for block in lock.split("[[package]]").skip(1) {
+        let field = |k: &str| {
+            block
+                .lines()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix(k)
+                        .and_then(|r| r.trim().strip_prefix('='))
+                })
+                .map(|v| v.trim().trim_matches('"').to_owned())
+        };
+        let Some(name) = field("name") else { continue };
+        if !dep_names.contains(&name.as_str()) {
+            continue;
+        }
+        let src = field("source").unwrap_or_default();
+        if !src.starts_with("registry+https://github.com/rust-lang/crates.io-index") {
+            return Some(format!(
+                "{name} resolves to source {src:?}, not crates.io ([patch]/[replace]?)"
+            ));
+        }
+    }
+    None
+}
+
+/// Build a throwaway crate from a manifest body + files and ask cargo what it would build.
+#[cfg(test)]
+fn probe_manifest(tag: &str, manifest: &str, files: &[(&str, &str)]) -> Option<String> {
+    let dir = std::env::temp_dir().join(format!("aib-cloud-boundary-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).expect("tmp dir");
+    fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "{manifest}
+[workspace]
+"
+        ),
+    )
+    .expect("manifest");
+    for (rel, body) in files {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().expect("parent")).expect("dir");
+        fs::write(p, body).expect("file");
+    }
+    let meta = cargo_metadata(&dir.join("Cargo.toml"), true);
+    let v = target_violation(&meta, "k", &dir);
+    let _ = fs::remove_dir_all(&dir);
+    v
 }
 
 fn root() -> PathBuf {
@@ -238,6 +421,37 @@ fn cloud_sources_do_no_io() {
         manifest_compact(&m).contains("default-features=false"),
         "serde_json 要 default-features = false(alloc-only),不然 std 從依賴回來"
     );
+    if let Some(why) = manifest_target_path_violation(&m) {
+        panic!("aib-cloud/Cargo.toml {why}(#566 M1:target path 能換掉 #![no_std] 的 crate 根)");
+    }
+    // #566 r2: ask cargo itself what it would build — closes every spelling at once.
+    let meta = cargo_metadata(&crate_dir("aib-cloud").join("Cargo.toml"), true);
+    if let Some(why) = target_violation(&meta, "aib-cloud", &crate_dir("aib-cloud")) {
+        panic!("aib-cloud targets: {why}(#566 r2:只准一個 src/lib.rs 的 lib + tests/ 下的 test)");
+    }
+    let lock = fs::read_to_string(root().join("Cargo.lock")).expect("Cargo.lock");
+    let deps: Vec<&str> = ALLOWED.iter().map(|(k, _)| *k).collect();
+    if let Some(why) = dependency_source_violation(&lock, &deps) {
+        panic!("aib-cloud dependencies: {why}");
+    }
+    for mf in [
+        crate_dir("aib-cloud").join("Cargo.toml"),
+        root().join("Cargo.toml"),
+    ] {
+        let text = manifest_compact(&fs::read_to_string(&mf).expect("manifest"));
+        assert!(
+            !text.contains("[patch")
+                && !text.contains("[replace")
+                && !text.contains("patch.")
+                && !text.contains("replace."),
+            "{} 有 [patch] / [replace](可以把 serde_json 換成本地 crate)",
+            mf.display()
+        );
+    }
+    assert!(
+        !crate_dir("aib-cloud").join("src").join("bin").exists(),
+        "aib-cloud 不准有 src/bin/(自動變 binary target,繞過 lib.rs 的 #![no_std];#566 M1)"
+    );
 }
 
 // #532 r2/r3 M1 knives: the text checker must catch every escape hatch the compiler cannot,
@@ -288,7 +502,48 @@ fn io_checker_catches_escape_hatches() {
         "#![cfg_attr(test, no_std)]\n// #![no_std]"
     )); // X7
     assert!(!declares_no_std("#![no_std] pub mod robot;")); // must be a line of its own
+                                                            // r5 Y1: the attribute text inside a string constant, after the real attribute was removed
+    assert!(!declares_no_std(
+        "pub mod robot;\npub const KNIFE: &str = \"\\n#![no_std]\\n\";"
+    ));
+    assert!(!declares_no_std(
+        "#[macro_use]\nextern crate alloc;\n#![no_std]"
+    )); // not first
+        // r5 Y3: nested block comment swallowing the attribute
+    assert!(!declares_no_std("/* /* */\n#![no_std]\n*/\npub mod robot;"));
+    assert!(!declares_no_std(
+        "/* a /* b */ c */ /* d */\npub mod robot;\n#![no_std]"
+    ));
+    assert!(declares_no_std(
+        "/* a /* b */ c */\n#![no_std]\npub mod robot;"
+    ));
     assert_eq!(strip_comments("a // x\nb /* y\nz */ c"), "a \nb  c");
+    assert_eq!(strip_comments("a /* 1 /* 2 */ 3 */ b"), "a  b");
+    assert_eq!(strip_comments("a /* never closed"), "a ");
+    // #566 M1: target tables that can swap the crate root
+    for bad in [
+        "[package]\nname = \"x\"\n\n[lib]\npath = \"src/root2.rs\"\n",
+        "[package]\nname = \"x\"\n[lib]\nname=\"y\"\n  path=\"../evil.rs\"\n[dependencies]\n",
+        "[lib]\n# comment\npath = \"src/other.rs\"\n",
+        "[[bin]]\nname = \"tool\"\npath = \"src/tool.rs\"\n",
+        "[[bin]]\nname = \"tool\"\n",
+        "[[example]]\nname = \"e\"\n",
+        "[[test]]\nname = \"t\"\npath = \"../t.rs\"\n",
+        "[[bench]]\nname = \"b\"\npath = \"../b.rs\"\n",
+    ] {
+        assert!(
+            manifest_target_path_violation(bad).is_some(),
+            "{bad:?} 沒被抓到"
+        );
+    }
+    for ok in [
+        "[package]\nname = \"x\"\n\n[lib]\nname = \"aib_cloud\"\n\n[dependencies]\nserde_json = \"1\"\n",
+        "[package]\nname = \"x\"\n# [lib] path = \"src/root2.rs\" (comment)\n[lints]\nworkspace = true\n",
+        "[[test]]\nname = \"boundary\"\nharness = true\n",
+        "[package]\nname = \"x\"\n[dependencies]\nfoo = { path = \"../foo\" }\n",
+    ] {
+        assert_eq!(manifest_target_path_violation(ok), None, "{ok:?} 不該被抓");
+    }
     // manifest: N10 `build="x"` without spaces, N11 `[lints]` only inside a comment
     assert!(has_build_key(
         "[package]\nname = \"x\"\nbuild=\"knife/gen.rs\"\n"
@@ -307,4 +562,93 @@ fn io_checker_catches_escape_hatches() {
         "[package]\nname = \"x\"\n#[lints]\n#workspace = true\n"
     ));
     assert!(!lints_inherit_workspace("[lints]\nworkspace = false\n"));
+}
+
+// #566 r2 (ebb36): the manifest spellings that slipped past the text rules, judged by cargo.
+#[test]
+fn cargo_view_catches_every_target_spelling() {
+    const PKG: &str = "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+    type Sample = (&'static str, String, Vec<(&'static str, &'static str)>);
+    let lib = ("src/lib.rs", "#![no_std]\n");
+    let root2 = (
+        "src/root2.rs",
+        "pub fn leak() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+    );
+    let main_rs = ("src/main.rs", "fn main() {}\n");
+    let b_rs = ("b.rs", "fn main() {}\n");
+    // top-level keys (`lib = …`, `lib.path`, `bin = [...]`) have to come before any `[table]`
+    let bad: Vec<Sample> = vec![
+        (
+            "lib-table-path",
+            format!("{PKG}\n[lib]\npath = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-inline-table",
+            format!("lib = {{ path = \"src/root2.rs\" }}\n{PKG}"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-dotted",
+            format!("lib.path = \"src/root2.rs\"\n{PKG}"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-quoted-table",
+            format!("{PKG}\n[\"lib\"]\npath = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-quoted-key",
+            format!("{PKG}\n[lib]\n\"path\" = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        ("auto-main-rs", PKG.to_owned(), vec![lib, main_rs]),
+        (
+            "top-level-bin-array",
+            format!("bin = [{{ name = \"t\", path = \"src/t.rs\" }}]\n{PKG}"),
+            vec![lib, ("src/t.rs", "fn main() {}\n")],
+        ),
+        (
+            "build-key",
+            format!("{PKG}build = \"b.rs\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "build-quoted-key",
+            format!("{PKG}\"build\" = \"b.rs\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "build-with-lib-table",
+            format!("{PKG}build = \"b.rs\"\n\n[lib]\nname = \"k\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "auto-build-rs",
+            PKG.to_owned(),
+            vec![lib, ("build.rs", "fn main() {}\n")],
+        ),
+    ];
+    for (tag, manifest, files) in &bad {
+        let v = probe_manifest(tag, manifest, files);
+        assert!(v.is_some(), "{tag}: cargo view did not flag it");
+    }
+    assert_eq!(probe_manifest("plain", PKG, &[lib]), None);
+    assert_eq!(
+        probe_manifest(
+            "with-tests",
+            PKG,
+            &[lib, ("tests/t.rs", "#[test] fn t() {}\n")]
+        ),
+        None
+    );
+    assert_eq!(
+        probe_manifest(
+            "lib-name-only",
+            &format!("{PKG}\n[lib]\nname = \"k\"\n"),
+            &[lib]
+        ),
+        None
+    );
 }
