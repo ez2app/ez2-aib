@@ -180,6 +180,50 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+      # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
+      # is written together with its event, a session row follows its events
+      # and open sessions are interrupted at start. Each knife must turn its
+      # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
+      # binding used (`&& false`, not `if false`).
+      - name: seats / sessions / output knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py crates/aib-store/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-store --locked --test seats "$3"; }
+          # S1 a reused key with another request replays the first answer instead of refusing
+          sk '                    if request != k.request {' \
+            '                    if request != k.request && false { // knife' \
+            the_same_key_with_another_request_is_a_conflict_and_writes_nothing
+          # S2 the seat is written without its event
+          sk '            insert_event(&tx, &event)?;' \
+            '            // knife: no event' \
+            a_seat_and_its_event_survive_a_restart
+          # S3 a session still holding a slot is not interrupted at start (only `running` ones)
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "                     WHERE state = 'running' OR holds_slot = 1" \
+            "                     WHERE state = 'running' -- knife" \
+            --expect-fail open_sessions_are_interrupted_at_start_and_never_resumed \
+            -- cargo test -p aib-store --locked --test sessions open_sessions_are_interrupted_at_start_and_never_resumed
+          # S4 aibd writes the event but not the session row: nothing to read back
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if let Err(err) = self.store.session_event(row, ev) {' \
+            '        if let Err(err) = self.store.append(vec![ev]).map(|_| drop(row)) { // knife' \
+            --expect-fail a_seat_session_is_stored_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test seat_sessions a_seat_session_is_stored_and_read_back_after_a_restart
+          # S5 sessions go back to discarding their output: nothing to read
+          python3 -I scripts/knife.py crates/aibd/src/platform/session_unix.rs \
+            '        discard_output: false,' \
+            '        discard_output: true, // knife' \
+            --expect-fail output_lines_are_events_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S6 an over-long line is not marked as cut
+          python3 -I scripts/knife.py crates/aibd/src/session_output.rs \
+            '                cut = true;' \
+            '                cut = cut && false; // knife' \
+            --expect-fail an_over_long_line_is_cut_and_the_next_line_still_arrives \
+            -- cargo test -p aibd --locked --test session_output an_over_long_line_is_cut_and_the_next_line_still_arrives
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

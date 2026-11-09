@@ -27,7 +27,7 @@ use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
 use crate::platform::session::{Running, SpawnFn, Spec, Stop};
 use aib_core::ErrorCode;
-use aib_store::{NewEvent, Store};
+use aib_store::{NewEvent, SessionRow, Store};
 use axum::body::Body;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -126,6 +126,9 @@ impl StopView {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
+    /// The seat it runs for; `None` when started through `POST /api/v1/sessions`
+    /// (preview.2 route, kept for compatibility).
+    pub seat_id: Option<String>,
     pub argv: Vec<String>,
     pub cwd: String,
     pub pid: u32,
@@ -157,11 +160,11 @@ pub struct Request {
 pub struct ApiError(pub ErrorCode, pub String);
 
 impl ApiError {
-    fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
+    pub(crate) fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
         ApiError(code, msg.into())
     }
 
-    fn into_response(self) -> Response {
+    pub(crate) fn into_response(self) -> Response {
         error_response(self.0, &self.1, &guard::request_id())
     }
 }
@@ -305,6 +308,32 @@ pub struct Sessions {
     me: std::sync::Weak<Sessions>,
 }
 
+/// The stored form of a session: argv[0]'s file name and the count only,
+/// never argv or env (spec 9.4).
+fn row_of(s: &Session) -> SessionRow {
+    SessionRow {
+        session_id: s.id.clone(),
+        seat_id: s.seat_id.clone(),
+        pid: s.pid,
+        argv0: s
+            .argv
+            .first()
+            .and_then(|a| Path::new(a).file_name())
+            .map(|n| n.to_string_lossy().into_owned()),
+        argc: i64::try_from(s.argv.len()).unwrap_or(i64::MAX),
+        state: s.state.to_owned(),
+        holds_slot: s.holds_slot,
+        started_at: s.started_at.clone(),
+        ended_at: s.ended_at.clone(),
+        ended_by: s.ended_by.map(str::to_owned),
+        exit_code: s.exit_code,
+        signal: s.signal.clone(),
+        stop_status: s.stop.as_ref().map(|v| v.status.to_owned()),
+        stop_reason: s.stop.as_ref().and_then(|v| v.reason.clone()),
+        updated_at: now_rfc3339(),
+    }
+}
+
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -318,6 +347,20 @@ impl Sessions {
         max: usize,
         default_cwd: PathBuf,
     ) -> Arc<Sessions> {
+        // a session still open when the previous aibd stopped is
+        // `interrupted`, never re-attached (DECISION-11 B, ADR 0004)
+        match store.interrupt_open_sessions(now_rfc3339(), || {
+            new_id("ev_").unwrap_or_else(|_| format!("ev_restart_{}", now_rfc3339()))
+        }) {
+            Ok(ids) if !ids.is_empty() => {
+                tracing::warn!(
+                    count = ids.len(),
+                    "sessions open at the last stop marked interrupted"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => tracing::error!(error = %err, "could not mark open sessions interrupted"),
+        }
         Arc::new_cyclic(|me| Sessions {
             inner: Mutex::new(Inner::default()),
             cv: Condvar::new(),
@@ -369,6 +412,16 @@ impl Sessions {
 
     /// POST. Blocking (spawn, event store).
     pub fn start(self: &Arc<Self>, req: Request) -> Result<Session, ApiError> {
+        self.start_for_seat(None, req)
+    }
+
+    /// POST for a seat (`POST /api/v1/seats/{id}/sessions`); the caller has
+    /// checked that the seat exists (the store refuses an unknown one too).
+    pub fn start_for_seat(
+        self: &Arc<Self>,
+        seat_id: Option<String>,
+        req: Request,
+    ) -> Result<Session, ApiError> {
         let id = new_id("s_").map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
         {
             let mut g = lock(&self.inner);
@@ -397,7 +450,7 @@ impl Sessions {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         self.cv.notify_all();
-        let run = match res {
+        let mut run = match res {
             Ok(r) => r,
             Err(f) => {
                 let Some(pid) = f.left_running else {
@@ -429,6 +482,7 @@ impl Sessions {
         g.next_order += 1;
         let rec = Session {
             id: id.clone(),
+            seat_id,
             argv: spec.argv.clone(),
             cwd: spec.cwd.to_string_lossy().into_owned(),
             pid: run.pid(),
@@ -442,6 +496,7 @@ impl Sessions {
             stop: None,
         };
         let exit_wait = run.exit_wait();
+        let output = run.take_output();
         let shutting = g.shutting;
         g.live.insert(
             id.clone(),
@@ -466,6 +521,11 @@ impl Sessions {
             }),
         );
         tracing::info!(session = %id, pid = rec.pid, "session started");
+        if let Some(out) = output {
+            // after `session.started`, so the first line comes after it on
+            // the global cursor; the readers never take `inner`
+            crate::session_output::start(self.store.clone(), &id, out);
+        }
         if shutting {
             // H3: shutdown began while this spawn ran; it must not escape the
             // sweep, so this request stops it before answering
@@ -934,13 +994,29 @@ impl Sessions {
         }
     }
 
+    /// A live session's event, written together with its current row (spec
+    /// 4.3: state and outbox in one transaction), so the session is read
+    /// back after a restart.
     fn event(&self, g: &mut Inner, id: &str, kind: &str, payload: serde_json::Value) {
         let Some(e) = g.live.get_mut(id) else {
             return;
         };
         let seq = e.seq;
         e.seq += 1;
-        self.append(id, seq, kind, payload);
+        let row = row_of(&e.rec);
+        let ev = NewEvent {
+            event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
+            aggregate_type: "session".into(),
+            aggregate_id: id.to_owned(),
+            sequence: seq,
+            event_type: kind.to_owned(),
+            correlation_id: None,
+            occurred_at: now_rfc3339(),
+            payload,
+        };
+        if let Err(err) = self.store.session_event(row, ev) {
+            tracing::error!(session = %id, event = kind, error = %err, "session event write failed");
+        }
     }
 
     fn append(&self, id: &str, seq: i64, kind: &str, payload: serde_json::Value) {
@@ -969,7 +1045,7 @@ fn wait_timeout<'a>(cv: &Condvar, g: MutexGuard<'a, Inner>, d: Duration) -> Mute
         .unwrap_or_else(|e| e.into_inner().0)
 }
 
-fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
+pub(crate) fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b)?;
     Ok(format!(
@@ -1009,7 +1085,7 @@ fn rfc3339(secs: i64, ms: u32) -> String {
 
 // ---- HTTP handlers ----
 
-fn json_content_type(h: &HeaderMap) -> bool {
+pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
     h.get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
@@ -1039,6 +1115,88 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
     }
 }
 
+/// `POST /api/v1/seats/{id}/sessions`: the same body and answers as
+/// `POST /api/v1/sessions`, for an existing seat (`404 seat_not_found`
+/// otherwise; spec 4.2: a session belongs to a seat).
+pub async fn create_for_seat(
+    State(st): State<AppState>,
+    UrlPath(seat): UrlPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !json_content_type(&headers) {
+        return bad("Content-Type must be application/json").into_response();
+    }
+    let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
+        Ok(b) => b,
+        Err(_) => {
+            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
+                .into_response()
+        }
+    };
+    let req = match validate(&bytes) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let store = st.store.clone();
+    let sid = seat.clone();
+    match tokio::task::spawn_blocking(move || store.seat(&sid)).await {
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => {
+            return ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
+        }
+        _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+    let s = st.sessions.clone();
+    match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
+        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+}
+
+/// `GET /api/v1/seats/{id}/sessions`: the seat's sessions as stored (also
+/// after a restart), oldest first. The stored form has no argv beyond
+/// `argv0` and `argc`, and never env.
+pub async fn list_for_seat(State(st): State<AppState>, UrlPath(seat): UrlPath<String>) -> Response {
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let s = store.seat(&seat)?;
+        Ok::<_, aib_store::StoreError>(match s {
+            Some(_) => Some(store.sessions_of_seat(&seat)?),
+            None => None,
+        })
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(rows))) => {
+            let v: Vec<_> = rows.iter().map(stored_view).collect();
+            Json(serde_json::json!({"sessions": v})).into_response()
+        }
+        Ok(Ok(None)) => ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response(),
+        _ => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+}
+
+fn stored_view(r: &SessionRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": r.session_id,
+        "seat_id": r.seat_id,
+        "pid": r.pid,
+        "argv0": r.argv0,
+        "argc": r.argc,
+        "state": r.state,
+        "holds_slot": r.holds_slot,
+        "started_at": r.started_at,
+        "ended_at": r.ended_at,
+        "ended_by": r.ended_by,
+        "exit_code": r.exit_code,
+        "signal": r.signal,
+        "stop_status": r.stop_status,
+        "stop_reason": r.stop_reason,
+    })
+}
+
 pub async fn list(State(st): State<AppState>) -> Response {
     Json(serde_json::json!({"sessions": st.sessions.list()})).into_response()
 }
@@ -1047,6 +1205,61 @@ pub async fn get_one(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -
     match st.sessions.get(&id) {
         Some(s) => Json(s).into_response(),
         None => ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response(),
+    }
+}
+
+/// Query of `GET /api/v1/sessions/{id}/output`.
+#[derive(Debug, serde::Deserialize)]
+pub struct OutputQuery {
+    #[serde(default)]
+    after: i64,
+    limit: Option<u32>,
+}
+
+/// `GET /api/v1/sessions/{id}/output?after=&limit=`: the session's output
+/// events (`session.output`, `session.output_truncated`,
+/// `session.output_closed`) with `sequence > after`, from the store, so a
+/// session of an earlier aibd run reads back the same. `next` is the last
+/// sequence returned (pass it as `after`).
+pub async fn output(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<OutputQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(500).clamp(1, 1000);
+    let after = q.after.max(0);
+    let known = st.sessions.get(&id).is_some();
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        if !known && store.session_row(&id)?.is_none() {
+            return Ok(None);
+        }
+        store
+            .events_of(&crate::session_output::aggregate_id(&id), after, limit)
+            .map(Some)
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(evs))) => {
+            let next = evs.last().map(|e| e.sequence).unwrap_or(after);
+            let items: Vec<_> = evs
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "sequence": e.sequence,
+                        "global_seq": e.global_seq,
+                        "type": e.event_type,
+                        "occurred_at": e.occurred_at,
+                        "payload": e.payload,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({"output": items, "next": next})).into_response()
+        }
+        Ok(Ok(None)) => {
+            ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response()
+        }
+        _ => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
 }
 
