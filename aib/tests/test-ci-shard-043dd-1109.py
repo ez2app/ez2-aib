@@ -132,7 +132,9 @@ class C(Base):
         started.mkdir()
         for i in range(6):
             self.put("aib/tests/test-s%d.py" % i,
-                     "import os, time\nopen(os.path.join(%r, '%d'), 'w').close()\ntime.sleep(30)\n" % (str(started), i))
+                     "import os, time\nopen(os.path.join(%r, '%d'), 'w').write(str(os.getpid()))\ntime.sleep(30)\n"
+                     % (str(started), i))
+        self.addCleanup(self._kill_started, started)   # 刀 K4 那條路 ci_shard 被硬殺,它開的子行程各自成組,要自己收
         out = self.d / "res.json"
         p = subprocess.Popen([sys.executable, "-B", str(SHARD), "--repo", str(self.repo), "--jobs", "2",
                               "--results", str(out)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -153,6 +155,16 @@ class C(Base):
         self.assertIn("interrupted", so)
         self.assertIn("missing", so)
         self.assertEqual(len(os.listdir(started)), 2, "收到中斷還在排新的")
+
+    @staticmethod
+    def _kill_started(started):
+        for f in started.iterdir():
+            try:
+                pid = int(f.read_text() or 0)
+                if pid > 1:
+                    os.killpg(pid, signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
 
     def test_c6_serial_group(self):
         self.put("aib/tests/test-p1.py", "import time\ntime.sleep(1)\n")

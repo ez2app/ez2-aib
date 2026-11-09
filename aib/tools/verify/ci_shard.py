@@ -133,10 +133,19 @@ class Runner:
             with open(log_path, "w", encoding="utf-8") as fh:
                 with self.lock:
                     if self.stopping:
-                        return None
-                    p = subprocess.Popen(cmd, cwd=str(self.repo), env=env, stdout=fh, stderr=subprocess.STDOUT,
-                                         stdin=subprocess.DEVNULL, start_new_session=True)
-                    self.running[name] = p
+                        stopped = True
+                        p = None
+                    else:
+                        stopped = False
+                        p = subprocess.Popen(cmd, cwd=str(self.repo), env=env, stdout=fh, stderr=subprocess.STDOUT,
+                                             stdin=subprocess.DEVNULL, start_new_session=True)
+                        self.running[name] = p
+                if stopped:            # 收到中斷後才輪到的:不跑、不記(驗證會列 missing),記錄檔也收掉
+                    try:
+                        os.unlink(log_path)
+                    except OSError:
+                        pass
+                    return None
                 try:
                     rc = p.wait(timeout=self.timeout_s)
                 except subprocess.TimeoutExpired:
