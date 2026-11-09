@@ -253,8 +253,15 @@ fn wait_with_timeout(
 /// Every child becomes the leader of its own process group so a timeout can take its whole
 /// subtree down (`kill -KILL -<pid>`), not just the direct child.
 fn own_group(cmd: &mut Command) -> &mut Command {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0)
+    }
+    #[cfg(not(unix))]
+    {
+        cmd
+    }
 }
 
 fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
@@ -897,13 +904,14 @@ fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
         std::process::id()
     );
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| format!("{tmp}: {e}"))?;
+        let mut oo = fs::OpenOptions::new();
+        oo.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            oo.mode(0o600);
+        }
+        let mut f = oo.open(&tmp).map_err(|e| format!("{tmp}: {e}"))?;
         f.write_all(text.as_bytes())
             .map_err(|e| format!("{tmp}: {e}"))?;
     }
