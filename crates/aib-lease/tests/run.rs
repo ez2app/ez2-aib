@@ -344,6 +344,7 @@ fn read_pid(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap_or_default().trim().to_string()
 }
 
+#[allow(clippy::disallowed_methods)] // ADR 0005 named exception: test pacing (a bounded poll for a pid file or a process to end)
 fn wait_for(what: &str, f: impl Fn() -> bool) {
     for _ in 0..300 {
         if f() {
