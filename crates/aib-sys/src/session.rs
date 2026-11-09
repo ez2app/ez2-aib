@@ -462,6 +462,10 @@ mod tests {
             },
             Duration::from_millis(800),
         );
+        // this thread's Windows last-error right after the start, before any
+        // other call can overwrite it (a63ab: a red run should carry a code to
+        // look up; `SysError::Os` already carries its own)
+        let last = std::io::Error::last_os_error();
         let Err((e, left)) = r else {
             panic!("must not start")
         };
@@ -472,9 +476,17 @@ mod tests {
         let mut left = left.unwrap_or_else(|| {
             let pid = *root_pid.borrow();
             if pid == 0 {
-                panic!("Job::spawn failed before the injected open ran: {e:?}")
+                panic!(
+                    "Job::spawn failed before the injected open ran: {e:?}; \
+                     last OS error {:?} ({last})",
+                    last.raw_os_error()
+                )
             }
-            panic!("NotReaped with its Job must hand the tree back; got {e:?}, root pid {pid}")
+            panic!(
+                "NotReaped with its Job must hand the tree back; got {e:?}, root pid {pid}; \
+                 last OS error {:?} ({last})",
+                last.raw_os_error()
+            )
         });
         assert_eq!(left.pid(), *root_pid.borrow());
         assert!(left.start_100ns().is_some(), "start time not read");
