@@ -38,12 +38,12 @@ impl Drop for Own {
     }
 }
 
-/// A listed native file (a copy of `/bin/true`) without any execute bit: it resolves and
+/// A listed native file (a copy of `/usr/bin/true`) without any execute bit: it resolves and
 /// passes the gate, then exec fails (the "a failed start gives its slot back" case).
 fn not_executable(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let f = dir.join("not-executable");
-    std::fs::copy("/bin/true", &f).unwrap();
+    std::fs::copy("/usr/bin/true", &f).unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
     f
 }
@@ -63,7 +63,7 @@ fn fixtures(dir: &Path) -> SessionPolicy {
         programs: vec![
             fx("sh", "/bin/sh"),
             fx("sleep", "/bin/sleep"),
-            fx("true", "/bin/true"),
+            fx("true", "/usr/bin/true"), // macOS has no /bin/true
             fx("not-executable", not_executable(dir)),
         ],
         env: vec!["MY_VAR".into(), "MY_TOKEN".into()],
@@ -543,7 +543,7 @@ async fn m1_gate_refuses_unlisted_programs_and_env_names_before_starting() {
             "{s}"
         );
         let body =
-            serde_json::json!({"argv": ["/bin/true"], "env": {"NOT_LISTED": "sk-SECRET-ENV"}})
+            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"NOT_LISTED": "sk-SECRET-ENV"}})
                 .to_string();
         let (c, s) = d.call("POST", "/api/v1/sessions", Some(&body));
         assert_eq!(

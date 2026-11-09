@@ -958,7 +958,7 @@ mod tests {
             assert_eq!(resolve(s(&link), &p), Ok(real("/bin/sleep")));
             // P5: another name for the same real file runs the same file
             assert_eq!(resolve("/bin/sleep", &p), Ok(real("/bin/sleep")));
-            assert_eq!(resolve("/bin/true", &p), Err(Refused::Program));
+            assert_eq!(resolve("/usr/bin/true", &p), Err(Refused::Program));
             // P2: `..` is refused before anything is resolved
             let dotdot = format!(
                 "{}/../{}/fx",
@@ -980,8 +980,8 @@ mod tests {
             };
             assert_eq!(resolve(s(&link), &p), Ok(real("/bin/sleep")));
             std::fs::remove_file(&link).unwrap();
-            symlink("/bin/true", &link).unwrap();
-            assert_eq!(resolve(s(&link), &p), Ok(real("/bin/true")));
+            symlink("/usr/bin/true", &link).unwrap();
+            assert_eq!(resolve(s(&link), &p), Ok(real("/usr/bin/true")));
             std::fs::remove_file(&link).unwrap();
             symlink("/bin/sh", &link).unwrap();
             assert_eq!(resolve(s(&link), &p), Err(Refused::Program));

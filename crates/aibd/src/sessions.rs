@@ -1239,22 +1239,25 @@ pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
 }
 
-pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
-    if !json_content_type(&headers) {
-        return bad("Content-Type must be application/json").into_response();
+/// Content type, size and [`validate`], shared by both POST routes. The first layer's
+/// refusals that matter are audited (1ced7 #593 M2: deny-listed env names, a relative
+/// `argv[0]`); plain shape errors (bad JSON, too long) are not.
+async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Request, Response> {
+    if !json_content_type(headers) {
+        return Err(bad("Content-Type must be application/json").into_response());
     }
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
-            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                .into_response()
+            return Err(
+                ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
+                    .into_response(),
+            )
         }
     };
-    let req = match validate(&bytes) {
-        Ok(r) => r,
+    match validate(&bytes) {
+        Ok(r) => Ok(r),
         Err(e) => {
-            // the first layer's refusals are the most suspicious ones: audit them too
-            // (1ced7 #593 M2); plain shape errors (bad JSON, too long) are not
             if e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE {
                 let program = lenient_argv0_name(&bytes);
                 let audit = st.sessions.clone();
@@ -1264,21 +1267,37 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
                 })
                 .await;
             }
-            return e.into_response();
+            Err(e.into_response())
         }
-    };
+    }
+}
+
+/// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
+/// is audited.
+async fn gate(st: &AppState, req: Request) -> Result<Request, Response> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
-    let gate = move || {
+    let run = move || {
         admit(req, &policy).map_err(|r| {
             audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
     };
-    let req = match tokio::task::spawn_blocking(gate).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return e.into_response(),
-        Err(_) => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    match tokio::task::spawn_blocking(run).await {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => Err(e.into_response()),
+        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error").into_response()),
+    }
+}
+
+pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    let req = match read_valid(&st, &headers, body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let req = match gate(&st, req).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start(req)).await {
@@ -1297,31 +1316,9 @@ pub async fn create_for_seat(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if !json_content_type(&headers) {
-        return bad("Content-Type must be application/json").into_response();
-    }
-    let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
-        Ok(b) => b,
-        Err(_) => {
-            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                .into_response()
-        }
-    };
-    let req = match validate(&bytes) {
+    let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
-        Err(e) => {
-            // same first-layer audit as `create` (1ced7 #593 M2)
-            if e.0 == ErrorCode::EnvNotAllowed || e.1 == ARGV0_RELATIVE {
-                let program = lenient_argv0_name(&bytes);
-                let audit = st.sessions.clone();
-                let code = e.0;
-                let _ = tokio::task::spawn_blocking(move || {
-                    audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, code, &program)
-                })
-                .await;
-            }
-            return e.into_response();
-        }
+        Err(resp) => return resp,
     };
     let store = st.store.clone();
     let sid = seat.clone();
@@ -1332,20 +1329,11 @@ pub async fn create_for_seat(
         }
         _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
-    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route
-    // came from #592 and the gate from #593; neither saw the other).
-    let policy = st.session_policy.clone();
-    let audit = st.sessions.clone();
-    let gate = move || {
-        admit(req, &policy).map_err(|r| {
-            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
-            r.error
-        })
-    };
-    let req = match tokio::task::spawn_blocking(gate).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return e.into_response(),
-        Err(_) => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
+    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
+    let req = match gate(&st, req).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
     let s = st.sessions.clone();
     match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
@@ -1496,7 +1484,7 @@ mod tests {
     const TRUE_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\whoami.exe"
     } else {
-        "/bin/true"
+        "/usr/bin/true" // macOS has no /bin/true (Linux has both)
     };
     const ECHO_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\cmd.exe"
