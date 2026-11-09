@@ -435,12 +435,17 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   and waits for one byte on a second pipe. While it waits aibd reads its coalition, its
   unique id (the same before and after exec, Mac Pro 13), its start time, and starts the
   fork watcher; then it writes the byte. `std::process::Command::spawn` returns only after
-  exec, so it runs on another thread meanwhile. The program never runs unless aibd
-  writes the byte: if recording panics aibd kills the held child (`SIGKILL`; it is an
-  unreaped child, so the pid is still it) and reaps it. Closing the pipe alone is not
-  enough: a child forked at the same moment holds a copy of the writer until it execs,
-  so two held spawns failing together could wait on each other (bb7dc ad94b515 H1). The
-  child itself gives up after 5 s without the byte (`poll`), or on EOF if aibd died.
+  exec, so it runs on another thread meanwhile. Only the go byte lets the program run;
+  any other byte, EOF (aibd died) or nothing within 5 s (`poll`) and the child exits
+  without exec'ing, and `std` reaps it and returns the error. If recording panics aibd
+  writes the cancel byte. Closing the pipe alone is not enough: a child forked at the
+  same moment holds a copy of the writer until it execs, so two held spawns failing
+  together could wait on each other (bb7dc ad94b515 H1). Nothing is signalled by pid:
+  once the child gave up at 5 s `std` has reaped it and the pid may be reused (bb7dc
+  52a4b1e2 H1); only `Child::kill` on a child `std` still holds.
+- While held the child is still a copy of aibd: its argv and environment are aibd's
+  (`KERN_PROCARGS2`), not the program's. Nothing reads them to tell sessions apart
+  today (no session marker yet); code that ever does must allow for it (043dd N2).
 - No limit on aibd's side while a child is held: only non-blocking calls run there. A
   call that can block added there needs a registered operation timer (ADR 0005).
 - `POSIX_SPAWN_START_SUSPENDED` + `SIGCONT` also holds a program (measured), but

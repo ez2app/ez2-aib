@@ -402,12 +402,23 @@ jobs:
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
           # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
-          # spawn holds back, instead of killing its own child
+          # spawn holds back, instead of sending its own child the cancel byte
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            '                    kill_held(p);' \
-            '                    let _ = kill_held; // knife: wait for EOF' \
+            '                    let _ = (&go_w).write_all(&[CANCEL]);' \
+            '                    let _ = CANCEL; // knife: wait for EOF' \
             --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
             -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+          # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
+            '            return Ok(()); // knife: run after the limit' \
+            --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
+          # once std reaped a child that gave up); only Child::kill
+          if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
+            echo "held.rs signals by pid"; exit 1
+          fi
           # H2 / H3 start_tree does not hold: an instant root is recorded too late,
           # and a detached grandchild of it is left running
           for t in an_instant_program_is_recorded_before_it_can_exit \

@@ -9,16 +9,19 @@
 //! while the `pre_exec` hook runs, closed once it execs.
 //!
 //! The program never runs unless the caller let it go:
-//! - the caller's code panics ⇒ the held child is killed (`SIGKILL`, it is
-//!   our unreaped child, so the pid is still it) and reaped, then the panic
-//!   goes on. Not by closing the go pipe alone: another child forked at the
-//!   same moment (another held spawn, or any fork + exec) holds a copy of
-//!   our go writer until it execs, so EOF can come late or, with two held
-//!   spawns failing together, never (bb7dc ad94b515 H1);
-//! - the go pipe closes unwritten (the parent died) ⇒ EOF ⇒ the hook
-//!   returns an error and the child never execs;
-//! - nothing comes within [`HOLD_LIMIT`] ⇒ the same. A backstop: aibd
-//!   writes the byte or kills the child well before.
+//! - only the byte [`GO`] lets it run; any other byte, EOF, an error or
+//!   nothing within [`HOLD_LIMIT`] ⇒ the hook returns an error, the child
+//!   exits without exec'ing and `std` reaps it and returns that error;
+//! - the caller's code panics ⇒ the byte [`CANCEL`] is written, then the
+//!   panic goes on. Not by closing the go pipe alone: another child forked
+//!   at the same moment (another held spawn, or any fork + exec) holds a
+//!   copy of our go writer until it execs, so EOF can come late or, with two
+//!   held spawns failing together, never (bb7dc ad94b515 H1). And not by
+//!   signalling the pid: once the child gave up at [`HOLD_LIMIT`], `std` has
+//!   reaped it and the pid may be someone else's (bb7dc 52a4b1e2 H1). No
+//!   signal is ever sent by pid here; only `Child::kill` on a child `std`
+//!   still holds;
+//! - the go pipe closes unwritten (the parent died) ⇒ EOF ⇒ the same.
 //!
 //! No time limit on the parent's side: while the child is held aibd only
 //! makes non-blocking calls (coalition, unique id, process table, kqueue).
@@ -34,6 +37,11 @@ use std::process::{Child, Command};
 /// How long a held child waits for the go byte before it gives up without
 /// exec'ing (milliseconds, for `poll`).
 pub const HOLD_LIMIT: libc::c_int = 5_000;
+
+/// The byte that lets a held child exec.
+const GO: u8 = 1;
+/// The byte that sends a held child away without exec'ing.
+const CANCEL: u8 = 0;
 
 /// Spawn `cmd` held before `exec`; `on_held(pid)` runs while it is held, and
 /// the program starts when it returns. `None` = no child was ever held
@@ -67,10 +75,15 @@ pub fn spawn_held<R>(
                 Ok(r) => Some(r),
                 Err(panic) => {
                     // never let it run, and do not wait for an EOF another
-                    // fork may hold back: kill it, reap it, go on panicking
-                    kill_held(p);
+                    // fork may hold back: tell it to go away. A failed write
+                    // only means it already gave up. `spawn` then returns its
+                    // error, having reaped it.
+                    let _ = (&go_w).write_all(&[CANCEL]);
                     drop(go_w);
                     if let Ok(Ok(mut c)) = spawner.join() {
+                        // not reachable (only GO execs); if it were, it is a
+                        // `Child` std still holds, so this kill is its own
+                        let _ = c.kill();
                         let _ = c.wait();
                     }
                     resume_unwind(panic);
@@ -80,33 +93,27 @@ pub fn spawn_held<R>(
         };
         if held.is_some() {
             // a failed write only means the child is gone: spawn says why
-            let _ = (&go_w).write_all(&[1]);
+            let _ = (&go_w).write_all(&[GO]);
         }
         drop(go_w);
-        let child = spawner
+        let mut child = spawner
             .join()
             .map_err(|_| std::io::Error::other("spawn thread panicked"))??;
         if held.is_some() && u32::from_ne_bytes(b) != child.id() {
+            // not reachable: the pipe is this call's own and only our child
+            // writes it. If it were, the program is running and the caller
+            // will hear "not started": stop it first (043dd ad94b515 L1)
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(std::io::Error::other("held pid is not the child"));
         }
         Ok((child, held))
     })
 }
 
-/// `SIGKILL` to a held child (our own, not yet reaped: the pid is still it).
-fn kill_held(pid: u32) {
-    if let Ok(p) = libc::pid_t::try_from(pid) {
-        if p > 0 {
-            // SAFETY: `kill` has no memory preconditions; `p` is a positive
-            // pid, so it reaches that one process, never a group.
-            unsafe { libc::kill(p, libc::SIGKILL) };
-        }
-    }
-}
-
 /// In the forked child: close our copy of the go writer, hand over the pid,
-/// wait for one byte. EOF, nothing within [`HOLD_LIMIT`], or any error ⇒
-/// `Err`, so `std` reports it and never execs.
+/// wait for one byte. [`GO`] ⇒ `Ok`; any other byte, EOF, nothing within
+/// [`HOLD_LIMIT`], or any error ⇒ `Err`, so `std` reports it and never execs.
 fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
     // SAFETY: `go_w` is an fd this child inherited; closing it only drops
     // this process's copy.
@@ -142,8 +149,8 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
         // SAFETY: `go` is a live, writable 1-byte buffer.
         let n = unsafe { libc::read(go_r, go.as_mut_ptr().cast(), 1) };
         match n {
-            1 => return Ok(()),
-            0 => return Err(std::io::Error::from_raw_os_error(libc::ECANCELED)),
+            1 if go[0] == GO => return Ok(()),
+            1 | 0 => return Err(std::io::Error::from_raw_os_error(libc::ECANCELED)),
             _ => {
                 let e = std::io::Error::last_os_error();
                 if e.raw_os_error() != Some(libc::EINTR) {
@@ -274,6 +281,39 @@ mod tests {
         assert!(!a_ran, "A's program ran although it was never let go");
         assert!(!a_left, "A {a_pid} left behind");
         assert!(b_ok && b_ran, "B was not let go on its own");
+    }
+
+    /// bb7dc 52a4b1e2 H1: the recording outlasts [`HOLD_LIMIT`], so the child
+    /// gave up and `std` reaped it before `on_held` returns. Returning then is
+    /// the spawn error; panicking then comes back as the panic. Either way the
+    /// program never ran. That nothing is signalled by the stale pid is by
+    /// construction (no `kill` by pid in this file; aibd.yml checks it).
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test pacing only
+    fn a_hold_past_the_limit_is_the_spawn_error_or_the_panic() {
+        let past = Duration::from_millis(u64::try_from(HOLD_LIMIT).unwrap() + 700);
+        let d = dir("late");
+        let (fr, fp) = (d.join("r"), d.join("p"));
+        let r = spawn_held(&mut writer(&fr), |pid| {
+            std::thread::sleep(past);
+            pid
+        });
+        let mut cp = writer(&fp);
+        let seen = std::sync::Mutex::new(None);
+        let p = catch_unwind(AssertUnwindSafe(|| {
+            spawn_held::<()>(&mut cp, |pid| {
+                std::thread::sleep(past);
+                *seen.lock().unwrap() = Some(pid);
+                panic!("late recording failed")
+            })
+        }));
+        std::thread::sleep(Duration::from_millis(300));
+        let (ran_r, ran_p) = (fr.exists(), fp.exists());
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(r.is_err(), "a hold past the limit still started: {:?}", r.map(|(c, h)| (c.id(), h)));
+        assert!(p.is_err(), "the late panic did not come back");
+        assert!(seen.lock().unwrap().is_some(), "on_held never ran");
+        assert!(!ran_r && !ran_p, "a program ran after its hold gave up");
     }
 
     /// A program that does not exist: no child was held, the spawn error
