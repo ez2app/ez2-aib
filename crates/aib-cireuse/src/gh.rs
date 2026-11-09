@@ -140,62 +140,90 @@ fn runs(src: &dyn Source, repo: &str, sha: &str, event: &str) -> Result<Vec<Run>
 /// Gather everything `judge` needs. Logs and tested trees that cannot be read stay None
 /// (judge turns that into a reason); list reads that fail make the whole thing an error.
 /// The expected cell list: required status check names of every active branch ruleset that
-/// covers main (the same source release-go-p2.sh reads). Anything unreadable = error (fail closed).
+/// covers main (the same source release-go-p2.sh reads). Parsing is all-or-nothing: a missing or
+/// unrecognised field anywhere (enforcement, target, ref conditions, rule type, check context) is
+/// an error, never "skip that ruleset", because skipping could shrink the expected list. Only
+/// rulesets that are clearly not in force on main (disabled / evaluate, tag / push target,
+/// ref conditions that plainly name other branches) are left out.
 pub fn required_checks(src: &dyn Source, repo: &str) -> Result<Vec<String>, String> {
     let list = json(src, &format!("repos/{repo}/rulesets?per_page=100"))?;
     let list = list.as_array().ok_or("rulesets: not a list")?;
     if list.len() >= 100 {
         return Err("rulesets: 100 or more, paging not supported".into());
     }
+    let field = |v: &Value, id: u64, k: &str| -> Result<String, String> {
+        v.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("ruleset {id}: no {k}"))
+    };
     let mut out = vec![];
     for r in list {
         let id = r
             .get("id")
             .and_then(Value::as_u64)
             .ok_or("rulesets: no id")?;
-        let active = r.get("enforcement").and_then(Value::as_str) == Some("active");
-        let branch = r.get("target").and_then(Value::as_str).unwrap_or("branch") == "branch";
-        if !active || !branch {
-            continue;
+        let enforcement = field(r, id, "enforcement")?;
+        let target = field(r, id, "target")?;
+        match enforcement.as_str() {
+            "active" => {}
+            "disabled" | "evaluate" => continue,
+            other => return Err(format!("ruleset {id}: unknown enforcement {other:?}")),
+        }
+        match target.as_str() {
+            "branch" => {}
+            "tag" | "push" => continue,
+            other => return Err(format!("ruleset {id}: unknown target {other:?}")),
         }
         let d = json(src, &format!("repos/{repo}/rulesets/{id}"))?;
-        let include = d
-            .pointer("/conditions/ref_name/include")
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("ruleset {id}: no conditions.ref_name.include"))?;
-        let covers_main = include.iter().any(|x| {
-            matches!(
-                x.as_str(),
-                Some("~DEFAULT_BRANCH" | "~ALL" | "refs/heads/main")
-            )
-        });
-        if !covers_main {
+        if !covers_main(&d, id)? {
             continue;
         }
         let rules = d
             .get("rules")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("ruleset {id}: no rules"))?;
-        for rule in rules
-            .iter()
-            .filter(|x| x.get("type").and_then(Value::as_str) == Some("required_status_checks"))
-        {
+        for rule in rules {
+            if field(rule, id, "type")? != "required_status_checks" {
+                continue;
+            }
             let checks = rule
                 .pointer("/parameters/required_status_checks")
                 .and_then(Value::as_array)
                 .ok_or_else(|| format!("ruleset {id}: unreadable required_status_checks"))?;
             for c in checks {
-                let ctx = c
-                    .get("context")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("ruleset {id}: a required check has no context"))?;
-                out.push(ctx.to_string());
+                out.push(field(c, id, "context")?);
             }
         }
     }
     out.sort();
     out.dedup();
     Ok(out)
+}
+
+/// Does this ruleset's ref condition cover main? Exact names and the two special values only;
+/// a glob pattern (or anything unreadable) is an error rather than a guess.
+fn covers_main(d: &Value, id: u64) -> Result<bool, String> {
+    let names = |k: &str| -> Result<Vec<String>, String> {
+        let arr = d
+            .pointer(&format!("/conditions/ref_name/{k}"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("ruleset {id}: no conditions.ref_name.{k}"))?;
+        let mut v = vec![];
+        for x in arr {
+            let s = x
+                .as_str()
+                .ok_or_else(|| format!("ruleset {id}: a ref_name.{k} entry is not a string"))?;
+            if s.contains(['*', '?', '[']) {
+                return Err(format!("ruleset {id}: ref pattern {s:?} is not evaluated"));
+            }
+            v.push(s.to_string());
+        }
+        Ok(v)
+    };
+    let main = |s: &String| matches!(s.as_str(), "~DEFAULT_BRANCH" | "~ALL" | "refs/heads/main");
+    let (include, exclude) = (names("include")?, names("exclude")?);
+    Ok(include.iter().any(main) && !exclude.iter().any(main))
 }
 
 pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {

@@ -22,8 +22,8 @@
 //! What "should be there" comes from an independent source, the required status checks of the
 //! active branch rulesets: each required check must be a job exactly once on the PR side and on
 //! main's side, or the verdict is unknown (so a cell both sides lack is never "reusable"). An
-//! unreadable or empty required list is unknown too. A job whose step list is missing or empty is
-//! not compared as equal: steps_unknown.
+//! unreadable or empty required list is unknown too. A job whose step list is missing, empty, or
+//! has a step without number / name / conclusion is not compared as equal: steps_unknown.
 //!
 //! Shadow false green is only counted over cells it could be compared on (main's own run of the
 //! cell ended success or failure). With nothing comparable it is unknown, not 0.
@@ -391,7 +391,7 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     }
     if !cj.steps_known || !mj.steps_known {
         c.reasons.push(format!(
-            "steps_unknown: step list missing on {}",
+            "steps_unknown: step list missing or incomplete on {}",
             match (cj.steps_known, mj.steps_known) {
                 (false, false) => "both sides",
                 (false, true) => "the PR side",
@@ -524,16 +524,26 @@ pub fn run_from_json(v: &Value) -> Option<Run> {
 }
 
 pub fn job_from_json(v: &Value) -> Option<Job> {
-    let steps: Vec<(String, Option<String>)> = v
-        .get("steps")
-        .and_then(Value::as_array)
+    let raw = v.get("steps").and_then(Value::as_array);
+    let steps: Vec<(String, Option<String>)> = raw
         .map(|a| {
             a.iter()
                 .map(|st| (s(st, "name"), os(st, "conclusion")))
                 .collect()
         })
         .unwrap_or_default();
-    let steps_known = !steps.is_empty();
+    // every step must carry a number, a non-empty name and a conclusion; anything less = unknown
+    let steps_known = raw.is_some_and(|a| {
+        !a.is_empty()
+            && a.iter().all(|st| {
+                st.get("number").and_then(Value::as_u64).is_some()
+                    && st
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| !n.is_empty())
+                    && st.get("conclusion").and_then(Value::as_str).is_some()
+            })
+    });
     Some(Job {
         id: v.get("id")?.as_u64()?,
         name: s(v, "name"),

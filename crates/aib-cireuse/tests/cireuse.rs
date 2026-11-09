@@ -2,7 +2,7 @@
 //! S1 shadow: the positive case shaped like #567 (11-09) plus one knife per way a "reuse" could be fake.
 #![allow(clippy::unwrap_used)]
 
-use aib_cireuse::gh::{facts, paged, Source};
+use aib_cireuse::gh::{facts, paged, required_checks, Source};
 use aib_cireuse::*;
 use std::collections::{BTreeMap, HashMap};
 
@@ -379,7 +379,7 @@ fn knife_missing_page_is_an_error_not_fewer_runs() {
 fn facts_end_to_end_from_api_shapes() {
     let jobj = |id: u64, start: &str, end: &str| {
         format!(
-            r#"{{"id":{id},"name":"smoke (ubuntu-latest, 3.12)","status":"completed","conclusion":"success","started_at":"{start}","completed_at":"{end}","steps":[{{"name":"smoke test","conclusion":"success"}}]}}"#
+            r#"{{"id":{id},"name":"smoke (ubuntu-latest, 3.12)","status":"completed","conclusion":"success","started_at":"{start}","completed_at":"{end}","steps":[{{"number":1,"name":"smoke test","conclusion":"success"}}]}}"#
         )
     };
     let runj = |id: u64, sha: &str, event: &str, at: &str, end: &str| {
@@ -720,7 +720,9 @@ fn r1b_missing_steps_are_never_equal() {
         let v = judge(&f);
         assert_eq!(v.state, "not_reusable", "{side}: {}", reasons(&v));
         assert!(
-            reasons(&v).contains(&format!("steps_unknown: step list missing on {side}")),
+            reasons(&v).contains(&format!(
+                "steps_unknown: step list missing or incomplete on {side}"
+            )),
             "{}",
             reasons(&v)
         );
@@ -731,4 +733,138 @@ fn r1b_missing_steps_are_never_equal() {
     assert!(!j.steps_known);
     let j = job_from_json(&serde_json::json!({"id": 1, "name": "x", "steps": []})).unwrap();
     assert!(!j.steps_known);
+}
+
+// ---------- bb7dc #575 3rd review (3c5254a0): parsing is all-or-nothing ----------
+
+fn rulesets(list: &str, details: &[(u64, &str)]) -> Fake {
+    let mut m = HashMap::new();
+    m.insert(
+        format!("repos/{REPO}/rulesets?per_page=100"),
+        list.to_string(),
+    );
+    for (id, body) in details {
+        m.insert(format!("repos/{REPO}/rulesets/{id}"), body.to_string());
+    }
+    Fake(m)
+}
+
+const GOOD: &str = r#"{"id":7,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"smoke (ubuntu-latest, 3.12)"}]}}]}"#;
+const SECOND: &str = r#"{"id":8,"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"rust (macos-latest)"}]}}]}"#;
+
+#[test]
+fn r1c_two_good_rulesets_union_and_known_skips() {
+    let list = r#"[{"id":7,"enforcement":"active","target":"branch"},{"id":8,"enforcement":"active","target":"branch"},{"id":9,"enforcement":"evaluate","target":"branch"},{"id":10,"enforcement":"active","target":"tag"}]"#;
+    let got = required_checks(&rulesets(list, &[(7, GOOD), (8, SECOND)]), REPO).unwrap();
+    assert_eq!(
+        got,
+        vec!["rust (macos-latest)", "smoke (ubuntu-latest, 3.12)"]
+    );
+    // a ruleset that names main in exclude does not cover main
+    let excl = r#"{"id":8,"conditions":{"ref_name":{"include":["~ALL"],"exclude":["refs/heads/main"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"x"}]}}]}"#;
+    let list2 = r#"[{"id":7,"enforcement":"active","target":"branch"},{"id":8,"enforcement":"active","target":"branch"}]"#;
+    let got = required_checks(&rulesets(list2, &[(7, GOOD), (8, excl)]), REPO).unwrap();
+    assert_eq!(got, vec!["smoke (ubuntu-latest, 3.12)"]);
+}
+
+#[test]
+fn r1c_one_good_one_unreadable_ruleset_is_an_error_not_a_smaller_list() {
+    let good = r#"{"id":7,"enforcement":"active","target":"branch"}"#;
+    let bad_lists = [
+        ("no enforcement", r#"{"id":8,"target":"branch"}"#),
+        (
+            "enforcement not a string",
+            r#"{"id":8,"enforcement":1,"target":"branch"}"#,
+        ),
+        (
+            "unknown enforcement",
+            r#"{"id":8,"enforcement":"maybe","target":"branch"}"#,
+        ),
+        ("no target", r#"{"id":8,"enforcement":"active"}"#),
+        (
+            "unknown target",
+            r#"{"id":8,"enforcement":"active","target":"repository"}"#,
+        ),
+    ];
+    for (why, second) in bad_lists {
+        let list = format!("[{good},{second}]");
+        let r = required_checks(&rulesets(&list, &[(7, GOOD), (8, SECOND)]), REPO);
+        assert!(r.is_err(), "{why}: {r:?}");
+    }
+    let list = format!(r#"[{good},{{"id":8,"enforcement":"active","target":"branch"}}]"#);
+    let bad_details = [
+        (
+            "rule without type",
+            r#"{"id":8,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"parameters":{"required_status_checks":[{"context":"rust (macos-latest)"}]}}]}"#,
+        ),
+        (
+            "check without context",
+            r#"{"id":8,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"integration_id":1}]}}]}"#,
+        ),
+        (
+            "no exclude list",
+            r#"{"id":8,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[]}"#,
+        ),
+        (
+            "glob include",
+            r#"{"id":8,"conditions":{"ref_name":{"include":["refs/heads/ma*"],"exclude":[]}},"rules":[]}"#,
+        ),
+        (
+            "include entry not a string",
+            r#"{"id":8,"conditions":{"ref_name":{"include":[1],"exclude":[]}},"rules":[]}"#,
+        ),
+        (
+            "no rules",
+            r#"{"id":8,"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}}}"#,
+        ),
+    ];
+    for (why, second) in bad_details {
+        let r = required_checks(&rulesets(&list, &[(7, GOOD), (8, second)]), REPO);
+        assert!(r.is_err(), "{why}: {r:?}");
+    }
+}
+
+#[test]
+fn r1c_a_step_without_number_name_or_conclusion_is_unknown() {
+    let ok = serde_json::json!({"id": 1, "name": "x", "steps": [
+        {"number": 1, "name": "Set up job", "conclusion": "success"},
+        {"number": 2, "name": "smoke test", "conclusion": "skipped"}]});
+    assert!(job_from_json(&ok).unwrap().steps_known);
+    for (why, bad) in [
+        (
+            "no number",
+            serde_json::json!({"name": "smoke test", "conclusion": "success"}),
+        ),
+        (
+            "no name",
+            serde_json::json!({"number": 2, "conclusion": "success"}),
+        ),
+        (
+            "empty name",
+            serde_json::json!({"number": 2, "name": "", "conclusion": "success"}),
+        ),
+        (
+            "no conclusion",
+            serde_json::json!({"number": 2, "name": "smoke test"}),
+        ),
+        (
+            "conclusion null",
+            serde_json::json!({"number": 2, "name": "smoke test", "conclusion": null}),
+        ),
+    ] {
+        let mut j = ok.clone();
+        j["steps"][1] = bad;
+        assert!(!job_from_json(&j).unwrap().steps_known, "{why}");
+    }
+    // both sides malformed the same way is still not "equal"
+    let mut f = base();
+    for j in [&mut f.cand_runs[0].jobs[0], &mut f.main_runs[0].jobs[0]] {
+        j.steps_known = false;
+    }
+    let v = judge(&f);
+    assert!(
+        reasons(&v).contains("steps_unknown: step list missing or incomplete on both sides"),
+        "{}",
+        reasons(&v)
+    );
 }
