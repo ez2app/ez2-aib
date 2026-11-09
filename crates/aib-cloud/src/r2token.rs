@@ -174,6 +174,14 @@ impl EgressIp {
             Some("192.168.0.0/16 (private)")
         } else if o[0] == 100 && (64..=127).contains(&o[1]) {
             Some("100.64.0.0/10 (carrier-grade NAT / Tailscale, not the host's public egress)")
+        } else if o[0] == 192 && o[1] == 0 && o[2] == 2 {
+            Some("192.0.2.0/24 (documentation range)")
+        } else if o[0] == 198 && o[1] == 51 && o[2] == 100 {
+            Some("198.51.100.0/24 (documentation range)")
+        } else if o[0] == 203 && o[1] == 0 && o[2] == 113 {
+            Some("203.0.113.0/24 (documentation range)")
+        } else if o[0] == 198 && (18..=19).contains(&o[1]) {
+            Some("198.18.0.0/15 (benchmarking range)")
         } else if o[0] >= 224 {
             Some("224.0.0.0/3 (multicast / reserved / broadcast)")
         } else {
@@ -460,7 +468,7 @@ impl VerifyReport {
         let token_id = obj
             .get("token_id")
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+            .filter(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
             .ok_or_else(|| Error::Report("missing or malformed token_id".into()))?
             .to_owned();
         Ok(VerifyReport {
@@ -505,12 +513,13 @@ impl VerifyReport {
 /// userinfo inside strings), so a remote side that renames a key cannot leak a value
 /// (#564 M1). On top of that, any key named `value` is masked (Cloudflare returns the raw
 /// token under `result.value`). `token_id` is the one token-ish key the report legitimately
-/// carries; it is kept only when it looks like an id (hex, at most 64 chars).
+/// carries; it is kept only when it is exactly a Cloudflare token id (32 hex chars). A
+/// 64-hex value in that slot is the shape of `secret_access_key` and gets masked (#564 r2 L2).
 pub fn sanitize(v: &mut Value) {
     let keep = v
         .get("token_id")
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .filter(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
         .map(str::to_owned);
     crate::robot::mask(v);
     mask_value_keys(v);
@@ -649,6 +658,13 @@ mod tests {
             "100.64.0.1",
             "100.120.222.46",
             "010.1.1.1",
+            "135.181.075.90", // #564 r2 L1: leading zero on an otherwise public address
+            "135.181.75.090",
+            "192.0.2.10", // #564 r2 L3: documentation / benchmark ranges
+            "198.51.100.7",
+            "203.0.113.200",
+            "198.18.0.1",
+            "198.19.255.254",
             "1.2.3",
             "１.2.3.4",
             "1.2.3.256",
@@ -664,6 +680,11 @@ mod tests {
             EgressIp::parse("135.181.75.90").unwrap().cidr(),
             "135.181.75.90/32"
         );
+        assert!(
+            matches!(EgressIp::parse("135.181.075.90"), Err(Error::Ip(m)) if m.contains("leading zero"))
+        );
+        assert!(EgressIp::parse("198.17.0.1").is_ok()); // just outside 198.18/15
+        assert!(EgressIp::parse("198.20.0.1").is_ok());
         assert!(EgressIp::parse("172.32.0.1").is_ok()); // just outside 172.16/12
         assert!(EgressIp::parse("100.128.0.1").is_ok()); // just outside 100.64/10
         assert!(
@@ -762,12 +783,19 @@ mod tests {
         assert!(
             matches!(VerifyReport::from_json(&failed), Err(Error::Report(m)) if m.contains("create_failed"))
         );
-        let mut bad_id = good;
-        bad_id["token_id"] = json!("not-hex!");
-        assert!(matches!(
-            VerifyReport::from_json(&bad_id),
-            Err(Error::Report(_))
-        ));
+        for bad in [
+            "not-hex!",
+            "",
+            "709325321f3e207ca9c8152720134ae",
+            &"a".repeat(64),
+        ] {
+            let mut bad_id = good.clone();
+            bad_id["token_id"] = json!(bad);
+            assert!(
+                matches!(VerifyReport::from_json(&bad_id), Err(Error::Report(_))),
+                "token_id {bad:?} must be exactly 32 hex (#564 r2 L2)"
+            );
+        }
     }
 
     #[test]
@@ -794,8 +822,17 @@ mod tests {
         assert_eq!(v["nested"]["keep"], 1);
         assert_eq!(v["list"][0]["fine"], true);
         // a token_id that does not look like an id is masked like any other token-ish key
-        let mut w = json!({"token_id": "not-an-id value!"});
-        sanitize(&mut w);
-        assert_eq!(w["token_id"], "***");
+        for not_id in [
+            "not-an-id value!",
+            &"a".repeat(64),
+            "709325321f3e207ca9c8152720134ae",
+        ] {
+            let mut w = json!({"token_id": not_id});
+            sanitize(&mut w);
+            assert_eq!(
+                w["token_id"], "***",
+                "{not_id:?} is not a 32-hex id (#564 r2 L2)"
+            );
+        }
     }
 }
