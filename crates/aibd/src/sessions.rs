@@ -1587,25 +1587,25 @@ mod tests {
             Err(i) => (i.err.0, i.audit),
         };
         let yes = [
-            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"DYLD_INSERT_LIBRARIES": "x"}}),
-            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"PATH": "/x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"DYLD_INSERT_LIBRARIES": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"PATH": "/x"}}),
             serde_json::json!({"argv": ["true"]}),
         ];
         for j in yes {
             assert!(audit(j.clone()).1, "not audited: {j}");
         }
         assert_eq!(
-            audit(serde_json::json!({"argv": ["/usr/bin/true"], "env": {"AIBD_X": "1"}})).0,
+            audit(serde_json::json!({"argv": [TRUE_ABS], "env": {"AIBD_X": "1"}})).0,
             ErrorCode::EnvNotAllowed
         );
         let no = [
             serde_json::json!({"argv": []}),
             serde_json::json!({"argv": [""]}),
-            serde_json::json!({"argv": ["/usr/bin/true", "a\u{0}b"]}),
-            serde_json::json!({"argv": ["/usr/bin/true"], "cwd": "relative"}),
-            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"1BAD": "x"}}),
-            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"A": "x", "a": "y"}}),
-            serde_json::json!({"argv": ["/usr/bin/true"], "extra": 1}),
+            serde_json::json!({"argv": [TRUE_ABS, "a\u{0}b"]}),
+            serde_json::json!({"argv": [TRUE_ABS], "cwd": "relative"}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"1BAD": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"A": "x", "a": "y"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "extra": 1}),
         ];
         for j in no {
             let (code, a) = audit(j.clone());
