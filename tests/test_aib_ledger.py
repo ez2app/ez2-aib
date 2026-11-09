@@ -558,6 +558,149 @@ class AibLedger(unittest.TestCase):
         db.close()
         self.ok(*args)
 
+    def test_1109_review_refuses_non_receipt_evidence(self):
+        # f1fae 11-09(b117-fp-honewei-chips):交 review 時把 .md 放進 --evidence,move 照收、之後拿不掉
+        _, sha = self.repo()
+        self.review_at(sha, item="B-md")
+        self.ok("move", "B-md", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        note = self.td / "notes.md"
+        note.write_text("# 查因\n", encoding="utf-8")
+        other = self.td / "other.json"
+        other.write_text(json.dumps({"schema": "something/1"}), encoding="utf-8")
+        for bad in (note, other):
+            r = self.L("move", "B-md", "--from", "running", "--to", "review", "--head", sha,
+                       "--evidence", self.receipt(sha=sha), "--evidence", str(bad), "--by", "seat:2240e")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(bad.name, r.stderr)
+        show = self.ok("show", "B-md", "--json").stdout
+        it = json.loads(show)
+        self.assertEqual((it["state"], it["evidence"]), ("running", []), show)
+
+    def test_1109_resubmit_replaces_evidence(self):
+        # 退回 running 再交 review:以這次交的為準,上一次的整批作廢,verify 只看最新一次交件
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-re", "--batch", "b117", "--owner", "2240e", "--title", "re", "--by", "seat:f1fae")
+        self.ok("move", "B-re", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        wrong = self.receipt(sha=sha, rc=1)            # 格式對、內容不過的那張
+        self.ok("move", "B-re", "--from", "running", "--to", "review", "--head", sha, "--evidence", wrong,
+                "--by", "seat:2240e")
+        r = self.L("move", "B-re", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.ok("move", "B-re", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        good = self.receipt(sha=sha)
+        self.ok("move", "B-re", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-re", "--json").stdout)
+        self.assertEqual(it["evidence"], [str(Path(good).resolve())])
+        self.assertEqual(it["superseded"][-1]["evidence"], [str(Path(wrong).resolve())])
+        self.assertIn("resubmitted at", self.ok("show", "B-re").stdout)
+        self.ok("move", "B-re", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+
+    def test_1109_r2_m1_verify_lists_earlier_red_at_this_head(self):
+        # ebb36 #541 M1:同頭碼先紅後綠,紅的不算、但 verify / 收件要看得到(只顯示、不擋)
+        _, sha = self.repo()
+        sha2 = "a1b2c3d4" * 5                           # 另一個頭碼(不帶 --repo,不查 commit)
+        self.roles()
+        self.ok("add", "B-red", "--batch", "b118", "--owner", "2240e", "--title", "red", "--by", "seat:f1fae")
+        self.ok("move", "B-red", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        old_head_red = self.receipt(sha=sha2, rc=1)     # 舊頭碼的紅收據:不屬這個頭碼,不列
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha2, "--evidence", old_head_red,
+                "--by", "seat:2240e")
+        self.ok("move", "B-red", "--from", "review", "--to", "running", "--by", "seat:f1fae")
+        red = self.receipt(sha=sha, rc=1)
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha, "--evidence", red,
+                "--by", "seat:2240e")
+        self.ok("move", "B-red", "--from", "review", "--to", "running", "--by", "seat:2240e")   # 負責席自己拉回
+        good = self.receipt(sha=sha)
+        self.ok("move", "B-red", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        v = self.ok("verify", "B-red").stdout
+        self.assertIn("EARLIER", v)
+        self.assertIn(Path(red).name, v)
+        self.assertIn("rc is 1, not 0", v)
+        self.assertNotIn(Path(old_head_red).name, v)
+        self.assertLess(v.index(Path(red).name), v.index("RESULT OK"), v)
+        vj = json.loads(self.ok("verify", "B-red", "--json").stdout)
+        self.assertTrue(vj["ok"])
+        self.assertEqual([r["path"] for r in vj["earlier_red"]], [str(Path(red).resolve())])
+        self.assertEqual((vj["earlier_red"][0]["why"], vj["earlier_red"][0]["by"]), ("resubmitted", "2240e"))
+        show = self.ok("show", "B-red").stdout
+        self.assertIn(str(Path(red).resolve()), show)
+        acc = self.ok("move", "B-red", "--from", "review", "--to", "accepted", "--by", "seat:f1fae").stdout
+        self.assertIn("did not pass", acc)
+
+    def test_1109_r3_m1_earlier_red_cmd(self):
+        # ebb36 #541 r2 M1(earlier-red-cmd):帶 --cmd 的件先交跑錯指令的 record 收據,同頭碼換掉後 verify 要列
+        import shlex
+        d, sha = self.repo()
+        self.roles()
+        want = shlex.join([sys.executable, "-m", "unittest", "test_x"])
+        self.ok("add", "B-cmd", "--batch", "b118", "--owner", "2240e", "--title", "c", "--cmd", want,
+                "--by", "seat:f1fae")
+        self.ok("move", "B-cmd", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        _, wrong = self.record(d, sys.executable, "-m", "unittest", "-v", "test_x")   # 綠、record 產,但不是派工那句
+        self.ok("move", "B-cmd", "--from", "running", "--to", "review", "--head", sha, "--evidence", wrong,
+                "--by", "seat:2240e")
+        r = self.L("move", "B-cmd", "--from", "review", "--to", "accepted", "--by", "seat:f1fae")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.ok("move", "B-cmd", "--from", "review", "--to", "running", "--by", "seat:2240e")
+        _, good = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.ok("move", "B-cmd", "--from", "running", "--to", "review", "--head", sha, "--evidence", good,
+                "--by", "seat:2240e")
+        vj = json.loads(self.ok("verify", "B-cmd", "--json").stdout)
+        self.assertTrue(vj["ok"], vj)
+        self.assertEqual([r["path"] for r in vj["earlier_red"]], [str(Path(wrong).resolve())])
+        self.assertIn("is not the dispatched command", " ".join(vj["earlier_red"][0]["problems"]))
+        self.assertIn("did not pass", self.ok("move", "B-cmd", "--from", "review", "--to", "accepted",
+                                              "--by", "seat:f1fae").stdout)
+
+    def test_1109_r3_m1_earlier_red_needs_recorded(self):
+        # ebb36 #541 r2 M1(earlier-red-needs-recorded):件標 needs recorded,先交別的工具產的收據
+        # (不冒稱 record,check_receipt 本身會過),同頭碼換成 record 的之後 verify 要列
+        d, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-nr", "--batch", "b118", "--owner", "2240e", "--title", "n", "--needs", "recorded",
+                "--by", "seat:f1fae")
+        self.ok("move", "B-nr", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        other = self.receipt(sha=sha)
+        self.ok("move", "B-nr", "--from", "running", "--to", "review", "--head", sha, "--evidence", other,
+                "--by", "seat:2240e")
+        self.ok("move", "B-nr", "--from", "review", "--to", "running", "--by", "seat:2240e")
+        _, rec = self.record(d, sys.executable, "-m", "unittest", "test_x")
+        self.ok("move", "B-nr", "--from", "running", "--to", "review", "--head", sha, "--evidence", rec,
+                "--by", "seat:2240e")
+        v = self.ok("verify", "B-nr").stdout
+        self.assertIn(Path(other).name, v)
+        self.assertIn("needs recorded", v)
+        self.assertIn("RESULT OK", v)
+
+    def test_1109_r2_l1_replay_before_format_check(self):
+        # ebb36 #541 L1:同 id 同內容 ⇒ 重播,就算收據檔事後不見了也不回 rc 2
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-rp", "--batch", "b118", "--owner", "2240e", "--title", "rp", "--by", "seat:f1fae")
+        self.ok("move", "B-rp", "--from", "queued", "--to", "running", "--by", "seat:2240e")
+        rec = self.receipt(sha=sha)
+        args = ("move", "B-rp", "--from", "running", "--to", "review", "--head", sha, "--evidence", rec,
+                "--event-id", "evE", "--by", "seat:2240e")
+        self.ok(*args)
+        Path(rec).unlink()
+        self.assertIn("(replayed)", self.ok(*args).stdout)
+
+    def test_1109_r2_l2_first_review_is_not_resubmitted(self):
+        # ebb36 #541 L2:第一次交 review 前別的 move 帶的收據,不標「resubmitted」
+        _, sha = self.repo()
+        self.roles()
+        self.ok("add", "B-first", "--batch", "b118", "--owner", "2240e", "--title", "f", "--by", "seat:f1fae")
+        early = self.receipt(sha=sha)
+        self.ok("move", "B-first", "--from", "queued", "--to", "running", "--evidence", early, "--by", "seat:2240e")
+        self.ok("move", "B-first", "--from", "running", "--to", "review", "--head", sha,
+                "--evidence", self.receipt(sha=sha), "--by", "seat:2240e")
+        it = json.loads(self.ok("show", "B-first", "--json").stdout)
+        self.assertEqual(it["superseded"][-1]["why"], "before first review")
+        self.assertNotIn("resubmitted", self.ok("show", "B-first").stdout)
+
     def test_read_commands_on_empty_ledger(self):
         self.assertIn("no items", self.ok("list").stdout)
         self.assertEqual(self.L("show", "nope").returncode, 3)
