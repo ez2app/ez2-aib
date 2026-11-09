@@ -1,0 +1,609 @@
+{
+ "plan_fnv": "a9bbfb4a8e25dde1",
+ "host": "135.181.75.90",
+ "results": [
+  {
+   "from": "ct:101",
+   "id": "edge-101-egress-22",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 3044,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-egress-443",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-egress6-443",
+   "ip": "2606:4700:4700::1111",
+   "kind": "tcp",
+   "ms": 20,
+   "open": false,
+   "port": 443
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-self-22",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-to-hostint-22",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-to-hostint-8006",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3023,
+   "open": false,
+   "port": 8006
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-to-hostpub-22",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-101-to-tailnet",
+   "ip": "100.120.222.46",
+   "kind": "icmp",
+   "ms": 2037,
+   "open": false,
+   "port": 0
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-to-site-110-22",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-to-site-110-80",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-to-site-112-22",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:101",
+   "id": "edge-to-site-112-80",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "host",
+   "id": "host-egress-22",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 23,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "host",
+   "id": "host-egress-443",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 23,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "host",
+   "id": "host-egress-80",
+   "ip": "151.101.2.132",
+   "kind": "tcp",
+   "ms": 5,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "host",
+   "id": "host-egress-dns",
+   "ip": "1.1.1.1",
+   "kind": "dns",
+   "ms": 1,
+   "open": true,
+   "port": 53
+  },
+  {
+   "from": "host",
+   "id": "host-egress6-443",
+   "ip": "2606:4700:4700::1111",
+   "kind": "tcp",
+   "ms": 1,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "host",
+   "id": "host-hostint-111-closed",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 0,
+   "open": false,
+   "port": 111
+  },
+  {
+   "from": "host",
+   "id": "host-tailnet-icmp",
+   "ip": "100.120.222.46",
+   "kind": "icmp",
+   "ms": 20,
+   "open": true,
+   "port": 0
+  },
+  {
+   "from": "host",
+   "id": "host-to-edge-101-80",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "host",
+   "id": "host-to-hostint-22",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "host",
+   "id": "host-to-hostint-3128",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 3128
+  },
+  {
+   "from": "host",
+   "id": "host-to-hostint-8006",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 8006
+  },
+  {
+   "from": "host",
+   "id": "host-to-hostpub-22",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "host",
+   "id": "host-to-hostpub-8006",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 0,
+   "open": true,
+   "port": 8006
+  },
+  {
+   "from": "host",
+   "id": "host-to-peerhost-22",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 35,
+   "open": true,
+   "port": 22
+  },
+  {
+   "id": "public-host-22",
+   "from": "external",
+   "kind": "tcp",
+   "ip": "135.181.75.90",
+   "port": 22,
+   "open": true,
+   "ms": 59
+  },
+  {
+   "id": "public-host-443",
+   "from": "external",
+   "kind": "tcp",
+   "ip": "135.181.75.90",
+   "port": 443,
+   "open": true,
+   "ms": 58
+  },
+  {
+   "id": "public-host-8006",
+   "from": "external",
+   "kind": "tcp",
+   "ip": "135.181.75.90",
+   "port": 8006,
+   "open": false,
+   "ms": 3117
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-egress-22",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 3044,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-egress-443",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-egress-80",
+   "ip": "151.101.2.132",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-egress-dns",
+   "ip": "1.1.1.1",
+   "kind": "dns",
+   "ms": 20,
+   "open": true,
+   "port": 53
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-egress6-443",
+   "ip": "2606:4700:4700::1111",
+   "kind": "tcp",
+   "ms": 20,
+   "open": false,
+   "port": 443
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-lan-3306-closed",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 20,
+   "open": false,
+   "port": 3306
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-self-22",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-edge-22",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-edge-80",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 3003,
+   "open": false,
+   "port": 80
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-hostint-22",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-hostint-3128",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 3128
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-hostint-8006",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3003,
+   "open": false,
+   "port": 8006
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-hostpub-22",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-hostpub-8006",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 8006
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-peerhost-22",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-peerhost-443",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-site-112-22",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-site-112-80",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 80
+  },
+  {
+   "from": "ct:110",
+   "id": "site-110-to-tailnet",
+   "ip": "100.120.222.46",
+   "kind": "icmp",
+   "ms": 2037,
+   "open": false,
+   "port": 0
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-egress-22",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 3063,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-egress-443",
+   "ip": "140.82.121.4",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-egress-80",
+   "ip": "151.101.2.132",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 80
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-egress-dns",
+   "ip": "1.1.1.1",
+   "kind": "dns",
+   "ms": 20,
+   "open": true,
+   "port": 53
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-egress6-443",
+   "ip": "2606:4700:4700::1111",
+   "kind": "tcp",
+   "ms": 20,
+   "open": false,
+   "port": 443
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-lan-3306-closed",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 20,
+   "open": false,
+   "port": 3306
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-self-22",
+   "ip": "10.77.0.12",
+   "kind": "tcp",
+   "ms": 20,
+   "open": true,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-edge-22",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-edge-80",
+   "ip": "10.77.0.2",
+   "kind": "tcp",
+   "ms": 3006,
+   "open": false,
+   "port": 80
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-hostint-22",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-hostint-3128",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 3128
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-hostint-8006",
+   "ip": "10.77.0.1",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 8006
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-hostpub-22",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-hostpub-8006",
+   "ip": "135.181.75.90",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 8006
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-peerhost-22",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 3004,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-peerhost-443",
+   "ip": "136.243.105.110",
+   "kind": "tcp",
+   "ms": 40,
+   "open": true,
+   "port": 443
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-site-110-22",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 3005,
+   "open": false,
+   "port": 22
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-site-110-80",
+   "ip": "10.77.0.10",
+   "kind": "tcp",
+   "ms": 3003,
+   "open": false,
+   "port": 80
+  },
+  {
+   "from": "ct:112",
+   "id": "site-112-to-tailnet",
+   "ip": "100.120.222.46",
+   "kind": "icmp",
+   "ms": 2036,
+   "open": false,
+   "port": 0
+  }
+ ]
+}

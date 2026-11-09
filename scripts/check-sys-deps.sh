@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Only aibd may depend on aib-sys (API list v0.2, section 9), and aib-sys
+# Only aibd and aib-procwatch may depend on aib-sys (API list v0.2, section 9;
+# DECISION-10 B), aib-forkcount only through aib-procwatch, and aib-sys
 # may depend only on its allow-list (xtask SYS_OWN_DEPS: exact version,
 # target and features; DECISION-11 A). The check is `aib-xtask deps` over
 # `cargo metadata` (every dependency kind and target, renamed keys, and
@@ -49,6 +50,10 @@ sys = { package = \"aib-sys\", path = \"../aib-sys\" }"
 case_run store-build fail '`aib-store` depends on aib-sys' aib-store "[target.'cfg(all())'.build-dependencies]
 aib-sys = $sys"
 case_run aibd-allowed ok '' aibd "[target.'cfg(all())'.dependencies]
+aib-sys = $sys"
+case_run procwatch-allowed ok '' aib-procwatch "[target.'cfg(all())'.dependencies]
+aib-sys = $sys"
+case_run forkcount-direct fail '`aib-forkcount` depends on aib-sys (aib-forkcount -> aib-sys)' aib-forkcount "[target.'cfg(all())'.dependencies]
 aib-sys = $sys"
 # aib-sys's own dependencies (allow-list)
 case_run sys-new-crate fail 'not on the allow-list: rand' aib-sys "[target.'cfg(unix)'.dependencies]

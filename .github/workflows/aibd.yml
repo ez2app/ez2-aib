@@ -103,7 +103,7 @@ jobs:
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
-      - name: aib-sys dependents (only aibd)
+      - name: aib-sys dependents (aibd, aib-procwatch)
         if: env.RUN == 'true'
         shell: bash
         run: |
@@ -158,6 +158,164 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
+      # Each knife breaks one rule and must turn its own test red (knife.py
+      # restores the file and checks the named test failed).
+      - name: procwatch listing knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          fc() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-forkcount --locked --test forkcount "$4"; }
+          # K1 procwatch: a failed listing washed into an empty list
+          fc crates/aib-procwatch/src/lib.rs \
+            '            let kids = match list_children(sh, p) {' \
+            '            let kids = match list_children(sh, p).or_else(|_| Ok::<_, SysError>(Vec::new())) { // knife' \
+            calibrate_a_failed_listing_is_unverified_not_empty
+          # K2 procwatch: a list that did not fit is skipped instead of counted
+          fc crates/aib-procwatch/src/lib.rs \
+            $'                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            $'                Err(SysError::Incomplete) => continue, // knife\n                Err(e) => {\n                    let mut g = lock(sh);\n                    g.stats.list_failures += 1;' \
+            calibrate_an_incomplete_listing_is_unverified
+          # K3 aib-sys fill stage, end to end: a failed fill read as "0 bytes"
+          fc crates/aib-sys/src/list.rs \
+            '        let bytes = call(&mut buf).map_err(SysError::from_errno)?;' \
+            '        let bytes = call(&mut buf).unwrap_or(0); // knife' \
+            calibrate_a_failed_listing_is_unverified_not_empty
+          # K4 aib-sys truncation, end to end: a full buffer accepted as the whole list
+          fc crates/aib-sys/src/list.rs \
+            '        if n < cap {' \
+            '        if n <= cap { // knife' \
+            calibrate_an_incomplete_listing_is_unverified
+          # K5 forkcount, end to end: a foreign child not flagged (one missed + one foreign)
+          fc crates/aib-forkcount/src/main.rs \
+            $'        if self.adopted_not_created > 0 {\n            r.push("adopted_not_created");' \
+            $'        if false {\n            r.push("adopted_not_created"); // knife' \
+            calibrate_one_missed_and_one_foreign_is_unverified
+          # K6 forkcount: comparing counts only (one missed + one foreign would pass)
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '        let a_p = cs.iter().filter(|c| adopted.get(c) == Some(p)).count() as u64;' \
+            '        let a_p = (adopted.values().filter(|q| *q == p).count() as u64).min(c_p); // knife' \
+            --expect-fail one_missed_and_one_foreign_is_caught_although_totals_match \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
+          python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
+            '    if need < 0 || (need == 0 && errno() != 0) {' \
+            '    if false { // knife' \
+            --expect-fail a_failed_size_query_is_an_error \
+            -- cargo test -p aib-sys --locked --lib macos::
+          # K8 aib-sys fill stage (unit): errno not cleared before a fill ⇒ a stale ESRCH reads as Gone
+          python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
+            $'        clear_errno();\n        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size);' \
+            $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
+            --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
+            -- cargo test -p aib-sys --locked --lib macos::
+      # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
+      # is written together with its event, a session row follows its events
+      # and open sessions are interrupted at start. Each knife must turn its
+      # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
+      # binding used (`&& false`, not `if false`).
+      - name: seats / sessions / output knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py crates/aib-store/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-store --locked --test seats "$3"; }
+          # S1 a reused key with another request replays the first answer instead of refusing
+          sk '                    if request != k.request {' \
+            '                    if request != k.request && false { // knife' \
+            the_same_key_with_another_request_is_a_conflict_and_writes_nothing
+          # S2 the seat is written without its event
+          sk '            insert_event(&tx, &event)?;' \
+            '            let _ = (insert_event, &event); // knife: no event (keeps the import used)' \
+            a_seat_and_its_event_survive_a_restart
+          # S3 a session still holding a slot is not interrupted at start (only `running` ones)
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "                     WHERE state = 'running' OR holds_slot = 1" \
+            "                     WHERE state = 'running' -- knife" \
+            --expect-fail open_sessions_are_interrupted_at_start_and_never_resumed \
+            -- cargo test -p aib-store --locked --test sessions open_sessions_are_interrupted_at_start_and_never_resumed
+          # S4 aibd writes the event but not the session row: nothing to read back
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if let Err(err) = self.store.session_event(row, ev) {' \
+            '        if let Err(err) = self.store.append(vec![ev]).map(|_| drop(row)) { // knife' \
+            --expect-fail a_seat_session_is_stored_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test seat_sessions a_seat_session_is_stored_and_read_back_after_a_restart
+          # S5 sessions go back to discarding their output: nothing to read
+          python3 -I scripts/knife.py crates/aibd/src/platform/session_unix.rs \
+            '        discard_output: false,' \
+            '        discard_output: true, // knife' \
+            --expect-fail output_lines_are_events_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S10 (a63ab preview.3) the database is created with the default mode, not 0600
+          python3 -I scripts/knife.py crates/aibd/src/server.rs \
+            '    platform::private_db_file(&db)?;' \
+            '    // knife: no owner-only database file' \
+            --expect-fail output_lines_are_events_and_read_back_after_a_restart \
+            -- cargo test -p aibd --locked --test session_output output_lines_are_events_and_read_back_after_a_restart
+          # S11 (a63ab 20:0x) the policy file accepts unknown fields: `interpreters_ok` from a file
+          python3 -I scripts/knife.py crates/aibd/src/allowlist.rs \
+            $'#[serde(deny_unknown_fields)]\nstruct PolicyFile {' \
+            $'// knife: unknown fields accepted\nstruct PolicyFile {' \
+            --expect-fail allowlist::tests::the_file_is_checked_field_by_field \
+            -- cargo test -p aibd --locked --lib allowlist::tests::the_file_is_checked_field_by_field
+          # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match Ok::<Request, Response>(req) { // knife: no gate' \
+            --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
+            -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
+          # S6 an over-long line is not marked as cut
+          python3 -I scripts/knife.py crates/aibd/src/session_output.rs \
+            '                cut = true;' \
+            '                cut = cut && false; // knife' \
+            --expect-fail an_over_long_line_is_cut_and_the_next_line_still_arrives \
+            -- cargo test -p aibd --locked --test session_output an_over_long_line_is_cut_and_the_next_line_still_arrives
+          # S7 (1ced7 #591 L1) the key is never recorded: a retry creates a second seat
+          python3 -I scripts/knife.py crates/aib-store/src/seats.rs \
+            '                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",' \
+            '                     SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE 0", // knife' \
+            --expect-fail a_retry_with_the_same_key_gets_the_first_seat_and_creates_nothing \
+            -- cargo test -p aibd --locked --test seats a_retry_with_the_same_key_gets_the_first_seat_and_creates_nothing
+          # S8 (1ced7 #591 L1) a key it cannot read is taken as no key
+          python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+            '        Err(bad("Idempotency-Key must be 1-128 of A-Z a-z 0-9 - _ . :"))' \
+            '        Ok(None) // knife' \
+            --expect-fail seats::tests::keys \
+            -- cargo test -p aibd --locked --lib seats::tests::keys
+      # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
+      # preview.3). Each knife takes one check out of the gate and must turn its own
+      # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
+      # (`&& false`), RUSTFLAGS has -D warnings.
+      - name: allowlist knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ak() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aibd --locked --test sessions_allowlist "$4"; }
+          # K1 the program list is not checked: an unlisted /bin/echo starts
+          ak crates/aibd/src/allowlist.rs \
+            '    if !listed {' \
+            '    if !listed && false { // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K4 the env name list is not checked: NODE_OPTIONS / HOME reach the child
+          ak crates/aibd/src/allowlist.rs \
+            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) {' \
+            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K9 shells / interpreters are not refused at start: a listed link to /bin/sh runs
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&real) || is_interpreter(a) {' \
+            '        if (is_interpreter(&real) || is_interpreter(a)) && false { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K13 a refusal leaves no audit record
+          ak crates/aibd/src/sessions.rs \
+            '            event_type: "session.spawn_rejected".into(),' \
+            '            event_type: "session.knife_no_audit".into(), // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -226,9 +384,10 @@ jobs:
           k '        (Some(pid), None) => UNHELD.lock().unwrap_or_else(|e| e.into_inner()).push(pid),' \
             '        (Some(_), None) => {} // knife: silent' \
             an_unheld_failed_start_is_listed_at_shutdown
-          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
-            '        session_windows::stop_leftovers(deadline)' \
-            '        { let _ = deadline; Vec::new() } // knife: Windows sweeps nothing' \
+          # #578: the Windows sweep moved into the Lifecycle impl (platform/lifecycle.rs)
+          python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
+            '        Swept::from_unconfirmed(super::session_windows::stop_leftovers(deadline))' \
+            '        { let _ = deadline; Swept::NoneLeft } // knife: Windows sweeps nothing' \
             --expect-fail an_unheld_failed_start_is_listed_at_shutdown \
             -- cargo test -p aibd --locked --lib platform::session_windows
       - name: aibd Windows sessions wiring knife (Windows)
@@ -239,8 +398,9 @@ jobs:
         # back; the real-aibd test must turn red.
         run: |
           set -eu
-          python3 -I scripts/knife.py crates/aibd/src/platform/mod.rs \
-            '        session_windows::spawn' \
-            '        |_: &session::Spec, _| Err(session::SpawnFail { tag: "unsupported_platform".into(), left_running: None }) // knife: not wired' \
+          # #578: the Windows spawn is chosen in the Lifecycle impl (platform/lifecycle.rs)
+          python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
+            '        Step::Done(super::session_windows::spawn)' \
+            '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
