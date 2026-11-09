@@ -281,9 +281,15 @@ decision list (a63ab, 2026-11-09).
   (`aib-sys` M5, #522) and reaped only after the last signal, so its pid cannot be reused
   while aibd still signals the group. A group signal goes out only after
   `root_is_our_unreaped_child()` confirms the group is still ours; when the root's
-  identity cannot be proven (someone else reaped it), no group signal is sent and the
-  stop is `unverified` / `root_identity_lost`.
-- **The slot.** Only a stop that looked everywhere frees the session's slot:
+  identity cannot be proven (someone else reaped it), no group signal is sent and
+  `root_identity_lost` is recorded as a gap. The stop is then `tree_not_clean` if a
+  recorded process is seen still running (survivors are checked first,
+  `Report::clean_status()`), otherwise `unverified` with that reason.
+- **The slot.** A stop frees the session's slot only when it saw no survivor in what it
+  could observe and its result is on the allow list below. This is not a proof that the
+  whole tree is gone, nor a resource-isolation guarantee: `observed_clean` still has its
+  blind spots (`Report::blind_spots()`: a re-parented process after its parent exited, a
+  new session, `env_cleared`, `uid_changed`).
   `Stop::releases_slot()` = `clean`, or `unverified` with a reason in
   `SLOT_RELEASING_REASONS` (today only `observed_clean`), and no survivor. Anything else
   keeps the slot; a second DELETE runs the stop again (H2) [6, 7, 8].
