@@ -401,7 +401,7 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// Key fragments that mark a value as secret (case-insensitive substring match).
-const MASK_KEYS: [&str; 15] = [
+const MASK_KEYS: [&str; 16] = [
     "password",
     "passwd",
     "pass",
@@ -415,6 +415,7 @@ const MASK_KEYS: [&str; 15] = [
     "credential",
     "private_key",
     "privatekey",
+    "access_key", // S3-style AccessKeyId / access_key_id (#564 M1)
     "cookie",
     "session",
 ];
@@ -774,6 +775,7 @@ mod tests {
         let mut v = json!({
             "credential": PW, "credentials": [PW], "private_key": PW, "privateKey": PW,
             "Cookie": PW, "set-cookie": PW, "auth": PW, "session_id": PW, "author": "keep me",
+            "Access_Key_Id": PW, "aws_access_key_id": PW,
             "note": format!("see https://a.example/x then https://u:{PW}@b.example/y"),
         });
         mask(&mut v);
@@ -787,6 +789,8 @@ mod tests {
             "set-cookie",
             "auth",
             "session_id",
+            "Access_Key_Id",
+            "aws_access_key_id",
         ] {
             assert_eq!(v[k], "***", "{k}");
         }

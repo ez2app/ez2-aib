@@ -17,3 +17,14 @@ acceptance baseline until the Rust path replaces it end to end.
 ```sh
 cargo test -p aib-cloud
 ```
+
+## `aib_cloud::r2token` (M-R1b, 11-09)
+
+Planning logic for the per-host Cloudflare R2 backup token (4.4.1 §10.1; Andy:
+"key 從 EU01 取得,再彈出生物辨識"): validates bucket / host alias / egress IPv4 /
+zone / destination / rclone remote, derives the approval facts, the token policy
+(one bucket, Item Read + Item Write, one `/32`) and the remote job spec from the
+same values, judges the five-check verification report and strips secret-looking
+keys before anything prints. Still no I/O: the ssh pipeline and the Touch ID gate
+stay in the Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) until the
+Rust shell lands with the ADR.
