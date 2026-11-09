@@ -1,7 +1,9 @@
-//! `/api/v1` routes: health (public); event cursor and metrics (authenticated).
+//! `/api/v1` routes: health (public); event cursor, metrics, seats and sessions
+//! (authenticated).
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::seats;
 use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
@@ -21,6 +23,8 @@ pub struct AppState {
     pub lineage: Arc<Lineage>,
     /// Sessions API state (preview.2).
     pub sessions: Arc<crate::sessions::Sessions>,
+    /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
+    pub session_policy: Arc<crate::config::SessionPolicy>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
@@ -28,6 +32,22 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/events", get(events))
         .route("/api/v1/metrics", get(metrics))
+        .route(
+            "/api/v1/seats",
+            get(seats::list)
+                .post(seats::create)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/seats/{id}",
+            get(seats::get_one).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/seats/{id}/sessions",
+            get(sessions::list_for_seat)
+                .post(sessions::create_for_seat)
+                .fallback(sessions::method_not_allowed),
+        )
         .route(
             "/api/v1/sessions",
             get(sessions::list)
@@ -39,6 +59,10 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
             get(sessions::get_one)
                 .delete(sessions::delete_one)
                 .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/sessions/{id}/output",
+            get(sessions::output).fallback(sessions::method_not_allowed),
         )
         .fallback(not_found)
         .with_state(state)
@@ -68,12 +92,19 @@ struct EventsQuery {
     #[serde(default)]
     cursor: i64,
     limit: Option<u32>,
+    aggregate_id: Option<String>,
 }
 
 async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Response {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let store = st.store.clone();
-    let res = tokio::task::spawn_blocking(move || store.events_after(q.cursor.max(0), limit)).await;
+    let cursor = q.cursor.max(0);
+    let filtered = q.aggregate_id.is_some();
+    let res = tokio::task::spawn_blocking(move || match q.aggregate_id {
+        Some(id) => store.events_for_after(&id, cursor, limit),
+        None => store.events_after(cursor, limit),
+    })
+    .await;
     match res {
         Ok(Ok(evs)) => {
             let next = evs.last().map(|e| e.global_seq).unwrap_or(q.cursor.max(0));
@@ -94,7 +125,11 @@ async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Res
                     })
                 })
                 .collect();
-            Json(serde_json::json!({"events": items, "next_cursor": next})).into_response()
+            if filtered {
+                Json(serde_json::json!({"events": items, "next_cursor": next, "filter_applied": true})).into_response()
+            } else {
+                Json(serde_json::json!({"events": items, "next_cursor": next})).into_response()
+            }
         }
         _ => {
             tracing::error!("events read failed");

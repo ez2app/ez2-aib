@@ -22,11 +22,11 @@ fn migrations_apply_once_and_reopen_is_idempotent() {
     let db = dir.path().join("aibd.sqlite");
     {
         let s = Store::open(&db).unwrap();
-        assert_eq!(s.applied_migrations().unwrap(), vec![1]);
+        assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3]);
         assert!(s.integrity_ok().unwrap());
     }
     let s = Store::open(&db).unwrap();
-    assert_eq!(s.applied_migrations().unwrap(), vec![1]);
+    assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -90,6 +90,17 @@ fn events_survive_restart_and_cursor_reads_across_aggregates() {
     let tail = s.events_after(2, 100).unwrap();
     assert_eq!(tail.len(), 1);
     assert_eq!(tail[0].global_seq, 3);
+    let first = s.events_for_after("seat-a", 0, 1).unwrap();
+    assert_eq!(first[0].global_seq, 1);
+    let next = s
+        .events_for_after("seat-a", first[0].global_seq, 1)
+        .unwrap();
+    assert_eq!(next[0].global_seq, 3);
+    assert!(s
+        .events_for_after("seat-a", next[0].global_seq, 1)
+        .unwrap()
+        .is_empty());
+    assert!(s.events_for_after("missing", 0, 1).unwrap().is_empty());
 }
 
 #[test]

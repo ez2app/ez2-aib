@@ -7,6 +7,7 @@
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
+use aibd::allowlist::{Program, SessionPolicy};
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use std::io::{Read, Write};
@@ -37,7 +38,44 @@ impl Drop for Own {
     }
 }
 
+/// A listed native file (a copy of `/usr/bin/true`) without any execute bit: it resolves and
+/// passes the gate, then exec fails (the "a failed start gives its slot back" case).
+fn not_executable(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let f = dir.join("not-executable");
+    std::fs::copy("/usr/bin/true", &f).unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    f
+}
+
+fn fx(name: &str, path: impl Into<PathBuf>) -> Program {
+    Program {
+        name: name.into(),
+        path: path.into(),
+        signer: None,
+    }
+}
+
+/// The policy most tests use: exactly the programs / env names they start. `/bin/sh` is
+/// a shell, so these in-process tests set `interpreters_ok` (only Rust code can).
+fn fixtures(dir: &Path) -> SessionPolicy {
+    SessionPolicy {
+        programs: vec![
+            fx("sh", "/bin/sh"),
+            fx("sleep", "/bin/sleep"),
+            fx("true", "/usr/bin/true"), // macOS has no /bin/true
+            fx("not-executable", not_executable(dir)),
+        ],
+        env: vec!["MY_VAR".into(), "MY_TOKEN".into()],
+        interpreters_ok: true,
+    }
+}
+
 async fn start(dir: &Path, max: usize) -> Daemon {
+    start_policy(dir, max, fixtures(dir)).await
+}
+
+async fn start_policy(dir: &Path, max: usize, session_policy: SessionPolicy) -> Daemon {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (st_tx, st_rx) = tokio::sync::oneshot::channel::<Started>();
     let c = Config {
@@ -45,6 +83,7 @@ async fn start(dir: &Path, max: usize) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: max,
+        session_policy,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -345,14 +384,22 @@ async fn limits_errors_and_the_guard_on_every_route() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 2).await;
     let v = view(&d);
+    let ne = tmp.path().join("not-executable").display().to_string();
     blocking!(v, |v| {
         let d = v.d();
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "{s}");
         // a failed start gives its reserved slot back: the second still fits
-        let (c, s) = d.post(&["/no/such/program"]);
+        let (c, s) = d.post(&[ne.as_str()]);
         assert_eq!((c, s["code"].as_str()), (422, Some("spawn_failed")), "{s}");
-        assert_eq!(s["message"], "could not start: enoent");
+        assert_eq!(s["message"], "could not start: eacces");
+        // a path that does not exist is not a listed program
+        let (c, s) = d.post(&["/no/such/program"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "slot leaked by the failed spawn: {s}");
         let (c, s) = d.post(&["/bin/sleep", "60"]);
@@ -468,6 +515,182 @@ async fn h3_concurrent_posts_never_exceed_the_limit() {
     d.shutdown().await;
 }
 
+/// M1 gate (a63ab 11-09): a program the policy does not allow and an env name it does not
+/// list are refused before anything starts; nothing is listed and no session event is
+/// written for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn m1_gate_refuses_unlisted_programs_and_env_names_before_starting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let v = view(&d);
+    blocking!(v, |v| {
+        let d = v.d();
+        let (c, s) = d.post(&["/bin/echo", "should-not-run"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
+        assert!(
+            !s.to_string().contains("/bin/echo"),
+            "message echoes the request: {s}"
+        );
+        // `..` is refused before anything is resolved
+        let (c, s) = d.post(&["/bin/../bin/true"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("program_not_allowed")),
+            "{s}"
+        );
+        let body =
+            serde_json::json!({"argv": ["/usr/bin/true"], "env": {"NOT_LISTED": "sk-SECRET-ENV"}})
+                .to_string();
+        let (c, s) = d.call("POST", "/api/v1/sessions", Some(&body));
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("env_not_allowed")),
+            "{s}"
+        );
+        let (c, s) = d.call("GET", "/api/v1/sessions", None);
+        assert_eq!(c, 200);
+        assert_eq!(s["sessions"].as_array().map(Vec::len), Some(0), "{s}");
+        let (c, evs) = d.call("GET", "/api/v1/events?limit=500", None);
+        assert_eq!(c, 200);
+        let started = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.started")
+            .count();
+        assert_eq!(started, 0, "{evs}");
+        // a63ab 19:23: each refusal is audited, folded per token + code per minute
+        // (two program refusals ⇒ one record), with exactly these payload keys
+        let rejected: Vec<&serde_json::Value> = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.spawn_rejected")
+            .collect();
+        assert_eq!(rejected.len(), 2, "{evs}");
+        let mut codes: Vec<&str> = rejected
+            .iter()
+            .map(|e| e["payload"]["code"].as_str().unwrap())
+            .collect();
+        codes.sort_unstable();
+        assert_eq!(codes, ["env_not_allowed", "program_not_allowed"]);
+        for e in &rejected {
+            assert_eq!(e["aggregate_type"], "security", "{e}");
+            let mut keys: Vec<&str> = e["payload"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                ["at", "code", "folded_before", "program", "token_id"],
+                "{e}"
+            );
+            assert_eq!(e["payload"]["token_id"], "startup", "{e}");
+            assert_eq!(e["payload"]["folded_before"], 0, "{e}");
+        }
+        let text = evs.to_string();
+        for secret in ["should-not-run", "sk-SECRET-ENV", "NOT_LISTED", "/bin/echo"] {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+    });
+    d.shutdown().await;
+}
+
+/// M1 gate with the policy aibd really runs (`interpreters_ok` false): a shell is refused
+/// even when listed in code, and an npm-style provider gets its own code (I2, N3).
+#[tokio::test(flavor = "multi_thread")]
+async fn m1_gate_refuses_shells_and_npm_installs_over_http() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let link = tmp.path().join("fixture-ok");
+    symlink("/bin/sh", &link).unwrap();
+    let js = tmp.path().join("cli.js");
+    std::fs::write(&js, b"#!/usr/bin/env node\n").unwrap();
+    std::fs::set_permissions(&js, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = tmp.path().join("claude");
+    symlink(&js, &claude).unwrap();
+    let policy = SessionPolicy {
+        programs: vec![
+            fx("fixture-ok", link.clone()),
+            fx("claude", claude.clone()),
+            fx("sleep", "/bin/sleep"),
+        ],
+        env: vec![],
+        interpreters_ok: false,
+    };
+    let mut d = start_policy(tmp.path(), 8, policy).await;
+    let v = view(&d);
+    let (link, claude) = (link.display().to_string(), claude.display().to_string());
+    blocking!(v, |v| {
+        let d = v.d();
+        for p in [link.as_str(), "/bin/sh"] {
+            let (c, s) = d.post(&[p, "-c", "exit 0"]);
+            assert_eq!(
+                (c, s["code"].as_str()),
+                (403, Some("program_not_allowed")),
+                "{p}: {s}"
+            );
+        }
+        let (c, s) = d.post(&[claude.as_str()]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (403, Some("provider_install_unsupported")),
+            "{s}"
+        );
+        let (c, s) = d.call("GET", "/api/v1/sessions", None);
+        assert_eq!(c, 200);
+        assert_eq!(s["sessions"].as_array().map(Vec::len), Some(0), "{s}");
+        // 1ced7 #593 M2: the first layer's refusals are audited too
+        let body = serde_json::json!({"argv": ["/bin/sleep", "1"], "env": {"DYLD_INSERT_LIBRARIES": "sk-DYLD-SECRET"}})
+            .to_string();
+        let (c, s) = d.call("POST", "/api/v1/sessions", Some(&body));
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("env_not_allowed")),
+            "{s}"
+        );
+        let (c, s) = d.post(&["sleep", "1"]);
+        assert_eq!(
+            (c, s["code"].as_str()),
+            (400, Some("invalid_request")),
+            "{s}"
+        );
+        let (c, evs) = d.call("GET", "/api/v1/events?limit=500", None);
+        assert_eq!(c, 200);
+        let mut codes: Vec<&str> = evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "session.spawn_rejected")
+            .map(|e| e["payload"]["code"].as_str().unwrap())
+            .collect();
+        codes.sort_unstable();
+        // program_not_allowed folded twice into one record; provider, env, argv[0] one each
+        assert_eq!(
+            codes,
+            [
+                "env_not_allowed",
+                "invalid_request",
+                "program_not_allowed",
+                "provider_install_unsupported"
+            ],
+            "{evs}"
+        );
+        assert!(!evs.to_string().contains("sk-DYLD-SECRET"), "{evs}");
+        // the gate is what refused them: a listed native program still starts
+        let (c, s) = d.post(&["/bin/sleep", "60"]);
+        assert_eq!(c, 201, "{s}");
+    });
+    d.shutdown().await;
+}
+
 /// Contract §4 / bb7dc: neither events nor GET carry env values or the full
 /// argv's secret parts; events name argv[0]'s file name and the count.
 #[tokio::test(flavor = "multi_thread")]
@@ -497,13 +720,22 @@ async fn events_never_carry_env_or_the_full_argv() {
         .iter()
         .find(|e| e["type"] == "session.started" && e["aggregate_id"] == id.as_str())
         .unwrap();
-    assert_eq!(started["payload"]["argv0"], "sh");
+    // argv[0] is replaced by the real path (Linux: /bin/sh is dash)
+    let sh = std::fs::canonicalize("/bin/sh").unwrap();
+    assert_eq!(
+        started["payload"]["argv0"],
+        sh.file_name().unwrap().to_str().unwrap()
+    );
     assert_eq!(started["payload"]["argc"], 4);
     d.shutdown().await;
 }
 
-/// a63ab ruling 3: stdin / stdout / stderr are the null device, never
-/// inherited from aibd; the request env is applied and AIBD_SESSION set.
+/// a63ab ruling 3: nothing is inherited from aibd. stdin is the null
+/// device; since preview.3 C stdout / stderr are pipes that aibd reads into
+/// `session.output` events (so what the child prints lands in its own output,
+/// never on aibd's stdout / stderr); the request env is applied and
+/// AIBD_SESSION set. Windows still starts with three null handles
+/// (UNVERIFIED, see the Windows tests).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let tmp = tempfile::tempdir().unwrap();
@@ -511,7 +743,7 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let v = view(&d);
     let f = tmp.path().join("out");
     let script = format!(
-        "r=; for n in 0 1 2; do if [ -c /dev/fd/$n ]; then r=\"$r $n chr\"; else r=\"$r $n other\"; fi; done; echo \"$r\" > {f}; env >> {f}",
+        "r=; for n in 0 1 2; do if [ -c /dev/fd/$n ]; then r=\"$r $n chr\"; elif [ -p /dev/fd/$n ]; then r=\"$r $n pipe\"; else r=\"$r $n other\"; fi; done; echo \"$r\" > {f}; env >> {f}; echo to-stdout; echo to-stderr >&2",
         f = f.display()
     );
     let body = serde_json::json!({"argv": ["/bin/sh", "-c", script], "env": {"MY_VAR": "one"}})
@@ -522,14 +754,80 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let id2 = id.clone();
     blocking!(v, |v| wait_state(&v.d(), &id2, "running"));
     let out = std::fs::read_to_string(&f).unwrap();
-    for n in 0..3 {
+    assert!(
+        out.contains(" 0 chr"),
+        "stdin is not the null device: {out}"
+    );
+    for n in 1..3 {
         assert!(
-            out.contains(&format!("{n} chr")),
-            "fd {n} is not the null device: {out}"
+            out.contains(&format!(" {n} pipe")),
+            "fd {n} is not aibd's output pipe: {out}"
         );
     }
     assert!(out.contains("MY_VAR=one"), "{out}");
     assert!(out.contains(&format!("AIBD_SESSION={id}")), "{out}");
+    // what the child printed is in its own output, one line per stream
+    let id3 = id.clone();
+    let items = blocking!(v, |v| {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (c, s) = v
+                .d()
+                .call("GET", &format!("/api/v1/sessions/{id3}/output"), None);
+            assert_eq!(c, 200, "{s}");
+            let items = s["output"].as_array().unwrap().clone();
+            let closed = items
+                .iter()
+                .filter(|e| e["type"] == "session.output_closed")
+                .count();
+            if closed == 2 {
+                break items;
+            }
+            assert!(Instant::now() < end, "streams not closed: {s}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    for (stream, line) in [("stdout", "to-stdout"), ("stderr", "to-stderr")] {
+        assert!(
+            items.iter().any(|e| e["type"] == "session.output"
+                && e["payload"]["stream"] == stream
+                && e["payload"]["line"] == line),
+            "{stream} line missing: {items:?}"
+        );
+    }
+    d.shutdown().await;
+}
+
+/// a63ab 20:32: an empty argument after argv[0] (claude `--setting-sources ""`) is
+/// accepted and reaches the child as an empty argument, in its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_arguments_reach_the_child_as_they_are() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let v = view(&d);
+    let f = tmp.path().join("args");
+    let script = format!(
+        "printf '[%s]' \"$#\" \"$@\" > {}.tmp && mv {0}.tmp {0}",
+        f.display()
+    );
+    let body = serde_json::json!({
+        "argv": ["/bin/sh", "-c", script, "sh", "--setting-sources", "", "x", ""]
+    })
+    .to_string();
+    let (c, s) = blocking!(v, |v| v.d().call("POST", "/api/v1/sessions", Some(&body)));
+    assert_eq!(c, 201, "{s}");
+    let f2 = f.clone();
+    let got = blocking!(v, |_v| {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(x) = std::fs::read_to_string(&f2) {
+                break x;
+            }
+            assert!(Instant::now() < end, "the child never wrote its arguments");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    assert_eq!(got, "[4][--setting-sources][][x][]");
     d.shutdown().await;
 }
 
@@ -1363,4 +1661,124 @@ fn a_root_whose_identity_was_lost_has_no_exit_code() {
         .find(|e| e.aggregate_id == rec.id && e.event_type == "session.stop_unconfirmed")
         .expect("no stop event");
     assert!(ev.payload["exit_code"].is_null(), "{}", ev.payload);
+}
+
+/// 1ced7 #593 L2: a folded refusal arms one flush thread that waits up to a
+/// minute for its window to close. While it waits it must not hold the
+/// sessions (and with them the store) alive: after a shutdown the store is
+/// released at once, not up to 61 s later.
+#[test]
+fn a_waiting_reject_flush_does_not_keep_the_sessions_alive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store.clone(),
+        None,
+        never_spawn,
+        1,
+        tmp.path().to_path_buf(),
+    );
+    let before = std::sync::Arc::strong_count(&s);
+    let t0 = Instant::now();
+    let code = aib_core::ErrorCode::ProgramNotAllowed;
+    // the first is written, the second is folded and arms the flush thread
+    s.record_rejection(t0, "startup", code, "x");
+    s.record_rejection(t0, "startup", code, "x");
+    // let the flush thread start and reach its wait
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        std::sync::Arc::strong_count(&s),
+        before,
+        "the waiting flush thread holds the sessions"
+    );
+    let w = std::sync::Arc::downgrade(&s);
+    drop(s);
+    assert!(
+        w.upgrade().is_none(),
+        "sessions still alive after the last owner dropped them"
+    );
+}
+
+/// G1 (1ced7 gate, 11-09): a program that ends at once gives its slot back.
+/// With one slot, twenty in a row must all start (201) and each end
+/// `observed_clean` without holding the slot. printenv / `sleep 0` used to
+/// hit `fork_watch_list_failed` (libproc left a stale errno) or
+/// `fork_watch_child_unreadable` (a child gone before it was read).
+/// The real `claude` race is checked by 1ced7 on a CI-built aibd (10 runs).
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn g1_instant_programs_give_their_slot_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut policy = fixtures(tmp.path());
+    policy.programs.push(fx("printenv", "/usr/bin/printenv"));
+    let mut d = start_policy(tmp.path(), 1, policy).await;
+    let v = view(&d);
+    blocking!(v, |v| {
+        let d = v.d();
+        let runs: [&[&str]; 2] = [&["/usr/bin/printenv", "HOME"], &["/bin/sleep", "0"]];
+        for (i, argv) in runs.iter().cycle().take(20).enumerate() {
+            let (c, s) = d.post(argv);
+            assert_eq!(c, 201, "run {i}: {s}");
+            let id = s["id"].as_str().unwrap().to_owned();
+            let s = wait_state(&d, &id, "running");
+            assert_eq!(s["stop"]["reason"], "observed_clean", "run {i}: {s}");
+            assert_eq!(s["holds_slot"], false, "run {i}: {s}");
+        }
+    });
+    d.shutdown().await;
+}
+
+/// G1 / 043dd 20:42: the middle process forks and exits before it may be
+/// read; its child is re-parented to launchd. Whichever layer finds it (fork
+/// watcher, lineage, or the widened orphan check), the slot is never given
+/// back while that child still runs: either it was stopped, or the slot is
+/// held (a survivor, or `candidates_unreadable`). Never `clean` on macOS, and
+/// the report names `exec_after_creator_exit` (043dd 01318a34).
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn g1_a_child_of_an_unread_middle_is_never_let_go() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 1).await;
+    let v = view(&d);
+    let f = tmp.path().join("gc");
+    // root sh -> subshell (middle) starts sh in the background and exits at
+    // once; that sh writes its pid and execs sleep; the root exits
+    let script = format!(
+        "( /bin/sh -c 'echo $$ > {f}; exec /bin/sleep 30' & ) ; exit 0",
+        f = f.display()
+    );
+    let (id, gc) = blocking!(v, |v| {
+        let d = v.d();
+        let (c, s) = d.post(&["/bin/sh", "-c", &script]);
+        assert_eq!(c, 201, "{s}");
+        (s["id"].as_str().unwrap().to_owned(), read_pid(&f))
+    });
+    let _own = Own(vec![gc]);
+    let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
+    assert_ne!(s["stop"]["status"], "clean", "{s}");
+    assert!(
+        s["stop"]["blind_spots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b == "exec_after_creator_exit"),
+        "{s}"
+    );
+    if alive(gc) {
+        assert_eq!(
+            s["holds_slot"], true,
+            "slot given back, {gc} still runs: {s}"
+        );
+        let surv: Vec<u64> = s["stop"]["survivors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        assert!(
+            surv.contains(&u64::from(gc)) || s["stop"]["reason"] == "candidates_unreadable",
+            "{gc} neither a survivor nor an unreadable candidate: {s}"
+        );
+    }
+    d.shutdown().await;
 }

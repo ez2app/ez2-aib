@@ -359,7 +359,9 @@ def _go_command(repo: Path, path: Path) -> list[str]:
             pass
         _GO_ENV_CACHE[go] = vals
     pre = ["%s=%s" % kv for kv in sorted(_GO_ENV_CACHE[go].items())]
-    return (["env"] + pre if pre else []) + [go, "test", pkg]
+    # 11-09 §G:帶 -v ⇒ 每支頂層測試一行 --- PASS/FAIL/SKIP,全部 t.Skip 才認得出來是「沒驗」(test_entry._other_lang_cells)。
+    #   Go 的測試快取照樣有效:-v 在可快取的旗標清單裡,快取命中會重播同一份 -v 輸出。
+    return (["env"] + pre if pre else []) + [go, "test", "-v", pkg]
 
 
 def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:

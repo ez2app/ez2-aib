@@ -22,12 +22,13 @@
 //!
 //! Blocking calls (spawn, stop, the event store) run on blocking threads.
 
+use crate::allowlist::{self, SessionPolicy};
 use crate::api::AppState;
 use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
 use crate::platform::session::{Running, SpawnFn, Spec, Stop};
 use aib_core::ErrorCode;
-use aib_store::{NewEvent, Store};
+use aib_store::{NewEvent, SessionRow, Store};
 use axum::body::Body;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -126,6 +127,9 @@ impl StopView {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
+    /// The seat it runs for; `None` when started through `POST /api/v1/sessions`
+    /// (preview.2 route, kept for compatibility).
+    pub seat_id: Option<String>,
     pub argv: Vec<String>,
     pub cwd: String,
     pub pid: u32,
@@ -157,11 +161,11 @@ pub struct Request {
 pub struct ApiError(pub ErrorCode, pub String);
 
 impl ApiError {
-    fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
+    pub(crate) fn new(code: ErrorCode, msg: impl Into<String>) -> ApiError {
         ApiError(code, msg.into())
     }
 
-    fn into_response(self) -> Response {
+    pub(crate) fn into_response(self) -> Response {
         error_response(self.0, &self.1, &guard::request_id())
     }
 }
@@ -180,7 +184,7 @@ struct RawRequest {
     env: Option<BTreeMap<String, String>>,
 }
 
-fn env_key_ok(k: &str) -> bool {
+pub(crate) fn env_key_ok(k: &str) -> bool {
     let b = k.as_bytes();
     !b.is_empty()
         && b.len() <= 64
@@ -188,7 +192,7 @@ fn env_key_ok(k: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
 }
 
-fn env_key_denied(k: &str) -> bool {
+pub(crate) fn env_key_denied(k: &str) -> bool {
     let up = k.to_ascii_uppercase();
     ENV_DENY_PREFIX.iter().any(|p| up.starts_with(p)) || ENV_DENY_EXACT.contains(&up.as_str())
 }
@@ -196,45 +200,70 @@ fn env_key_denied(k: &str) -> bool {
 /// Validate a POST body (contract §1). serde's own messages are never echoed:
 /// they can quote the offending value.
 pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
+    validate_audit(body).map_err(|i| i.err)
+}
+
+/// A refused POST body. `audit` = the first layer writes a `session.spawn_rejected`
+/// record for it. It is set where the refusal is made, never read back from the
+/// message (043dd #593 N1: rewording a message used to drop the record silently).
+pub(crate) struct Invalid {
+    pub err: ApiError,
+    pub audit: bool,
+}
+
+impl From<ApiError> for Invalid {
+    fn from(err: ApiError) -> Self {
+        Invalid { err, audit: false }
+    }
+}
+
+fn audited(err: ApiError) -> Invalid {
+    Invalid { err, audit: true }
+}
+
+/// [`validate`], also saying whether the refusal is audited (see [`Invalid`]).
+pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
     if body.len() > MAX_BODY {
-        return Err(ApiError::new(
-            ErrorCode::PayloadTooLarge,
-            "request body over 64 KiB",
-        ));
+        return Err(ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB").into());
     }
     let raw: RawRequest = serde_json::from_slice(body).map_err(|_| {
         bad("body must be a JSON object {argv: [string], cwd?: string, env?: {string: string}}")
     })?;
     let argv = raw.argv;
     if argv.is_empty() || argv.len() > MAX_ARGS {
-        return Err(bad("argv must have 1-64 items"));
+        return Err(bad("argv must have 1-64 items").into());
     }
     let mut total = 0usize;
-    for a in &argv {
-        if a.is_empty() || a.len() > MAX_ARG_BYTES || a.contains('\0') {
-            return Err(bad("each argv item must be 1-4096 bytes without NUL"));
+    // a63ab 20:32: argv[0] must be non-empty; later items may be empty (claude needs
+    // `--setting-sources ""`) and are passed to the child as they are.
+    for (i, a) in argv.iter().enumerate() {
+        if (i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES || a.contains('\0') {
+            return Err(bad(
+                "argv[0] must be non-empty; each argv item at most 4096 bytes without NUL",
+            )
+            .into());
         }
         total += a.len();
     }
     if total > MAX_ARGV_TOTAL {
-        return Err(bad("argv over 32 KiB in total"));
+        return Err(bad("argv over 32 KiB in total").into());
     }
     if !Path::new(&argv[0]).is_absolute() {
-        return Err(bad("argv[0] must be an absolute path (no PATH lookup)"));
+        return Err(audited(bad(ARGV0_RELATIVE)));
     }
     let cwd = match raw.cwd {
         None => None,
         Some(c) => {
             let p = PathBuf::from(&c);
             if c.contains('\0') || !p.is_absolute() || !p.is_dir() {
-                return Err(bad("cwd must be an existing absolute directory"));
+                return Err(bad("cwd must be an existing absolute directory").into());
             }
             Some(p)
         }
     };
     let env_in = raw.env.unwrap_or_default();
     if env_in.len() > MAX_ENV {
-        return Err(bad("env has more than 32 keys"));
+        return Err(bad("env has more than 32 keys").into());
     }
     let mut env = Vec::with_capacity(env_in.len());
     for (k, v) in env_in {
@@ -244,25 +273,88 @@ pub fn validate(body: &[u8]) -> Result<Request, ApiError> {
             .iter()
             .any(|(e, _): &(String, String)| e.eq_ignore_ascii_case(&k))
         {
-            return Err(bad(
-                "env has the same key twice (keys are compared without case)",
-            ));
+            return Err(bad("env has the same key twice (keys are compared without case)").into());
         }
         if !env_key_ok(&k) {
-            return Err(bad("env key must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$"));
+            return Err(bad("env key must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$").into());
         }
         if env_key_denied(&k) {
-            return Err(ApiError::new(
+            return Err(audited(ApiError::new(
                 ErrorCode::EnvNotAllowed,
                 "env key not allowed (AIBD_*, DYLD_*, LD_*, PATH)",
-            ));
+            )));
         }
         if v.len() > MAX_ENV_VALUE || v.contains('\0') {
-            return Err(bad("env value must be at most 4096 bytes without NUL"));
+            return Err(bad("env value must be at most 4096 bytes without NUL").into());
         }
         env.push((k, v));
     }
     Ok(Request { argv, cwd, env })
+}
+
+const ARGV0_RELATIVE: &str = "argv[0] must be an absolute path (no PATH lookup)";
+
+/// `argv[0]`'s file name from a body that failed [`validate`], for the audit record only
+/// (empty when the body has none).
+fn lenient_argv0_name(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["argv"][0].as_str().map(str::to_owned))
+        .and_then(|a| {
+            Path::new(&a)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+}
+
+/// The only credential today is the startup token: its id is this name, never anything
+/// derived from the value. Pairing cookies (Phase 3) get their own ids.
+pub const TOKEN_ID_STARTUP: &str = "startup";
+
+/// A gate refusal: the answer, and the program's file name for the audit record.
+#[derive(Debug)]
+pub struct Refusal {
+    pub error: ApiError,
+    /// The real path's file name when it resolves, else `argv[0]`'s; never more of argv.
+    pub program: String,
+}
+
+/// M1 security gate (crate::allowlist), after [`validate`] (syntax first) and before
+/// anything starts: `argv[0]` must resolve, now, to the real path of a listed program that
+/// is not a shell / interpreter / launcher / npm install, and every env name must be
+/// listed. On success `argv[0]` is replaced by that real path, so what runs is what was
+/// checked. The fixed deny list still applies inside `validate`. Blocking (reads the file
+/// system): call it on a blocking thread.
+pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
+    let Some(argv0) = req.argv.first() else {
+        return Err(Refusal {
+            error: bad("argv must have 1-64 items"),
+            program: String::new(),
+        });
+    };
+    let name = |a: &str| {
+        let a = Path::new(a);
+        let real = std::fs::canonicalize(a).ok();
+        real.as_deref()
+            .unwrap_or(a)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let refuse = |r: allowlist::Refused, argv0: &str| Refusal {
+        error: ApiError::new(r.code(), r.message()),
+        program: name(argv0),
+    };
+    let real = allowlist::resolve(argv0, p).map_err(|r| refuse(r, argv0))?;
+    allowlist::env_allowed(p, req.env.iter().map(|(k, _)| k.as_str()))
+        .map_err(|r| refuse(r, argv0))?;
+    let real = real
+        .into_os_string()
+        .into_string()
+        .map_err(|_| refuse(allowlist::Refused::Program, argv0))?;
+    req.argv[0] = real;
+    Ok(req)
 }
 
 struct Entry {
@@ -302,7 +394,35 @@ pub struct Sessions {
     /// How long the background slot re-check runs (a63ab: 30 s; tests shorten it).
     /// (window, longest pass): test hook only changes them.
     rescan_window: Mutex<(Duration, Duration)>,
+    /// M1 gate rejections, folded per token + code per minute.
+    rejections: allowlist::RejectLog,
     me: std::sync::Weak<Sessions>,
+}
+
+/// The stored form of a session: argv[0]'s file name and the count only,
+/// never argv or env (spec 9.4).
+fn row_of(s: &Session) -> SessionRow {
+    SessionRow {
+        session_id: s.id.clone(),
+        seat_id: s.seat_id.clone(),
+        pid: s.pid,
+        argv0: s
+            .argv
+            .first()
+            .and_then(|a| Path::new(a).file_name())
+            .map(|n| n.to_string_lossy().into_owned()),
+        argc: i64::try_from(s.argv.len()).unwrap_or(i64::MAX),
+        state: s.state.to_owned(),
+        holds_slot: s.holds_slot,
+        started_at: s.started_at.clone(),
+        ended_at: s.ended_at.clone(),
+        ended_by: s.ended_by.map(str::to_owned),
+        exit_code: s.exit_code,
+        signal: s.signal.clone(),
+        stop_status: s.stop.as_ref().map(|v| v.status.to_owned()),
+        stop_reason: s.stop.as_ref().and_then(|v| v.reason.clone()),
+        updated_at: now_rfc3339(),
+    }
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -318,6 +438,20 @@ impl Sessions {
         max: usize,
         default_cwd: PathBuf,
     ) -> Arc<Sessions> {
+        // a session still open when the previous aibd stopped is
+        // `interrupted`, never re-attached (DECISION-11 B, ADR 0004)
+        match store.interrupt_open_sessions(now_rfc3339(), || {
+            new_id("ev_").unwrap_or_else(|_| format!("ev_restart_{}", now_rfc3339()))
+        }) {
+            Ok(ids) if !ids.is_empty() => {
+                tracing::warn!(
+                    count = ids.len(),
+                    "sessions open at the last stop marked interrupted"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => tracing::error!(error = %err, "could not mark open sessions interrupted"),
+        }
         Arc::new_cyclic(|me| Sessions {
             inner: Mutex::new(Inner::default()),
             cv: Condvar::new(),
@@ -327,6 +461,7 @@ impl Sessions {
             max,
             default_cwd,
             rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
+            rejections: allowlist::RejectLog::default(),
             me: me.clone(),
         })
     }
@@ -369,6 +504,16 @@ impl Sessions {
 
     /// POST. Blocking (spawn, event store).
     pub fn start(self: &Arc<Self>, req: Request) -> Result<Session, ApiError> {
+        self.start_for_seat(None, req)
+    }
+
+    /// POST for a seat (`POST /api/v1/seats/{id}/sessions`); the caller has
+    /// checked that the seat exists (the store refuses an unknown one too).
+    pub fn start_for_seat(
+        self: &Arc<Self>,
+        seat_id: Option<String>,
+        req: Request,
+    ) -> Result<Session, ApiError> {
         let id = new_id("s_").map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
         {
             let mut g = lock(&self.inner);
@@ -397,7 +542,7 @@ impl Sessions {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
         self.cv.notify_all();
-        let run = match res {
+        let mut run = match res {
             Ok(r) => r,
             Err(f) => {
                 let Some(pid) = f.left_running else {
@@ -429,6 +574,7 @@ impl Sessions {
         g.next_order += 1;
         let rec = Session {
             id: id.clone(),
+            seat_id,
             argv: spec.argv.clone(),
             cwd: spec.cwd.to_string_lossy().into_owned(),
             pid: run.pid(),
@@ -442,6 +588,7 @@ impl Sessions {
             stop: None,
         };
         let exit_wait = run.exit_wait();
+        let output = run.take_output();
         let shutting = g.shutting;
         g.live.insert(
             id.clone(),
@@ -466,6 +613,11 @@ impl Sessions {
             }),
         );
         tracing::info!(session = %id, pid = rec.pid, "session started");
+        if let Some(out) = output {
+            // after `session.started`, so the first line comes after it on
+            // the global cursor; the readers never take `inner`
+            crate::session_output::start(self.store.clone(), &id, out);
+        }
         if shutting {
             // H3: shutdown began while this spawn ran; it must not escape the
             // sweep, so this request stops it before answering
@@ -867,6 +1019,10 @@ impl Sessions {
     /// flight, stop every live session in parallel, all within
     /// [`SHUTDOWN_CAP`]. Returns how many were still stopping at the cap.
     pub fn shutdown_all(self: &Arc<Self>) -> usize {
+        // folded rejection counts still in an open window are written now (1ced7 #593 M1)
+        for (token_id, code, n, program) in self.rejections.drain() {
+            self.write_rejection(code, &program, &token_id, n);
+        }
         let deadline = Instant::now() + SHUTDOWN_CAP;
         let mut g = lock(&self.inner);
         g.shutting = true;
@@ -908,10 +1064,13 @@ impl Sessions {
         let reserved = g.reserved;
         drop(g);
         // same deadline as everything else here (bb7dc #544 310cf95c D4)
-        let leftovers = crate::platform::stop_leftovers(deadline);
-        if !leftovers.is_empty() || reserved > 0 {
+        // `Swept` has no empty value for "could not look": Unsupported is
+        // reported like an unconfirmed tree (platform parity, a9136 11-09)
+        let swept = crate::platform::stop_leftovers(deadline);
+        if swept.unconfirmed() > 0 || reserved > 0 {
             tracing::warn!(
-                left_running = ?leftovers,
+                left_running = ?swept,
+                unconfirmed = swept.unconfirmed(),
                 reserved,
                 "trees of failed starts not confirmed gone by the shutdown cap, or starts still in flight"
             );
@@ -931,13 +1090,106 @@ impl Sessions {
         }
     }
 
+    /// A live session's event, written together with its current row (spec
+    /// 4.3: state and outbox in one transaction), so the session is read
+    /// back after a restart.
     fn event(&self, g: &mut Inner, id: &str, kind: &str, payload: serde_json::Value) {
         let Some(e) = g.live.get_mut(id) else {
             return;
         };
         let seq = e.seq;
         e.seq += 1;
-        self.append(id, seq, kind, payload);
+        let row = row_of(&e.rec);
+        let ev = NewEvent {
+            event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
+            aggregate_type: "session".into(),
+            aggregate_id: id.to_owned(),
+            sequence: seq,
+            event_type: kind.to_owned(),
+            correlation_id: None,
+            occurred_at: now_rfc3339(),
+            payload,
+        };
+        if let Err(err) = self.store.session_event(row, ev) {
+            tracing::error!(session = %id, event = kind, error = %err, "session event write failed");
+        }
+    }
+
+    /// Audit a refusal (a63ab 19:23): event `session.spawn_rejected` in aggregate type
+    /// `security` (each record its own aggregate, sequence 1) plus one `warn` line, at most
+    /// one per token + code per minute (`now` is injected); the count of the folded ones
+    /// is written when the window closes (see [`allowlist::RejectLog`]). The payload is
+    /// exactly `code`, `program` (a file name, cut to 64 characters, control characters
+    /// escaped), `token_id`, `at`, `folded_before`: never env values, the full argv or the
+    /// cwd.
+    pub fn record_rejection(&self, now: Instant, token_id: &str, code: ErrorCode, program: &str) {
+        let code = code.as_str();
+        let program = allowlist::audit_name(program);
+        match self.rejections.note(now, token_id, code, &program) {
+            allowlist::Note::Write { folded_before } => {
+                self.write_rejection(code, &program, token_id, folded_before)
+            }
+            allowlist::Note::Folded { arm: Some(start) } => {
+                self.arm_reject_flush(token_id.to_owned(), code, start)
+            }
+            allowlist::Note::Folded { arm: None } => {}
+        }
+    }
+
+    /// One flush per window, at its end (`session.reject_flush`, an Operation timer that
+    /// lives at most one window). The thread holds only a `Weak` while it waits (1ced7
+    /// #593 L2): after a shutdown the store is not kept open for up to a minute; if the
+    /// sessions are gone when it wakes, it ends (the shutdown drain wrote the count).
+    fn arm_reject_flush(&self, token_id: String, code: &'static str, start: Instant) {
+        let me = self.me.clone();
+        let spawned = std::thread::Builder::new()
+            .name("aibd-reject-flush".into())
+            .spawn(move || {
+                let op = crate::timers::SESSION_REJECT_FLUSH
+                    .begin(Some(start + allowlist::REJECT_WINDOW));
+                while op.tick() {}
+                drop(op);
+                let Some(me) = me.upgrade() else {
+                    return;
+                };
+                if let Some((n, program)) = me.rejections.close(&token_id, code, start) {
+                    me.write_rejection(code, &program, &token_id, n);
+                }
+            });
+        if spawned.is_err() {
+            tracing::error!(code, "session.reject_flush could not start; the count is written by the next rejection or at shutdown");
+        }
+    }
+
+    fn write_rejection(&self, code: &str, program: &str, token_id: &str, folded_before: u64) {
+        let at = now_rfc3339();
+        tracing::warn!(
+            code,
+            program,
+            token_id,
+            folded_before,
+            "session spawn rejected"
+        );
+        let agg = new_id("rj_").unwrap_or_else(|_| format!("rj_{}", at.replace([':', '.'], "")));
+        let ev = NewEvent {
+            event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{agg}_1")),
+            aggregate_type: "security".into(),
+            aggregate_id: agg,
+            sequence: 1,
+            event_type: "session.spawn_rejected".into(),
+            correlation_id: None,
+            occurred_at: at.clone(),
+            payload: serde_json::json!({
+                "code": code,
+                "program": program,
+                "token_id": token_id,
+                "at": at,
+                "folded_before": folded_before,
+            }),
+        };
+        if self.store.append(vec![ev]).is_err() {
+            tracing::error!(code, "session.spawn_rejected write failed");
+        }
     }
 
     fn append(&self, id: &str, seq: i64, kind: &str, payload: serde_json::Value) {
@@ -966,7 +1218,7 @@ fn wait_timeout<'a>(cv: &Condvar, g: MutexGuard<'a, Inner>, d: Duration) -> Mute
         .unwrap_or_else(|e| e.into_inner().0)
 }
 
-fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
+pub(crate) fn new_id(prefix: &str) -> Result<String, getrandom::Error> {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b)?;
     Ok(format!(
@@ -1006,25 +1258,70 @@ fn rfc3339(secs: i64, ms: u32) -> String {
 
 // ---- HTTP handlers ----
 
-fn json_content_type(h: &HeaderMap) -> bool {
+pub(crate) fn json_content_type(h: &HeaderMap) -> bool {
     h.get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
 }
 
-pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
-    if !json_content_type(&headers) {
-        return bad("Content-Type must be application/json").into_response();
+/// Content type, size and [`validate`], shared by both POST routes. The first layer's
+/// refusals that matter are audited (1ced7 #593 M2: deny-listed env names, a relative
+/// `argv[0]`); plain shape errors (bad JSON, too long) are not.
+async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Request, ApiError> {
+    if !json_content_type(headers) {
+        return Err(bad("Content-Type must be application/json"));
     }
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
-            return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB")
-                .into_response()
+            return Err(ApiError::new(
+                ErrorCode::PayloadTooLarge,
+                "request body over 64 KiB",
+            ))
         }
     };
-    let req = match validate(&bytes) {
+    match validate_audit(&bytes) {
+        Ok(r) => Ok(r),
+        Err(Invalid { err: e, audit }) => {
+            if audit {
+                let program = lenient_argv0_name(&bytes);
+                let audit = st.sessions.clone();
+                let code = e.0;
+                let _ = tokio::task::spawn_blocking(move || {
+                    audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, code, &program)
+                })
+                .await;
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
+/// is audited.
+async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
+    let policy = st.session_policy.clone();
+    let audit = st.sessions.clone();
+    let run = move || {
+        admit(req, &policy).map_err(|r| {
+            audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
+            r.error
+        })
+    };
+    match tokio::task::spawn_blocking(run).await {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error")),
+    }
+}
+
+pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    let req = match read_valid(&st, &headers, body).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let req = match gate(&st, req).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
@@ -1036,6 +1333,84 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
     }
 }
 
+/// `POST /api/v1/seats/{id}/sessions`: the same body and answers as
+/// `POST /api/v1/sessions`, for an existing seat (`404 seat_not_found`
+/// otherwise; spec 4.2: a session belongs to a seat).
+pub async fn create_for_seat(
+    State(st): State<AppState>,
+    UrlPath(seat): UrlPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let req = match read_valid(&st, &headers, body).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let store = st.store.clone();
+    let sid = seat.clone();
+    match tokio::task::spawn_blocking(move || store.seat(&sid)).await {
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => {
+            return ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
+        }
+        _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
+    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
+    let req = match gate(&st, req).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let s = st.sessions.clone();
+    match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
+        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+}
+
+/// `GET /api/v1/seats/{id}/sessions`: the seat's sessions as stored (also
+/// after a restart), oldest first. The stored form has no argv beyond
+/// `argv0` and `argc`, and never env.
+pub async fn list_for_seat(State(st): State<AppState>, UrlPath(seat): UrlPath<String>) -> Response {
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let s = store.seat(&seat)?;
+        Ok::<_, aib_store::StoreError>(match s {
+            Some(_) => Some(store.sessions_of_seat(&seat)?),
+            None => None,
+        })
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(rows))) => {
+            let v: Vec<_> = rows.iter().map(stored_view).collect();
+            Json(serde_json::json!({"sessions": v})).into_response()
+        }
+        Ok(Ok(None)) => ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response(),
+        _ => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+}
+
+fn stored_view(r: &SessionRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": r.session_id,
+        "seat_id": r.seat_id,
+        "pid": r.pid,
+        "argv0": r.argv0,
+        "argc": r.argc,
+        "state": r.state,
+        "holds_slot": r.holds_slot,
+        "started_at": r.started_at,
+        "ended_at": r.ended_at,
+        "ended_by": r.ended_by,
+        "exit_code": r.exit_code,
+        "signal": r.signal,
+        "stop_status": r.stop_status,
+        "stop_reason": r.stop_reason,
+    })
+}
+
 pub async fn list(State(st): State<AppState>) -> Response {
     Json(serde_json::json!({"sessions": st.sessions.list()})).into_response()
 }
@@ -1044,6 +1419,61 @@ pub async fn get_one(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -
     match st.sessions.get(&id) {
         Some(s) => Json(s).into_response(),
         None => ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response(),
+    }
+}
+
+/// Query of `GET /api/v1/sessions/{id}/output`.
+#[derive(Debug, serde::Deserialize)]
+pub struct OutputQuery {
+    #[serde(default)]
+    after: i64,
+    limit: Option<u32>,
+}
+
+/// `GET /api/v1/sessions/{id}/output?after=&limit=`: the session's output
+/// events (`session.output`, `session.output_truncated`,
+/// `session.output_closed`) with `sequence > after`, from the store, so a
+/// session of an earlier aibd run reads back the same. `next` is the last
+/// sequence returned (pass it as `after`).
+pub async fn output(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<OutputQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(500).clamp(1, 1000);
+    let after = q.after.max(0);
+    let known = st.sessions.get(&id).is_some();
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        if !known && store.session_row(&id)?.is_none() {
+            return Ok(None);
+        }
+        store
+            .events_of(&crate::session_output::aggregate_id(&id), after, limit)
+            .map(Some)
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(evs))) => {
+            let next = evs.last().map(|e| e.sequence).unwrap_or(after);
+            let items: Vec<_> = evs
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "sequence": e.sequence,
+                        "global_seq": e.global_seq,
+                        "type": e.event_type,
+                        "occurred_at": e.occurred_at,
+                        "payload": e.payload,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({"output": items, "next": next})).into_response()
+        }
+        Ok(Ok(None)) => {
+            ApiError::new(ErrorCode::SessionNotFound, "no such session").into_response()
+        }
+        _ => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
 }
 
@@ -1080,13 +1510,121 @@ mod tests {
     const TRUE_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\whoami.exe"
     } else {
-        "/bin/true"
+        "/usr/bin/true" // macOS has no /bin/true (Linux has both)
     };
     const ECHO_ABS: &str = if cfg!(windows) {
         r"C:\Windows\System32\cmd.exe"
     } else {
         "/bin/echo"
     };
+
+    fn policy() -> SessionPolicy {
+        SessionPolicy {
+            programs: vec![allowlist::Program {
+                name: "fx".into(),
+                path: PathBuf::from(TRUE_ABS),
+                signer: None,
+            }],
+            env: vec!["MY_VAR".into()],
+            interpreters_ok: false,
+        }
+    }
+
+    fn req(argv0: &str, env: &[(&str, &str)]) -> Request {
+        Request {
+            argv: vec![argv0.into(), "--secret-arg".into()],
+            cwd: None,
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn m1_gate_a_listed_program_runs_by_its_real_path() {
+        let r = admit(req(TRUE_ABS, &[("MY_VAR", "1")]), &policy()).unwrap();
+        let real = std::fs::canonicalize(TRUE_ABS).unwrap();
+        assert_eq!(Path::new(&r.argv[0]), allowlist_exec(&real));
+        assert_eq!(r.argv[1], "--secret-arg");
+        assert!(admit(req(TRUE_ABS, &[]), &policy()).is_ok());
+    }
+
+    /// What admit runs for a real path (Windows drops the `\\?\` prefix).
+    fn allowlist_exec(real: &Path) -> PathBuf {
+        let s = real.to_str().unwrap();
+        PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(s))
+    }
+
+    #[test]
+    fn m1_gate_other_program_is_program_not_allowed_and_not_echoed() {
+        let r = admit(req(ECHO_ABS, &[]), &policy()).unwrap_err();
+        let want = std::fs::canonicalize(ECHO_ABS).unwrap();
+        assert_eq!(r.program, want.file_name().unwrap().to_str().unwrap());
+        let e = r.error;
+        assert_eq!(e.0, ErrorCode::ProgramNotAllowed);
+        assert_eq!(e.0.http_status(), 403);
+        assert!(!e.1.contains(ECHO_ABS), "{}", e.1);
+        assert!(!e.1.contains("secret"), "{}", e.1);
+    }
+
+    #[test]
+    fn m1_gate_unlisted_env_name_is_env_not_allowed() {
+        let e = admit(req(TRUE_ABS, &[("OTHER", "v-SECRET")]), &policy())
+            .unwrap_err()
+            .error;
+        assert_eq!(e.0, ErrorCode::EnvNotAllowed);
+        assert!(!e.1.contains("OTHER") && !e.1.contains("SECRET"), "{}", e.1);
+    }
+
+    /// 043dd #593 N1: which first-layer refusals are audited is decided where the
+    /// refusal is made (`Invalid::audit`), not from the message text. Exactly two are:
+    /// a denied env key and a relative argv[0].
+    #[test]
+    fn first_layer_audit_is_flagged_at_the_refusal_not_by_its_message() {
+        let audit = |j: serde_json::Value| match validate_audit(j.to_string().as_bytes()) {
+            Ok(_) => panic!("accepted: {j}"),
+            Err(i) => (i.err.0, i.audit),
+        };
+        let yes = [
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"DYLD_INSERT_LIBRARIES": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"PATH": "/x"}}),
+            serde_json::json!({"argv": ["true"]}),
+        ];
+        for j in yes {
+            assert!(audit(j.clone()).1, "not audited: {j}");
+        }
+        assert_eq!(
+            audit(serde_json::json!({"argv": [TRUE_ABS], "env": {"AIBD_X": "1"}})).0,
+            ErrorCode::EnvNotAllowed
+        );
+        let no = [
+            serde_json::json!({"argv": []}),
+            serde_json::json!({"argv": [""]}),
+            serde_json::json!({"argv": [TRUE_ABS, "a\u{0}b"]}),
+            serde_json::json!({"argv": [TRUE_ABS], "cwd": "relative"}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"1BAD": "x"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "env": {"A": "x", "a": "y"}}),
+            serde_json::json!({"argv": [TRUE_ABS], "extra": 1}),
+        ];
+        for j in no {
+            let (code, a) = audit(j.clone());
+            assert!(!a, "audited: {j}");
+            assert_eq!(code, ErrorCode::InvalidRequest, "{j}");
+        }
+        // `validate` keeps its old shape: the same error, without the flag
+        let e = validate(br#"{"argv": ["true"]}"#).unwrap_err();
+        assert_eq!(e.1, ARGV0_RELATIVE);
+    }
+
+    #[test]
+    fn m1_gate_empty_policy_allows_nothing() {
+        let none = SessionPolicy::default();
+        assert_eq!(
+            admit(req(TRUE_ABS, &[]), &none).unwrap_err().error.0,
+            ErrorCode::ProgramNotAllowed
+        );
+    }
 
     fn v(j: serde_json::Value) -> Result<Request, ApiError> {
         validate(j.to_string().as_bytes())
@@ -1106,7 +1644,8 @@ mod tests {
             serde_json::json!([]),
             serde_json::json!(["true"]),
             serde_json::json!(["./x"]),
-            serde_json::json!([ECHO_ABS, ""]),
+            serde_json::json!([""]),
+            serde_json::json!(["", "x"]),
             serde_json::json!([ECHO_ABS, "a\u{0}b"]),
             serde_json::json!(vec![ECHO_ABS; 65]),
             serde_json::json!([ECHO_ABS, "x".repeat(4097)]),
@@ -1114,6 +1653,10 @@ mod tests {
             let e = v(serde_json::json!({ "argv": bad_argv })).unwrap_err();
             assert_eq!(e.0, ErrorCode::InvalidRequest, "{bad_argv}");
         }
+        // a63ab 20:32: empty items after argv[0] are kept as they are, in place
+        let r =
+            v(serde_json::json!({"argv": [ECHO_ABS, "--setting-sources", "", "x", ""]})).unwrap();
+        assert_eq!(r.argv, [ECHO_ABS, "--setting-sources", "", "x", ""]);
         let many: Vec<String> = std::iter::once(ECHO_ABS.to_owned())
             .chain(std::iter::repeat_n("y".repeat(4000), 9))
             .collect();

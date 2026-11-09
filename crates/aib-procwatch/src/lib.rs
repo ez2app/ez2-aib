@@ -2,6 +2,8 @@
 //!
 //! macOS: a kqueue `EVFILT_PROC` watch with `NOTE_FORK | NOTE_EXIT` on every
 //! recorded pid. On each fork the parent's children are listed by parent pid
+//! (aib-sys M3, DECISION-10 B: errno cleared before the size query and every
+//! fill, a list that still does not fit is an error, never a truncated list)
 //! and watched too, recursively. The thread blocks in `kevent` with no
 //! timeout; it wakes only on a fork, an exit, or the stop event.
 //!
@@ -14,7 +16,9 @@
 //!
 //! Other OSes: [`ForkWatch::start`] returns `Unsupported`.
 //!
-//! Safe code only (`nix` and `libproc` wrappers); no `unsafe` here.
+//! Safe code only (`nix`, `libproc` and aib-sys wrappers); no `unsafe` here.
+//! aib-sys types stay private: callers (aib-forkcount) only see counters and
+//! tags, so the dependency rule "aib-sys only through aib-procwatch" holds.
 
 #![forbid(unsafe_code)]
 
@@ -29,8 +33,24 @@ pub struct Stats {
     pub children_adopted: u64,
     /// Watches that could not be registered (process already gone, or refused).
     pub register_failures: u64,
-    /// Child listings that failed.
+    /// Child listings that failed (any error: permission, OS error, a list
+    /// that did not fit after retries, …). Never washed into an empty list.
     pub list_failures: u64,
+    /// The same failures by aib-sys tag (`permission_denied`, `incomplete`,
+    /// `os_error`, `unknown`, `gone`, …). Report only.
+    pub list_failures_by_tag: BTreeMap<String, u64>,
+    /// Listings that returned zero children. Report only (an empty list is
+    /// normal for a process with no children; DECISION-10 kept it out of the
+    /// verdict).
+    pub empty_lists: u64,
+    /// `NOTE_FORK` events after which the parent's listing adopted no new
+    /// child. Report only: events coalesce and a child may exit or be
+    /// re-parented before it is listed, so this is not a loss count and has
+    /// no threshold until the attribution window is defined (DECISION-10 3).
+    pub fork_without_child: u64,
+    /// Listings where a fault was injected (`ListFault`); non-zero means the
+    /// run is a test of the error paths, never a measurement.
+    pub injected: u64,
     /// Fork events by the parent's program name.
     pub by_parent: BTreeMap<String, u64>,
     /// Fork events by the parent's pid (lets calibration attribute events to
@@ -40,12 +60,31 @@ pub struct Stats {
     pub per_second: BTreeMap<u64, u64>,
 }
 
+/// Fault injection for the child listing (tests and `aib-forkcount
+/// calibrate --inject-list`). Every fault makes a run look worse, never
+/// better, and is counted in [`Stats::injected`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListFault {
+    /// The `nth` listing (1-based): the fill call fails with EIO. Goes
+    /// through aib-sys's real `read_pid_list`, so its error classification is
+    /// what is tested, not a made-up result.
+    Error { nth: u64 },
+    /// The `nth` listing (1-based): every fill comes back full. aib-sys's
+    /// real `read_pid_list` grows and retries, then refuses with
+    /// `Incomplete` (a truncated list must never be returned).
+    Incomplete { nth: u64 },
+    /// The first listing that has children drops its first child, and every
+    /// later listing drops that pid too (a missed child: it is never adopted,
+    /// so neither are its own children).
+    HideOne,
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::Stats;
+    use super::{ListFault, Stats};
+    use aib_sys::{Macos, ProcessInfo, SysError};
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::{name, pidinfo};
-    use libproc::processes::{pids_by_type, ProcFilter};
     use nix::errno::Errno;
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
     use std::collections::BTreeMap;
@@ -60,6 +99,10 @@ mod imp {
         /// adopted child -> the parent it was listed under
         parent_of: BTreeMap<u32, u32>,
         stats: Stats,
+        fault: Option<ListFault>,
+        /// listings done so far (for `ListFault::Error` / `Incomplete`)
+        listings: u64,
+        hidden: Option<u32>,
     }
 
     type Shared = Mutex<Inner>;
@@ -91,18 +134,66 @@ mod imp {
         kq.kevent(&[ev], &mut [], None).is_ok()
     }
 
+    /// One child listing through aib-sys M3, with the injected fault if any.
+    fn list_children(sh: &Shared, ppid: u32) -> Result<Vec<u32>, SysError> {
+        let (n, fault) = {
+            let mut g = lock(sh);
+            g.listings += 1;
+            (g.listings, g.fault)
+        };
+        match fault {
+            Some(ListFault::Error { nth }) if nth == n => {
+                lock(sh).stats.injected += 1;
+                // the fill fails with EIO (5)
+                return aib_sys::list::read_pid_list(1, |_| Err(5));
+            }
+            Some(ListFault::Incomplete { nth }) if nth == n => {
+                lock(sh).stats.injected += 1;
+                // the OS keeps filling whatever buffer it gets
+                return aib_sys::list::read_pid_list(1, |buf| Ok(std::mem::size_of_val(buf)));
+            }
+            _ => {}
+        }
+        let mut kids = Macos.children(ppid)?;
+        if fault == Some(ListFault::HideOne) {
+            let mut g = lock(sh);
+            let hidden = g.hidden;
+            match hidden {
+                None if !kids.is_empty() => {
+                    g.hidden = Some(kids.remove(0));
+                    g.stats.injected += 1;
+                }
+                Some(h) => kids.retain(|k| *k != h),
+                None => {}
+            }
+        }
+        Ok(kids)
+    }
+
     /// Record and watch every not-yet-known descendant of `parent`.
-    fn adopt(kq: &Kqueue, sh: &Shared, parent: u32) {
+    /// Returns how many new **direct** children of `parent` were adopted.
+    fn adopt(kq: &Kqueue, sh: &Shared, parent: u32) -> u64 {
+        let mut direct = 0;
         let mut stack = vec![parent];
         while let Some(p) = stack.pop() {
             let pstart = lock(sh).seen.get(&p).copied();
-            let kids = match pids_by_type(ProcFilter::ByParentProcess { ppid: p }) {
+            // Every error counts as a failure, whatever its tag: "gone" is
+            // not proof that nothing was missed (bb7dc, DECISION-10).
+            let kids = match list_children(sh, p) {
                 Ok(k) => k,
-                Err(_) => {
-                    lock(sh).stats.list_failures += 1;
+                Err(e) => {
+                    let mut g = lock(sh);
+                    g.stats.list_failures += 1;
+                    *g.stats
+                        .list_failures_by_tag
+                        .entry(e.tag().to_owned())
+                        .or_default() += 1;
                     continue;
                 }
             };
+            if kids.is_empty() {
+                lock(sh).stats.empty_lists += 1;
+            }
             for k in kids {
                 if k == 0 || lock(sh).seen.contains_key(&k) {
                     continue;
@@ -122,9 +213,13 @@ mod imp {
                     g.stats.register_failures += 1;
                 }
                 drop(g);
+                if p == parent {
+                    direct += 1;
+                }
                 stack.push(k);
             }
         }
+        direct
     }
 
     pub struct ForkWatch {
@@ -135,6 +230,12 @@ mod imp {
 
     impl ForkWatch {
         pub fn start(roots: &[u32]) -> std::io::Result<Self> {
+            Self::start_with(roots, None)
+        }
+
+        /// [`start`](Self::start) with a fault injected into the child
+        /// listing (see [`ListFault`]).
+        pub fn start_with(roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
             let kq = Arc::new(Kqueue::new().map_err(std::io::Error::from)?);
             let stop = KEvent::new(
                 STOP_IDENT,
@@ -150,6 +251,9 @@ mod imp {
                 seen: BTreeMap::new(),
                 parent_of: BTreeMap::new(),
                 stats: Stats::default(),
+                fault,
+                listings: 0,
+                hidden: None,
             }));
             let w = {
                 let (kq, sh) = (kq.clone(), sh.clone());
@@ -239,7 +343,9 @@ mod imp {
                                 .entry(t0.elapsed().as_secs())
                                 .or_default() += 1;
                         }
-                        adopt(kq, sh, pid);
+                        if adopt(kq, sh, pid) == 0 {
+                            lock(sh).stats.fork_without_child += 1;
+                        }
                     }
                     _ => {}
                 }
@@ -275,7 +381,7 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use super::Stats;
+    use super::{ListFault, Stats};
 
     pub fn start_time(_pid: u32) -> Option<u64> {
         None
@@ -289,7 +395,10 @@ mod imp {
     pub struct ForkWatch;
 
     impl ForkWatch {
-        pub fn start(_roots: &[u32]) -> std::io::Result<Self> {
+        pub fn start(roots: &[u32]) -> std::io::Result<Self> {
+            Self::start_with(roots, None)
+        }
+        pub fn start_with(_roots: &[u32], _fault: Option<ListFault>) -> std::io::Result<Self> {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "aib-procwatch: only macOS is implemented",
