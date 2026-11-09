@@ -156,6 +156,43 @@ async fn events_written_before_restart_are_read_back() {
     h.await.unwrap().unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn filtered_events_preserve_global_cursor_without_other_aggregates() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let s = aib_store::Store::open(&d.path().join("aibd.sqlite")).unwrap();
+        let event = |id: &str, aggregate: &str, sequence| aib_store::NewEvent {
+            event_id: id.into(),
+            aggregate_type: "session".into(),
+            aggregate_id: aggregate.into(),
+            sequence,
+            event_type: "session.changed".into(),
+            correlation_id: None,
+            occurred_at: "2026-11-07T00:00:00Z".into(),
+            payload: serde_json::json!({}),
+        };
+        s.append(vec![
+            event("e1", "session-a", 1),
+            event("e2", "session-b", 1),
+            event("e3", "session-a", 2),
+        ])
+        .unwrap();
+    }
+    let (st, stop, h) = start(d.path()).await;
+    let token = std::fs::read_to_string(&st.token_path).unwrap();
+    let addr = st.addr;
+    let port = addr.port();
+    let body = tokio::task::spawn_blocking(move || {
+        http(addr, &format!("GET /api/v1/events?cursor=1&limit=500&aggregate_id=session-a HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"))
+    }).await.unwrap();
+    assert!(body.contains("\"filter_applied\":true"), "{body}");
+    assert!(body.contains("\"event_id\":\"e3\""), "{body}");
+    assert!(body.contains("\"next_cursor\":3"), "{body}");
+    assert!(!body.contains("\"event_id\":\"e2\""), "{body}");
+    stop.send(()).unwrap();
+    h.await.unwrap().unwrap();
+}
+
 #[test]
 fn wildcard_bind_is_refused_by_config() {
     let get = |k: &str| (k == "AIBD_BIND").then(|| "0.0.0.0:47770".to_string());

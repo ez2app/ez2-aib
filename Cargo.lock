@@ -13,21 +13,21 @@ dependencies = [
 
 [[package]]
 name = "aib-cireuse"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-cloud"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-core"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "serde",
  "thiserror",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aib-fixture-tree"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
  "signal-hook",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "aib-forkcount"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "aib-procwatch",
  "serde_json",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "aib-procwatch"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "aib-sys",
  "libproc",
@@ -68,14 +68,14 @@ dependencies = [
 
 [[package]]
 name = "aib-release"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-store"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "aib-core",
  "rusqlite",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "aib-sys"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "libc",
  "thiserror",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "aib-xtask"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "aibd"
-version = "0.2.0-preview.3"
+version = "0.2.0-preview.4"
 dependencies = [
  "aib-core",
  "aib-store",
