@@ -127,6 +127,63 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
+      # rule of the pure decision and must turn its own test red (knife.py restores the file).
+      - name: aib-thermal knives
+        if: env.RUN == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-thermal/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-thermal --locked --lib "$3"; }
+          # K1 pressure ignored
+          tk '        if p != 0 {' \
+            '        if p != 0 && false { // knife' \
+            a5_pressure_reaps_now
+          # K2 fallback ignores avg
+          tk '    if value >= REAP_AVG_C {' \
+            '    if value >= REAP_AVG_C && false { // knife' \
+            a18_fallback_honours_avg
+          # K3 instant crit lost
+          tk '    if max >= CPU_CRIT_C {' \
+            '    if max >= CPU_CRIT_C && false { // knife' \
+            a7_no_history_falls_back_to_instant
+          # K4 no_signal fallback skipped
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && !history.continuous() && false { // knife' \
+            a15_gap_without_pressure_falls_back
+          # K5 gaps count as continuous
+          tk '        if v < limit || t_prev - t > SUSTAIN_GAP_S {' \
+            '        if v < limit || t_prev - t > SUSTAIN_GAP_S * 100.0 { // knife' \
+            a4_broken_streak_restarts
+          # K6 two samples are enough
+          tk '        if n >= SUSTAIN_MIN_SAMPLES {' \
+            '        if n >= 1 { // knife' \
+            a16_two_samples_across_pause_not_sustained
+          # K7 same-moment panels counted twice
+          tk '            if t_counted - t >= SAMPLE_SPACING_S {' \
+            '            if t_counted - t >= 0.0 { // knife' \
+            a16b_same_moment_panels_are_one_sample
+          # K8 slow writer drops newer rows
+          tk '            (-SUSTAIN_GAP_S..=HISTORY_KEEP_S).contains(&age)' \
+            '            (0.0..=HISTORY_KEEP_S).contains(&age) // knife' \
+            a14c_slow_writer_keeps_newer_low_sample
+          # K9 no nogo level
+          tk '    for (level, limit) in [(Level::Crit, REAP_AVG_C), (Level::Hot, NOGO_AVG_C)] {' \
+            '    for (level, limit) in [(Level::Crit, REAP_AVG_C)] { // knife' \
+            a9_nogo_at_85_without_reap
+          # K10 hot reaps
+          tk '        self.level == Level::Crit' \
+            '        matches!(self.level, Level::Hot | Level::Crit) // knife' \
+            a9_nogo_at_85_without_reap
+          # K11 max instead of avg
+          tk '        Some(self.avg.filter(|v| v.is_finite()).unwrap_or(max))' \
+            '        Some(self.avg.filter(|v| v.is_finite()).map(|_| max).unwrap_or(max)) // knife' \
+            a1_spike_not_reaped
+          # K12 corrupt rows accepted
+          tk '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) {' \
+            '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) && false { // knife' \
+            a17b_nan_or_infinite_is_corrupt
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
