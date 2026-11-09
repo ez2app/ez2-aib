@@ -609,9 +609,9 @@ struct Stubborn;
 struct NeverExits;
 
 impl aibd::platform::session::ExitWait for NeverExits {
-    fn wait(&self, t: Duration) -> Option<aibd::platform::session::Exit> {
+    fn wait(&self, t: Duration) -> aibd::platform::session::Waited {
         std::thread::sleep(t.min(Duration::from_millis(50)));
-        None
+        aibd::platform::session::Waited::TimedOut
     }
 }
 

@@ -123,6 +123,21 @@ impl Op {
     }
 }
 
+impl Op {
+    /// Time left until this operation's end (`None` = no end). For a wait
+    /// that blocks on events instead of ticking (a9136 #514): it still keeps
+    /// to the same end and counts each wake-up with [`Op::woke`].
+    pub fn remaining(&self) -> Option<Duration> {
+        self.end
+            .map(|end| end.saturating_duration_since(Instant::now()))
+    }
+
+    /// Count one wake-up of an event wait (see [`Op::remaining`]).
+    pub fn woke(&self) {
+        self.timer.wakeups.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl Drop for Op {
     fn drop(&mut self) {
         self.timer.active.fetch_sub(1, Ordering::Relaxed);
@@ -159,10 +174,18 @@ pub static SELFCHECK_CHILD_WAIT: Timer = Timer::operation(
     "wait for the selfcheck tree's child to report it started, before stopping the tree (bb7dc #549)",
 );
 
+pub static SESSION_ROOT_WATCH_BACKOFF: Timer = Timer::operation(
+    "session.root_watch_backoff",
+    secs(30),
+    secs(30),
+    "pause the root-exit watcher when its wait answers far sooner than asked (a failed wait), doubling from 100 ms up to 30 s, so it never spins (1ced7 #543 Medium 2)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
+    &SESSION_ROOT_WATCH_BACKOFF,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

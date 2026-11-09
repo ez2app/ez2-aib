@@ -2,7 +2,7 @@
 //! (`tree.rs`). macOS keeps the root unreaped until the last signal (H1);
 //! never `clean` (DECISION-23).
 
-use super::session::{Exit, ExitWait, Running, SpawnFail, Spec, Stop, StopStatus};
+use super::session::{Exit, ExitWait, Running, SpawnFail, Spec, Stop, StopStatus, Waited};
 use super::tree::{
     start_tree, RootEnd, RootWatch, SpawnSpec, StartFailed, StartFailedOr, TreeHandle,
 };
@@ -33,8 +33,12 @@ fn signal_name(n: i32) -> String {
 }
 
 impl ExitWait for Watch {
-    fn wait(&self, timeout: Duration) -> Option<Exit> {
-        self.0.wait(timeout).map(exit_of)
+    /// Woken by the root-wait thread; nothing here can fail to look.
+    fn wait(&self, timeout: Duration) -> Waited {
+        match self.0.wait(timeout) {
+            Some(end) => Waited::Exited(exit_of(end)),
+            None => Waited::TimedOut,
+        }
     }
 }
 

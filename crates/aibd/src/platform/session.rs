@@ -260,11 +260,27 @@ pub fn child_env(
     out
 }
 
+/// What one [`ExitWait::wait`] saw (a9136, 1ced7 #543 Medium 1 / a63ab
+/// 06:0x ruling). Three answers, so "the wait could not look" is never
+/// mistaken for "not yet" or for an exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Waited {
+    /// The root exited, with what it ended with.
+    Exited(Exit),
+    /// The timeout passed and the root still runs.
+    TimedOut,
+    /// The wait could not tell (a code, not user text): `wait_failed`, or
+    /// `exit_code_unreadable` (ended, but how cannot be read). Never an exit,
+    /// so never a clean end. May come back at once on every call: the caller
+    /// must not loop on it without a pause (`Sessions::watch_root` backs off).
+    Failed(&'static str),
+}
+
 /// Waits for the root's exit while someone else may hold the [`Running`]
 /// (a stop can run meanwhile). Never reaps.
 pub trait ExitWait: Send + Sync {
-    /// The root's exit once it has exited, or `None` at the timeout.
-    fn wait(&self, timeout: Duration) -> Option<Exit>;
+    /// Block until the root exits, the timeout passes, or the wait fails.
+    fn wait(&self, timeout: Duration) -> Waited;
 }
 
 /// One started session tree.

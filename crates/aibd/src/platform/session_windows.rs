@@ -29,7 +29,8 @@ use aib_sys::session::{KillReport, Leftover, SessionTree, SpawnError};
 use aib_sys::SysError;
 
 use super::session::{
-    child_env, Exit, ExitWait, Running, Signal, SpawnFail, Spec, Stop, StopStatus, JOB_ERROR_PREFIX,
+    child_env, Exit, ExitWait, Running, Signal, SpawnFail, Spec, Stop, StopStatus, Waited,
+    JOB_ERROR_PREFIX,
 };
 use crate::lineage::Lineage;
 
@@ -109,42 +110,29 @@ impl RootHandle for Process {
     }
 }
 
-/// An exit is only reported when the handle signaled **and** the code was read.
-/// A failed wait or an unreadable code is never an exit (so never a clean end):
-/// it reads as "not yet" until the three-state ExitWait (a9136, after preview.2;
-/// a63ab ruling on 1ced7 #543 Medium 1).
+/// An exit is only reported when the handle signaled **and** the code was
+/// read. A failed wait or an unreadable code is [`Waited::Failed`], never an
+/// exit (so never a clean end) and never "not yet" (a9136 three-state
+/// ExitWait; a63ab ruling on 1ced7 #543 Medium 1). Those answers come back at
+/// once; the caller's loop backs off (`Sessions::watch_root`, #543 Medium 2).
 struct RootWait<P: RootHandle>(Arc<P>);
 
 impl<P: RootHandle> ExitWait for RootWait<P> {
-    fn wait(&self, timeout: Duration) -> Option<Exit> {
+    fn wait(&self, timeout: Duration) -> Waited {
         match self.0.wait(timeout) {
             Ok(true) => match self.0.exit_code() {
-                Ok(Some(c)) => Some(code(c)),
+                Ok(Some(c)) => Waited::Exited(code(c)),
                 // signaled but the code cannot be read: stays so on every call
-                _ => idle(timeout),
+                _ => Waited::Failed(FAILED_CODE_UNREADABLE),
             },
-            Ok(false) => None, // the wait itself took `timeout`
-            Err(_) => idle(timeout),
+            Ok(false) => Waited::TimedOut, // the wait itself took `timeout`
+            Err(_) => Waited::Failed(FAILED_WAIT),
         }
     }
 }
 
-/// Longest pause before an unanswered wait returns `None`.
-const IDLE_MAX: Duration = Duration::from_secs(1);
-
-/// A wait that failed, or a signaled root whose code cannot be read, would
-/// otherwise return `None` at once on every call; a caller that loops on
-/// `wait` (#546 `watch_root`) would spin at 100% CPU holding its lock each
-/// round (1ced7 #543 Medium 2, a63ab 07:12 ruling (a)). Pause `min(timeout,
-/// 1 s)` first: still "not an exit", never a busy loop.
-fn idle(timeout: Duration) -> Option<Exit> {
-    // ADR 0005 named exception: a bounded back-off on a failed OS wait inside
-    // a blocking ExitWait call (already on its own watcher thread); there is
-    // no timer event to register for "the handle wait failed".
-    #[allow(clippy::disallowed_methods)]
-    std::thread::sleep(timeout.min(IDLE_MAX));
-    None
-}
+const FAILED_WAIT: &str = "wait_failed";
+const FAILED_CODE_UNREADABLE: &str = "exit_code_unreadable";
 
 /// Windows exit codes are u32 (NTSTATUS for crashes); the wire carries i32 bits.
 fn code(c: u32) -> Exit {
@@ -423,59 +411,34 @@ mod tests {
         }
     }
 
-    fn root_wait(
-        wait: Result<bool, SysError>,
-        code: Result<Option<u32>, SysError>,
-    ) -> Option<Exit> {
+    fn root_wait(wait: Result<bool, SysError>, code: Result<Option<u32>, SysError>) -> Waited {
         RootWait(Arc::new(FakeRoot { wait, code })).wait(Duration::ZERO)
     }
 
-    /// 1ced7 #543 / a63ab 06:2x: a root wait or exit-code error is never an exit.
+    /// 1ced7 #543 / a63ab 06:2x: a root wait or exit-code error is never an
+    /// exit, and never "not yet" either: it says it could not look.
     #[test]
     fn a_root_wait_or_exit_code_error_is_never_an_exit() {
-        assert_eq!(root_wait(Err(SysError::Os(6)), Ok(Some(0))), None);
-        assert_eq!(root_wait(Ok(true), Err(SysError::Os(5))), None);
-        assert_eq!(root_wait(Ok(true), Ok(None)), None);
-        assert_eq!(root_wait(Ok(false), Ok(Some(0))), None);
-        assert_eq!(root_wait(Ok(true), Ok(Some(7))), Some(Exit::Code(7)));
+        assert_eq!(
+            root_wait(Err(SysError::Os(6)), Ok(Some(0))),
+            Waited::Failed("wait_failed")
+        );
+        assert_eq!(
+            root_wait(Ok(true), Err(SysError::Os(5))),
+            Waited::Failed("exit_code_unreadable")
+        );
+        assert_eq!(
+            root_wait(Ok(true), Ok(None)),
+            Waited::Failed("exit_code_unreadable")
+        );
+        assert_eq!(root_wait(Ok(false), Ok(Some(0))), Waited::TimedOut);
+        assert_eq!(
+            root_wait(Ok(true), Ok(Some(7))),
+            Waited::Exited(Exit::Code(7))
+        );
         assert_eq!(
             root_wait(Ok(true), Ok(Some(0xC000_0005))),
-            Some(Exit::Code(0xC000_0005_u32 as i32))
-        );
-    }
-
-    /// 1ced7 #543 Medium 2: the two "no exit" answers that would come back at
-    /// once pause first (bounded), so a loop on `wait` cannot spin.
-    #[test]
-    fn an_unanswered_root_wait_pauses_before_none_and_is_bounded() {
-        use std::time::Instant;
-        for (wait, code) in [
-            (Ok(true), Err(SysError::Os(5))),
-            (Ok(true), Ok(None)),
-            (Err(SysError::Os(6)), Ok(Some(0))),
-        ] {
-            let t = Instant::now();
-            assert_eq!(
-                RootWait(Arc::new(FakeRoot { wait, code })).wait(Duration::from_millis(200)),
-                None
-            );
-            let took = t.elapsed();
-            assert!(
-                took >= Duration::from_millis(180),
-                "returned at once: {took:?}"
-            );
-            assert!(took < Duration::from_secs(2), "not bounded: {took:?}");
-        }
-        let t = Instant::now();
-        let r = RootWait(Arc::new(FakeRoot {
-            wait: Err(SysError::Os(6)),
-            code: Ok(None),
-        }))
-        .wait(Duration::from_secs(30));
-        assert_eq!(r, None);
-        assert!(
-            t.elapsed() < Duration::from_millis(1500),
-            "longer than IDLE_MAX"
+            Waited::Exited(Exit::Code(0xC000_0005_u32 as i32))
         );
     }
 
