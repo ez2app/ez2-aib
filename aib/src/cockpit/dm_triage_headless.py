@@ -62,6 +62,7 @@ _ACK_BAD_RE = re.compile(r"請|要|[/\\~]|\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])")
 ACK_MAX = 200
 NOTICE_FILE = "headless-notice.json"       # 結了 / 擬了 ⇒ 下一回合注入一行(SPEC v2 §2.5;注入一次就收)
 NOTICE_SCHEMA = "aib-dm-headless-notice/v1"
+COVER_SCHEMA = "aib-dm-headless-cover/v1"       # #552 G3:這份整理稿涵蓋哪幾封(id + rev)與整理那刻時間
 SUGGEST_SCHEMA = "aib-dm-headless-suggest/v1"   # 只擬不結的建議清單(DMTRIAGE 檔旁的 .json;triage-apply 讀它)
 NOTICE_ITEMS = 8                           # 注入那一行最多列幾封(其餘看檔)
 
@@ -523,18 +524,51 @@ def _write_report(seat, actor, decisions, results, env, now, brand, dry=False):
     head = ("執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗)。**只擬不結**:一封都沒改,下面「建議」是驗得過的,"
             "請本席看過自己結。草稿沒有寄出。" if dry else
             "執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗才套用)。草稿沒有寄出,要回的請本席看過再寄。") % (actor, brand)
-    lines = ["# DM 背景整理 @%s(%s)" % (seat, Q.taipei_stamp(now)), "", head, ""]
+    lines = ["# DM 背景整理 @%s(%s)" % (seat, Q.taipei_stamp(now)), "", head, "",
+             ("整理那刻 %s,涵蓋 %d 封(每行 id@修訂號)。之後信被改過 ⇒ 這份那幾行已過時,以待審框為準;"
+              "套用建議時核心會逐條重驗修訂號。") % (Q.taipei_stamp(now), len(results)), ""]
     for r in results:
         d0 = by.get(r["id"], {})
         state = ("建議" if r.get("would") else "不建議") if dry else ("已套用" if r["applied"] else "未套用")
-        lines.append("- %s | %s | %s | %s%s" % (r["id"], r["action"], state,
+        lines.append("- %s@%s | %s | %s | %s%s" % (r["id"], r.get("rev", "?"), r["action"], state,
                                                 r.get("reason") or "", ("|" + d0["why"]) if d0.get("why") else ""))
         if dry and r.get("would") and d0.get("evidence"):
             lines.append("  證據:" + d0["evidence"])
         if d0.get("draft") and d0.get("action") == "draft":
             lines.append("  草稿:" + d0["draft"].replace("\n", "\n  "))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_json(cover_path(path), {"schema": COVER_SCHEMA, "seat": seat, "at": int(now),
+                                    "items": [{"id": r["id"], "rev": r.get("rev")} for r in results]})
     return path
+
+
+def cover_path(report_path):
+    return Path(report_path).with_suffix(".cover.json")
+
+
+def stale_ids(seat, items, env=None):
+    """整理稿 / 通知列的 [{id, rev}] 裡,現在修訂號已不同(或信不在了)的 id(#552 G3)。rev 沒記的不算過時。"""
+    out = []
+    for i in items or []:
+        if not isinstance(i, dict) or type(i.get("rev")) is not int:
+            continue
+        cur = Q._load_item(seat, str(i.get("id") or ""), env)
+        if cur is None or Q.item_rev(cur) != i["rev"]:
+            out.append(i["id"])
+    return out
+
+
+def report_stale(report_path, env=None):
+    """這份整理稿過時了嗎:{ok, seat, at, n, stale:[id…]}。讀不到涵蓋檔 ⇒ ok False(舊稿沒記涵蓋,當作要重整)。"""
+    try:
+        rec = json.loads(cover_path(report_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": False, "reason": "no-cover"}
+    if not isinstance(rec, dict) or rec.get("schema") != COVER_SCHEMA:
+        return {"ok": False, "reason": "schema"}
+    seat = str(rec.get("seat") or "")
+    items = rec.get("items") or []
+    return {"ok": True, "seat": seat, "at": rec.get("at"), "n": len(items), "stale": stale_ids(seat, items, env)}
 
 
 def _closes(decisions, results, dry):
@@ -599,11 +633,17 @@ def take_notice(seat, env=None):
     listed = "、".join("%s(%s)" % (i["id"], str(i.get("reason") or "")[:24]) for i in items)
     n = int(rec.get("n") or len(items))
     more = "…" if n > len(items) else ""
+    try:
+        stale = stale_ids(seat, items, env)
+    except Exception:  # noqa: BLE001  只是通知,hook 不准炸
+        stale = []
+    warn = ("。⚠ 其中 %d 封整理後又被改過(%s),那幾行已過時" % (len(stale), "、".join(stale[:4]))) if stale else ""
     if rec.get("dry"):
         return ("🧹 背景整理擬了 %d 封結案建議(只擬不結,一封都沒改):%s%s —— 看 %s;要套用 "
-                "`python3 %s/dm_queue.py triage-apply --seat %s --file %s --yes`(逐條重驗才結)") % (
-            n, listed, more, rec.get("file"), HERE, seat, rec.get("suggest"))
-    return "🧹 背景整理結了 %d 封:%s%s —— 證據與理由看 %s;結錯了 `dm_queue.py reopen`" % (n, listed, more, rec.get("file"))
+                "`python3 %s/dm_queue.py triage-apply --seat %s --file %s --yes`(逐條重驗才結)%s") % (
+            n, listed, more, rec.get("file"), HERE, seat, rec.get("suggest"), warn)
+    return "🧹 背景整理結了 %d 封:%s%s —— 證據與理由看 %s;結錯了 `dm_queue.py reopen`%s" % (
+        n, listed, more, rec.get("file"), warn)
 
 
 def triage_apply(seat, file, yes=False, env=None, now=None, gh=gh_merged):
