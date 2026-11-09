@@ -179,7 +179,9 @@ impl SiteSpec {
 }
 const NET: &str = "10.77.0.";
 
-fn valid_code(code: &str) -> bool {
+/// Site code: 2–41 chars of `[a-z0-9.-]`, starting with a letter or digit (it becomes a hostname,
+/// a record file name and a Caddy marker, so nothing else is allowed).
+pub fn valid_code(code: &str) -> bool {
     let b = code.as_bytes();
     (2..=41).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
@@ -296,6 +298,38 @@ pub fn desired(spec: &SiteSpec) -> Vec<(&'static str, String)> {
     ];
     v.sort_by(|a, b| a.0.cmp(b.0));
     v
+}
+
+/// Keys a site CT's `pct config` may carry without being drift: what `desired()` declares,
+/// the identity keys PVE writes itself, and `lxc.idmap` (per-CT uid range, DECISION
+/// ct-idmap 11-10). Everything else — `lxc.hook.*`, `hookscript`, `lxc.cgroup2.devices.allow`,
+/// `lxc.include`, `lxc.cap.*`, `lxc.mount.*`, `lxc.apparmor.*`, `lxc.prlimit.*`, `mp*`, `dev*`,
+/// `template`, `protection`… — is drift.
+pub fn config_key_allowed(key: &str) -> bool {
+    const DESIRED: [&str; 10] = [
+        "cores",
+        "cpulimit",
+        "features",
+        "hostname",
+        "lxc.cgroup2.pids.max",
+        "memory",
+        "net0",
+        "onboot",
+        "swap",
+        "unprivileged",
+    ];
+    const HARMLESS: [&str; 9] = [
+        "arch",
+        "ostype",
+        "rootfs",
+        "nameserver",
+        "searchdomain",
+        "description",
+        "tags",
+        "cmode",
+        "tty",
+    ];
+    DESIRED.contains(&key) || HARMLESS.contains(&key) || key == "lxc.idmap"
 }
 
 /// The per-CT firewall file: options, the two SSH-1 rules when the site has customer ssh
@@ -493,27 +527,22 @@ pub fn drift(
             });
         }
     }
-    // things that must NOT be there
-    if get("template").is_some() {
-        out.push(Drift {
-            ct: spec.ct,
-            key: "template".to_owned(),
-            want: "<absent>".to_owned(),
-            got: get("template").unwrap_or("").to_owned(),
-        });
-    }
+    // Everything else in the config must be on the allow-list (c477a #585 M1: a deny-list
+    // missed `lxc.hook.*`, which runs as host root at CT start). Anything not declared by
+    // `desired()` and not a known harmless PVE key is drift, named by its key.
     for (k, v) in &obs {
-        if k.starts_with("mp")
-            || k.starts_with("dev")
-            || k == "lxc.apparmor.profile"
-            || k == "lxc.cap.drop"
-            || k.starts_with("lxc.mount")
-        {
+        if !config_key_allowed(k) {
+            let why = if k.starts_with("mp") || k.starts_with("dev") {
+                "<absent> (no bind mounts / devices on a site CT)"
+            } else if k.starts_with("lxc.") || k == "hookscript" {
+                "<absent> (raw lxc.* / hookscript run as host root; only lxc.cgroup2.pids.max and lxc.idmap are declared)"
+            } else {
+                "<absent> (not in the site CT allow-list)"
+            };
             out.push(Drift {
                 ct: spec.ct,
                 key: k.clone(),
-                want: "<absent> (no bind mounts / devices / apparmor or cap changes on a site CT)"
-                    .to_owned(),
+                want: why.to_owned(),
                 got: v.clone(),
             });
         }
@@ -575,7 +604,7 @@ pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
 /// customer-facing text Andy decides (§14 P2), this only wires it.
 pub fn caddy_block_suspended(spec: &SiteSpec, page_path: &str) -> String {
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# suspended\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:suspended\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
         dir = page_path.rsplit_once('/').map_or("/srv/errors", |(d, _)| d),
@@ -640,18 +669,28 @@ pub fn caddy_block_is_suspended(caddyfile: &str, code: &str) -> Result<bool, Err
         .iter()
         .position(|l| *l == "}")
         .map_or(lines.len(), |o| start + o);
-    Ok(lines[start..end].iter().any(|l| l.trim() == "# suspended"))
+    let body: Vec<&str> = lines[start..end].iter().map(|l| l.trim()).collect();
+    // c477a #585 L5: a stray "# suspended" comment in a live block must not count; the
+    // suspended shape is our own marker *and* the 503 file_server pair.
+    let marked = body.iter().any(|l| *l == "# ez2:suspended");
+    let serves_503 = body.iter().any(|l| l.starts_with("file_server"))
+        && body.iter().any(|l| *l == "status 503");
+    Ok(marked && serves_503)
 }
 
 /// Blue-green restore: bring the backup up as a **new** CT with a **new** internal IP next to
 /// the running one, then point the Edge at it; the old CT stays until someone deletes it
 /// (that delete is L2). Validated: new id / ip differ from the live ones and from the
 /// template / edge; backup path is a vzdump archive name.
+/// `taken_ip_last`: every last octet already used on vmbr1 — the other sites' records and
+/// what `pct config` shows for every CT (c477a #585 M2: a mistyped `--ip` would put two CTs
+/// on one address and take another customer's site down by ARP; pct does not refuse it).
 pub fn restore_plan(
     spec: &SiteSpec,
     backup_path: &str,
     new_ct: u32,
     new_ip_last: u8,
+    taken_ip_last: &[u8],
 ) -> Result<Vec<Step>, Error> {
     if new_ct == spec.ct
         || !(100..=999_999_999).contains(&new_ct)
@@ -660,7 +699,10 @@ pub fn restore_plan(
     {
         return Err(Error::CtId(new_ct));
     }
-    if new_ip_last == spec.ip_last || !(3..=249).contains(&new_ip_last) {
+    if new_ip_last == spec.ip_last
+        || !(3..=249).contains(&new_ip_last)
+        || taken_ip_last.contains(&new_ip_last)
+    {
         return Err(Error::Ip(alloc::format!("{NET}{new_ip_last}")));
     }
     let name = backup_path.rsplit('/').next().unwrap_or("");
@@ -1068,6 +1110,34 @@ mod tests {
             ),
             ["mp0"]
         );
+        // c477a #585 M1: allow-list, not deny-list — the dangerous raw keys are drift
+        for extra in [
+            "lxc.hook.pre-start: /x\n",
+            "hookscript: local:snippets/x.sh\n",
+            "lxc.cgroup2.devices.allow: a\n",
+            "lxc.include: /etc/x.conf\n",
+            "lxc.cap.keep: sys_admin\n",
+            "lxc.prlimit.nofile: 65536\n",
+            "protection: 1\n",
+            "dev0: /dev/sda\n",
+        ] {
+            let d = keys(drift(&site2(), &alloc::format!("{CT112}{extra}"), Some(&fw)).unwrap());
+            assert_eq!(d, [extra.split(':').next().unwrap()], "{extra}");
+        }
+        // …while PVE's own identity keys and the declared idmap are not
+        let benign = alloc::format!(
+            "{CT112}description: customer site\nsearchdomain: ez2.site\ntags: ez2\nlxc.idmap: u 0 165536 65536\nlxc.idmap: g 0 165536 65536\n"
+        );
+        assert_eq!(
+            drift(&site2(), &benign, Some(&fw)).unwrap(),
+            Vec::<Drift>::new()
+        );
+        assert!(config_key_allowed("lxc.cgroup2.pids.max") && config_key_allowed("lxc.idmap"));
+        assert!(
+            !config_key_allowed("lxc.hook.pre-start")
+                && !config_key_allowed("hookscript")
+                && !config_key_allowed("template")
+        );
         assert_eq!(keys(drift(&site2(), CT112, None).unwrap()), ["firewall"]);
         assert_eq!(
             keys(
@@ -1112,7 +1182,7 @@ mod tests {
         assert!(up.contains("reverse_proxy 10.77.0.12:80 {") && up.ends_with("}\n"));
         let sus = caddy_block_suspended(&sp, "/srv/errors/suspended.html");
         assert!(
-            sus.contains("# suspended")
+            sus.contains("# ez2:suspended")
                 && sus.contains("root * /srv/errors")
                 && sus.contains("rewrite * /suspended.html")
                 && sus.contains("status 503")
@@ -1126,6 +1196,20 @@ mod tests {
         let swapped = caddy_swap_block(&file, "site2", &sus).unwrap();
         assert!(caddy_block_is_suspended(&swapped, "site2").unwrap());
         assert!(!caddy_block_is_suspended(&swapped, "other").unwrap());
+        // c477a #585 L5: a live block with a stray "# suspended" comment is still live
+        let stray = caddy_swap_block(
+            &file,
+            "site2",
+            &up.replace(
+                "\timport ez2_whitelabel\n",
+                "\timport ez2_whitelabel\n\t# suspended\n\t# ez2:suspended\n",
+            ),
+        )
+        .unwrap();
+        assert!(
+            !caddy_block_is_suspended(&stray, "site2").unwrap(),
+            "marker without the 503 file_server is not suspended"
+        );
         assert!(
             swapped.contains("# site:other\nother.example {"),
             "other block untouched"
@@ -1154,6 +1238,7 @@ mod tests {
             "/var/lib/vz/dump/vzdump-lxc-112-2026_11_09-03_00_01.tar.zst",
             212,
             22,
+            &[10, 13],
         )
         .unwrap();
         assert_eq!(p[0].argv[..3], ["pct", "restore", "212"]);
@@ -1174,20 +1259,30 @@ mod tests {
             }
         }
         let b = "/var/lib/vz/dump/vzdump-lxc-112-x.tar.zst";
-        assert!(restore_plan(&sp, b, 112, 22).is_err(), "same ct");
-        assert!(restore_plan(&sp, b, 212, 12).is_err(), "same ip");
-        assert!(restore_plan(&sp, b, 900, 22).is_err(), "template id");
-        assert!(restore_plan(&sp, b, 212, 2).is_err(), "edge ip");
+        assert!(restore_plan(&sp, b, 112, 22, &[]).is_err(), "same ct");
+        assert!(restore_plan(&sp, b, 212, 12, &[]).is_err(), "same ip");
+        assert!(restore_plan(&sp, b, 900, 22, &[]).is_err(), "template id");
+        assert!(restore_plan(&sp, b, 212, 2, &[]).is_err(), "edge ip");
+        // c477a #585 M2: an address another CT already has on vmbr1 is refused
         assert!(
-            restore_plan(&sp, "vzdump-lxc-112.tar.zst", 212, 22).is_err(),
+            restore_plan(&sp, b, 212, 10, &[10, 13]).is_err(),
+            "site1's ip"
+        );
+        assert!(
+            restore_plan(&sp, b, 212, 13, &[10, 13]).is_err(),
+            "site3's ip"
+        );
+        assert!(restore_plan(&sp, b, 212, 22, &[10, 13]).is_ok());
+        assert!(
+            restore_plan(&sp, "vzdump-lxc-112.tar.zst", 212, 22, &[]).is_err(),
             "relative path"
         );
         assert!(
-            restore_plan(&sp, "/var/lib/vz/dump/../../etc/passwd", 212, 22).is_err(),
+            restore_plan(&sp, "/var/lib/vz/dump/../../etc/passwd", 212, 22, &[]).is_err(),
             "traversal"
         );
         assert!(
-            restore_plan(&sp, "/var/lib/vz/dump/other.tar.zst", 212, 22).is_err(),
+            restore_plan(&sp, "/var/lib/vz/dump/other.tar.zst", 212, 22, &[]).is_err(),
             "not a vzdump name"
         );
     }

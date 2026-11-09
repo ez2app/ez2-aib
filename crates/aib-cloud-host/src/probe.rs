@@ -775,11 +775,75 @@ const EDGE_CT: &str = "101";
 const CADDYFILE: &str = "/etc/caddy/Caddyfile";
 const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
 
+/// Read one site record. The CLI code is validated before it touches a path (c477a #585 L3:
+/// `../` would otherwise walk out of the records dir) and must equal the record's own `site`,
+/// so the Caddy block we swap and the spec we render always belong to the same site.
 fn load_site(code: &str, records_dir: &str) -> Result<aib_cloud::site::SiteSpec, String> {
+    if !aib_cloud::site::valid_code(code) {
+        return Err(format!("site code {code:?} is not valid"));
+    }
     let path = format!("{records_dir}/{code}.json");
     let text = fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
     let rec: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
-    aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("{path}: {e}"))
+    let spec = aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("{path}: {e}"))?;
+    if spec.code != code {
+        return Err(format!(
+            "{path}: record is for site {:?}, not {code:?}",
+            spec.code
+        ));
+    }
+    Ok(spec)
+}
+
+/// Every last octet in use on vmbr1: all site records plus `pct config` of every CT
+/// (c477a #585 M2). Unreadable records or CTs are errors, not skipped: a gap here is how
+/// two CTs end up on one address.
+fn occupied_ip_lasts(records_dir: &str) -> Result<Vec<u8>, String> {
+    let mut taken: Vec<u8> = Vec::new();
+    for e in fs::read_dir(records_dir).map_err(|e| format!("{records_dir}: {e}"))? {
+        let path = e.map_err(|e| e.to_string())?.path();
+        if path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rec: Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let spec = aib_cloud::site::spec_from_record(&rec)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        taken.push(spec.ip_last);
+    }
+    let mut list = Command::new("pct");
+    list.arg("list");
+    let out = run_capture(&mut list, Duration::from_secs(20))?;
+    for line in out.lines().skip(1) {
+        let Some(id) = line.split_whitespace().next() else {
+            continue;
+        };
+        if !id.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let mut cfg = Command::new("pct");
+        cfg.args(["config", id]);
+        let text = run_capture(&mut cfg, Duration::from_secs(15))?;
+        for l in text.lines() {
+            if let Some(rest) = l.strip_prefix("net0:") {
+                for part in rest.split(',') {
+                    if let Some(ip) = part.trim().strip_prefix("ip=") {
+                        if let Some(last) = ip
+                            .strip_prefix("10.77.0.")
+                            .and_then(|t| t.split('/').next())
+                            .and_then(|t| t.parse::<u8>().ok())
+                        {
+                            taken.push(last);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    taken.sort_unstable();
+    taken.dedup();
+    Ok(taken)
 }
 
 fn edge_caddyfile() -> Result<String, String> {
@@ -796,8 +860,23 @@ fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
     let mut cp = Command::new("pct");
     cp.args(["exec", EDGE_CT, "--", "cp", "-a", CADDYFILE, &backup]);
     run_capture(&mut cp, Duration::from_secs(15))?;
-    let tmp = format!("/tmp/aib-cloud-host-caddyfile-{stamp}");
-    fs::write(&tmp, text).map_err(|e| format!("{tmp}: {e}"))?;
+    // c477a #585 L1: a guessable /tmp name written as root follows a planted symlink; use /run,
+    // create_new (fails if anything is there) and 0600.
+    let tmp = format!(
+        "/run/aib-cloud-host-caddyfile-{}-{stamp}",
+        std::process::id()
+    );
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("{tmp}: {e}"))?;
+        f.write_all(text.as_bytes())
+            .map_err(|e| format!("{tmp}: {e}"))?;
+    }
     let mut push = Command::new("pct");
     push.args(["push", EDGE_CT, &tmp, CADDYFILE, "--perms", "0644"]);
     let pushed = run_capture(&mut push, Duration::from_secs(20));
@@ -817,7 +896,19 @@ fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
     }
     let mut reload = Command::new("pct");
     reload.args(["exec", EDGE_CT, "--", "systemctl", "reload", "caddy"]);
-    run_capture(&mut reload, Duration::from_secs(30))?;
+    if let Err(e) = run_capture(&mut reload, Duration::from_secs(30)) {
+        // c477a #585 L2: a validated file that failed to reload must not stay on disk, or the
+        // next unrelated reload brings it live. Put the backup back and reload that.
+        let mut undo = Command::new("pct");
+        undo.args(["exec", EDGE_CT, "--", "cp", "-a", &backup, CADDYFILE]);
+        let _ = run_capture(&mut undo, Duration::from_secs(15));
+        let mut re = Command::new("pct");
+        re.args(["exec", EDGE_CT, "--", "systemctl", "reload", "caddy"]);
+        let _ = run_capture(&mut re, Duration::from_secs(30));
+        return Err(format!(
+            "caddy reload failed, Caddyfile restored from {backup} and reloaded: {e}"
+        ));
+    }
     Ok(backup)
 }
 
@@ -911,13 +1002,15 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
         }
     }
     let spec = load_site(&code, &records)?;
+    let taken = occupied_ip_lasts(&records)?;
     let plan = restore_plan(
         &spec,
         backup.as_deref().ok_or("--backup required")?,
         ct.ok_or("--ct required")?,
         ip.ok_or("--ip required")?,
+        &taken,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| format!("{e} (in use on vmbr1: {taken:?})"))?;
     let new_ct = ct.unwrap_or(0).to_string();
     let mut probe = Command::new("pct");
     probe.args(["status", &new_ct]);
@@ -977,7 +1070,34 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
             .map_err(|e| e.to_string())?;
         let backup_file = edge_apply_caddyfile(&next)?;
         eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
-        eprintln!("remember: update {records}/{code}.json (ct, ip) so drift and backups follow the new CT");
+        // c477a #585 L4: the record follows the switch (ct, ip, ssh_port) so drift and backups
+        // look at the new CT; the old record is kept beside it.
+        let rec_path = format!("{records}/{code}.json");
+        let text = fs::read_to_string(&rec_path).map_err(|e| format!("{rec_path}: {e}"))?;
+        fs::write(format!("{rec_path}.bak-{}", unix_now()), &text)
+            .map_err(|e| format!("{rec_path}.bak: {e}"))?;
+        let mut rec: Value = serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
+        let new_ct_n = ct.unwrap_or(0);
+        rec["ct"] = json!(new_ct_n);
+        rec["ip"] = json!(new_ip);
+        let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
+        if had_ssh {
+            rec["ssh_port"] = json!(2000 + new_ct_n);
+        }
+        aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("new record invalid: {e}"))?;
+        fs::write(
+            &rec_path,
+            serde_json::to_string(&rec).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("{rec_path}: {e}"))?;
+        eprintln!(
+            "record {rec_path} now points at ct {new_ct_n} / {new_ip}{}",
+            if had_ssh {
+                format!("; ssh_port {} — run ez2-site-ssh {code} {new_ct_n} <pubkey> to move the DNAT / CT rules", 2000 + new_ct_n)
+            } else {
+                String::new()
+            }
+        );
     } else {
         eprintln!("not switched (--switch to point the Edge at it)");
     }
