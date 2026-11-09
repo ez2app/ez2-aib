@@ -9,6 +9,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::Value;
 
 /// Allowed `[dependencies]` of aib-cloud: name → exact version requirement.
 const ALLOWED: &[(&str, &str)] = &[(
@@ -164,6 +167,136 @@ fn manifest_target_path_violation(manifest: &str) -> Option<String> {
     None
 }
 
+/// `cargo metadata` for a manifest, as JSON (offline; the crate under test has no network).
+/// `no_deps` keeps it to the workspace / crate itself.
+fn cargo_metadata(manifest: &Path, no_deps: bool) -> Value {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args([
+        "metadata",
+        "--format-version",
+        "1",
+        "--offline",
+        "--manifest-path",
+    ])
+    .arg(manifest);
+    if no_deps {
+        cmd.arg("--no-deps");
+    }
+    let out = cmd.output().expect("run cargo metadata");
+    assert!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("cargo metadata json")
+}
+
+/// What cargo will actually build for a package (#566 r2, ebb36): exactly one `lib`
+/// target whose source is `<crate>/src/lib.rs`, test targets only under `<crate>/tests/`,
+/// and no bin / example / bench / custom-build target however the manifest spells it
+/// (`[lib] path`, `lib = { path }`, `lib.path`, `["lib"]`, `"path" =`, `src/main.rs`,
+/// top-level `bin = [...]`, `build = …` in any form). Reading cargo's own view instead of
+/// the manifest text closes the whole class.
+fn target_violation(meta: &Value, pkg_name: &str, crate_dir: &Path) -> Option<String> {
+    let pkgs = meta["packages"].as_array()?;
+    let Some(pkg) = pkgs.iter().find(|p| p["name"] == pkg_name) else {
+        return Some(format!("package {pkg_name} not in metadata"));
+    };
+    let targets = pkg["targets"].as_array()?;
+    let canon = |p: &str| Path::new(p).canonicalize().ok();
+    let want_lib = canon(&crate_dir.join("src").join("lib.rs").to_string_lossy());
+    let tests_dir = canon(&crate_dir.join("tests").to_string_lossy());
+    let mut libs = 0;
+    for t in targets {
+        let name = t["name"].as_str().unwrap_or("?");
+        let src = t["src_path"].as_str().unwrap_or("");
+        for k in t["kind"].as_array()?.iter().filter_map(Value::as_str) {
+            match k {
+                "lib" => {
+                    libs += 1;
+                    if canon(src) != want_lib {
+                        return Some(format!(
+                            "lib target {name} is rooted at {src}, not src/lib.rs"
+                        ));
+                    }
+                }
+                "test" => {
+                    let ok =
+                        matches!((&tests_dir, canon(src)), (Some(d), Some(s)) if s.starts_with(d));
+                    if !ok {
+                        return Some(format!("test target {name} outside tests/: {src}"));
+                    }
+                }
+                other => {
+                    return Some(format!(
+                        "target kind {other} ({name}) is not allowed in aib-cloud"
+                    ))
+                }
+            }
+        }
+    }
+    if libs != 1 {
+        return Some(format!("{libs} lib targets, want exactly 1"));
+    }
+    None
+}
+
+/// Every dependency of the crate must resolve to a crates.io package: `[patch]` /
+/// `[replace]` pointing at a local or git crate shows up in Cargo.lock as a package of that
+/// name without a registry `source`. Read from the lockfile so it works offline without
+/// downloading the whole workspace graph.
+fn dependency_source_violation(lock: &str, dep_names: &[&str]) -> Option<String> {
+    for block in lock.split("[[package]]").skip(1) {
+        let field = |k: &str| {
+            block
+                .lines()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix(k)
+                        .and_then(|r| r.trim().strip_prefix('='))
+                })
+                .map(|v| v.trim().trim_matches('"').to_owned())
+        };
+        let Some(name) = field("name") else { continue };
+        if !dep_names.contains(&name.as_str()) {
+            continue;
+        }
+        let src = field("source").unwrap_or_default();
+        if !src.starts_with("registry+https://github.com/rust-lang/crates.io-index") {
+            return Some(format!(
+                "{name} resolves to source {src:?}, not crates.io ([patch]/[replace]?)"
+            ));
+        }
+    }
+    None
+}
+
+/// Build a throwaway crate from a manifest body + files and ask cargo what it would build.
+#[cfg(test)]
+fn probe_manifest(tag: &str, manifest: &str, files: &[(&str, &str)]) -> Option<String> {
+    let dir = std::env::temp_dir().join(format!("aib-cloud-boundary-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).expect("tmp dir");
+    fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "{manifest}
+[workspace]
+"
+        ),
+    )
+    .expect("manifest");
+    for (rel, body) in files {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().expect("parent")).expect("dir");
+        fs::write(p, body).expect("file");
+    }
+    let meta = cargo_metadata(&dir.join("Cargo.toml"), true);
+    let v = target_violation(&meta, "k", &dir);
+    let _ = fs::remove_dir_all(&dir);
+    v
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -291,6 +424,30 @@ fn cloud_sources_do_no_io() {
     if let Some(why) = manifest_target_path_violation(&m) {
         panic!("aib-cloud/Cargo.toml {why}(#566 M1:target path 能換掉 #![no_std] 的 crate 根)");
     }
+    // #566 r2: ask cargo itself what it would build — closes every spelling at once.
+    let meta = cargo_metadata(&crate_dir("aib-cloud").join("Cargo.toml"), true);
+    if let Some(why) = target_violation(&meta, "aib-cloud", &crate_dir("aib-cloud")) {
+        panic!("aib-cloud targets: {why}(#566 r2:只准一個 src/lib.rs 的 lib + tests/ 下的 test)");
+    }
+    let lock = fs::read_to_string(root().join("Cargo.lock")).expect("Cargo.lock");
+    let deps: Vec<&str> = ALLOWED.iter().map(|(k, _)| *k).collect();
+    if let Some(why) = dependency_source_violation(&lock, &deps) {
+        panic!("aib-cloud dependencies: {why}");
+    }
+    for mf in [
+        crate_dir("aib-cloud").join("Cargo.toml"),
+        root().join("Cargo.toml"),
+    ] {
+        let text = manifest_compact(&fs::read_to_string(&mf).expect("manifest"));
+        assert!(
+            !text.contains("[patch")
+                && !text.contains("[replace")
+                && !text.contains("patch.")
+                && !text.contains("replace."),
+            "{} 有 [patch] / [replace](可以把 serde_json 換成本地 crate)",
+            mf.display()
+        );
+    }
     assert!(
         !crate_dir("aib-cloud").join("src").join("bin").exists(),
         "aib-cloud 不准有 src/bin/(自動變 binary target,繞過 lib.rs 的 #![no_std];#566 M1)"
@@ -405,4 +562,93 @@ fn io_checker_catches_escape_hatches() {
         "[package]\nname = \"x\"\n#[lints]\n#workspace = true\n"
     ));
     assert!(!lints_inherit_workspace("[lints]\nworkspace = false\n"));
+}
+
+// #566 r2 (ebb36): the manifest spellings that slipped past the text rules, judged by cargo.
+#[test]
+fn cargo_view_catches_every_target_spelling() {
+    const PKG: &str = "[package]\nname = \"k\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+    type Sample = (&'static str, String, Vec<(&'static str, &'static str)>);
+    let lib = ("src/lib.rs", "#![no_std]\n");
+    let root2 = (
+        "src/root2.rs",
+        "pub fn leak() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+    );
+    let main_rs = ("src/main.rs", "fn main() {}\n");
+    let b_rs = ("b.rs", "fn main() {}\n");
+    // top-level keys (`lib = …`, `lib.path`, `bin = [...]`) have to come before any `[table]`
+    let bad: Vec<Sample> = vec![
+        (
+            "lib-table-path",
+            format!("{PKG}\n[lib]\npath = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-inline-table",
+            format!("lib = {{ path = \"src/root2.rs\" }}\n{PKG}"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-dotted",
+            format!("lib.path = \"src/root2.rs\"\n{PKG}"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-quoted-table",
+            format!("{PKG}\n[\"lib\"]\npath = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        (
+            "lib-quoted-key",
+            format!("{PKG}\n[lib]\n\"path\" = \"src/root2.rs\"\n"),
+            vec![lib, root2],
+        ),
+        ("auto-main-rs", PKG.to_owned(), vec![lib, main_rs]),
+        (
+            "top-level-bin-array",
+            format!("bin = [{{ name = \"t\", path = \"src/t.rs\" }}]\n{PKG}"),
+            vec![lib, ("src/t.rs", "fn main() {}\n")],
+        ),
+        (
+            "build-key",
+            format!("{PKG}build = \"b.rs\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "build-quoted-key",
+            format!("{PKG}\"build\" = \"b.rs\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "build-with-lib-table",
+            format!("{PKG}build = \"b.rs\"\n\n[lib]\nname = \"k\"\n"),
+            vec![lib, b_rs],
+        ),
+        (
+            "auto-build-rs",
+            PKG.to_owned(),
+            vec![lib, ("build.rs", "fn main() {}\n")],
+        ),
+    ];
+    for (tag, manifest, files) in &bad {
+        let v = probe_manifest(tag, manifest, files);
+        assert!(v.is_some(), "{tag}: cargo view did not flag it");
+    }
+    assert_eq!(probe_manifest("plain", PKG, &[lib]), None);
+    assert_eq!(
+        probe_manifest(
+            "with-tests",
+            PKG,
+            &[lib, ("tests/t.rs", "#[test] fn t() {}\n")]
+        ),
+        None
+    );
+    assert_eq!(
+        probe_manifest(
+            "lib-name-only",
+            &format!("{PKG}\n[lib]\nname = \"k\"\n"),
+            &[lib]
+        ),
+        None
+    );
 }
