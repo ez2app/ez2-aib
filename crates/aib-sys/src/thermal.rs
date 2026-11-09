@@ -80,11 +80,16 @@ pub fn summarize<'a>(
     let mut sum = 0.0;
     let mut max = f64::NEG_INFINITY;
     for (name, t) in readings {
-        if !name.starts_with(TDIE_PREFIX) || seen.contains(&name) {
+        if !name.starts_with(TDIE_PREFIX) {
             continue;
         }
+        // Checked before de-duplication: a second listing of a sensor with a broken value
+        // fails the read too (043dd #617 N1).
         if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) {
             return Err(SysError::Implausible);
+        }
+        if seen.contains(&name) {
+            continue;
         }
         seen.push(name);
         sum += t;
@@ -189,8 +194,10 @@ pub fn read_die_temps<A: HidApi>(api: &A) -> Result<DieTemps, SysError> {
         if !name.starts_with(TDIE_PREFIX) {
             continue;
         }
+        // A tdie sensor whose event cannot be read fails the whole read: skipping it could
+        // drop the hottest one (043dd #617 M1).
         let Some(event) = api.event(service) else {
-            continue;
+            return Err(SysError::Unknown);
         };
         let event = Owned::new(api, event);
         readings.push((name, api.celsius(event.r)));
@@ -216,6 +223,14 @@ mod tests {
         assert_eq!(d.n, 2);
         assert_eq!(d.max, 70.0);
         assert_eq!(d.avg, 60.0);
+    }
+
+    #[test]
+    fn t1_duplicate_with_a_broken_value_fails() {
+        assert_eq!(
+            summarize([("PMU tdie1", 60.0), ("PMU tdie1", 400.0)]),
+            Err(SysError::Implausible)
+        );
     }
 
     #[test]
@@ -355,7 +370,6 @@ mod tests {
             (Some("PMU tdie1"), Some(60.0)),
             (Some("PMU tdev3"), Some(40.0)), // not tdie: its event is never copied
             (None, Some(99.0)),              // product not a string: skipped
-            (Some("PMU tdie2"), None),       // no event: skipped
             (Some("PMU tdie3"), Some(80.0)),
         ]);
         let d = read_die_temps(&hid).unwrap();
@@ -367,6 +381,24 @@ mod tests {
             .borrow()
             .keys()
             .all(|r| !(100..200).contains(r)));
+    }
+
+    #[test]
+    fn walk_tdie_without_event_fails_the_read() {
+        let hid = FakeHid::with(vec![
+            (Some("PMU tdie1"), Some(60.0)),
+            (Some("PMU tdie2"), None), // the event cannot be read
+            (Some("PMU tdie3"), Some(80.0)),
+        ]);
+        assert_eq!(read_die_temps(&hid), Err(SysError::Unknown));
+        hid.assert_balanced();
+        // a non-tdie sensor without an event is not ours to judge
+        let hid = FakeHid::with(vec![
+            (Some("PMU tdie1"), Some(60.0)),
+            (Some("PMU tdev1"), None),
+        ]);
+        assert!(read_die_temps(&hid).is_ok());
+        hid.assert_balanced();
     }
 
     #[test]
