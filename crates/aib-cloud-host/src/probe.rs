@@ -823,9 +823,7 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
 /// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
 /// is left running for comparison (deleting it is a separate, human-approved step).
 fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
-    use aib_cloud::site::{
-        caddy_block_upstream, caddy_swap_block, desired_firewall, restore_plan, FW_GROUP,
-    };
+    use aib_cloud::site::{caddy_block_upstream, caddy_swap_block, desired_firewall, restore_plan};
     let (code, records, rest) = site_args(args)?;
     let (mut backup, mut ct, mut ip, mut switch) = (None, None, None, false);
     let mut it = rest.iter();
@@ -878,7 +876,8 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
         if step.id == "set" {
             let fw = format!("/etc/pve/firewall/{new_ct}.fw");
             if !Path::new(&fw).exists() {
-                fs::write(&fw, desired_firewall(FW_GROUP)).map_err(|e| format!("{fw}: {e}"))?;
+                fs::write(&fw, desired_firewall(&spec.fw_group, spec.ssh_port))
+                    .map_err(|e| format!("{fw}: {e}"))?;
             }
         }
     }

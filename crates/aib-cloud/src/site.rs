@@ -131,11 +131,52 @@ pub struct SiteSpec {
     pub wp: bool,
     pub locale: String,
     pub limits: Limits,
+    /// Versioned firewall group the CT's `.fw` file points at (`ez2-site-v1`, `-v2`, …;
+    /// NET-1 11-10 moved every site to v2). Groups are never edited in place, so a record
+    /// says which one its CT was switched to.
+    pub fw_group: String,
+    /// Customer ssh (SSH-1, 4.4.1 §25): public port `2000 + ct` DNATed to the CT's 22. When
+    /// set, the `.fw` file carries two extra IN rules before the group line.
+    pub ssh_port: Option<u16>,
 }
 
 pub const TEMPLATE_CT: u32 = 900;
 pub const EDGE_CT: u32 = 101;
+/// Default group for a record that names none (the 11-09 PoC records).
 pub const FW_GROUP: &str = "ez2-site-v1";
+
+/// `ez2-site-v<N>` only: the group name goes verbatim into a firewall file.
+pub fn valid_fw_group(g: &str) -> bool {
+    g.strip_prefix("ez2-site-v")
+        .is_some_and(|n| !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The public port a customer uses to reach their CT's ssh (SSH-1): `2000 + ct`.
+pub fn customer_ssh_port(ct: u32) -> Option<u16> {
+    u16::try_from(2000 + ct).ok()
+}
+
+impl SiteSpec {
+    /// Point the CT at another versioned group (rejects anything but `ez2-site-v<N>`).
+    pub fn with_fw_group(mut self, group: &str) -> Result<Self, Error> {
+        if !valid_fw_group(group) {
+            return Err(Error::Code(alloc::format!("fw_group {group}")));
+        }
+        self.fw_group = group.to_owned();
+        Ok(self)
+    }
+    /// Declare customer ssh; the port must be exactly `2000 + ct` (that is what the host DNATs).
+    pub fn with_ssh_port(mut self, port: u16) -> Result<Self, Error> {
+        if customer_ssh_port(self.ct) != Some(port) {
+            return Err(Error::Code(alloc::format!(
+                "ssh_port {port} is not 2000+{}",
+                self.ct
+            )));
+        }
+        self.ssh_port = Some(port);
+        Ok(self)
+    }
+}
 const NET: &str = "10.77.0.";
 
 fn valid_code(code: &str) -> bool {
@@ -209,6 +250,8 @@ impl SiteSpec {
         }
         limits.validate()?;
         Ok(SiteSpec {
+            fw_group: FW_GROUP.to_owned(),
+            ssh_port: None,
             code: code.to_owned(),
             ct,
             ip_last,
@@ -255,9 +298,17 @@ pub fn desired(spec: &SiteSpec) -> Vec<(&'static str, String)> {
     v
 }
 
-/// The per-CT firewall file: everything through the versioned group, nothing else.
-pub fn desired_firewall(group: &str) -> String {
-    alloc::format!("[OPTIONS]\nenable: 1\npolicy_in: DROP\npolicy_out: DROP\nipfilter: 1\n\n[RULES]\nGROUP {group}\n")
+/// The per-CT firewall file: options, the two SSH-1 rules when the site has customer ssh
+/// (private / tailnet sources still dropped on 22, public DNATed ssh accepted), then the
+/// versioned group, nothing else. The shell writes exactly this; `drift` compares against it
+/// ignoring comments and blank lines.
+pub fn desired_firewall(group: &str, ssh_port: Option<u16>) -> String {
+    let ssh = if ssh_port.is_some() {
+        "IN DROP -source +private -p tcp -dport 22 -log nolog\nIN ACCEPT -p tcp -dport 22 -log nolog\n"
+    } else {
+        ""
+    };
+    alloc::format!("[OPTIONS]\nenable: 1\npolicy_in: DROP\npolicy_out: DROP\nipfilter: 1\n\n[RULES]\n{ssh}GROUP {group}\n")
 }
 
 /// The host-side record (`/var/lib/ez2-cloud/sites/<code>.json`) the shell writes after a
@@ -265,7 +316,8 @@ pub fn desired_firewall(group: &str) -> String {
 pub fn record(spec: &SiteSpec, created: &str) -> Value {
     json!({
         "site": spec.code, "ct": spec.ct, "ip": spec.ip(), "hosts": spec.hosts.join(","),
-        "wp": u8::from(spec.wp), "locale": spec.locale, "created": created, "template": TEMPLATE_CT, "fw_group": FW_GROUP,
+        "wp": u8::from(spec.wp), "locale": spec.locale, "created": created, "template": TEMPLATE_CT, "fw_group": spec.fw_group,
+        "ssh_port": spec.ssh_port,
         "limits": {"cores": spec.limits.cores, "cpulimit_x100": spec.limits.cpulimit_x100, "memory_mb": spec.limits.memory_mb,
                    "swap_mb": spec.limits.swap_mb, "pids_max": spec.limits.pids_max}
     })
@@ -313,7 +365,21 @@ pub fn spec_from_record(rec: &Value) -> Result<SiteSpec, Error> {
         }
         None => Limits::TEST_TIER,
     };
-    SiteSpec::new(code, ct, last, &hosts, wp, locale, limits)
+    let mut spec = SiteSpec::new(code, ct, last, &hosts, wp, locale, limits)?;
+    if let Some(g) = rec.get("fw_group").and_then(Value::as_str) {
+        spec = spec.with_fw_group(g)?;
+    }
+    match rec.get("ssh_port") {
+        None | Some(Value::Null) => {}
+        Some(v) => {
+            let port = v
+                .as_u64()
+                .and_then(|p| u16::try_from(p).ok())
+                .ok_or_else(|| Error::Observed("record ssh_port is not a port".to_owned()))?;
+            spec = spec.with_ssh_port(port)?;
+        }
+    }
+    Ok(spec)
 }
 
 /// One step of `site create`, as an argument list (never a shell string).
@@ -453,7 +519,7 @@ pub fn drift(
         }
     }
     // firewall file
-    let want_fw = desired_firewall(FW_GROUP);
+    let want_fw = desired_firewall(&spec.fw_group, spec.ssh_port);
     match observed_fw {
         None => out.push(Drift {
             ct: spec.ct,
@@ -891,7 +957,7 @@ mod tests {
             .iter()
             .any(|(k, v)| *k == "lxc.cgroup2.pids.max" && v == "2048"));
         assert!(d.windows(2).all(|w| w[0].0 < w[1].0), "sorted");
-        assert!(desired_firewall(FW_GROUP).contains("GROUP ez2-site-v1"));
+        assert!(desired_firewall(FW_GROUP, None).contains("GROUP ez2-site-v1"));
     }
 
     #[test]
@@ -909,7 +975,7 @@ mod tests {
 
     #[test]
     fn s5_no_drift_when_identical_modulo_mac_and_order() {
-        let fw = desired_firewall(FW_GROUP);
+        let fw = desired_firewall(FW_GROUP, None);
         assert_eq!(
             drift(&site2(), CT112, Some(&fw)).unwrap(),
             Vec::<Drift>::new()
@@ -930,7 +996,7 @@ mod tests {
 
     #[test]
     fn s6_each_drift_is_named() {
-        let fw = desired_firewall(FW_GROUP);
+        let fw = desired_firewall(FW_GROUP, None);
         let keys = |d: Vec<Drift>| d.into_iter().map(|x| x.key).collect::<Vec<_>>();
         assert_eq!(
             keys(
@@ -1124,5 +1190,66 @@ mod tests {
             restore_plan(&sp, "/var/lib/vz/dump/other.tar.zst", 212, 22).is_err(),
             "not a vzdump name"
         );
+    }
+
+    #[test]
+    fn s9_fw_group_and_customer_ssh_are_part_of_the_desired_firewall() {
+        // NET-1 (11-10): a site switched to ez2-site-v2 is not drift when its record says so
+        let v2 = site2().with_fw_group("ez2-site-v2").unwrap();
+        let fw_v2 = desired_firewall("ez2-site-v2", None);
+        assert_eq!(
+            drift(&v2, CT112, Some(&fw_v2)).unwrap(),
+            Vec::<Drift>::new()
+        );
+        // …but the v1 file against a v2 record is
+        let keys = |d: Vec<Drift>| d.into_iter().map(|x| x.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys(drift(&v2, CT112, Some(&desired_firewall(FW_GROUP, None))).unwrap()),
+            ["firewall"]
+        );
+        assert!(site2().with_fw_group("ez2-site-v").is_err());
+        assert!(site2().with_fw_group("ez2-edge-v1").is_err());
+        assert!(site2().with_fw_group("ez2-site-v2; rm").is_err());
+        // SSH-1: the record's ssh_port adds exactly the two IN rules the shell writes
+        let ssh = site2().with_ssh_port(2112).unwrap();
+        let fw_ssh = desired_firewall(FW_GROUP, Some(2112));
+        assert!(fw_ssh.contains("IN DROP -source +private -p tcp -dport 22 -log nolog\nIN ACCEPT -p tcp -dport 22 -log nolog\nGROUP ez2-site-v1"));
+        assert_eq!(
+            drift(&ssh, CT112, Some(&fw_ssh)).unwrap(),
+            Vec::<Drift>::new()
+        );
+        // the same file against a record without ssh is drift (and vice versa)
+        assert_eq!(
+            keys(drift(&site2(), CT112, Some(&fw_ssh)).unwrap()),
+            ["firewall"]
+        );
+        assert_eq!(
+            keys(drift(&ssh, CT112, Some(&desired_firewall(FW_GROUP, None))).unwrap()),
+            ["firewall"]
+        );
+        // the port must be 2000 + ct
+        assert!(site2().with_ssh_port(2113).is_err());
+        assert_eq!(customer_ssh_port(112), Some(2112));
+        // record round trip keeps both
+        let full = site2()
+            .with_fw_group("ez2-site-v2")
+            .unwrap()
+            .with_ssh_port(2112)
+            .unwrap();
+        let rec = record(&full, "2026-11-10T01:00:00Z");
+        assert_eq!(rec["fw_group"], "ez2-site-v2");
+        assert_eq!(rec["ssh_port"], 2112);
+        assert_eq!(spec_from_record(&rec).unwrap(), full);
+        // the real EU02 records after NET-1 / SSH-1
+        let eu02 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(spec_from_record(&eu02).unwrap(), full);
+        assert!(spec_from_record(
+            &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","ssh_port":22})
+        )
+        .is_err());
+        assert!(spec_from_record(
+            &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","fw_group":"other"})
+        )
+        .is_err());
     }
 }
