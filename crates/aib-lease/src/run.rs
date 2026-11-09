@@ -300,6 +300,12 @@ pub fn ssh_args(spec: &RunSpec, remote_cmd: &str) -> Vec<String> {
         "BatchMode=yes",
         "-o",
         "ConnectTimeout=15",
+        // 2240e #606 r2 L1: a network that vanishes (no FIN / RST) would leave this ssh
+        // waiting for ever; 4 unanswered probes 15 s apart end it (rc 3)
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=4",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -895,6 +901,16 @@ mod tests {
         sp.jump = Some("sin02-ts".into());
         let joined = ssh_args(&sp, "true").join(" ");
         assert!(joined.contains("-o ForwardAgent=no -o ClearAllForwardings=yes"));
+        assert!(
+            joined.contains("-o ServerAliveInterval=15 -o ServerAliveCountMax=4"),
+            "a vanished network ends this ssh: {joined}"
+        );
+        let a = ssh_args(&sp, "true");
+        let dashes = a.iter().position(|x| x == "--").unwrap();
+        assert!(
+            a.iter().position(|x| x == "ServerAliveInterval=15").unwrap() < dashes,
+            "options come before the host: {a:?}"
+        );
         assert!(joined.contains("-J sin02-ts -- pro13 true"), "{joined}");
         sp.host = "-oProxyCommand=x".into();
         assert_eq!(sp.check(), Err(SpecError::BadHost(sp.host.clone())));
