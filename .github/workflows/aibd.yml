@@ -481,6 +481,22 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+          # background site create (33e28, site-create plan r2 M1): a creating site whose worker is gone
+          ck create.rs '            Some(_) => match lock(holder, boot_id, liveness) {' \
+             '            Some(_) => match lock(holder, &boot_id[..0], liveness) { // knife: boot id ignored' \
+             another_boot_is_interrupted
+          ck create.rs '                Lock::TakeOver => Verdict::Interrupted,' \
+             '                Lock::TakeOver => Verdict::Creating, // knife' \
+             gone_worker_is_interrupted
+          ck create.rs '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Unknown,' \
+             '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Interrupted, // knife' \
+             unknown_changes_nothing
+          ck create.rs '            None if now.saturating_sub(created_at) > START_GRACE_SECS => Verdict::Interrupted,' \
+             '            None if now.saturating_sub(created_at) > 0 => Verdict::Interrupted, // knife' \
+             missing_holder_waits_out_the_start_grace
+          ck create.rs '    now_state == CreateState::Creating && judged.0 == now_record.0 && judged.1 == now_record.1' \
+             '    now_state == CreateState::Creating && judged.1 == now_record.1 // knife: holder not compared' \
+             mark_only_the_same_attempt
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
