@@ -552,8 +552,8 @@ jobs:
           hk leakwordscmd.rs '    if f.unread.is_empty() {' '    if f.unread.is_empty() || true { // knife' \
              collect_reads_a_host_tree_and_names_what_it_could_not_read
           # leak-words: the printed summary names the values
-          hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}"))' \
-             '.map(|(why, n)| format!("{why}: {n} {rules:?}")) // knife' \
+          hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}")).collect();' \
+             '.map(|(why, n)| format!("{why}: {n} {rules:?}")).collect(); // knife' \
              the_printed_summary_never_names_a_value
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
