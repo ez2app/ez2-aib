@@ -28,7 +28,28 @@ pub struct AppState {
     pub session_policy: Arc<crate::config::SessionPolicy>,
 }
 
+/// Facts about this aibd process for `GET /api/v1/health` (043dd S3, PLAN A5): `aib web`
+/// and the page tell a restarted aibd apart by `instance_id` / `started_at`. Health is
+/// public, so nothing here names a path (the data directory stays behind the token).
+struct Process {
+    started_at: u64,
+    instance_id: String,
+}
+
+static PROCESS: std::sync::LazyLock<Process> = std::sync::LazyLock::new(|| {
+    let mut b = [0u8; 8];
+    let _ = getrandom::fill(&mut b);
+    Process {
+        started_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        instance_id: b.iter().map(|x| format!("{x:02x}")).collect(),
+    }
+});
+
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
+    std::sync::LazyLock::force(&PROCESS); // started_at = when the router was built
     // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
     // the list is tested to sit under `/api/` (a9136 A3 L1)
     let mut r = Router::new();
@@ -80,7 +101,13 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok", "api_version": API_VERSION}))
+    Json(serde_json::json!({
+        "status": "ok",
+        "api_version": API_VERSION,
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at": PROCESS.started_at,
+        "instance_id": PROCESS.instance_id,
+    }))
 }
 
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or

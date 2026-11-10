@@ -11,6 +11,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
+    aib web [--no-open]         pair a browser page with the running aibd (prints a code, opens the page, asks y/N)
     aib ledger add|move|show|list|verify   cabin work ledger: who owns what, in which state, accepted only with receipts
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib update auto on|off|status   update automatically when a new version is released (default on)
@@ -21,6 +22,7 @@ only the affected tests rerun, and nothing ships while something new is red.
 """
 import os
 import runpy
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 = 原本倉根的版面(tools/、src/、i18n/)
@@ -134,6 +136,16 @@ def _lease(args):
     return rc
 
 
+def _web(args):
+    """`aib web` = `aibd ctl web` (ADR 0006 §7 W1, PLAN A5): one implementation, in aibd's own client, which reads
+    the token from aibd's run folder and never puts it in a URL. aibd comes from AIBD_BIN or PATH."""
+    aibd = os.environ.get("AIBD_BIN") or shutil.which("aibd")
+    if not aibd:
+        sys.stderr.write("aib web: aibd not found (set AIBD_BIN, or build it: cargo build -p aibd --features web)\n")
+        return 3
+    os.execv(aibd, [aibd, "ctl", "web"] + list(args))
+
+
 def _ui_mod():
     sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
     import aib_ui
@@ -175,6 +187,8 @@ def main():
         return _update(sys.argv[2:])
     if sys.argv[1] == "lease":
         return _lease(sys.argv[2:])
+    if sys.argv[1] == "web":
+        return _web(sys.argv[2:])
     if sys.argv[1] == "license":
         # 授權(10-08):status / device-id / activate / deactivate —— entitlement 是套件(相對 import),用 run_module
         sys.path.insert(0, os.path.join(HERE, "src"))

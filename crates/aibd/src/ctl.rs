@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init";
+const USAGE: &str = "aibd ctl seat create <name> | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -142,6 +142,9 @@ fn parse_response(raw: &[u8]) -> Result<Value, String> {
         }
         bytes.to_vec()
     };
+    if status == 204 && payload.is_empty() {
+        return Ok(Value::Null); // DELETE answers (pair/codes/{id})
+    }
     let value: Value =
         serde_json::from_slice(&payload).map_err(|e| format!("invalid JSON response: {e}"))?;
     if !(200..300).contains(&status) {
@@ -367,6 +370,105 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
     }
 }
 
+/// How often `web` asks whether the page has redeemed the code.
+const WEB_POLL: Duration = Duration::from_secs(1);
+
+/// `aibd ctl web` (`aib web`; ADR 0006 §7 W1, PLAN A5): check aibd answers, ask it for a
+/// pairing code, print the code and the page address (the address carries nothing), open
+/// the browser, wait until the page has redeemed the code, then show the short code and
+/// confirm only when the person answers `y`. Anything else cancels the pairing, and the
+/// page stays locked.
+///
+/// The y/N answer comes from this terminal, which an AI running as the same account can
+/// also answer: that is why pairing is off unless `AIBD_PAIRING=terminal-unverified`.
+fn web(
+    c: &Client,
+    open: bool,
+    input: &mut dyn std::io::BufRead,
+    poll: Duration,
+) -> Result<(), String> {
+    let health = c.request("GET", "/api/v1/health", None)?;
+    if health.get("status").and_then(Value::as_str) != Some("ok") {
+        return Err(format!("aibd is not healthy: {health}"));
+    }
+    let created = c
+        .request("POST", "/api/v1/pair/codes", None)
+        .map_err(|e| {
+            if e.starts_with("HTTP 404") {
+                "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified (the y/N \
+                 answer below does not stop an AI running as your account; ADR 0006 §7)"
+                    .to_string()
+            } else {
+                e
+            }
+        })?;
+    let pair_id = id(created
+        .get("pair_id")
+        .and_then(Value::as_str)
+        .ok_or("no pair_id in the answer")?)?;
+    let code = created
+        .get("code")
+        .and_then(Value::as_str)
+        .ok_or("no code in the answer")?;
+    let expires_in = created
+        .get("expires_in")
+        .and_then(Value::as_u64)
+        .unwrap_or(120);
+    let url = format!("http://{}/", c.addr);
+    println!("Open {url} and type this code there: {code}  (valid {expires_in} s)");
+    if open {
+        if let Err(e) = aibd::platform::open_in_browser(&url) {
+            println!("(could not open the browser: {e}; open the address yourself)");
+        }
+    }
+    let path = format!("/api/v1/pair/codes/{pair_id}");
+    let deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
+    let short = loop {
+        let v = c.request("GET", &path, None)?;
+        match v.get("state").and_then(Value::as_str) {
+            Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),
+            Some("awaiting_confirmation") => {
+                break v
+                    .get("short_code")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                    .ok_or("no short code in the answer")?
+                    .to_string();
+            }
+            Some("issued") => {
+                let _ = c.request("DELETE", &path, None);
+                return Err("the code was not used in time; run aib web again".into());
+            }
+            other => {
+                return Err(format!(
+                    "pairing ended ({}); run aib web again",
+                    other.unwrap_or("unknown")
+                ))
+            }
+        }
+    };
+    print!("Does the page show {short}? Answer y only if you are looking at it yourself [y/N] ");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .map_err(|e| format!("read answer: {e}"))?;
+    let answer = answer.trim();
+    if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+        c.request(
+            "POST",
+            &format!("{path}/confirm"),
+            Some(json!({"short_code": short})),
+        )
+        .map_err(|e| format!("not confirmed ({e}); run aib web again"))?;
+        println!("Confirmed: the page is unlocked.");
+        Ok(())
+    } else {
+        let _ = c.request("DELETE", &path, None);
+        Err("not confirmed: the pairing was cancelled and the page stays locked".into())
+    }
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
@@ -405,6 +507,8 @@ fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
             result
         }
         ["watch", session] => return watch(c, session),
+        ["web"] => return web(c, true, &mut std::io::stdin().lock(), WEB_POLL),
+        ["web", "--no-open"] => return web(c, false, &mut std::io::stdin().lock(), WEB_POLL),
         ["session", "start", seat, "--", argv @ ..] if !argv.is_empty() => {
             if !Path::new(argv[0]).is_absolute() {
                 return Err("program must be an absolute path".into());
@@ -579,11 +683,18 @@ mod tests {
     }
 
     fn fake(responses: Vec<&'static str>) -> (Client, std::thread::JoinHandle<Vec<String>>) {
+        fake_with(responses.into_iter().map(|b| ("200 OK", b)).collect())
+    }
+
+    /// Like `fake`, with a status line per answer.
+    fn fake_with(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (Client, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for response in responses {
+            for (status, response) in responses {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -606,7 +717,7 @@ mod tests {
                 requests.push(format!("{header}{}", String::from_utf8(body).unwrap()));
                 write!(
                     socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
                     response.len()
                 )
                 .unwrap();
@@ -774,6 +885,95 @@ mod tests {
         assert!(id("../x").is_err());
         assert!(id("seat_1").is_ok());
     }
+    const HEALTH: &str = r#"{"status":"ok","api_version":"v1"}"#;
+    const CREATED: &str = r#"{"pair_id":"p_1","code":"ABCDE-FGHIJ","expires_in":120}"#;
+    const ISSUED: &str = r#"{"pair_id":"p_1","state":"issued","expires_in":100}"#;
+    const AWAITING: &str =
+        r#"{"pair_id":"p_1","state":"awaiting_confirmation","expires_in":110,"short_code":"123456"}"#;
+
+    fn first_lines(requests: &[String]) -> Vec<&str> {
+        requests.iter().map(|r| r.lines().next().unwrap()).collect()
+    }
+
+    #[test]
+    fn web_waits_for_the_page_and_confirms_only_after_a_yes() {
+        let (c, server) = fake(vec![
+            HEALTH,
+            CREATED,
+            ISSUED,
+            AWAITING,
+            r#"{"state":"confirmed"}"#,
+        ]);
+        let mut input = std::io::Cursor::new(b"y\n".to_vec());
+        web(&c, false, &mut input, Duration::from_millis(1)).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(
+            first_lines(&requests),
+            [
+                "GET /api/v1/health HTTP/1.1",
+                "POST /api/v1/pair/codes HTTP/1.1",
+                "GET /api/v1/pair/codes/p_1 HTTP/1.1",
+                "GET /api/v1/pair/codes/p_1 HTTP/1.1",
+                "POST /api/v1/pair/codes/p_1/confirm HTTP/1.1",
+            ]
+        );
+        assert!(requests[4].ends_with(r#"{"short_code":"123456"}"#), "{}", requests[4]);
+        // the pairing code is typed into the page; it never travels back to aibd from here
+        assert!(requests.iter().all(|r| !r.contains("ABCDE")));
+    }
+
+    #[test]
+    fn web_cancels_on_anything_but_yes() {
+        for answer in ["\n", "n\n", "yy\n", ""] {
+            let (c, server) = fake_with(vec![
+                ("200 OK", HEALTH),
+                ("201 Created", CREATED),
+                ("200 OK", AWAITING),
+                ("204 No Content", ""),
+            ]);
+            let mut input = std::io::Cursor::new(answer.as_bytes().to_vec());
+            let r = web(&c, false, &mut input, Duration::from_millis(1));
+            assert!(r.unwrap_err().contains("stays locked"), "{answer:?}");
+            let requests = server.join().unwrap();
+            assert_eq!(
+                first_lines(&requests)[3],
+                "DELETE /api/v1/pair/codes/p_1 HTTP/1.1",
+                "{answer:?}"
+            );
+            assert!(requests.iter().all(|r| !r.contains("/confirm")), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn web_says_how_to_turn_pairing_on() {
+        let (c, server) = fake_with(vec![
+            ("200 OK", HEALTH),
+            ("404 Not Found", r#"{"code":"not_found","message":"pairing is off"}"#),
+        ]);
+        let mut input = std::io::Cursor::new(Vec::new());
+        let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+        assert!(e.contains("AIBD_PAIRING=terminal-unverified"), "{e}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn web_never_confirms_an_ended_pairing() {
+        for state in ["expired", "revoked", "confirmed"] {
+            // even if a short code came along, only awaiting_confirmation is ever confirmed
+            let body: &'static str = Box::leak(
+                format!(
+                    r#"{{"pair_id":"p_1","state":"{state}","expires_in":0,"short_code":"123456"}}"#
+                )
+                .into_boxed_str(),
+            );
+            let (c, server) = fake(vec![HEALTH, CREATED, body]);
+            let mut input = std::io::Cursor::new(b"y\n".to_vec());
+            let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+            assert!(e.contains("pairing ended"), "{state}: {e}");
+            assert_eq!(server.join().unwrap().len(), 3, "{state}");
+        }
+    }
+
     #[test]
     fn parses_and_rejects_truncated_http() {
         assert_eq!(
