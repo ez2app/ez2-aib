@@ -619,6 +619,18 @@ jobs:
             '        if (a.is_empty() || i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
             --expect-fail sessions::tests::argv_rules \
             -- cargo test -p aibd --locked --lib sessions::tests::argv_rules
+          # GW-S1a (043dd, gameworld 2.0 S1) seat open creates the seat before checking the program
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            $'    let resolved = resolve_argv(argv)?;\n    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;' \
+            $'    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;\n    let resolved = resolve_argv(argv)?; // knife' \
+            --expect-fail ctl::tests::seat_open_with_a_relative_program_sends_nothing \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_with_a_relative_program_sends_nothing
+          # GW-S1b a session start that fails after the seat was created is reported as success
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            '            Err(format!("session start for {seat_id}: {e}"))' \
+            '            { let _ = (seat_id, e); Ok(()) } // knife' \
+            --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
