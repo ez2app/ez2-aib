@@ -375,6 +375,12 @@ fn cmd_prepare(args: &[String]) -> Result<Value, String> {
     if dir.exists() {
         return Err(format!("{} already exists (down it first)", dir.display()));
     }
+    if !dir.to_str().is_some_and(plain_path) {
+        return Err(format!(
+            "{}: the sandbox path must be UTF-8 without spaces or quotes",
+            dir.display()
+        ));
+    }
     let u = uid();
     let sb = Sandbox { dir: dir.clone() };
     mkdir_700(&dir)?;
@@ -384,6 +390,12 @@ fn cmd_prepare(args: &[String]) -> Result<Value, String> {
     let sockdir = sb.sockdir(&u).map_err(|r| r.0)?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let real_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    if !real_dir.to_str().is_some_and(plain_path) {
+        return Err(format!(
+            "{}: real path has spaces or quotes",
+            real_dir.display()
+        ));
+    }
     let shim = format!(
         "#!/bin/sh\nexec '{}' shim --dir '{}' -- \"$@\"\n",
         me.display(),
@@ -420,27 +432,65 @@ fn read_cfg(dir: &Path) -> Result<Value, String> {
     serde_json::from_str(&t).map_err(|e| format!("fixture.json: {e}"))
 }
 
-/// The environment every aib call of the fixture runs with.
-fn sandbox_env(c: &mut Command, cfg: &Value) {
+/// Inherited variables a sandbox call may keep; everything else (EZ2_*, AIB_*, CLAUDE*,
+/// PYTHONPATH, TMUX…) is dropped, so legacy aib cannot fall back to the caller's real
+/// ctx / persona / route contract / resume uuid (a9136 #629 M1).
+const KEEP_ENV: &[&str] = &["LANG", "TERM", "USER", "LOGNAME", "SHELL", "TMPDIR"];
+
+/// The whole environment of a sandbox call: the allow-listed part of `inherited`, then
+/// the sandbox's own values (PATH has the sandbox bin first).
+pub fn sandbox_env_vars(
+    inherited: impl IntoIterator<Item = (String, String)>,
+    cfg: &Value,
+) -> Vec<(String, String)> {
     let s = |k: &str| cfg[k].as_str().unwrap_or_default().to_string();
-    let path = format!("{}:{}", s("bin"), std::env::var("PATH").unwrap_or_default());
-    c.env("PATH", path)
-        .env("HOME", s("home"))
-        .env("TMUX_TMPDIR", s("tmux_tmpdir"))
-        .env("EZ2_AIB_STATE_ROOT", s("state_root"))
-        .env("EZ2_AIB_HOME", s("state_root"))
-        .env("AIB_NO_ATTACH", "1")
-        .env("AIB_NO_CLIENT_SWITCH", "1")
-        .env("AIB_AUTO_UPDATE", "0")
-        .env_remove("EZ2_AIHUB_SOCKET")
-        .env_remove("EZ2_AIB_INSTANCE")
-        .env_remove("EZ2_AIB_INSTANCE_HOME")
-        .env_remove("EZ2_TMUX_SESSION")
-        .env_remove("EZ2_VAULT_DIR")
-        .env_remove("AIB_TMUX_BIN")
-        .env_remove("EZ2_AIB_TMUX_BIN")
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE");
+    let mut path = String::new();
+    let mut v: Vec<(String, String)> = vec![];
+    for (k, val) in inherited {
+        if k == "PATH" {
+            path = val;
+        } else if KEEP_ENV.contains(&k.as_str()) || k.starts_with("LC_") {
+            v.push((k, val));
+        }
+    }
+    v.push(("PATH".into(), format!("{}:{path}", s("bin"))));
+    for (k, val) in [
+        ("HOME", s("home")),
+        ("TMUX_TMPDIR", s("tmux_tmpdir")),
+        ("EZ2_AIB_STATE_ROOT", s("state_root")),
+        ("EZ2_AIB_HOME", s("state_root")),
+        ("AIB_NO_ATTACH", "1".into()),
+        ("AIB_NO_CLIENT_SWITCH", "1".into()),
+        ("AIB_AUTO_UPDATE", "0".into()),
+    ] {
+        v.push((k.into(), val));
+    }
+    v
+}
+
+/// The environment every aib call of the fixture runs with: cleared, then sandbox_env_vars.
+fn sandbox_env(c: &mut Command, cfg: &Value) {
+    c.env_clear().envs(sandbox_env_vars(std::env::vars(), cfg));
+}
+
+/// Seat windows on the hub server (`<role>-claude`, `<role>2-claude`, …).
+pub fn seat_windows(windows: &[&str], role: &str) -> usize {
+    windows
+        .iter()
+        .filter(|w| {
+            w.strip_prefix(role)
+                .and_then(|r| r.strip_suffix("-claude"))
+                .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count()
+}
+
+/// A sandbox path the shim script and the HOME match can carry as-is (a9136 #629 L2).
+pub fn plain_path(p: &str) -> bool {
+    !p.is_empty()
+        && !p
+            .chars()
+            .any(|c| c.is_whitespace() || c == '\'' || c == '"' || c == '\\')
 }
 
 fn cmd_up(args: &[String]) -> Result<Value, String> {
@@ -467,14 +517,26 @@ fn cmd_up(args: &[String]) -> Result<Value, String> {
         sandbox_env(&mut c, &cfg);
         steps.push(run_step(&sb, c)?);
     }
-    Ok(json!({"hub": hub, "cabin": cabin, "steps": steps, "status": status(&sb)?}))
+    let names = lines(&tm(
+        &sb,
+        &hub,
+        &["list-windows", "-a", "-F", "#{window_name}"],
+    )?);
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let got = seat_windows(&names, &role);
+    if got != seats as usize {
+        return Err(format!(
+            "asked for {seats} seats, the hub has {got} seat windows: {names:?}"
+        ));
+    }
+    Ok(json!({"hub": hub, "cabin": cabin, "seats": got, "steps": steps, "status": status(&sb)?}))
 }
 
 fn run_step(sb: &Sandbox, mut c: Command) -> Result<Value, String> {
     sb.sockdir(&uid()).map_err(|r| r.0)?;
     let o = c.stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
     let v = json!({
-        "argv": format!("{c:?}"),
+        "argv": std::iter::once(c.get_program()).chain(c.get_args()).map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         "rc": o.status.code(),
         "stdout_tail": String::from_utf8_lossy(&o.stdout).lines().rev().take(8).collect::<Vec<_>>(),
         "stderr_tail": String::from_utf8_lossy(&o.stderr).lines().rev().take(12).collect::<Vec<_>>(),
@@ -805,6 +867,15 @@ pub fn sandbox_pids(ps: &str, home: &str, me: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Pids to signal now: listed again with the same, known start time as when first found
+/// (a pid reused by another process, or one whose start time cannot be read, is left alone).
+pub fn sweep_targets(now: &[(u32, Option<u64>)], found: &[(u32, Option<u64>)]) -> Vec<u32> {
+    now.iter()
+        .filter(|(p, st)| st.is_some() && found.iter().any(|(q, s0)| q == p && s0 == st))
+        .map(|(p, _)| *p)
+        .collect()
+}
+
 /// After kill-server, legacy aib can leave helpers that outlive their tmux server and
 /// still call the shim (A/A 11-10: one bound the next sandbox's hub to its old name).
 /// Everything still running with this sandbox's HOME is the fixture's own: TERM it,
@@ -818,6 +889,13 @@ fn sweep_leftovers(dir: &Path) -> Result<Value, String> {
             .stdin(Stdio::null())
             .output()
             .map_err(|e| format!("ps: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "ps rc {:?}: {} (cannot tell what is left)",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
         Ok(sandbox_pids(
             &String::from_utf8_lossy(&o.stdout),
             &home,
@@ -831,14 +909,11 @@ fn sweep_leftovers(dir: &Path) -> Result<Value, String> {
     let mut killed = vec![];
     for sig in ["-TERM", "-KILL"] {
         let now = list()?;
-        let targets: Vec<&(u32, Option<u64>)> = now
-            .iter()
-            .filter(|(p, st)| st.is_some() && found.iter().any(|(q, s0)| q == p && s0 == st))
-            .collect();
+        let targets = sweep_targets(&now, &found);
         if targets.is_empty() {
             break;
         }
-        for (p, _) in &targets {
+        for p in &targets {
             let _ = Command::new("/bin/kill")
                 .args([sig, &p.to_string()])
                 .status();
@@ -1153,5 +1228,126 @@ mod tests {
         assert!(bind_hub(&d, "aihub-zz99").is_err());
         assert_eq!(bound_hub(&d).as_deref(), Some("aihub-ab12"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+    #[test]
+    fn the_sandbox_env_keeps_only_the_allow_list_and_its_own_values() {
+        let cfg = json!({"bin": "/sb/bin", "home": "/sb/home", "tmux_tmpdir": "/sb/t", "state_root": "/sb/home/.ez2-aib"});
+        let inherited = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/Users/real"),
+            ("LANG", "zh_TW.UTF-8"),
+            ("LC_ALL", "C"),
+            ("EZ2_CTX_DIR", "/Users/real/.ez2/ctx"),
+            ("EZ2_ROUTE_REGISTRY", "/Users/real/route.json"),
+            ("EZ2_AIHUB_SOCKET", "aihub-real"),
+            ("AIB_RESUME_UUID", "1"),
+            ("AIB_RESUME_SESSION_UUID", "abc"),
+            ("CLAUDE_CODE_SESSION_ID", "abc"),
+            ("PYTHONPATH", "/x"),
+            ("TMUX", "/private/tmp/tmux-501/default,1,0"),
+            ("TMUX_PANE", "%1"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let v = sandbox_env_vars(inherited, &cfg);
+        let get = |k: &str| v.iter().find(|(n, _)| n == k).map(|(_, x)| x.as_str());
+        assert_eq!(get("PATH"), Some("/sb/bin:/usr/bin"));
+        assert_eq!(get("HOME"), Some("/sb/home"));
+        assert_eq!(get("LANG"), Some("zh_TW.UTF-8"));
+        assert_eq!(get("LC_ALL"), Some("C"));
+        assert_eq!(get("EZ2_AIB_STATE_ROOT"), Some("/sb/home/.ez2-aib"));
+        let ours = [
+            "EZ2_AIB_STATE_ROOT",
+            "EZ2_AIB_HOME",
+            "AIB_NO_ATTACH",
+            "AIB_NO_CLIENT_SWITCH",
+            "AIB_AUTO_UPDATE",
+            "TMUX_TMPDIR",
+        ];
+        for (k, _) in &v {
+            let caller = ["EZ2", "AIB", "CLAUDE", "PYTHON", "TMUX"]
+                .iter()
+                .any(|p| k.starts_with(p));
+            assert!(
+                !caller || ours.contains(&k.as_str()),
+                "{k} leaked into the sandbox"
+            );
+        }
+        assert_eq!(v.iter().filter(|(k, _)| k == "HOME").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sandbox_child_sees_no_variable_outside_the_allow_list() {
+        let cfg = json!({"bin": "/sb/bin", "home": "/sb/home", "tmux_tmpdir": "/sb/t", "state_root": "/sb/home/.ez2-aib"});
+        let mut c = Command::new("/usr/bin/env");
+        sandbox_env(&mut c, &cfg);
+        c.env("FX_PROBE", "1"); // something the parent never has: proves the child env is read
+        let o = c.output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        let ours = [
+            "PATH",
+            "HOME",
+            "TMUX_TMPDIR",
+            "EZ2_AIB_STATE_ROOT",
+            "EZ2_AIB_HOME",
+            "AIB_NO_ATTACH",
+            "AIB_NO_CLIENT_SWITCH",
+            "AIB_AUTO_UPDATE",
+            "FX_PROBE",
+        ];
+        let mut seen_probe = false;
+        for l in out.lines() {
+            let k = l.split('=').next().unwrap_or("");
+            seen_probe |= k == "FX_PROBE";
+            assert!(
+                ours.contains(&k) || KEEP_ENV.contains(&k) || k.starts_with("LC_"),
+                "{k} reached a sandbox child"
+            );
+        }
+        assert!(seen_probe);
+    }
+
+    #[test]
+    fn seat_windows_count_only_this_role() {
+        let w = [
+            "dev-claude",
+            "dev2-claude",
+            "watch",
+            "menu",
+            "dev10-claude",
+            "qa-claude",
+            "devx-claude",
+            "dev2-codex",
+        ];
+        assert_eq!(seat_windows(&w, "dev"), 3);
+        assert_eq!(seat_windows(&w, "qa"), 1);
+    }
+
+    #[test]
+    fn sandbox_paths_with_spaces_or_quotes_are_refused() {
+        assert!(plain_path("/private/tmp/043dd-aa-fx-r2-neutral-p1-A1"));
+        for bad in [
+            "",
+            "/tmp/a b",
+            "/tmp/a'b",
+            "/tmp/a\"b",
+            "/tmp/a\tb",
+            "/tmp/a\\b",
+        ] {
+            assert!(!plain_path(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_sweep_skips_reused_and_unreadable_pids() {
+        let found = [(10, Some(100)), (11, Some(200)), (12, None)];
+        // 10 same process; 11 reused by a newer process; 12 start unreadable; 13 new
+        let now = [
+            (10, Some(100)),
+            (11, Some(999)),
+            (12, None),
+            (13, Some(300)),
+        ];
+        assert_eq!(sweep_targets(&now, &found), vec![10]);
     }
 }
