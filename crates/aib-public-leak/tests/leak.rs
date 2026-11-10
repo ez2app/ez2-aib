@@ -115,6 +115,31 @@ fn without_a_denylist_only_the_address_rule_runs_and_says_so() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// RULES §16 rollout: hits already on main must not turn a PR red; only what it adds counts.
+#[test]
+fn a_hit_already_on_the_base_does_not_fail_a_clean_change() {
+    let d = repo("scope");
+    git(&d, &["tag", "leaky"]);
+    std::fs::write(
+        d.join("notes.txt"),
+        format!(
+            "clean line\nmoved to ExampleHost at {}\nanother clean line\n",
+            public()
+        ),
+    )
+    .expect("write");
+    git(&d, &["commit", "-q", "-am", "a clean line"]);
+    let o = run(&d, &["--base", "leaky"], Some(WORD));
+    let out = text(&o);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "scope: a hit already on the base was reported\n{out}"
+    );
+    assert!(out.contains("1 added line(s)"), "{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn nothing_added_is_clean() {
     let d = repo("clean");

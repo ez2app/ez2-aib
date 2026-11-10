@@ -280,6 +280,10 @@ jobs:
           pl "        if let Some(text) = l.strip_prefix('+') {" \
              "        if let Some(text) = l.strip_prefix('+').or_else(|| l.strip_prefix('-')) { // knife" \
              a_removed_line_is_not_a_finding
+          # PL6 (a63ab 11-10 22:00) scope: lines already on the base (context) are checked as if added
+          pl "        } else if l.starts_with(' ') {" \
+             "        } else if let Some(text) = l.strip_prefix(' ') { if let Some(f) = files.last_mut() { f.lines.push((next_line, text.to_string())); } next_line += 1; } else if false { // knife" \
+             an_existing_hit_with_nothing_new_is_clean
       # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

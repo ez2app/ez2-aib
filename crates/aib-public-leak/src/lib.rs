@@ -372,6 +372,18 @@ mod tests {
         assert_eq!(d.first_hit("in Example-DC"), Some(2));
         assert_eq!(d.first_hit("nothing here"), None);
         assert!(Denylist::parse("# only a comment\n").is_empty());
+        // One pattern per line, the whole line, literally: a phrase with spaces, an address,
+        // regex characters taken as text.
+        let d = Denylist::parse("Example Data Center\r\n198.51.100.77\na.c\n");
+        assert_eq!(d.first_hit("in the example data center"), Some(1));
+        assert_eq!(
+            d.first_hit("example center"),
+            None,
+            "the phrase is not split into words"
+        );
+        assert_eq!(d.first_hit("ip 198.51.100.77 here"), Some(2));
+        assert_eq!(d.first_hit("abc"), None, "not a regex");
+        assert_eq!(d.first_hit("x a.c y"), Some(3));
     }
 
     #[test]
@@ -476,6 +488,29 @@ deleted file mode 100644
             ..Input::default()
         };
         assert!(scan(&input, &Denylist::parse("examplehost")).is_empty());
+    }
+
+    /// Scope: only what the PR adds. A hit already on the base (here as context lines of a
+    /// diff, which is how a wider diff would carry it) must not turn the check red.
+    #[test]
+    fn an_existing_hit_with_nothing_new_is_clean() {
+        let p = public();
+        let diff = format!(
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,4 @@\n examplehost on the base\n see {p}\n+clean addition\n tail\n"
+        );
+        let input = Input {
+            files: parse_diff(&diff),
+            ..Input::default()
+        };
+        assert_eq!(
+            input.files[0].lines,
+            vec![(3, "clean addition".to_string())],
+            "scope: a line already on the base was taken as added"
+        );
+        assert!(
+            scan(&input, &Denylist::parse("examplehost")).is_empty(),
+            "scope: a hit already on the base was reported"
+        );
     }
 
     #[test]
