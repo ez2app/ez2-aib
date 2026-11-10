@@ -14,7 +14,8 @@
 //! * **Nothing is forwarded** and no terminal is requested: the connection carries one
 //!   request and its answer.
 //! * **The request is checked here first**, with the parser the host uses, so a mistyped
-//!   request is refused before a connection is made. The host checks again: this side is
+//!   request is refused before a connection is made; a request not offered to customers
+//!   yet is refused the same way. The host checks again: this side is
 //!   a convenience, not the gate.
 //! * **Nothing on the line can be read as an option**: every value is checked, and the
 //!   destination comes after `--`.
@@ -22,7 +23,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::customer::{parse_request, Refused};
+use crate::customer::{parse_request, Refused, Request};
 
 /// Where a customer's requests go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +116,10 @@ pub fn ssh_args(target: &Target<'_>, line: &str) -> Result<Vec<String>, NotSent>
         return Err(NotSent::BadPath);
     }
     parse_request(line).map_err(NotSent::Request)?;
+    // what is not offered yet is answered as if the word did not exist (Andy 11-10)
+    if !parse_request(line).is_ok_and(Request::offered) {
+        return Err(NotSent::Request(Refused::UnknownRequest));
+    }
     let request = line
         .split(' ')
         .filter(|w| !w.is_empty())
@@ -302,6 +307,14 @@ mod tests {
             ssh_args(&T, "status site3"),
             Err(NotSent::Request(Refused::BadArguments))
         );
+        // what is not offered yet is not sent, and reads like any unknown word
+        for hidden in ["php-reload", "restart", "backup"] {
+            assert_eq!(
+                ssh_args(&T, hidden),
+                Err(NotSent::Request(Refused::UnknownRequest)),
+                "{hidden}"
+            );
+        }
         assert_eq!(
             NotSent::Request(Refused::UnknownRequest).as_str(),
             "unknown_request"

@@ -54,6 +54,13 @@ impl Request {
     pub fn writes(self) -> bool {
         matches!(self, Request::PhpReload | Request::Restart)
     }
+
+    /// Whether the request is offered to customers yet. The rest parse, and the host
+    /// answers them "not available yet", but the customer's side neither lists nor sends
+    /// them (Andy 11-10: 「隱藏未開放動作」).
+    pub fn offered(self) -> bool {
+        matches!(self, Request::Status | Request::Logs { .. })
+    }
 }
 
 /// Why a request line was refused. The reason is a fixed word: what the customer sent is
@@ -263,6 +270,11 @@ mod tests {
         let long = "status ".repeat(40);
         assert_eq!(parse_request(&long), Err(Refused::Malformed));
         assert_eq!(Refused::Malformed.as_str(), "malformed_request");
+        assert!(Request::Status.offered());
+        assert!(parse_request("logs db").unwrap().offered());
+        for hidden in ["php-reload", "restart", "backup"] {
+            assert!(!parse_request(hidden).unwrap().offered(), "{hidden}");
+        }
     }
 
     fn checks(list: &[(&'static str, Outcome)]) -> alloc::vec::Vec<CheckResult> {

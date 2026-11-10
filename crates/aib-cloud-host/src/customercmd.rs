@@ -63,7 +63,8 @@ pub fn answer(site: &str, records: &str, line: &str) -> u8 {
         Err(why) => {
             // a fixed word: what was sent is not echoed
             eprintln!("refused: {}", why.as_str());
-            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N] | php-reload | restart | backup");
+            // only what is offered is listed (Andy 11-10: the rest stays hidden)
+            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N]");
             return 2;
         }
     };

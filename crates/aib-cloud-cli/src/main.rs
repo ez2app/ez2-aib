@@ -5,7 +5,6 @@
 //! ```text
 //! aib-cloud site status
 //! aib-cloud site logs <nginx|php|db> [lines N] [minutes N]
-//! aib-cloud site php-reload | restart | backup
 //! ```
 //!
 //! Which site is not said here: the host knows it from the key. Where to connect comes
@@ -25,7 +24,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use aib_cloud::client::{ssh_args, Target};
 
-const USAGE: &str = "aib-cloud site <status | logs <nginx|php|db> [lines N] [minutes N] | php-reload | restart | backup> --host H --user U --known-hosts F [--port N] [--key F] [--print]";
+const USAGE: &str = "aib-cloud site <status | logs <nginx|php|db> [lines N] [minutes N]> --host H --user U --known-hosts F [--port N] [--key F] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -243,6 +242,8 @@ mod tests {
         assert!(full(&["status"]).is_ok());
         assert_eq!(full(&[]).unwrap_err(), "not sent: no_request");
         assert_eq!(full(&["stop"]).unwrap_err(), "not sent: unknown_request");
+        // not offered yet: the same answer as any unknown word
+        assert_eq!(full(&["restart"]).unwrap_err(), "not sent: unknown_request");
         assert_eq!(
             full(&["status", "site3"]).unwrap_err(),
             "not sent: bad_arguments"
