@@ -222,22 +222,75 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
     }
 }
 
-/// Who a key belongs to. The six names are Ez2.PAGE's (Andy 11-11: "比照 ez2.page"), so
-/// a customer meets one set of words in both products; a key may carry several.
+/// What a request is, in Ez2.PAGE's own words for operations (Andy 11-11: "名稱與
+/// ez2.page 對齊,ez2.page 之後會串接提供主機服務"). Hosting uses the names and the
+/// policy of `ez2-page-tenant-authorization` as they are, so one account, one set of
+/// roles and one table serve both products.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    /// `read_private`: see what is the customer's own — a site's status, the list of sites.
+    ReadPrivate,
+    /// `edit` / `manage_blocks`: work on a site — reload PHP (and, outside this entry,
+    /// log in to the site).
+    Edit,
+    /// `publish` / `bind_route`: change what is live — restart a site (and, later, bind
+    /// a domain).
+    Publish,
+    /// `view_analytics`: read figures and logs — logs, backup freshness, usage.
+    ViewAnalytics,
+    /// `archive`: take a site out of service. No customer request does this yet.
+    Archive,
+}
+
+impl Operation {
+    /// Ez2.PAGE's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Operation::ReadPrivate => "read_private",
+            Operation::Edit => "edit",
+            Operation::Publish => "publish",
+            Operation::ViewAnalytics => "view_analytics",
+            Operation::Archive => "archive",
+        }
+    }
+}
+
+impl Request {
+    /// The operation a site request is.
+    pub fn operation(self) -> Operation {
+        match self {
+            Request::Status => Operation::ReadPrivate,
+            Request::Logs { .. } | Request::Backup => Operation::ViewAnalytics,
+            Request::PhpReload => Operation::Edit,
+            Request::Restart => Operation::Publish,
+        }
+    }
+}
+
+impl OwnerRequest<'_> {
+    /// The operation a customer key's request is.
+    pub fn operation(self) -> Operation {
+        match self {
+            OwnerRequest::Sites => Operation::ReadPrivate,
+            OwnerRequest::Usage => Operation::ViewAnalytics,
+            OwnerRequest::Site { request, .. } => request.operation(),
+        }
+    }
+}
+
+/// Who a key belongs to: Ez2.PAGE's six roles, with Ez2.PAGE's policy. A key may carry
+/// several.
 ///
-/// | request | owner | admin | editor | publisher | analyst | viewer |
+/// | operation | owner | admin | editor | publisher | analyst | viewer |
 /// |---|---|---|---|---|---|---|
-/// | `status` | yes | yes | yes | yes | yes | yes |
-/// | `logs`, `backup` | yes | yes | yes | — | yes | — |
-/// | `php-reload` | yes | yes | yes | — | — | — |
-/// | `restart` | yes | yes | — | yes | — | — |
-/// | `sites` (customer key) | yes | yes | — | — | yes | yes |
-/// | `usage` (customer key) | yes | yes | — | — | yes | — |
+/// | `read_private` | yes | yes | yes | yes | yes | yes |
+/// | `edit`, `manage_blocks` | yes | yes | yes | — | — | — |
+/// | `publish`, `bind_route` | yes | yes | — | yes | — | — |
+/// | `view_analytics` | yes | yes | — | — | yes | — |
+/// | `archive` | yes | yes | — | — | — | — |
 ///
-/// As in Ez2.PAGE, changing what is live is the publisher's, not the editor's: an editor
-/// works on a site and may reload PHP, but restarting it takes owner, admin or publisher
-/// (and a person's confirmation on the customer's side, which is not this table's
-/// business). `admin` is ours.
+/// So, as there: an editor works on a site but changing what is live is the
+/// publisher's, and figures and logs are the analyst's. `admin` is the platform's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// The customer.
@@ -248,9 +301,9 @@ pub enum Role {
     Editor,
     /// May change what is live.
     Publisher,
-    /// Reads.
+    /// Reads figures and logs.
     Analyst,
-    /// Sees that a site is up.
+    /// Sees what is there.
     Viewer,
 }
 
@@ -268,27 +321,15 @@ impl Role {
         })
     }
 
-    /// Whether this role alone may make a site request.
-    pub fn allows(self, request: Request) -> bool {
+    /// Whether this role alone may do an operation: Ez2.PAGE's policy table.
+    pub fn may(self, operation: Operation) -> bool {
         use Role::{Admin, Analyst, Editor, Owner, Publisher};
-        match request {
-            Request::Status => true,
-            Request::Logs { .. } | Request::Backup => {
-                matches!(self, Owner | Admin | Editor | Analyst)
-            }
-            Request::PhpReload => matches!(self, Owner | Admin | Editor),
-            Request::Restart => matches!(self, Owner | Admin | Publisher),
-        }
-    }
-
-    /// Whether this role alone may make a customer key's request. A request about one
-    /// site is that site request's own matter.
-    pub fn allows_owner(self, request: OwnerRequest<'_>) -> bool {
-        use Role::{Admin, Analyst, Owner, Viewer};
-        match request {
-            OwnerRequest::Sites => matches!(self, Owner | Admin | Analyst | Viewer),
-            OwnerRequest::Usage => matches!(self, Owner | Admin | Analyst),
-            OwnerRequest::Site { request, .. } => self.allows(request),
+        match operation {
+            Operation::ReadPrivate => true,
+            Operation::Edit => matches!(self, Owner | Admin | Editor),
+            Operation::Publish => matches!(self, Owner | Admin | Publisher),
+            Operation::ViewAnalytics => matches!(self, Owner | Admin | Analyst),
+            Operation::Archive => matches!(self, Owner | Admin),
         }
     }
 }
@@ -482,10 +523,9 @@ mod tests {
         assert_eq!(parse_request("status shop.a"), Err(Refused::Malformed));
     }
 
-    /// Andy 11-11: the roles are Ez2.PAGE's.
+    /// Andy 11-11: names and policy are Ez2.PAGE's.
     #[test]
     fn a_role_gives_what_the_table_says_and_no_more() {
-        let logs = parse_request("logs nginx").unwrap();
         let all = [
             Role::Owner,
             Role::Admin,
@@ -494,43 +534,41 @@ mod tests {
             Role::Analyst,
             Role::Viewer,
         ];
-        let who = |request: Request| -> alloc::vec::Vec<Role> {
-            all.iter().copied().filter(|r| r.allows(request)).collect()
+        let who = |operation: Operation| -> alloc::vec::Vec<Role> {
+            all.iter().copied().filter(|r| r.may(operation)).collect()
         };
-        assert_eq!(who(Request::Status), all);
+        // the table, row by row, as ez2-page-tenant-authorization has it
+        assert_eq!(who(Operation::ReadPrivate), all);
         assert_eq!(
-            who(logs),
-            [Role::Owner, Role::Admin, Role::Editor, Role::Analyst]
-        );
-        assert_eq!(who(Request::Backup), who(logs));
-        assert_eq!(
-            who(Request::PhpReload),
+            who(Operation::Edit),
             [Role::Owner, Role::Admin, Role::Editor]
         );
-        // what is live is the publisher's to change, not the editor's
         assert_eq!(
-            who(Request::Restart),
+            who(Operation::Publish),
             [Role::Owner, Role::Admin, Role::Publisher]
         );
-        let who_owner = |request: OwnerRequest<'_>| -> alloc::vec::Vec<Role> {
-            all.iter()
-                .copied()
-                .filter(|r| r.allows_owner(request))
-                .collect()
-        };
         assert_eq!(
-            who_owner(OwnerRequest::Sites),
-            [Role::Owner, Role::Admin, Role::Analyst, Role::Viewer]
-        );
-        assert_eq!(
-            who_owner(OwnerRequest::Usage),
+            who(Operation::ViewAnalytics),
             [Role::Owner, Role::Admin, Role::Analyst]
         );
+        assert_eq!(who(Operation::Archive), [Role::Owner, Role::Admin]);
+        assert_eq!(Operation::ViewAnalytics.as_str(), "view_analytics");
+        // which operation each request is
+        let logs = parse_request("logs nginx").unwrap();
+        assert_eq!(Request::Status.operation(), Operation::ReadPrivate);
+        assert_eq!(logs.operation(), Operation::ViewAnalytics);
+        assert_eq!(Request::Backup.operation(), Operation::ViewAnalytics);
+        assert_eq!(Request::PhpReload.operation(), Operation::Edit);
+        // what is live is the publisher's to change, not the editor's
+        assert_eq!(Request::Restart.operation(), Operation::Publish);
+        assert!(!Role::Editor.may(Request::Restart.operation()));
+        assert_eq!(OwnerRequest::Sites.operation(), Operation::ReadPrivate);
+        assert_eq!(OwnerRequest::Usage.operation(), Operation::ViewAnalytics);
         let restart = OwnerRequest::Site {
             site: "site2",
             request: Request::Restart,
         };
-        assert_eq!(who_owner(restart), who(Request::Restart));
+        assert_eq!(restart.operation(), Operation::Publish);
         // a key may carry several roles; a wrong entry gives none
         assert_eq!(
             parse_roles("editor,publisher"),

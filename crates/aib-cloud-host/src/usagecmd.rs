@@ -5,7 +5,7 @@
 //! config`, `lvs` and `/proc`; prints usage and advice. **Nothing is changed**: applying a
 //! raise is a write and is not part of this command.
 //!
-//! Sites are grouped by the `owner` their record names (the site itself when it names
+//! Sites are grouped by the `tenant_id` their record names (the site itself when it names
 //! none): the plan's envelope is the customer's. CPU is a short sample between two
 //! readings, not yet the 95th percentile of a long window; that needs a sampler.
 
@@ -15,7 +15,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use aib_cloud::arc::{self, Advice, HostRoom, Usage};
-use aib_cloud::site::{record_owner, spec_from_record, Limits};
+use aib_cloud::site::{record_tenant, spec_from_record, Limits};
 use aib_cloud::usage;
 use serde_json::{json, Value};
 
@@ -202,8 +202,8 @@ fn run(args: &[String]) -> Result<u8, String> {
         let rec: Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let spec = spec_from_record(&rec).map_err(|e| format!("{}: {e}", path.display()))?;
-        let owner = record_owner(&rec)
-            .ok_or_else(|| format!("{}: owner is not a customer code", path.display()))?
+        let owner = record_tenant(&rec)
+            .ok_or_else(|| format!("{}: tenant_id is not a customer code", path.display()))?
             .to_owned();
         // what the CT has is what is judged, not what the record hopes: limits from pct config
         let config = observe("pct", &["config", &spec.ct.to_string()]);
@@ -307,13 +307,13 @@ fn run(args: &[String]) -> Result<u8, String> {
         unread |= advice.is_none();
         findings |= advice.as_ref().is_some_and(|a| !a.is_empty());
         out.push(json!({
-            "site": s.code, "owner": s.owner, "ct": s.ct,
+            "site": s.code, "tenant_id": s.owner, "ct": s.ct,
             "limits": { "cores": s.limits.cores, "cpulimit_x100": s.limits.cpulimit_x100,
                         "memory_mb": s.limits.memory_mb, "disk_gb": s.disk_gb },
             "usage": s.usage.map(|u| json!({ "cpu_x100": u.cpu_x100_p95,
                 "memory_mb_working": u.memory_mb_working, "oom_kills": u.oom_kills,
                 "disk_used_gb": u.disk_used_gb })),
-            "owner_holds": { "cpu_x100": held.cpu_x100, "memory_mb": held.memory_mb, "disk_gb": held.disk_gb },
+            "tenant_holds": { "cpu_x100": held.cpu_x100, "memory_mb": held.memory_mb, "disk_gb": held.disk_gb },
             "advice": advice.map(|a| a.iter().map(advice_json).collect::<Vec<_>>()),
         }));
     }
@@ -331,7 +331,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         for s in doc["sites"].as_array().into_iter().flatten() {
             eprintln!(
                 "{} ({}): usage {} advice {}",
-                s["site"], s["owner"], s["usage"], s["advice"]
+                s["site"], s["tenant_id"], s["usage"], s["advice"]
             );
         }
         eprintln!("host room: {}", doc["host_room"]);
