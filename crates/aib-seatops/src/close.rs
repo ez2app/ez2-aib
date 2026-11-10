@@ -271,8 +271,9 @@ fn now_s() -> u64 {
 }
 
 /// ADR 0005 named exception: a short wait in a one-shot CLI (a lock retry, a child poll,
-/// the test-only `hold`); never a loop in aibd, never longer than the caller's timeout.
-fn pause(d: Duration) {
+/// the test-only `hold`, the tests' wait for a lock signal); never a loop in aibd, never
+/// longer than the caller's timeout.
+pub fn pause(d: Duration) {
     #[allow(clippy::disallowed_methods)]
     std::thread::sleep(d);
 }
