@@ -9,7 +9,7 @@ k() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
 
 # W1 the pairing is confirmed whatever the person answers
 k crates/aibd/src/ctl.rs '    if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {' \
-       '    if true { // knife' \
+       '    if answer.len() < usize::MAX { // knife: any answer confirms; answer stays used (-D warnings)' \
   web_cancels_on_anything_but_yes
 # W2 web does not wait for the page to redeem the code
 k crates/aibd/src/ctl.rs '            Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),' \
