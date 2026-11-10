@@ -550,6 +550,22 @@ mod tests {
         assert!(s.reaps.is_empty(), "{:?}", s.reaps);
     }
 
+    /// a63ab #626 L1: Q2 must not turn into "no pressure, never reap". With
+    /// pressure unreadable, continuous samples whose average holds at the reap
+    /// limit for SUSTAIN_S over SUSTAIN_MIN_SAMPLES samples still reap.
+    #[test]
+    fn no_pressure_sustained_heat_still_reaps() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        let mut last = s.step(95.0, Some(REAP_AVG_C + 1.0), 20.0);
+        assert!(s.reaps.is_empty(), "the first lone reading must not reap");
+        for _ in 0..4 {
+            last = s.step(95.0, Some(REAP_AVG_C + 1.0), 20.0);
+        }
+        assert_eq!((last.level, last.why), (Level::Crit, Why::Sustained));
+        assert_eq!(s.reaps.first(), Some(&Why::Sustained), "{:?}", s.reaps);
+    }
+
     /// #615 33e28 L2: the Linux steady state (pressure never readable). Once
     /// samples are continuous a spike with a low average is judged on the
     /// average (`Below`), not on the fallback.

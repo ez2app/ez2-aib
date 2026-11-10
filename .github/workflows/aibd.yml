@@ -192,6 +192,10 @@ jobs:
           tk '    if pressure.is_none() && level == Level::Crit {' \
             '    if pressure.is_none() && level == Level::Crit && false { // knife' \
             l1_fallback_lone_spike_never_reaps
+          # K15 (a63ab #626 L1) with pressure unreadable every round takes the capped fallback: never reaps
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && (!history.continuous() || true) { // knife' \
+            no_pressure_sustained_heat_still_reaps
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
