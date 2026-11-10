@@ -276,9 +276,9 @@ jobs:
           ck verify.rs '                Outcome::Red("ct_policy_open")' \
              '                Outcome::Green // knife' \
              review_segment_3
-          ck verify.rs '        (SiteState::Suspended, true) => Outcome::Red("suspended_but_running"),' \
-             '        (SiteState::Suspended, true) => Outcome::Green, // knife' \
-             s01_state_turns_the_expectation_round
+          ck verify.rs '        (SiteState::Active, false) => Outcome::Red("ct_down"),' \
+             '        (SiteState::Active, false) => Outcome::Green, // knife' \
+             s01_only_an_active_site_has_to_be_running
           ck verify.rs '        (u.thin_meta, 80, "thin_meta_full"),' \
              '        (u.thin_meta, 101, "thin_meta_full"), // knife' \
              h04_disk_thresholds

@@ -1158,10 +1158,11 @@ pub fn main(args: &[String]) -> Result<u8, String> {
     match args.first().map(String::as_str) {
         Some("site") => match args.get(1).map(String::as_str) {
             Some("drift") => cmd_site_drift(&args[2..]),
+            Some("verify") => crate::siteverify::cmd(&args[2..]),
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
@@ -1179,7 +1180,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 
