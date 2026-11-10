@@ -131,7 +131,14 @@ pub fn reply(request: Request, exit: u8, out: &str, err: &str) -> String {
             } else {
                 let mut text = String::from(LOGS_HEAD);
                 text.push('\n');
-                text.push_str(out.trim_end_matches('\n'));
+                // once more on this side: an older host, or a line that came some other
+                // way, still reaches the terminal as plain text (ebb36, #648 L2)
+                let lines: alloc::vec::Vec<String> = out
+                    .trim_end_matches('\n')
+                    .lines()
+                    .map(crate::svc::plain)
+                    .collect();
+                text.push_str(&lines.join("\n"));
                 if said("output cut at the limit") {
                     text.push('\n');
                     text.push_str(LOGS_CUT);
@@ -216,6 +223,9 @@ mod tests {
         assert_eq!(reply(logs, 3, "", "could not read the log\n"), LOGS_UNREAD);
         // a log line that merely contains the word is a log line
         assert!(reply(logs, 0, "GET /provider_check 200\n", "").starts_with(LOGS_HEAD));
+        // a line the host did not make plain is made plain here
+        let shown = reply(logs, 0, "a\u{1b}[2Jb\nc\u{e0041}d\n", "");
+        assert!(shown.ends_with("a\\x1b[2Jb\nc\\u{e0041}d"), "{shown}");
         // status that is not the host's document reads as "could not be read"
         assert_eq!(
             reply(Request::Status, 3, "", "could not read the site record\n"),

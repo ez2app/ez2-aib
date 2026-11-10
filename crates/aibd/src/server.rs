@@ -118,6 +118,8 @@ pub async fn run(
     let session_policy = Arc::new(cfg.session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
+    // no instance id, no start (#646): checked before the thermal guard reads anything
+    api::process_ready()?;
     // R1 thermal guard, dry run (ADR 0005 §1): before the router takes requests,
     // so it hears the first 0 → 1. Its start-up T1 check reads sensors once.
     let thermal = {

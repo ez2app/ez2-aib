@@ -38,9 +38,13 @@ k crates/aibd/src/pairing.rs '        let hit = inner.failures.len() >= MAX_FAIL
 k crates/aibd/src/guard.rs '            Some("null") => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")),' \
        '            Some("null") if false => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")), // knife' \
   null_origin_is_refused_everywhere
-# P8 redeem takes any http origin (a hostile page on another local port)
+# P8 redeem takes a null origin (any page's sandboxed frame)
 k crates/aibd/src/guard.rs 'cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
        'o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)) /* knife: no parens, CI builds with -D warnings (unused_parens) */' \
+  redeem_takes_only_a_small_form_from_its_own_origin
+# P8b redeem takes a page on another local port (a9136 A4 N1: the P8 comment promised this one)
+k crates/aibd/src/guard.rs 'cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
+       'o.starts_with("http://127.0.0.1:") || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)) /* knife: no parens (-D warnings) */' \
   redeem_takes_only_a_small_form_from_its_own_origin
 # P9 a query string on a pairing path is accepted
 k crates/aibd/src/guard.rs '    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {' \
@@ -109,4 +113,4 @@ k crates/aibd/src/guard.rs '    if page_credential_in_url(cfg, raw_path, req.uri
 kl crates/aibd/src/pairing.rs '        if p.stored == Stored::Revoked && p.cred.is_none() {' \
         '        if p.stored == Stored::Revoked && p.cred.is_none() && false { // knife' \
   a_dead_code_is_a_failure_not_a_reuse
-echo "pairing knives: 24/24 bite"
+echo "pairing knives: 25/25 bite"

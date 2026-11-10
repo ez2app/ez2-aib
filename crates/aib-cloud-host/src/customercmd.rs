@@ -291,6 +291,31 @@ pub fn answer_tenant(
     }
 }
 
+/// Whether the records directory named on the command line is taken: any, when run
+/// directly (tests, an operator); through sudo only our own.
+fn records_taken(under_sudo: bool, records: &str) -> bool {
+    !under_sudo || records == RECORDS
+}
+
+/// What the customer sent, out of the environment sshd leaves: `SSH_ORIGINAL_COMMAND`, or
+/// nothing when they sent no command (an interactive login; refused later as empty).
+///
+/// Through `sudo` the environment is reset, and the entry's sudoers rule has to keep
+/// `SSH_ORIGINAL_COMMAND` and `SSH_CONNECTION`. If it does not, every request would arrive
+/// empty and read as "you typed nothing" (33e28, #642 M1). `SSH_CONNECTION` is there for
+/// every ssh session, so under sudo its absence says the variables were not kept: `None`.
+fn request_line(
+    original: Option<String>,
+    under_sudo: bool,
+    has_connection: bool,
+) -> Option<String> {
+    match original {
+        Some(line) => Some(line),
+        None if under_sudo && !has_connection => None,
+        None => Some(String::new()),
+    }
+}
+
 /// `customer --site <code> --roles <r,…>` or `customer --tenant <code> [--sites a,b] --roles <r,…>`:
 /// the forced command of a key's entry. Which of the two, the code and the roles are
 /// written there by us; a wrong entry is an error here, never a wider right.
@@ -313,7 +338,21 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let roles = roles
         .and_then(parse_roles)
         .ok_or("customer needs --roles <role,…> (set in the key's entry)")?;
-    let line = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    let under_sudo = std::env::var_os("SUDO_UID").is_some();
+    // the records directory is ours to name, never the caller's: through sudo this runs as
+    // root, and a directory of someone's own making would hand them any CT (33e28, #642 L2)
+    if !records_taken(under_sudo, &records) {
+        return Err("--records is not taken through sudo".to_owned());
+    }
+    let Some(line) = request_line(
+        std::env::var("SSH_ORIGINAL_COMMAND").ok(),
+        under_sudo,
+        std::env::var_os("SSH_CONNECTION").is_some(),
+    ) else {
+        // a fixed word: this is our set-up, not something the customer typed
+        eprintln!("entry is not set up");
+        return Ok(3);
+    };
     let scope = match scope {
         None => None,
         Some(_) if tenant.is_none() => return Err("--sites goes with --tenant".to_owned()),
@@ -557,5 +596,27 @@ mod tests {
         ]))
         .is_err());
         assert!(cmd(&args(&["--tenant", "../x", "--roles", "owner"])).is_err());
+    }
+    /// 33e28, #642 seg. 4 M1: the entry runs through sudo, which resets the environment.
+    #[test]
+    fn an_entry_whose_environment_was_not_kept_is_not_an_empty_request() {
+        let sent = |s: &str| Some(s.to_owned());
+        // what was sent is what is answered, sudo or not
+        assert_eq!(request_line(sent("status"), true, true), sent("status"));
+        assert_eq!(request_line(sent("status"), false, true), sent("status"));
+        // nothing sent (an interactive login): an empty request, to be refused as such
+        assert_eq!(request_line(None, true, true), sent(""));
+        assert_eq!(request_line(None, false, false), sent(""));
+        // through sudo with not even the connection variable: the rule does not keep them
+        assert_eq!(request_line(None, true, false), None);
+    }
+
+    /// 33e28, #642 seg. 4 L2: through sudo the records are where we say, not where the caller says.
+    #[test]
+    fn through_sudo_the_records_directory_is_ours_only() {
+        assert!(records_taken(false, "/tmp/any"));
+        assert!(records_taken(true, RECORDS));
+        assert!(!records_taken(true, "/tmp/any"));
+        assert!(!records_taken(true, "/var/lib/ez2-cloud/sites/"));
     }
 }

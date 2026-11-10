@@ -23,6 +23,7 @@ only the affected tests rerun, and nothing ships while something new is red.
 import os
 import runpy
 import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 = 原本倉根的版面(tools/、src/、i18n/)
@@ -130,7 +131,6 @@ def _lease(args):
     tool = os.path.join(HERE, "tools", "governance", "host_lease.py")
     if args:
         os.execv(sys.executable, [sys.executable, tool] + list(args))
-    import subprocess
     rc = subprocess.run([sys.executable, tool, "status"], stdin=subprocess.DEVNULL).returncode
     subprocess.run([sys.executable, tool, "queue", "list"], stdin=subprocess.DEVNULL)
     return rc
@@ -143,7 +143,15 @@ def _web(args):
     if not aibd:
         sys.stderr.write("aib web: aibd not found (set AIBD_BIN, or build it: cargo build -p aibd --features web)\n")
         return 3
-    os.execv(aibd, [aibd, "ctl", "web"] + list(args))
+    argv = [aibd, "ctl", "web"] + list(args)
+    if os.name == "nt":
+        # Windows' execv does not replace this process: cmd / PowerShell get their prompt back at once and read
+        # the console together with aibd, right at its y/N question. Wait for aibd instead (a9136 A5 L1).
+        try:
+            return subprocess.run(argv).returncode
+        except KeyboardInterrupt:  # Ctrl-C reaches aibd too; answer like a shell would, no traceback (ebb36 N1)
+            return 130
+    os.execv(aibd, argv)
 
 
 def _ui_mod():
