@@ -386,6 +386,108 @@ fn get<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
     cfg.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
+/// S10: the site is masked (4.5 §7; c477a's list). The CT's configuration carries the
+/// mask's hook line — that key, the wrapper's path, once — and, for a running CT, the
+/// hook's verdict file says every cover is in place. A stopped CT has no verdict to read:
+/// the line alone is checked. `mask_result` is `/run/ez2-cloud/mask/<ct>/result`.
+pub fn s10_masked(
+    pct_config: Option<&str>,
+    running: Option<bool>,
+    mask_result: Option<&str>,
+) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S10", Outcome::Unknown("unread"));
+    };
+    let hooks: Vec<&str> = cfg
+        .iter()
+        .filter(|(k, _)| k == "lxc.hook.mount")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let outcome = match (hooks.as_slice(), running) {
+        ([one], _) if !crate::site::mask_hook_ok(one) => Outcome::Red("no_mask_hook"),
+        ([_], Some(false)) => Outcome::Green,
+        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) => Outcome::Green,
+        ([_], Some(true)) => Outcome::Red("not_masked"),
+        ([_], None) => Outcome::Unknown("unread"),
+        _ => Outcome::Red("no_mask_hook"),
+    };
+    result("S10", outcome)
+}
+
+/// S11: the CT has its own resolver and no search domain. Without `nameserver` the CT
+/// inherits the host's resolver settings, and a search domain is a name of ours in every
+/// lookup the site makes.
+pub fn s11_resolver(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S11", Outcome::Unknown("unread"));
+    };
+    let outcome = if get(&cfg, "searchdomain").is_some() {
+        Outcome::Red("search_domain")
+    } else if get(&cfg, "nameserver").is_none() {
+        Outcome::Red("host_resolver")
+    } else {
+        Outcome::Green
+    };
+    result("S11", outcome)
+}
+
+/// The value of one `key=value` field of the CT's `net0` line.
+fn net0<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    get(cfg, "net0")?
+        .split(',')
+        .find_map(|f| f.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// S12: the CT's hardware address is a locally administered one, not from the platform's
+/// own vendor prefix (which names the platform to anything that reads the address).
+pub fn s12_hwaddr(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S12", Outcome::Unknown("unread"));
+    };
+    let Some(mac) = net0(&cfg, "hwaddr") else {
+        return result("S12", Outcome::Unknown("unparsed"));
+    };
+    // locally administered and not multicast: the second hex digit is 2, 6, A or E
+    let local = mac.len() == 17
+        && matches!(
+            mac.as_bytes()[1].to_ascii_uppercase(),
+            b'2' | b'6' | b'A' | b'E'
+        );
+    let outcome = if local {
+        Outcome::Green
+    } else {
+        Outcome::Red("vendor_hwaddr")
+    };
+    result("S12", outcome)
+}
+
+/// S13: the CT has no IPv6 address. Its IPv6 traffic would leave from the host's own
+/// prefix, whatever the IPv4 egress is.
+pub fn s13_no_ipv6(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S13", Outcome::Unknown("unread"));
+    };
+    let outcome = if get(&cfg, "net0").is_none() {
+        Outcome::Unknown("unparsed")
+    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {
+        Outcome::Red("has_ipv6")
+    } else {
+        Outcome::Green
+    };
+    result("S13", outcome)
+}
+
+/// H14: the kernel log is not readable from inside a container
+/// (`/proc/sys/kernel/dmesg_restrict` is 1). It names the hardware at boot.
+pub fn h14_dmesg_restrict(value: Option<&str>) -> CheckResult {
+    let outcome = match value.map(str::trim) {
+        Some("1") => Outcome::Green,
+        Some("0") => Outcome::Red("dmesg_open"),
+        _ => Outcome::Unknown("unread"),
+    };
+    result("H14", outcome)
+}
+
 /// S02: the CT is unprivileged and is not a template.
 pub fn s02_unprivileged(pct_config: Option<&str>) -> CheckResult {
     let Some(cfg) = config(pct_config) else {
@@ -1112,6 +1214,91 @@ mod tests {
             h13_inventory(None, &[110], &platform).outcome,
             Outcome::Unknown("unread")
         );
+    }
+
+    /// 4.5 r4 section 14.1 #6 (c477a's list): the passive mask checks.
+    #[test]
+    fn s10_to_s13_and_h14_the_site_is_masked() {
+        const CT: &str = "arch: amd64\ncores: 2\nhostname: site2\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nunprivileged: 1\n";
+        let hook = crate::mask::HOOK_LINE;
+        let masked = alloc::format!("{CT}{hook}\n");
+        let ok = crate::mask::result_ok(212);
+        let s10 =
+            |cfg: &str, running, res: Option<&str>| s10_masked(Some(cfg), running, res).outcome;
+        assert_eq!(s10(&masked, Some(true), Some(&ok)), Outcome::Green);
+        // the line is there but the hook did not cover everything, or left no verdict
+        assert_eq!(
+            s10(&masked, Some(true), Some("NOT MASKED proc\n")),
+            Outcome::Red("not_masked")
+        );
+        assert_eq!(s10(&masked, Some(true), None), Outcome::Red("not_masked"));
+        // no line, another path, two lines: not the mask
+        assert_eq!(s10(CT, Some(true), Some(&ok)), Outcome::Red("no_mask_hook"));
+        assert_eq!(
+            s10(
+                &alloc::format!("{CT}lxc.hook.mount: /x\n"),
+                Some(true),
+                Some(&ok)
+            ),
+            Outcome::Red("no_mask_hook")
+        );
+        assert_eq!(
+            s10(&alloc::format!("{masked}{hook}\n"), Some(true), Some(&ok)),
+            Outcome::Red("no_mask_hook")
+        );
+        // a stopped CT has no verdict; whether it runs unknown is unknown
+        assert_eq!(s10(&masked, Some(false), None), Outcome::Green);
+        assert_eq!(s10(&masked, None, Some(&ok)), Outcome::Unknown("unread"));
+        assert_eq!(
+            s10_masked(None, Some(true), Some(&ok)).outcome,
+            Outcome::Unknown("unread")
+        );
+
+        assert_eq!(s11_resolver(Some(CT)).outcome, Outcome::Green);
+        assert_eq!(
+            s11_resolver(Some(&alloc::format!("{CT}searchdomain: example.net\n"))).outcome,
+            Outcome::Red("search_domain")
+        );
+        assert_eq!(
+            s11_resolver(Some(&swap(CT, "nameserver: 1.1.1.1\n", ""))).outcome,
+            Outcome::Red("host_resolver")
+        );
+        assert_eq!(s11_resolver(None).outcome, Outcome::Unknown("unread"));
+
+        // the fixture's address is the platform's vendor prefix
+        assert_eq!(s12_hwaddr(Some(CT)).outcome, Outcome::Red("vendor_hwaddr"));
+        for (mac, want) in [
+            ("02:00:0A:4D:00:0C", Outcome::Green),
+            ("ae:11:22:33:44:55", Outcome::Green),
+            ("00:11:22:33:44:55", Outcome::Red("vendor_hwaddr")),
+            ("03:11:22:33:44:55", Outcome::Red("vendor_hwaddr")),
+            ("02:00", Outcome::Red("vendor_hwaddr")),
+        ] {
+            let cfg = swap(CT, "BC:24:11:AA:BB:CC", mac);
+            assert_eq!(s12_hwaddr(Some(&cfg)).outcome, want, "{mac}");
+        }
+        assert_eq!(
+            s12_hwaddr(Some(&swap(CT, "hwaddr=BC:24:11:AA:BB:CC,", ""))).outcome,
+            Outcome::Unknown("unparsed")
+        );
+
+        assert_eq!(s13_no_ipv6(Some(CT)).outcome, Outcome::Green);
+        for extra in ["ip6=auto", "ip6=2001:db8::12/64", "gw6=2001:db8::1"] {
+            let cfg = swap(CT, "type=veth", &alloc::format!("{extra},type=veth"));
+            assert_eq!(
+                s13_no_ipv6(Some(&cfg)).outcome,
+                Outcome::Red("has_ipv6"),
+                "{extra}"
+            );
+        }
+        assert_eq!(s13_no_ipv6(None).outcome, Outcome::Unknown("unread"));
+
+        assert_eq!(h14_dmesg_restrict(Some("1\n")).outcome, Outcome::Green);
+        assert_eq!(
+            h14_dmesg_restrict(Some("0\n")).outcome,
+            Outcome::Red("dmesg_open")
+        );
+        assert_eq!(h14_dmesg_restrict(None).outcome, Outcome::Unknown("unread"));
     }
 
     #[test]

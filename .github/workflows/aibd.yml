@@ -271,6 +271,18 @@ jobs:
           ck site.rs '        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {' \
              '        if k == "lxc.hook.mount" && (mask_hook_ok(v) || true) && mask_hooks == 1 { // knife' \
              s6_each_drift_is_named
+          # site verify S10: the hook's verdict is not read (a CT whose covers failed is green)
+          ck verify.rs '        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) => Outcome::Green,' \
+             '        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) || true => Outcome::Green, // knife' \
+             s10_to_s13_and_h14_the_site_is_masked
+          # site verify S10: any hook on that key counts as the mask
+          ck verify.rs '        ([one], _) if !crate::site::mask_hook_ok(one) => Outcome::Red("no_mask_hook"),' \
+             '        ([one], _) if !crate::site::mask_hook_ok(one) && false => Outcome::Red("no_mask_hook"), // knife' \
+             s10_to_s13_and_h14_the_site_is_masked
+          # site verify S13: an IPv6 address on the CT is not seen
+          ck verify.rs '    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {' \
+             '    } else if net0(&cfg, "ip6").is_some() && net0(&cfg, "gw6").is_some() { // knife' \
+             s10_to_s13_and_h14_the_site_is_masked
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
