@@ -476,6 +476,14 @@ jobs:
           hk $'            self.running_changed(old, &g);\n            self.kick(&mut g);' \
             $'            let _ = (old, &g); // knife: no hook\n            self.kick(&mut g);' \
             running_count_changes_reach_the_hook_once_each
+          # T-e a start does not tell the hook (a9136 3a N2)
+          hk $'        self.running_changed(old, &g);\n        self.event(' \
+            $'        let _ = (old, &g); // knife: no hook\n        self.event(' \
+            running_count_changes_reach_the_hook_once_each
+          # T-f hooks set late are not told the current count (a9136 3a L1)
+          hk '        self.running_changed(0, &g);' \
+            '        let _ = &g; // knife: not told' \
+            hooks_set_late_hear_the_current_count
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \

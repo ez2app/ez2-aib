@@ -594,9 +594,16 @@ impl Sessions {
     }
 
     /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
-    /// refused (`false`) and the first stays.
+    /// refused (`false`) and the first stays. Set under the sessions lock and
+    /// told the current count at once (`(0, n)` when sessions already run), so
+    /// a guard set late still hears its 0→n (a9136 3a L1).
     pub fn set_hooks(&self, h: Hooks) -> bool {
-        self.hooks.set(h).is_ok()
+        let g = lock(&self.inner);
+        if self.hooks.set(h).is_err() {
+            return false;
+        }
+        self.running_changed(0, &g);
+        true
     }
 
     /// Caller holds the lock.

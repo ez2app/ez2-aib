@@ -70,6 +70,24 @@ fn running_count_changes_reach_the_hook_once_each() {
     );
 }
 
+/// a9136 3a L1: hooks set while a session already runs hear (0, 1) at once.
+#[test]
+fn hooks_set_late_hear_the_current_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sessions(tmp.path(), 2);
+    let a = s.start(sleeper()).unwrap();
+    assert_eq!(a.state, "running", "{a:?}");
+    let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::default();
+    let seen2 = seen.clone();
+    assert!(s.set_hooks(Hooks {
+        on_running_changed: Arc::new(move |a, b| seen2.lock().unwrap().push((a, b))),
+        ..Hooks::default()
+    }));
+    assert_eq!(*seen.lock().unwrap(), vec![(0, 1)], "a late guard missed 0→1");
+    s.stop(&a.id, Duration::from_secs(5)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![(0, 1), (1, 0)]);
+}
+
 #[test]
 fn a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it() {
     let tmp = tempfile::tempdir().unwrap();
