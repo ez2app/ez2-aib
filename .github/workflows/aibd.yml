@@ -270,6 +270,19 @@ jobs:
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
+          # customer logs: characters nobody sees go out as they came (ebb36, #648 L1)
+          ck svc.rs "        if c == '\\t' || !(c.is_control() || unseen(c)) {" \
+             "        if c == '\\t' || !(c.is_control() || (unseen(c) && false)) { // knife" \
+             nothing_in_a_line_reaches_the_terminal_as_a_control
+          # customer side: the host's sites / usage document is printed as it came (ebb36, #648 L2)
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        .map(|l| aib_cloud::svc::plain(l) + "\n")' \
+            '        .map(|l| l.to_owned() + "\n") // knife' \
+            --expect-fail the_hosts_document_is_printed_as_plain_text \
+            -- cargo test -p aib-cloud-cli --locked the_hosts_document_is_printed_as_plain_text
+          # customer side: a log line is shown as the host sent it (ebb36, #648 L2)
+          ck wording.rs '                    .map(crate::svc::plain)' '                    .map(String::from) // knife' \
+             every_answer_has_its_sentence
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \

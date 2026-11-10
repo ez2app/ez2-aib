@@ -251,9 +251,7 @@ pub fn mask_line(line: &str) -> String {
 pub fn plain(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     for c in line.chars() {
-        // direction marks and overrides, line / paragraph separators, zero-width characters
-        let reorders = matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
-        if c == '\t' || !(c.is_control() || reorders) {
+        if c == '\t' || !(c.is_control() || unseen(c)) {
             out.push(c);
         } else if u32::from(c) < 0x100 {
             out.push_str(&alloc::format!("\\x{:02x}", u32::from(c)));
@@ -262,6 +260,42 @@ pub fn plain(line: &str) -> String {
         }
     }
     out
+}
+
+/// Characters a person does not see and a program — or the customer's AI reading the same
+/// output — does (ebb36, #648 L1): Unicode format characters (direction marks and
+/// overrides, zero-width and invisible operators, interlinear annotation marks, the tag
+/// block, which can carry a whole hidden sentence), line and paragraph separators,
+/// variation selectors, private-use characters and non-characters. Ranges, because this
+/// crate has no Unicode tables; a code point not assigned yet is not covered.
+fn unseen(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+            | '\u{e000}'..='\u{f8ff}'
+            | '\u{f0000}'..='\u{ffffd}'
+            | '\u{100000}'..='\u{10fffd}'
+            | '\u{fdd0}'..='\u{fdef}'
+    ) || (u32::from(c) & 0xfffe) == 0xfffe
 }
 
 fn mask_secrets(line: &str) -> String {
@@ -538,6 +572,23 @@ mod tests {
         assert_eq!(plain("x\u{9b}31m"), "x\\x9b31m");
         assert_eq!(plain("evil\u{202e}gpj.exe"), "evil\\u{202e}gpj.exe");
         assert_eq!(plain("中文 記錄 ok"), "中文 記錄 ok");
+        // what nobody sees and a reader's AI does (ebb36, #648 L1): the tag block, a soft
+        // hyphen, an invisible operator, private use, a non-character, a variation selector
+        assert_eq!(
+            plain("ok\u{e0049}\u{e0067}\u{e007f}"),
+            "ok\\u{e0049}\\u{e0067}\\u{e007f}"
+        );
+        assert_eq!(plain("a\u{ad}b\u{2062}c"), "a\\xadb\\u{2062}c");
+        assert_eq!(
+            plain("\u{e000}\u{fffe}\u{fe0f}"),
+            "\\u{e000}\\u{fffe}\\u{fe0f}"
+        );
+        // a control character inside a secret's value does not let the value out (N2)
+        let masked = mask_line("password=\u{1b}hunter2 next");
+        assert!(
+            !masked.contains("hunter2") && !masked.contains('\u{1b}'),
+            "{masked}"
+        );
         assert_eq!(
             plain("a\u{200f}b\u{200b}c\u{feff}d\u{061c}"),
             "a\\u{200f}b\\u{200b}c\\u{feff}d\\u{61c}"
