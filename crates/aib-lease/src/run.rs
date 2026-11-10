@@ -909,7 +909,7 @@ mod tests {
     #[test]
     fn ssh_is_always_hardened_and_the_host_cannot_be_an_option() {
         let mut sp = spec();
-        sp.jump = Some("sin02-ts".into());
+        sp.jump = Some("jump-host".into());
         let joined = ssh_args(&sp, "true").join(" ");
         assert!(joined.contains("-o ForwardAgent=no -o ClearAllForwardings=yes"));
         assert!(
@@ -925,7 +925,7 @@ mod tests {
                 < dashes,
             "options come before the host: {a:?}"
         );
-        assert!(joined.contains("-J sin02-ts -- pro13 true"), "{joined}");
+        assert!(joined.contains("-J jump-host -- pro13 true"), "{joined}");
         sp.host = "-oProxyCommand=x".into();
         assert_eq!(sp.check(), Err(SpecError::BadHost(sp.host.clone())));
     }
