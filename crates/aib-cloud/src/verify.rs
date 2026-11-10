@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use serde_json::{json, Value};
 
-use crate::roster::{SUDOERS_DEFAULTS, SUDOERS_RULE_HEAD};
+use crate::roster::{ENTRY_ACCOUNT, SUDOERS_DEFAULTS, SUDOERS_HEADER, SUDOERS_RULE_HEAD};
 use crate::site::{parse_pct_config, valid_code, SiteSpec};
 
 /// What one check found.
@@ -360,6 +360,64 @@ pub struct EntrySudoers<'a> {
     pub text: Option<&'a str>,
     /// Whether `visudo -c -f` accepted it.
     pub visudo_ok: Option<bool>,
+    /// The text of every other sudoers file sudo reads (`/etc/sudoers` and the files of
+    /// `/etc/sudoers.d` it does not skip). `None`: one of them could not be read.
+    pub others: Option<&'a [String]>,
+    /// The entry account's uid and the names of its groups.
+    pub account: Option<(u32, &'a [String])>,
+}
+
+/// Whether `text` (a sudoers file other than ours) may grant the entry account anything
+/// (33e28, #655 M1): a line naming the account anywhere (a rule, an alias), a rule for
+/// `ALL`, for its uid (`#<uid>`) or for one of its groups (`%group`). `None` when the file
+/// pulls in something other than `/etc/sudoers.d` (the caller has not read it).
+fn grants_elsewhere(text: &str, uid: u32, groups: &[String]) -> Option<bool> {
+    let joined = text.replace("\\\n", " ");
+    let me = alloc::format!("#{uid}");
+    for line in joined.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with("Defaults") {
+            continue;
+        }
+        if line.starts_with("#include") || line.starts_with("@include") {
+            let mut w = line.split_whitespace();
+            match (w.next(), w.next(), w.next()) {
+                (Some("#includedir" | "@includedir"), Some("/etc/sudoers.d"), None) => continue,
+                _ => return None,
+            }
+        }
+        // `#` and then a digit is a uid; any other `#` line is a comment
+        if line
+            .strip_prefix('#')
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            continue;
+        }
+        let named = line
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .any(|w| w == ENTRY_ACCOUNT);
+        // the user list: the words before `=` up to the first gap that is not after or
+        // before a comma (`root, cloudgate host=…` lists two users; the host list follows)
+        let head = line.split('=').next().unwrap_or("");
+        let mut who = String::new();
+        let mut words = head.split_whitespace().peekable();
+        while let Some(w) = words.next() {
+            who.push_str(w);
+            if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {
+                break;
+            }
+        }
+        let for_us = who.split(',').map(str::trim).any(|u| {
+            u == "ALL"
+                || u == me
+                || u.strip_prefix('%')
+                    .map(|g| g.trim_start_matches(':'))
+                    .is_some_and(|g| groups.iter().any(|x| x == g))
+        });
+        if named || for_us {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// One rule line's arguments, after [`SUDOERS_RULE_HEAD`]: exactly what
@@ -390,12 +448,21 @@ pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
             (None, _) | (_, None) => Outcome::Unknown("unread"),
             (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),
             (Some(_), Some(text)) => {
+                // only the fixed header may start with `#`: `#include` and `#<uid>` are
+                // not comments in sudoers (33e28, #655 H1), so they are judged as rules
                 let lines: Vec<&str> = text
                     .lines()
                     .map(str::trim_end)
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER)
                     .collect();
                 let mut rules = lines.iter().filter(|l| **l != SUDOERS_DEFAULTS);
+                let elsewhere = match (seen.others, seen.account) {
+                    (Some(files), Some((uid, groups))) => files
+                        .iter()
+                        .map(|t| grants_elsewhere(t, uid, groups))
+                        .try_fold(false, |any, g| g.map(|g| any || g)),
+                    _ => None,
+                };
                 if text.contains('*') {
                     Outcome::Red("sudoers_wildcard")
                 } else if lines.iter().filter(|l| **l == SUDOERS_DEFAULTS).count() != 1 {
@@ -405,6 +472,10 @@ pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
                         .is_some_and(entry_rule_args)
                 }) {
                     Outcome::Red("sudoers_rule")
+                } else if elsewhere == Some(true) {
+                    Outcome::Red("sudoers_elsewhere")
+                } else if elsewhere.is_none() {
+                    Outcome::Unknown("others_unread")
                 } else {
                     match seen.visudo_ok {
                         None => Outcome::Unknown("visudo_unread"),
@@ -1201,12 +1272,15 @@ mod tests {
                 { "public_key": key(b'B'), "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
         let roster = parse(&roster.to_string(), &["site2", "site3"]).unwrap();
         let good = sudoers_file(&[roster]).unwrap();
+        static NONE: [String; 0] = [];
         fn seen(text: &str) -> EntrySudoers<'_> {
             EntrySudoers {
                 present: Some(true),
                 owner_mode: Some((0, 0, 0o440)),
                 text: Some(text),
                 visudo_ok: Some(true),
+                others: Some(&NONE),
+                account: Some((1001, &NONE)),
             }
         }
         let h14 = |e: EntrySudoers<'_>| h14_entry_sudoers(e).outcome;
@@ -1226,6 +1300,85 @@ mod tests {
             let text = alloc::format!("{good}{bad}\n");
             assert_eq!(h14(seen(&text)), Outcome::Red("sudoers_rule"), "{bad}");
         }
+        // `#` lines other than the header are not comments in sudoers (33e28, #655 H1)
+        for bad in [
+            "#include /etc/x",
+            "#includedir /etc/y",
+            "@include /etc/x",
+            "#0 ALL=(ALL) NOPASSWD: ALL",
+            "# just a note",
+        ] {
+            let text = alloc::format!("{good}{bad}\n");
+            assert_eq!(h14(seen(&text)), Outcome::Red("sudoers_rule"), "{bad}");
+        }
+        // another sudoers file that grants the entry account anything (33e28, #655 M1)
+        let debian = "# comment cloudgate\nDefaults\tenv_reset\nroot\tALL=(ALL:ALL) ALL\n%sudo\tALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n".to_string();
+        let groups = ["cloudgate".to_string(), "users".to_string()];
+        let with = |extra: &str| alloc::vec![debian.clone(), extra.to_string()];
+        let judge = |files: &[String], groups: &[String]| {
+            h14(EntrySudoers {
+                others: Some(files),
+                account: Some((1001, groups)),
+                ..seen(&good)
+            })
+        };
+        assert_eq!(judge(&with(""), &groups), Outcome::Green);
+        for (extra, why) in [
+            (
+                "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer x",
+                "by name",
+            ),
+            ("User_Alias GATE = nobody, cloudgate", "in an alias"),
+            ("ALL ALL=(root) NOPASSWD: /bin/true", "for ALL"),
+            ("#1001 ALL=(ALL) ALL", "by uid"),
+            ("%users ALL=(ALL) ALL", "by group"),
+            ("%:users ALL=(ALL) ALL", "by group, other spelling"),
+            ("root,cloudgate ALL=(ALL) ALL", "in a user list"),
+            (
+                "root, #1001 ALL=(ALL) ALL",
+                "by uid, second in a spaced list",
+            ),
+            (
+                "%nobody, \\\n    #1001 ALL=(ALL) ALL",
+                "by uid on a continued line",
+            ),
+        ] {
+            let files = with(extra);
+            assert_eq!(
+                judge(&files, &groups),
+                Outcome::Red("sudoers_elsewhere"),
+                "{why}"
+            );
+        }
+        // the sudo group is not the account's: green; a group the account is in: red
+        let sudo_member = ["cloudgate".to_string(), "sudo".to_string()];
+        assert_eq!(
+            judge(&with(""), &sudo_member),
+            Outcome::Red("sudoers_elsewhere")
+        );
+        // an include the caller did not follow, or files not read: unknown
+        assert_eq!(
+            judge(&with("@include /etc/other"), &groups),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            judge(&with("#includedir /opt/x"), &groups),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                others: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                account: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("others_unread")
+        );
         // Defaults missing (variables not kept: every request reads as empty) or twice
         let no_defaults: String = good
             .lines()

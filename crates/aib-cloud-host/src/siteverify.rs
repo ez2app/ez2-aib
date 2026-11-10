@@ -14,7 +14,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aib_cloud::quarantine;
-use aib_cloud::roster::SUDOERS_PATH;
+use aib_cloud::roster::{ENTRY_ACCOUNT, SUDOERS_PATH};
 use aib_cloud::site::spec_from_record_strict;
 use aib_cloud::verify::{self, CheckResult, DiskUse, EntrySudoers, Outcome, SiteState};
 use serde_json::{json, Value};
@@ -80,10 +80,44 @@ pub fn parse_lvs_percent(out: &str) -> (Option<u8>, Option<u8>) {
 }
 
 const VISUDO: &str = "/usr/sbin/visudo";
+const SUDOERS_MAIN: &str = "/etc/sudoers";
+
+/// Every sudoers file sudo reads besides `ours`: the main file and the files of its
+/// directory, less those sudo skips (a name with a `.` or ending in `~`). `None` when any
+/// of them cannot be read: a file left out could hold the rule H14 looks for.
+fn other_sudoers(main: &str, ours: &str) -> Option<Vec<String>> {
+    let ours = std::path::Path::new(ours);
+    let dir = ours.parent()?;
+    let mut out = vec![fs::read_to_string(main).ok()?];
+    let mut names: Vec<std::path::PathBuf> = Vec::new();
+    for entry in fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        let name = path.file_name()?.to_str()?.to_owned();
+        if path == ours || name.contains('.') || name.ends_with('~') {
+            continue;
+        }
+        names.push(path);
+    }
+    names.sort();
+    for p in names {
+        out.push(fs::read_to_string(p).ok()?);
+    }
+    Some(out)
+}
+
+/// The entry account's uid and group names, from `id`.
+fn account_of(name: &str) -> Option<(u32, Vec<String>)> {
+    let uid = observe("id", &["-u", name], 3)?.trim().parse().ok()?;
+    let groups = observe("id", &["-nG", name], 3)?
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    Some((uid, groups))
+}
 
 /// H14's observation of the entry account's sudoers file. `visudo -c -f` that cannot be
 /// found is "could not look"; one that ran and did not say yes (or timed out) is "no".
-fn entry_sudoers(path: &str) -> verify::CheckResult {
+fn entry_sudoers(path: &str, main: &str) -> verify::CheckResult {
     use std::os::unix::fs::MetadataExt;
     let meta = fs::symlink_metadata(path);
     let present = match &meta {
@@ -108,11 +142,15 @@ fn entry_sudoers(path: &str) -> verify::CheckResult {
         .ok()
         .filter(|there| *there)
         .map(|_| observe(VISUDO, &["-c", "-f", path], 5).is_some());
+    let others = other_sudoers(main, path);
+    let account = account_of(ENTRY_ACCOUNT);
     verify::h14_entry_sudoers(EntrySudoers {
         present,
         owner_mode,
         text: text.as_deref(),
         visudo_ok,
+        others: others.as_deref(),
+        account: account.as_ref().map(|(u, g)| (*u, g.as_slice())),
     })
 }
 
@@ -162,7 +200,7 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
             )
             .as_deref(),
         ),
-        entry_sudoers(SUDOERS_PATH),
+        entry_sudoers(SUDOERS_PATH, SUDOERS_MAIN),
     ]
 }
 
@@ -438,24 +476,42 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("aib-sv-h14-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("ez2-entry");
+        let d = dir.join("sudoers.d");
+        fs::create_dir_all(&d).unwrap();
+        let main = dir.join("sudoers");
+        let main = main.to_str().unwrap();
+        let file = d.join("ez2-entry");
         let path = file.to_str().unwrap();
         // not set up yet
         assert_eq!(
-            entry_sudoers(path).outcome,
+            entry_sudoers(path, main).outcome,
             Outcome::Warn("entry_not_set_up")
         );
         // there, but not root:root 0440 (a test runs as a user; 0644 is wrong either way)
         fs::write(&file, aib_cloud::roster::sudoers_file(&[]).unwrap()).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(entry_sudoers(path).outcome, Outcome::Red("sudoers_mode"));
+        assert_eq!(
+            entry_sudoers(path, main).outcome,
+            Outcome::Red("sudoers_mode")
+        );
         // a symlink to it is not the file
         let link = dir.join("link");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert_eq!(
-            entry_sudoers(link.to_str().unwrap()).outcome,
+            entry_sudoers(link.to_str().unwrap(), main).outcome,
             Outcome::Red("sudoers_mode")
+        );
+        // the other files: the main one missing is "could not read"; a file sudo skips
+        // (a dot in its name, a trailing ~) is not read; ours is not among them
+        assert_eq!(other_sudoers(main, path), None);
+        fs::write(main, "root ALL=(ALL) ALL\n").unwrap();
+        fs::write(d.join("zz"), "b\n").unwrap();
+        fs::write(d.join("aa"), "a\n").unwrap();
+        fs::write(d.join("aa.bak"), "skipped\n").unwrap();
+        fs::write(d.join("aa~"), "skipped\n").unwrap();
+        assert_eq!(
+            other_sudoers(main, path).unwrap(),
+            ["root ALL=(ALL) ALL\n", "a\n", "b\n"]
         );
         let _ = fs::remove_dir_all(&dir);
     }

@@ -487,6 +487,18 @@ jobs:
           ck verify.rs '                        .is_some_and(entry_rule_args)' \
              '                        .is_some_and(|r| entry_rule_args(r) || true) // knife' \
              h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any line starting with # is taken for a comment (#include, #<uid>: 33e28, #655 H1)
+          ck verify.rs '                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER)' \
+             "                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER && !l.starts_with('#')) // knife" \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a rule for the entry account in another sudoers file is not looked at (33e28, #655 M1)
+          ck verify.rs '                } else if elsewhere == Some(true) {' \
+             '                } else if false && elsewhere == Some(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: only the first name of a spaced user list (root, #uid) is read
+          ck verify.rs "            if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {" \
+             '            if true { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
           # H14: owner and mode are not looked at
           ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
              '            (Some(om), _) if false && om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"), // knife' \
