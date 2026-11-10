@@ -758,12 +758,15 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let mut names: Vec<std::path::PathBuf> = fs::read_dir(&dir)
-        .map_err(|e| format!("{dir}: {e}"))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
+    // An entry that cannot be read is an error, not a site to skip: a drift report that
+    // silently leaves a record out would read as "that site is fine".
+    let mut names: Vec<std::path::PathBuf> = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| format!("{dir}: {e}"))? {
+        let path = entry.map_err(|e| format!("{dir}: {e}"))?.path();
+        if path.extension().is_some_and(|x| x == "json") {
+            names.push(path);
+        }
+    }
     names.sort();
     if names.is_empty() {
         return Err(format!("{dir}: no site records"));
