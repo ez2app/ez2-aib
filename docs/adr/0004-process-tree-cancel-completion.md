@@ -291,6 +291,10 @@ decision list (a63ab, 2026-11-09).
   blind spots (`Report::blind_spots()`, `BLIND_SPOTS_UNCONTAINED` in
   `crates/aibd/src/platform/tree.rs`: `exec_after_creator_exit`, `env_cleared`,
   `fork_watch_miss`, `uid_changed`).
+  Known, not flaky (#614, Mac Pro 13 11-10: 20 of 50 runs): a grandchild that clears
+  its environment and execs only after its creator exited has `p_puniqueid` = 1 and no
+  readable marker, so when the fork watcher missed its creator macOS can only report it
+  as `candidates_unreadable`. It is never signalled; the stop says so and keeps the slot.
   `Stop::releases_slot()` = `clean`, or `unverified` with a reason in
   `SLOT_RELEASING_REASONS` (today only `observed_clean`), and no survivor. Anything else
   keeps the slot; a second DELETE runs the stop again (H2) [6, 7, 8].
