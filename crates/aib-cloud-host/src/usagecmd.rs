@@ -148,7 +148,21 @@ fn advice_json(a: &Advice) -> Value {
     }
 }
 
+/// Exit status: 0 all quiet, 2 ARC has something to say, 3 something could not be
+/// measured. A records directory that cannot be read, a broken record or a mistyped
+/// argument is **3 as well**: the caller's exit status for an error is 2, which here
+/// would read as "there is advice" (c477a, #631 seg. 7 M1; the same as `site verify`).
 pub fn cmd(args: &[String]) -> Result<u8, String> {
+    match run(args) {
+        Ok(code) => Ok(code),
+        Err(why) => {
+            eprintln!("aib-cloud-host site usage: {why}");
+            Ok(3)
+        }
+    }
+}
+
+fn run(args: &[String]) -> Result<u8, String> {
     let mut records = RECORDS.to_owned();
     let mut pool = THIN_POOL.to_owned();
     let mut seconds: u64 = 5;
@@ -373,12 +387,17 @@ mod tests {
     }
 
     #[test]
-    fn nothing_measured_is_an_error_or_exit_3() {
+    fn nothing_measured_is_exit_3() {
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert!(cmd(&args(&["--records", "/nonexistent/aib-usage"])).is_err());
-        assert!(cmd(&args(&["--sample-seconds", "0"])).is_err());
-        assert!(cmd(&args(&["--sample-seconds", "61"])).is_err());
-        assert!(cmd(&args(&["--thin", "-o"])).is_err());
-        assert!(cmd(&args(&["--apply"])).is_err());
+        // never 2: in this command 2 says "ARC has advice"
+        for bad in [
+            &["--records", "/nonexistent/aib-usage"][..],
+            &["--sample-seconds", "0"],
+            &["--sample-seconds", "61"],
+            &["--thin", "-o"],
+            &["--apply"],
+        ] {
+            assert_eq!(cmd(&args(bad)), Ok(3), "{bad:?}");
+        }
     }
 }
