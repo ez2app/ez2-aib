@@ -9,6 +9,7 @@
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host root-password apply <file>
+//! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
 //! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
 //! ```
@@ -27,6 +28,8 @@ mod probe;
 mod quarantinecmd;
 #[cfg(unix)]
 mod siteverify;
+#[cfg(unix)]
+mod speccmd;
 #[cfg(unix)]
 mod update;
 
