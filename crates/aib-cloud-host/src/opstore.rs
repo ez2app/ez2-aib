@@ -562,12 +562,23 @@ impl OpPlace {
 }
 
 /// Who stands behind an operation, written as its journal's `approval`. Commands run by
-/// root on the host are approved by whoever typed them (`local-root`); a customer's
-/// request through the forced command of their key is approved by the key's entry
-/// (`customer-key`, Andy 11-10: customers operate their own site). Both are standing
-/// approvals, not one-time nonces: a nonce-checked approval belongs to the remote CLI.
-pub const BY_LOCAL_ROOT: &str = "local-root";
-pub const BY_CUSTOMER_KEY: &str = "customer-key";
+/// root on the host are approved by whoever typed them; a customer's request through the
+/// forced command of their key is approved by the key's entry (Andy 11-10: customers
+/// operate their own site; the site code comes from that entry, never from the
+/// customer). Both are **standing** approvals, not one-time nonces, and are spelled with
+/// the `standing-` prefix so a journal never confuses them with a nonce from the remote
+/// CLI (4542e 11-10 condition a).
+///
+/// **Known gap (4542e 11-10 condition b)**: `standing-local-root` means "a person typed this
+/// on the host". An AI seat running the same command as root over ssh looks the same to
+/// this program. That is closed by process, not by code: until the remote CLI with
+/// one-time approvals exists, EU02 writes keep going through `pending/SIGN-*.sh` and a
+/// human approving in the window — having this value does **not** let an AI run writes
+/// directly.
+pub const BY_LOCAL_ROOT: &str = "standing-local-root";
+pub const BY_CUSTOMER_KEY: &str = "standing-customer-key";
+/// The only commands a customer's key may approve (the customer entry's writing requests).
+pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"];
 
 /// Run one change as an operation (4.4.1 §1.1): take the host lock, refuse while another
 /// operation on `target` is unfinished, journal `planned` → `approved` → `running` (synced
@@ -584,6 +595,9 @@ pub fn run_op<T>(
     now: u64,
     change: impl FnOnce(&str) -> Result<T, String>,
 ) -> Result<T, String> {
+    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {
+        return Err(format!("{command} cannot be approved by a customer key"));
+    }
     let op_id = op_id(now, random4()?);
     let plan_sha256 = sha256_hex(
         plan_hash_input(plan, &place.fingerprint, env!("CARGO_PKG_VERSION")).as_bytes(),
@@ -1272,6 +1286,39 @@ mod tests {
         .unwrap();
         // a finished operation has nothing to recover
         assert!(mark_recovered(&pl, &failed, 1_794_300_240).is_err());
+    }
+
+    #[test]
+    fn a_customer_key_approves_only_the_customer_commands() {
+        let pl = place("runop-customer");
+        let mut ran = false;
+        let err = run_op(
+            &pl,
+            "site.restore",
+            "site:site2",
+            &json!({}),
+            BY_CUSTOMER_KEY,
+            1_794_300_000,
+            |_| {
+                ran = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("customer key") && !ran, "{err}");
+        assert_eq!(fs::read_dir(&pl.ops_dir).unwrap().count(), 0);
+        run_op(
+            &pl,
+            "site.restart",
+            "site:site2",
+            &json!({}),
+            BY_CUSTOMER_KEY,
+            1_794_300_000,
+            |_| Ok(()),
+        )
+        .unwrap();
+        // standing approvals never look like a nonce
+        assert!(BY_LOCAL_ROOT.starts_with("standing-") && BY_CUSTOMER_KEY.starts_with("standing-"));
     }
 
     #[test]

@@ -1033,7 +1033,12 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
     Ok(0)
 }
 
-/// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch]`:
+/// Whether `--yes-<code>` was typed for exactly this site.
+fn switch_confirmed(code: &str, yes: Option<&str>) -> bool {
+    yes == Some(code)
+}
+
+/// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch --yes-<code>]`:
 /// blue-green — restore the backup as a new CT beside the live one, apply the site's limits,
 /// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
 /// is left running for comparison (deleting it is a separate, human-approved step).
@@ -1041,6 +1046,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
     use aib_cloud::site::{caddy_block_upstream, caddy_swap_block, desired_firewall, restore_plan};
     let (code, records, rest) = site_args(args)?;
     let (mut backup, mut ct, mut ip, mut switch) = (None, None, None, false);
+    let mut yes: Option<String> = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1062,8 +1068,16 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 )
             }
             "--switch" => switch = true,
+            a if a.starts_with("--yes-") => yes = Some(a.trim_start_matches("--yes-").to_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    // --switch moves the Edge and rewrites the site record: no inverse command, so a
+    // standing approval is not enough — the person types the site code (4542e 11-10 c)
+    if switch && !switch_confirmed(&code, yes.as_deref()) {
+        return Err(format!(
+            "--switch moves {code}'s live traffic: add --yes-{code} to confirm"
+        ));
     }
     let spec = load_site(&code, &records)?;
     // restoring a quarantined site would bring its backup up with egress (and, with
@@ -1219,7 +1233,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("spec") => crate::speccmd::cmd(&args[1..]),
@@ -1239,7 +1253,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch] | spec lint <file> | spec plan <file> [--from <step>] [--json] | op status [<op id>] | op unfinished <target> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | op status [<op id>] | op unfinished <target> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 
@@ -1248,6 +1262,33 @@ pub fn main(args: &[String]) -> Result<u8, String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// 4542e 11-10 condition c: --switch has no inverse, so the site code is typed.
+    #[test]
+    fn a_switch_needs_the_site_code_typed() {
+        assert!(switch_confirmed("site2", Some("site2")));
+        assert!(!switch_confirmed("site2", None));
+        assert!(!switch_confirmed("site2", Some("site3")));
+        assert!(!switch_confirmed("site2", Some("")));
+        // the check runs before anything is read or changed
+        let args: Vec<String> = [
+            "site2",
+            "--records",
+            "/nonexistent",
+            "--backup",
+            "b",
+            "--ct",
+            "200",
+            "--ip",
+            "40",
+            "--switch",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let err = cmd_site_restore(&args).unwrap_err();
+        assert!(err.contains("--yes-site2"), "{err}");
+    }
 
     fn cell(id: &str, from: &str, kind: &str, ip: &str, port: u64, expect: &str) -> Value {
         json!({"id": id, "from": from, "kind": kind, "ip": ip, "port": port, "expect": expect})
