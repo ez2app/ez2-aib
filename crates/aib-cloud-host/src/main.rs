@@ -7,6 +7,7 @@
 //! aib-cloud-host probe one   <tcp|dns|icmp> <ip> <port>      (internal: runs inside a CT netns)
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
+//! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
 //! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
@@ -22,6 +23,8 @@
 // at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
 #[cfg(unix)]
 mod probe;
+#[cfg(unix)]
+mod quarantinecmd;
 #[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]

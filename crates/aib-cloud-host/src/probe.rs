@@ -428,7 +428,7 @@ fn probe_in(
 
 // ---------------------------------------------------------------- commands
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -887,7 +887,7 @@ fn occupied_ip_lasts(records_dir: &str) -> Result<Vec<u8>, String> {
     Ok(taken)
 }
 
-fn edge_caddyfile() -> Result<String, String> {
+pub(crate) fn edge_caddyfile() -> Result<String, String> {
     let mut cmd = Command::new("pct");
     cmd.args(["exec", EDGE_CT, "--", "cat", CADDYFILE]);
     run_capture(&mut cmd, Duration::from_secs(15))
@@ -1159,10 +1159,19 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         Some("site") => match args.get(1).map(String::as_str) {
             Some("drift") => cmd_site_drift(&args[2..]),
             Some("verify") => crate::siteverify::cmd(&args[2..]),
+            Some("quarantine") => {
+                crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
+            }
+            Some("unquarantine") => {
+                crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Unquarantine)
+            }
+            Some("quarantine-archive") => {
+                crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Archive)
+            }
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
