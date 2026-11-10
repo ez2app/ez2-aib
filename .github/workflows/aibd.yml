@@ -253,6 +253,18 @@ jobs:
           ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
              '        .filter(|l| !l.is_empty())' \
              review_segment_5
+          # quarantine guard: a record on disk no longer counts (33e28, seg. 5 r2 N)
+          ck quarantine.rs '    if record.is_some() || is_quarantined(ct_fw) {' \
+             '    if record.is_some() && is_quarantined(ct_fw) { // knife' \
+             review_segment_5
+          # quarantine: the record's edge block may hold more than this site's block (33e28 N)
+          ck quarantine.rs "        return refuse(\"the record's edge block is not exactly this site's block\");" \
+             '        // knife: any block goes' \
+             review_segment_5
+          # quarantine: a stale record is archived whatever the firewall is now (1ced7 L)
+          ck quarantine.rs '    if ct_fw != restored_firewall {' \
+             '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \

@@ -1305,8 +1305,12 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         assert!(probe_here("tcp", "127.0.0.1".parse().unwrap(), port));
         drop(l);
-        // the port we just released: nothing listens now
-        assert!(!probe_here("tcp", "127.0.0.1".parse().unwrap(), port));
+        // the port we just released: nothing listens now. Only asserted on Linux, where
+        // this binary runs: on a shared macOS machine the port was seen answering again
+        // straight after the release (c477a, andymini, two runs).
+        if cfg!(target_os = "linux") {
+            assert!(!probe_here("tcp", "127.0.0.1".parse().unwrap(), port));
+        }
     }
 
     #[test]

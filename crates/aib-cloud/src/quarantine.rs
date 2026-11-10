@@ -426,6 +426,48 @@ pub fn unquarantine_plan(
     ])
 }
 
+/// Plan the clean-up after an `unquarantine` that put everything back and stopped before
+/// archiving its record. In that state [`guard`] refuses resume / start (a record is on
+/// disk), [`unquarantine_plan`] refuses (the CT is not on the quarantine firewall) and
+/// [`quarantine_plan`] refuses (the record is stale) — this is the way out. It is allowed
+/// only when the host is exactly what that unquarantine would have left: not quarantined,
+/// the firewall file the record would restore, and the edge block the record holds.
+/// Anything else is a half-finished state a person has to look at.
+pub fn archive_stale_plan(
+    spec: &SiteSpec,
+    record: &Record,
+    ct_fw: &str,
+    caddyfile: &str,
+) -> Result<Vec<Action>, Error> {
+    let refuse = |what: &str| {
+        Err(Error::Observed(alloc::format!(
+            "archive record {}: {what}",
+            spec.code
+        )))
+    };
+    if record.site != spec.code || record.ct != spec.ct {
+        return refuse("the record belongs to another site");
+    }
+    if is_quarantined(ct_fw) {
+        return refuse("the CT is still on the quarantine firewall: unquarantine instead");
+    }
+    let restored_firewall = if record.prev_firewall.is_empty() {
+        desired_firewall(&spec.fw_group, spec.ssh_port)
+    } else {
+        record.prev_firewall.clone()
+    };
+    if ct_fw != restored_firewall {
+        return refuse("the firewall file is not the one this record restores");
+    }
+    if caddy_block_text(caddyfile, &spec.code)? != record.prev_caddy_block {
+        return refuse("the edge block is not the one this record restores");
+    }
+    Ok(alloc::vec![
+        Action::Verify { quarantined: false },
+        Action::ArchiveRecord,
+    ])
+}
+
 /// Operations that would put a site back on the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reopens {
@@ -924,5 +966,38 @@ mod tests {
         two.prev_firewall = normal_fw();
         two.prev_caddy_block = alloc::format!("{}{}", two.prev_caddy_block, other_block(&file));
         assert!(unquarantine_plan(&spec(), &two, &firewall(), written_caddyfile(&a)).is_err());
+    }
+
+    /// Review after #623 (1ced7 L): an unquarantine that restored everything and stopped
+    /// before archiving leaves a record nothing else can get past; archiving it is allowed
+    /// only when the host is exactly what that unquarantine left.
+    #[test]
+    fn a_stale_record_can_be_archived_when_the_host_is_fully_restored() {
+        let file = caddyfile();
+        let a = actions(do_plan(&normal_fw(), &file, None));
+        let Action::SaveRecord(record) = &a[0] else {
+            panic!("record first");
+        };
+        let quarantined_file = written_caddyfile(&a);
+        // the stuck state: everything restored, record still there
+        assert!(guard("site2", &normal_fw(), Some(record), Reopens::Resume).is_err());
+        assert!(unquarantine_plan(&spec(), record, &normal_fw(), &file).is_err());
+        assert_eq!(
+            archive_stale_plan(&spec(), record, &normal_fw(), &file).unwrap(),
+            [Action::Verify { quarantined: false }, Action::ArchiveRecord]
+        );
+        // still quarantined, route not restored, another firewall, another site's record
+        assert!(archive_stale_plan(&spec(), record, &firewall(), quarantined_file).is_err());
+        assert!(archive_stale_plan(&spec(), record, &normal_fw(), quarantined_file).is_err());
+        let other_fw = normal_fw().replace("ez2-site-v2", "ez2-site-v3");
+        assert!(archive_stale_plan(&spec(), record, &other_fw, &file).is_err());
+        let mut theirs = record.clone();
+        theirs.ct = 113;
+        assert!(archive_stale_plan(&spec(), &theirs, &normal_fw(), &file).is_err());
+        // a CT that had no firewall file: what unquarantine wrote is the desired file
+        let mut none = record.clone();
+        none.prev_firewall = String::new();
+        assert!(archive_stale_plan(&spec(), &none, &normal_fw(), &file).is_ok());
+        assert!(archive_stale_plan(&spec(), &none, "", &file).is_err());
     }
 }
