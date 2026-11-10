@@ -361,8 +361,8 @@ fn closes_of(q: &Q, i: &str) -> Vec<Value> {
 }
 
 /// True once someone else holds the seat's transition lock: a separate open of the file gets
-/// WouldBlock (flock is per open file, so this works inside one process too). Spins with
-/// `yield_now`, no sleep; gives up after `limit`.
+/// WouldBlock (flock is per open file, so this works inside one process too). Waits
+/// `close::pause` (10 ms) between tries, so it does not spin a core; gives up after `limit`.
 fn wait_until_locked(roots: &Roots, limit: Duration) -> bool {
     let p = roots.seat_dir(SEAT).join("transition.lock");
     let until = std::time::Instant::now() + limit;
@@ -376,7 +376,7 @@ fn wait_until_locked(roots: &Roots, limit: Duration) -> bool {
                 Err(std::fs::TryLockError::Error(_)) => {}
             }
         }
-        std::thread::yield_now();
+        aib_seatops::close::pause(Duration::from_millis(10));
     }
     false
 }
