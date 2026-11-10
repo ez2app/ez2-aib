@@ -462,10 +462,11 @@ pub fn archive_stale_plan(
     }
     match quarantine_op_state {
         Some(crate::op::State::Verified) => {}
-        Some(_) => {
-            return refuse(
-                "the quarantine this record belongs to did not finish: run quarantine again",
-            )
+        Some(unfinished) => {
+            return refuse(&alloc::format!(
+                "the quarantine this record belongs to did not finish (its journal stops at {}): run quarantine again",
+                unfinished.as_str()
+            ));
         }
         None => return refuse("no journal for the quarantine this record belongs to"),
     }
