@@ -129,9 +129,10 @@ fn s4_an_unreachable_host_is_not_an_absent_file() {
          \x20 H \"touch /etc/x.conf\" || exit 3\n\
          fi\n\
          SSH=\"ssh -o BatchMode=yes host-a\"\n\
-         $SSH test -d /srv/a && echo present\n",
+         $SSH test -d /srv/a && echo present\n\
+         conf=$($SSH cat /etc/app.conf 2>/dev/null) || true\n",
     );
-    assert_eq!(of(&t, "S4"), vec![5, 10]);
+    assert_eq!(of(&t, "S4"), vec![5, 10, 11]);
     // stops, or tells 255 apart
     let t = script(
         "set -uo pipefail\n\

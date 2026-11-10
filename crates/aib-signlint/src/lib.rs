@@ -605,8 +605,33 @@ fn is_assignment(w: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Words of a stage; a `$( … )` or `( … )` stays one word (`v=$(cat /etc/x)`).
+fn words_of(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    for c in text.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+        if c.is_whitespace() && depth == 0 {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 fn stage_of(text: &str) -> Stage {
-    let words: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    let words = words_of(text);
     let mut s = Stage {
         words: words.clone(),
         text: text.trim().to_owned(),
@@ -886,12 +911,12 @@ impl Shape {
     /// The first word of `$(` … in an assignment calls another host.
     fn assigns_remote(&self, st: &Stage) -> bool {
         st.words.iter().any(|w| {
-            w.split_once("$(")
-                .is_some_and(|(_, r)| !r.is_empty() && self.is_remote_word(r))
-        }) || st
-            .words
-            .windows(2)
-            .any(|p| p[0].ends_with("$(") && self.is_remote_word(&p[1]))
+            w.split_once("$(").is_some_and(|(_, r)| {
+                r.split_whitespace()
+                    .next()
+                    .is_some_and(|first| self.is_remote_word(first))
+            })
+        })
     }
 
     fn is_stop(&self, st: &Stage) -> bool {
