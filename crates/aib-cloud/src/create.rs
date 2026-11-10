@@ -10,8 +10,13 @@
 //! lock uses since #647) into the creating record before it does anything else. Whoever
 //! reads the record — `status`, the next `create`, the first operation after a boot —
 //! asks [`verdict`]; on [`Verdict::Interrupted`] it takes the host lock, re-reads the
-//! record and marks it incomplete only if [`still_same_attempt`] says nothing changed in
+//! record and marks it unfinished only if [`still_same_attempt`] says nothing changed in
 //! between. Pure decision code: the caller reads `/proc`, the clock and the record.
+//!
+//! In the site record (PLAN-customer-site-create §11.8, 4542e): `state` is `creating`,
+//! `ready` or `unfinished` (a record without it is `ready`: the sites from before);
+//! `created_at` is UTC seconds, written when the code is given; `holder` has the host
+//! lock's shape. Reading those fields into [`CreateState`] and a [`Holder`] is the caller's.
 
 use crate::op::{lock, Holder, Liveness, Lock};
 
@@ -23,7 +28,7 @@ pub enum CreateState {
     /// Finished; the site can be used.
     Ready,
     /// Stopped half way; kept, counted against the plan, not usable (r2 §8.1 #4).
-    Incomplete,
+    Unfinished,
 }
 
 /// What the reader should conclude.
@@ -31,15 +36,15 @@ pub enum CreateState {
 pub enum Verdict {
     /// Being created: tell the user to look again later.
     Creating,
-    /// The worker is gone (or never started): mark the record incomplete and tell us.
+    /// The worker is gone (or never started): mark the record unfinished and tell us.
     Interrupted,
     /// Whether the worker lives could not be established: say "creating", add that the
     /// state cannot be checked right now, change nothing.
     Unknown,
     /// Finished.
     Ready,
-    /// Already marked incomplete.
-    Incomplete,
+    /// Already marked unfinished.
+    Unfinished,
 }
 
 /// Seconds a "creating" record may go without a holder before the start is taken as
@@ -61,7 +66,7 @@ pub fn verdict(
 ) -> Verdict {
     match state {
         CreateState::Ready => Verdict::Ready,
-        CreateState::Incomplete => Verdict::Incomplete,
+        CreateState::Unfinished => Verdict::Unfinished,
         CreateState::Creating => match holder {
             None if now.saturating_sub(created_at) > START_GRACE_SECS => Verdict::Interrupted,
             None => Verdict::Creating,
@@ -76,7 +81,7 @@ pub fn verdict(
 }
 
 /// After taking the host lock and re-reading the record: may it now be marked
-/// incomplete? Only if it is still "creating" with the very holder (or the same missing
+/// unfinished? Only if it is still "creating" with the very holder (or the same missing
 /// holder and the same `created_at`) that the verdict was about. Otherwise the worker
 /// finished in between, another reader already marked it, or a newer attempt started —
 /// and overwriting would destroy that.
@@ -116,8 +121,8 @@ mod tests {
                 Verdict::Ready
             );
             assert_eq!(
-                verdict(CreateState::Incomplete, None, T0, T0, BOOT, l),
-                Verdict::Incomplete
+                verdict(CreateState::Unfinished, None, T0, T0, BOOT, l),
+                Verdict::Unfinished
             );
         }
     }
@@ -272,7 +277,7 @@ mod tests {
         // another reader marked it already
         assert!(!still_same_attempt(
             judged,
-            CreateState::Incomplete,
+            CreateState::Unfinished,
             (Some(&h), T0)
         ));
         // a newer attempt: other holder, or same holder fields but a new record
