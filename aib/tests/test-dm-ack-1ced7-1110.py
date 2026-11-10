@@ -69,12 +69,13 @@ class Ack(unittest.TestCase):
 
     def test_a3_only_a_short_line_and_only_as_read(self):
         relay = "長訊已落檔(9 位元組),請讀:%s/pending/RELAY-dm-x.txt" % self.tmp.name
+        # RULES §15.17: each refusal says why (ack = the text, status = the kind / status pair)
         for bad in ("x" * 201, "第一行\n第二行", "  ", relay):
-            with self.assertRaises(ValueError, msg=repr(bad[:20])):
+            with self.assertRaisesRegex(ValueError, "^ack$", msg=repr(bad[:20])):
                 self.ack(bad)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "^status$"):
             Q.record(SEAT, "收到", "@bbbbb", status="read", env=self.env, now=NOW, kind="other")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "^status$"):
             Q.record(SEAT, "收到", "@bbbbb", status="delivered", env=self.env, now=NOW, kind="ack")
         self.assertEqual(Q._all_items(SEAT, env=self.env), [])
 
