@@ -130,7 +130,7 @@ LAYOUT = (
     #   這類要另開一格 ⇒ 就是這檔。只准 --remote-only 推到那台主機(chpasswd 讀完 shred),本機不存;名字 HOST_ROOT_PASSWORD_<主機代號>,
     #   只有 HOST_ROOT_ 開頭落這檔(NO_SEGMENT_PREFIX_FILES);缺值不補填。配 `aib secret ask … --generate` 在視窗內產 28 字合規密碼。
     ("host-root.env", "host-root", "type",
-     "主機 root 密碼(只准 --remote-only 推到那台主機;本機不存)。HOST_ROOT_PASSWORD_<主機代號>,例 HOST_ROOT_PASSWORD_EU02。",
+     "主機 root 密碼(只准 --remote-only 推到那台主機;本機不存)。HOST_ROOT_PASSWORD_<主機代號>,例 HOST_ROOT_PASSWORD_HOSTA。",
      (("HOST_ROOT_PASSWORD", "主機 root@pam 密碼(實際名字加 _<主機代號>)", "cloud-host", "host-root", False),)),
     ("pve.env", "pve-api", "type",
      "Proxmox VE API token(建議 aib@pve 的 privsep token)。一行 PVE_API_TOKEN=使用者@realm!token名=UUID;多台加 _<主機代號>。不是 root 密碼,也不收 root@ 的 token。",

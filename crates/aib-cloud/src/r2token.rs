@@ -554,6 +554,8 @@ mod tests {
         Plan::new(
             "ez2-cloud-host-a",
             "host-a-ts",
+            // a well-known public resolver address stands in for the host's egress address:
+            // EgressIp refuses the documentation ranges on purpose, so 203.0.113.x cannot be used here
             "8.8.8.8",
             "host-b-ts",
             "ez2.work",
