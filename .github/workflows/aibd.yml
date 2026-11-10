@@ -439,7 +439,7 @@ jobs:
              '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
              output_that_does_not_end_is_cut_on_the_host
           # site usage: the host offers its reserve too
-          hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb,' \
+          hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
              the_host_keeps_its_reserve
           # edge domain add / rm without --plan goes on
           hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
