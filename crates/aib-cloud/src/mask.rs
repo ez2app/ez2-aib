@@ -209,11 +209,15 @@ pub fn cpuinfo(host: &str, cores: u32) -> Option<String> {
     Some(out)
 }
 
+/// What [`cpu_dir`] gives: the files directly in the directory (name, text) and the
+/// names of the per-processor directories.
+pub type CpuDir = (Vec<(&'static str, String)>, Vec<String>);
+
 /// What the container sees as `/sys/devices/system/cpu`, for `cores` processors: files
 /// (name, content) and the names of the per-processor directories. Programs count
 /// processors from `online` and from the `cpuN` entries; nothing else of the host's
 /// directory is carried over.
-pub fn cpu_dir(cores: u32) -> Option<(Vec<(&'static str, String)>, Vec<String>)> {
+pub fn cpu_dir(cores: u32) -> Option<CpuDir> {
     if !(1..=CORES_MAX).contains(&cores) {
         return None;
     }
