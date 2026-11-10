@@ -539,6 +539,10 @@ jobs:
           hk opstore.rs '        Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),' \
              '        Ok(Ok(last)) if last.state == op::State::Verified || true => "finished".to_owned(), // knife (a guard, so the next arm stays reachable under -D warnings)' \
              a_damaged_journal_is_archived_and_an_unfinished_one_is_not
+          # op archive: a damaged journal is archived only with its target named (#638 M1)
+          hk opstore.rs '    let named = target.is_some_and(|t| match targets.as_slice() {' \
+             '    let named = target.is_none() || target.is_some_and(|t| match targets.as_slice() { // knife' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
           # host lock: a holder written aside and never renamed is cleared (#635 L1 N1)
           hk opstore.rs '        sweep_leftovers(&p.lock);' \
              '        let _ = sweep_leftovers; // knife: not called (still referenced, else dead_code under -D warnings)' \

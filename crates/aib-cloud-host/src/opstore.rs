@@ -832,22 +832,108 @@ pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), Stri
 /// Where [`archive_op`] moves a journal: below the journal directory, out of what
 /// [`last_entries`] reads.
 pub const ARCHIVE_DIR: &str = "archive";
+/// One line per archived journal (when, which, why), below [`ARCHIVE_DIR`].
+pub const ARCHIVE_NOTES: &str = "notes.jsonl";
+
+/// Every line of a journal that reads as an entry on its own, and how many lines there
+/// were. For telling a person what a damaged journal was doing; never for deciding that
+/// an operation finished.
+fn salvage(text: &str) -> (Vec<Entry>, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let entries = lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| Entry::from_json(&v).ok())
+        .collect();
+    (entries, lines.len())
+}
+
+/// A journal that cannot be read or replayed may still be an operation that changed the
+/// host: `running` was written, then a later line was damaged. Archiving it would take
+/// its target out of `refuse_unfinished` with the host possibly half changed (#638 M1,
+/// 1ced7). So it is archived only when the person names the target, after checking the
+/// host for it; until then the refusal shows what could be read of it.
+fn damaged(path: &Path, op_id: &str, err: &str, target: Option<&str>) -> Result<String, String> {
+    let text = fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let (readable, total) = salvage(&text);
+    let mut targets: Vec<&str> = readable.iter().map(|e| e.target.as_str()).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let changed = readable.iter().any(|e| {
+        matches!(
+            e.state,
+            op::State::Running | op::State::Failed | op::State::Recovery
+        )
+    }) || readable
+        .last()
+        .is_some_and(|e| e.state == op::State::Approved);
+    let summary = format!(
+        "{err}; {}/{total} lines readable; target {}; command {}; last readable state {}{}",
+        readable.len(),
+        if targets.is_empty() {
+            "unreadable".to_owned()
+        } else {
+            targets.join(", ")
+        },
+        readable.last().map_or("unreadable", |e| e.command.as_str()),
+        readable.last().map_or("none", |e| e.state.as_str()),
+        if changed {
+            "; it may have changed the host (running, failed or recovery was written, or it stopped at approved)"
+        } else {
+            ""
+        },
+    );
+    let named = target.is_some_and(|t| match targets.as_slice() {
+        [only] => t == *only,
+        [] => !t.is_empty(),
+        _ => false,
+    });
+    if !named {
+        return Err(format!(
+            "operation {op_id}: journal damaged ({summary}). Not archived: check the host for that target, then run `op archive {op_id} --target <target>` naming it"
+        ));
+    }
+    Ok(format!(
+        "damaged ({summary}); host checked by hand for {}",
+        target.unwrap_or_default()
+    ))
+}
+
+/// Append one note line and sync it.
+fn append_note(path: &Path, note: &Value) -> Result<(), String> {
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(format!("{note}\n").as_bytes())
+        .and_then(|()| f.sync_all())
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
 
 /// Move one operation's journal out of the way, by hand, under the host lock (#635 seg. 1
 /// N2, 1ced7). Only a journal that cannot be read or replayed — which otherwise refuses
 /// every operation on every target — or one whose operation is verified. An operation
 /// that is running, failed or in recovery is refused here: a person closes it with
 /// `op recovered` after checking the host. Returns what was archived and why.
-pub fn archive_op(place: &OpPlace, op_id: &str) -> Result<String, String> {
+pub fn archive_op(place: &OpPlace, op_id: &str, target: Option<&str>) -> Result<String, String> {
     let path = journal_path(&place.ops_dir, op_id)?;
     let pid = std::process::id();
     acquire(&place.lock, op_id, pid)?;
-    let result = archive_locked(&place.ops_dir, &path, op_id);
+    let result = archive_locked(&place.ops_dir, &path, op_id, target);
     let _ = release(&place.lock, op_id, pid);
     result
 }
 
-fn archive_locked(dir: &Path, path: &Path, op_id: &str) -> Result<String, String> {
+fn archive_locked(
+    dir: &Path,
+    path: &Path,
+    op_id: &str,
+    target: Option<&str>,
+) -> Result<String, String> {
     if !path.exists() {
         return Err(format!(
             "operation {op_id} has no journal in {}",
@@ -856,8 +942,8 @@ fn archive_locked(dir: &Path, path: &Path, op_id: &str) -> Result<String, String
     }
     let journal = read_journal(path);
     let why = match journal.as_ref().map(|(entries, _)| op::replay(entries)) {
-        Err(e) => format!("damaged ({e})"),
-        Ok(Err(e)) => format!("damaged ({e})"),
+        Err(e) => damaged(path, op_id, e, target)?,
+        Ok(Err(e)) => damaged(path, op_id, &e.to_string(), target)?,
         Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),
         Ok(Ok(last)) => {
             return Err(format!(
@@ -872,6 +958,13 @@ fn archive_locked(dir: &Path, path: &Path, op_id: &str) -> Result<String, String
     if to.exists() {
         return Err(format!("{} already exists; not overwritten", to.display()));
     }
+    // the record goes first: a crash before the move leaves a note and the journal in
+    // place (run it again); never a journal moved with nothing saying why (#638 L1)
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let note = json!({ "at": at, "op": op_id, "why": why, "pid": std::process::id() });
+    append_note(&archive.join(ARCHIVE_NOTES), &note)?;
     fs::rename(path, &to).map_err(|e| format!("{}: {e}", path.display()))?;
     sync_dir(&archive)?;
     sync_dir(dir)?;
@@ -992,12 +1085,17 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         }
         Some("archive") => {
             // moves a damaged or finished journal aside; refuses an unfinished operation
-            let op_id = args.get(1).ok_or("op archive needs <op id>")?;
-            println!("{}", archive_op(&OpPlace::host()?, op_id)?);
+            let op_id = args.get(1).ok_or("op archive needs <op id> [--target <target>]")?;
+            let target = match args.get(2..).unwrap_or_default() {
+                [] => None,
+                [flag, t] if flag.as_str() == "--target" => Some(t.as_str()),
+                _ => return Err("op archive needs <op id> [--target <target>]".to_owned()),
+            };
+            println!("{}", archive_op(&OpPlace::host()?, op_id, target)?);
             Ok(0)
         }
         _ => Err(
-            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id>"
+            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id> [--target <target>]"
                 .to_owned(),
         ),
     }
@@ -1630,6 +1728,59 @@ mod tests {
 
     /// #635 seg. 1 N2 (1ced7): one damaged journal refuses every operation on every
     /// target; `op archive` is the way out, and it does not take an unfinished one.
+    /// #638 M1 (1ced7): a damaged journal of an operation that wrote `running` is not
+    /// archived on its own: the refusal shows the target and what was read, and only the
+    /// target named by the person (the one read from it) archives it, with a note.
+    #[test]
+    fn a_damaged_journal_that_ran_is_archived_only_with_its_target_named() {
+        let pl = place("archive-ran");
+        let mut ran = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site4",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op| {
+                ran = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        // it stopped after `running`, and a line before it was damaged
+        let path = journal_path(&pl.ops_dir, &ran).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.contains("\"verified\""))
+            .collect();
+        assert!(lines.iter().any(|l| l.contains("\"running\"")), "{text}");
+        lines.insert(1, "{damaged");
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let why = archive_op(&pl, &ran, None).unwrap_err();
+        assert!(
+            why.contains("running") && why.contains("site:site4") && why.contains("--target"),
+            "{why}"
+        );
+        assert!(path.exists());
+        // another target is not this one
+        assert!(archive_op(&pl, &ran, Some("site:site5")).is_err());
+        assert!(path.exists());
+        let done = archive_op(&pl, &ran, Some("site:site4")).unwrap();
+        assert!(
+            done.contains("damaged") && done.contains("site:site4"),
+            "{done}"
+        );
+        assert!(!path.exists());
+        let notes = fs::read_to_string(pl.ops_dir.join(ARCHIVE_DIR).join(ARCHIVE_NOTES)).unwrap();
+        assert!(
+            notes.contains(ran.as_str()) && notes.contains("site:site4"),
+            "{notes}"
+        );
+    }
+
     #[test]
     fn a_damaged_journal_is_archived_and_an_unfinished_one_is_not() {
         let pl = place("archive");
@@ -1680,15 +1831,23 @@ mod tests {
         .is_err());
 
         // unfinished: refused, and the journal stays where it is
-        let why = archive_op(&pl, &failed).unwrap_err();
+        let why = archive_op(&pl, &failed, None).unwrap_err();
         assert!(
             why.contains("failed") && why.contains("op recovered"),
             "{why}"
         );
         assert!(journal_path(&pl.ops_dir, &failed).unwrap().exists());
         // damaged and finished: moved below archive/, out of what is read
-        assert!(archive_op(&pl, OP1).unwrap().contains("damaged"));
-        assert!(archive_op(&pl, &done).unwrap().contains("finished"));
+        // nothing of it is readable: only with a target named by the person
+        let why = archive_op(&pl, OP1, None).unwrap_err();
+        assert!(
+            why.contains("--target") && why.contains("0/2 lines"),
+            "{why}"
+        );
+        assert!(archive_op(&pl, OP1, Some("site:site9"))
+            .unwrap()
+            .contains("damaged"));
+        assert!(archive_op(&pl, &done, None).unwrap().contains("finished"));
         assert!(pl
             .ops_dir
             .join(ARCHIVE_DIR)
@@ -1696,7 +1855,7 @@ mod tests {
             .exists());
         assert!(!journal_path(&pl.ops_dir, OP1).unwrap().exists());
         // nothing to archive, and the lock is given back every time
-        assert!(archive_op(&pl, OP2).is_err());
+        assert!(archive_op(&pl, OP2, None).is_err());
         assert!(!pl.lock.lock.exists());
         // site3 goes on; site2 is still held by its failed operation
         run_op(
