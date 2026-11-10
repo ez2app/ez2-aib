@@ -5987,6 +5987,6 @@
   "aib.gameworld.open_failed": "로비 창을 열 수 없습니다. 직접 여세요: {url}",
   "aib.gameworld.start_failed": "로비를 시작할 수 없습니다(함장실 플러그인이 올바른 결과를 주지 않음). 좌석에는 영향이 없습니다.",
   "aib.gameworld.not_switched": "로비가 {target}(으)로 전환되지 않았습니다. 현재 {actual}입니다. 좌석에는 영향이 없습니다.",
-  "aib.cloud_robot.touchid_apply": "aib: Hetzner 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
-  "aib.approve_gate.cat.host_rescue": "호스트 구조(Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib: 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
+  "aib.approve_gate.cat.host_rescue": "호스트 구조(공급자 콘솔 rescue / reset)"
 }
