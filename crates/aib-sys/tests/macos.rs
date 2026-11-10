@@ -404,13 +404,19 @@ fn t2_pressure_real() {
 }
 
 /// The start-up check passes where T1 is usable and reports a tag where it is not.
+/// `unknown` too: the GitHub macOS VM gets no HID services array, which is `Unknown`
+/// since 043dd #617 r2 L1 (CI run 42807240345, #626).
 #[test]
 fn t1_selfcheck_real() {
     match aib_sys::thermal::selfcheck_t1(&Macos) {
         Ok(d) => assert!(d.n >= 1),
         Err(e) => {
             assert!(!t1_required(), "{e:?}");
-            assert!(["unsupported", "spi_missing"].contains(&e.tag()));
+            assert!(
+                ["unsupported", "spi_missing", "unknown"].contains(&e.tag()),
+                "{e:?}"
+            );
+            eprintln!("T1 selfcheck: UNVERIFIED (vm or not arm64), {}", e.tag());
         }
     }
 }
