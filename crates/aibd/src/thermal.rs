@@ -53,7 +53,7 @@ pub(crate) trait Beat: Send {
 
 impl Pace for &'static Timer {
     fn begin(&self) -> Box<dyn Beat> {
-        Box::new(Timer::begin(*self, None))
+        Box::new(Timer::begin(self, None))
     }
 }
 
