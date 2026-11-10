@@ -32,8 +32,8 @@ k "$P" $'        if !ok {\n            Self::revoke(&mut inner, pair_id);' \
        $'        if !ok {\n            // knife: no revoke on a wrong short code' \
   a_wrong_short_code_revokes_and_cannot_be_retried
 # P6 no rate limit on failures
-k "$P" '        inner.failures.len() >= MAX_FAILURES' \
-       '        inner.failures.len() >= MAX_FAILURES && false // knife' \
+k "$P" '        let hit = inner.failures.len() >= MAX_FAILURES;' \
+       '        let hit = inner.failures.len() >= MAX_FAILURES && false; // knife' \
   wrong_guesses_hit_the_rate_limit_but_not_an_unrelated_session
 # P7 `Origin: null` passes elsewhere once someone lists it as allowed
 k "$G" '            Some("null") => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")),' \

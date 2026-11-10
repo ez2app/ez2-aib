@@ -44,9 +44,9 @@ fn app_with(origins: &[&str]) -> T {
         origins.iter().map(|s| s.to_string()).collect(),
         Token::from_test_value(TOKEN),
     )
-        .with_pairing(Arc::new(
-            Pairing::with_clock(clock).with_channel(ConfirmChannel::TerminalUnverified),
-        ));
+    .with_pairing(Arc::new(
+        Pairing::with_clock(clock).with_channel(ConfirmChannel::TerminalUnverified),
+    ));
     let app = router(
         AppState {
             sessions: aibd::sessions::Sessions::new(
@@ -121,7 +121,8 @@ impl T {
         if let Some(o) = origin {
             b = b.header("origin", o);
         }
-        self.send(b.body(Body::from(body.to_string())).unwrap()).await
+        self.send(b.body(Body::from(body.to_string())).unwrap())
+            .await
     }
 
     async fn redeem(&self, code: &str) -> R {
@@ -135,7 +136,9 @@ impl T {
 
     /// `(pair_id, code)`
     async fn new_code(&self) -> (String, String) {
-        let r = self.call("POST", "/api/v1/pair/codes", Some(TOKEN), None).await;
+        let r = self
+            .call("POST", "/api/v1/pair/codes", Some(TOKEN), None)
+            .await;
         assert_eq!(r.status, StatusCode::CREATED, "{}", r.text);
         (
             r.json["pair_id"].as_str().unwrap().to_string(),
@@ -153,7 +156,12 @@ impl T {
 
     async fn short_code(&self, id: &str) -> String {
         let r = self
-            .call("GET", &format!("/api/v1/pair/codes/{id}"), Some(TOKEN), None)
+            .call(
+                "GET",
+                &format!("/api/v1/pair/codes/{id}"),
+                Some(TOKEN),
+                None,
+            )
             .await;
         r.json["short_code"].as_str().unwrap_or("").to_string()
     }
@@ -184,7 +192,9 @@ async fn the_whole_pairing_flow_unlocks_only_after_confirm() {
     let t = app();
     let (id, code, cred) = t.paired().await;
     // the page and the terminal show the same short code
-    let page = t.call("GET", "/api/v1/pair/status", Some(&cred), None).await;
+    let page = t
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
     assert_eq!(page.status, StatusCode::OK);
     assert_eq!(page.json["state"], "awaiting_confirmation");
     let short = t.short_code(&id).await;
@@ -194,7 +204,9 @@ async fn the_whole_pairing_flow_unlocks_only_after_confirm() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     let ev = t.call("GET", "/api/v1/events", Some(&cred), None).await;
     assert_eq!(ev.status, StatusCode::OK, "{}", ev.text);
-    let st = t.call("GET", "/api/v1/pair/status", Some(&cred), None).await;
+    let st = t
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
     assert_eq!(st.json["state"], "confirmed");
     assert!(st.json.get("short_code").is_none());
 }
@@ -229,7 +241,9 @@ async fn an_unconfirmed_credential_gets_only_the_allow_list() {
     }
     let h = t.call("GET", "/api/v1/health", Some(&cred), None).await;
     assert_eq!(h.status, StatusCode::OK);
-    let s = t.call("GET", "/api/v1/pair/status", Some(&cred), None).await;
+    let s = t
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
     assert_eq!(s.status, StatusCode::OK);
 }
 
@@ -259,7 +273,9 @@ async fn a_page_credential_never_reaches_the_code_endpoints() {
     }
     // still the same after confirmation through the right channel
     assert_eq!(t.confirm(&id, &short).await.status, StatusCode::OK);
-    let r = t.call("POST", "/api/v1/pair/codes", Some(&cred), None).await;
+    let r = t
+        .call("POST", "/api/v1/pair/codes", Some(&cred), None)
+        .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -272,7 +288,9 @@ async fn a_second_redemption_is_409_and_revokes_the_first_credential() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(code_of(&r), "pairing_code_reused");
     assert!(!r.text.contains("setItem"));
-    let s = t.call("GET", "/api/v1/pair/status", Some(&cred), None).await;
+    let s = t
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
     assert_eq!(s.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -288,7 +306,12 @@ async fn an_attacker_who_redeems_first_never_unlocks_by_waiting() {
     let r = t.call("GET", "/api/v1/events", Some(&cred), None).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     let v = t
-        .call("GET", &format!("/api/v1/pair/codes/{id}"), Some(TOKEN), None)
+        .call(
+            "GET",
+            &format!("/api/v1/pair/codes/{id}"),
+            Some(TOKEN),
+            None,
+        )
         .await;
     assert_eq!(v.json["state"], "revoked");
 }
@@ -298,12 +321,21 @@ async fn a_wrong_short_code_revokes_and_cannot_be_retried() {
     let t = app();
     let (id, _code, cred) = t.paired().await;
     let short = t.short_code(&id).await;
-    let wrong = if short == "000000" { "000001" } else { "000000" };
+    let wrong = if short == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
     let r = t.confirm(&id, wrong).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     assert_eq!(code_of(&r), "pairing_failed");
-    assert_eq!(t.confirm(&id, &short).await.status, StatusCode::UNAUTHORIZED);
-    let r = t.call("GET", "/api/v1/pair/status", Some(&cred), None).await;
+    assert_eq!(
+        t.confirm(&id, &short).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let r = t
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -312,20 +344,31 @@ async fn cancel_in_the_terminal_and_revoke_on_the_page_both_end_the_credential()
     let t = app();
     let (id, _code, cred) = t.paired().await;
     let r = t
-        .call("DELETE", &format!("/api/v1/pair/codes/{id}"), Some(TOKEN), None)
+        .call(
+            "DELETE",
+            &format!("/api/v1/pair/codes/{id}"),
+            Some(TOKEN),
+            None,
+        )
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     let short = t.short_code(&id).await;
     assert!(short.is_empty() || t.confirm(&id, &short).await.status != StatusCode::OK);
     assert_eq!(
-        t.call("GET", "/api/v1/pair/status", Some(&cred), None).await.status,
+        t.call("GET", "/api/v1/pair/status", Some(&cred), None)
+            .await
+            .status,
         StatusCode::UNAUTHORIZED
     );
     let (_id2, _c2, cred2) = t.paired().await;
-    let r = t.call("POST", "/api/v1/pair/revoke", Some(&cred2), None).await;
+    let r = t
+        .call("POST", "/api/v1/pair/revoke", Some(&cred2), None)
+        .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        t.call("GET", "/api/v1/pair/status", Some(&cred2), None).await.status,
+        t.call("GET", "/api/v1/pair/status", Some(&cred2), None)
+            .await
+            .status,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -389,7 +432,11 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
     }
     // JSON or another content type
     let r = t
-        .redeem_raw(Some("null"), "application/json", &format!("{{\"code\":\"{code}\"}}"))
+        .redeem_raw(
+            Some("null"),
+            "application/json",
+            &format!("{{\"code\":\"{code}\"}}"),
+        )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     // over 1 KiB
@@ -408,7 +455,9 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
     };
     let r = t.send(get("/api/v1/pair/redeem".into())).await;
     assert_eq!(r.status, StatusCode::METHOD_NOT_ALLOWED);
-    let r = t.send(get(format!("/api/v1/pair/redeem?code={code}"))).await;
+    let r = t
+        .send(get(format!("/api/v1/pair/redeem?code={code}")))
+        .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert_eq!(code_of(&r), "token_in_url");
     // none of that used the code up: aibd's own origin still redeems it
@@ -475,7 +524,9 @@ async fn the_exchange_page_is_not_cached_and_loads_nothing() {
     assert!(r.text.contains("location.replace('/')"));
     assert!(!r.text.contains("src="));
     // the code response is not cached either
-    let c = t.call("POST", "/api/v1/pair/codes", Some(TOKEN), None).await;
+    let c = t
+        .call("POST", "/api/v1/pair/codes", Some(TOKEN), None)
+        .await;
     assert_eq!(c.headers["cache-control"], "no-store");
 }
 
@@ -526,7 +577,9 @@ async fn pairing_is_off_unless_turned_on() {
         clock: Arc::new(AtomicU64::new(0)),
         _dir: dir,
     };
-    let r = t.call("POST", "/api/v1/pair/codes", Some(TOKEN), None).await;
+    let r = t
+        .call("POST", "/api/v1/pair/codes", Some(TOKEN), None)
+        .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     let m = t.call("GET", "/api/v1/metrics", Some(TOKEN), None).await;
     assert_eq!(m.json["pairing"]["channel"], "off");
@@ -548,6 +601,8 @@ async fn the_start_up_token_keeps_full_access_and_has_no_page_status() {
     let t = app();
     let r = t.call("GET", "/api/v1/events", Some(TOKEN), None).await;
     assert_eq!(r.status, StatusCode::OK);
-    let r = t.call("GET", "/api/v1/pair/status", Some(TOKEN), None).await;
+    let r = t
+        .call("GET", "/api/v1/pair/status", Some(TOKEN), None)
+        .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }

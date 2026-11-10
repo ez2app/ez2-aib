@@ -81,7 +81,10 @@ impl GuardConfig {
         if ipv6 {
             allowed_hosts.push(format!("[::1]:{port}"));
         }
-        let own_origins = allowed_hosts.iter().map(|h| format!("http://{h}")).collect();
+        let own_origins = allowed_hosts
+            .iter()
+            .map(|h| format!("http://{h}"))
+            .collect();
         GuardConfig {
             allowed_hosts,
             allowed_origins,
@@ -256,8 +259,8 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     }
 
     let path = req.uri().path();
-    let origin =
-        single_header(h, header::ORIGIN).map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
+    let origin = single_header(h, header::ORIGIN)
+        .map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
     if path == PAIR_REDEEM {
         // a browser form POST always sends Origin: `null` from a local file, or ours
         let ok = origin.is_some_and(|o| {
@@ -324,7 +327,10 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         return Err((ErrorCode::Unauthorized, "wrong token"));
     };
     if path == PAIR_CODES || path.starts_with("/api/v1/pair/codes/") {
-        return Err((ErrorCode::Unauthorized, "this endpoint takes the start-up token only"));
+        return Err((
+            ErrorCode::Unauthorized,
+            "this endpoint takes the start-up token only",
+        ));
     }
     if !page.confirmed && !UNCONFIRMED_PATHS.contains(&path) {
         return Err((

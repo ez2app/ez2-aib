@@ -63,20 +63,21 @@ fn pair_error(e: PairError, msg: &'static str) -> Response {
     no_store(error_response(code, msg, &request_id()))
 }
 
-async fn read_limited(body: Body, max: usize) -> Result<Bytes, Response> {
-    axum::body::to_bytes(body, max).await.map_err(|_| {
-        error_response(
-            ErrorCode::PayloadTooLarge,
-            "request body too large",
-            &request_id(),
-        )
-    })
+/// The body, or `None` when it is larger than `max` (answer with [`too_large`]).
+async fn read_limited(body: Body, max: usize) -> Option<Bytes> {
+    axum::body::to_bytes(body, max).await.ok()
+}
+
+fn too_large() -> Response {
+    error_response(
+        ErrorCode::PayloadTooLarge,
+        "request body too large",
+        &request_id(),
+    )
 }
 
 /// `POST /api/v1/pair/codes`
-pub async fn create_code(
-    Extension(p): Extension<Arc<Pairing>>,
-) -> Response {
+pub async fn create_code(Extension(p): Extension<Arc<Pairing>>) -> Response {
     match p.create_code() {
         Ok(n) => json(
             StatusCode::CREATED,
@@ -88,10 +89,7 @@ pub async fn create_code(
 }
 
 /// `GET /api/v1/pair/codes/{pair_id}`
-pub async fn get_code(
-    Extension(p): Extension<Arc<Pairing>>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn get_code(Extension(p): Extension<Arc<Pairing>>, Path(id): Path<String>) -> Response {
     match p.view(&id) {
         Some(v) => {
             let mut j = view_json(&v);
@@ -108,9 +106,8 @@ pub async fn confirm(
     Path(id): Path<String>,
     body: Body,
 ) -> Response {
-    let bytes = match read_limited(body, CONFIRM_MAX_BODY).await {
-        Ok(b) => b,
-        Err(r) => return r,
+    let Some(bytes) = read_limited(body, CONFIRM_MAX_BODY).await else {
+        return too_large();
     };
     let short = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
@@ -130,10 +127,7 @@ pub async fn confirm(
 }
 
 /// `DELETE /api/v1/pair/codes/{pair_id}`: the person said no or closed the prompt.
-pub async fn cancel(
-    Extension(p): Extension<Arc<Pairing>>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn cancel(Extension(p): Extension<Arc<Pairing>>, Path(id): Path<String>) -> Response {
     if p.cancel(&id) {
         no_store(StatusCode::NO_CONTENT.into_response())
     } else {
@@ -145,9 +139,10 @@ fn is_form(h: &HeaderMap) -> bool {
     let mut it = h.get_all(header::CONTENT_TYPE).iter();
     match (it.next(), it.next()) {
         (Some(v), None) => v.to_str().is_ok_and(|s| {
-            s.split(';')
-                .next()
-                .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/x-www-form-urlencoded"))
+            s.split(';').next().is_some_and(|m| {
+                m.trim()
+                    .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+            })
         }),
         _ => false,
     }
@@ -212,9 +207,8 @@ pub async fn redeem(
             &request_id(),
         ));
     }
-    let bytes = match read_limited(body, REDEEM_MAX_BODY).await {
-        Ok(b) => b,
-        Err(r) => return no_store(r),
+    let Some(bytes) = read_limited(body, REDEEM_MAX_BODY).await else {
+        return no_store(too_large());
     };
     let code = code_field(&bytes).unwrap_or_default();
     match p.redeem(&code) {
@@ -264,8 +258,14 @@ mod tests {
 
     #[test]
     fn code_field_takes_exactly_one_code() {
-        assert_eq!(code_field(b"code=ABCDE-FGHJK").as_deref(), Some("ABCDE-FGHJK"));
-        assert_eq!(code_field(b"code=ABCDE%2DFGHJK").as_deref(), Some("ABCDE-FGHJK"));
+        assert_eq!(
+            code_field(b"code=ABCDE-FGHJK").as_deref(),
+            Some("ABCDE-FGHJK")
+        );
+        assert_eq!(
+            code_field(b"code=ABCDE%2DFGHJK").as_deref(),
+            Some("ABCDE-FGHJK")
+        );
         assert_eq!(code_field(b"code=a&code=b"), None);
         assert_eq!(code_field(b"x=1"), None);
         assert_eq!(code_field(b"code"), None);
@@ -276,7 +276,10 @@ mod tests {
     fn form_content_type_only() {
         let mut h = HeaderMap::new();
         assert!(!is_form(&h));
-        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
         assert!(!is_form(&h));
         h.insert(
             header::CONTENT_TYPE,
@@ -296,13 +299,17 @@ mod tests {
         let h = r.headers();
         assert_eq!(h[header::CACHE_CONTROL], "no-store");
         assert_eq!(h[header::REFERRER_POLICY], "no-referrer");
-        let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_string();
+        let csp = h[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("default-src 'none'"));
         let script = format!(
             "try{{sessionStorage.setItem('{STORAGE_KEY}','abc_DEF-123')}}catch(e){{}}location.replace('/');"
         );
-        let want = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
+        let want =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
         assert!(csp.contains(&format!("'sha256-{want}'")));
     }
 }

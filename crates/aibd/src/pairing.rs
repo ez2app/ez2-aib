@@ -220,8 +220,7 @@ impl Pair {
         PairView {
             state,
             expires_in,
-            short_code: (state == PairState::AwaitingConfirmation)
-                .then(|| self.short_code.clone()),
+            short_code: (state == PairState::AwaitingConfirmation).then(|| self.short_code.clone()),
         }
     }
 }
@@ -622,9 +621,15 @@ mod tests {
 
     #[test]
     fn off_by_default_issues_no_code() {
-        assert_eq!(Pairing::default().create_code().unwrap_err(), PairError::Off);
+        assert_eq!(
+            Pairing::default().create_code().unwrap_err(),
+            PairError::Off
+        );
         assert_eq!(ConfirmChannel::from_env_value(None), ConfirmChannel::Off);
-        assert_eq!(ConfirmChannel::from_env_value(Some("1")), ConfirmChannel::Off);
+        assert_eq!(
+            ConfirmChannel::from_env_value(Some("1")),
+            ConfirmChannel::Off
+        );
         assert_eq!(
             ConfirmChannel::from_env_value(Some("terminal-unverified")),
             ConfirmChannel::TerminalUnverified
@@ -714,7 +719,11 @@ mod tests {
                 std::thread::spawn(move || p.redeem(&code).is_ok())
             })
             .collect();
-        let wins = hs.into_iter().map(|h| h.join().unwrap()).filter(|x| *x).count();
+        let wins = hs
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|x| *x)
+            .count();
         assert_eq!(wins, 1);
         // and the one that won is revoked by the losers
         assert_eq!(p.view(&c.pair_id).unwrap().state, PairState::Revoked);
