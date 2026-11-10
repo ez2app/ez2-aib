@@ -1178,9 +1178,13 @@ jobs:
              '    if req.candidate.dirty && false { // knife' \
              a_candidate_that_does_not_say_where_it_came_from_or_was_built_dirty_is_refused
           # H4 a host build without build info passes with no reason
-          hk '        Current::Unknown => match &req.allow_unknown_current {' \
-             '        Current::Unknown => match &Some(String::new()) { // knife' \
+          hk '        None => match &req.allow_unknown_current {' \
+             '        None => match &Some(String::new()) { // knife' \
              a_host_build_without_build_info_needs_a_reason
+          # H5 the main line is whatever is checked out (2240e, #650 M1: a PR head named as main)
+          hk 'pub const MAIN_REF: &str = "refs/remotes/origin/main";' \
+             'pub const MAIN_REF: &str = "HEAD"; // knife' \
+             the_main_line_is_origin_main_and_not_what_is_checked_out
       # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
       # and health stays public and minimal.
       - name: aib web knives (macOS)

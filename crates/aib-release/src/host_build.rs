@@ -10,22 +10,30 @@
 //!
 //! 1. the candidate's commit is known and it was built clean
 //!    (`candidate_unknown`, `candidate_dirty`);
-//! 2. the candidate is on main: an ancestor of `--main` (`not_on_main`).
-//!    **There is no flag for this one**: a PR head never goes onto a host;
+//! 2. the candidate is on main: an ancestor of [`MAIN_REF`] (`not_on_main`).
+//!    **There is no flag for this one**, and the main line cannot be named
+//!    from the command line: a PR head never goes onto a host;
 //! 3. the candidate is a descendant of what the host runs now
 //!    (`not_a_descendant`), unless a downgrade is asked for with its reason;
-//! 4. a host build made before build info existed is `current_unknown`,
-//!    passed only when asked for with its reason.
+//! 4. a host build made before build info existed, or one that says
+//!    `commit=unknown`, is `current_unknown`, passed only when asked for with
+//!    its reason.
 //!
 //! A reason given is printed in the answer, so it can go onto the approval
-//! the person reads. Nothing is fetched (the caller fetches first) and
-//! nothing is written: the repository is only asked `rev-parse`,
-//! `cat-file -e` and `merge-base --is-ancestor`. Exit: 0 may go on, 2
-//! refused, 3 git could not answer, 64 usage.
+//! the person reads; a reason given but not needed is listed too
+//! (`unused_allow`). Nothing is fetched and nothing is written: the
+//! repository is only asked `rev-parse`, `cat-file -e` and
+//! `merge-base --is-ancestor`. It is trusted: run it in our own clone, right
+//! after `git fetch origin main` (a stale main only refuses more). Exit: 0 may
+//! go on, 2 refused, 3 git could not answer, 64 usage.
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The main line a host build must be on. Fixed: not a flag, not an
+/// environment variable (2240e, #650 M1: `--main <PR head>` passed a PR head).
+pub const MAIN_REF: &str = "refs/remotes/origin/main";
 
 /// What starts the build info in `aib-cloud-host build-info` and in the file.
 pub const MARK: &str = "aib-build-info ";
@@ -139,12 +147,25 @@ pub enum Current {
 pub struct Request {
     pub candidate: BuildInfo,
     pub current: Current,
-    /// The main line, e.g. `origin/main` (fetched by the caller).
+    /// The main line; [`Request::for_host`] sets [`MAIN_REF`].
     pub main: String,
     /// `--allow-downgrade <why>`.
     pub allow_downgrade: Option<String>,
     /// `--allow-unknown-current <why>`.
     pub allow_unknown_current: Option<String>,
+}
+
+impl Request {
+    /// The request the command line makes: the main line is always [`MAIN_REF`].
+    pub fn for_host(candidate: BuildInfo, current: Current) -> Self {
+        Self {
+            candidate,
+            current,
+            main: MAIN_REF.to_owned(),
+            allow_downgrade: None,
+            allow_unknown_current: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,8 +247,13 @@ pub fn check(git: &dyn Git, req: &Request) -> Report {
         Err(e) => return rep(Verdict::Error, "git", e),
     }
     let mut allowed = Vec::new();
-    match &req.current {
-        Current::Unknown => match &req.allow_unknown_current {
+    // what the host runs, when it says; `None` for no build info or `commit=unknown`
+    let current = match &req.current {
+        Current::Known(info) => info.commit.as_deref(),
+        Current::Unknown => None,
+    };
+    match current {
+        None => match &req.allow_unknown_current {
             Some(why) => allowed.push(("allow_unknown_current", why.clone())),
             None => {
                 return rep(
@@ -237,14 +263,7 @@ pub fn check(git: &dyn Git, req: &Request) -> Report {
                 )
             }
         },
-        Current::Known(info) => {
-            let Some(cur) = info.commit.as_deref() else {
-                return rep(
-                    Verdict::Refused,
-                    "current_unknown",
-                    "the host's build says commit=unknown".into(),
-                );
-            };
+        Some(cur) => {
             match git.has_commit(cur) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -302,6 +321,7 @@ pub fn to_json(req: &Request, rep: &Report) -> Value {
         },
         "code": rep.code,
         "detail": rep.detail,
+        "main_ref": req.main,
         "main": rep.main,
         "candidate": info(&req.candidate),
         "current": match &req.current {
@@ -309,7 +329,22 @@ pub fn to_json(req: &Request, rep: &Report) -> Value {
             Current::Unknown => Value::Null,
         },
         "allowed": rep.allowed.iter().map(|(f, why)| json!({"flag": f, "why": why})).collect::<Vec<_>>(),
+        // a reason given that this check did not need: someone tried, the approval shows it
+        "unused_allow": unused_allow(req, rep),
     })
+}
+
+fn unused_allow(req: &Request, rep: &Report) -> Vec<Value> {
+    [
+        ("allow_downgrade", &req.allow_downgrade),
+        ("allow_unknown_current", &req.allow_unknown_current),
+    ]
+    .into_iter()
+    .filter_map(|(flag, why)| {
+        let why = why.as_ref()?;
+        (!rep.allowed.iter().any(|(f, _)| *f == flag)).then(|| json!({"flag": flag, "why": why}))
+    })
+    .collect()
 }
 
 /// The real git, asked about one repository with no repository chosen by the
@@ -327,16 +362,13 @@ impl GitCli {
 
     fn git(&self, args: &[&str]) -> Result<std::process::Output, String> {
         let mut c = Command::new("git");
-        for v in [
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_COMMON_DIR",
-            "GIT_NAMESPACE",
-        ] {
-            c.env_remove(v);
+        // nothing from the caller's environment chooses the repository, its objects
+        // or its settings: every GIT_* goes (GIT_DIR, GIT_CONFIG_COUNT / KEY_n /
+        // VALUE_n, GIT_CONFIG_PARAMETERS from `git -c`, …) (2240e, #650 N1)
+        for (k, _) in std::env::vars_os() {
+            if k.to_string_lossy().starts_with("GIT_") {
+                c.env_remove(k);
+            }
         }
         c.arg("-C").arg(&self.dir).args(args);
         c.output()

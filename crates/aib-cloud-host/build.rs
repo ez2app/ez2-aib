@@ -13,13 +13,11 @@ use std::process::Command;
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut c = Command::new("git");
-    for v in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-    ] {
-        c.env_remove(v);
+    // no GIT_* from the environment chooses the repository or its settings (#650 N1)
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("GIT_") {
+            c.env_remove(k);
+        }
     }
     let out = c.arg("-C").arg(dir).args(args).output().ok()?;
     out.status
@@ -40,10 +38,19 @@ fn main() {
         return;
     };
     let top = Path::new(&top);
-    // What goes into the build: every crate, the workspace manifest, the lock and the pinned
-    // toolchain. A change in any of them, or a new commit (HEAD, the branch it points to, the
-    // index), runs this again.
-    const INPUTS: [&str; 4] = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
+    // What goes into the build: every crate, the workspace manifest, the lock, the pinned
+    // toolchain and the repository's cargo settings (`.cargo/config.toml` can patch crates or
+    // set flags; untracked it is still dirty, #650 N2). A change in any of them, or a new
+    // commit (HEAD, the branch it points to, the index), runs this again. A path that does not
+    // exist (usually `.cargo`) makes cargo run this every build: slower, never stale. Cargo
+    // settings outside the repository (`~/.cargo/config.toml`) are not seen.
+    const INPUTS: [&str; 5] = [
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo",
+    ];
     for i in INPUTS {
         println!("cargo:rerun-if-changed={}", top.join(i).display());
     }

@@ -14,11 +14,11 @@
 //!
 //! `aib-release host-build (--candidate-bin FILE | --candidate-info LINE)
 //!     (--current-bin FILE | --current-info LINE | --current-unknown)
-//!     [--repo-dir DIR] [--main REF] [--allow-downgrade WHY]
-//!     [--allow-unknown-current WHY]` says whether a build of aib-cloud-host
-//! may go onto a host: built clean, on main, containing what the host runs
-//! (DEV 4.6 P1; see `host_build`). Exit: 0 may go on, 2 refused, 3 git could
-//! not answer, 64 usage.
+//!     [--repo-dir DIR] [--allow-downgrade WHY] [--allow-unknown-current WHY]`
+//! says whether a build of aib-cloud-host may go onto a host: built clean, on
+//! `origin/main` (fixed; fetch first), containing what the host runs (DEV 4.6
+//! P1; see `host_build`). Exit: 0 may go on, 2 refused, 3 git could not
+//! answer, 64 usage.
 
 use aib_release::gh::GhCli;
 use aib_release::host_build;
@@ -30,7 +30,7 @@ const USAGE: &str =
 [--need-workflow NAME]… [--label NAME] [--apply]
        aib-release trial --base REF [--repo-dir DIR] [--expect-tree REF] [--integ-branch NAME] HEAD…
        aib-release host-build (--candidate-bin FILE | --candidate-info LINE) \
-(--current-bin FILE | --current-info LINE | --current-unknown) [--repo-dir DIR] [--main REF] \
+(--current-bin FILE | --current-info LINE | --current-unknown) [--repo-dir DIR] \
 [--allow-downgrade WHY] [--allow-unknown-current WHY]";
 
 struct Args {
@@ -198,8 +198,8 @@ fn info_of(
 
 fn parse_host_build(argv: &[String]) -> Result<(std::path::PathBuf, host_build::Request), String> {
     let mut it = argv.iter().skip(1);
-    let (mut dir, mut main, mut cbin, mut cinfo, mut hbin, mut hinfo, mut hunknown) =
-        (None, None, None, None, None, None, false);
+    let (mut dir, mut cbin, mut cinfo, mut hbin, mut hinfo, mut hunknown) =
+        (None, None, None, None, None, false);
     let (mut down, mut unknown) = (None, None);
     while let Some(a) = it.next() {
         let mut val = || {
@@ -209,7 +209,6 @@ fn parse_host_build(argv: &[String]) -> Result<(std::path::PathBuf, host_build::
         };
         match a.as_str() {
             "--repo-dir" => dir = Some(std::path::PathBuf::from(val()?)),
-            "--main" => main = Some(val()?),
             "--candidate-bin" => cbin = Some(val()?),
             "--candidate-info" => cinfo = Some(val()?),
             "--current-bin" => hbin = Some(val()?),
@@ -234,12 +233,11 @@ fn parse_host_build(argv: &[String]) -> Result<(std::path::PathBuf, host_build::
     };
     Ok((
         dir.unwrap_or_else(|| ".".into()),
+        // the main line is not the caller's to name (2240e, #650 M1)
         host_build::Request {
-            candidate,
-            current,
-            main: main.unwrap_or_else(|| "origin/main".to_owned()),
             allow_downgrade: down,
             allow_unknown_current: unknown,
+            ..host_build::Request::for_host(candidate, current)
         },
     ))
 }
@@ -310,7 +308,7 @@ mod tests {
             a
         };
         let (_, req) = parse_host_build(&base(&["--current-unknown"])).unwrap();
-        assert_eq!(req.main, "origin/main");
+        assert_eq!(req.main, "refs/remotes/origin/main");
         assert_eq!(req.current, host_build::Current::Unknown);
         let (_, req) = parse_host_build(&base(&[
             "--current-info",
@@ -328,7 +326,10 @@ mod tests {
             base(&["--current-unknown", "--current-info", &info]),
             base(&["--current-unknown", "--allow-downgrade", ""]),
             base(&["--current-unknown", "--allow-downgrade", "ok"]),
-            base(&["--current-unknown", "--allow-downgrade", "--main"]),
+            base(&["--current-unknown", "--allow-downgrade", "--x"]),
+            // the main line cannot be named: a PR head given as main passed it (#650 M1)
+            base(&["--current-unknown", "--main", "HEAD"]),
+            base(&["--current-unknown", "--main", "refs/remotes/origin/main"]),
             base(&["--current-unknown", "--allow-unknown-current"]),
             base(&["--current-unknown", "--candidate-bin", "/x"]),
             base(&["--current-info", "commit=abc"]),

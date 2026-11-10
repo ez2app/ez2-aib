@@ -6,7 +6,7 @@
 
 use aib_release::host_build::{
     check, exit_code, info_in_binary, parse_info, to_json, BuildInfo, Current, GitCli, Request,
-    Verdict,
+    Verdict, MAIN_REF,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -144,6 +144,38 @@ fn a_build_from_a_pr_head_never_goes_on() {
         "{rep:?}"
     );
     assert_eq!(exit_code(&rep), 2);
+    // both reasons were given and neither got it through: the approval shows someone tried
+    let j = to_json(&req, &rep);
+    assert_eq!(j["allowed"], serde_json::json!([]));
+    assert_eq!(j["unused_allow"][0]["flag"], "allow_downgrade");
+    assert_eq!(j["unused_allow"][1]["flag"], "allow_unknown_current");
+}
+
+/// #650 M1 (2240e): the main line is `origin/main` as fetched, whatever is checked out. Here
+/// the repository stands on the PR head, so `HEAD` (or the PR head named as main) would pass it.
+#[test]
+fn the_main_line_is_origin_main_and_not_what_is_checked_out() {
+    let l = line("mainref");
+    l.repo
+        .git(&["update-ref", "refs/remotes/origin/main", &l.c]);
+    l.repo.git(&["switch", "-q", "pr-head"]);
+    let git = GitCli::new(&l.repo.0);
+    let req = Request::for_host(built(&l.d), Current::Known(built(&l.b)));
+    assert_eq!(req.main, "refs/remotes/origin/main");
+    let rep = check(&git, &req);
+    assert_eq!(
+        (rep.verdict, rep.code),
+        (Verdict::Refused, "not_on_main"),
+        "{rep:?}"
+    );
+    let j = to_json(&req, &rep);
+    assert_eq!(j["main_ref"], MAIN_REF);
+    assert_eq!(j["main"], l.c.as_str());
+    let rep = check(
+        &git,
+        &Request::for_host(built(&l.c), Current::Known(built(&l.b))),
+    );
+    assert_eq!((rep.verdict, rep.code), (Verdict::Ok, "ok"), "{rep:?}");
 }
 
 /// What the host runs is not in the candidate: going on would take something away.
@@ -209,15 +241,24 @@ fn a_host_build_without_build_info_needs_a_reason() {
         (Verdict::Refused, "current_unknown"),
         "{rep:?}"
     );
-    let mut says_unknown = built(&l.b);
-    says_unknown.commit = None;
-    let rep = check(&git, &ask(built(&l.c), Current::Known(says_unknown)));
-    assert_eq!(rep.code, "current_unknown");
     req.allow_unknown_current = Some("first build with build info".into());
     let rep = check(&git, &req);
     assert_eq!((rep.verdict, rep.code), (Verdict::Ok, "ok"));
     assert_eq!(rep.allowed[0].0, "allow_unknown_current");
     assert_eq!(to_json(&req, &rep)["current"], serde_json::Value::Null);
+    // a host that answers `commit=unknown` is the same case, and its answer stays in the
+    // JSON (2240e, #650 N3)
+    let mut says_unknown = built(&l.b);
+    says_unknown.commit = None;
+    let mut req = ask(built(&l.c), Current::Known(says_unknown));
+    assert_eq!(check(&git, &req).code, "current_unknown");
+    req.allow_unknown_current = Some("host built before build info".into());
+    let rep = check(&git, &req);
+    assert_eq!((rep.verdict, rep.code), (Verdict::Ok, "ok"), "{rep:?}");
+    let j = to_json(&req, &rep);
+    assert_eq!(j["current"]["commit"], serde_json::Value::Null);
+    assert_eq!(j["current"]["version"], "0.2.0-preview.3");
+    assert_eq!(j["unused_allow"], serde_json::json!([]));
 }
 
 /// A commit the repository does not have is "fetch first" (exit 3), never a pass or a refusal.
