@@ -265,7 +265,10 @@ fn own_group(cmd: &mut Command) -> &mut Command {
     }
 }
 
-fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+pub(crate) fn run_quiet(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
     let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1248,6 +1251,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
+        Some("ct") => crate::maskcmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
             Some("check") => crate::backupcmd::cmd(&args[2..]),
