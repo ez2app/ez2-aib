@@ -162,9 +162,7 @@ pub fn serve(assets: &[Asset], method: &Method, path: &str, h: &HeaderMap) -> Re
 /// `Cache-Control: no-store` on every API answer that set nothing itself (§6: static cache
 /// rules never apply to `/api/`). Called by the guard.
 pub fn api_no_store(path: &str, resp: &mut Response) {
-    if crate::guard::is_api(path)
-        && !resp.headers().contains_key(header::CACHE_CONTROL)
-    {
+    if crate::guard::is_api(path) && !resp.headers().contains_key(header::CACHE_CONTROL) {
         resp.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }

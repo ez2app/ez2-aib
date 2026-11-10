@@ -105,7 +105,11 @@ async fn precompressed_files_follow_accept_encoding() {
         let (s, hh, b) = body_of(serve(FILES, &Method::GET, p, &h)).await;
         assert_eq!(s, StatusCode::OK, "{ae}");
         assert_eq!(b, want, "{ae}");
-        assert_eq!(hh.get("content-encoding").map(|v| v.to_str().unwrap()), coding, "{ae}");
+        assert_eq!(
+            hh.get("content-encoding").map(|v| v.to_str().unwrap()),
+            coding,
+            "{ae}"
+        );
         assert_eq!(hh["vary"], "Accept-Encoding", "{ae}");
     }
     let (_, _, b) = body_of(serve(FILES, &Method::GET, p, &HeaderMap::new())).await;
@@ -114,7 +118,12 @@ async fn precompressed_files_follow_accept_encoding() {
 
 #[tokio::test]
 async fn unknown_files_and_other_methods_are_refused() {
-    for p in ["/nope.js", "/assets/../index.html", "/%2e%2e/etc/passwd", "/assets/"] {
+    for p in [
+        "/nope.js",
+        "/assets/../index.html",
+        "/%2e%2e/etc/passwd",
+        "/assets/",
+    ] {
         let (s, _, _) = body_of(serve(FILES, &Method::GET, p, &HeaderMap::new())).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{p}");
     }
@@ -180,7 +189,9 @@ async fn without_the_web_feature_pages_are_404_web_not_built_and_never_hold_the_
 #[cfg(feature = "web")]
 #[tokio::test]
 async fn the_web_build_serves_the_embedded_index_without_the_token() {
-    assert!(aibd::static_files::ASSETS.iter().any(|a| a.path == "index.html"));
+    assert!(aibd::static_files::ASSETS
+        .iter()
+        .any(|a| a.path == "index.html"));
     let (s, h, body) = get("/", false).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(h["cache-control"], "no-cache");
@@ -206,7 +217,10 @@ async fn api_paths_keep_the_bearer_rule_and_answer_no_store() {
     }
     // static cache rules never reach the API
     let (_, h, _) = get("/", false).await;
-    assert_ne!(h.get("cache-control").map(|v| v.to_str().unwrap()), Some("public, max-age=31536000, immutable"));
+    assert_ne!(
+        h.get("cache-control").map(|v| v.to_str().unwrap()),
+        Some("public, max-age=31536000, immutable")
+    );
 }
 
 #[tokio::test]
