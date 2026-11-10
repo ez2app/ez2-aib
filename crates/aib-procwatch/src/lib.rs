@@ -35,6 +35,10 @@ pub struct Stats {
     /// had already exited). Kept, not watched, no identity check (a63ab
     /// 11-10: they are forks the watcher saw, not a blind spot).
     pub children_start_unknown: u64,
+    /// Children seen in a listing whose start time was refused (EPERM: still
+    /// running, not readable by us, e.g. setuid). Not counted, not watched;
+    /// reported so a caller can mark the run unverified (a9136 #624 L1).
+    pub children_start_denied: u64,
     /// Watches that could not be registered (process already gone, or refused).
     pub register_failures: u64,
     /// Child listings that failed (any error: permission, OS error, a list
@@ -118,7 +122,16 @@ pub enum TraceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotAdoptedWhy {
     StartUnreadable,
+    /// the start time read was refused (EPERM): the child is alive
+    StartDenied,
     OlderThanParent,
+}
+
+/// errno in libproc 0.15's error text (`"…, errno = N, message = …"`).
+pub fn errno_in(message: &str) -> Option<i32> {
+    let rest = message.split("errno = ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// What [`ForkWatch::trace`] returns.
@@ -152,6 +165,7 @@ mod imp {
         parent_of: BTreeMap<u32, u32>,
         /// listed child whose start time was unreadable -> its parent
         start_unknown: BTreeMap<u32, u32>,
+        start_denied: std::collections::BTreeSet<u32>,
         stats: Stats,
         fault: Option<ListFault>,
         /// listings done so far (for `ListFault::Error` / `Incomplete`)
@@ -192,8 +206,29 @@ mod imp {
     /// Start time in seconds (`pbi_start_tvsec`, the same source sysinfo
     /// uses on macOS, so records compare equal).
     pub fn start_time(pid: u32) -> Option<u64> {
-        let info = pidinfo::<BSDInfo>(i32::try_from(pid).ok()?, 0).ok()?;
-        Some(info.pbi_start_tvsec)
+        match read_start(pid) {
+            StartRead::Known(s) => Some(s),
+            StartRead::Gone | StartRead::Denied => None,
+        }
+    }
+
+    /// A start time read, telling a refused read (EPERM, alive) apart from
+    /// every other failure (taken as exited: ESRCH, or a zombie).
+    enum StartRead {
+        Known(u64),
+        Gone,
+        Denied,
+    }
+
+    fn read_start(pid: u32) -> StartRead {
+        let Ok(p) = i32::try_from(pid) else {
+            return StartRead::Gone;
+        };
+        match pidinfo::<BSDInfo>(p, 0) {
+            Ok(info) => StartRead::Known(info.pbi_start_tvsec),
+            Err(m) if super::errno_in(&m) == Some(1) => StartRead::Denied,
+            Err(_) => StartRead::Gone,
+        }
     }
 
     pub fn program_name(pid: u32) -> Option<String> {
@@ -292,7 +327,28 @@ mod imp {
                 if k == 0 || lock(sh).seen.contains_key(&k) {
                     continue;
                 }
-                let Some(ks) = start_time(k) else {
+                let ks = match read_start(k) {
+                    StartRead::Known(ks) => Some(ks),
+                    StartRead::Gone => None,
+                    StartRead::Denied => {
+                        // Alive but not readable: not a fork we can name.
+                        let t = uptime_ns().unwrap_or(0);
+                        let mut g = lock(sh);
+                        g.record(
+                            t,
+                            p,
+                            TraceKind::NotAdopted {
+                                child: k,
+                                why: NotAdoptedWhy::StartDenied,
+                            },
+                        );
+                        if g.start_denied.insert(k) {
+                            g.stats.children_start_denied += 1;
+                        }
+                        continue;
+                    }
+                };
+                let Some(ks) = ks else {
                     // It was in the list, so it was p's child; it exited
                     // before its start time could be read. Keep it (counted,
                     // marked start_unknown), never watch it: it is gone.
@@ -397,6 +453,7 @@ mod imp {
                 seen: BTreeMap::new(),
                 parent_of: BTreeMap::new(),
                 start_unknown: BTreeMap::new(),
+                start_denied: std::collections::BTreeSet::new(),
                 stats: Stats::default(),
                 fault,
                 listings: 0,
@@ -609,3 +666,25 @@ mod imp {
 }
 
 pub use imp::{program_name, start_time, uptime_ns, ForkWatch};
+
+#[cfg(test)]
+mod errno_tests {
+    use super::errno_in;
+
+    #[test]
+    fn errno_is_read_from_libproc_error_text() {
+        assert_eq!(
+            errno_in("return code = 0, errno = 1, message = 'Operation not permitted'"),
+            Some(1)
+        );
+        assert_eq!(
+            errno_in("return code = -1, errno = 3, message = 'No such process'"),
+            Some(3)
+        );
+        assert_eq!(
+            errno_in("Cannot request information about kernel task"),
+            None
+        );
+        assert_eq!(errno_in("errno = x"), None);
+    }
+}
