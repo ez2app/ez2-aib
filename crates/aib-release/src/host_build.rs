@@ -96,8 +96,6 @@ pub fn parse_info(line: &str) -> Option<BuildInfo> {
     })
 }
 
-/// The build info written into a built file (any platform's: it is read as
-/// bytes, never run). Every copy in the file must say the same thing.
 /// sha256 of a file's bytes, lowercase hex: what `shasum -a 256` / `sha256sum` print.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -107,6 +105,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The build info written into a built file (any platform's: it is read as
+/// bytes, never run). Every copy in the file must say the same thing.
 pub fn info_in_binary(bytes: &[u8]) -> Result<BuildInfo, String> {
     let mark = MARK.as_bytes();
     let mut found: Option<BuildInfo> = None;
