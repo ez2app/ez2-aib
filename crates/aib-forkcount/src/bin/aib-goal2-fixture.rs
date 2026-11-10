@@ -785,8 +785,76 @@ fn cmd_down(args: &[String]) -> Result<Value, String> {
             json!({"server_pid": pid, "kill_server_rc": kill.status.code()}),
         );
     }
+    let leftovers = sweep_leftovers(&dir)?;
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(json!({"servers": out, "removed": dir}))
+    Ok(json!({"servers": out, "leftovers": leftovers, "removed": dir}))
+}
+
+/// Pids in `ps -E -o pid=,command=` output whose environment has `HOME=<home>` exactly
+/// (the sandbox's own home), other than `me`.
+pub fn sandbox_pids(ps: &str, home: &str, me: u32) -> Vec<u32> {
+    let want = format!("HOME={home}");
+    ps.lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            let (pid, rest) = l.split_once(' ')?;
+            let pid: u32 = pid.parse().ok()?;
+            rest.split(' ').any(|w| w == want).then_some(pid)
+        })
+        .filter(|p| *p != me)
+        .collect()
+}
+
+/// After kill-server, legacy aib can leave helpers that outlive their tmux server and
+/// still call the shim (A/A 11-10: one bound the next sandbox's hub to its old name).
+/// Everything still running with this sandbox's HOME is the fixture's own: TERM it,
+/// then KILL what is left, checking each start time so a reused pid is never hit.
+fn sweep_leftovers(dir: &Path) -> Result<Value, String> {
+    let home = std::fs::canonicalize(dir.join("home")).map_err(|e| format!("home: {e}"))?;
+    let home = home.to_str().ok_or("home path is not UTF-8")?.to_string();
+    let list = || -> Result<Vec<(u32, Option<u64>)>, String> {
+        let o = Command::new("/bin/ps")
+            .args(["-E", "-ww", "-o", "pid=,command=", "-U", &uid()])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("ps: {e}"))?;
+        Ok(sandbox_pids(
+            &String::from_utf8_lossy(&o.stdout),
+            &home,
+            std::process::id(),
+        )
+        .into_iter()
+        .map(|p| (p, aib_procwatch::start_time(p)))
+        .collect())
+    };
+    let found = list()?;
+    let mut killed = vec![];
+    for sig in ["-TERM", "-KILL"] {
+        let now = list()?;
+        let targets: Vec<&(u32, Option<u64>)> = now
+            .iter()
+            .filter(|(p, st)| st.is_some() && found.iter().any(|(q, s0)| q == p && s0 == st))
+            .collect();
+        if targets.is_empty() {
+            break;
+        }
+        for (p, _) in &targets {
+            let _ = Command::new("/bin/kill")
+                .args([sig, &p.to_string()])
+                .status();
+            killed.push(json!({"pid": p, "signal": sig}));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    let left = list()?;
+    if !left.is_empty() {
+        return Err(format!(
+            "sandbox processes still running after TERM / KILL: {left:?}"
+        ));
+    }
+    Ok(
+        json!({"found": found.len(), "pids": found.iter().map(|(p, _)| p).collect::<Vec<_>>(), "signals": killed}),
+    )
 }
 
 fn shim_main(args: &[String]) -> ExitCode {
@@ -1001,6 +1069,17 @@ mod tests {
         )
         .is_err());
         assert!(r(&["-u", "-x", "-L", "aihub-ab12", "ls"], None, None).is_err());
+    }
+
+    #[test]
+    fn leftovers_are_matched_by_the_exact_sandbox_home() {
+        let ps = "  101 /bin/sleep 9 PATH=/x HOME=/sb/home TERM=y\n\
+                    102 bash HOME=/sb/home/sub\n\
+                    103 zsh HOME=/Users/me\n\
+                    104 python3 w.py HOME=/sb/home\n\
+                    105 HOME=/sb/home\n";
+        assert_eq!(sandbox_pids(ps, "/sb/home", 105), vec![101, 104]);
+        assert!(sandbox_pids(ps, "/sb", 0).is_empty());
     }
 
     #[test]
