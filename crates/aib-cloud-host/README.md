@@ -10,6 +10,7 @@ aib-cloud-host probe run   <plan.json> --host <public ip> [--out report.json] [-
 aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 aib-cloud-host self-update <version>        # 從 GitHub release 換自己(cloud-host-v<version>,驗 SHA256SUMS + --version 才換)
 aib-cloud-host site verify [<code>] [--json]  # 被動檢查:宿主 H01–H10 / H12 / H13 + 每站 S00–S06;只讀;結束碼 0 綠 / 1 紅 / 3 不明 / 2 黃;紀錄夾讀不到、沒有紀錄、參數打錯也是 3(不是 2)
+aib-cloud-host backup check [--json]        # 離站備份檢查(只列清單):B01 新鮮 / B02 每個 CT 都有 / B03 設定包 / B04 沒有未加密檔 / B05 大小合理;結束碼同 site verify
 aib-cloud-host --version                    # aib-cloud-host <version> <os>-<arch>
 ```
 

@@ -388,6 +388,9 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # backup check: a remote that is a local path or an option is accepted
+          hk backupcmd.rs '        && plain(name, b"_-")' '        && (plain(name, b"_-") || true)' \
+             remotes
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
