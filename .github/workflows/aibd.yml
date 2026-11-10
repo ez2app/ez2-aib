@@ -379,6 +379,10 @@ jobs:
           tt '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) {' \
             '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) && !seen.contains(&name) { // knife' \
             t1_duplicate_with_a_broken_value_fails
+          # KT9 no services array read as "no sensors" (Unsupported switches T1 off; 043dd #617 r2 L1)
+          tt $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unknown);' \
+            $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unsupported); // knife' \
+            walk_releases_on_every_error_path
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its
