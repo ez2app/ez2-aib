@@ -808,6 +808,11 @@ fn held_spec(session: &str, program: &str, args: &[&str]) -> SpawnSpec {
         env: vec![],
         discard_output: true,
         inject: Some(aibd::platform::tree::Inject::RecordLate),
+        // a63ab 11-10 ruling A: with the watcher alone, a middle process that
+        // forks and exits at once is missed about 1 run in 3 under a full
+        // suite (fork_watch_miss); M1 lineage links the grandchild back to
+        // the recorded middle, as a real session does.
+        lineage: Some(lineage()),
         ..spec_watch("unused", session, true)
     }
 }
