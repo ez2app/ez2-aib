@@ -830,8 +830,10 @@ fn an_instant_program_is_recorded_before_it_can_exit() {
 
 /// 043dd / bb7dc / Codex counterexample: the root forks at once, the child
 /// clears the environment, leaves the session (`setsid`) and execs a long
-/// sleep, the root exits. Held and watched from before exec, the sleep is
-/// recorded and stopped; it is never left running.
+/// sleep, the root exits. Held from before exec, the root is recorded. The
+/// sleep is stopped when the watcher saw the middle process; when it did
+/// not, it is reported as an unreadable candidate and the cancel is not
+/// observed_clean (never silently left).
 #[cfg(target_os = "macos")]
 #[test]
 fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
@@ -865,5 +867,21 @@ fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
         !rep.known_gaps.contains(&"root_unrecorded"),
         "recorded too late: {rep:?}"
     );
-    assert!(left.is_empty(), "grandchild {gc} left running: {rep:?}");
+    // a63ab 11-10 ruling B (A measured 30/50 on Mac Pro 13): the grandchild
+    // clears its environment and execs after its creator exited, so neither
+    // lineage (parent_unique = 1) nor the marker can tie it to the session;
+    // when the fork watcher missed the middle process it is an unreadable
+    // candidate. That is never signalled; the cancel must then say so and
+    // never claim observed_clean. Either way nothing is left unaccounted.
+    if !left.is_empty() {
+        assert!(
+            rep.candidates_unreadable.contains(&gc),
+            "grandchild {gc} left running and not reported: {rep:?}"
+        );
+        assert_eq!(
+            rep.unverified_reason(),
+            Some("candidates_unreadable"),
+            "a left grandchild must not read as observed_clean: {rep:?}"
+        );
+    }
 }
