@@ -737,6 +737,15 @@ fn stmts_of(lines: &[Logical]) -> Vec<Stmt> {
 
 // ---------------------------------------------------------------- the script's shape
 
+/// The `set` state outside a function body, kept while the body is read.
+#[derive(Clone, Copy)]
+struct Outside {
+    body: (usize, usize),
+    pipefail: bool,
+    errexit: bool,
+    plus_e: Option<usize>,
+}
+
 struct Func {
     name: String,
     /// logical lines [from, to] (both inclusive)
@@ -1194,18 +1203,23 @@ fn lint_script(text: &str, offset: usize, whole_restore: bool, out: &mut Vec<Fin
     };
     // a function body is read where it is written, but a `set` in it changes nothing
     // until it is called: the state outside goes on from before the definition
-    let mut outside: Option<((usize, usize), bool, bool, Option<usize>)> = None;
+    let mut outside: Option<Outside> = None;
     for (i, s) in stmts.iter().enumerate() {
         let at = cx.at(s);
         let body = shape.func_at(s.lix).map(|f| (f.from, f.to));
-        if let Some((key, p, e, pe)) = outside {
-            if body != Some(key) {
-                (pipefail, errexit, plus_e) = (p, e, pe);
+        if let Some(o) = outside {
+            if body != Some(o.body) {
+                (pipefail, errexit, plus_e) = (o.pipefail, o.errexit, o.plus_e);
                 outside = None;
             }
         }
         if let (Some(key), None) = (body, outside) {
-            outside = Some((key, pipefail, errexit, plus_e));
+            outside = Some(Outside {
+                body: key,
+                pipefail,
+                errexit,
+                plus_e,
+            });
         }
         if let Some(st) = s.first() {
             let (p, e) = set_change(st);
