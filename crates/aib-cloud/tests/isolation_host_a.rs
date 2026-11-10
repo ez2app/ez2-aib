@@ -12,7 +12,7 @@ use std::path::Path;
 
 const HOST_PUBLIC: &str = "203.0.113.90";
 
-/// host A on 11-09: Edge CT 101, site CTs 110 (ez2.work + hosta-site1) and 112 (hosta-site2),
+/// host A on 11-09: Edge CT 101, site CTs 110 (example.org + hosta-site1) and 112 (hosta-site2),
 /// Tailscale on, host B as the peer host, IPv6 on the host only.
 fn host_a() -> Topology {
     Topology {

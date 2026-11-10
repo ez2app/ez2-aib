@@ -558,7 +558,7 @@ mod tests {
             // EgressIp refuses the documentation ranges on purpose, so 203.0.113.x cannot be used here
             "8.8.8.8",
             "host-b-ts",
-            "ez2.work",
+            "example.org",
             "/etc/ez2-cloud/backup-r2.env",
             "r2",
             None,
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(spec["ip"], f.ip);
         assert_eq!(spec["perm_read"], PERM_ITEM_READ);
         assert_eq!(spec["perm_write"], PERM_ITEM_WRITE);
-        assert_eq!(spec["zone"], "ez2.work");
+        assert_eq!(spec["zone"], "example.org");
     }
 
     #[test]
