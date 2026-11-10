@@ -351,6 +351,14 @@ jobs:
           ck provision.rs '            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));' \
              '            return Err(format!("{name} is not a variable name"));' \
              a_refused_placeholder_is_quoted_in_the_finding
+          # site svc: a quarantined site can be started (4.4.1 1.3)
+          ck svc.rs '    if action != Svc::Stop {' \
+             '    if action != Svc::Stop && action != Svc::Start { // knife' \
+             a_quarantined_site_is_not_started_and_stopping_it_says_what_is_lost
+          # site logs: values after secret-looking keys are shown
+          ck svc.rs '                if end > 0 {' \
+             '                if end > usize::MAX - 1 { // knife' \
+             secrets_do_not_leave_with_the_logs
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
