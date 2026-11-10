@@ -1476,6 +1476,40 @@ mod tests {
         );
     }
 
+    /// c477a #635 seg. 2 L2: `op recovered` is the way out for a person, never a way past an
+    /// operation that is still running — its process holds the host lock.
+    #[test]
+    fn a_running_operation_cannot_be_closed_by_hand() {
+        let pl = place("recover-live");
+        let mut tried: Option<Result<(), String>> = None;
+        let mut me = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op_id| {
+                me = op_id.to_owned();
+                tried = Some(mark_recovered(&pl, op_id, 1_794_300_001));
+                Ok(())
+            },
+        )
+        .unwrap();
+        let err = tried.unwrap().unwrap_err();
+        assert!(err.contains("locked"), "{err}");
+        assert_eq!(
+            states(&pl, &me),
+            [
+                State::Planned,
+                State::Approved,
+                State::Running,
+                State::Verified
+            ]
+        );
+    }
+
     #[test]
     fn a_failed_operation_blocks_its_target_until_recovered() {
         let pl = place("runop-fail");

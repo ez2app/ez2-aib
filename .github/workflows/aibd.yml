@@ -520,6 +520,10 @@ jobs:
           hk opstore.rs '        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",' \
              '        "operation {} ({} {}, {}): check the host{}", // knife' \
              a_held_target_names_its_operation_and_the_command
+          # op recovered closes an operation whose process still runs (c477a #635 seg. 2 L2)
+          hk opstore.rs '    acquire(&place.lock, op_id, pid)?;' \
+             '    let _ = acquire(&place.lock, op_id, pid); // knife' \
+             a_running_operation_cannot_be_closed_by_hand
           # restore --switch without the typed site code (4542e 11-10 condition c)
           hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
              a_switch_needs_the_site_code_typed
