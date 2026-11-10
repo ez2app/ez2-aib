@@ -332,14 +332,18 @@ fn a_bare_file_name_in_the_working_folder_is_a_path() {
 #[test]
 fn the_ledger_is_never_written_through_a_link() {
     let e = env();
-    // the ledger file is a link to some other file
+    // the ledger file is a link to some other file. The target is empty on purpose: an empty
+    // file is a valid (empty) ledger, so only the link check stands between the append and
+    // it; a target with text in it would be refused by the ledger parser anyway (a63ab, CI
+    // run 42817347354: the knife on this check missed while the target held "keep me").
     let target = e.outside.join("role.md");
-    std::fs::write(&target, "keep me\n").expect("w");
+    std::fs::write(&target, "").expect("w");
     std::fs::create_dir_all(e.cand.join("p1")).expect("mkdir");
     std::os::unix::fs::symlink(&target, e.cand.join("p1").join("evidence.jsonl")).expect("ln");
     let (rc, _, err) = e.add("deadbee", "a", "seat:aaaaa");
     assert_eq!(rc, 3, "{err}");
-    assert_eq!(std::fs::read_to_string(&target).expect("r"), "keep me\n");
+    assert!(err.contains("is a link"), "{err}");
+    assert_eq!(std::fs::read_to_string(&target).expect("r"), "");
     // the persona folder is a link out of the candidate root
     let e = env();
     std::os::unix::fs::symlink(&e.outside, e.cand.join("p1")).expect("ln");
