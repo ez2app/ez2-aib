@@ -286,5 +286,10 @@ Why: 2026-11-03 on andymini a single sensor reading ≥ 90°C killed every runni
   two samples across a pause are not sustained (A16); panels at the same moment are one sample
   (A16b); bad shape, NaN or a corrupt file count as no history (A17, A17b).
 - Reaping still happens when logging fails or stderr is broken (A19, A19b).
+- **Intended change from 1.x (R1 PR 3 Q2, a63ab 11-10):** with pressure unreadable, the
+  fallback (A7 with no history, A15 with a gap) never reaps: one reading blocks new work at
+  most, and a reap needs the sustained rule's samples. 1.x reaped there; that is the 11-03
+  case above. Tests `a15_gap_without_pressure_falls_back` and
+  `l1_fallback_lone_spike_never_reaps` (was `l1_fallback_lone_spike_reaps_like_1x`).
 - Unfinished records are reported (A20), not double counted (A20b), not cleared by dry-run
   (A20c); summary (A21); pressure parsing (A12); i18n in four languages (A13).

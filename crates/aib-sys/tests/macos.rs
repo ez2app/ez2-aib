@@ -354,7 +354,9 @@ fn t1_required() -> bool {
 /// check that the private signatures are right (a wrong one is undefined behaviour, not a red
 /// test), so it must have passed on a physical Apple Silicon Mac before aibd uses T1. Intel and
 /// VMs have no `PMU tdie` sensors and must say `Unsupported` (or `SpiMissing`), never a number;
-/// they print UNVERIFIED (a9136 #617 M2).
+/// they print UNVERIFIED (a9136 #617 M2). `Unknown` is accepted there too since a missing
+/// services array became `Unknown` (043dd #617 r2 L1); the line names the error so a CI run
+/// with `--nocapture` shows which path a VM takes.
 #[test]
 fn t1_die_temps_real() {
     let r = aib_sys::ThermalInfo::die_temps(&Macos);
@@ -372,7 +374,10 @@ fn t1_die_temps_real() {
             Ok(d) => eprintln!("T1: UNVERIFIED (vm or not arm64), read {d:?}"),
             Err(e) => {
                 assert!(
-                    matches!(e, SysError::Unsupported | SysError::SpiMissing),
+                    matches!(
+                        e,
+                        SysError::Unsupported | SysError::SpiMissing | SysError::Unknown
+                    ),
                     "{e:?}"
                 );
                 eprintln!("T1: UNVERIFIED (vm or not arm64), {}", e.tag());
@@ -399,13 +404,19 @@ fn t2_pressure_real() {
 }
 
 /// The start-up check passes where T1 is usable and reports a tag where it is not.
+/// `unknown` too: the GitHub macOS VM gets no HID services array, which is `Unknown`
+/// since 043dd #617 r2 L1 (CI run 42807240345, #626).
 #[test]
 fn t1_selfcheck_real() {
     match aib_sys::thermal::selfcheck_t1(&Macos) {
         Ok(d) => assert!(d.n >= 1),
         Err(e) => {
             assert!(!t1_required(), "{e:?}");
-            assert!(["unsupported", "spi_missing"].contains(&e.tag()));
+            assert!(
+                ["unsupported", "spi_missing", "unknown"].contains(&e.tag()),
+                "{e:?}"
+            );
+            eprintln!("T1 selfcheck: UNVERIFIED (vm or not arm64), {}", e.tag());
         }
     }
 }
