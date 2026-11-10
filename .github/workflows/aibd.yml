@@ -453,6 +453,9 @@ jobs:
           # backup check: a remote that is a local path or an option is accepted
           hk backupcmd.rs '        && plain(name, b"_-")' '        && (plain(name, b"_-") || true)' \
              remotes
+          # backup check: rclone runs without the backup job's settings (ebb36, #631 seg. 4 M1)
+          hk backupcmd.rs '    cmd.envs(env.iter().map(|(k, v)| (k, v)));' '    let _ = env; // knife' \
+             rclone_runs_with_the_backup_jobs_settings
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
