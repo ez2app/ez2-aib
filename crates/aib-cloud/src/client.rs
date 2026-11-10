@@ -142,7 +142,7 @@ pub fn site_line(typed: &str) -> String {
     let words: Vec<&str> = typed.split(' ').filter(|w| !w.is_empty()).collect();
     match words.as_slice() {
         // a customer key's own words after `site`: opening a site, a site's domain
-        ["create"] => String::from("site create"),
+        ["create", rest @ ..] => format!("site create {}", rest.join(" ")),
         [code, "domain", rest @ ..] if crate::site::valid_code(code) => {
             format!("site {code} domain {}", rest.join(" "))
         }
@@ -423,7 +423,7 @@ mod tests {
             "site site3 php-reload",
             "site site3 backup",
             // opening a site and binding a domain: the host cannot do them yet
-            "site create",
+            "site create www.example.com",
             "site site3 domain check example.org",
             "site site3 domain add example.org",
         ] {
@@ -444,14 +444,18 @@ mod tests {
         // a site that is called like a request is still a site when a request follows
         // a request word is nobody's site code (`site::RESERVED_CODES`)
         assert_eq!(site_line("status status"), "status status");
-        assert_eq!(site_line("create"), "site create");
+        assert_eq!(
+            site_line("create www.example.com"),
+            "site create www.example.com"
+        );
+        assert_eq!(site_line("create"), "site create ");
         assert_eq!(
             site_line("site3  domain check example.org"),
             "site site3 domain check example.org"
         );
         // the customer key's parser refuses what is wrong with these, not this function
         assert_eq!(site_line("site3 domain"), "site site3 domain ");
-        assert_eq!(site_line("create site9"), "create site9");
+        assert_eq!(site_line("create site9"), "site create site9");
         // not a request after a code, or not a code: left as typed, and refused as typed
         for typed in [
             "",

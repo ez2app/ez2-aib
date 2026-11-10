@@ -164,15 +164,17 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
 /// sites
 /// usage
 /// site <code> <a site request, as in the grammar at the top>
-/// site create
+/// site create <name>
 /// site <code> domain check <name>
 /// site <code> domain add <name>
 /// ```
 ///
-/// `site create` opens a new site for the customer (Andy 11-11: 「客戶可以透過 aib 的
-/// skill 完成新網站含網址的建立」): the host chooses the code and the address, nothing about
-/// the new site is said on the line. `create` is therefore not a site's code here. A
-/// domain is a name the customer points at us; `check` looks, `add` puts it on the site.
+/// `site create <name>` opens a new site for the customer at a domain of their own (Andy
+/// 11-11: 「客戶可以透過 aib 的 skill 完成新網站含網址的建立」, and no address of ours is given
+/// to it: 「不用預設主機網址」). The host chooses the site's code; the name is the only
+/// thing about the new site said on the line. `create` is therefore not a site's code
+/// here. A domain is a name the customer points at us; `check` looks, `add` puts one more
+/// on a site.
 ///
 /// The site named here is **data**: whether it exists and whether it is this customer's
 /// is for the host to decide from its own records, with one answer for both "no such
@@ -190,8 +192,12 @@ pub enum OwnerRequest<'a> {
         /// What is asked of it.
         request: Request,
     },
-    /// Open a new site for this customer; the host chooses its code and its address.
-    Create,
+    /// Open a new site for this customer at a domain of their own; the host chooses the
+    /// site's code.
+    Create {
+        /// The name as sent; checked for shape only ([`crate::edge::valid_domain`]).
+        name: &'a str,
+    },
     /// A domain of the customer's own, for one of their sites.
     Domain {
         /// The site's code as sent; checked for shape only.
@@ -218,7 +224,7 @@ impl OwnerRequest<'_> {
         match self {
             OwnerRequest::Sites | OwnerRequest::Usage => false,
             OwnerRequest::Site { request, .. } => request.writes(),
-            OwnerRequest::Create => true,
+            OwnerRequest::Create { .. } => true,
             OwnerRequest::Domain { action, .. } => action == DomainAction::Add,
         }
     }
@@ -231,7 +237,7 @@ impl OwnerRequest<'_> {
             OwnerRequest::Sites | OwnerRequest::Usage => true,
             OwnerRequest::Site { request, .. } => request.offered(),
             // the host cannot do these yet (PLAN-customer-site-create, PR B / C)
-            OwnerRequest::Create | OwnerRequest::Domain { .. } => false,
+            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,
         }
     }
 }
@@ -264,12 +270,14 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
         }
         "site" => {
             let site = words.next().ok_or(Refused::BadArguments)?;
-            // `create` is the request, never a site's code (`site::RESERVED_CODES`):
-            // nothing may follow it
+            // `create` is the request, never a site's code (`site::RESERVED_CODES`): one
+            // name follows it, the new site's domain, and nothing else
             if site == "create" {
-                return match words.next() {
-                    None => Ok(OwnerRequest::Create),
-                    Some(_) => Err(Refused::BadArguments),
+                return match (words.next(), words.next()) {
+                    (Some(name), None) if crate::edge::valid_domain(name) => {
+                        Ok(OwnerRequest::Create { name })
+                    }
+                    _ => Err(Refused::BadArguments),
                 };
             }
             if !crate::site::valid_code(site) {
@@ -358,7 +366,7 @@ impl OwnerRequest<'_> {
             OwnerRequest::Sites => Operation::ReadPrivate,
             OwnerRequest::Usage => Operation::ViewAnalytics,
             OwnerRequest::Site { request, .. } => request.operation(),
-            OwnerRequest::Create => Operation::Create,
+            OwnerRequest::Create { .. } => Operation::Create,
             // looking at a name's DNS shows nothing of ours, but it is the first half of
             // binding it: the same right as the binding
             OwnerRequest::Domain { .. } => Operation::Publish,
@@ -612,14 +620,20 @@ mod tests {
         assert_eq!(parse_request("status shop.a"), Err(Refused::Malformed));
     }
 
-    /// Andy 11-11: the customer opens a new site, with its address, from their own aib.
-    /// Nothing about the new site is on the line; a domain is checked for shape only.
+    /// Andy 11-11: the customer opens a new site at a domain of their own, from their own
+    /// aib. The name is all the line says of the new site; it is checked for shape only.
     #[test]
     fn a_customer_key_opens_a_site_and_names_a_domain() {
-        assert_eq!(parse_owner_request("site create"), Ok(OwnerRequest::Create));
+        let create = OwnerRequest::Create {
+            name: "www.example.com",
+        };
         assert_eq!(
-            parse_owner_request(" site  create "),
-            Ok(OwnerRequest::Create)
+            parse_owner_request("site create www.example.com"),
+            Ok(create)
+        );
+        assert_eq!(
+            parse_owner_request(" site  create  www.example.com "),
+            Ok(create)
         );
         assert_eq!(
             parse_owner_request("site s-ab12cd domain check shop.example.com"),
@@ -638,10 +652,15 @@ mod tests {
             })
         );
         for (line, why) in [
-            // `create` takes nothing: no code, no name, no size chosen by the customer
+            // `create` takes one name: no code, no size chosen by the customer, and
+            // a site is not opened without an address
+            ("site create", Refused::BadArguments),
             ("site create site9", Refused::BadArguments),
             ("site create status", Refused::BadArguments),
+            ("site create example.org site9", Refused::BadArguments),
             ("site create domain add example.org", Refused::BadArguments),
+            ("site create 192.0.2.7", Refused::BadArguments),
+            ("site create *.example.org", Refused::Malformed),
             ("create", Refused::UnknownRequest),
             ("site site2 domain", Refused::BadArguments),
             ("site site2 domain add", Refused::BadArguments),
@@ -690,19 +709,19 @@ mod tests {
             parse_owner_request(&long),
             Ok(OwnerRequest::Domain { .. })
         ));
-        let too_long = alloc::format!("site create{}", " ".repeat(OWNER_REQUEST_MAX));
+        let too_long = alloc::format!("site create example.org{}", " ".repeat(OWNER_REQUEST_MAX));
         assert_eq!(parse_owner_request(&too_long), Err(Refused::Malformed));
         // what changes something, and what is offered yet
-        assert!(OwnerRequest::Create.writes());
+        assert!(create.writes());
         let check = parse_owner_request("site site2 domain check example.org").unwrap();
         let add = parse_owner_request("site site2 domain add example.org").unwrap();
         assert!(!check.writes() && add.writes());
         assert!(!OwnerRequest::Sites.writes() && OwnerRequest::Sites.offered());
-        for hidden in [OwnerRequest::Create, check, add] {
+        for hidden in [create, check, add] {
             assert!(!hidden.offered(), "{hidden:?}");
         }
         // opening a site is the owner's alone; a domain is the publisher's too
-        assert_eq!(OwnerRequest::Create.operation(), Operation::Create);
+        assert_eq!(create.operation(), Operation::Create);
         assert_eq!(check.operation(), Operation::Publish);
         assert_eq!(add.operation(), Operation::Publish);
         assert!(Role::Owner.may(Operation::Create) && Role::Admin.may(Operation::Create));

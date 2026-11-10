@@ -407,9 +407,9 @@ jobs:
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
              everything_else_is_refused_whole
-          # customer key: `site create` takes words (a code or a size the customer chose) (Andy 11-11)
-          ck customer.rs '                    Some(_) => Err(Refused::BadArguments),' \
-             '                    Some(_) => Ok(OwnerRequest::Create), // knife' \
+          # customer key: `site create` takes more than its one name (a code or a size the customer chose) (Andy 11-11)
+          ck customer.rs '                return match (words.next(), words.next()) {' \
+             '                return match (words.next(), None::<&str>) { // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # customer key: a word of the request line is taken as a site's code (one table for parser, records and roster)
           ck site.rs '    !RESERVED_CODES.contains(&code)' \
@@ -424,8 +424,8 @@ jobs:
              '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin | Publisher), // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # customer side: opening a site is sent before the host can do it
-          ck customer.rs '            OwnerRequest::Create | OwnerRequest::Domain { .. } => false,' \
-             '            OwnerRequest::Create | OwnerRequest::Domain { .. } => true, // knife' \
+          ck customer.rs '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,' \
+             '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => true, // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # ARC: a raise goes past what the plan allows (4.4.1 23)
           ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
@@ -531,8 +531,8 @@ jobs:
              nothing_but_a_plan
           # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
           # customer key: opening a site goes past "not available yet" before the host can do it (Andy 11-11)
-          hk customercmd.rs '    if matches!(request, OwnerRequest::Create | OwnerRequest::Domain { .. }) {' \
-             '    if matches!(request, OwnerRequest::Create | OwnerRequest::Domain { .. }) && false { // knife' \
+          hk customercmd.rs '    if coming_later {' \
+             '    if coming_later && false { // knife' \
              a_tenant_key_reaches_its_own_sites_only
           hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \

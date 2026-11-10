@@ -209,7 +209,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{}", shown(&out)),
             // not sent yet (`offered`); when they are, the host's document until the
             // sentences are final
-            (_, OwnerRequest::Create | OwnerRequest::Domain { .. }) => {
+            (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
                 print!("{}", shown(&out));
             }
         },
