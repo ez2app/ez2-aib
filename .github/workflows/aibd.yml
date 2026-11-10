@@ -399,6 +399,14 @@ jobs:
           ck client.rs '        && edge(b.first())' \
              '        && b.first().is_some() // knife' \
              nothing_can_be_read_as_an_option
+          # customer wording: a row or a code the table does not know is shown all the same
+          ck wording.rs '        if let (Some(name), Some(sentence)) = (name, sentence) {' \
+             '        if let (Some(name), Some(sentence)) = (name.or(Some("?")), sentence.or(Some("?"))) { // knife' \
+             status_reads_as_sentences_and_shows_nothing_it_does_not_know
+          # customer wording: the neutral answer gives way to "could not be read"
+          ck wording.rs '            if said("provider_check") {' \
+             '            if said("provider_check") && exit == 0 { // knife' \
+             every_answer_has_its_sentence
           # customer side: a request not offered yet is sent (Andy 11-10: hidden)
           ck client.rs '    if !parse_request(line).is_ok_and(Request::offered) {' \
              '    if !parse_request(line).is_ok_and(|r| r.offered() || true) { // knife' \

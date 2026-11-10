@@ -57,3 +57,8 @@ the destination comes after `--`. The binary `aib-cloud` (crate `aib-cloud-cli`)
 `EZ2_CLOUD_*`, runs `ssh` with those arguments and hands back the host's exit status
 (`--print` shows the arguments and sends nothing). Not here yet: version negotiation, a
 stored target per site, IPv6 literals, paths with blanks.
+
+`aib_cloud::wording` holds what the customer reads next to each code (zh-TW). The sentences
+are final wording (pending/HUMAN-PASTE-4542e-1110.md section F, Andy 11-10): do not
+rephrase them in a code change. `aib-cloud` shows these by default; `--raw` shows the host's
+answer as it came.

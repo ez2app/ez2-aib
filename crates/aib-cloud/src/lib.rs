@@ -53,3 +53,4 @@ pub mod site;
 pub mod svc;
 pub mod usage;
 pub mod verify;
+pub mod wording;

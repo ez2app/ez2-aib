@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-cloud site <request…> --host H --user U --known-hosts F [--port N] [--key F] [--print]`
+//! `aib-cloud site <request…> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]`
 //! — a customer asks the host for something about **their own site** (4.4.1 §1).
 //!
 //! ```text
@@ -16,15 +16,21 @@
 //! the host key must match the file named, nothing is forwarded). `--print` shows those
 //! arguments and sends nothing.
 //!
+//! The host answers in codes. What is shown is the sentence `aib_cloud::wording` has for
+//! each code (zh-TW, final wording); a code it does not know is not shown. `--raw` shows
+//! the host's answer as it came, for scripts.
+//!
 //! Exit status: the host's own for an answered request (see `aib-cloud-host customer`);
 //! 2 the request or a flag was refused here and nothing was sent; 3 the host could not
 //! be reached or `ssh` could not be run.
 
 use std::process::{Command, ExitCode, Stdio};
 
-use aib_cloud::client::{ssh_args, Target};
+use aib_cloud::client::{ssh_args, NotSent, Target};
+use aib_cloud::customer::parse_request;
+use aib_cloud::wording;
 
-const USAGE: &str = "aib-cloud site <status | logs <nginx|php|db> [lines N] [minutes N]> --host H --user U --known-hosts F [--port N] [--key F] [--print]";
+const USAGE: &str = "aib-cloud site <status | logs <nginx|php|db> [lines N] [minutes N]> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -35,6 +41,7 @@ struct Asked {
     known_hosts: Option<String>,
     port: Option<String>,
     key: Option<String>,
+    raw: bool,
     print: bool,
 }
 
@@ -53,6 +60,10 @@ fn read_args(args: &[String]) -> Result<Asked, String> {
             "--key" => &mut asked.key,
             "--print" => {
                 asked.print = true;
+                continue;
+            }
+            "--raw" => {
+                asked.raw = true;
                 continue;
             }
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
@@ -85,11 +96,30 @@ fn with_env(mut asked: Asked, get: impl Fn(&str) -> Option<String>) -> Asked {
     asked
 }
 
+/// Why nothing is sent.
+#[derive(Debug, PartialEq, Eq)]
+enum Stop {
+    /// A flag is missing or is not what it should be: said in plain words.
+    Flag(String),
+    /// A value or the request was refused by `aib_cloud::client`: a fixed code.
+    NotSent(NotSent),
+}
+
+impl Stop {
+    /// The line for `--raw` and for flags: a code, never what was typed.
+    fn raw(&self) -> String {
+        match self {
+            Stop::Flag(why) => why.clone(),
+            Stop::NotSent(why) => format!("not sent: {}", why.as_str()),
+        }
+    }
+}
+
 /// The `ssh` arguments for what was asked, or why nothing is sent.
-fn plan(asked: &Asked) -> Result<Vec<String>, String> {
+fn plan(asked: &Asked) -> Result<Vec<String>, Stop> {
     let need = |v: &Option<String>, what: &str| {
         v.clone()
-            .ok_or_else(|| format!("{what} is not set (flag or environment)"))
+            .ok_or_else(|| Stop::Flag(format!("{what} is not set (flag or environment)")))
     };
     let host = need(&asked.host, "--host")?;
     let user = need(&asked.user, "--user")?;
@@ -98,7 +128,7 @@ fn plan(asked: &Asked) -> Result<Vec<String>, String> {
         None => 22,
         Some(p) => p
             .parse::<u16>()
-            .map_err(|_| "--port is not a port number".to_owned())?,
+            .map_err(|_| Stop::Flag("--port is not a port number".to_owned()))?,
     };
     let target = Target {
         host: &host,
@@ -107,8 +137,7 @@ fn plan(asked: &Asked) -> Result<Vec<String>, String> {
         key: asked.key.as_deref(),
         known_hosts: &known_hosts,
     };
-    // a fixed word: what was typed is not echoed
-    ssh_args(&target, &asked.request).map_err(|why| format!("not sent: {}", why.as_str()))
+    ssh_args(&target, &asked.request).map_err(Stop::NotSent)
 }
 
 fn run(args: &[String]) -> Result<u8, String> {
@@ -117,28 +146,58 @@ fn run(args: &[String]) -> Result<u8, String> {
         _ => return Err(USAGE.to_owned()),
     };
     let asked = with_env(read_args(rest)?, |name| std::env::var(name).ok());
-    let ssh = plan(&asked)?;
+    let ssh = match plan(&asked) {
+        Ok(a) => a,
+        Err(stop) => {
+            match (&stop, asked.raw) {
+                (Stop::NotSent(why), false) => eprintln!("{}", wording::not_sent(*why)),
+                _ => eprintln!("aib-cloud: {}", stop.raw()),
+            }
+            return Ok(2);
+        }
+    };
     if asked.print {
         for a in &ssh {
             println!("{a}");
         }
         return Ok(0);
     }
-    let status = match Command::new("ssh").args(&ssh).stdin(Stdio::null()).status() {
-        Ok(s) => s,
+    let done = match Command::new("ssh").args(&ssh).stdin(Stdio::null()).output() {
+        Ok(d) => d,
         Err(e) => {
-            eprintln!("aib-cloud: ssh could not be run: {e}");
+            if asked.raw {
+                eprintln!("aib-cloud: ssh could not be run: {e}");
+            } else {
+                eprintln!("{}", wording::NO_SSH);
+            }
             return Ok(3);
         }
     };
-    Ok(match status.code() {
+    let out = String::from_utf8_lossy(&done.stdout);
+    let err = String::from_utf8_lossy(&done.stderr);
+    let code = match done.status.code() {
         // ssh's own failure (no route, key refused, host key mismatch) is 255
         Some(255) | None => {
-            eprintln!("aib-cloud: the host was not reached");
-            3
+            if asked.raw {
+                eprint!("{err}");
+                eprintln!("aib-cloud: the host was not reached");
+            } else {
+                eprintln!("{}", wording::NOT_REACHED);
+            }
+            return Ok(3);
         }
         Some(code) => u8::try_from(code).unwrap_or(3),
-    })
+    };
+    if asked.raw {
+        print!("{out}");
+        eprint!("{err}");
+        return Ok(code);
+    }
+    // plan() checked the request; one that does not parse was never sent
+    if let Ok(request) = parse_request(&asked.request) {
+        println!("{}", wording::reply(request, code, &out, &err));
+    }
+    Ok(code)
 }
 
 fn main() -> ExitCode {
@@ -226,7 +285,7 @@ mod tests {
     #[test]
     fn nothing_is_sent_without_a_target_or_with_a_bad_request() {
         let bare = with_env(read_args(&words(&["status"])).unwrap(), no_env);
-        assert!(plan(&bare).unwrap_err().contains("--host"));
+        assert!(plan(&bare).unwrap_err().raw().contains("--host"));
         let full = |request: &[&str]| {
             let mut a = words(request);
             a.extend(words(&[
@@ -240,17 +299,23 @@ mod tests {
             plan(&with_env(read_args(&a).unwrap(), no_env))
         };
         assert!(full(&["status"]).is_ok());
-        assert_eq!(full(&[]).unwrap_err(), "not sent: no_request");
-        assert_eq!(full(&["stop"]).unwrap_err(), "not sent: unknown_request");
-        // not offered yet: the same answer as any unknown word
-        assert_eq!(full(&["restart"]).unwrap_err(), "not sent: unknown_request");
+        assert_eq!(full(&[]).unwrap_err().raw(), "not sent: no_request");
         assert_eq!(
-            full(&["status", "site3"]).unwrap_err(),
+            full(&["stop"]).unwrap_err().raw(),
+            "not sent: unknown_request"
+        );
+        // not offered yet: the same answer as any unknown word
+        assert_eq!(
+            full(&["restart"]).unwrap_err().raw(),
+            "not sent: unknown_request"
+        );
+        assert_eq!(
+            full(&["status", "site3"]).unwrap_err().raw(),
             "not sent: bad_arguments"
         );
         // what was typed is not echoed
         assert_eq!(
-            full(&["status;id"]).unwrap_err(),
+            full(&["status;id"]).unwrap_err().raw(),
             "not sent: malformed_request"
         );
         let mut a = words(&["status", "--port", "70000"]);
@@ -264,6 +329,7 @@ mod tests {
         ]));
         assert!(plan(&read_args(&a).unwrap())
             .unwrap_err()
+            .raw()
             .contains("--port"));
         // and the whole command needs `site` first
         assert!(run(&words(&["status"])).is_err());
