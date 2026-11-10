@@ -63,13 +63,15 @@ fn calibrate_unlisted_fork_is_not_counted() {
     assert_eq!(v["expected_process_creations"], 10, "{v}");
     // The listed /usr/bin/true children may be missed under load (that is
     // what calibrate measures); the claim here is only that the one unlisted
-    // child is adopted but never counted as confirmed.
+    // child is listed but never counted as confirmed. A listed child whose
+    // start time could not be read is kept as start_unknown, not adopted,
+    // so listed = adopted + start_unknown (CI macOS 11-10: 9 + 1 + the
+    // unlisted one).
     let confirmed = v["identity_confirmed"].as_u64().unwrap();
     assert!(confirmed <= 10, "{v}");
-    assert!(
-        v["raw"]["children_adopted"].as_u64().unwrap() > confirmed,
-        "the unlisted child was not adopted: {v}"
-    );
+    let listed = v["raw"]["children_adopted"].as_u64().unwrap()
+        + v["raw"]["children_start_unknown"].as_u64().unwrap();
+    assert!(listed > confirmed, "the unlisted child was not listed: {v}");
     assert_eq!(v["meets_threshold"], false, "{v}");
     assert_eq!(v["status"], "unverified", "{v}");
     let reasons = v["unverified_reasons"].to_string();

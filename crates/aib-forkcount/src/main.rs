@@ -948,6 +948,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "raw": {
                 "fork_events": stats.fork_events,
                 "children_adopted": stats.children_adopted,
+                "children_start_unknown": stats.children_start_unknown,
                 "register_failures": stats.register_failures,
                 "list_failures": stats.list_failures,
                 "capture_rate_fork_events": rate(stats.fork_events),
