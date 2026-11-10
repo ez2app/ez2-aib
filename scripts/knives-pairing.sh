@@ -40,7 +40,7 @@ k crates/aibd/src/guard.rs '            Some("null") => return Err((ErrorCode::O
   null_origin_is_refused_everywhere
 # P8 redeem takes any http origin (a hostile page on another local port)
 k crates/aibd/src/guard.rs 'cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
-       '(o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))) /* knife */' \
+       'o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)) /* knife: no parens, CI builds with -D warnings (unused_parens) */' \
   redeem_takes_only_a_small_form_from_its_own_origin
 # P9 a query string on a pairing path is accepted
 k crates/aibd/src/guard.rs '    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {' \
