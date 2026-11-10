@@ -467,6 +467,30 @@ jobs:
           ck roster.rs '    if map.keys().any(|k| !named.contains(&k.as_str())) {' \
              '    if map.keys().any(|k| !named.contains(&k.as_str()) && k.is_empty()) { // knife' \
              strict_reading
+          # entry sudoers: a comma in the arguments goes out bare and starts a second command (c477a, #648 N2)
+          ck roster.rs "        if matches!(c, '\\\\' | ',' | ':' | '=') {" \
+             '        if false { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: two rosters of one tenant are both written
+          ck roster.rs '        if rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) {' \
+             '        if false && rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: a member whose entry keys are all revoked keeps a rule
+          ck roster.rs '                .any(|k| k.usage == KeyUse::Entry && !k.revoked)' \
+             '                .any(|k| k.usage == KeyUse::Entry) // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # H14: a wildcard rule is not told apart (the hand-written customer *)
+          ck verify.rs "                if text.contains('*') {" \
+             '                if false { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any rule that starts like ours passes, whatever its arguments
+          ck verify.rs '                        .is_some_and(entry_rule_args)' \
+             '                        .is_some() // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: owner and mode are not looked at
+          ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
+             '            (Some(om), _) if false && om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"), // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
           # site record: a record that names no tenant belongs to the tenant called like the site
           ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
              '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
@@ -529,6 +553,10 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # roster sudoers: the action is not reached (c477a, #648 N2)
+          hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
+             '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
+             the_sudoers_file_comes_from_every_roster_or_none
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \

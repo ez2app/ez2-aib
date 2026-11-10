@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12, H13; per site S00–S06), hands what it saw to `aib_cloud::verify`, prints the
+//! commands with a timeout each (host H01–H10, H12–H14; per site S00–S06), hands what it saw to `aib_cloud::verify`, prints the
 //! verdicts. Nothing here writes, enters a CT or opens a connection; `--active` checks are
 //! a later slice.
 //!
@@ -14,8 +14,9 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aib_cloud::quarantine;
+use aib_cloud::roster::SUDOERS_PATH;
 use aib_cloud::site::spec_from_record_strict;
-use aib_cloud::verify::{self, CheckResult, DiskUse, Outcome, SiteState};
+use aib_cloud::verify::{self, CheckResult, DiskUse, EntrySudoers, Outcome, SiteState};
 use serde_json::{json, Value};
 
 use crate::probe::run_capture;
@@ -78,6 +79,43 @@ pub fn parse_lvs_percent(out: &str) -> (Option<u8>, Option<u8>) {
     (data, meta)
 }
 
+const VISUDO: &str = "/usr/sbin/visudo";
+
+/// H14's observation of the entry account's sudoers file. `visudo -c -f` that cannot be
+/// found is "could not look"; one that ran and did not say yes (or timed out) is "no".
+fn entry_sudoers(path: &str) -> verify::CheckResult {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::symlink_metadata(path);
+    let present = match &meta {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    };
+    // a symlink is not "the file": its own mode says nothing, so it reads as a wrong mode
+    let owner_mode = meta.ok().map(|m| {
+        (
+            m.uid(),
+            m.gid(),
+            if m.file_type().is_file() {
+                m.mode() & 0o7777
+            } else {
+                0
+            },
+        )
+    });
+    let text = fs::read_to_string(path).ok();
+    let visudo_ok = fs::exists(VISUDO)
+        .ok()
+        .filter(|there| *there)
+        .map(|_| observe(VISUDO, &["-c", "-f", path], 5).is_some());
+    verify::h14_entry_sudoers(EntrySudoers {
+        present,
+        owner_mode,
+        text: text.as_deref(),
+        visudo_ok,
+    })
+}
+
 fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
     let df = observe("df", &["--output=pcent", "/", DUMP_DIR], 5)
         .map(|o| parse_df_pcent(&o))
@@ -124,6 +162,7 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
             )
             .as_deref(),
         ),
+        entry_sudoers(SUDOERS_PATH),
     ]
 }
 
@@ -384,10 +423,40 @@ mod tests {
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
         assert_eq!(r.len(), 6);
+        // a site's checks are what a customer's status is made of (`customer` reads
+        // site_checks): the host's H14 is never among them (f1fae, #642)
+        assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");
         if Command::new("pct").arg("--version").output().is_err() {
             assert!(r.iter().all(|x| x.outcome != Outcome::Green), "{r:?}");
             assert_ne!(verify::exit_code(&r), 0);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn h14_reads_the_file_it_is_given() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("aib-sv-h14-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ez2-entry");
+        let path = file.to_str().unwrap();
+        // not set up yet
+        assert_eq!(
+            entry_sudoers(path).outcome,
+            Outcome::Warn("entry_not_set_up")
+        );
+        // there, but not root:root 0440 (a test runs as a user; 0644 is wrong either way)
+        fs::write(&file, aib_cloud::roster::sudoers_file(&[]).unwrap()).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(entry_sudoers(path).outcome, Outcome::Red("sudoers_mode"));
+        // a symlink to it is not the file
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert_eq!(
+            entry_sudoers(link.to_str().unwrap()).outcome,
+            Outcome::Red("sudoers_mode")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

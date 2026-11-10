@@ -15,7 +15,7 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! Passive host checks: H01–H10, H12, H13. Passive site checks: S01–S06. Still to come:
+//! Passive host checks: H01–H10, H12–H14. Passive site checks: S01–S06. Still to come:
 //! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
 //! the `--active` checks.
 
@@ -25,7 +25,8 @@ use alloc::vec::Vec;
 
 use serde_json::{json, Value};
 
-use crate::site::{parse_pct_config, SiteSpec};
+use crate::roster::{SUDOERS_DEFAULTS, SUDOERS_RULE_HEAD};
+use crate::site::{parse_pct_config, valid_code, SiteSpec};
 
 /// What one check found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +346,76 @@ pub fn h13_inventory(cts: Option<&[u32]>, record_cts: &[u32], platform: &[u32]) 
         Outcome::Green
     };
     result("H13", outcome)
+}
+
+/// What `site verify` saw of the entry account's sudoers file
+/// ([`crate::roster::SUDOERS_PATH`]). `None` in a field: could not be observed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EntrySudoers<'a> {
+    /// Whether the file is there.
+    pub present: Option<bool>,
+    /// Owner uid, group gid and permission bits.
+    pub owner_mode: Option<(u32, u32, u32)>,
+    /// Its text.
+    pub text: Option<&'a str>,
+    /// Whether `visudo -c -f` accepted it.
+    pub visudo_ok: Option<bool>,
+}
+
+/// One rule line's arguments, after [`SUDOERS_RULE_HEAD`]: exactly what
+/// [`crate::roster::sudoers_file`] writes — `--tenant <code> [--sites a\,b] --roles r\,s` —
+/// and nothing else (no `*`, no second command after a bare `,`).
+fn entry_rule_args(rest: &str) -> bool {
+    let list = |w: &str| w.split("\\,").all(valid_code);
+    let words: Vec<&str> = rest.split(' ').collect();
+    match words.as_slice() {
+        ["--tenant", t, "--roles", r] => valid_code(t) && list(r),
+        ["--tenant", t, "--sites", s, "--roles", r] => valid_code(t) && list(s) && list(r),
+        _ => false,
+    }
+}
+
+/// H14: the entry account's sudoers file is the generated one in shape (c477a, #648 N2):
+/// root:root 0440, accepted by `visudo`, our `Defaults` line (both variables kept, no tty
+/// needed), and every rule names the customer command with its arguments written out.
+///
+/// A host where the entry account is not set up yet has no file: a warning, not red.
+/// **This is a host check, for the people who run the host**: it is not in any site's
+/// checks, so it never reaches what a customer is shown (#642).
+pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
+    let outcome = match seen.present {
+        None => Outcome::Unknown("unread"),
+        Some(false) => Outcome::Warn("entry_not_set_up"),
+        Some(true) => match (seen.owner_mode, seen.text) {
+            (None, _) | (_, None) => Outcome::Unknown("unread"),
+            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),
+            (Some(_), Some(text)) => {
+                let lines: Vec<&str> = text
+                    .lines()
+                    .map(str::trim_end)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                let mut rules = lines.iter().filter(|l| **l != SUDOERS_DEFAULTS);
+                if text.contains('*') {
+                    Outcome::Red("sudoers_wildcard")
+                } else if lines.iter().filter(|l| **l == SUDOERS_DEFAULTS).count() != 1 {
+                    Outcome::Red("sudoers_defaults")
+                } else if !rules.all(|l| {
+                    l.strip_prefix(SUDOERS_RULE_HEAD)
+                        .is_some_and(entry_rule_args)
+                }) {
+                    Outcome::Red("sudoers_rule")
+                } else {
+                    match seen.visudo_ok {
+                        None => Outcome::Unknown("visudo_unread"),
+                        Some(false) => Outcome::Red("sudoers_invalid"),
+                        Some(true) => Outcome::Green,
+                    }
+                }
+            }
+        },
+    };
+    result("H14", outcome)
 }
 
 /// S06: nothing drifted from the record. `drifted` is how many keys differ; `None` when
@@ -1110,6 +1181,101 @@ mod tests {
         );
         assert_eq!(
             h13_inventory(None, &[110], &platform).outcome,
+            Outcome::Unknown("unread")
+        );
+    }
+
+    #[test]
+    fn h14_the_entry_sudoers_file_is_the_generated_one() {
+        use crate::roster::{parse, sudoers_file};
+        let roster = json!({ "tenant_id": "t-aaa", "members": [
+            { "identity_id": "m-01", "roles": ["owner"], "scope": "tenant", "keys": [
+                { "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "use": "entry", "added": "2026-11-11T00:00:00Z" }] },
+            { "identity_id": "m-02", "roles": ["editor", "analyst"], "scope": ["site2", "site3"], "keys": [
+                { "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
+        let roster = parse(&roster.to_string(), &["site2", "site3"]).unwrap();
+        let good = sudoers_file(&[roster]).unwrap();
+        let seen = |text: &str| EntrySudoers {
+            present: Some(true),
+            owner_mode: Some((0, 0, 0o440)),
+            text: Some(text),
+            visudo_ok: Some(true),
+        };
+        let h14 = |e: EntrySudoers<'_>| h14_entry_sudoers(e).outcome;
+        assert_eq!(h14(seen(&good)), Outcome::Green);
+        assert_eq!(h14_entry_sudoers(seen(&good)).id, "H14");
+        // the hand-written rule this replaces
+        let star = "Defaults:cloudgate !requiretty, env_keep += \"SSH_ORIGINAL_COMMAND SSH_CONNECTION\"\ncloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer *\n";
+        assert_eq!(h14(seen(star)), Outcome::Red("sudoers_wildcard"));
+        // a second command after a bare comma, more roles than a code, another program
+        for bad in [
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner, /bin/sh",
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner --records /tmp",
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --site site2 --roles owner",
+            "cloudgate ALL=(root) NOPASSWD: /bin/sh",
+            "cloudgate ALL=(ALL) ALL",
+        ] {
+            let text = alloc::format!("{good}{bad}\n");
+            assert_eq!(h14(seen(&text)), Outcome::Red("sudoers_rule"), "{bad}");
+        }
+        // Defaults missing (variables not kept: every request reads as empty) or twice
+        let no_defaults: String = good
+            .lines()
+            .filter(|l| !l.starts_with("Defaults"))
+            .map(|l| alloc::format!("{l}\n"))
+            .collect();
+        assert_eq!(h14(seen(&no_defaults)), Outcome::Red("sudoers_defaults"));
+        let twice = alloc::format!("{good}{SUDOERS_DEFAULTS}\n");
+        assert_eq!(h14(seen(&twice)), Outcome::Red("sudoers_defaults"));
+        // owner and mode
+        for om in [
+            (0, 0, 0o640),
+            (0, 0, 0o444),
+            (1000, 0, 0o440),
+            (0, 27, 0o440),
+        ] {
+            let e = EntrySudoers {
+                owner_mode: Some(om),
+                ..seen(&good)
+            };
+            assert_eq!(h14(e), Outcome::Red("sudoers_mode"), "{om:?}");
+        }
+        // visudo
+        assert_eq!(
+            h14(EntrySudoers {
+                visudo_ok: Some(false),
+                ..seen(&good)
+            }),
+            Outcome::Red("sudoers_invalid")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                visudo_ok: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("visudo_unread")
+        );
+        // not set up yet: a warning; could not look: unknown, never green
+        assert_eq!(
+            h14(EntrySudoers {
+                present: Some(false),
+                ..EntrySudoers::default()
+            }),
+            Outcome::Warn("entry_not_set_up")
+        );
+        assert_eq!(h14(EntrySudoers::default()), Outcome::Unknown("unread"));
+        assert_eq!(
+            h14(EntrySudoers {
+                text: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                owner_mode: None,
+                ..seen(&good)
+            }),
             Outcome::Unknown("unread")
         );
     }
