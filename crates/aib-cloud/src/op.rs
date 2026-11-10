@@ -26,6 +26,11 @@
 //! * The way back must be safe to take twice: `failed → recovery → failed → recovery` is
 //!   a legal history, and a recovery can itself be interrupted.
 //! * The shell syncs the `running` line to disk **before** it changes anything.
+//! * Checking an approval ([`approval_covers`]) and writing the `approved` line happen
+//!   under the same host lock, and a journal is kept at least until the approval it names
+//!   has expired: together they are what makes a nonce single-use.
+//! * [`parse_journal`] returning no entries and "cut short" means the operation never
+//!   began: its first line did not reach the disk.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;

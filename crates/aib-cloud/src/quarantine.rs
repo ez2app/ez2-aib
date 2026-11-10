@@ -23,6 +23,11 @@
 //!    no timed revert: reverting on error would put the attack back on the wire.
 //! 8. While a site is quarantined, the firewall file drift should expect is the
 //!    quarantine one ([`expected_firewall`]).
+//!
+//! What a quarantine does **not** stop, for the runbook: mail sent with the site's mail
+//! key from somewhere else (a leaked key is revoked or rotated separately); and what it
+//! is expected to break: the site's uptime monitor (503), backups the site pushes out
+//! itself (host-side backups do not use the CT's network and carry on).
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
@@ -51,7 +56,12 @@ pub fn is_quarantined(ct_fw: &str) -> bool {
     let mut in_rules = false;
     let mut rules: Vec<&str> = Vec::new();
     let mut options: Vec<&str> = Vec::new();
-    for line in ct_fw.lines().map(str::trim).filter(|l| !l.is_empty()) {
+    // comment lines are not rules: a hand-added note must not turn "quarantined" into "not"
+    for line in ct_fw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
         if line.starts_with('[') {
             in_rules = line.eq_ignore_ascii_case("[RULES]");
         } else if in_rules {
@@ -140,7 +150,8 @@ pub struct Record {
     pub op: String,
     /// Why, as a short code (`abuse_report`, `outbound_spam`, `operator`, …).
     pub reason: String,
-    /// The CT's firewall file before, verbatim.
+    /// The CT's firewall file before, verbatim. Empty when the CT had **no** firewall
+    /// file — no firewall at all, egress wide open, the site that most needs this.
     pub prev_firewall: String,
     /// The site's edge block before, verbatim.
     pub prev_caddy_block: String,
@@ -197,7 +208,12 @@ impl Record {
             ct,
             op: text("op")?,
             reason: text("reason")?,
-            prev_firewall: text("prev_firewall")?,
+            // empty = the CT had no firewall file
+            prev_firewall: obj
+                .get("prev_firewall")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| bad("prev_firewall"))?,
             prev_caddy_block: text("prev_caddy_block")?,
         };
         if !valid_reason(&record.reason) || !crate::site::valid_code(&record.site) {
@@ -221,6 +237,10 @@ pub enum Action {
         text: String,
     },
     /// Have the firewall compile and apply its configuration; a compile error is a failure.
+    /// The shell returns from this only when the rules are **in effect in the kernel** for
+    /// this CT (it waits until it can see them): the firewall daemon applies changes in
+    /// the background, and connections dropped before the new rules are loaded can simply
+    /// be opened again and then stay allowed as established.
     ApplyFirewall,
     /// Drop every tracked connection from and to this address.
     DropConnections {
@@ -321,9 +341,6 @@ pub fn quarantine_plan(
             prev_caddy_block: caddy_block_text(caddyfile, &spec.code)?,
         },
     };
-    if record.prev_firewall.is_empty() {
-        return refuse("the CT has no firewall file to keep");
-    }
     let new_caddyfile = caddy_swap_block(caddyfile, &spec.code, &block)?;
     let route_done = new_caddyfile == caddyfile;
     if cut_off && route_done {
@@ -343,12 +360,15 @@ pub fn quarantine_plan(
         actions.push(Action::ApplyFirewall);
     }
     // always: a connection that was open before the rules changed keeps flowing
-    actions.push(Action::DropConnections { ip: spec.ip() });
+    let cut = Action::DropConnections { ip: spec.ip() };
+    actions.push(cut.clone());
     if !route_done {
         actions.push(Action::WriteCaddyfile {
             text: new_caddyfile,
         });
     }
+    // and once more at the end: whatever was opened between the first drop and now
+    actions.push(cut);
     actions.push(Action::Verify { quarantined: true });
     Ok(Quarantine::Do(actions))
 }
@@ -377,19 +397,28 @@ pub fn unquarantine_plan(
     if is_quarantined(&record.prev_firewall) {
         return refuse("the record's previous firewall is itself the quarantine one");
     }
-    // the block must still be this site's own and the swap must leave the rest alone
-    if !record
-        .prev_caddy_block
-        .starts_with(&alloc::format!("{}\n", caddy_marker(&spec.code)))
+    // the block must be exactly one block, this site's: anything after its closing brace
+    // (another site's block, say) would be written into the edge configuration with it
+    if caddy_block_text(&record.prev_caddy_block, &spec.code)
+        .ok()
+        .as_deref()
+        != Some(record.prev_caddy_block.as_str())
     {
-        return refuse("the record's edge block is not this site's");
+        return refuse("the record's edge block is not exactly this site's block");
     }
+    // the one place where what comes back is not what was there: a CT that had no
+    // firewall file gets the file its record says it should have, not "no firewall" again
+    let firewall_back = if record.prev_firewall.is_empty() {
+        desired_firewall(&spec.fw_group, spec.ssh_port)
+    } else {
+        record.prev_firewall.clone()
+    };
     let restored = caddy_swap_block(caddyfile, &spec.code, &record.prev_caddy_block)?;
     Ok(alloc::vec![
         Action::WriteCaddyfile { text: restored },
         Action::WriteFirewall {
             ct: spec.ct,
-            text: record.prev_firewall.clone(),
+            text: firewall_back,
         },
         Action::ApplyFirewall,
         Action::Verify { quarantined: false },
@@ -411,9 +440,12 @@ pub enum Reopens {
 }
 
 /// Refuse anything that would reopen a quarantined site. Only `unquarantine` ends a
-/// quarantine. `ct_fw` is the CT's firewall file as it is now.
-pub fn guard(code: &str, ct_fw: &str, what: Reopens) -> Result<(), Error> {
-    if is_quarantined(ct_fw) {
+/// quarantine. `ct_fw` is the CT's firewall file as it is now; `record` is the site's
+/// quarantine record if one is on disk. Either is enough: a record without the firewall
+/// is a quarantine that was interrupted right after it began, and that is not the moment
+/// to restore or resume the site.
+pub fn guard(code: &str, ct_fw: &str, record: Option<&Record>, what: Reopens) -> Result<(), Error> {
+    if record.is_some() || is_quarantined(ct_fw) {
         return Err(Error::Observed(alloc::format!(
             "{code} is quarantined: {what:?} refused (unquarantine first)"
         )));
@@ -516,7 +548,7 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            ["record", "firewall", "apply", "drop", "route", "verify"]
+            ["record", "firewall", "apply", "drop", "route", "drop", "verify"]
         );
         assert_eq!(
             a[1],
@@ -531,7 +563,7 @@ mod tests {
                 ip: "10.77.0.12".to_owned()
             }
         );
-        assert_eq!(a[5], Action::Verify { quarantined: true });
+        assert_eq!(a[6], Action::Verify { quarantined: true });
     }
 
     #[test]
@@ -724,8 +756,6 @@ mod tests {
         .is_err());
         let twice = alloc::format!("{file}{}", caddy_block_upstream(&spec(), "10.77.0.12"));
         assert!(quarantine_plan(&spec(), OP, "operator", PAGE, &fw, &twice, None).is_err());
-        // no firewall file to keep
-        assert!(quarantine_plan(&spec(), OP, "operator", PAGE, "", &file, None).is_err());
         // somebody else's record
         let mut r = Record {
             site: "site3".to_owned(),
@@ -807,8 +837,8 @@ mod tests {
             Reopens::Restore,
             Reopens::DomainAdd,
         ] {
-            assert!(guard("site2", &firewall(), what).is_err(), "{what:?}");
-            assert!(guard("site2", &normal_fw(), what).is_ok(), "{what:?}");
+            assert!(guard("site2", &firewall(), None, what).is_err(), "{what:?}");
+            assert!(guard("site2", &normal_fw(), None, what).is_ok(), "{what:?}");
         }
     }
 
@@ -840,10 +870,59 @@ mod tests {
         v["extra"] = json!(1);
         assert!(Record::from_json(&v).is_err());
         let mut v = good.clone();
-        v["prev_firewall"] = json!("");
+        v["prev_caddy_block"] = json!("");
         assert!(Record::from_json(&v).is_err());
         let mut v = good;
         v["reason"] = json!("see ticket #4");
         assert!(Record::from_json(&v).is_err());
+    }
+
+    /// Review of #623 segment 5 (33e28): M1 connections are dropped again after the route,
+    /// M2 a CT without a firewall file can be quarantined and comes back with the file it
+    /// should have, L1 comment lines and a record without the firewall, L2 the record's
+    /// block is exactly one block.
+    #[test]
+    fn review_segment_5() {
+        let file = caddyfile();
+        // M1
+        let a = actions(do_plan(&normal_fw(), &file, None));
+        let drops: Vec<usize> = a
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| matches!(x, Action::DropConnections { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let route = a
+            .iter()
+            .position(|x| matches!(x, Action::WriteCaddyfile { .. }))
+            .unwrap();
+        assert_eq!(drops.len(), 2);
+        assert!(drops[0] < route && route < drops[1]);
+        // M2
+        let a = actions(do_plan("", &file, None));
+        let Action::SaveRecord(record) = &a[0] else {
+            panic!("record first");
+        };
+        assert_eq!(record.prev_firewall, "");
+        assert_eq!(Record::from_json(&record.to_json()).unwrap(), *record);
+        assert!(a.contains(&Action::WriteFirewall {
+            ct: 112,
+            text: firewall()
+        }));
+        let back = unquarantine_plan(&spec(), record, &firewall(), written_caddyfile(&a)).unwrap();
+        assert!(back.contains(&Action::WriteFirewall {
+            ct: 112,
+            text: normal_fw()
+        }));
+        // L1 (i)
+        let noted = firewall().replace("GROUP", "# cut off 11-10, see ticket\nGROUP");
+        assert!(is_quarantined(&noted));
+        // L1 (ii)
+        assert!(guard("site2", &normal_fw(), Some(record), Reopens::Restore).is_err());
+        // L2
+        let mut two = record.clone();
+        two.prev_firewall = normal_fw();
+        two.prev_caddy_block = alloc::format!("{}{}", two.prev_caddy_block, other_block(&file));
+        assert!(unquarantine_plan(&spec(), &two, &firewall(), written_caddyfile(&a)).is_err());
     }
 }
