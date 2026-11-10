@@ -890,6 +890,13 @@ fn damaged(path: &Path, op_id: &str, err: &str, target: Option<&str>) -> Result<
         [] => !t.is_empty(),
         _ => false,
     });
+    if !named && targets.len() > 1 {
+        // one operation has one target: a journal naming several cannot be told apart
+        // by a command (#638 r2 N1, 1ced7)
+        return Err(format!(
+            "operation {op_id}: journal damaged ({summary}) and it names more than one target. Not archived, and `op archive` will not: check the host for every one of them, move the file aside by hand and write down what you did"
+        ));
+    }
     if !named {
         return Err(format!(
             "operation {op_id}: journal damaged ({summary}). Not archived: check the host for that target, then run `op archive {op_id} --target <target>` naming it"
@@ -901,8 +908,24 @@ fn damaged(path: &Path, op_id: &str, err: &str, target: Option<&str>) -> Result<
     ))
 }
 
-/// Append one note line and sync it.
+/// Who ran this, for the archive note (#638 r2 L1, 1ced7): the effective uid (the owner
+/// of `/proc/self`), and `SUDO_USER` / `LOGNAME` as they were set. The names are only a
+/// lead: anyone can set them. Linux only, like the rest of the host side; what cannot be
+/// read is null.
+fn who() -> Value {
+    use std::os::unix::fs::MetadataExt;
+    let uid = fs::metadata("/proc/self").ok().map(|m| m.uid());
+    json!({
+        "uid": uid,
+        "sudo_user": std::env::var("SUDO_USER").ok(),
+        "logname": std::env::var("LOGNAME").ok(),
+    })
+}
+
+/// Append one note line and sync it. A file made by this call is also synced into its
+/// directory, so the note does not depend on a later sync of the directory (#638 r2 N2).
 fn append_note(path: &Path, note: &Value) -> Result<(), String> {
+    let new = !path.exists();
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
@@ -911,7 +934,11 @@ fn append_note(path: &Path, note: &Value) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))?;
     f.write_all(format!("{note}\n").as_bytes())
         .and_then(|()| f.sync_all())
-        .map_err(|e| format!("{}: {e}", path.display()))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if new {
+        sync_dir(path.parent().unwrap_or(Path::new(".")))?;
+    }
+    Ok(())
 }
 
 /// Move one operation's journal out of the way, by hand, under the host lock (#635 seg. 1
@@ -964,7 +991,13 @@ fn archive_locked(
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let note = json!({ "at": at, "op": op_id, "why": why, "pid": std::process::id() });
+    let note = json!({
+        "at": at,
+        "op": op_id,
+        "why": why,
+        "pid": std::process::id(),
+        "who": who(),
+    });
     append_note(&archive.join(ARCHIVE_NOTES), &note)?;
     fs::rename(path, &to).map_err(|e| format!("{}: {e}", path.display()))?;
     sync_dir(&archive)?;
@@ -1780,6 +1813,42 @@ mod tests {
             notes.contains(ran.as_str()) && notes.contains("site:site4"),
             "{notes}"
         );
+        // who did it, as far as the host can tell (#638 r2 L1)
+        let line: Value = serde_json::from_str(notes.lines().last().unwrap()).unwrap();
+        assert!(line["who"].get("uid").is_some(), "{line}");
+        assert!(line["who"].get("sudo_user").is_some(), "{line}");
+
+        // a journal naming more than one target has no command way out (#638 r2 N1)
+        let mut mixed = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site6",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_300,
+            |op| {
+                mixed = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let path = journal_path(&pl.ops_dir, &mixed).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let other = text
+            .lines()
+            .last()
+            .unwrap()
+            .replace("site:site6", "site:site7");
+        fs::write(&path, format!("{text}{{damaged\n{other}\n")).unwrap();
+        for t in [None, Some("site:site6"), Some("site:site7")] {
+            let why = archive_op(&pl, &mixed, t).unwrap_err();
+            assert!(
+                why.contains("more than one target") && why.contains("by hand"),
+                "{why}"
+            );
+        }
+        assert!(path.exists());
     }
 
     #[test]

@@ -543,6 +543,14 @@ jobs:
           hk opstore.rs '    let named = target.is_some_and(|t| match targets.as_slice() {' \
              '    let named = target.is_none() || target.is_some_and(|t| match targets.as_slice() { // knife' \
              a_damaged_journal_that_ran_is_archived_only_with_its_target_named
+          # op archive: a journal naming more than one target says so (#638 r2 N1)
+          hk opstore.rs '    if !named && targets.len() > 1 {' \
+             '    if !named && targets.len() > 99 { // knife' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
+          # op archive: the note says who, not only the pid (#638 r2 L1)
+          hk opstore.rs '        "who": who(),' \
+             '        "who": { let _ = who; Value::Null }, // knife' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
           # host lock: a holder written aside and never renamed is cleared (#635 L1 N1)
           hk opstore.rs '        sweep_leftovers(&p.lock);' \
              '        let _ = sweep_leftovers; // knife: not called (still referenced, else dead_code under -D warnings)' \
