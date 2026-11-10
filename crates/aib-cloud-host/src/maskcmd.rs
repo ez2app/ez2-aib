@@ -34,7 +34,7 @@ use aib_cloud::mask;
 
 use crate::probe::run_quiet;
 
-const STATE: &str = "/run/ez2-cloud/mask";
+pub(crate) const STATE: &str = "/run/ez2-cloud/mask";
 const PVE_CONF: &str = "/etc/pve/lxc";
 
 pub fn cmd(args: &[String]) -> Result<u8, String> {
