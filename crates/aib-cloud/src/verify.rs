@@ -180,8 +180,13 @@ pub fn h05_raid(mdstat: Option<&str>) -> CheckResult {
         arrays += 1;
         degraded |= members.contains('_');
     }
+    // an array that did not assemble has no member line at all; beside a healthy one it
+    // would otherwise go unseen
+    let inactive = text.lines().any(|l| l.contains(": inactive"));
     if degraded {
         result("H05", Outcome::Red("degraded"))
+    } else if inactive {
+        result("H05", Outcome::Red("inactive"))
     } else if arrays == 0 {
         result("H05", Outcome::Unknown("no_array"))
     } else if text.contains("resync") || text.contains("recovery") {
@@ -228,7 +233,8 @@ pub fn h09_cluster_firewall(cluster_fw: Option<&str>) -> CheckResult {
     };
     let outcome = if fw_option(text, "enable") != Some("1") {
         Outcome::Red("cluster_fw_off")
-    } else if fw_option(text, "policy_in") != Some("DROP") {
+    } else if !matches!(fw_option(text, "policy_in"), None | Some("DROP" | "REJECT")) {
+        // not written means the default, which is DROP
         Outcome::Red("policy_in_open")
     } else {
         Outcome::Green
@@ -284,14 +290,33 @@ pub fn s03_firewall_attached(pct_config: Option<&str>, ct_fw: Option<&str>) -> C
     let Some(cfg) = config(pct_config) else {
         return result("S03", Outcome::Unknown("unread"));
     };
-    let on_card = get(&cfg, "net0").is_some_and(|n| n.split(',').any(|p| p == "firewall=1"));
-    let outcome = if !on_card {
+    // every card: one `netN` without firewall=1 is a way round all the rules
+    let cards: Vec<&str> = cfg
+        .iter()
+        .filter(|(k, _)| {
+            k.strip_prefix("net")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+        })
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let on_every_card = !cards.is_empty()
+        && cards
+            .iter()
+            .all(|n| n.split(',').any(|p| p == "firewall=1"));
+    let outcome = if !on_every_card {
         Outcome::Red("fw_not_on_card")
     } else {
         match ct_fw {
             // no file at all: nothing is enabled
             None => Outcome::Red("fw_file_missing"),
             Some(text) if fw_option(text, "enable") != Some("1") => Outcome::Red("fw_disabled"),
+            // with inbound ACCEPT by default a group only adds openings: everything is open.
+            // Not written means the default, which is DROP.
+            Some(text)
+                if !matches!(fw_option(text, "policy_in"), None | Some("DROP" | "REJECT")) =>
+            {
+                Outcome::Red("ct_policy_open")
+            }
             Some(_) => Outcome::Green,
         }
     };
@@ -352,12 +377,20 @@ pub fn s05_limits(spec: &SiteSpec, pct_config: Option<&str>) -> CheckResult {
     };
     let l = &spec.limits;
     let number = |key: &str| get(&cfg, key).map(|v| v.parse::<u32>().ok());
+    // "no limit" has two more spellings than leaving the key out: `cpulimit: 0` (also the
+    // default) and `pids.max: max`. Both are read as absent, which is red below.
+    let cpulimit = get(&cfg, "cpulimit")
+        .map(cpulimit_x100)
+        .filter(|v| *v != Some(0));
+    let pids = get(&cfg, "lxc.cgroup2.pids.max")
+        .filter(|v| *v != "max")
+        .map(|v| v.parse::<u32>().ok());
     let observed = [
         (number("cores"), l.cores),
-        (get(&cfg, "cpulimit").map(cpulimit_x100), l.cpulimit_x100),
+        (cpulimit, l.cpulimit_x100),
         (number("memory"), l.memory_mb),
         (number("swap"), l.swap_mb),
-        (number("lxc.cgroup2.pids.max"), l.pids_max),
+        (pids, l.pids_max),
     ];
     let mut less = false;
     for (seen, want) in observed {
@@ -836,5 +869,61 @@ mod tests {
         assert_eq!(parse_state("Active"), None);
         assert_eq!(code(Outcome::Green), "ok");
         assert_eq!(code(Outcome::Red("ct_down")), "ct_down");
+    }
+
+    /// Review of #623 segment 3 (c477a): M1 the other spellings of "no limit", L1 every
+    /// card, L2 the CT's own default policy, L3 an array that did not assemble, N2 the
+    /// default and REJECT in the cluster file.
+    #[test]
+    fn review_segment_3() {
+        let s = spec();
+        let zero = swap(CONFIG, "cpulimit: 2", "cpulimit: 0");
+        assert_eq!(
+            s05_limits(&s, Some(&zero)).outcome,
+            Outcome::Red("unlimited")
+        );
+        let max = swap(CONFIG, "pids.max: 2048", "pids.max: max");
+        assert_eq!(
+            s05_limits(&s, Some(&max)).outcome,
+            Outcome::Red("unlimited")
+        );
+
+        let s03 = |cfg: &str, fw: &str| s03_firewall_attached(Some(cfg), Some(fw)).outcome;
+        let two = swap(
+            CONFIG,
+            "onboot: 1",
+            "net1: name=eth1,bridge=vmbr0,ip=dhcp\nonboot: 1",
+        );
+        assert_eq!(s03(&two, CT_FW), Outcome::Red("fw_not_on_card"));
+        let both = swap(&two, "ip=dhcp", "ip=dhcp,firewall=1");
+        assert_eq!(s03(&both, CT_FW), Outcome::Green);
+        let card = "net0: name=eth0,bridge=vmbr1,firewall=1,ip=10.77.0.12/24\n";
+        assert_eq!(
+            s03(&swap(CONFIG, card, ""), CT_FW),
+            Outcome::Red("fw_not_on_card")
+        );
+        let accept = swap(CT_FW, "policy_in: DROP", "policy_in: ACCEPT");
+        assert_eq!(s03(CONFIG, &accept), Outcome::Red("ct_policy_open"));
+        let reject = swap(CT_FW, "policy_in: DROP", "policy_in: REJECT");
+        assert_eq!(s03(CONFIG, &reject), Outcome::Green);
+        assert_eq!(
+            s03(CONFIG, &swap(CT_FW, "policy_in: DROP\n", "")),
+            Outcome::Green
+        );
+
+        let md = "md2 : active raid1 a[1] b[0]\n      1 blocks [2/2] [UU]\nmd0 : inactive sda1[0](S)\n      1024 blocks\n";
+        assert_eq!(h05_raid(Some(md)).outcome, Outcome::Red("inactive"));
+
+        let cluster = "[OPTIONS]\nenable: 1\npolicy_in: REJECT\n";
+        assert_eq!(h09_cluster_firewall(Some(cluster)).outcome, Outcome::Green);
+        assert_eq!(
+            h09_cluster_firewall(Some("[OPTIONS]\nenable: 1\n")).outcome,
+            Outcome::Green
+        );
+        let open = "[OPTIONS]\nenable: 1\npolicy_in: ACCEPT\n";
+        assert_eq!(
+            h09_cluster_firewall(Some(open)).outcome,
+            Outcome::Red("policy_in_open")
+        );
     }
 }
