@@ -415,7 +415,7 @@ async fn every_redeem_failure_says_the_same_thing() {
 }
 
 #[tokio::test]
-async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
+async fn redeem_takes_only_a_small_form_from_its_own_origin() {
     let t = app();
     let (_id, code) = t.new_code().await;
     let form = format!("code={code}");

@@ -42,7 +42,7 @@ k "$G" '            Some("null") => return Err((ErrorCode::OriginNotAllowed, "Or
 # P8 redeem takes any http origin (a hostile page on another local port)
 k "$G" 'cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
        '(o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))) /* knife */' \
-  redeem_takes_only_a_small_form_from_null_or_its_own_origin
+  redeem_takes_only_a_small_form_from_its_own_origin
 # P9 a query string on a pairing path is accepted
 k "$G" '    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {' \
        '    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() && false { // knife' \

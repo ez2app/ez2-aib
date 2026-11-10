@@ -4,8 +4,8 @@
 //! Since pairing (ADR 0006 §7) the bearer is either the start-up token or a page
 //! credential. A page credential never reaches `/api/v1/pair/codes*` (start-up token
 //! only), and until it is confirmed it reaches only pair/status, pair/revoke and health.
-//! `Origin: null` is accepted on `/api/v1/pair/redeem` only, and that endpoint accepts
-//! nothing else but `null` or aibd's own origin.
+//! `/api/v1/pair/redeem` accepts only aibd's own origin; `Origin: null` (the P2
+//! local-file form) is refused everywhere until P2 is built (043dd A4 L1).
 
 use crate::pairing::{PageAccess, Pairing};
 use crate::token::Token;
