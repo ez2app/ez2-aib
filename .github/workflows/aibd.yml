@@ -203,6 +203,12 @@ jobs:
             '            .any(|(_, end, r)| s.exiting == 0 && *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c))) // knife' \
             --expect-fail a_listing_while_the_parent_was_alive_is_a_tool_problem \
             -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KT3 forkcount (a63ab 11-10): a listed child whose start time was unreadable is dropped again
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '    let mut m = start_unknown.clone();' \
+            '    let mut m = BTreeMap::new(); let _ = start_unknown; // knife' \
+            --expect-fail a_listed_child_with_no_start_time_counts_and_adoption_wins \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
           # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
           python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
             '    if need < 0 || (need == 0 && errno() != 0) {' \

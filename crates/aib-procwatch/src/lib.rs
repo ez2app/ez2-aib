@@ -31,6 +31,10 @@ pub struct Stats {
     pub fork_events: u64,
     /// New descendants recorded (a lower bound of processes created).
     pub children_adopted: u64,
+    /// Children seen in a listing whose start time could not be read (they
+    /// had already exited). Kept, not watched, no identity check (a63ab
+    /// 11-10: they are forks the watcher saw, not a blind spot).
+    pub children_start_unknown: u64,
     /// Watches that could not be registered (process already gone, or refused).
     pub register_failures: u64,
     /// Child listings that failed (any error: permission, OS error, a list
@@ -146,6 +150,8 @@ mod imp {
         seen: BTreeMap<u32, u64>,
         /// adopted child -> the parent it was listed under
         parent_of: BTreeMap<u32, u32>,
+        /// listed child whose start time was unreadable -> its parent
+        start_unknown: BTreeMap<u32, u32>,
         stats: Stats,
         fault: Option<ListFault>,
         /// listings done so far (for `ListFault::Error` / `Incomplete`)
@@ -287,8 +293,12 @@ mod imp {
                     continue;
                 }
                 let Some(ks) = start_time(k) else {
+                    // It was in the list, so it was p's child; it exited
+                    // before its start time could be read. Keep it (counted,
+                    // marked start_unknown), never watch it: it is gone.
                     let t = uptime_ns().unwrap_or(0);
-                    lock(sh).record(
+                    let mut g = lock(sh);
+                    g.record(
                         t,
                         p,
                         TraceKind::NotAdopted {
@@ -296,6 +306,14 @@ mod imp {
                             why: NotAdoptedWhy::StartUnreadable,
                         },
                     );
+                    if !g.start_unknown.contains_key(&k) {
+                        g.start_unknown.insert(k, p);
+                        g.stats.children_start_unknown += 1;
+                        drop(g);
+                        if p == parent {
+                            direct += 1;
+                        }
+                    }
                     continue;
                 };
                 // A child cannot be older than its recorded parent; an older
@@ -372,6 +390,7 @@ mod imp {
             let sh = Arc::new(Mutex::new(Inner {
                 seen: BTreeMap::new(),
                 parent_of: BTreeMap::new(),
+                start_unknown: BTreeMap::new(),
                 stats: Stats::default(),
                 fault,
                 listings: 0,
@@ -432,6 +451,14 @@ mod imp {
         /// (roots are not included).
         pub fn adopted_parents(&self) -> BTreeMap<u32, u32> {
             lock(&self.sh).parent_of.clone()
+        }
+
+        /// Children listed under a parent whose start time could not be read
+        /// (child -> parent). Not in [`adopted_parents`](Self::adopted_parents)
+        /// or [`snapshot`](Self::snapshot): there is no start time to check
+        /// identity with, so nothing may signal them.
+        pub fn start_unknown_parents(&self) -> BTreeMap<u32, u32> {
+            lock(&self.sh).start_unknown.clone()
         }
 
         /// The trace so far (empty and `enabled: false` unless started with
@@ -562,6 +589,9 @@ mod imp {
             Self::start_with(&[], fault)
         }
         pub fn adopted_parents(&self) -> std::collections::BTreeMap<u32, u32> {
+            std::collections::BTreeMap::new()
+        }
+        pub fn start_unknown_parents(&self) -> std::collections::BTreeMap<u32, u32> {
             std::collections::BTreeMap::new()
         }
         pub fn trace(&self) -> Trace {

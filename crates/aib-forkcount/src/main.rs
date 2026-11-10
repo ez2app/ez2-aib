@@ -548,6 +548,18 @@ fn attribute(
     a
 }
 
+/// Every child listed under a parent: adopted ones, and (a63ab 11-10) the
+/// ones listed whose start time could not be read because they had already
+/// exited. Adoption wins where both name a child.
+fn listed_under(
+    adopted: &BTreeMap<u32, u32>,
+    start_unknown: &BTreeMap<u32, u32>,
+) -> BTreeMap<u32, u32> {
+    let mut m = start_unknown.clone();
+    m.extend(adopted.iter().map(|(c, p)| (*c, *p)));
+    m
+}
+
 /// Every recorded creation whose identity was not confirmed, one record each
 /// (DECISION-10 3: a missing identity is listed, never explained away by a
 /// count). `adopted_under` is the parent the child was listed under, if it
@@ -617,8 +629,9 @@ type Listing<'a> = (u64, u64, &'a Result<Vec<u32>, String>);
 ///   parent was alive and the child was its child), and the child was not in
 ///   the list. Not a known blind spot: a tool problem;
 /// - `listed_start_unreadable`: the child was in a listing of the parent but
-///   its start time could not be read (it had already exited), so it was not
-///   recorded. Blind spot of short-lived children;
+///   its start time could not be read (it had already exited). Since a63ab
+///   11-10 such a child is kept (`start_unknown`) and counts as listed, so
+///   this cause only shows if that keeping breaks;
 /// - `listed_older_than_parent`: listed, refused as older than the parent
 ///   (the pid-reuse rule);
 /// - `parent_exited_before_list`: every listing of the parent after its fork
@@ -845,7 +858,8 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let elapsed = t0.elapsed().as_secs_f64();
     let stats = w.stats();
     let tracked = w.snapshot().len();
-    let adopted = w.adopted_parents();
+    let start_unknown = w.start_unknown_parents();
+    let adopted = listed_under(&w.adopted_parents(), &start_unknown);
     let trace = w.trace();
     w.stop();
     let (gen_rc, stdout) = match out {
@@ -858,6 +872,10 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let created = parse_creations(&stdout);
     let malformed = malformed_records(&stdout);
     let att = attribute(planned, &created, &adopted, &stats.fork_events_by_pid);
+    let confirmed_start_unknown = created
+        .iter()
+        .filter(|(p, c)| start_unknown.get(c) == Some(p))
+        .count() as u64;
     let stamps = parse_stamps(&stdout);
     let missing = missing_identities(
         &created,
@@ -909,10 +927,11 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "status": if reasons.is_empty() { "ok" } else { "unverified" },
             "unverified_reasons": reasons,
             "capture_rate": rate(att.identity_confirmed),
-            "capture_rate_definition": "identity coverage: recorded creations whose child was adopted under the recorded parent / expected",
+            "capture_rate_definition": "identity coverage: recorded creations whose child was listed under the recorded parent (adopted, or start_unknown: listed but exited before its start time could be read) / expected",
             "capture_threshold": CAPTURE_THRESHOLD,
             "meets_threshold": v.meets_threshold,
             "identity_confirmed": att.identity_confirmed,
+            "identity_confirmed_start_unknown": confirmed_start_unknown,
             "missing_identities": missing,
             "missing_causes": causes,
             "missing_causes_definition": "order of observations only (watcher trace + gen-one stamps, CLOCK_UPTIME_RAW); never counted as captured",
@@ -1269,6 +1288,18 @@ mod tests {
             miss_cause(7, 9, None, None, &na(NotAdoptedWhy::StartUnreadable)),
             "unknown"
         );
+    }
+
+    #[test]
+    fn a_listed_child_with_no_start_time_counts_and_adoption_wins() {
+        // a63ab 11-10: parallel's 25 misses were children the watcher listed
+        let adopted: BTreeMap<u32, u32> = [(11, 10)].into_iter().collect();
+        let unknown: BTreeMap<u32, u32> = [(12, 10), (11, 99)].into_iter().collect();
+        let l = listed_under(&adopted, &unknown);
+        assert_eq!(l.get(&11), Some(&10));
+        assert_eq!(l.get(&12), Some(&10));
+        let a = attribute(3, &[(10, 11), (10, 12), (10, 13)], &l, &m(&[(10, 3)]));
+        assert_eq!(a.identity_confirmed, 2);
     }
 
     #[test]
