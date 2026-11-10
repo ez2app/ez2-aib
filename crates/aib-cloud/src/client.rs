@@ -119,7 +119,7 @@ impl Line<'_> {
             Line::Site(request) | Line::Owner(OwnerRequest::Site { request, .. }) => {
                 request.offered()
             }
-            Line::Owner(OwnerRequest::Sites | OwnerRequest::Usage) => true,
+            Line::Owner(owner) => owner.offered(),
         }
     }
 }
@@ -141,6 +141,11 @@ pub fn parse_line(line: &str) -> Result<Line<'_>, Refused> {
 pub fn site_line(typed: &str) -> String {
     let words: Vec<&str> = typed.split(' ').filter(|w| !w.is_empty()).collect();
     match words.as_slice() {
+        // a customer key's own words after `site`: opening a site, a site's domain
+        ["create"] => String::from("site create"),
+        [code, "domain", rest @ ..] if crate::site::valid_code(code) => {
+            format!("site {code} domain {}", rest.join(" "))
+        }
         [code, rest @ ..]
             if parse_request(typed).is_err()
                 && crate::site::valid_code(code)
@@ -417,6 +422,10 @@ mod tests {
             "site site3 restart",
             "site site3 php-reload",
             "site site3 backup",
+            // opening a site and binding a domain: the host cannot do them yet
+            "site create",
+            "site site3 domain check example.org",
+            "site site3 domain add example.org",
         ] {
             assert_eq!(
                 ssh_args(&T, hidden),
@@ -434,6 +443,14 @@ mod tests {
         assert_eq!(site_line(" site3  logs php "), "site site3 logs php");
         // a site that is called like a request is still a site when a request follows
         assert_eq!(site_line("status status"), "site status status");
+        assert_eq!(site_line("create"), "site create");
+        assert_eq!(
+            site_line("site3  domain check example.org"),
+            "site site3 domain check example.org"
+        );
+        // the customer key's parser refuses what is wrong with these, not this function
+        assert_eq!(site_line("site3 domain"), "site site3 domain ");
+        assert_eq!(site_line("create site9"), "create site9");
         // not a request after a code, or not a code: left as typed, and refused as typed
         for typed in [
             "",

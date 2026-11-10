@@ -159,7 +159,15 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
 /// sites
 /// usage
 /// site <code> <a site request, as in the grammar at the top>
+/// site create
+/// site <code> domain check <name>
+/// site <code> domain add <name>
 /// ```
+///
+/// `site create` opens a new site for the customer (Andy 11-11: 「客戶可以透過 aib 的
+/// skill 完成新網站含網址的建立」): the host chooses the code and the address, nothing about
+/// the new site is said on the line. `create` is therefore not a site's code here. A
+/// domain is a name the customer points at us; `check` looks, `add` puts it on the site.
 ///
 /// The site named here is **data**: whether it exists and whether it is this customer's
 /// is for the host to decide from its own records, with one answer for both "no such
@@ -177,6 +185,50 @@ pub enum OwnerRequest<'a> {
         /// What is asked of it.
         request: Request,
     },
+    /// Open a new site for this customer; the host chooses its code and its address.
+    Create,
+    /// A domain of the customer's own, for one of their sites.
+    Domain {
+        /// The site's code as sent; checked for shape only.
+        site: &'a str,
+        /// Look only, or put the name on the site.
+        action: DomainAction,
+        /// The name as sent; checked for shape only ([`crate::edge::valid_domain`]).
+        name: &'a str,
+    },
+}
+
+/// What is asked about a domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainAction {
+    /// Whether the name is ready to be put on a site (its DNS). Changes nothing.
+    Check,
+    /// Put the name on the site.
+    Add,
+}
+
+impl OwnerRequest<'_> {
+    /// Whether the request changes something (and so needs the operation journal).
+    pub fn writes(self) -> bool {
+        match self {
+            OwnerRequest::Sites | OwnerRequest::Usage => false,
+            OwnerRequest::Site { request, .. } => request.writes(),
+            OwnerRequest::Create => true,
+            OwnerRequest::Domain { action, .. } => action == DomainAction::Add,
+        }
+    }
+
+    /// Whether the request is offered to customers yet (as [`Request::offered`]): what is
+    /// not parses, and the host answers "not available yet", but the customer's side
+    /// neither lists nor sends it.
+    pub fn offered(self) -> bool {
+        match self {
+            OwnerRequest::Sites | OwnerRequest::Usage => true,
+            OwnerRequest::Site { request, .. } => request.offered(),
+            // the host cannot do these yet (PLAN-customer-site-create, PR B / C)
+            OwnerRequest::Create | OwnerRequest::Domain { .. } => false,
+        }
+    }
 }
 
 /// Turn a customer key's line into a request.
@@ -207,10 +259,32 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
         }
         "site" => {
             let site = words.next().ok_or(Refused::BadArguments)?;
+            // `create` is the request, never a site's code: nothing may follow it
+            if site == "create" {
+                return match words.next() {
+                    None => Ok(OwnerRequest::Create),
+                    Some(_) => Err(Refused::BadArguments),
+                };
+            }
             if !crate::site::valid_code(site) {
                 return Err(Refused::BadArguments);
             }
-            let rest = words.collect::<alloc::vec::Vec<_>>().join(" ");
+            let rest: alloc::vec::Vec<&str> = words.collect();
+            if let ["domain", more @ ..] = rest.as_slice() {
+                let &[action, name] = more else {
+                    return Err(Refused::BadArguments);
+                };
+                let action = match action {
+                    "check" => DomainAction::Check,
+                    "add" => DomainAction::Add,
+                    _ => return Err(Refused::BadArguments),
+                };
+                if !crate::edge::valid_domain(name) {
+                    return Err(Refused::BadArguments);
+                }
+                return Ok(OwnerRequest::Domain { site, action, name });
+            }
+            let rest = rest.join(" ");
             // the rest is a site request, checked by the site grammar (no dots there)
             let request = parse_request(&rest).map_err(|why| match why {
                 Refused::Empty => Refused::BadArguments,
@@ -240,6 +314,9 @@ pub enum Operation {
     ViewAnalytics,
     /// `archive`: take a site out of service. No customer request does this yet.
     Archive,
+    /// `create`: open a new site on the customer's plan. The customer's own decision
+    /// (it uses up the plan), so the owner's and the platform's only.
+    Create,
 }
 
 impl Operation {
@@ -251,6 +328,7 @@ impl Operation {
             Operation::Publish => "publish",
             Operation::ViewAnalytics => "view_analytics",
             Operation::Archive => "archive",
+            Operation::Create => "create",
         }
     }
 }
@@ -274,6 +352,10 @@ impl OwnerRequest<'_> {
             OwnerRequest::Sites => Operation::ReadPrivate,
             OwnerRequest::Usage => Operation::ViewAnalytics,
             OwnerRequest::Site { request, .. } => request.operation(),
+            OwnerRequest::Create => Operation::Create,
+            // looking at a name's DNS shows nothing of ours, but it is the first half of
+            // binding it: the same right as the binding
+            OwnerRequest::Domain { .. } => Operation::Publish,
         }
     }
 }
@@ -288,6 +370,7 @@ impl OwnerRequest<'_> {
 /// | `publish`, `bind_route` | yes | yes | — | yes | — | — |
 /// | `view_analytics` | yes | yes | — | — | yes | — |
 /// | `archive` | yes | yes | — | — | — | — |
+/// | `create` | yes | yes | — | — | — | — |
 ///
 /// So, as there: an editor works on a site but changing what is live is the
 /// publisher's, and figures and logs are the analyst's. `admin` is the platform's.
@@ -329,7 +412,7 @@ impl Role {
             Operation::Edit => matches!(self, Owner | Admin | Editor),
             Operation::Publish => matches!(self, Owner | Admin | Publisher),
             Operation::ViewAnalytics => matches!(self, Owner | Admin | Analyst),
-            Operation::Archive => matches!(self, Owner | Admin),
+            Operation::Archive | Operation::Create => matches!(self, Owner | Admin),
         }
     }
 }
@@ -523,6 +606,79 @@ mod tests {
         assert_eq!(parse_request("status shop.a"), Err(Refused::Malformed));
     }
 
+    /// Andy 11-11: the customer opens a new site, with its address, from their own aib.
+    /// Nothing about the new site is on the line; a domain is checked for shape only.
+    #[test]
+    fn a_customer_key_opens_a_site_and_names_a_domain() {
+        assert_eq!(parse_owner_request("site create"), Ok(OwnerRequest::Create));
+        assert_eq!(
+            parse_owner_request(" site  create "),
+            Ok(OwnerRequest::Create)
+        );
+        assert_eq!(
+            parse_owner_request("site s-ab12cd domain check shop.example.com"),
+            Ok(OwnerRequest::Domain {
+                site: "s-ab12cd",
+                action: DomainAction::Check,
+                name: "shop.example.com"
+            })
+        );
+        assert_eq!(
+            parse_owner_request("site site2 domain add example.org"),
+            Ok(OwnerRequest::Domain {
+                site: "site2",
+                action: DomainAction::Add,
+                name: "example.org"
+            })
+        );
+        for (line, why) in [
+            // `create` takes nothing: no code, no name, no size chosen by the customer
+            ("site create site9", Refused::BadArguments),
+            ("site create status", Refused::BadArguments),
+            ("site create domain add example.org", Refused::BadArguments),
+            ("create", Refused::UnknownRequest),
+            ("site site2 domain", Refused::BadArguments),
+            ("site site2 domain add", Refused::BadArguments),
+            ("site site2 domain rm example.org", Refused::BadArguments),
+            (
+                "site site2 domain add example.org example.net",
+                Refused::BadArguments,
+            ),
+            ("site site2 domain add localhost", Refused::BadArguments),
+            ("site site2 domain add 192.0.2.7", Refused::BadArguments),
+            (
+                "site site2 domain add -x.example.org",
+                Refused::BadArguments,
+            ),
+            ("site site2 domain add example..org", Refused::BadArguments),
+            ("site site2 domain add *.example.org", Refused::Malformed),
+            ("site site2 domain add example.org/x", Refused::Malformed),
+            ("site site2 domain add EXAMPLE.org", Refused::Malformed),
+            // a site whose code is `domain`: the rest is then a site request, and no
+            // site request carries a dot
+            ("site domain add example.org", Refused::Malformed),
+        ] {
+            assert_eq!(parse_owner_request(line), Err(why), "{line:?}");
+        }
+        // what changes something, and what is offered yet
+        assert!(OwnerRequest::Create.writes());
+        let check = parse_owner_request("site site2 domain check example.org").unwrap();
+        let add = parse_owner_request("site site2 domain add example.org").unwrap();
+        assert!(!check.writes() && add.writes());
+        assert!(!OwnerRequest::Sites.writes() && OwnerRequest::Sites.offered());
+        for hidden in [OwnerRequest::Create, check, add] {
+            assert!(!hidden.offered(), "{hidden:?}");
+        }
+        // opening a site is the owner's alone; a domain is the publisher's too
+        assert_eq!(OwnerRequest::Create.operation(), Operation::Create);
+        assert_eq!(check.operation(), Operation::Publish);
+        assert_eq!(add.operation(), Operation::Publish);
+        assert!(Role::Owner.may(Operation::Create) && Role::Admin.may(Operation::Create));
+        for role in [Role::Editor, Role::Publisher, Role::Analyst, Role::Viewer] {
+            assert!(!role.may(Operation::Create), "{role:?}");
+        }
+    }
+
     /// Andy 11-11: names and policy are Ez2.PAGE's.
     #[test]
     fn a_role_gives_what_the_table_says_and_no_more() {
@@ -552,6 +708,7 @@ mod tests {
             [Role::Owner, Role::Admin, Role::Analyst]
         );
         assert_eq!(who(Operation::Archive), [Role::Owner, Role::Admin]);
+        assert_eq!(who(Operation::Create), [Role::Owner, Role::Admin]);
         assert_eq!(Operation::ViewAnalytics.as_str(), "view_analytics");
         // which operation each request is
         let logs = parse_request("logs nginx").unwrap();

@@ -229,6 +229,8 @@ pub fn answer_tenant(
         Err(why) => {
             eprintln!("refused: {}", why.as_str());
             eprintln!("requests: sites | usage | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N]");
+            // `site create` and `site <code> domain check|add <name>` are not listed
+            // until the host can do them (Andy 11-10: what is not open is not shown)
             return 2;
         }
     };
@@ -251,6 +253,14 @@ pub fn answer_tenant(
     if !roles.iter().any(|r| r.may(request.operation())) {
         eprintln!("refused: role_forbidden");
         return 2;
+    }
+    // opening a site and a site's domains parse and are checked against the roles, and
+    // nothing is done yet (PLAN-customer-site-create: the journal and the host lock come
+    // with the part that does them). The role came first: a key that may not ask learns
+    // nothing, not even whether the site named is the customer's.
+    if matches!(request, OwnerRequest::Create | OwnerRequest::Domain { .. }) {
+        eprintln!("not available yet");
+        return 4;
     }
     let Ok(sites) = tenant_sites(tenant, scope, records) else {
         eprintln!("could not read the site records");
@@ -287,7 +297,7 @@ pub fn answer_tenant(
             );
             0
         }
-        OwnerRequest::Site { .. } => 3,
+        OwnerRequest::Site { .. } | OwnerRequest::Create | OwnerRequest::Domain { .. } => 3,
     }
 }
 
@@ -444,6 +454,36 @@ mod tests {
             answer_tenant("t-aaa", None, "/nonexistent/aib-tenant", "sites", ALL),
             3
         );
+        // Andy 11-11: opening a site and a site's domains. They parse, the role is asked,
+        // and nothing is done yet: the same "not available yet" as a site's restart
+        let coming = not_yet;
+        assert_eq!(answer_tenant("t-aaa", None, d, "site create", ALL), coming);
+        assert_eq!(
+            answer_tenant("t-aaa", None, d, "site create", &[Role::Owner]),
+            coming
+        );
+        // opening a site is the owner's: nobody else's key gets as far as "not yet"
+        for role in [Role::Editor, Role::Publisher, Role::Analyst, Role::Viewer] {
+            assert_eq!(answer_tenant("t-aaa", None, d, "site create", &[role]), 2);
+        }
+        let bind = "site site2 domain add shop.example.com";
+        assert_eq!(
+            answer_tenant("t-aaa", None, d, bind, &[Role::Publisher]),
+            coming
+        );
+        assert_eq!(answer_tenant("t-aaa", None, d, bind, &[Role::Editor]), 2);
+        assert_eq!(
+            answer_tenant(
+                "t-aaa",
+                None,
+                d,
+                "site site2 domain check shop.example.com",
+                ALL
+            ),
+            coming
+        );
+        // nothing about the new site is the customer's to choose
+        assert_eq!(answer_tenant("t-aaa", None, d, "site create site9", ALL), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
