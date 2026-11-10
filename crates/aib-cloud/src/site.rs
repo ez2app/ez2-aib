@@ -86,6 +86,17 @@ impl Limits {
         pids_max: 2048,
     };
 
+    /// What a new site starts with (Andy 11-10: "起步降到 1G、預期以 512、或更少記憶體運作"):
+    /// 1 GiB of memory, the rest as the test tier. Measured idle sites hold 150–200 MiB;
+    /// ARC raises the limit when a site really needs more.
+    pub const START: Limits = Limits {
+        cores: 2,
+        cpulimit_x100: 200,
+        memory_mb: 1024,
+        swap_mb: 512,
+        pids_max: 2048,
+    };
+
     pub fn validate(&self) -> Result<(), Error> {
         let band = |k: &'static str, v: u32, lo: u32, hi: u32| {
             if (lo..=hi).contains(&v) {
@@ -489,8 +500,8 @@ pub struct RecordGap {
 }
 
 const RECORD_KEYS: &[&str] = &[
-    "site", "ct", "ip", "hosts", "wp", "locale", "created", "template", "fw_group", "ssh_port",
-    "limits",
+    "owner", "disk_gb", "site", "ct", "ip", "hosts", "wp", "locale", "created", "template",
+    "fw_group", "ssh_port", "limits",
 ];
 const LIMIT_KEYS: &[&str] = &["cores", "cpulimit_x100", "memory_mb", "swap_mb", "pids_max"];
 
@@ -550,12 +561,34 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
             }
         }
     }
+    // optional, but of the right kind when present
+    if obj
+        .get("owner")
+        .is_some_and(|v| !v.as_str().is_some_and(valid_code))
+    {
+        out.push(gap("R01", "owner"));
+    }
+    if obj
+        .get("disk_gb")
+        .is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1024).contains(&n)))
+    {
+        out.push(gap("R01", "disk_gb"));
+    }
     for key in obj.keys() {
         if !RECORD_KEYS.contains(&key.as_str()) {
             out.push(gap("R04", key));
         }
     }
     out
+}
+
+/// The customer a site belongs to: the record's `owner`, or the site itself when the
+/// record names none (a customer with one site). The plan's envelope is per owner.
+pub fn record_owner(rec: &Value) -> Option<&str> {
+    match rec.get("owner") {
+        Some(v) => v.as_str().filter(|o| valid_code(o)),
+        None => rec.get("site").and_then(Value::as_str),
+    }
 }
 
 /// [`spec_from_record`] for callers that must not accept a defaulted value: any
@@ -1626,6 +1659,25 @@ mod tests {
         site1["limits"] =
             json!({"cores":2,"cpulimit_x100":200,"memory_mb":2048,"swap_mb":512,"pids_max":2048});
         assert_eq!(gaps(&site1), []);
+    }
+
+    #[test]
+    fn owner_and_disk_are_optional_but_typed() {
+        let mut r = record(&site2(), "2026-11-10T01:00:00Z");
+        assert_eq!(record_owner(&r), Some("site2"));
+        r["owner"] = json!("acme");
+        r["disk_gb"] = json!(16);
+        assert_eq!(gaps(&r), []);
+        assert_eq!(record_owner(&r), Some("acme"));
+        r["owner"] = json!("Acme Inc.");
+        r["disk_gb"] = json!(0);
+        assert_eq!(
+            gaps(&r),
+            [("R01", "owner".to_owned()), ("R01", "disk_gb".to_owned())]
+        );
+        assert_eq!(record_owner(&r), None);
+        Limits::START.validate().unwrap();
+        assert_eq!(Limits::START.memory_mb, 1024);
     }
 
     #[test]
