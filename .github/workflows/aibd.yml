@@ -327,6 +327,14 @@ jobs:
           ck verify.rs '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),' \
              '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Green, // knife' \
              h01_h06_h07_h10_h12
+          # edge domain: an AAAA record no longer blocks a domain (4.4.1 6.2)
+          ck edge.rs '        out.push(NotReady::HasAaaa);' \
+             '        // knife: AAAA ignored' \
+             preflight_reads_a_aaaa_and_caa
+          # edge domain: a name already on another site is added again
+          ck edge.rs '            refuse("already on another site", name)' \
+             '            Ok(alloc::vec![]) // knife' \
+             add_refusals
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \

@@ -38,6 +38,7 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
+pub mod edge;
 pub mod isolation;
 pub mod op;
 pub mod provision;
