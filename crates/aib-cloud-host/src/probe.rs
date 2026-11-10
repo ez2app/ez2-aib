@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Execute an `aib_cloud::isolation` probe plan on a Proxmox host (or a public vantage
 //! point) and write the report `judge()` accepts. Rust rewrite of the Python runner
-//! `aib/tools/cloud-host/ez2-isolation-probe` (#568 r2 M2 rules kept one for one):
+//! `ez2-isolation-probe` (retired 11-09 after this binary re-ran the full EU02 matrix with
+//! the same `plan_fnv` and identical cells; #568 r2 M2 rules kept one for one):
 //!
 //! * the whole plan is validated against a whitelist first (id charset, `from` shape,
 //!   kind, ip parses, port range, expect, unique ids); one bad cell and nothing runs;
@@ -758,12 +759,15 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let mut names: Vec<std::path::PathBuf> = fs::read_dir(&dir)
-        .map_err(|e| format!("{dir}: {e}"))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
+    // An entry that cannot be read is an error, not a site to skip: a drift report that
+    // silently leaves a record out would read as "that site is fine".
+    let mut names: Vec<std::path::PathBuf> = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| format!("{dir}: {e}"))? {
+        let path = entry.map_err(|e| format!("{dir}: {e}"))?.path();
+        if path.extension().is_some_and(|x| x == "json") {
+            names.push(path);
+        }
+    }
     names.sort();
     if names.is_empty() {
         return Err(format!("{dir}: no site records"));
@@ -1170,11 +1174,12 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             }
             _ => Err("probe needs run | merge | one | netns".to_owned()),
         },
+        Some("self-update") => crate::update::main(&args[1..]),
         Some("--version") => {
-            println!("aib-cloud-host {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 

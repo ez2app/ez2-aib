@@ -20,6 +20,7 @@
 //!   would not see.
 
 mod deps;
+mod knife_anchors;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -279,8 +280,14 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        [cmd] if cmd == "knife-anchors" => ExitCode::from(knife_anchors::run(Path::new("."))),
+        [cmd, root] if cmd == "knife-anchors" => {
+            ExitCode::from(knife_anchors::run(Path::new(root)))
+        }
         _ => {
-            eprintln!("usage: aib-xtask purity <crate-dir> | deps [--manifest-path P]");
+            eprintln!(
+                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT]"
+            );
             ExitCode::from(2)
         }
     }
