@@ -206,7 +206,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             (_, OwnerRequest::Site { request, .. }) => {
                 println!("{}", wording::reply(request, code, &out, &err));
             }
-            (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{out}"),
+            (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{}", shown(&out)),
         },
         Err(_) => {}
     }
@@ -224,6 +224,16 @@ fn command(args: &[String]) -> Result<Asked, String> {
         _ => return Err(USAGE.to_owned()),
     };
     Ok(asked)
+}
+
+/// The host's document as it is printed: line by line through [`aib_cloud::svc::plain`],
+/// so nothing in it acts on the terminal or hides from the person reading (ebb36, #648
+/// L2). The host's JSON writer already escapes the C0 controls; it passes DEL, C1,
+/// direction overrides and invisible characters as they are.
+fn shown(out: &str) -> String {
+    out.lines()
+        .map(|l| aib_cloud::svc::plain(l) + "\n")
+        .collect()
 }
 
 /// The code of the host's `refused: <code>` line, when it is a plain code word.
@@ -411,6 +421,16 @@ mod tests {
             full(&["site", "site3", "restart"]).unwrap_err().raw(),
             "not sent: unknown_request"
         );
+    }
+
+    #[test]
+    fn the_hosts_document_is_printed_as_plain_text() {
+        assert_eq!(shown("{\"sites\":[]}\n"), "{\"sites\":[]}\n");
+        assert_eq!(
+            shown("{\"hosts\":\"a\u{9b}31m\u{202e}b\u{e0041}\"}\n"),
+            "{\"hosts\":\"a\\x9b31m\\u{202e}b\\u{e0041}\"}\n"
+        );
+        assert_eq!(shown(""), "");
     }
 
     #[test]

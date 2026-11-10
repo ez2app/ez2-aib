@@ -13,10 +13,12 @@
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
+//! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site>   (a customer's roster as authorized_keys lines; prints, changes nothing)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
 //! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
+//! aib-cloud-host build-info     (aib-build-info version=<v> commit=<40 hex|unknown> dirty=<0|1>;)
 //! ```
 //!
 //! `plan.json` is `aib_cloud::isolation::probe_plan()`; the report is what
@@ -39,6 +41,8 @@ mod opstore;
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
+#[cfg(unix)]
+mod rostercmd;
 #[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]

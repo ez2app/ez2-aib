@@ -113,7 +113,7 @@ class Country(Base):
         f = G.queue_fields(rec, tab_paths=self.paths)
         self.assertEqual((f["country"], f["country_status"], f["tz_country"], f["lang"]), ("TW", "mismatch", "JP", "zh-TW"))
         self.assertEqual(G.queue_fields(dict(rec, lang="en"), tab_paths=self.paths)["lang"], "en")
-        env = {"EZ2_AIB_STATE_ROOT": str(self.dir), "HOME": str(self.dir), "AIB_DM_ADDR": "100.114.152.121",
+        env = {"EZ2_AIB_STATE_ROOT": str(self.dir), "HOME": str(self.dir), "AIB_DM_ADDR": "100.64.0.121",
                "EZ2_AIB_LOCALE": "zh-TW"}
         it = Q.enqueue("8f366", rec["content"], f["shown_name"], sender_kind=f["sender_kind"],
                        sender_origin=f["sender_origin"], env=env,

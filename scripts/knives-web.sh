@@ -23,6 +23,10 @@ k crates/aibd/src/ctl.rs '            Some("awaiting_confirmation") => {' \
 k crates/aibd/src/ctl.rs '        if e.starts_with("HTTP 404") {' '        if false { // knife' \
   web_says_how_to_turn_pairing_on
 # W5 health stops telling a restarted aibd apart
-k crates/aibd/src/api.rs '        "instance_id": PROCESS.instance_id,' '        "instance_id_gone": PROCESS.instance_id, // knife: health has no instance_id; the field stays read (-D warnings)' \
+k crates/aibd/src/api.rs '        "instance_id": p.map(|p| p.instance_id.as_str()),' '        "instance_id_gone": p.map(|p| p.instance_id.as_str()), // knife: health has no instance_id; the field stays read (-D warnings)' \
   health_is_public_and_minimal
-echo "web knives: 5/5 bite"
+# W6 a failed random read gives an id anyway (zeros, the same on every restart)
+k crates/aibd/src/api.rs '    fill(&mut b).map_err(|e| format!("instance id: {e}"))?;' \
+       '    let _ = fill(&mut b).map_err(|e| format!("instance id: {e}")); // knife: the error is dropped' \
+  instance_id_needs_randomness
+echo "web knives: 6/6 bite"

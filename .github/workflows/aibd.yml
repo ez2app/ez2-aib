@@ -267,6 +267,22 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
+          ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
+             nothing_in_a_line_reaches_the_terminal_as_a_control
+          # customer logs: characters nobody sees go out as they came (ebb36, #648 L1)
+          ck svc.rs "        if c == '\\t' || !(c.is_control() || unseen(c)) {" \
+             "        if c == '\\t' || !(c.is_control() || (unseen(c) && false)) { // knife" \
+             nothing_in_a_line_reaches_the_terminal_as_a_control
+          # customer side: the host's sites / usage document is printed as it came (ebb36, #648 L2)
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        .map(|l| aib_cloud::svc::plain(l) + "\n")' \
+            '        .map(|l| l.to_owned() + "\n") // knife' \
+            --expect-fail the_hosts_document_is_printed_as_plain_text \
+            -- cargo test -p aib-cloud-cli --locked the_hosts_document_is_printed_as_plain_text
+          # customer side: a log line is shown as the host sent it (ebb36, #648 L2)
+          ck wording.rs '                    .map(crate::svc::plain)' '                    .map(String::from) // knife' \
+             every_answer_has_its_sentence
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
@@ -509,6 +525,17 @@ jobs:
           hk customercmd.rs '        Some([only]) if !is_owner_word(line) && !line.trim().is_empty() => {' \
              '        Some([only, ..]) if !is_owner_word(line) && !line.trim().is_empty() => { // knife' \
              a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # roster: login lines are printed for a site of another tenant
+          hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
+             '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
+             lines_only_for_the_rosters_own_sites
+          # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
+          hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
+             '        None if under_sudo && !has_connection && false => None, // knife' \
+             an_entry_whose_environment_was_not_kept_is_not_an_empty_request
+          # customer entry: through sudo any records directory is taken (33e28, #642 L2)
+          hk customercmd.rs '    !under_sudo || records == RECORDS' '    !under_sudo || !records.is_empty() // knife' \
+             through_sudo_the_records_directory_is_ours_only
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error
@@ -574,6 +601,22 @@ jobs:
           hk opstore.rs '        Err(_) => Liveness::Unknown,' \
              '        Err(_) => Liveness::Gone, // knife' \
              liveness_from_proc
+          # liveness: a pid now started at another time (reused) is read as the holder (FOLLOWUP-635 N3)
+          hk opstore.rs '            Some(_) => Liveness::Gone,' \
+             '            Some(_) => Liveness::Alive, // knife' \
+             liveness_from_proc
+          # liveness: a zombie holder keeps the lock until it is reaped (FOLLOWUP-635 N1)
+          hk opstore.rs "            Some(st) if st == holder.start_time && stat_state(&t) == Some('Z') => Liveness::Gone," \
+             "            Some(st) if st == holder.start_time && stat_state(&t) == Some('?') => Liveness::Gone, // knife" \
+             liveness_from_proc
+          # /proc stat: the state letter read after the first paren instead of the last
+          hk opstore.rs "    stat.rsplit_once(')')?" \
+             "    stat.split_once(')')? // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # unfinished: an operation's own recovery is blocked by itself (FOLLOWUP-635 N3)
+          hk opstore.rs '        .filter(|e| e.target == target && e.op != own_op && is_unfinished(e))' \
+             '        .filter(|e| e.target == target && (e.op != own_op || true) && is_unfinished(e)) // knife' \
+             unfinished_operations_block_their_target
           # lock: a damaged lock file is read as free
           hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
              '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
@@ -1156,6 +1199,41 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+      # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
+      # the test that asserts its refusal code red
+      - name: aib-release host-build knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py crates/aib-release/src/host_build.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-release --locked --test host_build "$3"; }
+          # H1 a build from a PR head passes (the 11-11 B build)
+          hk '    match git.is_ancestor(cand, &main) {' \
+             '    match git.is_ancestor(cand, &main).map(|_| true) { // knife' \
+             a_build_from_a_pr_head_never_goes_on
+          # H2 a build that does not contain the host's build passes
+          hk '            match git.is_ancestor(cur, cand) {' \
+             '            match git.is_ancestor(cur, cand).map(|_| true) { // knife' \
+             a_build_that_does_not_contain_the_hosts_build_is_refused_unless_a_downgrade_is_asked_for
+          # H3 a dirty build counts as clean
+          hk '    if req.candidate.dirty {' \
+             '    if req.candidate.dirty && false { // knife' \
+             a_candidate_that_does_not_say_where_it_came_from_or_was_built_dirty_is_refused
+          # H4 a host build without build info passes with no reason
+          hk '        None => match &req.allow_unknown_current {' \
+             '        None => match &Some(String::new()) { // knife' \
+             a_host_build_without_build_info_needs_a_reason
+          # H5 the main line is whatever is checked out (2240e, #650 M1: a PR head named as main)
+          hk 'pub const MAIN_REF: &str = "refs/remotes/origin/main";' \
+             'pub const MAIN_REF: &str = "HEAD"; // knife' \
+             the_main_line_is_origin_main_and_not_what_is_checked_out
+          # H6 the answer does not name the file it checked (4542e, #650 L1: A checked, B swapped in)
+          python3 -I scripts/knife.py crates/aib-release/src/main.rs \
+            '            Ok((info, Some(host_build::sha256_hex(&bytes))))' \
+            '            Ok((info, None)) // knife' \
+            --expect-fail a_candidate_file_is_named_by_its_sha256 \
+            -- cargo test -p aib-release --locked --bin aib-release a_candidate_file_is_named_by_its_sha256
       # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
       # and health stays public and minimal.
       - name: aib web knives (macOS)
