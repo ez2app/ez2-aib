@@ -57,7 +57,7 @@ fn home() -> PathBuf {
 
 fn env_path(keys: &[&str]) -> Option<PathBuf> {
     keys.iter()
-        .filter_map(|k| std::env::var_os(k))
+        .filter_map(std::env::var_os)
         .find(|v| !v.is_empty())
         .map(PathBuf::from)
 }
