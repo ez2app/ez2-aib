@@ -299,6 +299,10 @@ jobs:
           # customer side: a log line is shown as the host sent it (ebb36, #648 L2)
           ck wording.rs '                    .map(crate::svc::plain)' '                    .map(String::from) // knife' \
              every_answer_has_its_sentence
+          # site drift: any path on the mask's hook key passes (33e28: only the wrapper's)
+          ck site.rs '        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {' \
+             '        if k == "lxc.hook.mount" && (mask_hook_ok(v) || true) && mask_hooks == 1 { // knife' \
+             s6_each_drift_is_named
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
