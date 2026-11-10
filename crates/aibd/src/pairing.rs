@@ -422,7 +422,6 @@ impl Pairing {
             return Err(PairError::Full);
         }
         let code = new_code().map_err(|_| PairError::Full)?;
-        let short_code = new_short_code().map_err(|_| PairError::Full)?;
         let pair_id = hex(&random::<8>().map_err(|_| PairError::Full)?);
         inner.pairs.insert(
             pair_id.clone(),
@@ -432,7 +431,8 @@ impl Pairing {
                 stored: Stored::Issued,
                 cred: None,
                 redeemed: None,
-                short_code,
+                // made at redemption, bound to that credential (ADR 0006 §7; a9136 L1)
+                short_code: String::new(),
             },
         );
         Ok(NewCode {
@@ -485,7 +485,9 @@ impl Pairing {
         use base64::Engine;
         let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
         let digest = sha(credential.as_bytes());
+        let short_code = new_short_code().map_err(|_| PairError::Failed)?;
         if let Some(p) = inner.pairs.get_mut(&id) {
+            p.short_code = short_code;
             p.stored = Stored::Awaiting;
             p.cred = Some(digest);
             p.redeemed = Some(now);
@@ -672,6 +674,16 @@ mod tests {
         let s = new_short_code().unwrap();
         assert_eq!(s.len(), 6);
         assert!(s.bytes().all(|b| b.is_ascii_digit()));
+    }
+
+    #[test]
+    fn the_short_code_exists_only_after_redemption() {
+        let p = on();
+        let c = p.create_code().unwrap();
+        assert_eq!(p.view(&c.pair_id).unwrap().short_code, None);
+        assert!(p.lock().pairs[&c.pair_id].short_code.is_empty());
+        p.redeem(&c.code).unwrap();
+        assert_eq!(p.view(&c.pair_id).unwrap().short_code.unwrap().len(), 6);
     }
 
     #[test]

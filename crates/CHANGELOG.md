@@ -17,11 +17,17 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   redemption is `409 pairing_code_reused` (new) and revokes the first credential; failures are
   `401 pairing_failed` (new, one message for all); 10 failures a minute per aibd give
   `429 pairing_rate_limited` (new). Credentials live 12 h, only as SHA-256, in memory.
-  `Origin: null` is refused on every other path, even if listed. `/api/v1/metrics` has
+  A confirmed page credential may only read (GET / HEAD) and revoke itself; any other
+  request is `403 page_write_not_allowed` (new) until the launch-profile routes exist, so a
+  page never sends argv. The 6-digit short code is made at redemption, bound to that
+  credential. **Behaviour change:** `Origin: null` is now refused on every path but
+  pair/redeem, even when it is listed in the allowed origins (before, a listed `null` passed). `/api/v1/metrics` has
   `pairing {channel, failures_total, rate_limited_total, pairs}`. Known limits: the terminal
   y/N confirmation does **not** stop an AI on the same OS account (it can read the token file
   and confirm itself), so it is UNVERIFIED and opt-in; another local account can keep pairing
-  locked by sending wrong codes (rate limit is per aibd; visible in metrics).
+  locked by sending wrong codes (rate limit is per aibd; visible in metrics). With 16 live
+  credentials a redemption answers `429` without using up the code and without counting as a
+  failure.
 - Session queue (ADR 0005 §5): when every slot is taken a POST is no longer refused with
   `429 too_many_sessions`; it answers `202` with the session `pending` (no process, `pid` 0,
   event `session.queued` with its `position`). Waiting sessions start in arrival order as

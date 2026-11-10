@@ -59,10 +59,13 @@ pub enum ErrorCode {
     PairingRateLimited,
     /// Pairing failed (unknown, expired or wrong code); deliberately says no more.
     PairingFailed,
+    /// A page credential sent a write (anything but GET / HEAD, and pair/revoke). Until the
+    /// launch-profile routes exist a page credential may only read (ADR 0006 §7; Q2).
+    PageWriteNotAllowed,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 23] = [
+    pub const ALL: [ErrorCode; 24] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -86,6 +89,7 @@ impl ErrorCode {
         ErrorCode::PairingCodeReused,
         ErrorCode::PairingRateLimited,
         ErrorCode::PairingFailed,
+        ErrorCode::PageWriteNotAllowed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -113,6 +117,7 @@ impl ErrorCode {
             ErrorCode::PairingCodeReused => "pairing_code_reused",
             ErrorCode::PairingRateLimited => "pairing_rate_limited",
             ErrorCode::PairingFailed => "pairing_failed",
+            ErrorCode::PageWriteNotAllowed => "page_write_not_allowed",
         }
     }
 
@@ -138,6 +143,7 @@ impl ErrorCode {
             ErrorCode::PairingCodeReused => 409,
             ErrorCode::PairingRateLimited => 429,
             ErrorCode::PairingFailed => 401,
+            ErrorCode::PageWriteNotAllowed => 403,
         }
     }
 }

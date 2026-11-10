@@ -597,6 +597,50 @@ async fn failures_and_rate_limits_are_counted_in_metrics() {
 }
 
 #[tokio::test]
+async fn a_confirmed_page_can_only_read_and_never_send_argv() {
+    let t = app();
+    let (id, _code, cred) = t.paired().await;
+    let short = t.short_code(&id).await;
+    assert_eq!(t.confirm(&id, &short).await.status, StatusCode::OK);
+    // reads work
+    let r = t.call("GET", "/api/v1/sessions", Some(&cred), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    // writes do not: no argv, no seats, no deletes (a9136 A4 M1; Q2)
+    for (m, p, body) in [
+        ("POST", "/api/v1/sessions", Some(r#"{"argv": ["/bin/echo", "x"]}"#)),
+        ("POST", "/api/v1/seats", Some("{}")),
+        ("DELETE", "/api/v1/sessions/x", None),
+        ("POST", "/api/v1/pair/codes", None),
+    ] {
+        let r = t.call(m, p, Some(&cred), body).await;
+        assert_ne!(r.status, StatusCode::OK, "{m} {p}");
+        assert!(r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED, "{m} {p}");
+    }
+    let r = t
+        .call(
+            "POST",
+            "/api/v1/sessions",
+            Some(&cred),
+            Some(r#"{"argv": ["/bin/echo", "x"]}"#),
+        )
+        .await;
+    assert_eq!(code_of(&r), "page_write_not_allowed");
+    // the start-up token still writes (the same request reaches the sessions handler)
+    let r = t
+        .call(
+            "POST",
+            "/api/v1/sessions",
+            Some(TOKEN),
+            Some(r#"{"argv": ["/bin/echo", "x"]}"#),
+        )
+        .await;
+    assert_ne!(code_of(&r), "page_write_not_allowed");
+    // and the page can still revoke itself
+    let r = t.call("POST", "/api/v1/pair/revoke", Some(&cred), None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn the_start_up_token_keeps_full_access_and_has_no_page_status() {
     let t = app();
     let r = t.call("GET", "/api/v1/events", Some(TOKEN), None).await;

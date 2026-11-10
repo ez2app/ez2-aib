@@ -12,7 +12,7 @@ use crate::token::Token;
 use aib_core::ErrorCode;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
@@ -199,8 +199,7 @@ pub const OTHER_METHOD: &str = "<other>";
 /// The method as it may be logged: a standard method, or a fixed
 /// placeholder. A method is an arbitrary token on the wire, so a caller could
 /// put a secret there (review by @3f312, 11-07).
-pub fn loggable_method(m: &axum::http::Method) -> &'static str {
-    use axum::http::Method;
+pub fn loggable_method(m: &Method) -> &'static str {
     const STANDARD: [Method; 9] = [
         Method::GET,
         Method::POST,
@@ -336,6 +335,16 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         return Err((
             ErrorCode::PairingUnconfirmed,
             "confirm the short code in the terminal first",
+        ));
+    }
+    // a9136 A4 M1: a page credential stays weaker than the start-up token. Until the
+    // launch-profile routes exist (Q2: the page sends a profile name, never argv), a
+    // confirmed page may only read, and revoke itself.
+    let reads = matches!(*req.method(), Method::GET | Method::HEAD);
+    if !reads && path != PAIR_REVOKE {
+        return Err((
+            ErrorCode::PageWriteNotAllowed,
+            "the page credential can only read for now",
         ));
     }
     Ok(Caller::Page(page))
