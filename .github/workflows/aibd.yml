@@ -265,6 +265,14 @@ jobs:
           ck quarantine.rs '    if ct_fw != restored_firewall {' \
              '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
              a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # quarantine: a stale record is archived whatever the journal says (1ced7, #625 seg. 2 M1)
+          ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
+             '        None => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
+          ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
+             '        let unprintable = false; // knife' \
+             upward_paths_and_control_characters
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \

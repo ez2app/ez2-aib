@@ -433,9 +433,18 @@ pub fn unquarantine_plan(
 /// only when the host is exactly what that unquarantine would have left: not quarantined,
 /// the firewall file the record would restore, and the edge block the record holds.
 /// Anything else is a half-finished state a person has to look at.
+///
+/// The host alone cannot tell this state from another one that looks the same: a
+/// quarantine that saved its record and was interrupted **before changing anything**. There
+/// the right move is to run the quarantine again, and archiving would drop the incident
+/// with the site still online. So the journal decides: `quarantine_op_state` is the last
+/// state of the operation the record names (`record.op`), and only `verified` — the
+/// quarantine did complete, so what is seen now is the unquarantine's doing — is accepted.
+/// `None` (no journal found) is refused like the unfinished states.
 pub fn archive_stale_plan(
     spec: &SiteSpec,
     record: &Record,
+    quarantine_op_state: Option<crate::op::State>,
     ct_fw: &str,
     caddyfile: &str,
 ) -> Result<Vec<Action>, Error> {
@@ -450,6 +459,15 @@ pub fn archive_stale_plan(
     }
     if is_quarantined(ct_fw) {
         return refuse("the CT is still on the quarantine firewall: unquarantine instead");
+    }
+    match quarantine_op_state {
+        Some(crate::op::State::Verified) => {}
+        Some(_) => {
+            return refuse(
+                "the quarantine this record belongs to did not finish: run quarantine again",
+            )
+        }
+        None => return refuse("no journal for the quarantine this record belongs to"),
     }
     let restored_firewall = if record.prev_firewall.is_empty() {
         desired_firewall(&spec.fw_group, spec.ssh_port)
@@ -973,6 +991,7 @@ mod tests {
     /// only when the host is exactly what that unquarantine left.
     #[test]
     fn a_stale_record_can_be_archived_when_the_host_is_fully_restored() {
+        const DONE: Option<crate::op::State> = Some(crate::op::State::Verified);
         let file = caddyfile();
         let a = actions(do_plan(&normal_fw(), &file, None));
         let Action::SaveRecord(record) = &a[0] else {
@@ -983,21 +1002,35 @@ mod tests {
         assert!(guard("site2", &normal_fw(), Some(record), Reopens::Resume).is_err());
         assert!(unquarantine_plan(&spec(), record, &normal_fw(), &file).is_err());
         assert_eq!(
-            archive_stale_plan(&spec(), record, &normal_fw(), &file).unwrap(),
+            archive_stale_plan(&spec(), record, DONE, &normal_fw(), &file).unwrap(),
             [Action::Verify { quarantined: false }, Action::ArchiveRecord]
         );
         // still quarantined, route not restored, another firewall, another site's record
-        assert!(archive_stale_plan(&spec(), record, &firewall(), quarantined_file).is_err());
-        assert!(archive_stale_plan(&spec(), record, &normal_fw(), quarantined_file).is_err());
+        assert!(archive_stale_plan(&spec(), record, DONE, &firewall(), quarantined_file).is_err());
+        assert!(archive_stale_plan(&spec(), record, DONE, &normal_fw(), quarantined_file).is_err());
         let other_fw = normal_fw().replace("ez2-site-v2", "ez2-site-v3");
-        assert!(archive_stale_plan(&spec(), record, &other_fw, &file).is_err());
+        assert!(archive_stale_plan(&spec(), record, DONE, &other_fw, &file).is_err());
         let mut theirs = record.clone();
         theirs.ct = 113;
-        assert!(archive_stale_plan(&spec(), &theirs, &normal_fw(), &file).is_err());
+        assert!(archive_stale_plan(&spec(), &theirs, DONE, &normal_fw(), &file).is_err());
+        // the look-alike (1ced7, #625 seg. 2 M1): the record was saved and the quarantine
+        // stopped before changing anything — same host state, but the journal says so
+        use crate::op::State;
+        for state in [
+            State::Planned,
+            State::Approved,
+            State::Running,
+            State::Failed,
+            State::Recovery,
+        ] {
+            let r = archive_stale_plan(&spec(), record, Some(state), &normal_fw(), &file);
+            assert!(r.is_err(), "{state:?}");
+        }
+        assert!(archive_stale_plan(&spec(), record, None, &normal_fw(), &file).is_err());
         // a CT that had no firewall file: what unquarantine wrote is the desired file
         let mut none = record.clone();
         none.prev_firewall = String::new();
-        assert!(archive_stale_plan(&spec(), &none, &normal_fw(), &file).is_ok());
-        assert!(archive_stale_plan(&spec(), &none, "", &file).is_err());
+        assert!(archive_stale_plan(&spec(), &none, DONE, &normal_fw(), &file).is_ok());
+        assert!(archive_stale_plan(&spec(), &none, DONE, "", &file).is_err());
     }
 }

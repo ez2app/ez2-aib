@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 
 use aib_cloud::provision::{self, Command, Disruption, Kind, Level, Recovery, Step};
 use serde_json::Value;
@@ -77,7 +78,16 @@ pub fn read_spec(path: &str) -> Result<Value, String> {
             "{path}: {size} bytes is larger than a spec ({MAX_BYTES})"
         ));
     }
-    let text = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    // read through a limit as well: the file may have grown since the size was taken
+    let mut text = String::new();
+    fs::File::open(path)
+        .map_err(|e| format!("{path}: {e}"))?
+        .take(MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("{path}: {e}"))?;
+    if text.len() as u64 > MAX_BYTES {
+        return Err(format!("{path}: larger than a spec ({MAX_BYTES} bytes)"));
+    }
     let value: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
     if let Some(key) = duplicate_key(&text) {
         return Err(format!("{path}: key {key:?} appears twice in one object"));

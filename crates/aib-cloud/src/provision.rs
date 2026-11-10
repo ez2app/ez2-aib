@@ -863,6 +863,11 @@ fn is_root(value: &str) -> bool {
     value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')
 }
 
+/// A path that walks upwards (`/var/..`, `../x`): where it ends is not what it says.
+fn walks_up(value: &str) -> bool {
+    value.split('/').any(|segment| segment == "..")
+}
+
 /// Every piece of text in a step, with how it is used.
 fn step_texts(step: &Step) -> Vec<(&str, Use)> {
     fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, Use)>) {
@@ -966,6 +971,12 @@ fn parse_vars(v: Option<&Value>, out: &mut Vec<Finding>) -> Vec<(String, String)
                         continue;
                     }
                 };
+                if text.chars().any(char::is_control) {
+                    out.push(top(
+                        "P11",
+                        format!("variable {name}: control character in the value"),
+                    ));
+                }
                 if looks_secret(&text) {
                     out.push(top(
                         "P11",
@@ -1002,7 +1013,7 @@ fn check_texts(
                             "P07",
                             format!("{{{{{name}}}}}: a value that starts with '-' would be read as an option"),
                         ),
-                        Some((_, value)) if used == Use::Shell && (!shell_plain(value) || is_root(value)) => sink.add(
+                        Some((_, value)) if used == Use::Shell && (!shell_plain(value) || is_root(value) || walks_up(value)) => sink.add(
                             "P07",
                             format!("{{{{{name}}}}} is used in a shell command but its value is not plain"),
                         ),
@@ -1024,6 +1035,15 @@ fn check_texts(
             sink.add(
                 "P11",
                 "text looks like a secret written out; use {\"secret\": \"name\"}".to_owned(),
+            );
+        }
+        // a plan is shown to the person who approves it: an escape sequence in a title or
+        // a command could repaint the terminal and hide the line that says what is destroyed
+        let unprintable = text.chars().any(char::is_control);
+        if unprintable {
+            sink.add(
+                "P11",
+                "control character in text (a plan must print as it reads)".to_owned(),
             );
         }
     }
@@ -1427,6 +1447,30 @@ mod tests {
         let mut v = with(1, "apply", json!([["echo", "{{tier}}"]]));
         v["vars"]["tier"] = json!("-pro");
         assert_eq!(codes(&v), ["P07"]);
+    }
+
+    /// Review of #625 (ebb36): seg. 1 N1 a path that walks up, seg. 5 L1 control
+    /// characters in what an approver reads.
+    #[test]
+    fn upward_paths_and_control_characters() {
+        let sh = json!([{ "sh": "chown -R www-data {{dir}}/*", "why": "glob" }]);
+        for dir in ["/var/..", "/var/../", "../x", "/a/../.."] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert_eq!(codes(&v), ["P07"], "{dir:?}");
+        }
+        let mut v = with(1, "apply", sh);
+        v["vars"]["dir"] = json!("/var/lib/..data");
+        assert!(lint(&v).is_ok());
+        // an escape sequence that would wipe the line above it
+        assert_eq!(
+            codes(&with(2, "destroys", json!("nothing\u{1b}[1A\u{1b}[2K"))),
+            ["P11"]
+        );
+        assert_eq!(codes(&with(1, "title", json!("two\nlines"))), ["P11"]);
+        let mut v = good();
+        v["vars"]["hostname"] = json!("host1\u{7}");
+        assert_eq!(codes(&v), ["P11"]);
     }
 
     /// A value is never read again after it is filled in (review of #619, L2).
