@@ -51,7 +51,7 @@ class Base(unittest.TestCase):
         self.addCleanup(td.cleanup)
         self.td = Path(td.name)
         self.root = self.td / "bridge"
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.114.152.121",
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.64.0.121",
                     "EZ2_AIB_LOCALE": "zh-TW", "AIB_CHAT_BRIDGE_DIR": str(self.root)}
         GF.ensure_dirs(self.root)
         (self.root / "sent").mkdir(exist_ok=True)
