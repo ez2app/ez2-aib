@@ -17,6 +17,50 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   T1 `unsupported` / `spi_missing` turns T1 off until restart; any other failure is checked
   again in the first round after 0 → n, at most every 10 minutes. With neither sensor (or
   not macOS) the guard is not set up and `thermal` is `null`.
+- Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
+  default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
+  aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding
+  (`"<hash>"`, `"<hash>-br"`, `"<hash>-gz"`; `If-None-Match` with any of them gives `304`)
+  and `Cache-Control: no-cache`; `assets/*` are `public, max-age=31536000, immutable`; `.br` /
+  `.gz` siblings follow `Accept-Encoding` (`Vary: Accept-Encoding`). Every `text/html` file
+  gets a CSP that loads only our own files (plus `data:` images and fonts) and
+  `X-Frame-Options: DENY`. Non-API paths need no bearer (the files are the same for every
+  caller); Host and token-in-URL checks still apply. Without the feature every non-API path is
+  `404 web_not_built` (new). Every `/api/` answer now carries `Cache-Control: no-store`
+  unless it set its own, and `X-Aibd-Build` (version + embedded `dist` hash): an open page
+  reloads when it changes, so old page code never calls a new API. No deep-link fallback:
+  the front end uses hash routes. Routes are mounted only from `guard::ROUTES`, which is
+  tested to sit under `/api/` (a route outside it would skip the bearer check).
+- Pairing (ADR 0006 §7, W1 manual entry), **off by default**; `AIBD_PAIRING=terminal-unverified`
+  turns it on (off: pair/codes and pair/redeem are `404`, nothing is counted). `POST
+  /api/v1/pair/codes` (start-up token) gives a 10-character code that a person types into the
+  page; the page redeems it with a form `POST /api/v1/pair/redeem` (`Origin` must be aibd's
+  own, ≤ 1 KiB, field `code`) and gets a page credential in the exchange page body (no-store,
+  no-referrer, CSP `default-src 'none'`). The credential is restricted until the 6-digit
+  short code (made at redemption, bound to that credential) shown on the page (`GET
+  /api/v1/pair/status`) and in the terminal (`GET /api/v1/pair/codes/{id}`) is confirmed with
+  `POST /api/v1/pair/codes/{id}/confirm` (start-up token); until then only pair/status,
+  pair/revoke and health answer, everything else is `403 pairing_unconfirmed` (new). A
+  confirmed page credential may only read (GET / HEAD) and revoke itself; any other request
+  is `403 page_write_not_allowed` (new) until the launch-profile routes exist, so a page
+  never sends argv. A second redemption is `409 pairing_code_reused` (new) and revokes the
+  first credential; a cancelled or expired code and every other failure is `401
+  pairing_failed` (new, one message for all); 10 redeem failures a minute per aibd give `429
+  pairing_rate_limited` (new). Confirmation has no shared limit (a wrong short code revokes).
+  Credentials live 12 h, only as SHA-256, in memory; a live page credential anywhere in a
+  path or query is `400 token_in_url`. **Behaviour change:** `Origin: null` is refused on
+  every path, even when listed in the allowed origins (before, a listed `null` passed;
+  `AIBD_ALLOWED_ORIGINS` never accepted it). `null` returns with the P2 local-file pairing.
+  `/api/v1/metrics` has `pairing {channel, failures_total, rate_limited_total,
+  confirm_failures_total, pairs}`.
+  Known limits: the terminal y/N confirmation does **not** stop an AI on the same OS account
+  (it can read the token file and confirm itself), so it is UNVERIFIED and opt-in. Anything
+  that can send a form from aibd's own origin, or another local account, can fill the redeem
+  limit and keep new pairings from redeeming (visible in metrics); a pairing already waiting
+  for confirmation still confirms. With 16 live credentials a redemption answers `429`
+  without using up the code and without counting as a failure. Back / bfcache / session
+  restore of the exchange page are not tested in a real browser yet (needed before turning
+  pairing on by default).
 - Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
   `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
   and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`

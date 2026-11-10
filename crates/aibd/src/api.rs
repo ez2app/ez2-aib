@@ -1,15 +1,16 @@
 //! `/api/v1` routes: health (public); event cursor, metrics, seats and sessions
-//! (authenticated).
+//! (authenticated); pairing (ADR 0006 §7, see `pair_api`).
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::pair_api;
 use crate::seats;
 use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post, MethodRouter};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -30,48 +31,54 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
-    Router::new()
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/events", get(events))
-        .route("/api/v1/metrics", get(metrics))
-        .route(
-            "/api/v1/seats",
-            get(seats::list)
-                .post(seats::create)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/seats/{id}",
-            get(seats::get_one).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/seats/{id}/sessions",
-            get(sessions::list_for_seat)
-                .post(sessions::create_for_seat)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions",
-            get(sessions::list)
-                .post(sessions::create)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions/{id}",
-            get(sessions::get_one)
-                .delete(sessions::delete_one)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions/{id}/output",
-            get(sessions::output).fallback(sessions::method_not_allowed),
-        )
-        .fallback(not_found)
+    // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
+    // the list is tested to sit under `/api/` (a9136 A3 L1)
+    let mut r = Router::new();
+    for path in guard::ROUTES {
+        if let Some(h) = handlers(path) {
+            r = r.route(path, h);
+        }
+    }
+    r.fallback(crate::static_files::fallback)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
             guard_cfg,
             guard::guard,
         ))
+}
+
+/// The handlers of one `guard::ROUTES` entry (`None` for any other path, which is
+/// never mounted).
+pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
+    use guard::{
+        EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
+        PAIR_STATUS, SEAT, SEATS, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
+    };
+    let nope = sessions::method_not_allowed;
+    Some(match path {
+        HEALTH => get(health),
+        EVENTS => get(events),
+        METRICS => get(metrics),
+        SEATS => get(seats::list).post(seats::create).fallback(nope),
+        SEAT => get(seats::get_one).fallback(nope),
+        SEAT_SESSIONS => get(sessions::list_for_seat)
+            .post(sessions::create_for_seat)
+            .fallback(nope),
+        SESSIONS => get(sessions::list).post(sessions::create).fallback(nope),
+        SESSION => get(sessions::get_one)
+            .delete(sessions::delete_one)
+            .fallback(nope),
+        SESSION_OUTPUT => get(sessions::output).fallback(nope),
+        PAIR_CODES => post(pair_api::create_code).fallback(nope),
+        PAIR_CODE => get(pair_api::get_code)
+            .delete(pair_api::cancel)
+            .fallback(nope),
+        PAIR_CONFIRM => post(pair_api::confirm).fallback(nope),
+        PAIR_REDEEM => post(pair_api::redeem).fallback(nope),
+        PAIR_STATUS => get(pair_api::status).fallback(nope),
+        PAIR_REVOKE => post(pair_api::revoke).fallback(nope),
+        _ => return None,
+    })
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -80,15 +87,18 @@ async fn health() -> Json<serde_json::Value> {
 
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
 /// `unsupported`; `lineage.failures` counts M1 reads that failed after
-/// start-up (a process being gone is not a failure). `thermal` is the
-/// guard's dry-run counters, or `null` when this machine has no sensor.
-async fn metrics(State(st): State<AppState>) -> Json<serde_json::Value> {
+/// start-up (a process being gone is not a failure). `pairing` has the
+/// pairing channel and failure / rate-limit totals. `thermal` is the guard's
+/// dry-run counters, or `null` when this machine has no sensor.
+async fn metrics(
+    State(st): State<AppState>,
+    pairing: Option<axum::extract::Extension<Arc<crate::pairing::Pairing>>>,
+) -> Json<serde_json::Value> {
+    let pairing = pairing.map(|p| p.0.metrics());
     let thermal = st.thermal.as_ref().map(|g| g.metrics());
-    Json(serde_json::json!({"lineage": st.lineage.status(), "thermal": thermal}))
-}
-
-async fn not_found() -> Response {
-    error_response(ErrorCode::NotFound, "no such route", &guard::request_id())
+    Json(serde_json::json!({
+        "lineage": st.lineage.status(), "pairing": pairing, "thermal": thermal
+    }))
 }
 
 #[derive(Deserialize)]
