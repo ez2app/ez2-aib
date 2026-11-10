@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host customer --site <code> | --tenant <id> --roles <role,…>` — the one
 //! command a customer's key reaches. A key is bound to one site or to a customer (all of
-//! that tenant's sites); its roles are Ez2.PAGE's (`aib_cloud::customer::Role`).
+//! that tenant's sites, or with `--sites a,b` the listed ones of them); its roles are
+//! Ez2.PAGE's (`aib_cloud::customer::Role`). The lines for a customer's keys are written
+//! from that customer's roster (`aib_cloud::roster`).
 //!
 //! Originally:
 //! (4.4.1 §1; request grammar: `aib_cloud::customer`). It is meant to be the forced
@@ -194,6 +196,14 @@ fn parse_scope(list: &str) -> Option<Vec<&str>> {
     ok.then_some(codes)
 }
 
+/// Whether a line starts with a word only a customer key's grammar has.
+fn is_owner_word(line: &str) -> bool {
+    matches!(
+        line.split(' ').find(|w| !w.is_empty()),
+        Some("sites" | "usage" | "site")
+    )
+}
+
 /// Answer one request of a **customer** key: every site of that tenant (or, with a scope,
 /// the listed ones of them), and no other. A site that does not exist, a site that is
 /// someone else's and a site outside the scope get the same answer.
@@ -204,6 +214,16 @@ pub fn answer_tenant(
     line: &str,
     roles: &[Role],
 ) -> u8 {
+    // a list of one site: that member need not name it (4.5 section 4). The line is still
+    // a customer key's line afterwards, so the record is asked whose the site is.
+    let named;
+    let line = match scope {
+        Some([only]) if !is_owner_word(line) && !line.trim().is_empty() => {
+            named = format!("site {only} {line}");
+            named.as_str()
+        }
+        _ => line,
+    };
     let request = match parse_owner_request(line) {
         Ok(r) => r,
         Err(why) => {
@@ -418,6 +438,18 @@ mod tests {
             answer_tenant("t-aaa", Some(scope), d, "site site4 status", ALL),
             2
         );
+        // a list of one site: its member asks without naming it, and still reaches no other.
+        // (`status` itself enters the site, so the words used here are ones refused before.)
+        assert_eq!(answer_tenant("t-aaa", Some(scope), d, "restart", ALL), 4);
+        assert_eq!(answer_tenant("t-aaa", Some(scope), d, "stop", ALL), 2);
+        assert_eq!(answer_tenant("t-aaa", Some(scope), d, "", ALL), 2);
+        // the one site is someone else's: the same refusal as any site not yours
+        let theirs: &[&str] = &["site4"];
+        assert_eq!(answer_tenant("t-aaa", Some(theirs), d, "restart", ALL), 2);
+        // with the whole tenant, or a longer list, the site has to be named
+        assert_eq!(answer_tenant("t-aaa", None, d, "restart", ALL), 2);
+        let two: &[&str] = &["site2", "site3"];
+        assert_eq!(answer_tenant("t-aaa", Some(two), d, "restart", ALL), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

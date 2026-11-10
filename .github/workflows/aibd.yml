@@ -435,6 +435,22 @@ jobs:
           ck client.rs '                && parse_request(&rest.join(" ")).is_ok() =>' \
              '                && (parse_request(&rest.join(" ")).is_ok() || true) => // knife' \
              a_code_in_front_of_a_request_names_the_site
+          # roster: a tenant id that is a site code is read all the same (4.5 r4 section 14.1 #3)
+          ck roster.rs '    if site_codes.contains(&tenant_id) {' \
+             '    if site_codes.contains(&tenant_id) && site_codes.is_empty() { // knife' \
+             a_tenant_id_that_is_a_site_code_refuses_the_whole_roster
+          # roster: a revoked entry key still gets its line
+          ck roster.rs '            if k.usage == KeyUse::Entry && !k.revoked {' \
+             '            if k.usage == KeyUse::Entry && (!k.revoked || true) { // knife' \
+             a_revoked_key_or_member_writes_no_line
+          # roster: a member who may not edit gets a login to the site
+          ck roster.rs '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Edit)) {' \
+             '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::ReadPrivate)) { // knife' \
+             one_roster_writes_both_kinds_of_lines
+          # roster: a field nobody named is skipped
+          ck roster.rs '    if map.keys().any(|k| !named.contains(&k.as_str())) {' \
+             '    if map.keys().any(|k| !named.contains(&k.as_str()) && k.is_empty()) { // knife' \
+             strict_reading
           # site record: a record that names no tenant belongs to the tenant called like the site
           ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
              '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
@@ -488,6 +504,10 @@ jobs:
           # customer key: the site list of the entry does not narrow (c477a: one member, some sites)
           hk customercmd.rs '            if scope.is_none_or(|list| list.contains(&spec.code.as_str())) {' \
              '            if scope.is_none_or(|list| list.contains(&spec.code.as_str()) || true) { // knife' \
+             a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # customer key: a list of one site turns any line into that site's, owner words too
+          hk customercmd.rs '        Some([only]) if !is_owner_word(line) && !line.trim().is_empty() => {' \
+             '        Some([only, ..]) if !is_owner_word(line) && !line.trim().is_empty() => { // knife' \
              a_site_list_narrows_a_tenant_key_and_never_widens_it
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
