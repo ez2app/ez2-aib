@@ -385,6 +385,8 @@ impl GitCli {
                 c.env_remove(k);
             }
         }
+        // refs/replace in the repository would change the ancestry merge-base sees (2240e r2 N2)
+        c.env("GIT_NO_REPLACE_OBJECTS", "1");
         c.arg("-C").arg(&self.dir).args(args);
         c.output()
             .map_err(|e| format!("git {}: {e}", args.join(" ")))

@@ -162,7 +162,8 @@ fn the_main_line_is_origin_main_and_not_what_is_checked_out() {
     l.repo.git(&["switch", "-q", "pr-head"]);
     let git = GitCli::new(&l.repo.0);
     let req = Request::for_host(built(&l.d), Current::Known(built(&l.b)));
-    assert_eq!(req.main, "refs/remotes/origin/main");
+    // compared with the constant, so knife H5 turns the PR head assertion red, not this one
+    assert_eq!(req.main, MAIN_REF);
     let rep = check(&git, &req);
     assert_eq!(
         (rep.verdict, rep.code),
