@@ -50,4 +50,5 @@ pub mod r2token;
 pub mod robot;
 pub mod site;
 pub mod svc;
+pub mod usage;
 pub mod verify;

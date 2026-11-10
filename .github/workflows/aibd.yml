@@ -379,6 +379,10 @@ jobs:
           ck arc.rs '            if room.memory_mb < next - limits.memory_mb {' \
              '            if room.memory_mb == u32::MAX { // knife' \
              never_past_what_the_host_can_back
+          # usage: memory is judged on current use, cache included (measured 11-10: every site would be raised)
+          ck usage.rs '    u32::try_from(current.saturating_sub(inactive).div_ceil(1024 * 1024)).ok()' \
+             '    u32::try_from((current + inactive * 0).div_ceil(1024 * 1024)).ok()' \
+             the_working_set_leaves_the_cache_out
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -418,6 +422,9 @@ jobs:
              nothing_but_a_plan
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
+          # site usage: the host offers its reserve too
+          hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb,' \
+             the_host_keeps_its_reserve
           # edge domain add / rm without --plan goes on
           hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
              usage_and_gates

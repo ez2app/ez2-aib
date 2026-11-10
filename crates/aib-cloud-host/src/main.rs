@@ -11,6 +11,7 @@
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host customer --site <code>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
+//! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
@@ -41,6 +42,8 @@ mod siteverify;
 mod speccmd;
 #[cfg(unix)]
 mod update;
+#[cfg(unix)]
+mod usagecmd;
 
 use std::process::ExitCode;
 

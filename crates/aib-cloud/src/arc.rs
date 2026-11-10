@@ -51,8 +51,10 @@ pub const PLAN: Plan = Plan {
 pub struct Usage {
     /// CPU in hundredths of a core, 95th percentile.
     pub cpu_x100_p95: u32,
-    /// Highest memory use in MiB.
-    pub memory_mb_peak: u32,
+    /// Memory the site cannot give back, in MiB: its working set
+    /// ([`crate::usage::working_set_mb`]). **Not** the cgroup's peak or current use: those
+    /// count file cache, which fills up to the limit on any site that reads files.
+    pub memory_mb_working: u32,
     /// Times the kernel killed a process in the CT for lack of memory.
     pub oom_kills: u32,
     /// Disk used, in GiB.
@@ -161,9 +163,9 @@ pub fn advise(
         });
     }
 
-    // memory: peaked at 85 % or the kernel had to kill something → half as much again
+    // memory: working set at 85 % or the kernel had to kill something → half as much again
     if usage.oom_kills > 0
-        || u64::from(usage.memory_mb_peak) * 100 >= u64::from(limits.memory_mb) * 85
+        || u64::from(usage.memory_mb_working) * 100 >= u64::from(limits.memory_mb) * 85
     {
         let memory_max = (limits.memory_mb + memory_left).min(plan.memory_mb);
         out.push(if limits.memory_mb >= memory_max {
@@ -241,7 +243,7 @@ mod tests {
     };
     const QUIET: Usage = Usage {
         cpu_x100_p95: 20,
-        memory_mb_peak: 600,
+        memory_mb_working: 600,
         oom_kills: 0,
         disk_used_gb: 3,
     };
@@ -269,7 +271,7 @@ mod tests {
     fn a_busy_site_is_raised_one_step_per_resource() {
         let hot = usage(|u| {
             u.cpu_x100_p95 = 160;
-            u.memory_mb_peak = 1800;
+            u.memory_mb_working = 1800;
             u.disk_used_gb = 20;
         });
         let advice = advise(&PLAN, &TRIAL, 24, &solo(&TRIAL, 24), &hot, &ROOMY);
@@ -293,7 +295,7 @@ mod tests {
         // just under each threshold: nothing
         let warm = usage(|u| {
             u.cpu_x100_p95 = 159;
-            u.memory_mb_peak = 1740;
+            u.memory_mb_working = 1740;
             u.disk_used_gb = 19;
         });
         assert_eq!(
@@ -318,7 +320,7 @@ mod tests {
         };
         let hot = Usage {
             cpu_x100_p95: 790,
-            memory_mb_peak: 16_000,
+            memory_mb_working: 16_000,
             oom_kills: 3,
             disk_used_gb: 250,
         };
@@ -363,7 +365,7 @@ mod tests {
     fn never_past_what_the_host_can_back() {
         let hot = usage(|u| {
             u.cpu_x100_p95 = 200;
-            u.memory_mb_peak = 2048;
+            u.memory_mb_working = 2048;
             u.disk_used_gb = 23;
         });
         let full = HostRoom {
@@ -414,7 +416,7 @@ mod tests {
         );
         let hot = Usage {
             cpu_x100_p95: 200,
-            memory_mb_peak: 2048,
+            memory_mb_working: 2048,
             oom_kills: 0,
             disk_used_gb: 23,
         };
