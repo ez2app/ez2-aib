@@ -13,7 +13,7 @@ k crates/aibd/src/ctl.rs '    if answer.eq_ignore_ascii_case("y") || answer.eq_i
   web_cancels_on_anything_but_yes
 # W2 web does not wait for the page to redeem the code
 k crates/aibd/src/ctl.rs '            Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),' \
-       '            Some("issued") if false => std::thread::sleep(poll), // knife' \
+       '            Some("issued") if Instant::now() > deadline => std::thread::sleep(poll), // knife: never waits before the deadline; deadline stays used (-D warnings)' \
   web_waits_for_the_page_and_confirms_only_after_a_yes
 # W3 an ended pairing (expired / revoked) is treated as waiting for confirmation
 k crates/aibd/src/ctl.rs '            Some("awaiting_confirmation") => {' \
@@ -23,6 +23,6 @@ k crates/aibd/src/ctl.rs '            Some("awaiting_confirmation") => {' \
 k crates/aibd/src/ctl.rs '        if e.starts_with("HTTP 404") {' '        if false { // knife' \
   web_says_how_to_turn_pairing_on
 # W5 health stops telling a restarted aibd apart
-k crates/aibd/src/api.rs '        "instance_id": PROCESS.instance_id,' '        // knife: no instance_id' \
+k crates/aibd/src/api.rs '        "instance_id": PROCESS.instance_id,' '        "instance_id_gone": PROCESS.instance_id, // knife: health has no instance_id; the field stays read (-D warnings)' \
   health_is_public_and_minimal
 echo "web knives: 5/5 bite"
