@@ -254,7 +254,7 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
-      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+      # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'

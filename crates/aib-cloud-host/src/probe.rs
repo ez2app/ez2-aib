@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Execute an `aib_cloud::isolation` probe plan on a Proxmox host (or a public vantage
 //! point) and write the report `judge()` accepts. Rust rewrite of the Python runner
-//! `ez2-isolation-probe` (retired 11-09 after this binary re-ran the full EU02 matrix with
+//! `ez2-isolation-probe` (retired 11-09 after this binary re-ran the full host A matrix with
 //! the same `plan_fnv` and identical cells; #568 r2 M2 rules kept one for one):
 //!
 //! * the whole plan is validated against a whitelist first (id charset, `from` shape,
@@ -1360,7 +1360,7 @@ mod tests {
             "site-110-to-peerhost-443",
             "ct:110",
             "tcp",
-            "136.243.105.110",
+            "203.0.113.110",
             443,
             "observe"
         )]))
@@ -1381,12 +1381,12 @@ mod tests {
     fn h2_fingerprint_is_aib_cloud_s_over_the_loaded_plan() {
         // same value the Python runner produced for this 4-cell plan (aib-cloud i9 pins it too)
         let plan = json!([
-            {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "135.181.75.90", "from": "external"},
-            {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 443, "expect": "open"},
-            {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 8006, "expect": "blocked"},
+            {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
+            {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
+            {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
             {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "52240dcf9134f54d");
+        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
     }
 
     #[test]
@@ -1446,13 +1446,13 @@ mod tests {
     fn h7_root_password_file() {
         let pw = "Ab3!".repeat(7);
         assert_eq!(
-            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}\n")).unwrap(),
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_HOSTA={pw}\n")).unwrap(),
             pw
         );
         assert_eq!(parse_root_password(&format!("{pw}\r\n")).unwrap(), pw);
         assert!(parse_root_password("").is_err(), "empty");
         assert!(
-            parse_root_password("HOST_ROOT_PASSWORD_EU02=short\n").is_err(),
+            parse_root_password("HOST_ROOT_PASSWORD_HOSTA=short\n").is_err(),
             "short"
         );
         assert!(
@@ -1460,12 +1460,12 @@ mod tests {
             "other key"
         );
         assert!(
-            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}\x07\n")).is_err(),
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_HOSTA={pw}\x07\n")).is_err(),
             "control char"
         );
         // a value that itself contains '=' keeps everything after the first '='
         assert_eq!(
-            parse_root_password(&format!("HOST_ROOT_PASSWORD_EU02={pw}=x=y\n")).unwrap(),
+            parse_root_password(&format!("HOST_ROOT_PASSWORD_HOSTA={pw}=x=y\n")).unwrap(),
             format!("{pw}=x=y")
         );
     }
@@ -1489,14 +1489,14 @@ mod tests {
         let a = parse_run(&[
             "p.json".into(),
             "--host".into(),
-            "135.181.75.90".into(),
+            "203.0.113.90".into(),
             "--external".into(),
         ])
         .unwrap();
         assert!(a.external && a.out.is_none());
         assert!(parse_run(&["p.json".into()]).is_err(), "host required");
         assert!(
-            parse_run(&["p.json".into(), "--host".into(), "eu02".into()]).is_err(),
+            parse_run(&["p.json".into(), "--host".into(), "hosta".into()]).is_err(),
             "host must be an ip"
         );
         assert!(

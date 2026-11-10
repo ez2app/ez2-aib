@@ -1014,7 +1014,7 @@ mod tests {
             "site2",
             112,
             12,
-            &["eu02-site2.ez2.site"],
+            &["site2.example.net"],
             true,
             "zh_TW",
             Limits::TEST_TIER,
@@ -1092,7 +1092,7 @@ mod tests {
             SiteSpec::new("site2", 112, 12, &["a.b"], true, "zh TW", ok).is_err(),
             "locale"
         );
-        assert!(site2().hosts == ["eu02-site2.ez2.site"]);
+        assert!(site2().hosts == ["site2.example.net"]);
         assert_eq!(site2().ip(), "10.77.0.12");
     }
 
@@ -1223,7 +1223,7 @@ mod tests {
     fn s4_record_round_trip_and_poc_record_gets_test_tier() {
         let rec = record(&site2(), "2026-11-09T03:33:11Z");
         assert_eq!(spec_from_record(&rec).unwrap(), site2());
-        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
+        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
         assert_eq!(spec_from_record(&poc).unwrap(), site2());
         assert!(spec_from_record(&json!({"site":"site2"})).is_err());
         assert!(spec_from_record(
@@ -1447,7 +1447,7 @@ mod tests {
         let sp = site2();
         let up = caddy_block_upstream(&sp, &sp.ip());
         assert!(
-            up.starts_with("# site:site2\neu02-site2.ez2.site {\n\timport ez2_whitelabel\n"),
+            up.starts_with("# site:site2\nsite2.example.net {\n\timport ez2_whitelabel\n"),
             "{up}"
         );
         assert!(up.contains("reverse_proxy 10.77.0.12:80 {") && up.ends_with("}\n"));
@@ -1523,7 +1523,7 @@ mod tests {
             .any(|a| a == "name=eth0,bridge=vmbr1,ip=10.77.0.22/24,gw=10.77.0.1,firewall=1"));
         assert!(p[1].argv.contains(&"--cpulimit".to_string()));
         assert_eq!(p[2].argv, ["pct", "start", "212"]);
-        assert!(p[3].argv.iter().any(|a| a == "Host: eu02-site2.ez2.site"));
+        assert!(p[3].argv.iter().any(|a| a == "Host: site2.example.net"));
         for st in &p {
             for a in &st.argv {
                 assert!(!a.contains(';') && !a.contains('|'), "{a}");
@@ -1606,9 +1606,9 @@ mod tests {
         assert_eq!(rec["fw_group"], "ez2-site-v2");
         assert_eq!(rec["ssh_port"], 2112);
         assert_eq!(spec_from_record(&rec).unwrap(), full);
-        // the real EU02 records after NET-1 / SSH-1
-        let eu02 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
-        assert_eq!(spec_from_record(&eu02).unwrap(), full);
+        // the real host A records after NET-1 / SSH-1
+        let host_a = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(spec_from_record(&host_a).unwrap(), full);
         assert!(spec_from_record(
             &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","ssh_port":22})
         )
@@ -1637,7 +1637,7 @@ mod tests {
     fn the_three_shapes_found_on_the_first_host() {
         // site2: written by the bash PoC, no limits at all. The lenient read fills in the
         // test tier; the strict one says so.
-        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
         assert_eq!(gaps(&site2), [("R02", "limits".to_owned())]);
         assert!(spec_from_record(&site2).is_ok());
         assert!(spec_from_record_strict(&site2).is_err());

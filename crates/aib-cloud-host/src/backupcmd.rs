@@ -256,7 +256,11 @@ mod tests {
 
     #[test]
     fn remotes() {
-        for ok in ["r2:ez2-cloud-eu02/platform", "b2:bucket/a/b", "my_remote:x"] {
+        for ok in [
+            "r2:ez2-cloud-host-a/platform",
+            "b2:bucket/a/b",
+            "my_remote:x",
+        ] {
             assert!(valid_remote(ok), "{ok}");
         }
         for bad in [
@@ -279,16 +283,16 @@ mod tests {
     /// ebb36, #631 seg. 4 M1: on the first host the listing is refused without RCLONE_BIND.
     #[test]
     fn rclone_runs_with_the_backup_jobs_settings() {
-        let text = "# backup\nAGE_RECIPIENT=age1xyz\nREMOTE=r2:ez2-cloud-eu02/platform\n\
-                    RCLONE_BIND=135.181.75.90\nexport RCLONE_RETRIES=\"5\"\nRCLONE_BIND=10.0.0.1\n\
-                    RCLONE_BIND=135.181.75.90\nRCLONE_S3_ENDPOINT=$ENDPOINT\nRCLONE_lower=x\n\
+        let text = "# backup\nAGE_RECIPIENT=age1xyz\nREMOTE=r2:ez2-cloud-host-a/platform\n\
+                    RCLONE_BIND=203.0.113.90\nexport RCLONE_RETRIES=\"5\"\nRCLONE_BIND=10.0.0.1\n\
+                    RCLONE_BIND=203.0.113.90\nRCLONE_S3_ENDPOINT=$ENDPOINT\nRCLONE_lower=x\n\
                     XRCLONE_BIND=1.2.3.4\nRCLONE_EMPTY=\n";
         let env = rclone_env(text);
         assert_eq!(
             env,
             [
                 ("RCLONE_RETRIES".to_owned(), "5".to_owned()),
-                ("RCLONE_BIND".to_owned(), "135.181.75.90".to_owned()),
+                ("RCLONE_BIND".to_owned(), "203.0.113.90".to_owned()),
             ]
         );
         // a later assignment that cannot be used takes the earlier one with it
@@ -299,7 +303,7 @@ mod tests {
             .get_envs()
             .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
             .collect();
-        assert!(got.contains(&("RCLONE_BIND".to_owned(), "135.181.75.90".to_owned())));
+        assert!(got.contains(&("RCLONE_BIND".to_owned(), "203.0.113.90".to_owned())));
         assert!(got.contains(&("RCLONE_RETRIES".to_owned(), "5".to_owned())));
         assert!(got.contains(&("LC_ALL".to_owned(), "C".to_owned())));
         let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -316,10 +320,10 @@ mod tests {
 
     #[test]
     fn remote_out_of_the_backup_env() {
-        let env = "# backup\nAGE_RECIPIENT=age1xyz\nREMOTE=r2:ez2-cloud-eu02/platform\nKEEP_LOCAL_DAYS=3\n";
+        let env = "# backup\nAGE_RECIPIENT=age1xyz\nREMOTE=r2:ez2-cloud-host-a/platform\nKEEP_LOCAL_DAYS=3\n";
         assert_eq!(
             remote_from_env(env).as_deref(),
-            Some("r2:ez2-cloud-eu02/platform")
+            Some("r2:ez2-cloud-host-a/platform")
         );
         assert_eq!(
             remote_from_env("export REMOTE=\"b2:bk/p\"\n").as_deref(),

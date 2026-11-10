@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Minting a per-host Cloudflare R2 token for off-site backups (4.4.1 §10.1,
-//! Andy 11-09: "key 從 EU01 取得,再彈出生物辨識").
+//! Andy 11-09: "key 從 host B 取得,再彈出生物辨識").
 //!
 //! Pure planning logic, same contract as [`crate::robot`]: validate operator
 //! input once, derive **the approval facts, the API policy body and the remote
@@ -199,7 +199,7 @@ impl EgressIp {
         self.0
     }
 
-    /// Dotted form, e.g. `135.181.75.90`.
+    /// Dotted form, e.g. `8.8.8.8`.
     pub fn text(&self) -> String {
         format!("{}.{}.{}.{}", self.0[0], self.0[1], self.0[2], self.0[3])
     }
@@ -552,10 +552,10 @@ mod tests {
 
     fn plan() -> Plan {
         Plan::new(
-            "ez2-cloud-eu02",
-            "eu02-ts",
-            "135.181.75.90",
-            "eu01-ts",
+            "ez2-cloud-host-a",
+            "host-a-ts",
+            "8.8.8.8",
+            "host-b-ts",
             "ez2.work",
             "/etc/ez2-cloud/backup-r2.env",
             "r2",
@@ -571,8 +571,8 @@ mod tests {
     #[test]
     fn r1_summary_has_no_secret_and_marks_ip_condition() {
         let s = plan().summary();
-        assert_eq!(s["ip_condition"], "135.181.75.90/32");
-        assert_eq!(s["name"], "ez2-cloud-eu02-ez2-cloud-eu02-r2");
+        assert_eq!(s["ip_condition"], "8.8.8.8/32");
+        assert_eq!(s["name"], "ez2-cloud-host-a-ez2-cloud-host-a-r2");
         let text = s.to_string();
         for k in ["secret", "access_key", "value", "authorization"] {
             assert!(!text.contains(k), "{k} leaked into summary");
@@ -587,7 +587,7 @@ mod tests {
         assert_eq!(res.len(), 1);
         assert_eq!(
             res.keys().next().unwrap(),
-            "com.cloudflare.edge.r2.bucket.3d7f55aaaaaaaaaaaaaaaaaaaaaaaaaa_default_ez2-cloud-eu02"
+            "com.cloudflare.edge.r2.bucket.3d7f55aaaaaaaaaaaaaaaaaaaaaaaaaa_default_ez2-cloud-host-a"
         );
         let perms: Vec<&str> = b["policies"][0]["permission_groups"]
             .as_array()
@@ -596,10 +596,7 @@ mod tests {
             .map(|g| g["id"].as_str().unwrap())
             .collect();
         assert_eq!(perms, vec![PERM_ITEM_READ, PERM_ITEM_WRITE]);
-        assert_eq!(
-            b["condition"]["request_ip"]["in"],
-            json!(["135.181.75.90/32"])
-        );
+        assert_eq!(b["condition"]["request_ip"]["in"], json!(["8.8.8.8/32"]));
         assert_eq!(b["policies"][0]["effect"], "allow");
     }
 
@@ -610,7 +607,7 @@ mod tests {
         let spec = p.remote_spec();
         assert_eq!(
             (f.bucket.as_str(), f.host.as_str(), f.ip.as_str()),
-            ("ez2-cloud-eu02", "eu02-ts", "135.181.75.90")
+            ("ez2-cloud-host-a", "host-a-ts", "8.8.8.8")
         );
         assert_eq!(spec["bucket"], f.bucket);
         assert_eq!(spec["ip"], f.ip);
@@ -636,7 +633,7 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
-        assert!(BucketName::parse("ez2-cloud-eu02").is_ok());
+        assert!(BucketName::parse("ez2-cloud-host-a").is_ok());
         assert!(BucketName::parse("abc").is_ok());
     }
 
@@ -656,10 +653,10 @@ mod tests {
             "172.31.255.1",
             "192.168.1.1",
             "100.64.0.1",
-            "100.120.222.46",
+            "100.64.0.46",
             "010.1.1.1",
-            "135.181.075.90", // #564 r2 L1: leading zero on an otherwise public address
-            "135.181.75.090",
+            "8.8.08.8", // #564 r2 L1: leading zero on an otherwise public address
+            "8.8.8.08",
             "192.0.2.10", // #564 r2 L3: documentation / benchmark ranges
             "198.51.100.7",
             "203.0.113.200",
@@ -676,19 +673,16 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
-        assert_eq!(
-            EgressIp::parse("135.181.75.90").unwrap().cidr(),
-            "135.181.75.90/32"
-        );
+        assert_eq!(EgressIp::parse("8.8.8.8").unwrap().cidr(), "8.8.8.8/32");
         assert!(
-            matches!(EgressIp::parse("135.181.075.90"), Err(Error::Ip(m)) if m.contains("leading zero"))
+            matches!(EgressIp::parse("8.8.08.8"), Err(Error::Ip(m)) if m.contains("leading zero"))
         );
         assert!(EgressIp::parse("198.17.0.1").is_ok()); // just outside 198.18/15
         assert!(EgressIp::parse("198.20.0.1").is_ok());
         assert!(EgressIp::parse("172.32.0.1").is_ok()); // just outside 172.16/12
         assert!(EgressIp::parse("100.128.0.1").is_ok()); // just outside 100.64/10
         assert!(
-            matches!(EgressIp::parse("100.120.222.46"), Err(Error::Ip(m)) if m.contains("Tailscale"))
+            matches!(EgressIp::parse("100.64.0.46"), Err(Error::Ip(m)) if m.contains("Tailscale"))
         );
     }
 
@@ -700,12 +694,12 @@ mod tests {
                 "{bad:?}"
             );
         }
-        assert!(HostAlias::parse("eu02-ts").is_ok());
+        assert!(HostAlias::parse("host-a-ts").is_ok());
         for bad in ["ez2", "Ez2.work", "-a.b", "a..b", "a.b-"] {
             assert!(matches!(Zone::parse(bad), Err(Error::Zone(_))), "{bad:?}");
         }
         let mk = |dest: &str, remote: &str| {
-            Plan::new("abc", "h", "135.181.75.90", "c", "a.b", dest, remote, None)
+            Plan::new("abc", "h", "8.8.8.8", "c", "a.b", dest, remote, None)
         };
         assert!(matches!(mk("relative.env", "r2"), Err(Error::Dest(_))));
         assert!(matches!(mk("/etc/../x", "r2"), Err(Error::Dest(_))));
@@ -721,7 +715,7 @@ mod tests {
             Plan::new(
                 "abc",
                 "h",
-                "135.181.75.90",
+                "8.8.8.8",
                 "c",
                 "a.b",
                 "/etc/x",
