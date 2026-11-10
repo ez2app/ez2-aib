@@ -345,7 +345,7 @@ jobs:
              b04_nothing_unencrypted_leaves_the_host
           # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
           ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
-             '        Some(_) => {} // knife' \
+             '        Some(_) if true => {} // knife' \
              a_stale_record_can_be_archived_when_the_host_is_fully_restored
           # provision: a refused placeholder is echoed raw to the terminal (ebb36, #625 seg. 5 r2)
           ck provision.rs '            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));' \
