@@ -40,11 +40,15 @@ b "$B" "$N2" 'ErrorCode::ALL is out of step with ErrorCode::ordinal'
 
 # E0 negative arm: the build breaks for ANOTHER reason (a type error) on the very line
 # that holds the assert's message. rustc prints that line, so the message is in the
-# output, but it is not the const assert that stopped the build: knife-build must MISS.
-if b '    const { assert!(N < ErrorCode::ALL.len(), "ErrorCode ordinal is outside ALL") };' \
-     '    const { assert!(N < ErrorCode::ALL.len() as u8, "ErrorCode ordinal is outside ALL") }; // knife' \
-     'ErrorCode ordinal is outside ALL'; then
-  echo "knives-errorcode: E0 counted a type error as the const assert (knife-build too loose)"
+# output, but it is not the const assert that stopped the build: knife-build must MISS
+# (rc 1). rc 0 = it took the type error for the assert; rc 2 = the anchor is gone and
+# nothing was tested. Both fail the script.
+e0=0
+b '    const { assert!(N < ErrorCode::ALL.len(), "ErrorCode ordinal is outside ALL") };' \
+  '    const { assert!(N < ErrorCode::ALL.len() as u8, "ErrorCode ordinal is outside ALL") }; // knife' \
+  'ErrorCode ordinal is outside ALL' || e0=$?
+if [ "$e0" -ne 1 ]; then
+  echo "knives-errorcode: E0 negative arm wanted knife-build rc 1 (MISSES), got rc $e0"
   exit 1
 fi
 echo "E0 negative arm: knife-build misses a build broken for another reason (as it should)"
