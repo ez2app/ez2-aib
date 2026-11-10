@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The host half of what every writing command shares (4.4.1 §1.1 / §1.3 / §1.4; EU02 B1):
+//! The host half of what every writing command shares (4.4.1 §1.1 / §1.3 / §1.4; B1):
 //! the plan hash, the operation journal on disk, the host lock file and the check that no
 //! other operation on the same target is unfinished. Every judgement is
 //! `aib_cloud::op`'s; this module only reads and writes the files and gathers the facts
@@ -572,7 +572,7 @@ impl OpPlace {
 /// **Known gap (4542e 11-10 condition b)**: `standing-local-root` means "a person typed this
 /// on the host". An AI seat running the same command as root over ssh looks the same to
 /// this program. That is closed by process, not by code: until the remote CLI with
-/// one-time approvals exists, EU02 writes keep going through `pending/SIGN-*.sh` and a
+/// one-time approvals exists, writes on the first host keep going through `pending/SIGN-*.sh` and a
 /// human approving in the window — having this value does **not** let an AI run writes
 /// directly.
 pub const BY_LOCAL_ROOT: &str = "standing-local-root";
