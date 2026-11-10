@@ -326,6 +326,78 @@ pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String
     Ok(out)
 }
 
+/// [`run_capture`] for a child whose output is **not trusted to end**: at most `max_bytes`
+/// of its standard output are read, and once that much has arrived — or the time is up —
+/// the child's whole process group is killed. Returns what was read and whether the child
+/// had more to say. Standard error is not read at all.
+///
+/// 33e28, #631 seg. 5 M1: `pct exec <ct> -- journalctl -n N` leaves the counting to a
+/// program inside the customer's container; whoever replaces that program must not be
+/// able to fill this host's memory.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_capture_bounded(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<(String, bool), String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let pipe = child.stdout.take();
+    let cap = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut more = false;
+        if let Some(p) = pipe {
+            let mut limited = p.take(cap);
+            let _ = limited.read_to_end(&mut buf);
+            // one byte past the cap tells "exactly that much" from "more than that"
+            more = matches!(limited.into_inner().read(&mut [0u8; 1]), Ok(1));
+        }
+        (buf, more)
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let finished = reader.is_finished();
+    let (buf, more) = if finished {
+        reader.join().unwrap_or_default()
+    } else {
+        (Vec::new(), false)
+    };
+    // the reader is done (end of output, or the cap) or the time is up: in every case
+    // nothing more is wanted from the group
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    if !finished || more {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        if !finished {
+            return Err(format!("{:?}: timeout", cmd.get_program()));
+        }
+        return Ok((String::from_utf8_lossy(&buf).into_owned(), true));
+    }
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status =
+        wait_with_timeout(&mut child, left).map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    kill_group(child.id());
+    if !status.success() {
+        return Err(format!("{:?} exited {status}", cmd.get_program()));
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), false))
+}
+
 // ---------------------------------------------------------------- container namespaces
 
 fn netns_of(pid: &str) -> Result<String, String> {
@@ -1221,6 +1293,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         Some("site") => match args.get(1).map(String::as_str) {
             Some("drift") => cmd_site_drift(&args[2..]),
             Some("verify") => crate::siteverify::cmd(&args[2..]),
+            Some("usage") => crate::usagecmd::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
             }
@@ -1233,9 +1306,15 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
+        Some("customer") => crate::customercmd::cmd(&args[1..]),
+        Some("edge") => crate::edgecmd::cmd(&args[1..]),
+        Some("backup") => match args.get(1).map(String::as_str) {
+            Some("check") => crate::backupcmd::cmd(&args[2..]),
+            _ => Err("backup needs check [--remote <name>:<path>] [--records dir] [--json]".to_owned()),
+        },
         Some("spec") => crate::speccmd::cmd(&args[1..]),
         Some("op") => crate::opstore::cmd(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
@@ -1253,7 +1332,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | op status [<op id>] | op unfinished <target> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 

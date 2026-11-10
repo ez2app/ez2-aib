@@ -68,7 +68,7 @@ pub fn action_json(spec: &SiteSpec, action: &Action) -> Value {
     }
 }
 
-fn load_spec(code: &str, records: &str) -> Result<SiteSpec, String> {
+pub(crate) fn load_spec(code: &str, records: &str) -> Result<SiteSpec, String> {
     if !valid_code(code) {
         return Err(format!("site code {code:?} is not valid"));
     }
@@ -84,7 +84,7 @@ fn load_spec(code: &str, records: &str) -> Result<SiteSpec, String> {
     Ok(spec)
 }
 
-fn load_record(code: &str, dir: &str) -> Result<Option<Record>, String> {
+pub(crate) fn load_record(code: &str, dir: &str) -> Result<Option<Record>, String> {
     let path = format!("{dir}/{code}.json");
     let Some(text) = read_optional(&path)? else {
         return Ok(None);
