@@ -8,7 +8,7 @@
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
-//! aib-cloud-host op status [<op id>] | op unfinished <target>   (read-only: journals and the host lock)
+//! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id>   (journals and the host lock; recovered closes a checked operation)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]

@@ -537,6 +537,180 @@ pub fn release(p: &LockPaths, op: &str, pid: u32) -> Result<(), String> {
     })
 }
 
+// ------------------------------------------------------------------ running a writing operation
+
+/// Where an operation keeps its journal and lock. The real host uses [`OpPlace::host`];
+/// tests point it at a scratch directory and a fake `/proc`.
+pub struct OpPlace {
+    pub ops_dir: PathBuf,
+    pub lock: LockPaths,
+    /// SHA-256 of the machine id (see [`host_fingerprint`]).
+    pub fingerprint: String,
+}
+
+impl OpPlace {
+    pub fn host() -> Result<Self, String> {
+        let lock = LockPaths::host()?;
+        let fingerprint = host_fingerprint(Path::new(MACHINE_ID))?;
+        fs::create_dir_all(OPS_DIR).map_err(|e| format!("{OPS_DIR}: {e}"))?;
+        Ok(OpPlace {
+            ops_dir: PathBuf::from(OPS_DIR),
+            lock,
+            fingerprint,
+        })
+    }
+}
+
+/// Who stands behind an operation, written as its journal's `approval`. Commands run by
+/// root on the host are approved by whoever typed them (`local-root`); a customer's
+/// request through the forced command of their key is approved by the key's entry
+/// (`customer-key`, Andy 11-10: customers operate their own site). Both are standing
+/// approvals, not one-time nonces: a nonce-checked approval belongs to the remote CLI.
+pub const BY_LOCAL_ROOT: &str = "local-root";
+pub const BY_CUSTOMER_KEY: &str = "customer-key";
+
+/// Run one change as an operation (4.4.1 §1.1): take the host lock, refuse while another
+/// operation on `target` is unfinished, journal `planned` → `approved` → `running` (synced
+/// before `change` runs), then `verified` when `change` returns `Ok` or `failed` when it
+/// returns an error. The lock is given back in every case. A `failed` operation blocks
+/// further operations on its target until `op recovered` closes it: the host may be half
+/// changed. So checks that change nothing belong **before** this call, not in `change`.
+pub fn run_op<T>(
+    place: &OpPlace,
+    command: &str,
+    target: &str,
+    plan: &Value,
+    approval: &str,
+    now: u64,
+    change: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    let op_id = op_id(now, random4()?);
+    let plan_sha256 = sha256_hex(
+        plan_hash_input(plan, &place.fingerprint, env!("CARGO_PKG_VERSION")).as_bytes(),
+    )?;
+    let pid = std::process::id();
+    if let Got::TookOver(h) = acquire(&place.lock, &op_id, pid)? {
+        eprintln!(
+            "took the host lock over from operation {} (pid {}, gone); its journal says how to resume it",
+            h.op, h.pid
+        );
+    }
+    let template = Entry {
+        op: op_id.clone(),
+        seq: 0,
+        at: 0,
+        state: op::State::Planned,
+        command: command.to_owned(),
+        target: target.to_owned(),
+        plan_sha256,
+        code: String::new(),
+        approval: approval.to_owned(),
+    };
+    let result = journaled(place, &template, change);
+    if let Err(e) = release(&place.lock, &op_id, pid) {
+        eprintln!("{e}");
+    }
+    result
+}
+
+/// [`run_op`]'s part under the lock.
+fn journaled<T>(
+    place: &OpPlace,
+    template: &Entry,
+    change: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    let op_id = template.op.as_str();
+    refuse_unfinished(&place.ops_dir, &template.target, op_id)?;
+    let mut seq = 0;
+    let mut step = |state: op::State, code: &str| {
+        seq += 1;
+        append_entry(
+            &place.ops_dir,
+            &Entry {
+                seq,
+                at: crate::probe::unix_now(),
+                state,
+                code: code.to_owned(),
+                approval: if state == op::State::Planned {
+                    String::new()
+                } else {
+                    template.approval.clone()
+                },
+                ..template.clone()
+            },
+        )
+    };
+    step(op::State::Planned, "ok")?;
+    step(op::State::Approved, "ok")?;
+    step(op::State::Running, "ok")?;
+    eprintln!(
+        "operation {op_id}: {} {}",
+        template.command, template.target
+    );
+    match change(op_id) {
+        Ok(v) => {
+            step(op::State::Verified, "ok")?;
+            Ok(v)
+        }
+        Err(e) => match step(op::State::Failed, "error") {
+            Ok(()) => Err(format!(
+                "{e} (operation {op_id} is failed: check the host, then `op recovered {op_id}`)"
+            )),
+            Err(j) => Err(format!("{e}; and the journal could not record it: {j}")),
+        },
+    }
+}
+
+/// Close an operation that a person has checked by hand: `failed` (or `running` left by a
+/// process that is gone) → `recovery` → `verified`, code `manual`. Under the host lock.
+pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), String> {
+    let path = journal_path(&place.ops_dir, op_id)?;
+    let pid = std::process::id();
+    acquire(&place.lock, op_id, pid)?;
+    let result = recover_locked(place, &path, op_id, now);
+    // the lock was taken under this operation's id: give it back whatever happened
+    let _ = release(&place.lock, op_id, pid);
+    result
+}
+
+fn recover_locked(place: &OpPlace, path: &Path, op_id: &str, now: u64) -> Result<(), String> {
+    let (entries, _) = read_journal(path)?;
+    let last = op::replay(&entries)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .clone();
+    let add = |state: op::State, code: &str, seq: u32| {
+        append_entry(
+            &place.ops_dir,
+            &Entry {
+                seq,
+                at: now,
+                state,
+                code: code.to_owned(),
+                ..last.clone()
+            },
+        )
+    };
+    let mut seq = last.seq;
+    match last.state {
+        op::State::Running => {
+            seq += 1;
+            add(op::State::Failed, "interrupted", seq)?;
+        }
+        op::State::Failed | op::State::Recovery => {}
+        other => {
+            return Err(format!(
+                "operation {op_id} is {}: nothing to recover",
+                other.as_str()
+            ))
+        }
+    }
+    if last.state != op::State::Recovery {
+        seq += 1;
+        add(op::State::Recovery, "manual", seq)?;
+    }
+    add(op::State::Verified, "manual", seq + 1)
+}
+
 // ------------------------------------------------------------------ read-only command
 
 /// `op status [<op id>]` — the lock holder (and whether it is alive) and, given an id, that
@@ -591,7 +765,14 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 }
             }
         }
-        _ => Err("op needs status [<op id>] | unfinished <target>".to_owned()),
+        Some("recovered") => {
+            // the one writing subcommand: a person checked the host and closes the operation
+            let op_id = args.get(1).ok_or("op recovered needs <op id>")?;
+            mark_recovered(&OpPlace::host()?, op_id, crate::probe::unix_now())?;
+            println!("{op_id}: recovered (closed by hand)");
+            Ok(0)
+        }
+        _ => Err("op needs status [<op id>] | unfinished <target> | recovered <op id>".to_owned()),
     }
 }
 
@@ -952,5 +1133,220 @@ mod tests {
     #[test]
     fn the_real_lock_is_linux_only() {
         assert_eq!(LockPaths::host().is_ok(), cfg!(target_os = "linux"));
+    }
+
+    /// An operation place in a scratch directory, with this process in the fake `/proc`.
+    fn place(name: &str) -> OpPlace {
+        let d = scratch(name);
+        let lock = paths(&d, BOOT_A);
+        fake_proc(&lock.proc_root, std::process::id(), 4242);
+        let ops_dir = d.join("ops");
+        fs::create_dir_all(&ops_dir).unwrap();
+        OpPlace {
+            ops_dir,
+            lock,
+            fingerprint: "f".repeat(64),
+        }
+    }
+
+    fn states(place: &OpPlace, op_id: &str) -> Vec<State> {
+        let (entries, _) = read_journal(&journal_path(&place.ops_dir, op_id).unwrap()).unwrap();
+        entries.iter().map(|e| e.state).collect()
+    }
+
+    #[test]
+    fn an_operation_is_journaled_and_gives_the_lock_back() {
+        let pl = place("runop-ok");
+        let plan = json!({ "command": "site.suspend", "site": "site2" });
+        let mut seen = String::new();
+        let got = run_op(
+            &pl,
+            "site.suspend",
+            "site:site2",
+            &plan,
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op_id| {
+                // the change runs only after `running` is on disk
+                seen = op_id.to_owned();
+                assert_eq!(states(&pl, op_id).last(), Some(&State::Running));
+                Ok(7)
+            },
+        )
+        .unwrap();
+        assert_eq!(got, 7);
+        assert_eq!(
+            states(&pl, &seen),
+            [
+                State::Planned,
+                State::Approved,
+                State::Running,
+                State::Verified
+            ]
+        );
+        let (entries, _) = read_journal(&journal_path(&pl.ops_dir, &seen).unwrap()).unwrap();
+        assert!(entries[0].approval.is_empty());
+        assert!(entries[1..].iter().all(|e| e.approval == BY_LOCAL_ROOT));
+        // the same plan hash on every line, and it is the sealed hash of the plan
+        let sha = sha256_hex(
+            plan_hash_input(&plan, &pl.fingerprint, env!("CARGO_PKG_VERSION")).as_bytes(),
+        )
+        .unwrap();
+        assert!(entries.iter().all(|e| e.plan_sha256 == sha));
+        assert!(!pl.lock.lock.exists(), "the lock is given back");
+    }
+
+    #[test]
+    fn a_failed_operation_blocks_its_target_until_recovered() {
+        let pl = place("runop-fail");
+        let plan = json!({ "command": "site.restore", "site": "site2" });
+        let mut failed = String::new();
+        let err = run_op(
+            &pl,
+            "site.restore",
+            "site:site2",
+            &plan,
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op_id| -> Result<(), String> {
+                failed = op_id.to_owned();
+                Err("new CT answers 502".to_owned())
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("op recovered"), "{err}");
+        assert_eq!(states(&pl, &failed).last(), Some(&State::Failed));
+        assert!(
+            !pl.lock.lock.exists(),
+            "the lock is given back after a failure too"
+        );
+        // the same site: refused before anything is changed
+        let mut ran = false;
+        let err = run_op(
+            &pl,
+            "site.resume",
+            "site:site2",
+            &plan,
+            BY_LOCAL_ROOT,
+            1_794_300_060,
+            |_| {
+                ran = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains(&failed) && !ran, "{err}");
+        // another site is not held up
+        run_op(
+            &pl,
+            "site.resume",
+            "site:site3",
+            &plan,
+            BY_LOCAL_ROOT,
+            1_794_300_060,
+            |_| Ok(()),
+        )
+        .unwrap();
+        // a person checks and closes it: the site is free again
+        mark_recovered(&pl, &failed, 1_794_300_120).unwrap();
+        assert_eq!(
+            states(&pl, &failed),
+            [
+                State::Planned,
+                State::Approved,
+                State::Running,
+                State::Failed,
+                State::Recovery,
+                State::Verified
+            ]
+        );
+        run_op(
+            &pl,
+            "site.resume",
+            "site:site2",
+            &plan,
+            BY_LOCAL_ROOT,
+            1_794_300_180,
+            |_| Ok(()),
+        )
+        .unwrap();
+        // a finished operation has nothing to recover
+        assert!(mark_recovered(&pl, &failed, 1_794_300_240).is_err());
+    }
+
+    #[test]
+    fn a_busy_host_changes_nothing_and_writes_no_journal() {
+        let pl = place("runop-busy");
+        fake_proc(&pl.lock.proc_root, 77, 9000);
+        assert_eq!(acquire(&pl.lock, OP1, 77).unwrap(), Got::Taken);
+        let mut ran = false;
+        let err = run_op(
+            &pl,
+            "site.suspend",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |_| {
+                ran = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains(OP1) && !ran, "{err}");
+        assert_eq!(fs::read_dir(&pl.ops_dir).unwrap().count(), 0);
+        // and the other operation's lock is left alone
+        assert_eq!(
+            holder_from_text(&fs::read_to_string(&pl.lock.lock).unwrap())
+                .unwrap()
+                .pid,
+            77
+        );
+    }
+
+    #[test]
+    fn an_interrupted_operation_is_closed_by_hand_through_failed() {
+        let pl = place("runop-interrupted");
+        // a journal left at `running` by a process that is gone
+        for (seq, state) in [
+            (1, State::Planned),
+            (2, State::Approved),
+            (3, State::Running),
+        ] {
+            append_entry(
+                &pl.ops_dir,
+                &Entry {
+                    op: OP1.to_owned(),
+                    seq,
+                    at: 1_794_300_000,
+                    state,
+                    command: "site.restore".to_owned(),
+                    target: "site:site2".to_owned(),
+                    plan_sha256: SHA.to_owned(),
+                    code: "ok".to_owned(),
+                    approval: if seq == 1 {
+                        String::new()
+                    } else {
+                        BY_LOCAL_ROOT.to_owned()
+                    },
+                },
+            )
+            .unwrap();
+        }
+        mark_recovered(&pl, OP1, 1_794_300_100).unwrap();
+        let (entries, _) = read_journal(&journal_path(&pl.ops_dir, OP1).unwrap()).unwrap();
+        let tail: Vec<(State, &str)> = entries[3..]
+            .iter()
+            .map(|e| (e.state, e.code.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                (State::Failed, "interrupted"),
+                (State::Recovery, "manual"),
+                (State::Verified, "manual")
+            ]
+        );
+        assert!(!pl.lock.lock.exists());
     }
 }

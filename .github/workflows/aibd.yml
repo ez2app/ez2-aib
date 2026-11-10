@@ -396,6 +396,22 @@ jobs:
           hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
              '        let Ok(last) = op::replay(&entries) else { continue }; // knife' \
              unfinished_operations_block_their_target
+          # run_op: the change runs before `running` is on disk (33e28 B1 wiring)
+          hk opstore.rs '    step(op::State::Running, "ok")?;' \
+             '    // knife: no running line' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: an unfinished operation on the same target does not block a new one
+          hk opstore.rs '    refuse_unfinished(&place.ops_dir, &template.target, op_id)?;' \
+             '    let _ = (&place.ops_dir, op_id); // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # run_op: the host lock is kept after the operation
+          hk opstore.rs '    if let Err(e) = release(&place.lock, &op_id, pid) {' \
+             '    if let Err(e) = Ok::<(), String>(()) { let _ = pid; // knife' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: a change that failed is not journaled as failed
+          hk opstore.rs '        Err(e) => match step(op::State::Failed, "error") {' \
+             '        Err(e) => match Ok::<(), String>(()) { // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
           # archive: the quarantine journal is not read (#625 seg. 2 M1 left unwired)
           hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
              '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
