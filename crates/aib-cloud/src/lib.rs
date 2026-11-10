@@ -43,3 +43,4 @@ pub mod provision;
 pub mod r2token;
 pub mod robot;
 pub mod site;
+pub mod verify;
