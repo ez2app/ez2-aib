@@ -65,6 +65,14 @@ class AibWebHandOver(unittest.TestCase):
         self.assertEqual(rc, 7)
         self.assertEqual(ran, [["/fake/aibd", "ctl", "web", "--no-open"]])
 
+    def test_windows_ctrl_c_is_rc_130_not_a_traceback(self):
+        def interrupted(a):
+            raise KeyboardInterrupt
+        with mock.patch.object(self.cli.os, "name", "nt"), \
+                mock.patch.object(self.cli.os, "execv", side_effect=AssertionError("execv on Windows")), \
+                mock.patch.object(self.cli.subprocess, "run", side_effect=interrupted):
+            self.assertEqual(self.cli._web([]), 130)
+
     def test_posix_replaces_the_process(self):
         seen = []
         with mock.patch.object(self.cli.os, "name", "posix"), \
