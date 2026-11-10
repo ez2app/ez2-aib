@@ -75,6 +75,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-persona"
+version = "0.2.0-preview.4"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-procwatch"
 version = "0.2.0-preview.4"
 dependencies = [
