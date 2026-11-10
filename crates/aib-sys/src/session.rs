@@ -389,15 +389,71 @@ mod tests {
         }
     }
 
-    /// Wait until the Job holds the root and its child, then hold a
-    /// terminable handle on every member (so the test can see them go).
+    /// The grandchild every tree test waits for (`tree_spec`'s `ping`).
+    const AWAITED_IMAGE: &str = "PING.EXE";
+
+    /// Image name of `pid` from `tasklist` (test only: no new unsafe in
+    /// aib-sys). Anything that is not a plain CSV row (gone, "INFO: ...",
+    /// tasklist failing) comes back as text that never equals an image.
+    fn image_of(pid: u32) -> String {
+        let filter = format!("PID eq {pid}");
+        match Command::new("tasklist")
+            .args(["/FI", filter.as_str(), "/FO", "CSV", "/NH"])
+            .output()
+        {
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let first = out.lines().next().unwrap_or("").trim();
+                first
+                    .split(',')
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string()
+            }
+            Err(e) => format!("?tasklist: {e}"),
+        }
+    }
+
+    /// Wait until `ping` itself is a Job member, then hold a terminable
+    /// handle on every member (so the test can see them go). Returns the
+    /// (pid, image) list seen at hold time, for the tests' panic messages.
+    ///
+    /// Waiting for "2 active processes" was not enough (DIAG-win-session-flake
+    /// a9136 11-09, UNVERIFIED: no Windows here): `cmd` + `conhost` can be 2
+    /// before `ping` exists, so a root-only kill emptied the Job and the
+    /// "child outlives the root" test saw `all_gone` instead of a leftover.
+    ///
     /// Called from the injected open, i.e. before the failure path lists the
     /// members: a member born between that list and the terminate is only
     /// covered by the Job count (the same gap as `kill`, #535).
-    fn hold_members(job: &Job, held: &RefCell<Vec<Process>>) {
+    fn hold_members(job: &Job, held: &RefCell<Vec<Process>>) -> Vec<(u32, String)> {
         let t = Instant::now();
-        while job.active_processes().unwrap_or(0) < 2 {
-            assert!(t.elapsed() < Duration::from_secs(10), "child never started");
+        let mut seen: Vec<(u32, String)> = Vec::new();
+        loop {
+            let members = job.members().unwrap_or_default();
+            // keep names already looked up: a pid stays the same process
+            // while it is a member
+            let mut now = Vec::with_capacity(members.len());
+            for m in &members {
+                let name = match seen.iter().find(|(p, _)| *p == m.pid) {
+                    Some((_, n)) => n.clone(),
+                    None => image_of(m.pid),
+                };
+                now.push((m.pid, name));
+            }
+            seen = now;
+            if seen
+                .iter()
+                .any(|(_, n)| n.eq_ignore_ascii_case(AWAITED_IMAGE))
+            {
+                break;
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "{AWAITED_IMAGE} never joined the Job within 10 s; members seen \
+                 (pid, image): {seen:?}"
+            );
             #[allow(clippy::disallowed_methods)] // test pacing only
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -406,6 +462,7 @@ mod tests {
                 held.borrow_mut().push(p);
             }
         }
+        seen
     }
 
     fn cleanup(held: &RefCell<Vec<Process>>) {
@@ -418,10 +475,11 @@ mod tests {
     #[test]
     fn a_failed_root_open_kills_and_confirms_the_whole_tree() {
         let held = RefCell::new(Vec::new());
+        let seen = RefCell::new(Vec::new());
         let r = SessionTree::spawn_with(
             &tree_spec(),
             |_, j| {
-                hold_members(j, &held);
+                *seen.borrow_mut() = hold_members(j, &held);
                 Err(SysError::Os(8))
             },
             |j| j.terminate(1),
@@ -435,24 +493,34 @@ mod tests {
         cleanup(&held);
         match r {
             Err(SpawnError::Spawn(SysError::Os(8))) => {}
-            other => panic!("expected Spawn(Os(8)), got {:?}", other.err()),
+            other => panic!(
+                "expected Spawn(Os(8)), got {:?}; members held (pid, image): {:?}",
+                other.err(),
+                seen.borrow()
+            ),
         }
-        assert!(gone.len() >= 2, "root and child were not both seen");
+        assert!(
+            gone.len() >= 2,
+            "root and child were not both seen; members held: {:?}",
+            seen.borrow()
+        );
         assert!(
             gone.iter().all(|g| *g),
-            "returned 'not started' while a member still ran: {gone:?}"
+            "returned 'not started' while a member still ran: {gone:?}; members held: {:?}",
+            seen.borrow()
         );
     }
 
     #[test]
     fn a_failed_root_open_whose_child_outlives_the_root_is_not_reaped() {
         let held = RefCell::new(Vec::new());
+        let seen = RefCell::new(Vec::new());
         let root_pid = RefCell::new(0u32);
         let r = SessionTree::spawn_keep(
             &tree_spec(),
             |pid, j| {
                 *root_pid.borrow_mut() = pid;
-                hold_members(j, &held);
+                *seen.borrow_mut() = hold_members(j, &held);
                 Err(SysError::Os(8))
             },
             |_| {
@@ -484,8 +552,9 @@ mod tests {
             }
             panic!(
                 "NotReaped with its Job must hand the tree back; got {e:?}, root pid {pid}; \
-                 last OS error {:?} ({last})",
-                last.raw_os_error()
+                 last OS error {:?} ({last}); members held (pid, image): {:?}",
+                last.raw_os_error(),
+                seen.borrow()
             )
         });
         assert_eq!(left.pid(), *root_pid.borrow());
@@ -500,7 +569,8 @@ mod tests {
         assert!(k.all_gone(), "{k:?}");
         assert!(
             gone.iter().all(|g| *g),
-            "a member outlived the later stop: {gone:?}"
+            "a member outlived the later stop: {gone:?}; members held: {:?}",
+            seen.borrow()
         );
         assert!(e.may_have_left_running(), "slot released: {e:?}");
         match e {
@@ -514,11 +584,12 @@ mod tests {
     #[test]
     fn a_failed_root_open_that_cannot_kill_is_not_reaped_within_its_limit() {
         let held = RefCell::new(Vec::new());
+        let seen = RefCell::new(Vec::new());
         let t = Instant::now();
         let r = SessionTree::spawn_with(
             &tree_spec(),
             |_, j| {
-                hold_members(j, &held);
+                *seen.borrow_mut() = hold_members(j, &held);
                 Err(SysError::Os(8))
             },
             |_| Ok(()), // a terminate that does nothing
@@ -526,8 +597,14 @@ mod tests {
         );
         let waited = t.elapsed();
         cleanup(&held);
-        let Err(e) = r else { panic!("must not start") };
-        assert!(e.may_have_left_running(), "slot released: {e:?}");
+        let Err(e) = r else {
+            panic!("must not start; members held: {:?}", seen.borrow())
+        };
+        assert!(
+            e.may_have_left_running(),
+            "slot released: {e:?}; members held: {:?}",
+            seen.borrow()
+        );
         // hold_members may take a moment for the child to appear; the limit
         // itself is 300 ms
         assert!(waited < Duration::from_secs(8), "not bounded: {waited:?}");

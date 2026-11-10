@@ -50,6 +50,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-flaky"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cireuse",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-forkcount"
 version = "0.2.0-preview.4"
 dependencies = [
@@ -102,6 +110,10 @@ dependencies = [
  "thiserror",
  "windows-sys",
 ]
+
+[[package]]
+name = "aib-thermal"
+version = "0.2.0-preview.4"
 
 [[package]]
 name = "aib-xtask"

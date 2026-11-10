@@ -164,6 +164,31 @@ impl View {
     fn stop(&self, id: &str) {
         let _ = self.call("DELETE", &format!("/api/v1/sessions/{id}"), None);
     }
+
+    /// The stdout lines of a session, once its stdout has closed (20 s at most).
+    fn stdout_lines(&self, id: &str) -> Vec<String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let (c, o) = self.call("GET", &format!("/api/v1/sessions/{id}/output"), None);
+            assert_eq!(c, 200, "{o}");
+            let items = o["output"].as_array().cloned().unwrap_or_default();
+            let closed = items.iter().any(|e| {
+                e["type"] == "session.output_closed" && e["payload"]["stream"] == "stdout"
+            });
+            if closed {
+                return items
+                    .iter()
+                    .filter(|e| e["type"] == "session.output" && e["payload"]["stream"] == "stdout")
+                    .filter_map(|e| e["payload"]["line"].as_str().map(str::to_string))
+                    .collect();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stdout of {id} never closed: {o}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 fn argv(a: &[&str]) -> serde_json::Value {
@@ -553,6 +578,154 @@ async fn the_audit_record_has_the_ruled_keys_and_no_request_value() {
         ] {
             assert!(!text.contains(secret), "{secret} in the event table");
         }
+    })
+    .await
+    .unwrap();
+    d.shutdown().await;
+}
+
+/// P3 / P5 (043dd 19:21: the real paths are compared, and the real path runs): another
+/// spelling of a listed path (`//`, `.`), an unlisted link to a listed program's real
+/// file, and that real file itself all start, and what runs is the real path. The list
+/// here holds only a link, so a check that compares the request's text instead of the
+/// real paths refuses all three (knife K2).
+#[tokio::test(flavor = "multi_thread")]
+async fn other_spellings_and_links_of_a_listed_program_run_its_real_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let listed = tmp.path().join("listed-true");
+    let other = tmp.path().join("other-link");
+    std::os::unix::fs::symlink("/usr/bin/true", &listed).unwrap();
+    std::os::unix::fs::symlink("/usr/bin/true", &other).unwrap();
+    let p = SessionPolicy {
+        programs: vec![fx("true", &listed)],
+        env: vec![],
+        interpreters_ok: false,
+    };
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let mut d = start(&data, 8, p).await;
+    let v = d.view();
+    let real = std::fs::canonicalize("/usr/bin/true").unwrap();
+    let real = real.to_str().unwrap().to_string();
+    let spelled = format!("{}/./{}", tmp.path().display(), "/listed-true");
+    let (o, r) = (other.to_str().unwrap().to_string(), real.clone());
+    tokio::task::spawn_blocking(move || {
+        let seat = v.new_seat();
+        for route in [None, Some(seat.as_str())] {
+            for a in [spelled.as_str(), o.as_str(), r.as_str()] {
+                let s = v.start_on(route, &argv(&[a]));
+                assert_eq!(s.0, 201, "{a} via {route:?}: {}", s.1);
+                assert_eq!(s.1["argv"][0], real.as_str(), "{a}: {}", s.1);
+            }
+        }
+        // the negative half on the same daemon: a program that is not the listed one
+        refused(
+            &v.start_on(None, &argv(&["/bin/sleep", "1"])),
+            403,
+            "program_not_allowed",
+        );
+    })
+    .await
+    .unwrap();
+    d.shutdown().await;
+}
+
+/// E5: the child starts from an empty environment: it sees a listed env name the request
+/// set and its own `AIBD_SESSION`, but none of aibd's `AIBD_*` variables (knife K7 keeps
+/// the inherited environment). `printenv` runs without arguments (the whole environment:
+/// BSD printenv prints only its first name argument). The variable is set in this test
+/// process, which is the aibd process here; its name is unique, so no other test reads it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_child_sees_listed_env_and_its_session_id_but_no_aibd_variable() {
+    const LEAK: &str = "AIBD_QA_E5_1CED7";
+    std::env::set_var(LEAK, "AIBDLEAK-1ced7");
+    let tmp = tempfile::tempdir().unwrap();
+    let mut p = policy();
+    p.programs.push(fx("printenv", "/usr/bin/printenv"));
+    let mut d = start(tmp.path(), 8, p).await;
+    let v = d.view();
+    tokio::task::spawn_blocking(move || {
+        let seat = v.new_seat();
+        for route in [None, Some(seat.as_str())] {
+            let body = serde_json::json!({
+                "argv": ["/usr/bin/printenv"],
+                "env": {"MY_VAR": "MYVALUE-1ced7"}
+            });
+            let s = v.start_on(route, &body);
+            assert_eq!(s.0, 201, "{route:?}: {}", s.1);
+            let id = s.1["id"].as_str().unwrap().to_string();
+            let lines = v.stdout_lines(&id);
+            assert!(
+                lines.iter().any(|l| l == "MY_VAR=MYVALUE-1ced7"),
+                "{lines:?}"
+            );
+            let own = format!("AIBD_SESSION={id}");
+            assert!(lines.contains(&own), "no {own}: {lines:?}");
+            assert!(
+                !lines.iter().any(|l| l.contains("AIBDLEAK-1ced7")),
+                "aibd's own AIBD_* reached the child: {lines:?}"
+            );
+        }
+    })
+    .await
+    .unwrap();
+    d.shutdown().await;
+    std::env::remove_var(LEAK);
+}
+
+/// E3 on both routes, the seat route included: the fixed deny list (`DYLD_*`, `LD_*`,
+/// `AIBD_*`, `PATH`, any case) is refused with `env_not_allowed` before the allow-list,
+/// nothing starts, and the refusal is audited like the others (one folded
+/// `session.spawn_rejected`, the program's file name only, no name or value from the
+/// request). Knife K18 drops the audit of these early refusals.
+#[tokio::test(flavor = "multi_thread")]
+async fn deny_listed_env_is_refused_and_audited_on_both_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8, policy()).await;
+    let v = d.view();
+    tokio::task::spawn_blocking(move || {
+        let seat = v.new_seat();
+        for route in [Some(seat.as_str()), None] {
+            for k in [
+                "DYLD_INSERT_LIBRARIES",
+                "dyld_library_path",
+                "LD_PRELOAD",
+                "AIBD_TOKEN",
+                "PATH",
+            ] {
+                let body = serde_json::json!({
+                    "argv": ["/usr/bin/true", "ARGSECRET-1ced7"],
+                    "env": {k: "DENYSECRET-1ced7"}
+                });
+                refused(&v.start_on(route, &body), 400, "env_not_allowed");
+            }
+        }
+        assert_eq!(v.count("session.started"), 0);
+        assert_eq!(v.sessions(), 0);
+        let evs = v.events();
+        let rejected: Vec<&serde_json::Value> = evs
+            .iter()
+            .filter(|e| e["type"] == "session.spawn_rejected")
+            .collect();
+        assert_eq!(rejected.len(), 1, "{evs:?}");
+        let e = rejected[0];
+        assert_eq!(e["aggregate_type"], "security", "{e}");
+        assert_eq!(e["payload"]["code"], "env_not_allowed", "{e}");
+        assert_eq!(e["payload"]["program"], "true", "{e}");
+        let text = serde_json::Value::Array(evs.clone()).to_string();
+        for secret in [
+            "DENYSECRET-1ced7",
+            "ARGSECRET-1ced7",
+            "DYLD_INSERT_LIBRARIES",
+            "LD_PRELOAD",
+            "AIBD_TOKEN",
+        ] {
+            assert!(!text.contains(secret), "{secret} in the event table");
+        }
+        // the positive half: a listed name on the same daemon starts
+        let ok = serde_json::json!({"argv": ["/usr/bin/true"], "env": {"MY_VAR": "1"}});
+        let s = v.start_on(Some(seat.as_str()), &ok);
+        assert_eq!(s.0, 201, "{}", s.1);
     })
     .await
     .unwrap();

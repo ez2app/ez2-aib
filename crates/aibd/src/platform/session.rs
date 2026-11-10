@@ -140,6 +140,49 @@ pub struct Signal {
     pub targets: Vec<u32>,
 }
 
+/// F (1ced7 11-09 23:38): what the late-exec candidate check saw, so a
+/// `candidates_unreadable` stop says which processes and which rule
+/// (narrow, or the G1 widened orphan check) put them there. macOS only;
+/// empty elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CandidateDiag {
+    /// Candidates found (narrow + widened).
+    pub count: usize,
+    /// Of those, added only by the widened orphan check (G1 `unread_gone`).
+    pub orphan_extra: usize,
+    /// Candidates whose environment could not be read, at most
+    /// [`UNREADABLE_LISTED`] of them (043dd #607 L1: a desktop can have a
+    /// long run of launchd services; every record, event and log line
+    /// carries this list).
+    pub unreadable: Vec<UnreadableCandidate>,
+    /// How many unreadable candidates were not listed. Left out of the JSON
+    /// when 0. `count` is always the real total.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unreadable_more: usize,
+    /// G1 coalition: unreadable candidates let go because they run in a
+    /// coalition other than the session's (launchd services). Left out of
+    /// the JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_coalition: Vec<UnreadableCandidate>,
+    /// Same limit for the coalition list.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub other_coalition_more: usize,
+}
+
+/// The most unreadable candidates one stop record lists.
+pub const UNREADABLE_LISTED: usize = 16;
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// One candidate: pid and the process name (not its arguments).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnreadableCandidate {
+    pub pid: u32,
+    pub comm: String,
+}
+
 /// Result of one [`Running::stop`] (contract §1 `stop`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stop {
@@ -150,6 +193,8 @@ pub struct Stop {
     /// What no layer here can rule out (macOS: always the DECISION-23 list).
     /// Windows: empty.
     pub blind_spots: Vec<&'static str>,
+    /// F: the candidate check behind the status (see [`CandidateDiag`]).
+    pub candidates: CandidateDiag,
 }
 
 impl Stop {
@@ -192,6 +237,46 @@ impl Stop {
                 })
                 .collect(),
             blind_spots: r.blind_spots(),
+            candidates: CandidateDiag {
+                count: r.candidates,
+                orphan_extra: r.orphan_candidates_extra,
+                unreadable_more: r
+                    .candidates_unreadable
+                    .len()
+                    .saturating_sub(UNREADABLE_LISTED),
+                unreadable: r
+                    .candidates_unreadable
+                    .iter()
+                    .take(UNREADABLE_LISTED)
+                    .enumerate()
+                    .map(|(i, &pid)| UnreadableCandidate {
+                        pid,
+                        comm: r
+                            .candidates_unreadable_comm
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+                other_coalition_more: r
+                    .candidates_other_coalition
+                    .len()
+                    .saturating_sub(UNREADABLE_LISTED),
+                other_coalition: r
+                    .candidates_other_coalition
+                    .iter()
+                    .take(UNREADABLE_LISTED)
+                    .enumerate()
+                    .map(|(i, &pid)| UnreadableCandidate {
+                        pid,
+                        comm: r
+                            .candidates_other_coalition_comm
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+            },
         }
     }
 }
@@ -328,6 +413,7 @@ mod tests {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 
@@ -379,6 +465,109 @@ mod tests {
             ..r
         };
         assert_eq!(Stop::from_report(&left).status, StopStatus::TreeNotClean);
+    }
+
+    /// F (1ced7 11-09 23:38): the stop says which candidates it could not
+    /// read (pid + process name, same order) and how many only the widened
+    /// orphan check added.
+    #[test]
+    fn a_macos_report_carries_its_candidate_check_into_the_stop() {
+        let r = Report {
+            candidates: 3,
+            orphan_candidates_extra: 1,
+            candidates_unreadable: vec![9, 11],
+            candidates_unreadable_comm: vec!["mdworker_shared".into(), "followupd".into()],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let s = Stop::from_report(&r);
+        assert_eq!(s.status.reason(), Some("candidates_unreadable"));
+        assert_eq!(
+            s.candidates,
+            CandidateDiag {
+                count: 3,
+                orphan_extra: 1,
+                unreadable: vec![
+                    UnreadableCandidate {
+                        pid: 9,
+                        comm: "mdworker_shared".into()
+                    },
+                    UnreadableCandidate {
+                        pid: 11,
+                        comm: "followupd".into()
+                    },
+                ],
+                other_coalition: vec![],
+                unreadable_more: 0,
+                other_coalition_more: 0,
+            }
+        );
+    }
+
+    /// G1 coalition, the 1ced7 c25144e1 desktop stop (VERIFY-F-diag): the
+    /// only candidate was pid 43028 DockHelper, a launchd service. Let go by
+    /// its coalition, the stop no longer holds the slot, and it says so.
+    #[test]
+    fn the_dockhelper_stop_gives_the_slot_back_and_names_what_it_let_go() {
+        let held = Report {
+            candidates: 1,
+            candidates_unreadable: vec![43028],
+            candidates_unreadable_comm: vec!["DockHelper".into()],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        assert_eq!(
+            Stop::from_report(&held).status.reason(),
+            Some("candidates_unreadable"),
+            "before: the slot is held"
+        );
+        let r = Report {
+            candidates: 1,
+            candidates_other_coalition: vec![43028],
+            candidates_other_coalition_comm: vec!["DockHelper".into()],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let s = Stop::from_report(&r);
+        assert_ne!(s.status.reason(), Some("candidates_unreadable"));
+        assert!(s.releases_slot(), "{:?}", s.status);
+        assert_eq!(
+            s.candidates.other_coalition,
+            vec![UnreadableCandidate {
+                pid: 43028,
+                comm: "DockHelper".into()
+            }]
+        );
+        assert!(s.candidates.unreadable.is_empty());
+    }
+
+    /// 043dd #607 L1: a long run of unreadable candidates is listed up to
+    /// the limit; the rest is a number, and `count` stays the real total.
+    #[test]
+    fn a_long_run_of_unreadable_candidates_is_cut_at_the_limit() {
+        let n = UNREADABLE_LISTED + 5;
+        let r = Report {
+            candidates: n,
+            candidates_unreadable: (1..=n as u32).collect(),
+            candidates_unreadable_comm: (1..=n).map(|i| format!("svc{i}")).collect(),
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let c = Stop::from_report(&r).candidates;
+        assert_eq!(c.count, n);
+        assert_eq!(c.unreadable.len(), UNREADABLE_LISTED);
+        assert_eq!(c.unreadable_more, 5);
+        assert_eq!(c.unreadable[0].comm, "svc1");
+        let j = serde_json::to_value(&c).unwrap();
+        assert_eq!(j["unreadable_more"], 5);
+        let short = Report {
+            candidates: 1,
+            candidates_unreadable: vec![9],
+            candidates_unreadable_comm: vec!["x".into()],
+            ..Report::default()
+        };
+        let j = serde_json::to_value(Stop::from_report(&short).candidates).unwrap();
+        assert!(j.get("unreadable_more").is_none(), "{j}");
     }
 
     #[test]

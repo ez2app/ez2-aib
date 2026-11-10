@@ -262,13 +262,15 @@ pub fn remote_script(spec: &RunSpec) -> String {
             "if [ -n \"$tb\" ]; then \"$tb\" -l -o \"$d.time\" bash -c {0} & else bash -c {0} & fi\n",
             q(step)
         );
-        s += "cpid=$!; peak=0\n";
+        // chrome: any Chrome process on the machine while the step ran, in its tree or not
+        // (2240e #609 L1: a browser test reparents its helpers; tonight's queues were Chrome)
+        s += "cpid=$!; peak=0; ch=0\n";
         s += &format!(
-            "t=0; while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${{c:-0}}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; sleep 1; t=$((t+1)); [ $((t % 5)) -ne 0 ] || echo \"{beat}\" 2>/dev/null || exit 141; done\n"
+            "t=0; while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${{c:-0}}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; [ \"$ch\" = 1 ] || {{ ps -A -o comm= 2>/dev/null | grep -qiE 'chrome|chromium' && ch=1; }}; sleep 1; t=$((t+1)); [ $((t % 5)) -ne 0 ] || echo \"{beat}\" 2>/dev/null || exit 141; done\n"
         );
         s += "wait \"$cpid\"; r=$?; cpid=; s1=$(date +%s)\n";
         s += "set -- -1 -1 -1; if [ -s \"$d.time\" ]; then set -- $(awk '{for(i=1;i<NF;i++){if($(i+1)==\"user\")u=$i; if($(i+1)==\"sys\")y=$i}} /maximum resident set size/{m=$1} END{printf \"%s %s %s\", (u==\"\"?-1:u), (y==\"\"?-1:y), (m==\"\"?-1:m)}' \"$d.time\"); fi\n";
-        s += &format!("echo \"{mark} {k} $s0 $s1 $r $1 $2 $3 $peak\"\n");
+        s += &format!("echo \"{mark} {k} $s0 $s1 $r $1 $2 $3 $peak $ch\"\n");
         s += &format!("echo \"aib-lease: step {k}/{n} rc=$r\"\n");
         s += "[ \"$r\" -eq 0 ] || fail=1\n";
     }
@@ -331,9 +333,11 @@ pub struct StepStat {
     pub sys_s: Option<f64>,
     pub maxrss: Option<u64>,
     pub peak_cpu: Option<u32>,
+    /// A Chrome / Chromium process was on the machine while the step ran (any tree).
+    pub chrome_seen: Option<bool>,
 }
 
-/// `AIB_LEASE_STAT <nonce> n start end rc user sys maxrss peak` ⇒ a [`StepStat`]; another
+/// `AIB_LEASE_STAT <nonce> n start end rc user sys maxrss peak chrome` ⇒ a [`StepStat`]; another
 /// nonce or a malformed line ⇒ `None`. `-1` means "not measured".
 pub fn parse_stat(line: &str, nonce: &str) -> Option<StepStat> {
     let rest = line
@@ -341,7 +345,7 @@ pub fn parse_stat(line: &str, nonce: &str) -> Option<StepStat> {
         .strip_prefix(nonce)?
         .strip_prefix(' ')?;
     let f: Vec<&str> = rest.split_whitespace().collect();
-    if f.len() != 8 {
+    if f.len() != 9 {
         return None;
     }
     let opt_f = |s: &str| s.parse::<f64>().ok().filter(|v| *v >= 0.0);
@@ -354,6 +358,11 @@ pub fn parse_stat(line: &str, nonce: &str) -> Option<StepStat> {
         sys_s: opt_f(f[5]),
         maxrss: f[6].parse::<i64>().ok().and_then(|v| u64::try_from(v).ok()),
         peak_cpu: f[7].parse::<i64>().ok().and_then(|v| u32::try_from(v).ok()),
+        chrome_seen: match f[8] {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        },
     })
 }
 
@@ -440,8 +449,10 @@ pub fn history_line(
                 "rc": st.map(|s| s.rc),
                 "cpu_user_s": st.and_then(|s| s.user_s),
                 "cpu_sys_s": st.and_then(|s| s.sys_s),
+                // `/usr/bin/time -l`: the largest single process of the step, not the tree's sum
                 "maxrss_bytes": st.and_then(|s| s.maxrss),
                 "peak_cpu_pct": st.and_then(|s| s.peak_cpu),
+                "chrome_seen": st.and_then(|s| s.chrome_seen),
             })
         })
         .collect();
@@ -961,7 +972,7 @@ mod tests {
 
     #[test]
     fn stat_lines_need_this_runs_nonce() {
-        let l = "AIB_LEASE_STAT 00ff 2 100 160 1 12.5 0.75 104857600 230";
+        let l = "AIB_LEASE_STAT 00ff 2 100 160 1 12.5 0.75 104857600 230 1";
         assert_eq!(
             parse_stat(l, "00ff"),
             Some(StepStat {
@@ -973,12 +984,19 @@ mod tests {
                 sys_s: Some(0.75),
                 maxrss: Some(104_857_600),
                 peak_cpu: Some(230),
+                chrome_seen: Some(true),
             })
         );
         assert_eq!(parse_stat(l, "beef"), None, "a step printing a stat line");
         assert_eq!(parse_stat(l, "00f"), None, "a nonce that is only a prefix");
-        let unmeasured = parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0", "00ff").unwrap();
+        let unmeasured = parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0 0", "00ff").unwrap();
         assert_eq!((unmeasured.user_s, unmeasured.maxrss), (None, None));
+        assert_eq!(unmeasured.chrome_seen, Some(false));
+        assert_eq!(
+            parse_stat("AIB_LEASE_STAT 00ff 1 1 2 0 -1 -1 -1 0", "00ff"),
+            None,
+            "nine fields"
+        );
         assert_eq!(parse_stat("AIB_LEASE_STAT 00ff 1 2", "00ff"), None);
     }
 
@@ -1054,6 +1072,7 @@ mod tests {
             sys_s: None,
             maxrss: Some(5),
             peak_cpu: Some(90),
+            chrome_seen: None,
         };
         let v = history_line(
             &spec(),
