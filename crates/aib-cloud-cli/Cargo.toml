@@ -15,6 +15,6 @@ name = "aib-cloud"
 path = "src/main.rs"
 
 # Only aib-cloud: no JSON, no network crate. The transport is the `ssh` the system has
-# (PLAN-eu02-dev-order §1: "用系統 ssh + 一個加固函式").
+# (dev-order plan §1: "用系統 ssh + 一個加固函式").
 [dependencies]
 aib-cloud = { path = "../aib-cloud" }

@@ -1058,23 +1058,53 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
     if !rest.is_empty() {
         return Err(format!("unknown arguments {rest:?}"));
     }
-    let spec = load_site(&code, &records)?;
-    let current = edge_caddyfile()?;
-    let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
-    if now == suspend {
+    // 33e28 B1: the Edge change runs as an operation (host lock + journal). Everything it
+    // decides from — the record, the quarantine marks, the Caddyfile — is read under the
+    // lock (c477a #635 seg. 2 M1), so a restore --switch of another site cannot land
+    // between the reading and the writing and be overwritten with the old Caddyfile.
+    let command = if suspend {
+        "site.suspend"
+    } else {
+        "site.resume"
+    };
+    let done = crate::opstore::run_op_prepared(
+        &crate::opstore::OpPlace::host()?,
+        command,
+        &format!("site:{code}"),
+        crate::opstore::BY_LOCAL_ROOT,
+        unix_now(),
+        || {
+            let spec = load_site(&code, &records)?;
+            // a quarantined site is neither reopened (resume) nor has its quarantine block
+            // replaced by the suspension page (suspend): only unquarantine ends a quarantine
+            crate::quarantinecmd::refuse_if_quarantined_here(
+                &code,
+                spec.ct,
+                aib_cloud::quarantine::Reopens::Resume,
+            )?;
+            let current = edge_caddyfile()?;
+            let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
+            if now == suspend {
+                return Ok(None);
+            }
+            let block = if suspend {
+                caddy_block_suspended(&spec, SUSPENDED_PAGE)
+            } else {
+                caddy_block_upstream(&spec, &spec.ip())
+            };
+            let next = caddy_swap_block(&current, &code, &block).map_err(|e| e.to_string())?;
+            let plan = json!({ "command": command, "site": code, "edge_block": block });
+            Ok(Some((plan, next)))
+        },
+        |_, next: String| edge_apply_caddyfile(&next),
+    )?;
+    let Some(backup) = done else {
         eprintln!(
             "{code} already {}",
             if suspend { "suspended" } else { "live" }
         );
         return Ok(0);
-    }
-    let block = if suspend {
-        caddy_block_suspended(&spec, SUSPENDED_PAGE)
-    } else {
-        caddy_block_upstream(&spec, &spec.ip())
     };
-    let next = caddy_swap_block(&current, &code, &block).map_err(|e| e.to_string())?;
-    let backup = edge_apply_caddyfile(&next)?;
     eprintln!(
         "{code} {} (Edge Caddyfile backup {backup})",
         if suspend {
@@ -1086,7 +1116,12 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
     Ok(0)
 }
 
-/// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch]`:
+/// Whether `--yes-<code>` was typed for exactly this site.
+fn switch_confirmed(code: &str, yes: Option<&str>) -> bool {
+    yes == Some(code)
+}
+
+/// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch --yes-<code>]`:
 /// blue-green — restore the backup as a new CT beside the live one, apply the site's limits,
 /// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
 /// is left running for comparison (deleting it is a separate, human-approved step).
@@ -1094,6 +1129,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
     use aib_cloud::site::{caddy_block_upstream, caddy_swap_block, desired_firewall, restore_plan};
     let (code, records, rest) = site_args(args)?;
     let (mut backup, mut ct, mut ip, mut switch) = (None, None, None, false);
+    let mut yes: Option<String> = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1115,118 +1151,163 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 )
             }
             "--switch" => switch = true,
+            a if a.starts_with("--yes-") => yes = Some(a.trim_start_matches("--yes-").to_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let spec = load_site(&code, &records)?;
-    let taken = occupied_ip_lasts(&records)?;
-    let plan = restore_plan(
-        &spec,
-        backup.as_deref().ok_or("--backup required")?,
-        ct.ok_or("--ct required")?,
-        ip.ok_or("--ip required")?,
-        &taken,
-    )
-    .map_err(|e| format!("{e} (in use on vmbr1: {taken:?})"))?;
-    let new_ct = ct.unwrap_or(0).to_string();
-    let mut probe = Command::new("pct");
-    probe.args(["status", &new_ct]);
-    if run_capture(&mut probe, Duration::from_secs(10)).is_ok() {
-        return Err(format!("CT {new_ct} already exists; pick another id"));
-    }
-    for step in &plan {
-        if step.id == "verify" {
-            break;
-        }
-        let mut cmd = Command::new(&step.argv[0]);
-        cmd.args(&step.argv[1..]);
-        eprintln!("→ {}", step.argv.join(" "));
-        run_capture(&mut cmd, Duration::from_secs(900))
-            .map_err(|e| format!("step {}: {e}", step.id))?;
-        if step.id == "set" {
-            let fw = format!("/etc/pve/firewall/{new_ct}.fw");
-            if !Path::new(&fw).exists() {
-                fs::write(&fw, desired_firewall(&spec.fw_group, spec.ssh_port))
-                    .map_err(|e| format!("{fw}: {e}"))?;
-            }
-        }
-    }
-    // wait for the site inside the new CT
-    let verify = plan
-        .iter()
-        .find(|s| s.id == "verify")
-        .ok_or("no verify step")?;
-    let mut code_seen = String::new();
-    for _ in 0..30 {
-        let mut cmd = Command::new(&verify.argv[0]);
-        cmd.args(&verify.argv[1..]);
-        if let Ok(out) = run_capture(&mut cmd, Duration::from_secs(20)) {
-            code_seen = out.trim().to_owned();
-            if code_seen == "200" {
-                break;
-            }
-        }
-        // pause 2 s between checks via a child (ADR 0005: this CLI has no timer registry; see wait_with_timeout)
-        if let Ok(mut pause) = Command::new("sleep").arg("2").spawn() {
-            let _ = wait_with_timeout(&mut pause, Duration::from_secs(5));
-        }
-    }
-    if code_seen != "200" {
+    // --switch moves the Edge and rewrites the site record: no inverse command, so a
+    // standing approval is not enough — the person types the site code (4542e 11-10 c)
+    if switch && !switch_confirmed(&code, yes.as_deref()) {
         return Err(format!(
-            "new CT {new_ct} answers {code_seen:?}, not 200; Edge not switched"
+            "--switch moves {code}'s live traffic: add --yes-{code} to confirm"
         ));
     }
-    eprintln!(
-        "new CT {new_ct} up and answering 200 for {}",
-        spec.primary()
-    );
-    if switch {
-        let new_ip = format!("10.77.0.{}", ip.unwrap_or(0));
-        // c477a #585 增量 L1: build and validate the new record *before* the Edge moves, so a
-        // record that cannot be written (ssh_port overflow, bad fields) never leaves the Edge
-        // pointing at a CT no record describes.
-        let rec_path = format!("{records}/{code}.json");
-        let text = fs::read_to_string(&rec_path).map_err(|e| format!("{rec_path}: {e}"))?;
-        let mut rec: Value = serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
-        let new_ct_n = ct.unwrap_or(0);
-        rec["ct"] = json!(new_ct_n);
-        rec["ip"] = json!(new_ip);
-        let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
-        if had_ssh {
-            let port = 2000u64 + u64::from(new_ct_n);
-            if port > 65535 {
+    // a confirmation with nothing to confirm is a mistake in the command, not a no-op
+    // (c477a #635 seg. 2 N3)
+    if !switch && yes.is_some() {
+        return Err(
+            "--yes-<code> confirms --switch; without --switch there is nothing to confirm"
+                .to_owned(),
+        );
+    }
+    let backup = backup.ok_or("--backup required")?;
+    let (ct_n, ip_n) = (ct.ok_or("--ct required")?, ip.ok_or("--ip required")?);
+    let new_ct = ct_n.to_string();
+    // 33e28 B1: the restore is an operation (host lock + journal); a failure from the first
+    // step that changes the host leaves it `failed` for a person to check. The record, the
+    // quarantine marks, the IPs and CT ids in use are read and checked under the lock
+    // (c477a #635 seg. 2 M1): two restores cannot both find the same IP or CT id free.
+    let done = crate::opstore::run_op_prepared(
+        &crate::opstore::OpPlace::host()?,
+        "site.restore",
+        &format!("site:{code}"),
+        crate::opstore::BY_LOCAL_ROOT,
+        unix_now(),
+        || {
+            let spec = load_site(&code, &records)?;
+            // restoring a quarantined site would bring its backup up with egress (and, with
+            // --switch, back on the edge): refused until unquarantine
+            crate::quarantinecmd::refuse_if_quarantined_here(
+                &code,
+                spec.ct,
+                aib_cloud::quarantine::Reopens::Restore,
+            )?;
+            let taken = occupied_ip_lasts(&records)?;
+            let plan = restore_plan(&spec, &backup, ct_n, ip_n, &taken)
+                .map_err(|e| format!("{e} (in use on vmbr1: {taken:?})"))?;
+            let mut probe = Command::new("pct");
+            probe.args(["status", &new_ct]);
+            if run_capture(&mut probe, Duration::from_secs(10)).is_ok() {
+                return Err(format!("CT {new_ct} already exists; pick another id"));
+            }
+            let plan_doc = json!({
+                "command": "site.restore",
+                "site": code,
+                "steps": plan.iter().map(|s| s.argv.clone()).collect::<Vec<_>>(),
+                "switch": switch,
+                // --switch is only accepted with the site code typed (checked above)
+                "confirmed_code": switch,
+            });
+            Ok(Some((plan_doc, (spec, plan))))
+        },
+        |_, (spec, plan)| {
+            for step in &plan {
+                if step.id == "verify" {
+                    break;
+                }
+                let mut cmd = Command::new(&step.argv[0]);
+                cmd.args(&step.argv[1..]);
+                eprintln!("→ {}", step.argv.join(" "));
+                run_capture(&mut cmd, Duration::from_secs(900))
+                    .map_err(|e| format!("step {}: {e}", step.id))?;
+                if step.id == "set" {
+                    let fw = format!("/etc/pve/firewall/{new_ct}.fw");
+                    if !Path::new(&fw).exists() {
+                        fs::write(&fw, desired_firewall(&spec.fw_group, spec.ssh_port))
+                            .map_err(|e| format!("{fw}: {e}"))?;
+                    }
+                }
+            }
+            // wait for the site inside the new CT
+            let verify = plan
+                .iter()
+                .find(|s| s.id == "verify")
+                .ok_or("no verify step")?;
+            let mut code_seen = String::new();
+            for _ in 0..30 {
+                let mut cmd = Command::new(&verify.argv[0]);
+                cmd.args(&verify.argv[1..]);
+                if let Ok(out) = run_capture(&mut cmd, Duration::from_secs(20)) {
+                    code_seen = out.trim().to_owned();
+                    if code_seen == "200" {
+                        break;
+                    }
+                }
+                // pause 2 s between checks via a child (ADR 0005: this CLI has no timer registry; see wait_with_timeout)
+                if let Ok(mut pause) = Command::new("sleep").arg("2").spawn() {
+                    let _ = wait_with_timeout(&mut pause, Duration::from_secs(5));
+                }
+            }
+            if code_seen != "200" {
                 return Err(format!(
-                    "new ct {new_ct_n}: customer ssh port 2000+ct would be {port}; not switching"
+                    "new CT {new_ct} answers {code_seen:?}, not 200; Edge not switched"
                 ));
             }
-            rec["ssh_port"] = json!(port);
-        }
-        aib_cloud::site::spec_from_record(&rec)
-            .map_err(|e| format!("new record invalid, not switching: {e}"))?;
-        let new_text = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
-        let current = edge_caddyfile()?;
-        let next = caddy_swap_block(&current, &code, &caddy_block_upstream(&spec, &new_ip))
-            .map_err(|e| e.to_string())?;
-        let backup_file = edge_apply_caddyfile(&next)?;
-        eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
-        // the record follows the switch (c477a #585 L4); old record kept, new one written via tmp + rename
-        fs::write(format!("{rec_path}.bak-{}", unix_now()), &text)
-            .map_err(|e| format!("{rec_path}.bak: {e}"))?;
-        let tmp = format!("{rec_path}.tmp-{}", std::process::id());
-        fs::write(&tmp, new_text).map_err(|e| format!("{tmp}: {e}"))?;
-        fs::rename(&tmp, &rec_path).map_err(|e| format!("{tmp} → {rec_path}: {e}"))?;
-        eprintln!(
-            "record {rec_path} now points at ct {new_ct_n} / {new_ip}{}",
-            if had_ssh {
-                format!("; ssh_port {} — run ez2-site-ssh {code} {new_ct_n} <pubkey> to move the DNAT / CT rules", 2000 + new_ct_n)
+            eprintln!(
+                "new CT {new_ct} up and answering 200 for {}",
+                spec.primary()
+            );
+            if switch {
+                let new_ip = format!("10.77.0.{}", ip.unwrap_or(0));
+                // c477a #585 增量 L1: build and validate the new record *before* the Edge moves, so a
+                // record that cannot be written (ssh_port overflow, bad fields) never leaves the Edge
+                // pointing at a CT no record describes.
+                let rec_path = format!("{records}/{code}.json");
+                let text = fs::read_to_string(&rec_path).map_err(|e| format!("{rec_path}: {e}"))?;
+                let mut rec: Value =
+                    serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
+                let new_ct_n = ct.unwrap_or(0);
+                rec["ct"] = json!(new_ct_n);
+                rec["ip"] = json!(new_ip);
+                let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
+                if had_ssh {
+                    let port = 2000u64 + u64::from(new_ct_n);
+                    if port > 65535 {
+                        return Err(format!(
+                    "new ct {new_ct_n}: customer ssh port 2000+ct would be {port}; not switching"
+                ));
+                    }
+                    rec["ssh_port"] = json!(port);
+                }
+                aib_cloud::site::spec_from_record(&rec)
+                    .map_err(|e| format!("new record invalid, not switching: {e}"))?;
+                let new_text = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
+                let current = edge_caddyfile()?;
+                let next = caddy_swap_block(&current, &code, &caddy_block_upstream(&spec, &new_ip))
+                    .map_err(|e| e.to_string())?;
+                let backup_file = edge_apply_caddyfile(&next)?;
+                eprintln!("Edge switched {} → {new_ip} (backup {backup_file}); old CT {} left running — delete it only after checking", spec.code, spec.ct);
+                // the record follows the switch (c477a #585 L4); old record kept, new one written via tmp + rename
+                fs::write(format!("{rec_path}.bak-{}", unix_now()), &text)
+                    .map_err(|e| format!("{rec_path}.bak: {e}"))?;
+                let tmp = format!("{rec_path}.tmp-{}", std::process::id());
+                fs::write(&tmp, new_text).map_err(|e| format!("{tmp}: {e}"))?;
+                fs::rename(&tmp, &rec_path).map_err(|e| format!("{tmp} → {rec_path}: {e}"))?;
+                eprintln!(
+                    "record {rec_path} now points at ct {new_ct_n} / {new_ip}{}",
+                    if had_ssh {
+                        format!("; ssh_port {} — run ez2-site-ssh {code} {new_ct_n} <pubkey> to move the DNAT / CT rules", 2000 + new_ct_n)
+                    } else {
+                        String::new()
+                    }
+                );
             } else {
-                String::new()
+                eprintln!("not switched (--switch to point the Edge at it)");
             }
-        );
-    } else {
-        eprintln!("not switched (--switch to point the Edge at it)");
-    }
-    Ok(0)
+            Ok(0)
+        },
+    )?;
+    Ok(done.unwrap_or(0))
 }
 
 pub fn main(args: &[String]) -> Result<u8, String> {
@@ -1247,7 +1328,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
@@ -1258,6 +1339,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             _ => Err("backup needs check [--remote <name>:<path>] [--records dir] [--json]".to_owned()),
         },
         Some("spec") => crate::speccmd::cmd(&args[1..]),
+        Some("op") => crate::opstore::cmd(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
             Some("run") => cmd_run(&args[2..]),
             Some("merge") => cmd_merge(&args[2..]),
@@ -1273,7 +1355,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 
@@ -1282,6 +1364,39 @@ pub fn main(args: &[String]) -> Result<u8, String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// 4542e 11-10 condition c: --switch has no inverse, so the site code is typed.
+    #[test]
+    fn a_switch_needs_the_site_code_typed() {
+        assert!(switch_confirmed("site2", Some("site2")));
+        assert!(!switch_confirmed("site2", None));
+        assert!(!switch_confirmed("site2", Some("site3")));
+        assert!(!switch_confirmed("site2", Some("")));
+        // the check runs before anything is read or changed
+        let args: Vec<String> = [
+            "site2",
+            "--records",
+            "/nonexistent",
+            "--backup",
+            "b",
+            "--ct",
+            "200",
+            "--ip",
+            "40",
+            "--switch",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let err = cmd_site_restore(&args).unwrap_err();
+        assert!(err.contains("--yes-site2"), "{err}");
+        // a confirmation without --switch is refused, before anything is read
+        let mut no_switch = args.clone();
+        no_switch.pop();
+        no_switch.push("--yes-site2".to_owned());
+        let err = cmd_site_restore(&no_switch).unwrap_err();
+        assert!(err.contains("nothing to confirm"), "{err}");
+    }
 
     fn cell(id: &str, from: &str, kind: &str, ip: &str, port: u64, expect: &str) -> Value {
         json!({"id": id, "from": from, "kind": kind, "ip": ip, "port": port, "expect": expect})

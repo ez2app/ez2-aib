@@ -375,6 +375,18 @@ jobs:
           ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
              '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
              a_customer_is_not_told_what_is_wrong_on_our_side
+          # roles: an editor may restart a site (the table is Ez2.PAGE's: live changes are the publisher's)
+          ck customer.rs '            Operation::Publish => matches!(self, Owner | Admin | Publisher),' \
+             '            Operation::Publish => matches!(self, Owner | Admin | Publisher | Editor), // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          # roles: restarting a site counts as editing it (so an editor could)
+          ck customer.rs '            Request::Restart => Operation::Publish,' \
+             '            Request::Restart => Operation::Edit, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          # customer key: a site name that is not a site code gets as far as the host records
+          ck customer.rs '            if !crate::site::valid_code(site) {' \
+             '            if site.is_empty() { // knife' \
+             a_customer_key_names_the_site_and_nothing_else
           # customer entry: a request may carry extra words (another site, say)
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
@@ -420,13 +432,25 @@ jobs:
              '            if said("provider_check") && exit == 0 { // knife' \
              every_answer_has_its_sentence
           # customer side: a request not offered yet is sent (Andy 11-10: hidden)
-          ck client.rs '    if !parse_request(line).is_ok_and(Request::offered) {' \
-             '    if !parse_request(line).is_ok_and(|r| r.offered() || true) { // knife' \
+          ck client.rs '    if !asked.offered() {' \
+             '    if !asked.offered() && false { // knife' \
              a_request_the_host_would_refuse_is_not_sent
           # customer side: a request the host would refuse is sent all the same
-          ck client.rs '    parse_request(line).map_err(NotSent::Request)?;' \
-             '    let _ = parse_request(line).map_err(NotSent::Request); // knife' \
+          ck client.rs '        _ => parse_request(line).map(Line::Site),' \
+             '        _ => parse_request(line).or(Ok(Request::Status)).map(Line::Site), // knife' \
              a_request_the_host_would_refuse_is_not_sent
+          # customer side: under a customer key a request not offered yet is sent (4.5 section 4)
+          ck client.rs '                request.offered()' \
+             '                request.offered() || matches!(self, Line::Owner(_)) // knife' \
+             a_customer_keys_lines_are_checked_by_their_own_grammar
+          # customer side: any first word is read as a site code (site status site3 would name a site)
+          ck client.rs '                && parse_request(&rest.join(" ")).is_ok() =>' \
+             '                && (parse_request(&rest.join(" ")).is_ok() || true) => // knife' \
+             a_code_in_front_of_a_request_names_the_site
+          # site record: a record that names no tenant belongs to the tenant called like the site
+          ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
+             '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
+             tenant_and_disk_are_optional_but_typed
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -453,7 +477,8 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
-      # aib-cloud-host: gates of the host commands (reviews of #625).
+      # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
+      # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -471,6 +496,28 @@ jobs:
           hk maskcmd.rs '        (Some(ours), Some(hosts)) if ours != hosts => Ok(()),' \
              '        (Some(ours), Some(hosts)) if ours != hosts || true => Ok(()), // knife' \
              nothing_is_mounted_on_the_host_or_through_a_link
+          # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
+          hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
+             '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: a tenant id equal to a site code owns the site that names no tenant
+          hk customercmd.rs '        if aib_cloud::site::record_tenant(&rec) == Some(tenant) {' \
+             '        if aib_cloud::site::record_tenant(&rec).or(rec.get("site").and_then(Value::as_str)) == Some(tenant) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: the site list of the entry does not narrow (c477a: one member, some sites)
+          hk customercmd.rs '            if scope.is_none_or(|list| list.contains(&spec.code.as_str())) {' \
+             '            if scope.is_none_or(|list| list.contains(&spec.code.as_str()) || true) { // knife' \
+             a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # customer key: a site list that is not one is taken as it is
+          hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
+             the_site_list_of_an_entry_is_codes_or_an_error
+          # usage: a site that names no tenant is summed with the tenant called like it
+          hk usagecmd.rs '        None => format!("site:{site}"),' '        None => format!("tenant:{site}"), // knife' \
+             a_site_without_a_tenant_is_never_summed_with_a_tenant_of_its_name
+          # customer key: the roles in the entry are not asked
+          hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
+             '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
+             a_tenant_key_reaches_its_own_sites_only
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \
@@ -502,6 +549,97 @@ jobs:
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
+          # plan hash: the host is not hashed
+          hk opstore.rs '        "aib-cloud-plan-v1\n{}\nhost {fingerprint}\nversion {version}\n",' \
+             '        "aib-cloud-plan-v1\n{}\nhost \nversion {version}\n{fingerprint:.0}", // knife' \
+             the_plan_hash_covers_host_and_version
+          # journal: a line counts before it is synced
+          hk opstore.rs '    sink.sync().map_err(|e| format!("journal sync: {e}"))' \
+             '    let _ = S::sync; Ok(()) // knife: no sync (S::sync stays referenced, else dead_code under -D warnings)' \
+             a_line_is_synced_before_it_counts
+          # journal: a line that does not follow is appended anyway
+          hk opstore.rs '    may_append(&entries, entry)?;' \
+             '    let _ = may_append(&entries, entry); // knife' \
+             a_journal_only_grows_by_lines_that_follow
+          # journal: a cut-short fragment is left in front of the next line
+          hk opstore.rs '    if cut {' \
+             '    if cut && false { // knife' \
+             a_cut_short_last_line_is_cut_off_before_the_next
+          # /proc stat: fields counted from the first space instead of the last paren
+          hk opstore.rs "    let rest = &stat[stat.rfind(')')? + 1..];" \
+             "    let rest = &stat[stat.find(')')? + 1..]; // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # liveness: an unreadable stat is taken as proof of death
+          hk opstore.rs '        Err(_) => Liveness::Unknown,' \
+             '        Err(_) => Liveness::Gone, // knife' \
+             liveness_from_proc
+          # lock: a damaged lock file is read as free
+          hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
+             '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
+             a_damaged_lock_file_keeps_the_lock
+          # lock: anyone may release it
+          hk opstore.rs '            Some(h) if h.op == op && h.pid == pid => {' \
+             '            Some(_) => { let _ = pid; // knife' \
+             only_the_holder_releases
+          # unfinished: a journal that does not replay is skipped
+          hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
+             '        let Ok(last) = op::replay(&entries) else { continue }; // knife' \
+             unfinished_operations_block_their_target
+          # run_op: the change runs before `running` is on disk (33e28 B1 wiring)
+          hk opstore.rs '    step(op::State::Running, "ok")?;' \
+             '    // knife: no running line' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: an unfinished operation on the same target does not block a new one
+          hk opstore.rs '    refuse_unfinished(&place.ops_dir, target, op_id)?;' \
+             '    let _ = (&place.ops_dir, target, op_id); // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # run_op: the host lock is kept after the operation
+          hk opstore.rs '    if let Err(e) = release(&place.lock, &op_id, pid) {' \
+             '    if let Err(e) = Ok::<(), String>(()) { let _ = pid; // knife' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: a change that failed is not journaled as failed
+          hk opstore.rs '        Err(e) => match step(op::State::Failed, "error") {' \
+             '        Err(e) => match Ok::<(), String>(()) { // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # what an operation decides from is read outside the host lock (c477a #635 seg. 2 M1)
+          hk opstore.rs '    let Some((plan, input)) = prepare()? else {' \
+             '    let _ = release(&place.lock, op_id, std::process::id()); let Some((plan, input)) = prepare()? else { // knife' \
+             what_an_operation_decides_from_is_read_under_the_lock
+          # a held target does not say which operation holds it or what to run (f1fae 11-10)
+          hk opstore.rs '        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",' \
+             '        "operation {} ({} {}, {}): check the host{}", // knife' \
+             a_held_target_names_its_operation_and_the_command
+          # op recovered closes an operation whose process still runs (c477a #635 seg. 2 L2)
+          hk opstore.rs '    acquire(&place.lock, op_id, pid)?;' \
+             '    let _ = acquire(&place.lock, op_id, pid); // knife' \
+             a_running_operation_cannot_be_closed_by_hand
+          # any string is an approval (c477a #635 seg. 2 L3)
+          hk opstore.rs '    if approval != BY_LOCAL_ROOT && approval != BY_CUSTOMER_KEY {' \
+             '    if approval.is_empty() && approval != BY_CUSTOMER_KEY { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # restore --switch without the typed site code (4542e 11-10 condition c)
+          hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
+             a_switch_needs_the_site_code_typed
+          # run_op: a customer key approves any command (4542e 11-10 condition a)
+          hk opstore.rs '    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {' \
+             '    if approval == BY_CUSTOMER_KEY && CUSTOMER_COMMANDS.is_empty() { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # host lock: the holder is written straight into the lock file (#635 seg. 1 L1)
+          hk opstore.rs '    if let Err(e) = write(&tmp, text) {' \
+             '    if let Err(e) = write(lock, text) { // knife' \
+             a_crash_while_taking_the_lock_leaves_no_lock_file
+          # archive: the quarantine journal is not read (#625 seg. 2 M1 left unwired)
+          hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
+             '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
+             the_archive_plan_reads_the_quarantine_journal
+          # quarantine guard on the host: resume / suspend / restore reopen a quarantined site (33e28 deep review)
+          hk quarantinecmd.rs '    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())' \
+             '    { let _ = (code, &ct_fw, record, what); Ok(()) } // knife' \
+             a_quarantined_site_is_not_reopened
+          # quarantine guard on the host: a record that cannot be read counts as none
+          hk quarantinecmd.rs '    let record = load_record(code, quarantine_dir)?;' \
+             '    let record = load_record(code, quarantine_dir).unwrap_or(None); // knife' \
+             a_quarantined_site_is_not_reopened
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -999,6 +1137,12 @@ jobs:
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
+      # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
+      # test red; the whole flow test is the positive path.
+      - name: pairing knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-pairing.sh
       - name: aib-sys job (Windows) 5x
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
