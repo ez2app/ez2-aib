@@ -127,6 +127,30 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
+      # judged count. Each knife drops one condition and must turn its own test red.
+      - name: aib-flaky run context knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          fk() { python3 -I scripts/knife.py crates/aib-flaky/src/gh.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # M1: main mode takes any run, not just a main push
+          fk '        Context::MainPush => event == Some("push") && branch == Some("main"),' \
+             '        Context::MainPush => event.is_some() || branch.is_some() || true,' \
+             run_counts_main_push_only
+          # M2: the PR number is not checked
+          fk '                            .any(|p| p.get("number").and_then(Value::as_u64) == Some(*number))' \
+             '                            .any(|p| p.get("number").is_some() || *number > 0)' \
+             run_counts_this_pr_only
+          # M2: the head branch is not checked
+          fk '                && branch == Some(head_ref.as_str())' \
+             '                && (branch == Some(head_ref.as_str()) || !head_ref.is_empty())' \
+             run_counts_this_pr_only
+          # M2 end to end: the run filter is dropped from the listing
+          fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
+             '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
+             m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
