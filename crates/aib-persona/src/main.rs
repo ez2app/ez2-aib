@@ -192,6 +192,39 @@ fn ledger_path(code: &str) -> R<PathBuf> {
     Ok(candidate_root().join(code).join("evidence.jsonl"))
 }
 
+/// The ledger is never written through a link (043dd #627 M3; the Python writer's
+/// writeguard rule, captain's review L5-01): the file itself must not be a symlink or
+/// anything but a regular file, and its folder, once resolved, must still be under the
+/// candidate root. Not a defence against this account (same-user threat model): it keeps a
+/// stray link from sending evidence lines into some other file.
+fn refuse_links(path: &Path) -> R<()> {
+    let broken = |m: String| Err(Fail::Broken(m));
+    if let Ok(md) = std::fs::symlink_metadata(path) {
+        if md.file_type().is_symlink() {
+            return broken(format!("{}: the ledger is a link; refused", path.display()));
+        }
+        if !md.is_file() {
+            return broken(format!("{}: not a regular file; refused", path.display()));
+        }
+    }
+    let real = |p: &Path| {
+        std::fs::canonicalize(p).map_err(|e| Fail::Broken(format!("{}: {e}", p.display())))
+    };
+    let dir = path
+        .parent()
+        .ok_or_else(|| Fail::Broken(format!("{}: no folder", path.display())))?;
+    let (real_root, real_dir) = (real(&candidate_root())?, real(dir)?);
+    if !real_dir.starts_with(&real_root) {
+        return broken(format!(
+            "{}: the folder resolves to {}, outside the candidate root {}; refused",
+            path.display(),
+            real_dir.display(),
+            real_root.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Open the ledger for writing, take the exclusive lock, and parse what is there.
 fn open_locked(path: &Path) -> R<(File, Ledger)> {
     if let Some(dir) = path.parent() {
@@ -202,6 +235,7 @@ fn open_locked(path: &Path) -> R<(File, Ledger)> {
         b.create(dir)
             .map_err(|e| Fail::Broken(format!("{}: {e}", dir.display())))?;
     }
+    refuse_links(path)?;
     let mut o = OpenOptions::new();
     o.read(true).append(true).create(true);
     #[cfg(unix)]
@@ -351,7 +385,14 @@ fn recheck(row: &mut Value) {
     ) else {
         return;
     };
-    let state = match File::open(&p) {
+    // a FIFO put where the receipt was would block the open (043dd #627 L1)
+    let state = match std::fs::metadata(&p).and_then(|md| {
+        if md.is_file() {
+            File::open(&p)
+        } else {
+            Err(std::io::Error::other("not a regular file"))
+        }
+    }) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing",
         Err(_) => "unreadable",
         Ok(f) => {
@@ -431,8 +472,39 @@ fn run(argv: &[String]) -> R<Value> {
     }
 }
 
+/// Printed for -h / --help (043dd #627 L3: `aib persona evidence --help` reached the Rust
+/// program and was read as a flag that needs a value).
+const HELP: &str = "\
+aib-persona evidence add  --persona-code C --lane L --day YYYY-MM-DD --pointer P --by seat:X [--session S] [--note N]
+aib-persona evidence list --persona-code C [--all] [--recheck]
+aib-persona evidence void --persona-code C --id e<line>-<hex16> --by seat:X --why TEXT
+aib-persona groups --persona-code C
+aib-persona doctor [--show]
+aib-persona doctor --pin --repo DIR --ref REF
+
+pointers: a commit (7-40 hex), ev_..., q_<16 hex> (in the dm queue), pr:<owner>/<repo>#<n>,
+a receipt (.json/.jsonl/.md/.txt) or path:line under an allowed root; a file in this folder
+is name.md or name.ext:N.
+exit: 0 done; 2 usage or refused; 3 the ledger or the pinned tree is unreadable or broken.
+";
+
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // an argument that is not UTF-8 is a usage error (rc 2), not a panic (043dd #627 L3)
+    let argv: Vec<String> = match std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect::<Result<_, _>>()
+    {
+        Ok(v) => v,
+        Err(a) => {
+            eprintln!("aib-persona: argument {a:?} is not UTF-8");
+            return ExitCode::from(2);
+        }
+    };
+    if argv.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{HELP}");
+        return ExitCode::SUCCESS;
+    }
     match run(&argv) {
         Ok(v) => {
             let s = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());

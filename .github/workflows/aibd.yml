@@ -163,6 +163,22 @@ jobs:
           pk pin.rs '    if !dirty.is_empty() {' \
              '    if !dirty.is_empty() && false { // knife' \
              '--test persona' doctor_pins_a_sha_and_refuses_anything_else
+          # P8 two lines of one file are one pointer (043dd #627 M2)
+          pk lib.rs '            (Some(r), Some(n)) => format!("{r}:{n}"),' \
+             '            (Some(r), Some(_)) => r.to_string(), // knife' \
+             '--lib' two_lines_of_one_file_are_two_pointers
+          # P9 a ledger that is a link is written through (043dd #627 M3)
+          pk main.rs '    if let Ok(md) = std::fs::symlink_metadata(path) {' \
+             '    if let Ok(md) = std::fs::metadata(path) { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P10 a persona folder that leads out of the candidate root is written into (M3)
+          pk main.rs '    if !real_dir.starts_with(&real_root) {' \
+             '    if !real_dir.starts_with(&real_root) && false { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P11 a bare name.md / name.ext:N in the working folder is refused (043dd #627 M4)
+          pk pointer.rs "    if p.contains('/') || p.starts_with('~') || bare_file {" \
+             "    if p.contains('/') || p.starts_with('~') || (bare_file && false) { // knife" \
+             '--test persona' a_bare_file_name_in_the_working_folder_is_a_path
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives

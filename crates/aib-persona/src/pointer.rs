@@ -252,6 +252,11 @@ fn check_path(p: &str, w: &World) -> Result<Checked, String> {
                 .join(", ")
         ));
     }
+    // look before opening: opening a FIFO for reading blocks until a writer comes (043dd #627 L1)
+    let before = std::fs::metadata(&real).map_err(|e| format!("{}: {e}", real.display()))?;
+    if !before.is_file() {
+        return Err(format!("{} is not a regular file", real.display()));
+    }
     let f = std::fs::File::open(&real).map_err(|e| format!("{}: {e}", real.display()))?;
     let md = f
         .metadata()
@@ -332,11 +337,18 @@ pub fn check(p: &str, w: &World) -> Result<Checked, String> {
     if is_message(p) {
         return plain(Kind::Message);
     }
-    if p.contains('/') || p.starts_with('~') {
+    // a bare `name.ext:N` or `name.md` in the working folder (043dd #627 M4): the old
+    // writer took it and seats used it; it is checked like any other path
+    let bare_file = legacy_kind(p) == Some(Kind::FileLine)
+        || Path::new(p)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| RECEIPT_EXTS.contains(&e));
+    if p.contains('/') || p.starts_with('~') || bare_file {
         return check_path(p, w);
     }
     Err(format!(
-        "{p:?} is not a pointer: commit, ev_…, q_…, pr:<owner>/<repo>#<n>, a receipt path or path:line"
+        "{p:?} is not a pointer: commit, ev_…, q_…, pr:<owner>/<repo>#<n>, a receipt path or path:line (a file in this folder: name.md or name.ext:N)"
     ))
 }
 

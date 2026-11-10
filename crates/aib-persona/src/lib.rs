@@ -325,11 +325,16 @@ pub fn groups(led: &Ledger) -> Value {
             rejected.push(json!({"id": l.id, "why": why}));
             continue;
         }
-        let ptr_key =
-            l.v.get("resolved")
-                .and_then(Value::as_str)
-                .unwrap_or(ptr)
-                .to_string();
+        // the real path stands for the file; a line in it is its own pointer (043dd #627 M2:
+        // two lines of one ledger are two events, as the v1 key `path:line` already had it)
+        let ptr_key = match (
+            l.v.get("resolved").and_then(Value::as_str),
+            l.v.get("line_no").and_then(Value::as_u64),
+        ) {
+            (Some(r), Some(n)) => format!("{r}:{n}"),
+            (Some(r), None) => r.to_string(),
+            (None, _) => ptr.to_string(),
+        };
         if !seen_ptr.insert(ptr_key) {
             rejected.push(json!({"id": l.id, "why": "duplicate_pointer"}));
             continue;
@@ -452,6 +457,25 @@ mod tests {
             ev("b", "2026-11-09", "deadbee", None),
         ]);
         let g = groups(&l);
+        assert_eq!(g["groups"], 1, "{g}");
+        assert_eq!(g["rejected"][0]["why"], "duplicate_pointer", "{g}");
+    }
+
+    /// 043dd #627 M2: two lines of one file are two pointers; the same line twice is one.
+    #[test]
+    fn two_lines_of_one_file_are_two_pointers() {
+        let v2 = |lane: &str, day: &str, line: u64| {
+            serde_json::to_string(&json!({
+                "schema": EVIDENCE_V2, "persona_code": "p1", "lane": lane, "day": day,
+                "pointer": format!("~/x/REVIEW.md:{line}"), "pointer_kind": "file_line",
+                "resolved": "/h/x/REVIEW.md", "line_no": line, "by": "seat:1ced7",
+                "note": "", "at_ms": 1,
+            }))
+            .unwrap_or_default()
+        };
+        let g = groups(&led(&[v2("a", "2026-11-09", 3), v2("b", "2026-11-10", 40)]));
+        assert_eq!(g["groups"], 2, "{g}");
+        let g = groups(&led(&[v2("a", "2026-11-09", 3), v2("b", "2026-11-10", 3)]));
         assert_eq!(g["groups"], 1, "{g}");
         assert_eq!(g["rejected"][0]["why"], "duplicate_pointer", "{g}");
     }

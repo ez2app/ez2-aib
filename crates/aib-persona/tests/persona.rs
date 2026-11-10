@@ -296,6 +296,50 @@ fn an_unfinished_ledger_is_not_appended_to() {
     assert_eq!((rc, &g["torn_tail"]), (0, &Value::from(true)), "{g}");
 }
 
+/// 043dd #627 M4: a file in the working folder written without a folder part (`x.md:1`,
+/// `x.md`), as the old writer took it; L1: a FIFO is refused, not opened (it would block).
+#[test]
+fn a_bare_file_name_in_the_working_folder_is_a_path() {
+    let e = env();
+    std::fs::write(e.root.join("SUMMARY-x.md"), "one\ntwo\n").expect("w");
+    let (rc, v, err) = e.add("SUMMARY-x.md:2", "a", "seat:aaaaa");
+    assert_eq!((rc, &v["pointer_kind"]), (0, &Value::from("file_line")), "{err}");
+    assert_eq!(v["resolved"], s(&e.root.join("SUMMARY-x.md")));
+    let (rc, v, err) = e.add("SUMMARY-x.md", "b", "seat:aaaaa");
+    assert_eq!((rc, &v["pointer_kind"]), (0, &Value::from("receipt")), "{err}");
+    // still checked: a name that is not there, and a FIFO in the root
+    assert_eq!(e.add("NOPE.md:1", "c", "seat:aaaaa").0, 2);
+    let st = Command::new("mkfifo")
+        .arg(e.root.join("pipe.md"))
+        .status()
+        .expect("mkfifo");
+    assert!(st.success());
+    let (rc, _, err) = e.add("pipe.md", "c", "seat:aaaaa");
+    assert_eq!(rc, 2, "{err}");
+    assert!(err.contains("not a regular file"), "{err}");
+}
+
+/// 043dd #627 M3: a ledger that is a link, or a persona folder that leads out of the
+/// candidate root, is not written through.
+#[test]
+fn the_ledger_is_never_written_through_a_link() {
+    let e = env();
+    // the ledger file is a link to some other file
+    let target = e.outside.join("role.md");
+    std::fs::write(&target, "keep me\n").expect("w");
+    std::fs::create_dir_all(e.cand.join("p1")).expect("mkdir");
+    std::os::unix::fs::symlink(&target, e.cand.join("p1").join("evidence.jsonl")).expect("ln");
+    let (rc, _, err) = e.add("deadbee", "a", "seat:aaaaa");
+    assert_eq!(rc, 3, "{err}");
+    assert_eq!(std::fs::read_to_string(&target).expect("r"), "keep me\n");
+    // the persona folder is a link out of the candidate root
+    let e = env();
+    std::os::unix::fs::symlink(&e.outside, e.cand.join("p1")).expect("ln");
+    let (rc, _, err) = e.add("deadbee", "a", "seat:aaaaa");
+    assert_eq!(rc, 3, "{err}");
+    assert!(!e.outside.join("evidence.jsonl").exists());
+}
+
 #[test]
 fn recheck_tells_same_changed_and_missing() {
     let e = env();
@@ -351,6 +395,18 @@ fn doctor_pins_a_sha_and_refuses_anything_else() {
     assert_eq!(rc, 0, "{err}");
     let sha = v["pinned"]["sha"].as_str().expect("sha").to_string();
     assert_eq!(sha.len(), 40);
+    // the pinned tree is locked, so auto-archive / prune leave it (043dd #627 L4); pinning
+    // the same sha again finds it already locked and still succeeds
+    let list = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .expect("git worktree list");
+    let list = String::from_utf8_lossy(&list.stdout);
+    assert!(list.contains("locked aib-persona pin"), "{list}");
+    let (rc, _, err) = e.run(&["doctor", "--pin", "--repo", &s(&repo), "--ref", "HEAD"]);
+    assert_eq!(rc, 0, "{err}");
     // a later commit does not move the pin
     std::fs::write(repo.join("tools/ez2-role-birth-check.js"), "// v2\n").expect("w");
     git(&repo, &["commit", "-qam", "v2"]);
@@ -439,6 +495,28 @@ fn usage_errors() {
     ] {
         let (rc, _, err) = e.run(&args);
         assert_eq!(rc, 2, "{args:?}: {err}");
+    }
+    assert_eq!(e.ledger(), "");
+    // --help prints the usage and writes nothing (043dd #627 L3)
+    for args in [vec!["evidence", "--help"], vec!["groups", "-h"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_aib-persona"))
+            .args(&args)
+            .output()
+            .expect("run");
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("evidence add"));
+    }
+    // an argument that is not UTF-8 is a usage error, not a panic
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = std::ffi::OsStr::from_bytes(b"\xff.md");
+        let out = Command::new(env!("CARGO_BIN_EXE_aib-persona"))
+            .args(["evidence", "add", "--pointer"])
+            .arg(bad)
+            .output()
+            .expect("run");
+        assert_eq!(out.status.code(), Some(2));
     }
     assert_eq!(e.ledger(), "");
 }

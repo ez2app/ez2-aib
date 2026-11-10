@@ -221,6 +221,12 @@ def groups(args):
         evs = ledgers.read(args.persona_code, ledgers.EVIDENCE_NAME)
     except ledgers.LedgerError as err:
         return die(_t("evidence_unusable", err=err))
+    # 043dd #627 M1:Rust 版寫的行(evidence/v2、void)這裡看不懂;硬算會把已作廢的筆算回來、
+    # 把新指標判成不可驗,同一本帳兩邊群數不同 ⇒ 不算,rc 2(fail closed)。
+    newer = sorted({str(e.get("schema")) for e in evs
+                    if not isinstance(e, dict) or e.get("schema") != "aib-persona-evidence/v1"})
+    if newer:
+        return die(_t("groups_needs_rust", schemas=", ".join(newer)))
     out = gates.count_groups(evs)
     out.update({"persona_code": args.persona_code, "evidence_count": len(evs),
                 "counting_key": "lane", "min_groups_for_card": gates.MIN_GROUPS_FOR_CARD})

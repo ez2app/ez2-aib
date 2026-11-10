@@ -62,6 +62,14 @@ pub fn pin(repo: &Path, git_ref: &str, pin_dir: &Path, now_ms: u64) -> Result<Va
         let r = root.to_string_lossy().into_owned();
         git(&repo, &["worktree", "add", "--detach", &r, &sha])?;
     }
+    // a pinned tree is clean and nobody edits it: without a lock, heat-tidy's auto-archive
+    // and `git worktree prune` take it away (043dd #627 L4). Locking twice is not an error.
+    let r = root.to_string_lossy().into_owned();
+    if let Err(e) = git(&repo, &["worktree", "lock", "--reason", "aib-persona pin", &r]) {
+        if !e.contains("already locked") {
+            return Err(e);
+        }
+    }
     let doc = json!({
         "schema": SCHEMA,
         "repo": repo.to_string_lossy(),
