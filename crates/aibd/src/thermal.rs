@@ -540,17 +540,18 @@ mod tests {
                 "dry run stopped {id}"
             );
         }
-        assert_eq!(
-            r.sessions.start(req()).unwrap().state,
-            "running",
-            "dry run refused"
-        );
         // the same session again within a minute: counted, not written again
         g.round_at(false, 1_005.0);
         assert_eq!(events(&r, "thermal.would_reap").len(), 1);
         assert_eq!(g.metrics()["would_reap"], 2);
         assert_eq!(g.metrics()["would_nogo"], true);
         assert_eq!(events(&r, "thermal.would_nogo").len(), 1);
+        // last: a new session is newer than b and would be named next round
+        assert_eq!(
+            r.sessions.start(req()).unwrap().state,
+            "running",
+            "dry run refused"
+        );
     }
 
     /// a63ab Q3 / 043dd #617 r2 L1: `unknown` keeps T1 for a later try, in the
