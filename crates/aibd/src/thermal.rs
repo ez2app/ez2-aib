@@ -42,7 +42,10 @@ enum T1 {
     /// Off until restart, with the tag that switched it off.
     Off(&'static str),
     /// Last check failed for a reason that may pass; checked again after [`T1_RECHECK_S`].
-    Retry { at: f64, tag: &'static str },
+    Retry {
+        at: f64,
+        tag: &'static str,
+    },
 }
 
 impl T1 {
@@ -338,8 +341,8 @@ impl Guard {
 
     /// One event per record (aggregate `thermal`, sequence 1), like `security`.
     fn event(&self, kind: &str, payload: serde_json::Value) {
-        let id = crate::sessions::new_id("ev_")
-            .unwrap_or_else(|_| format!("ev_thermal_{}", self.now()));
+        let id =
+            crate::sessions::new_id("ev_").unwrap_or_else(|_| format!("ev_thermal_{}", self.now()));
         let ev = NewEvent {
             event_id: id.clone(),
             aggregate_type: "thermal".into(),
@@ -531,9 +534,17 @@ mod tests {
         assert_eq!(reaps[0]["why"], "pressure");
         assert_eq!(reaps[0]["dry_run"], true);
         for id in [&a.id, &b.id] {
-            assert_eq!(r.sessions.get(id).unwrap().state, "running", "dry run stopped {id}");
+            assert_eq!(
+                r.sessions.get(id).unwrap().state,
+                "running",
+                "dry run stopped {id}"
+            );
         }
-        assert_eq!(r.sessions.start(req()).unwrap().state, "running", "dry run refused");
+        assert_eq!(
+            r.sessions.start(req()).unwrap().state,
+            "running",
+            "dry run refused"
+        );
         // the same session again within a minute: counted, not written again
         g.round_at(false, 1_005.0);
         assert_eq!(events(&r, "thermal.would_reap").len(), 1);
@@ -597,18 +608,26 @@ mod tests {
         let g = install(&r, t);
         assert_eq!(t.active(), 0);
         let a = r.sessions.start(req()).unwrap();
-        assert!(wait_until(|| t.active() == 1 && g.metrics()["rounds"].as_u64() >= Some(3)));
+        assert!(wait_until(
+            || t.active() == 1 && g.metrics()["rounds"].as_u64() >= Some(3)
+        ));
         assert!(
             wait_until(|| g.metrics()["rebegins"].as_u64() >= Some(1)),
             "no re-begin at the maximum lifetime"
         );
         assert_eq!(t.active(), 1, "a re-begin must not leave two");
         r.sessions.stop(&a.id, Duration::from_secs(1)).unwrap();
-        assert!(wait_until(|| t.active() == 0 && g.metrics()["sampling"] == false));
+        assert!(wait_until(
+            || t.active() == 0 && g.metrics()["sampling"] == false
+        ));
         let rounds = g.metrics()["rounds"].as_u64();
         #[allow(clippy::disallowed_methods)] // test pacing only
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(g.metrics()["rounds"].as_u64(), rounds, "sampled with 0 sessions");
+        assert_eq!(
+            g.metrics()["rounds"].as_u64(),
+            rounds,
+            "sampled with 0 sessions"
+        );
         assert_eq!(g.sampler_starts(), 1);
         // a new 0 → 1 starts it again
         let b = r.sessions.start(req()).unwrap();
