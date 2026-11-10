@@ -1,15 +1,16 @@
 //! `/api/v1` routes: health (public); event cursor, metrics, seats and sessions
-//! (authenticated).
+//! (authenticated); pairing (ADR 0006 §7, see `pair_api`).
 
 use crate::guard::{self, error_response, GuardConfig};
 use crate::lineage::Lineage;
+use crate::pair_api;
 use crate::seats;
 use crate::sessions;
 use aib_core::ErrorCode;
 use aib_store::Store;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -64,6 +65,32 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
             "/api/v1/sessions/{id}/output",
             get(sessions::output).fallback(sessions::method_not_allowed),
         )
+        .route(
+            "/api/v1/pair/codes",
+            post(pair_api::create_code).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/pair/codes/{id}",
+            get(pair_api::get_code)
+                .delete(pair_api::cancel)
+                .fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/pair/codes/{id}/confirm",
+            post(pair_api::confirm).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/pair/redeem",
+            post(pair_api::redeem).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/pair/status",
+            get(pair_api::status).fallback(sessions::method_not_allowed),
+        )
+        .route(
+            "/api/v1/pair/revoke",
+            post(pair_api::revoke).fallback(sessions::method_not_allowed),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -78,9 +105,14 @@ async fn health() -> Json<serde_json::Value> {
 
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
 /// `unsupported`; `lineage.failures` counts M1 reads that failed after
-/// start-up (a process being gone is not a failure).
-async fn metrics(State(st): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"lineage": st.lineage.status()}))
+/// start-up (a process being gone is not a failure). `pairing` has the
+/// pairing channel and failure / rate-limit totals.
+async fn metrics(
+    State(st): State<AppState>,
+    pairing: Option<axum::extract::Extension<Arc<crate::pairing::Pairing>>>,
+) -> Json<serde_json::Value> {
+    let pairing = pairing.map(|p| p.0.metrics());
+    Json(serde_json::json!({"lineage": st.lineage.status(), "pairing": pairing}))
 }
 
 async fn not_found() -> Response {
