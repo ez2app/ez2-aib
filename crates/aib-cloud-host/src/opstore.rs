@@ -778,7 +778,8 @@ fn journaled<P, T>(
 }
 
 /// Close an operation that a person has checked by hand: `failed` (or `running` left by a
-/// process that is gone) → `recovery` → `verified`, code `manual`. Under the host lock.
+/// process that is gone) → `recovery` → `verified`, code [`CLOSED_BY_HAND`]. Under the host
+/// lock.
 pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), String> {
     let path = journal_path(&place.ops_dir, op_id)?;
     let pid = std::process::id();
@@ -788,6 +789,12 @@ pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), Stri
     let _ = release(&place.lock, op_id, pid);
     result
 }
+
+/// The code of the lines `op recovered` writes. The approval column cannot say who closed
+/// the operation — one operation runs under one approval to its end, and a customer key's
+/// operation keeps `standing-customer-key` — so the code does: closed by a person as root
+/// on the host (c477a #635 seg. 2 L1).
+pub const CLOSED_BY_HAND: &str = "manual_by_local_root";
 
 fn recover_locked(place: &OpPlace, path: &Path, op_id: &str, now: u64) -> Result<(), String> {
     let (entries, _) = read_journal(path)?;
@@ -822,9 +829,9 @@ fn recover_locked(place: &OpPlace, path: &Path, op_id: &str, now: u64) -> Result
     }
     if last.state != op::State::Recovery {
         seq += 1;
-        add(op::State::Recovery, "manual", seq)?;
+        add(op::State::Recovery, CLOSED_BY_HAND, seq)?;
     }
-    add(op::State::Verified, "manual", seq + 1)
+    add(op::State::Verified, CLOSED_BY_HAND, seq + 1)
 }
 
 // ------------------------------------------------------------------ read-only command
@@ -1649,8 +1656,8 @@ mod tests {
             tail,
             [
                 (State::Failed, "interrupted"),
-                (State::Recovery, "manual"),
-                (State::Verified, "manual")
+                (State::Recovery, "manual_by_local_root"),
+                (State::Verified, "manual_by_local_root")
             ]
         );
         assert!(!pl.lock.lock.exists());
