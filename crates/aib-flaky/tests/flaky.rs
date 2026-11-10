@@ -774,7 +774,7 @@ fn gh_map(changed_files: u64) -> Map {
     };
     put(
         "repos/o/r/pulls/7",
-        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "changed_files": changed_files}),
+        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "state": "open", "changed_files": changed_files}),
     );
     put(
         "repos/o/r/pulls/7/files?per_page=100&page=1",
@@ -1107,4 +1107,41 @@ fn a_compare_at_the_file_cap_is_unknown() {
     let e = gather(&old_head_map(&[OLD], 300), R, Some(7), OLD).expect_err("cut off");
     assert!(e.starts_with("compare_truncated:"), "{e}");
     assert!(gather(&old_head_map(&[OLD], 299), R, Some(7), OLD).is_ok());
+}
+
+/// 2240e #654 M1: once the PR is merged, GitHub leaves `pull_requests` empty on its runs;
+/// they must still be read (not an empty, silent answer), and only for a PR that is closed.
+#[test]
+fn a_merged_prs_runs_are_still_its_own() {
+    let mut m = old_head_map(&["aaaaaaa1", OLD, HEAD], 2);
+    m.0.insert(
+        format!("repos/o/r/actions/runs?head_sha={OLD}&per_page=100&page=1"),
+        json!({"total_count": 1, "workflow_runs": [
+            {"id": 3, "head_sha": OLD, "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": []}
+        ]})
+        .to_string(),
+    );
+    // open: an empty list is not this PR's (another context may have built the SHA)
+    let f = gather(&m, R, Some(7), OLD).expect("gather");
+    assert!(f.attempts.is_empty(), "{:?}", f.attempts);
+    // merged: the same run is this PR's
+    m.0.insert(
+        "repos/o/r/pulls/7".into(),
+        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "state": "closed",
+               "changed_files": 1})
+        .to_string(),
+    );
+    let f = gather(&m, R, Some(7), OLD).expect("gather");
+    assert_eq!(f.attempts.len(), 1, "{:?}", f.attempts);
+    // …but a run from another branch is still not
+    let other = Context::PrClosed {
+        number: 7,
+        head_ref: "feat/x".into(),
+    };
+    let r = json!({"event": "pull_request", "head_branch": "feat/y", "pull_requests": []});
+    assert!(!run_counts(&r, &other));
+    let r =
+        json!({"event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 8}]});
+    assert!(!run_counts(&r, &other));
 }

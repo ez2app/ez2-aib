@@ -87,6 +87,10 @@ pub enum Context {
     /// PR mode: a `pull_request` run from the PR's head branch whose `pull_requests` names
     /// the PR (M2: another PR's green run of the same head is not this PR's re-run).
     Pr { number: u64, head_ref: String },
+    /// A PR that is merged or closed: GitHub no longer names it in `pull_requests` (2240e
+    /// #654 M1, seen on #646), so a `pull_request` run from its head branch with an empty
+    /// list (or one naming it) is its run. The head itself is already one of its commits.
+    PrClosed { number: u64, head_ref: String },
 }
 
 /// Does this workflow run belong to `ctx`? Missing fields = no.
@@ -95,6 +99,17 @@ pub fn run_counts(r: &Value, ctx: &Context) -> bool {
     let branch = r.get("head_branch").and_then(Value::as_str);
     match ctx {
         Context::MainPush => event == Some("push") && branch == Some("main"),
+        Context::PrClosed { number, head_ref } => {
+            event == Some("pull_request")
+                && branch == Some(head_ref.as_str())
+                && r.get("pull_requests")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| {
+                        a.is_empty()
+                            || a.iter()
+                                .any(|p| p.get("number").and_then(Value::as_u64) == Some(*number))
+                    })
+        }
         Context::Pr { number, head_ref } => {
             event == Some("pull_request")
                 && branch == Some(head_ref.as_str())
@@ -316,9 +331,16 @@ pub fn gather(src: &dyn Source, repo: &str, pr: Option<u64>, sha: &str) -> Resul
                 head,
                 base,
                 files,
-                Context::Pr {
-                    number: n,
-                    head_ref,
+                if str_at(&p, "/state")? == "open" {
+                    Context::Pr {
+                        number: n,
+                        head_ref,
+                    }
+                } else {
+                    Context::PrClosed {
+                        number: n,
+                        head_ref,
+                    }
                 },
             )
         }
