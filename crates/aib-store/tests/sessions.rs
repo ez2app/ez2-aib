@@ -207,3 +207,62 @@ fn a_session_of_an_unknown_seat_or_a_foreign_event_is_refused() {
     assert!(matches!(r, Err(StoreError::Invalid(_))), "{r:?}");
     assert!(s.events_after(0, 10).unwrap().is_empty());
 }
+
+/// ADR 0005 §5 (a63ab 19:13): a session still waiting in the queue when aibd
+/// stopped is `interrupted` at the next start too, told apart by
+/// `previous_state`; it never had a process.
+#[test]
+fn pending_and_running_are_interrupted_with_previous_state_and_process_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let mut p = row("s_wait", None, "pending", false, "2026-11-09T00:00:01.000Z");
+    p.pid = 0;
+    s.session_event(p, ev("s_wait", 1, "session.queued"))
+        .unwrap();
+    s.session_event(
+        row("s_run", None, "running", true, "2026-11-09T00:00:02.000Z"),
+        ev("s_run", 1, "session.started"),
+    )
+    .unwrap();
+    let mut n = 0;
+    let ids = s
+        .interrupt_open_sessions("2026-11-09T01:00:00.000Z".into(), move || {
+            n += 1;
+            format!("ev_r{n}")
+        })
+        .unwrap();
+    assert_eq!(ids, vec!["s_wait".to_string(), "s_run".to_string()]);
+    let w = s.session_row("s_wait").unwrap().unwrap();
+    assert_eq!(w.state, "interrupted");
+    assert_eq!(w.ended_by.as_deref(), Some("aibd_restart"));
+    let evs = s.events_after(0, 100).unwrap();
+    let by = |id: &str| {
+        evs.iter()
+            .find(|e| e.aggregate_id == id && e.event_type == "session.interrupted")
+            .unwrap()
+            .payload
+            .clone()
+    };
+    assert_eq!(by("s_wait")["previous_state"], "pending");
+    assert_eq!(by("s_wait")["processes_may_remain"], false);
+    assert_eq!(by("s_run")["previous_state"], "running");
+    assert_eq!(by("s_run")["processes_may_remain"], true);
+}
+
+/// A queued session that starts gets its pid and start time on the row.
+#[test]
+fn a_queued_session_that_starts_gets_its_pid_and_start_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let mut p = row("s_q", None, "pending", false, "2026-11-09T00:00:01.000Z");
+    p.pid = 0;
+    s.session_event(p, ev("s_q", 1, "session.queued")).unwrap();
+    let r = row("s_q", None, "running", true, "2026-11-09T00:00:09.000Z");
+    s.session_event(r, ev("s_q", 2, "session.started")).unwrap();
+    let got = s.session_row("s_q").unwrap().unwrap();
+    assert_eq!(
+        (got.pid, got.started_at.as_str()),
+        (4242, "2026-11-09T00:00:09.000Z")
+    );
+    assert_eq!(got.state, "running");
+}

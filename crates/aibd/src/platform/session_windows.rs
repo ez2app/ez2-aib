@@ -81,6 +81,7 @@ pub fn stop_from(r: Result<KillReport, SysError>) -> Stop {
                     targets: k.members,
                 }],
                 blind_spots: vec![],
+                candidates: Default::default(),
             }
         }
         Err(e) => Stop {
@@ -89,6 +90,7 @@ pub fn stop_from(r: Result<KillReport, SysError>) -> Stop {
             tree_size: 0,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         },
     }
 }

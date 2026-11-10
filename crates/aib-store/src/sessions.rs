@@ -8,6 +8,8 @@ use rusqlite::{params, OptionalExtension, Row};
 
 /// `state` of a session ended by an aibd restart.
 pub const INTERRUPTED: &str = "interrupted";
+/// `state` of a session waiting in the queue (ADR 0005 §5): no process yet.
+pub const PENDING: &str = "pending";
 /// `ended_by` of a session ended by an aibd restart.
 pub const ENDED_BY_RESTART: &str = "aibd_restart";
 
@@ -57,7 +59,8 @@ fn row_of(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
 
 impl Store {
     /// Write the session's current row (insert or replace the mutable
-    /// fields; `seat_id`, `pid`, `argv0`, `argc`, `started_at` never change)
+    /// fields; `seat_id`, `argv0`, `argc` never change; `pid` and
+    /// `started_at` change once, when a queued session starts)
     /// and its event, in one transaction. Returns the event's `global_seq`.
     pub fn session_event(&self, row: SessionRow, event: NewEvent) -> Result<i64> {
         self.write(move |c| {
@@ -72,6 +75,7 @@ impl Store {
                     "INSERT INTO sessions ({COLS})
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                      ON CONFLICT (session_id) DO UPDATE SET
+                         pid = excluded.pid, started_at = excluded.started_at,
                          state = excluded.state, holds_slot = excluded.holds_slot,
                          ended_at = excluded.ended_at, ended_by = excluded.ended_by,
                          exit_code = excluded.exit_code, signal = excluded.signal,
@@ -102,12 +106,15 @@ impl Store {
         })
     }
 
-    /// At aibd start: every session still `running`, or still holding a slot
-    /// (a stop that could not show the tree gone), becomes `interrupted` with
-    /// `ended_by = aibd_restart` and a `session.interrupted` event. Nothing is
-    /// re-attached or restarted. On macOS its processes may still run (aibd
+    /// At aibd start: every session still `running`, still holding a slot
+    /// (a stop that could not show the tree gone), or still `pending` in the
+    /// queue (ADR 0005 §5) becomes `interrupted` with `ended_by =
+    /// aibd_restart` and a `session.interrupted` event (`previous_state`
+    /// tells them apart). Nothing is re-attached, restarted or started from
+    /// the old queue. On macOS a running one's processes may still run (aibd
     /// cannot stop what a previous run started); the event says so instead of
-    /// claiming a clean end. Returns the ids, oldest first.
+    /// claiming a clean end; a pending one never had a process. Returns the
+    /// ids, oldest first.
     pub fn interrupt_open_sessions(
         &self,
         now: String,
@@ -118,7 +125,7 @@ impl Store {
             let open: Vec<(String, String)> = {
                 let mut st = tx.prepare(
                     "SELECT session_id, state FROM sessions
-                     WHERE state = 'running' OR holds_slot = 1
+                     WHERE state = 'running' OR holds_slot = 1 OR state = 'pending'
                      ORDER BY started_at, session_id",
                 )?;
                 let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -150,7 +157,7 @@ impl Store {
                             "id": id,
                             "reason": ENDED_BY_RESTART,
                             "previous_state": was,
-                            "processes_may_remain": true,
+                            "processes_may_remain": was != PENDING,
                         }),
                     },
                 )?;

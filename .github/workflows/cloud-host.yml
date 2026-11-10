@@ -1,0 +1,305 @@
+# SPDX-License-Identifier: Apache-2.0
+# aib-cloud-host:the Linux binary that runs on the Proxmox host (EU02). Built here as a static
+# musl executable so it runs on any x86_64 Linux without a toolchain on the host (Andy 11-09:
+# every new tool is Rust;the host has no cargo).
+#
+# Two ways to run (大綱 r2 #26, 11-09:the host takes the binary from a release, not from an artifact):
+#   push / pull_request touching the crates ⇒ test + build + smoke ⇒ 14-day CI artifact (for trying a build).
+#   tag cloud-host-v<X.Y.Z[-preview.N]> (= Cargo.toml [workspace.package] version)
+#     ⇒ the same build + smoke ⇒ SHA256SUMS ⇒ **draft** pre-release (not public; refuses an existing release)
+#     ⇒ verify:download from the draft through the API, check SHA256SUMS, run --version, and run the file's own
+#        `self-update` against the draft's files over file:// (the host's upgrade path, end to end, no network)
+#     ⇒ only when verify is green:publish the draft as a pre-release (never "latest") and read it back.
+#   A red verify leaves the draft unpublished for good (same rule as aibd-release.yml).
+# Release notes docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-<version>.md must exist:a human reads them before tagging.
+# Nothing is signed;SHA256SUMS proves the download is what CI built.
+name: cloud-host
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]          # with `tags` present, branches must be listed too or branch pushes stop triggering
+    tags: ["cloud-host-v*"]
+    paths:
+      - "crates/aib-cloud-host/**"
+      - "crates/aib-cloud/**"
+      - ".github/workflows/cloud-host.yml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - "crates/aib-cloud-host/**"
+      - "crates/aib-cloud/**"
+      - ".github/workflows/cloud-host.yml"
+      - "Cargo.lock"
+permissions:
+  contents: read
+concurrency:
+  group: cloud-host-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+  TARGET: x86_64-unknown-linux-musl
+  PLAT: linux-x86_64          # what `aib-cloud-host --version` prints after the version on the host
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          ver=$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
+          echo "workspace version: $ver"
+          if [ "$REF_TYPE" = tag ]; then
+            want="${REF_NAME#cloud-host-v}"
+            if [ "$want" != "$ver" ]; then
+              echo "::error::tag $REF_NAME says $want but Cargo.toml [workspace.package] version is $ver — not releasing"; exit 1
+            fi
+            if ! printf '%s\n' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[1-9][0-9]*)?$'; then
+              echo "::error::$ver is not X.Y.Z or X.Y.Z-preview.N"; exit 1
+            fi
+            [ -f "docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-$ver.md" ] || { echo "::error::docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-$ver.md is missing (release notes are read by a human before tagging)"; exit 1; }
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  linux-musl:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools >/dev/null
+      - name: test (host crate, native)
+        run: cargo test -p aib-cloud-host --locked
+      # #612 (33e28, c477a review M1 / M2 / L1): each knife breaks one self-update rule and must turn
+      # its own test red (scripts/knife.py restores the file and checks the named test failed).
+      - name: self-update knives
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-cloud-host/src/update.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-cloud-host --locked --bin aib-cloud-host "$3"; }
+          # K1 M1: https:// --base-url accepted again
+          tk '        Some(u) if u.starts_with("file:///") =>' \
+            '        Some(u) if u.starts_with("file:///") || u.starts_with("https://") =>' \
+            u7_args_refused
+          # K2 L1: downgrade not checked
+          tk '    if w < c && !allow {' \
+            '    if w < c && !allow && false { // knife' \
+            u8_downgrade_refused_unless_asked
+          # K3 L1: preview sorts above its release
+          tk '        None => u64::MAX,' \
+            '        None => 0, // knife' \
+            u8_downgrade_refused_unless_asked
+          # K4 M2: old file not kept
+          tk '        fs::hard_link(dest, &link).map_err(|e| {' \
+            '        fs::copy(new, &link).map(|_| ()).map_err(|e| { // knife' \
+            u9_swap_keeps_prev_and_never_leaves_dest_missing
+          # K5 M2: failed install leaves the half-made link
+          tk '            let _ = fs::remove_file(&link);' \
+            '            // knife: link left behind' \
+            u9_swap_keeps_prev_and_never_leaves_dest_missing
+      - name: build (static)
+        run: cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+      - name: smoke (static, --version exact)
+        run: |
+          bin="target/$TARGET/release/aib-cloud-host"
+          # `file` says "statically linked" or (PIE) "static-pie linked" depending on version; both are static
+          file "$bin" | tee /dev/stderr | grep -qiE "static(ally|-pie) linked" || { echo "::error::not static"; exit 1; }
+          ldd "$bin" 2>&1 | grep -qiE "not a dynamic executable|statically linked" || { echo "::error::ldd says dynamic"; exit 1; }
+          out=$("$bin" --version) || { echo "::error::--version failed"; exit 1; }
+          echo "--version: $out"
+          [ "$out" = "aib-cloud-host $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aib-cloud-host $VERSION $PLAT'"; exit 1; }
+          name="aib-cloud-host-${VERSION}-${TARGET}"
+          mkdir -p dist && cp "$bin" "dist/$name"
+          (cd dist && sha256sum "$name" > SHA256SUMS && cat SHA256SUMS)
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - name: self-update smoke (file://, no network — the host's upgrade path on the file just built)
+        run: |
+          mkdir -p inst
+          cp "dist/$NAME" inst/old-aib-cloud-host          # stands in for the installed binary
+          # 1) install over an existing file:prev kept, new one in place, says what it did
+          inst/old-aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD/dist" | tee su1.txt
+          grep -q "not installed" su1.txt || { echo "::error::first self-update should report 'was not installed'"; exit 1; }
+          cmp -s "dist/$NAME" inst/aib-cloud-host || { echo "::error::installed file differs from the build"; exit 1; }
+          # 2) same version again:nothing changed
+          inst/aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD/dist" | tee su2.txt
+          grep -q "nothing changed" su2.txt || { echo "::error::second self-update should be a no-op"; exit 1; }
+          # 3) a tampered SHA256SUMS must refuse and leave the installed file alone
+          mkdir -p bad && cp "dist/$NAME" bad/ && printf '%s  %s\n' "$(printf 'f%.0s' $(seq 64))" "$NAME" > bad/SHA256SUMS
+          if inst/aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD/bad" 2>su3.txt; then
+            echo "::error::self-update accepted a wrong checksum"; cat su3.txt; exit 1
+          fi
+          grep -q "SHA-256" su3.txt || { echo "::error::refusal did not name the checksum"; cat su3.txt; exit 1; }
+          cmp -s "dist/$NAME" inst/aib-cloud-host || { echo "::error::a refused update changed the installed file"; exit 1; }
+          [ -z "$(ls -A inst | grep '^\.aib-cloud-host-update\.')" ] || { echo "::error::temp directory left behind"; ls -la inst; exit 1; }
+          # 4) #612 c477a M2: --dest already holds a different file ⇒ new file in place, old one kept as
+          #    .prev, no half-made .prev.new, no temp directory
+          rm -f inst/aib-cloud-host.prev
+          printf '#!/bin/sh\necho "aib-cloud-host 0.0.1 linux-x86_64"\n' > inst/aib-cloud-host && chmod +x inst/aib-cloud-host
+          cp inst/aib-cloud-host old-copy
+          inst/old-aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD/dist" | tee su4.txt
+          grep -q "was aib-cloud-host 0.0.1" su4.txt || { echo "::error::should report the old version it replaced"; cat su4.txt; exit 1; }
+          cmp -s "dist/$NAME" inst/aib-cloud-host || { echo "::error::existing file was not replaced by the build"; exit 1; }
+          cmp -s old-copy inst/aib-cloud-host.prev || { echo "::error::previous file not kept as .prev"; ls -la inst; exit 1; }
+          [ ! -e inst/aib-cloud-host.prev.new ] || { echo "::error::.prev.new left behind"; ls -la inst; exit 1; }
+          [ -z "$(ls -A inst | grep '^\.aib-cloud-host-update\.')" ] || { echo "::error::temp directory left behind"; ls -la inst; exit 1; }
+          # 5) #612 c477a M1: an https:// --base-url is refused before anything is fetched
+          if inst/aib-cloud-host self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "https://example.com/x" 2>su5.txt; then
+            echo "::error::self-update accepted an https --base-url"; exit 1
+          fi
+          grep -q "file:///" su5.txt || { echo "::error::refusal did not say file:///"; cat su5.txt; exit 1; }
+          echo "self-update smoke pass"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aib-cloud-host-${{ env.TARGET }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    needs: [meta, linux-musl]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.mk.outputs.release_id }}
+    permissions:
+      contents: write          # create the draft release and upload files; nothing else
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: aib-cloud-host-${{ env.TARGET }}
+          path: dist
+      - name: check what was built
+        run: |
+          cd dist && ls -l
+          [ "$(ls aib-cloud-host-* | wc -l)" -eq 1 ] || { echo "::error::expected exactly one binary in dist"; exit 1; }
+          sha256sum -c SHA256SUMS
+      - name: create a draft pre-release (not public; refuses to touch an existing release)
+        id: mk
+        run: |
+          set -o pipefail
+          rel_ids() { gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | [.id, .tag_name, .draft] | @tsv' \
+                        | awk -F'\t' -v t="$TAG" -v want="$1" '$2 == t && (want == "any" || $3 == want) {print $1}'; }
+          old=$(rel_ids any)
+          if [ -n "$old" ]; then
+            echo "::error::release(s) for $TAG already exist (ids: $old; maybe a draft from a red run) — not touching them; a new version gets a new tag"; exit 1
+          fi
+          notes="docs/cloud-host/CLOUD-HOST-RELEASE-NOTES-${VERSION}.md"
+          [ -f "$notes" ] || { echo "::error::$notes is missing"; exit 1; }
+          gh release create "$TAG" --draft --prerelease --latest=false --verify-tag \
+            --title "aib-cloud-host $VERSION" --notes-file "$notes" dist/aib-cloud-host-* dist/SHA256SUMS
+          # the releases list is eventually consistent (aibd-release 11-09 run 42573353508):retry only while empty
+          ids=""
+          for try in 1 2 3 4 5 6; do
+            ids=$(rel_ids true)
+            [ -n "$ids" ] && break
+            [ "$try" = 6 ] && break
+            echo "draft for $TAG not listed yet (try $try/6) — retry in 3 s"
+            sleep 3
+          done
+          [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || { echo "::error::expected exactly one draft for $TAG, got: '$ids'"; exit 1; }
+          got=$(gh api "repos/$GH_REPO/releases/$ids" --jq '"draft=\(.draft) tag=\(.tag_name) assets=\(.assets | length)"')
+          want="draft=true tag=$TAG assets=2"
+          [ "$got" = "$want" ] || { echo "::error::release $ids reads back as '$got', want '$want'"; exit 1; }
+          echo "draft release id: $ids ($got)"
+          echo "release_id=$ids" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: [meta, draft]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write          # a draft is only visible to tokens that can write; the token is given to the download step only
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      RID: ${{ needs.draft.outputs.release_id }}
+    steps:
+      - name: download from the draft and check SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
+          NAME="aib-cloud-host-${VERSION}-${TARGET}"
+          mkdir v && cd v
+          gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) assets=\(.assets | length)"'
+          for want in "$NAME" SHA256SUMS; do
+            aid=$(gh api "repos/$GH_REPO/releases/$RID/assets?per_page=100" --jq '.[] | [.id, .name] | @tsv' \
+                    | awk -F'\t' -v n="$want" '$2 == n {print $1}')
+            [ "$(printf '%s\n' "$aid" | grep -c .)" = 1 ] || { echo "::error::asset $want: expected one, got '$aid'"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid" > "$want"
+            ls -l "$want"
+          done
+          sha256sum -c SHA256SUMS
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+      - name: run what was uploaded (no token in this step)
+        run: |
+          cd v
+          chmod +x "$NAME"
+          out=$("./$NAME" --version) || { echo "::error::--version failed"; exit 1; }
+          echo "--version: $out"
+          [ "$out" = "aib-cloud-host $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aib-cloud-host $VERSION $PLAT'"; exit 1; }
+          # the host's upgrade path against the files that will be published, over file://
+          mkdir -p inst
+          "./$NAME" self-update "$VERSION" --dest "$PWD/inst/aib-cloud-host" --base-url "file://$PWD" | tee su.txt
+          cmp -s "$NAME" inst/aib-cloud-host || { echo "::error::self-update installed a different file"; exit 1; }
+          inst/aib-cloud-host --version
+
+  publish:
+    needs: [meta, draft, verify]      # verify green, or this never runs and the draft stays private
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write          # flip the draft to public; nothing else
+    env:
+      TAG: ${{ github.ref_name }}
+      RID: ${{ needs.draft.outputs.release_id }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: publish the verified draft as a pre-release (not latest)
+        run: |
+          [ -n "$RID" ] || { echo "::error::draft job gave no release id"; exit 1; }
+          gh api -X PATCH "repos/$GH_REPO/releases/$RID" -F draft=false -F prerelease=true -f make_latest=false \
+            --jq '"patched id=\(.id) tag=\(.tag_name)"'
+      - name: read it back through the API
+        run: |
+          got=$(gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) prerelease=\(.prerelease) tag=\(.tag_name)"')
+          echo "$got"
+          [ "$got" = "draft=false prerelease=true tag=$TAG" ] || { echo "::error::release $RID reads back as '$got'"; exit 1; }
+          if out=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>&1); then latest=$out
+          else case "$out" in *"HTTP 404"*) latest="" ;; *) echo "::error::could not read the latest release: $out"; exit 1 ;; esac; fi
+          echo "latest release: ${latest:-<none>}"
+          [ "$latest" != "$TAG" ] || { echo "::error::$TAG became the repo's latest release"; exit 1; }

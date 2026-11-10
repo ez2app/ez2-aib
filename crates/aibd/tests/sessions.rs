@@ -402,12 +402,13 @@ async fn limits_errors_and_the_guard_on_every_route() {
         );
         let (c, s) = d.post(&["/bin/sleep", "60"]);
         assert_eq!(c, 201, "slot leaked by the failed spawn: {s}");
+        // full: queued, not refused (ADR 0005 §5); DELETE takes it out again
         let (c, s) = d.post(&["/bin/sleep", "60"]);
-        assert_eq!(
-            (c, s["code"].as_str()),
-            (429, Some("too_many_sessions")),
-            "{s}"
-        );
+        assert_eq!((c, s["state"].as_str()), (202, Some("pending")), "{s}");
+        assert_eq!(s["pid"], 0, "{s}");
+        let qid = s["id"].as_str().unwrap().to_string();
+        let (c, s) = d.call("DELETE", &format!("/api/v1/sessions/{qid}"), None);
+        assert_eq!((c, s["state"].as_str()), (200, Some("cancelled")), "{s}");
         let env = |k: &str| serde_json::json!({"argv": ["/bin/true"], "env": {k: "x"}}).to_string();
         let (c, s) = d.call("POST", "/api/v1/sessions", Some(&env("PATH")));
         assert_eq!(
@@ -489,7 +490,7 @@ async fn limits_errors_and_the_guard_on_every_route() {
 }
 
 /// bb7dc H3: concurrent POSTs never get past the limit (the slot is reserved
-/// under the lock before the spawn).
+/// under the lock before the spawn); the others are queued.
 #[tokio::test(flavor = "multi_thread")]
 async fn h3_concurrent_posts_never_exceed_the_limit() {
     let tmp = tempfile::tempdir().unwrap();
@@ -511,7 +512,8 @@ async fn h3_concurrent_posts_never_exceed_the_limit() {
             .collect::<Vec<u16>>()
     });
     assert_eq!(codes.iter().filter(|c| **c == 201).count(), 3, "{codes:?}");
-    assert_eq!(codes.iter().filter(|c| **c == 429).count(), 7, "{codes:?}");
+    // the rest wait in the queue (ADR 0005 §5), none is refused
+    assert_eq!(codes.iter().filter(|c| **c == 202).count(), 7, "{codes:?}");
     d.shutdown().await;
 }
 
@@ -936,6 +938,7 @@ impl aibd::platform::session::Running for Stubborn {
             tree_size: 2,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: Default::default(),
         }
     }
 }
@@ -973,10 +976,7 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
     assert_eq!(first.stop.as_ref().unwrap().survivors, vec![999_998]);
     assert_eq!(s.slots_in_use(), 1, "a survivor must keep the slot");
     assert!(first.holds_slot, "{first:?}");
-    assert_eq!(
-        s.start(req()).unwrap_err().0,
-        aib_core::ErrorCode::TooManySessions
-    );
+    assert_queued_then_cancel(&s, req());
     let second = s.stop(&rec.id, Duration::ZERO).unwrap();
     assert_eq!(
         FAKE_STOPS.load(std::sync::atomic::Ordering::SeqCst),
@@ -1042,11 +1042,18 @@ fn a_start_that_may_have_left_a_process_keeps_its_slot() {
     assert_eq!(e.0, aib_core::ErrorCode::SpawnFailed);
     assert!(e.1.contains("pid 424242"), "{}", e.1);
     assert_eq!(s.slots_in_use(), 1);
-    assert_eq!(
-        s.start(req).unwrap_err().0,
-        aib_core::ErrorCode::TooManySessions
-    );
-    let evs = store.events_after(0, 10).unwrap();
+    assert_queued_then_cancel(&s, req);
+    let evs: Vec<_> = store
+        .events_after(0, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            !matches!(
+                e.event_type.as_str(),
+                "session.queued" | "session.cancelled"
+            )
+        })
+        .collect();
     assert_eq!(evs.len(), 1, "{evs:?}");
     assert_eq!(evs[0].event_type, "session.spawn_failed");
     assert_eq!(evs[0].payload["left_running"], 424_242);
@@ -1068,9 +1075,10 @@ impl aibd::platform::session::Running for Unreadable {
         std::sync::Arc::new(NeverExits)
     }
     fn stop(&mut self, _: Duration) -> aibd::platform::session::Stop {
-        use aibd::platform::session::{Stop, StopStatus};
+        use aibd::platform::session::{CandidateDiag, Stop, StopStatus, UnreadableCandidate};
         let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let reason = if n < self.1 {
+        let unreadable = n < self.1;
+        let reason = if unreadable {
             "candidates_unreadable"
         } else {
             "observed_clean"
@@ -1081,6 +1089,21 @@ impl aibd::platform::session::Running for Unreadable {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: if unreadable {
+                CandidateDiag {
+                    count: 2,
+                    orphan_extra: 1,
+                    unreadable: vec![UnreadableCandidate {
+                        pid: 4343,
+                        comm: "mdworker_shared".into(),
+                    }],
+                    other_coalition: vec![],
+                    unreadable_more: 0,
+                    other_coalition_more: 0,
+                }
+            } else {
+                CandidateDiag::default()
+            },
         }
     }
 }
@@ -1111,6 +1134,24 @@ fn wait_until(d: Duration, mut f: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     f()
+}
+
+/// The limit is full: a start is queued (`pending`, no process), and DELETE
+/// takes it out again without starting it (ADR 0005 §5).
+fn assert_queued_then_cancel(
+    s: &std::sync::Arc<aibd::sessions::Sessions>,
+    req: aibd::sessions::Request,
+) {
+    let p = s.start(req).unwrap();
+    assert_eq!(
+        (p.state, p.pid, p.holds_slot),
+        ("pending", 0, false),
+        "{p:?}"
+    );
+    assert_eq!(s.queued(), 1);
+    let c = s.stop(&p.id, Duration::ZERO).unwrap();
+    assert_eq!(c.state, "cancelled", "{c:?}");
+    assert_eq!(s.queued(), 0);
 }
 
 fn one_req() -> aibd::sessions::Request {
@@ -1193,11 +1234,19 @@ fn a_slot_that_stays_unreadable_stays_held_with_the_reason() {
         .find(|e| e.event_type == "session.slot_held")
         .unwrap();
     assert_eq!(h.payload["reason"], "candidates_unreadable", "{evs:?}");
+    // F (1ced7 11-09 23:38): which candidates, and which rule put them there
+    let want = serde_json::json!({"count": 2, "orphan_extra": 1,
+        "unreadable": [{"pid": 4343, "comm": "mdworker_shared"}]});
+    assert_eq!(h.payload["candidates"], want, "{evs:?}");
+    let u = evs
+        .iter()
+        .find(|e| e.event_type == "session.stop_unconfirmed")
+        .unwrap();
+    assert_eq!(u.payload["candidates"], want, "{evs:?}");
+    let got = serde_json::to_value(s.get(&rec.id).unwrap()).unwrap();
+    assert_eq!(got["stop"]["candidates"], want, "{got}");
     assert!(!evs.iter().any(|e| e.event_type == "session.slot_released"));
-    assert_eq!(
-        s.start(one_req()).unwrap_err().0,
-        aib_core::ErrorCode::TooManySessions
-    );
+    assert_queued_then_cancel(&s, one_req());
 }
 
 /// Measurement, not a gate (a63ab 11-09: how often a real macOS stop ends
@@ -1306,6 +1355,7 @@ impl aibd::platform::session::Running for Gated {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec!["env_cleared"],
+            candidates: Default::default(),
         }
     }
 }
@@ -1382,6 +1432,7 @@ impl aibd::platform::session::Running for Slow {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }
@@ -1506,6 +1557,7 @@ impl aibd::platform::session::Running for Stuck {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }
@@ -1614,6 +1666,7 @@ impl aibd::platform::session::Running for LostRoot {
             tree_size: 1,
             signals: vec![],
             blind_spots: vec![],
+            candidates: Default::default(),
         }
     }
 }
