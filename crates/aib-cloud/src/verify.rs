@@ -541,11 +541,10 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<boo
                     continue;
                 }
             }
-        } else if first == "User_Alias" {
-            continue;
         } else if matches!(
             first,
-            "Host_Alias" | "Cmnd_Alias" | "Cmd_Alias" | "Runas_Alias"
+            // User_Alias was read above; the others name hosts, commands or run-as users
+            "User_Alias" | "Host_Alias" | "Cmnd_Alias" | "Cmd_Alias" | "Runas_Alias"
         ) {
             continue;
         } else {
