@@ -319,6 +319,82 @@ jobs:
           ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
              '        let unprintable = false; // knife' \
              upward_paths_and_control_characters
+          # site verify: a CT nobody recorded goes unnoticed (c477a's list, H13)
+          ck verify.rs '        .any(|c| !record_cts.contains(c) && !platform.contains(c))' \
+             '        .any(|c| !record_cts.contains(c) && !platform.contains(c) && c == &0)' \
+             h13_every_ct_is_accounted_for
+          # site verify: a stale host-health file is fine (H01)
+          ck verify.rs '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),' \
+             '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Green, // knife' \
+             h01_h06_h07_h10_h12
+          # edge domain: an AAAA record no longer blocks a domain (4.4.1 6.2)
+          ck edge.rs '        out.push(NotReady::HasAaaa);' \
+             '        // knife: AAAA ignored' \
+             preflight_reads_a_aaaa_and_caa
+          # edge domain: a name already on another site is added again
+          ck edge.rs '            refuse("already on another site", name)' \
+             '            Ok(alloc::vec![]) // knife' \
+             add_refusals
+          # backup check: a CT missing from the off-site backup goes unnoticed (4.4.1 10)
+          ck backup.rs '        } else if missing {' \
+             '        } else if missing && must_have.len() > 99 { // knife' \
+             b02_every_ct_and_b03_config
+          # backup check: an unencrypted object off-site is fine
+          ck backup.rs '        if plain {' \
+             '        if plain && newest.is_empty() { // knife' \
+             b04_nothing_unencrypted_leaves_the_host
+          # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
+          ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
+             '        Some(_) if true => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: a refused placeholder is echoed raw to the terminal (ebb36, #625 seg. 5 r2)
+          ck provision.rs '            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));' \
+             '            return Err(format!("{name} is not a variable name"));' \
+             a_refused_placeholder_is_quoted_in_the_finding
+          # site svc: a quarantined site can be started (4.4.1 1.3)
+          ck svc.rs '    if action != Svc::Stop {' \
+             '    if action != Svc::Stop && action != Svc::Start { // knife' \
+             a_quarantined_site_is_not_started_and_stopping_it_says_what_is_lost
+          # site logs: values after secret-looking keys are shown
+          ck svc.rs '                if end > 0 {' \
+             '                if end > usize::MAX - 1 { // knife' \
+             secrets_do_not_leave_with_the_logs
+          # site logs: only the first cookie of a header is masked, a Digest credential not at all (33e28, #631 seg. 5 M2)
+          ck svc.rs '                let whole = key == "cookie" || (key == "authorization" && scheme == 0);' \
+             '                let whole = false && key == "cookie"; // knife' \
+             secrets_do_not_leave_with_the_logs
+          # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
+          ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
+             '            .all(|c| c != 0)' \
+             everything_else_is_refused_whole
+          # customer status: a code nobody named is shown to the customer as it is (c477a 11-10)
+          ck customer.rs '            (_, _) => None,' \
+             '            (_, Outcome::Red(c)) => Some(("red", Some(c))), (_, _) => None, // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
+          # customer status: what is wrong on our side does not show at all
+          ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
+             '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
+          # customer entry: a request may carry extra words (another site, say)
+          ck customer.rs '        if rest.is_empty() {' \
+             '        if rest.len() < 9 { // knife' \
+             everything_else_is_refused_whole
+          # ARC: a raise goes past what the plan allows (4.4.1 23)
+          ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
+             '            let next = limits.cpulimit_x100 + 100; // knife' \
+             never_past_the_plan
+          # ARC: each site gets the whole plan to itself (Andy 11-10: the envelope is the customer's)
+          ck arc.rs '    let memory_left = plan.memory_mb.saturating_sub(held.memory_mb);' \
+             '    let memory_left = plan.memory_mb; // knife' \
+             sites_of_one_customer_share_the_envelope
+          # ARC: a raise the host cannot back is proposed all the same
+          ck arc.rs '            if room.memory_mb < next - limits.memory_mb {' \
+             '            if room.memory_mb == u32::MAX { // knife' \
+             never_past_what_the_host_can_back
+          # usage: memory is judged on current use, cache included (measured 11-10: every site would be raised)
+          ck usage.rs '    u32::try_from(current.saturating_sub(inactive).div_ceil(1024 * 1024)).ok()' \
+             '    u32::try_from((current + inactive * 0).div_ceil(1024 * 1024)).ok()' \
+             the_working_set_leaves_the_cache_out
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -356,6 +432,30 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer entry: writes are answered as done
+          hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
+          # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
+          hk probe.rs '            let mut limited = p.take(cap);' \
+             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+             output_that_does_not_end_is_cut_on_the_host
+          # site usage: the host offers its reserve too
+          hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
+             the_host_keeps_its_reserve
+          # site usage: "nothing could be measured" exits like "ARC has advice" (c477a, #631 seg. 7 M1)
+          hk usagecmd.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_measured_is_exit_3
+          # edge domain add / rm without --plan goes on
+          hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
+             usage_and_gates
+          # edge domain: a resolver error reads as "no record"
+          hk edgecmd.rs "    if lines.iter().any(|l| l.starts_with(';')) {" "    if lines.is_empty() && lines.iter().any(|l| l.starts_with(';')) { // knife" \
+             dig_output
+          # backup check: a remote that is a local path or an option is accepted
+          hk backupcmd.rs '        && plain(name, b"_-")' '        && (plain(name, b"_-") || true)' \
+             remotes
+          # backup check: rclone runs without the backup job's settings (ebb36, #631 seg. 4 M1)
+          hk backupcmd.rs '    cmd.envs(env.iter().map(|(k, v)| (k, v)));' '    let _ = env; // knife' \
+             rclone_runs_with_the_backup_jobs_settings
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2

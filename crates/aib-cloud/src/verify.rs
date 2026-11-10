@@ -15,8 +15,9 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! This first slice holds the passive host checks H02–H05, H08, H09 and the passive site
-//! checks S01–S05. The remaining passive checks and the `--active` ones follow.
+//! Passive host checks: H01–H10, H12, H13. Passive site checks: S01–S06. Still to come:
+//! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
+//! the `--active` checks.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
@@ -241,6 +242,120 @@ pub fn h09_cluster_firewall(cluster_fw: Option<&str>) -> CheckResult {
         Outcome::Green
     };
     result("H09", outcome)
+}
+
+/// H01: the host-health timer wrote its file within the last 15 minutes. `mtime` is `None`
+/// when the file is not there.
+pub fn h01_health_fresh(now: u64, mtime: Option<u64>) -> CheckResult {
+    let outcome = match mtime {
+        None => Outcome::Red("never"),
+        Some(t) if t > now.saturating_add(300) => Outcome::Unknown("clock"),
+        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),
+        Some(_) => Outcome::Green,
+    };
+    result("H01", outcome)
+}
+
+/// H06: load. `loadavg` is `/proc/loadavg`; a one-minute load of twice the core count or
+/// more is a warning (never red: a busy host is not a broken one).
+pub fn h06_load(loadavg: Option<&str>, cores: u32) -> CheckResult {
+    let load1_x100 = loadavg
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|first| {
+            let (whole, frac) = first.split_once('.')?;
+            if frac.len() != 2 {
+                return None;
+            }
+            Some(whole.parse::<u64>().ok()?.checked_mul(100)? + frac.parse::<u64>().ok()?)
+        });
+    let outcome = match load1_x100 {
+        None => Outcome::Unknown("unread"),
+        Some(_) if cores == 0 => Outcome::Unknown("cores"),
+        Some(l) if l >= u64::from(cores) * 200 => Outcome::Warn("load_high"),
+        Some(_) => Outcome::Green,
+    };
+    result("H06", outcome)
+}
+
+/// H07: a reboot is pending (`/var/run/reboot-required` exists). Reported, never acted
+/// on: a reboot needs a person. `None`: could not tell.
+pub fn h07_reboot_required(exists: Option<bool>) -> CheckResult {
+    let outcome = match exists {
+        None => Outcome::Unknown("unread"),
+        Some(true) => Outcome::Warn("reboot_required"),
+        Some(false) => Outcome::Green,
+    };
+    result("H07", outcome)
+}
+
+/// H10: fail2ban answers and has its sshd jail (`fail2ban-client status sshd`). The ban
+/// count is not judged. No answer is red: public ssh without it is the finding.
+pub fn h10_fail2ban(status: Option<&str>) -> CheckResult {
+    let outcome = match status {
+        None => Outcome::Red("f2b_no_answer"),
+        Some(t) if t.contains("Status for the jail: sshd") => Outcome::Green,
+        Some(_) => Outcome::Red("f2b_no_sshd_jail"),
+    };
+    result("H10", outcome)
+}
+
+/// H12: the clock is synchronised (`timedatectl show -p NTPSynchronized --value`).
+/// Backup ages, certificates and one-time codes all lean on it.
+pub fn h12_time_sync(value: Option<&str>) -> CheckResult {
+    let outcome = match value.map(str::trim) {
+        Some("yes") => Outcome::Green,
+        Some("no") => Outcome::Warn("clock_unsynced"),
+        _ => Outcome::Unknown("unread"),
+    };
+    result("H12", outcome)
+}
+
+/// CT ids out of `pct list` (a header line, then `<id> <status> …` per CT). `None` when a
+/// line does not start with an id: a list that is not understood is not an empty list.
+pub fn parse_pct_list(out: &str) -> Option<Vec<u32>> {
+    out.lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.split_whitespace().next()?.parse::<u32>().ok())
+        .collect()
+}
+
+/// H13: every site record has its CT and every CT is accounted for — it belongs to a
+/// record or is one of `platform` (edge, template, …). A CT nobody recorded is a site
+/// that is neither backed up by name nor checked.
+pub fn h13_inventory(cts: Option<&[u32]>, record_cts: &[u32], platform: &[u32]) -> CheckResult {
+    let Some(cts) = cts else {
+        return result("H13", Outcome::Unknown("unread"));
+    };
+    let outcome = if record_cts.iter().any(|r| !cts.contains(r)) {
+        Outcome::Red("record_without_ct")
+    } else if cts
+        .iter()
+        .any(|c| !record_cts.contains(c) && !platform.contains(c))
+    {
+        Outcome::Red("ct_without_record")
+    } else if record_cts
+        .iter()
+        .enumerate()
+        .any(|(i, r)| record_cts[..i].contains(r) || platform.contains(r))
+    {
+        // two records for one CT, or a record claiming the edge / template
+        Outcome::Red("ct_claimed_twice")
+    } else {
+        Outcome::Green
+    };
+    result("H13", outcome)
+}
+
+/// S06: nothing drifted from the record. `drifted` is how many keys differ; `None` when
+/// the comparison could not be made.
+pub fn s06_drift(drifted: Option<usize>) -> CheckResult {
+    let outcome = match drifted {
+        None => Outcome::Unknown("unread"),
+        Some(0) => Outcome::Green,
+        Some(_) => Outcome::Red("drift"),
+    };
+    result("S06", outcome)
 }
 
 /// S01: an active site's CT runs. `status` is the output of `pct status <ct>`
@@ -910,5 +1025,99 @@ mod tests {
             h09_cluster_firewall(Some(open)).outcome,
             Outcome::Red("policy_in_open")
         );
+    }
+
+    #[test]
+    fn h01_h06_h07_h10_h12() {
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW - 60)).outcome,
+            Outcome::Green
+        );
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW - 901)).outcome,
+            Outcome::Red("stale")
+        );
+        assert_eq!(h01_health_fresh(NOW, None).outcome, Outcome::Red("never"));
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW + HOUR)).outcome,
+            Outcome::Unknown("clock")
+        );
+
+        let load = |t: &str| h06_load(Some(t), 12).outcome;
+        assert_eq!(load("3.85 3.85 6.35 1/234 5678\n"), Outcome::Green);
+        assert_eq!(load("23.99 1.00 1.00 1/1 1"), Outcome::Green);
+        assert_eq!(load("24.00 1.00 1.00 1/1 1"), Outcome::Warn("load_high"));
+        assert_eq!(load("95.10 1.00 1.00 1/1 1"), Outcome::Warn("load_high"));
+        assert_eq!(load(""), Outcome::Unknown("unread"));
+        assert_eq!(load("high"), Outcome::Unknown("unread"));
+        assert_eq!(h06_load(None, 12).outcome, Outcome::Unknown("unread"));
+        assert_eq!(
+            h06_load(Some("1.00 1.00 1.00"), 0).outcome,
+            Outcome::Unknown("cores")
+        );
+
+        assert_eq!(h07_reboot_required(Some(false)).outcome, Outcome::Green);
+        assert_eq!(
+            h07_reboot_required(Some(true)).outcome,
+            Outcome::Warn("reboot_required")
+        );
+        assert_eq!(
+            h07_reboot_required(None).outcome,
+            Outcome::Unknown("unread")
+        );
+
+        let jail = "Status for the jail: sshd\n|- Filter\n|  |- Currently failed: 3\n";
+        assert_eq!(h10_fail2ban(Some(jail)).outcome, Outcome::Green);
+        assert_eq!(
+            h10_fail2ban(Some("Sorry but the jail 'sshd' does not exist")).outcome,
+            Outcome::Red("f2b_no_sshd_jail")
+        );
+        assert_eq!(h10_fail2ban(None).outcome, Outcome::Red("f2b_no_answer"));
+
+        assert_eq!(h12_time_sync(Some("yes\n")).outcome, Outcome::Green);
+        assert_eq!(
+            h12_time_sync(Some("no")).outcome,
+            Outcome::Warn("clock_unsynced")
+        );
+        assert_eq!(h12_time_sync(Some("")).outcome, Outcome::Unknown("unread"));
+        assert_eq!(h12_time_sync(None).outcome, Outcome::Unknown("unread"));
+    }
+
+    #[test]
+    fn h13_every_ct_is_accounted_for() {
+        let list = "VMID       Status     Lock         Name\n101        running                 edge\n110        running                 site1\n112        stopped                 site2\n900        stopped                 tpl\n";
+        assert_eq!(parse_pct_list(list), Some(alloc::vec![101, 110, 112, 900]));
+        assert_eq!(parse_pct_list("VMID Status Lock Name\n"), Some(Vec::new()));
+        assert_eq!(parse_pct_list("VMID Status\nconnection refused\n"), None);
+        let platform = [101, 900];
+        let h13 = |cts: &[u32], recs: &[u32]| h13_inventory(Some(cts), recs, &platform).outcome;
+        assert_eq!(h13(&[101, 110, 112, 900], &[110, 112]), Outcome::Green);
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 112]),
+            Outcome::Red("record_without_ct")
+        );
+        assert_eq!(
+            h13(&[101, 110, 112, 113, 900], &[110, 112]),
+            Outcome::Red("ct_without_record")
+        );
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 110]),
+            Outcome::Red("ct_claimed_twice")
+        );
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 101]),
+            Outcome::Red("ct_claimed_twice")
+        );
+        assert_eq!(
+            h13_inventory(None, &[110], &platform).outcome,
+            Outcome::Unknown("unread")
+        );
+    }
+
+    #[test]
+    fn s06_drift_counts() {
+        assert_eq!(s06_drift(Some(0)).outcome, Outcome::Green);
+        assert_eq!(s06_drift(Some(2)).outcome, Outcome::Red("drift"));
+        assert_eq!(s06_drift(None).outcome, Outcome::Unknown("unread"));
     }
 }
