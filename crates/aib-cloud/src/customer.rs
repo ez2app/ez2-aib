@@ -24,9 +24,13 @@ use serde_json::{json, Value};
 use crate::svc::{LogSource, LOG_LINES_MAX, LOG_MINUTES_MAX};
 use crate::verify::{exit_code, CheckResult, Outcome};
 
-/// Longest request line accepted, in bytes: room for `site <code> domain check <name>`
-/// with the longest code (41) and the longest name (253).
-pub const REQUEST_MAX: usize = 320;
+/// Longest request line accepted, in bytes.
+pub const REQUEST_MAX: usize = 200;
+
+/// Longest line of a customer key, in bytes: room for `site <code> domain check <name>`
+/// with the longest code (41) and the longest name (253). What follows a site's code is
+/// still a site request and held to [`REQUEST_MAX`] by its own parser.
+pub const OWNER_REQUEST_MAX: usize = 320;
 
 /// One thing a customer asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,7 +242,7 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
         return Err(Refused::Empty);
     }
     // a site code may carry dots; nothing else is added to the site grammar's characters
-    if line.len() > REQUEST_MAX
+    if line.len() > OWNER_REQUEST_MAX
         || !line.bytes().all(|c| {
             c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.' || c == b' '
         })
@@ -681,11 +685,13 @@ mod tests {
             "c".repeat(63),
             "d".repeat(61)
         );
-        assert!(long.len() <= REQUEST_MAX, "{}", long.len());
+        assert!(long.len() > REQUEST_MAX && long.len() <= OWNER_REQUEST_MAX);
         assert!(matches!(
             parse_owner_request(&long),
             Ok(OwnerRequest::Domain { .. })
         ));
+        let too_long = alloc::format!("site create{}", " ".repeat(OWNER_REQUEST_MAX));
+        assert_eq!(parse_owner_request(&too_long), Err(Refused::Malformed));
         // what changes something, and what is offered yet
         assert!(OwnerRequest::Create.writes());
         let check = parse_owner_request("site site2 domain check example.org").unwrap();
