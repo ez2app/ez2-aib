@@ -12,7 +12,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   Pairing off ⇒ says how to turn it on. Needs `AIBD_PAIRING=terminal-unverified` (ADR 0006 §7:
   the y/N answer does not stop an AI running as the same account).
 - `GET /api/v1/health` adds `version`, `started_at` (Unix seconds) and `instance_id` (random
-  per start), so a restarted aibd can be told apart; still no path in it (043dd S3).
+  per start), so a restarted aibd can be told apart; still no path in it (043dd S3). If the
+  random read fails, aibd does not start (it used to report an id of zeros, the same on every
+  restart).
+- `aib web` on Windows waits for `aibd ctl web` and returns its exit code. Windows `execv` gave
+  the shell its prompt back while aibd was still asking y/N.
 - Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
   default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
   aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding
