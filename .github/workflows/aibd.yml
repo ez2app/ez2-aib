@@ -485,7 +485,7 @@ jobs:
              h14_the_entry_sudoers_file_is_the_generated_one
           # H14: any rule that starts like ours passes, whatever its arguments
           ck verify.rs '                        .is_some_and(entry_rule_args)' \
-             '                        .is_some() // knife' \
+             '                        .is_some_and(|r| entry_rule_args(r) || true) // knife' \
              h14_the_entry_sudoers_file_is_the_generated_one
           # H14: owner and mode are not looked at
           ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
