@@ -222,6 +222,92 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
     }
 }
 
+/// Who a key belongs to. The six names are Ez2.PAGE's (Andy 11-11: "比照 ez2.page"), so
+/// a customer meets one set of words in both products; a key may carry several.
+///
+/// | request | owner | admin | editor | publisher | analyst | viewer |
+/// |---|---|---|---|---|---|---|
+/// | `status` | yes | yes | yes | yes | yes | yes |
+/// | `logs`, `backup` | yes | yes | yes | — | yes | — |
+/// | `php-reload` | yes | yes | yes | — | — | — |
+/// | `restart` | yes | yes | — | yes | — | — |
+/// | `sites` (customer key) | yes | yes | — | — | yes | yes |
+/// | `usage` (customer key) | yes | yes | — | — | yes | — |
+///
+/// As in Ez2.PAGE, changing what is live is the publisher's, not the editor's: an editor
+/// works on a site and may reload PHP, but restarting it takes owner, admin or publisher
+/// (and a person's confirmation on the customer's side, which is not this table's
+/// business). `admin` is ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The customer.
+    Owner,
+    /// The platform's own service identity.
+    Admin,
+    /// Works on a site's content.
+    Editor,
+    /// May change what is live.
+    Publisher,
+    /// Reads.
+    Analyst,
+    /// Sees that a site is up.
+    Viewer,
+}
+
+impl Role {
+    /// The spelling in a key's entry and in the roster.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "owner" => Role::Owner,
+            "admin" => Role::Admin,
+            "editor" => Role::Editor,
+            "publisher" => Role::Publisher,
+            "analyst" => Role::Analyst,
+            "viewer" => Role::Viewer,
+            _ => return None,
+        })
+    }
+
+    /// Whether this role alone may make a site request.
+    pub fn allows(self, request: Request) -> bool {
+        use Role::{Admin, Analyst, Editor, Owner, Publisher};
+        match request {
+            Request::Status => true,
+            Request::Logs { .. } | Request::Backup => {
+                matches!(self, Owner | Admin | Editor | Analyst)
+            }
+            Request::PhpReload => matches!(self, Owner | Admin | Editor),
+            Request::Restart => matches!(self, Owner | Admin | Publisher),
+        }
+    }
+
+    /// Whether this role alone may make a customer key's request. A request about one
+    /// site is that site request's own matter.
+    pub fn allows_owner(self, request: OwnerRequest<'_>) -> bool {
+        use Role::{Admin, Analyst, Owner, Viewer};
+        match request {
+            OwnerRequest::Sites => matches!(self, Owner | Admin | Analyst | Viewer),
+            OwnerRequest::Usage => matches!(self, Owner | Admin | Analyst),
+            OwnerRequest::Site { request, .. } => self.allows(request),
+        }
+    }
+}
+
+/// The roles of a key, out of the comma-separated word in its entry (`editor,publisher`).
+/// `None` when the word is empty, names a role twice or names something that is not a
+/// role: an entry we wrote wrongly gives no rights at all rather than some.
+pub fn parse_roles(word: &str) -> Option<alloc::vec::Vec<Role>> {
+    let mut roles = alloc::vec::Vec::new();
+    for part in word.split(',') {
+        let role = Role::parse(part)?;
+        if roles.contains(&role) {
+            return None;
+        }
+        roles.push(role);
+    }
+    Some(roles)
+}
+
 /// What a customer is shown of their site's checks (c477a 11-10,
 /// PROPOSAL-customer-status-codes): a **whitelist**.
 ///
@@ -394,6 +480,72 @@ mod tests {
             Err(Refused::UnknownRequest)
         );
         assert_eq!(parse_request("status shop.a"), Err(Refused::Malformed));
+    }
+
+    /// Andy 11-11: the roles are Ez2.PAGE's.
+    #[test]
+    fn a_role_gives_what_the_table_says_and_no_more() {
+        let logs = parse_request("logs nginx").unwrap();
+        let all = [
+            Role::Owner,
+            Role::Admin,
+            Role::Editor,
+            Role::Publisher,
+            Role::Analyst,
+            Role::Viewer,
+        ];
+        let who = |request: Request| -> alloc::vec::Vec<Role> {
+            all.iter().copied().filter(|r| r.allows(request)).collect()
+        };
+        assert_eq!(who(Request::Status), all);
+        assert_eq!(
+            who(logs),
+            [Role::Owner, Role::Admin, Role::Editor, Role::Analyst]
+        );
+        assert_eq!(who(Request::Backup), who(logs));
+        assert_eq!(
+            who(Request::PhpReload),
+            [Role::Owner, Role::Admin, Role::Editor]
+        );
+        // what is live is the publisher's to change, not the editor's
+        assert_eq!(
+            who(Request::Restart),
+            [Role::Owner, Role::Admin, Role::Publisher]
+        );
+        let who_owner = |request: OwnerRequest<'_>| -> alloc::vec::Vec<Role> {
+            all.iter()
+                .copied()
+                .filter(|r| r.allows_owner(request))
+                .collect()
+        };
+        assert_eq!(
+            who_owner(OwnerRequest::Sites),
+            [Role::Owner, Role::Admin, Role::Analyst, Role::Viewer]
+        );
+        assert_eq!(
+            who_owner(OwnerRequest::Usage),
+            [Role::Owner, Role::Admin, Role::Analyst]
+        );
+        let restart = OwnerRequest::Site {
+            site: "site2",
+            request: Request::Restart,
+        };
+        assert_eq!(who_owner(restart), who(Request::Restart));
+        // a key may carry several roles; a wrong entry gives none
+        assert_eq!(
+            parse_roles("editor,publisher"),
+            Some(alloc::vec![Role::Editor, Role::Publisher])
+        );
+        for bad in [
+            "",
+            "editor,",
+            "editor,editor",
+            "Editor",
+            "root",
+            "editor publisher",
+        ] {
+            assert_eq!(parse_roles(bad), None, "{bad:?}");
+        }
     }
 
     fn checks(list: &[(&'static str, Outcome)]) -> alloc::vec::Vec<CheckResult> {

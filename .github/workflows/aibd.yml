@@ -375,6 +375,10 @@ jobs:
           ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
              '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
              a_customer_is_not_told_what_is_wrong_on_our_side
+          # roles: an editor may restart a site (the table is Ez2.PAGE's: live changes are the publisher's)
+          ck customer.rs '            Request::Restart => matches!(self, Owner | Admin | Publisher),' \
+             '            Request::Restart => matches!(self, Owner | Admin | Publisher | Role::Editor), // knife' \
+             a_role_gives_what_the_table_says_and_no_more
           # customer key: a site name that is not a site code gets as far as the host records
           ck customer.rs '            if !crate::site::valid_code(site) {' \
              '            if site.is_empty() { // knife' \
