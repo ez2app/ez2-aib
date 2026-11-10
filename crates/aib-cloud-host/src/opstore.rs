@@ -309,19 +309,57 @@ pub fn last_entries(dir: &Path) -> Result<Vec<Entry>, String> {
 /// the operation asking: its own recovery is not blocked by itself.
 pub fn refuse_unfinished(dir: &Path, target: &str, own_op: &str) -> Result<(), String> {
     let lasts = last_entries(dir)?;
-    let refs: Vec<&Entry> = lasts.iter().collect();
-    let others: Vec<&str> = op::unfinished(target, &refs)
-        .into_iter()
-        .filter(|o| *o != own_op)
+    let blocking: Vec<&Entry> = lasts
+        .iter()
+        .filter(|e| e.target == target && e.op != own_op && is_unfinished(e))
         .collect();
-    if others.is_empty() {
+    if blocking.is_empty() {
         Ok(())
     } else {
+        let lines: Vec<String> = blocking.iter().map(|e| what_to_run(e)).collect();
         Err(format!(
-            "{target} has unfinished operations: {} (resume or recover them first)",
-            others.join(", ")
+            "{target} is held by an unfinished operation: {}",
+            lines.join("; ")
         ))
     }
+}
+
+/// Whether an operation's last state keeps its target from a new operation.
+fn is_unfinished(last: &Entry) -> bool {
+    let refs = [last];
+    !op::unfinished(&last.target, &refs).is_empty()
+}
+
+/// Which operation holds a target, what it was, and the command a person runs once they
+/// have checked the host (f1fae 11-10: `op status` names what blocks a target and how).
+pub fn what_to_run(last: &Entry) -> String {
+    format!(
+        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",
+        last.op,
+        last.command,
+        last.target,
+        last.state.as_str(),
+        last.op
+    )
+}
+
+/// Every unfinished operation by its target, for `op status`.
+pub fn unfinished_report(lasts: &[Entry]) -> Value {
+    let mut by_target = Map::new();
+    for e in lasts.iter().filter(|e| is_unfinished(e)) {
+        let list = by_target
+            .entry(e.target.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(items) = list {
+            items.push(json!({
+                "op": e.op,
+                "command": e.command,
+                "state": e.state.as_str(),
+                "what_to_run": what_to_run(e),
+            }));
+        }
+    }
+    Value::Object(by_target)
 }
 
 // ------------------------------------------------------------------ host lock
@@ -814,6 +852,13 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 Err(e) => return Err(format!("{LOCK_FILE}: {e}")),
             };
             doc["lock"] = lock;
+            // which targets are held, by what, and what a person runs after checking
+            doc["unfinished"] = match last_entries(dir) {
+                Ok(lasts) => unfinished_report(&lasts),
+                Err(e) => {
+                    json!({ "error": e, "what_to_do": "a journal cannot be read: every target is held until it is fixed or moved aside by hand" })
+                }
+            };
             if let Some(op) = args.get(1) {
                 let (entries, cut) = read_journal(&journal_path(dir, op)?)?;
                 let last = op::replay(&entries).map_err(|e| e.to_string())?;
@@ -1387,6 +1432,41 @@ mod tests {
         assert_eq!(journals, 1, "only A's operation is journaled");
         assert!(!pl.lock.lock.exists());
         refuse_unfinished(&pl.ops_dir, "site:site2", "").unwrap();
+    }
+
+    /// f1fae 11-10: what holds a target is named, with the command to run after checking.
+    #[test]
+    fn a_held_target_names_its_operation_and_the_command() {
+        let pl = place("held");
+        let mut failed = String::new();
+        let _ = run_op(
+            &pl,
+            "site.restore",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op_id| -> Result<(), String> {
+                failed = op_id.to_owned();
+                Err("502".to_owned())
+            },
+        );
+        let err = refuse_unfinished(&pl.ops_dir, "site:site2", "").unwrap_err();
+        assert!(
+            err.contains(&format!(
+                "operation {failed} (site.restore site:site2, failed)"
+            )) && err.contains(&format!("`aib-cloud-host op recovered {failed}`")),
+            "{err}"
+        );
+        let report = unfinished_report(&last_entries(&pl.ops_dir).unwrap());
+        assert_eq!(report["site:site2"][0]["op"], json!(failed));
+        assert_eq!(report["site:site2"][0]["state"], json!("failed"));
+        assert!(report.get("site:site3").is_none());
+        mark_recovered(&pl, &failed, 1_794_300_060).unwrap();
+        assert_eq!(
+            unfinished_report(&last_entries(&pl.ops_dir).unwrap()),
+            json!({})
+        );
     }
 
     #[test]

@@ -516,6 +516,10 @@ jobs:
           hk opstore.rs '    let Some((plan, input)) = prepare()? else {' \
              '    let _ = release(&place.lock, op_id, std::process::id()); let Some((plan, input)) = prepare()? else { // knife' \
              what_an_operation_decides_from_is_read_under_the_lock
+          # a held target does not say which operation holds it or what to run (f1fae 11-10)
+          hk opstore.rs '        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",' \
+             '        "operation {} ({} {}, {}): check the host{}", // knife' \
+             a_held_target_names_its_operation_and_the_command
           # restore --switch without the typed site code (4542e 11-10 condition c)
           hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
              a_switch_needs_the_site_code_typed
