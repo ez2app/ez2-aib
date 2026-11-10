@@ -1159,6 +1159,14 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
             "--switch moves {code}'s live traffic: add --yes-{code} to confirm"
         ));
     }
+    // a confirmation with nothing to confirm is a mistake in the command, not a no-op
+    // (c477a #635 seg. 2 N3)
+    if !switch && yes.is_some() {
+        return Err(
+            "--yes-<code> confirms --switch; without --switch there is nothing to confirm"
+                .to_owned(),
+        );
+    }
     let backup = backup.ok_or("--backup required")?;
     let (ct_n, ip_n) = (ct.ok_or("--ct required")?, ip.ok_or("--ip required")?);
     let new_ct = ct_n.to_string();
@@ -1194,6 +1202,8 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 "site": code,
                 "steps": plan.iter().map(|s| s.argv.clone()).collect::<Vec<_>>(),
                 "switch": switch,
+                // --switch is only accepted with the site code typed (checked above)
+                "confirmed_code": switch,
             });
             Ok(Some((plan_doc, (spec, plan))))
         },
@@ -1376,6 +1386,12 @@ mod tests {
         .collect();
         let err = cmd_site_restore(&args).unwrap_err();
         assert!(err.contains("--yes-site2"), "{err}");
+        // a confirmation without --switch is refused, before anything is read
+        let mut no_switch = args.clone();
+        no_switch.pop();
+        no_switch.push("--yes-site2".to_owned());
+        let err = cmd_site_restore(&no_switch).unwrap_err();
+        assert!(err.contains("nothing to confirm"), "{err}");
     }
 
     fn cell(id: &str, from: &str, kind: &str, ip: &str, port: u64, expect: &str) -> Value {
