@@ -500,11 +500,23 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
             out.push(gap("R01", key));
         }
     }
-    if !obj.get("ct").is_some_and(Value::is_u64) {
+    // "is the lenient read going to use this value as it stands" — so the same
+    // conversions it makes: a number that does not fit is defaulted there, a gap here
+    let fits_u32 = |v: &Value| v.as_u64().is_some_and(|n| u32::try_from(n).is_ok());
+    if !obj.get("ct").is_some_and(fits_u32) {
         out.push(gap("R01", "ct"));
     }
-    if !obj.get("wp").is_some_and(Value::is_u64) {
+    if !obj
+        .get("wp")
+        .is_some_and(|v| matches!(v.as_u64(), Some(0 | 1)))
+    {
         out.push(gap("R02", "wp"));
+    }
+    if obj
+        .get("ssh_port")
+        .is_some_and(|v| !v.is_null() && !v.as_u64().is_some_and(|n| u16::try_from(n).is_ok()))
+    {
+        out.push(gap("R01", "ssh_port"));
     }
     for key in ["locale", "fw_group"] {
         if !obj.get(key).is_some_and(Value::is_string) {
@@ -515,7 +527,7 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
         None => out.push(gap("R02", "limits")),
         Some(limits) => {
             for key in LIMIT_KEYS {
-                if !limits.get(*key).is_some_and(Value::is_u64) {
+                if !limits.get(*key).is_some_and(fits_u32) {
                     out.push(gap("R03", &alloc::format!("limits.{key}")));
                 }
             }
@@ -1630,5 +1642,41 @@ mod tests {
                 ("R04", "state".to_owned()),
             ]
         );
+    }
+
+    /// A value the lenient read would replace with a default is a gap, whatever its JSON
+    /// type says (review of #623 segment 2, f1fae M1 / L1 / L2).
+    #[test]
+    fn values_the_lenient_read_would_not_use_are_gaps() {
+        let full = record(&site2(), "2026-11-10T01:00:00Z");
+        // 2^32 does not fit a limit: spec_from_record would fall back to the test tier
+        let mut r = full.clone();
+        r["limits"]["memory_mb"] = json!(4_294_967_296_u64);
+        assert_eq!(gaps(&r), [("R03", "limits.memory_mb".to_owned())]);
+        assert!(spec_from_record_strict(&r).is_err());
+        assert_eq!(spec_from_record(&r).unwrap().limits.memory_mb, 2048);
+        let mut r = full.clone();
+        r["limits"]["memory_mb"] = json!(4_294_967_295_u64);
+        assert_eq!(gaps(&r), []);
+        // wp is 0 or 1; anything else reads as "not WordPress" without saying so
+        for (wp, want) in [
+            (json!(0), 0),
+            (json!(1), 0),
+            (json!(2), 1),
+            (json!(true), 1),
+        ] {
+            let mut r = full.clone();
+            r["wp"] = wp;
+            assert_eq!(gaps(&r).len(), want, "{}", r["wp"]);
+        }
+        // a port that is not a port
+        for port in [json!("2112"), json!(70_000), json!(-1)] {
+            let mut r = full.clone();
+            r["ssh_port"] = port;
+            assert_eq!(gaps(&r), [("R01", "ssh_port".to_owned())]);
+        }
+        let mut r = full.clone();
+        r["ct"] = json!(4_294_967_296_u64);
+        assert_eq!(gaps(&r), [("R01", "ct".to_owned())]);
     }
 }
