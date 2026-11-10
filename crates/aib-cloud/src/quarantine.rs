@@ -110,6 +110,17 @@ pub fn caddy_block_text(caddyfile: &str, code: &str) -> Result<String, Error> {
         .iter()
         .position(|l| *l == "}")
         .ok_or_else(|| Error::Observed(alloc::format!("block for {code} never closes")))?;
+    // the closing line must be this block's own: if another site's marker comes first,
+    // this block's brace is malformed (trailing blank, say) and the text up to the next
+    // "}" would be two sites' worth
+    if lines[*start + 1..*start + len]
+        .iter()
+        .any(|l| l.trim_start().starts_with("# site:"))
+    {
+        return Err(Error::Observed(alloc::format!(
+            "block for {code} runs into the next site's"
+        )));
+    }
     let mut out = String::new();
     for l in &lines[*start..=*start + len] {
         out.push_str(l);
@@ -265,7 +276,12 @@ pub fn quarantine_plan(
     if !valid_reason(reason) {
         return refuse("reason must be a short code (a-z 0-9 _)");
     }
-    if !page_path.starts_with('/') || page_path.contains(['\n', '{', '}', ' ']) {
+    // goes verbatim into the edge configuration, on the emergency path: plain paths only
+    if !page_path.starts_with('/')
+        || !page_path
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))
+    {
         return refuse("page path");
     }
     if existing.is_some_and(|r| r.site != spec.code || r.ct != spec.ct) {
@@ -282,7 +298,20 @@ pub fn quarantine_plan(
         ),
         // a record without the firewall: an earlier attempt stopped right after saving
         // it. Its originals are the true ones (nothing was changed after it was written).
-        (false, Some(r)) => r.clone(),
+        // … but only if the host still looks exactly as that record says. A record left
+        // behind by an unquarantine that restored everything and stopped before archiving
+        // describes an older incident: reusing it would hide this one's reason and, on the
+        // way out, put back a firewall and a block from before whatever changed since.
+        (false, Some(r)) => {
+            if r.prev_firewall != ct_fw
+                || r.prev_caddy_block != caddy_block_text(caddyfile, &spec.code)?
+            {
+                return refuse(
+                    "a quarantine record is on disk but the host no longer matches it (an older incident?): archive it first",
+                );
+            }
+            r.clone()
+        }
         (false, None) => Record {
             site: spec.code.clone(),
             ct: spec.ct,
@@ -575,6 +604,67 @@ mod tests {
         assert!(resume
             .iter()
             .any(|x| matches!(x, Action::WriteFirewall { .. })));
+    }
+
+    /// Review of #623 segment 5 (1ced7 M1): a record left by an unquarantine that stopped
+    /// before archiving must not be reused once the host has moved on.
+    #[test]
+    fn a_stale_record_is_not_reused() {
+        let file = caddyfile();
+        let first = actions(do_plan(&normal_fw(), &file, None));
+        let Action::SaveRecord(old) = &first[0] else {
+            panic!("record first");
+        };
+        // host exactly as the record says: the interrupted attempt is finished
+        assert!(quarantine_plan(
+            &spec(),
+            OP,
+            "operator",
+            PAGE,
+            &normal_fw(),
+            &file,
+            Some(old)
+        )
+        .is_ok());
+        // since then: another firewall group, or another domain on the block
+        let new_fw = normal_fw().replace("ez2-site-v2", "ez2-site-v3");
+        assert!(quarantine_plan(&spec(), OP, "operator", PAGE, &new_fw, &file, Some(old)).is_err());
+        let new_file = file.replace(
+            "site2.example.test {",
+            "site2.example.test shop.example.test {",
+        );
+        assert_ne!(new_file, file);
+        assert!(quarantine_plan(
+            &spec(),
+            OP,
+            "operator",
+            PAGE,
+            &normal_fw(),
+            &new_file,
+            Some(old)
+        )
+        .is_err());
+    }
+
+    /// Review of #623 segment 5 (1ced7 L1 / L2).
+    #[test]
+    fn block_ends_and_page_paths() {
+        // this site's closing brace has a trailing blank: the next "}" is another site's
+        let file = caddyfile();
+        let mine = caddy_block_text(&file, "site2").unwrap();
+        let broken = file.replace(&mine, &alloc::format!("{} \n", mine.trim_end()));
+        assert_ne!(broken, file);
+        assert!(caddy_block_text(&broken, "site2").is_err());
+        assert!(caddy_block_text(&broken, "other").is_ok());
+        for page in [
+            "/srv/e/q.html\"",
+            "/srv/e/q.html#x",
+            "/srv/e/q\t.html",
+            "/srv/e/q html",
+        ] {
+            let q = quarantine_plan(&spec(), OP, "operator", page, &normal_fw(), &file, None);
+            assert!(q.is_err(), "{page:?}");
+        }
     }
 
     #[test]

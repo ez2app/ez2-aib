@@ -19,9 +19,17 @@
 //!   SHA-256 of the plan, unexpired. Anything else must be asked again.
 //! * A lock is taken over only when its holder is **known to be gone**. A holder that is
 //!   merely slow, or whose liveness cannot be established, keeps the lock.
+//! * `plan_sha256` is made by the shell and must cover everything an approver was shown:
+//!   the spec, the commands with their variables filled in, the **identity of the target
+//!   host** and the version of this crate. A hash without the host would let an approval
+//!   for `site:site2` count on a reinstalled machine with the same site code.
+//! * The way back must be safe to take twice: `failed → recovery → failed → recovery` is
+//!   a legal history, and a recovery can itself be interrupted.
+//! * The shell syncs the `running` line to disk **before** it changes anything.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use serde_json::{json, Value};
 
@@ -136,6 +144,11 @@ pub struct Entry {
     pub plan_sha256: String,
     /// A short code for why (`ok`, `verify_red`, `timeout`, …); never raw output.
     pub code: String,
+    /// The nonce of the approval this operation runs under: empty in `planned`, set in
+    /// `approved` and the same in every entry after it. It ties the journal to the
+    /// approver's receipt and lets an interrupted operation resume under the approval it
+    /// already used.
+    pub approval: String,
 }
 
 fn valid_sha256(s: &str) -> bool {
@@ -174,6 +187,12 @@ impl Entry {
         if !valid_token(&self.code, b"_") {
             return bad("code");
         }
+        if (self.state == State::Planned) != self.approval.is_empty() {
+            return bad("approval is empty in planned and set afterwards");
+        }
+        if !self.approval.is_empty() && !valid_token(&self.approval, b"_-") {
+            return bad("approval");
+        }
         Ok(())
     }
 
@@ -182,7 +201,7 @@ impl Entry {
         json!({
             "op": self.op, "seq": self.seq, "at": self.at, "state": self.state.as_str(),
             "command": self.command, "target": self.target,
-            "plan_sha256": self.plan_sha256, "code": self.code,
+            "plan_sha256": self.plan_sha256, "code": self.code, "approval": self.approval,
         })
     }
 
@@ -200,6 +219,7 @@ impl Entry {
             "target",
             "plan_sha256",
             "code",
+            "approval",
         ];
         if obj.len() != KEYS.len() || !obj.keys().all(|k| KEYS.contains(&k.as_str())) {
             return Err(Error::Entry("keys".to_owned()));
@@ -224,6 +244,7 @@ impl Entry {
             target: text("target")?,
             plan_sha256: text("plan_sha256")?,
             code: text("code")?,
+            approval: text("approval")?,
         };
         entry.validate()?;
         Ok(entry)
@@ -258,6 +279,10 @@ pub fn replay(entries: &[Entry]) -> Result<&Entry, Error> {
         if let Some(p) = prev {
             if !p.state.may_become(e.state) {
                 return bad("state does not follow");
+            }
+            // one operation runs under one approval, from `approved` to the end
+            if p.state != State::Planned && p.approval != e.approval {
+                return bad("approval changes");
             }
         }
         prev = Some(e);
@@ -321,14 +346,19 @@ pub enum Refusal {
     Replayed,
 }
 
-/// Whether `approval` covers running the plan `plan_sha256` against `target` at `now`.
-/// `used` tells whether a nonce was already spent.
+/// Whether `approval` covers operation `op` running the plan `plan_sha256` against
+/// `target` at `now`. `used_by` names the operation that already spent a nonce, if any:
+/// an approval is good for one operation, and stays good for **that** operation — one
+/// that was interrupted after `approved` resumes under the approval its journal records,
+/// while the same approval offered to another operation is a replay. The shell records
+/// "this nonce belongs to this op" by writing the `approved` line, which carries both.
 pub fn approval_covers(
     approval: &Approval,
+    op: &str,
     target: &str,
     plan_sha256: &str,
     now: u64,
-    used: impl Fn(&str) -> bool,
+    used_by: impl Fn(&str) -> Option<String>,
 ) -> Result<(), Refusal> {
     if approval.target != target {
         Err(Refusal::Target)
@@ -336,11 +366,61 @@ pub fn approval_covers(
         Err(Refusal::Plan)
     } else if now >= approval.expires {
         Err(Refusal::Expired)
-    } else if used(&approval.nonce) {
+    } else if used_by(&approval.nonce).is_some_and(|other| other != op) {
         Err(Refusal::Replayed)
     } else {
         Ok(())
     }
+}
+
+/// The kernel's boot id: a UUID, `8-4-4-4-12` lower hex.
+pub fn valid_boot_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit() || (b'a'..=b'f').contains(c)
+            }
+        })
+}
+
+/// Operations on `target` that are not finished, given the last entry of every journal
+/// on the host: `running`, `failed` and `recovery` (an `approved` one has changed nothing
+/// yet). While there is one, a new operation on the same target is refused unless it is
+/// that operation's own recovery — otherwise a quarantine that failed half way could be
+/// "fixed" by an unrelated command that reopens the site.
+pub fn unfinished<'a>(target: &str, last_entries: &[&'a Entry]) -> Vec<&'a str> {
+    last_entries
+        .iter()
+        .filter(|e| {
+            e.target == target
+                && matches!(e.state, State::Running | State::Failed | State::Recovery)
+        })
+        .map(|e| e.op.as_str())
+        .collect()
+}
+
+/// Read a journal file. Every line must be a valid entry, with one exception: a last line
+/// that has **no newline after it** and does not parse is a write that was cut short; it
+/// is dropped and reported (`true`). The shell appends a whole line and then syncs, so a
+/// cut-short line was never acted on. Any other damaged line refuses the journal.
+pub fn parse_journal(text: &str) -> Result<(Vec<Entry>, bool), Error> {
+    let complete = text.is_empty() || text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let mut entries = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let parsed = serde_json::from_str::<Value>(line)
+            .map_err(|_| Error::Entry("not JSON".to_owned()))
+            .and_then(|v| Entry::from_json(&v));
+        match parsed {
+            Ok(e) => entries.push(e),
+            Err(_) if !complete && i + 1 == lines.len() => return Ok((entries, true)),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((entries, false))
 }
 
 /// Who holds the host lock, as written in the lock file.
@@ -385,8 +465,12 @@ pub enum Lock {
 pub fn lock(holder: Option<&Holder>, boot_id: &str, liveness: Liveness) -> Lock {
     match holder {
         None => Lock::Take,
-        // every process from before the reboot is gone
-        Some(h) if h.boot_id != boot_id => Lock::TakeOver,
+        // every process from before the reboot is gone — but only two well-formed ids
+        // that differ say "another boot". An id that could not be read, or a damaged lock
+        // file, differs from everything and proves nothing: fall through to liveness.
+        Some(h) if valid_boot_id(&h.boot_id) && valid_boot_id(boot_id) && h.boot_id != boot_id => {
+            Lock::TakeOver
+        }
         Some(_) => match liveness {
             Liveness::Gone => Lock::TakeOver,
             Liveness::Alive | Liveness::Unknown => Lock::Busy,
@@ -398,7 +482,7 @@ pub fn lock(holder: Option<&Holder>, boot_id: &str, liveness: Liveness) -> Lock 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::string::ToString;
 
     const OP: &str = "20261110T014500Z-0a1b2c3d";
     const SHA: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
@@ -413,6 +497,11 @@ mod tests {
             target: "site:site2".to_owned(),
             plan_sha256: SHA.to_owned(),
             code: "ok".to_owned(),
+            approval: if state == State::Planned {
+                String::new()
+            } else {
+                "n1".to_owned()
+            },
         }
     }
 
@@ -546,34 +635,41 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_covers_one_plan_once() {
+    fn an_approval_covers_one_plan_for_one_operation() {
         let a = Approval {
             target: "site:site2".to_owned(),
             plan_sha256: SHA.to_owned(),
             expires: 2000,
             nonce: "n1".to_owned(),
         };
-        let fresh = |_: &str| false;
-        assert_eq!(approval_covers(&a, "site:site2", SHA, 1000, fresh), Ok(()));
+        let t = "site:site2";
+        let fresh = |_: &str| None;
+        assert_eq!(approval_covers(&a, OP, t, SHA, 1000, fresh), Ok(()));
         assert_eq!(
-            approval_covers(&a, "site:site3", SHA, 1000, fresh),
+            approval_covers(&a, OP, "site:site3", SHA, 1000, fresh),
             Err(Refusal::Target)
         );
         let other = SHA.replace('9', "8");
         assert_eq!(
-            approval_covers(&a, "site:site2", &other, 1000, fresh),
+            approval_covers(&a, OP, t, &other, 1000, fresh),
             Err(Refusal::Plan)
         );
         assert_eq!(
-            approval_covers(&a, "site:site2", "", 1000, fresh),
+            approval_covers(&a, OP, t, "", 1000, fresh),
             Err(Refusal::Plan)
         );
         assert_eq!(
-            approval_covers(&a, "site:site2", SHA, 2000, fresh),
+            approval_covers(&a, OP, t, SHA, 2000, fresh),
             Err(Refusal::Expired)
         );
+        // spent by this operation (its journal says approved under n1, then it died):
+        // resuming is not a replay
+        let mine = |n: &str| (n == "n1").then(|| OP.to_owned());
+        assert_eq!(approval_covers(&a, OP, t, SHA, 1000, mine), Ok(()));
+        // the same approval offered to another operation is
+        let another = "20261110T014501Z-0a1b2c3d";
         assert_eq!(
-            approval_covers(&a, "site:site2", SHA, 1000, |n| n == "n1"),
+            approval_covers(&a, another, t, SHA, 1000, mine),
             Err(Refusal::Replayed)
         );
         // an approval whose own hash is not a hash covers nothing, even "equal" to itself
@@ -582,24 +678,114 @@ mod tests {
             ..a
         };
         assert_eq!(
-            approval_covers(&empty, "site:site2", "", 1000, fresh),
+            approval_covers(&empty, OP, t, "", 1000, fresh),
             Err(Refusal::Plan)
         );
     }
 
     #[test]
     fn slow_is_not_dead() {
+        const BOOT_A: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        const BOOT_B: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+        assert!(valid_boot_id(BOOT_A) && valid_boot_id(BOOT_B));
+        for bad in [
+            "",
+            "boot-a",
+            "0F8FAD5B-D9CB-469F-A165-70867728950E",
+            &BOOT_A[..35],
+        ] {
+            assert!(!valid_boot_id(bad), "{bad:?}");
+        }
         let h = Holder {
             op: OP.to_owned(),
             pid: 4242,
             start_time: 99,
-            boot_id: "boot-a".to_owned(),
+            boot_id: BOOT_A.to_owned(),
         };
-        assert_eq!(lock(None, "boot-a", Liveness::Unknown), Lock::Take);
-        assert_eq!(lock(Some(&h), "boot-a", Liveness::Alive), Lock::Busy);
-        assert_eq!(lock(Some(&h), "boot-a", Liveness::Unknown), Lock::Busy);
-        assert_eq!(lock(Some(&h), "boot-a", Liveness::Gone), Lock::TakeOver);
+        assert_eq!(lock(None, BOOT_A, Liveness::Unknown), Lock::Take);
+        assert_eq!(lock(Some(&h), BOOT_A, Liveness::Alive), Lock::Busy);
+        assert_eq!(lock(Some(&h), BOOT_A, Liveness::Unknown), Lock::Busy);
+        assert_eq!(lock(Some(&h), BOOT_A, Liveness::Gone), Lock::TakeOver);
         // after a reboot the holder cannot be alive, whatever a pid lookup says
-        assert_eq!(lock(Some(&h), "boot-b", Liveness::Alive), Lock::TakeOver);
+        assert_eq!(lock(Some(&h), BOOT_B, Liveness::Alive), Lock::TakeOver);
+        // a boot id that could not be read, or a damaged lock file, proves no reboot
+        // (review of #623 segment 4, 1ced7 M1)
+        assert_eq!(lock(Some(&h), "", Liveness::Alive), Lock::Busy);
+        assert_eq!(lock(Some(&h), "", Liveness::Unknown), Lock::Busy);
+        let damaged = Holder {
+            boot_id: "garbage".to_owned(),
+            ..h
+        };
+        assert_eq!(lock(Some(&damaged), BOOT_A, Liveness::Alive), Lock::Busy);
+        assert_eq!(lock(Some(&damaged), BOOT_A, Liveness::Unknown), Lock::Busy);
+        assert_eq!(lock(Some(&damaged), BOOT_A, Liveness::Gone), Lock::TakeOver);
+    }
+
+    /// Review of #623 segment 4 (ebb36 M1): the journal says which approval an operation
+    /// runs under, and it does not change half way.
+    #[test]
+    fn the_journal_names_the_approval() {
+        use State::{Approved, Planned, Running};
+        let j = journal(&[Planned, Approved, Running]);
+        assert_eq!((j[0].approval.as_str(), j[1].approval.as_str()), ("", "n1"));
+        assert!(replay(&j).is_ok());
+        let mut swapped = j.clone();
+        swapped[2].approval = "n2".to_owned();
+        assert!(replay(&swapped).is_err());
+        let mut unnamed = j.clone();
+        unnamed[1].approval = String::new();
+        assert!(replay(&unnamed).is_err());
+        let mut early = j;
+        early[0].approval = "n1".to_owned();
+        assert!(replay(&early).is_err());
+    }
+
+    /// ebb36 L1: an operation that did not finish blocks a new one on the same target.
+    #[test]
+    fn unfinished_operations_on_a_target() {
+        use State::{Approved, Failed, Planned, Recovery, Running, Verified};
+        let other_op = "20261110T020000Z-ffffffff";
+        for (state, open) in [
+            (Planned, false),
+            (Approved, false),
+            (Running, true),
+            (Failed, true),
+            (Recovery, true),
+            (Verified, false),
+        ] {
+            let mut e = entry(1, state);
+            e.op = other_op.to_owned();
+            let want: Vec<&str> = if open {
+                alloc::vec![other_op]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(unfinished("site:site2", &[&e]), want, "{state:?}");
+            assert!(unfinished("site:site3", &[&e]).is_empty());
+        }
+    }
+
+    /// ebb36 L2: only a last line cut short is tolerated.
+    #[test]
+    fn a_journal_file_with_a_torn_last_line() {
+        use State::{Approved, Planned, Running};
+        let j = journal(&[Planned, Approved, Running]);
+        let line = |e: &Entry| e.to_json().to_string();
+        let whole = alloc::format!("{}\n{}\n{}\n", line(&j[0]), line(&j[1]), line(&j[2]));
+        assert_eq!(parse_journal(&whole).unwrap(), (j.clone(), false));
+        assert_eq!(parse_journal("").unwrap(), (Vec::new(), false));
+        // the third line was being written when the host died
+        let torn = alloc::format!("{}\n{}\n{}", line(&j[0]), line(&j[1]), &line(&j[2])[..40]);
+        let (read, cut) = parse_journal(&torn).unwrap();
+        assert!(cut);
+        assert_eq!(read, j[..2]);
+        assert_eq!(resume(replay(&read).unwrap().state), Resume::Run);
+        // the same damage followed by a newline, or in the middle, is not a torn write
+        assert!(parse_journal(&alloc::format!("{torn}\n")).is_err());
+        let middle = alloc::format!("{}\n{{\"op\":\n{}\n", line(&j[0]), line(&j[2]));
+        assert!(parse_journal(&middle).is_err());
+        // a complete last line without a newline is simply read
+        let no_newline = whole.trim_end().to_owned();
+        assert_eq!(parse_journal(&no_newline).unwrap(), (j, false));
     }
 }

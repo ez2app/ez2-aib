@@ -151,6 +151,39 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
+      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+      # pure decision code and must turn the test that guards it red.
+      - name: aib-cloud decision knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
+          ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
+             '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
+             values_the_lenient_read_would_not_use_are_gaps
+          # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
+          ck verify.rs '        .filter(|v| *v != Some(0));' \
+             '        .filter(|v| v.is_some()); // knife' \
+             review_segment_3
+          # host lock: any two different strings mean "another boot" (1ced7, seg. 4 M1)
+          ck op.rs '        Some(h) if valid_boot_id(&h.boot_id) && valid_boot_id(boot_id) && h.boot_id != boot_id => {' \
+             '        Some(h) if h.boot_id != boot_id => { // knife' \
+             slow_is_not_dead
+          # approval: a spent nonce is good for any operation (ebb36, seg. 4 M1)
+          ck op.rs '    } else if used_by(&approval.nonce).is_some_and(|other| other != op) {' \
+             '    } else if used_by(&approval.nonce).is_some_and(|other| other != op && op.is_empty()) { // knife' \
+             an_approval_covers_one_plan_for_one_operation
+          # quarantine: an old record is reused whatever the host looks like now (1ced7, seg. 5 M1)
+          ck quarantine.rs '            if r.prev_firewall != ct_fw' \
+             '            if r.prev_firewall.is_empty()' \
+             a_stale_record_is_not_reused
+          # quarantine: existing connections are left alone (33e28 K1)
+          ck quarantine.rs '    actions.push(Action::DropConnections { ip: spec.ip() });' \
+             '    let _ = spec.ip(); // knife: no drop' \
+             plan_order_is_record_egress_connections_route_verify
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

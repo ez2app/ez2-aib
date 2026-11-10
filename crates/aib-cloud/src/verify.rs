@@ -432,6 +432,7 @@ pub fn code(outcome: Outcome) -> String {
 mod tests {
     use super::*;
     use crate::site::Limits;
+    use alloc::string::ToString;
 
     const HOUR: u64 = 3600;
     const NOW: u64 = 1_800_000_000;
