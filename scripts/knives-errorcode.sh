@@ -2,10 +2,14 @@
 # ErrorCode::ALL knives (a63ab 11-10): ALL one short, holding a code twice, or drifting
 # from the contract order must fail the build or its own test. Run from the repo root.
 set -eu
+# FILE is written out (not a variable): aib-xtask knife-anchors (#590) reads every
+# scripts/knife.py call before the push and only understands plain text and $1..$9.
+# E1 / E2 are build-time knives (scripts/knife-build.py), not read by that checker:
+# their anchor is the ALL block, taken from the file itself below.
 E=crates/aib-core/src/error.rs
 b() { python3 -I scripts/knife-build.py "$E" "$1" "$2" --expect-error "$3" \
         -- cargo build -p aib-core --locked; }
-t() { python3 -I scripts/knife.py "$E" "$1" "$2" --expect-fail "$3" \
+t() { python3 -I scripts/knife.py crates/aib-core/src/error.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-core --locked --lib "$3"; }
 # Text from the `ALL` line to the end of `ordinal` (one block: the knives below change
 # both at once, the way a careless edit would).
@@ -34,16 +38,10 @@ sys.stdout.write(sys.argv[1].replace("        ErrorCode::WebNotBuilt,\n    ];",
     "        ErrorCode::PairingFailed, // knife\n    ];", 1))')
 b "$B" "$N2" 'ErrorCode::ALL is out of step with ErrorCode::ordinal'
 
-# E3 two codes swapped in ALL and in ordinal together (builds): the contract order catches it
-N3=$(edit '
-import sys
-s = sys.argv[1]
-s = s.replace("        ErrorCode::HostNotAllowed,\n        ErrorCode::OriginNotAllowed,\n",
-              "        ErrorCode::OriginNotAllowed,\n        ErrorCode::HostNotAllowed, // knife\n", 1)
-s = s.replace("ErrorCode::HostNotAllowed => at::<0>(),", "ErrorCode::HostNotAllowed => at::<1>(),", 1)
-s = s.replace("ErrorCode::OriginNotAllowed => at::<1>(),", "ErrorCode::OriginNotAllowed => at::<0>(),", 1)
-sys.stdout.write(s)')
-t "$B" "$N3" all_lists_every_code_once_in_contract_order
+# E3 two codes swap places on the wire (builds, round-trips): the contract order catches it
+t $'            ErrorCode::HostNotAllowed => "host_not_allowed",\n            ErrorCode::OriginNotAllowed => "origin_not_allowed",' \
+  $'            ErrorCode::HostNotAllowed => "origin_not_allowed", // knife\n            ErrorCode::OriginNotAllowed => "host_not_allowed",' \
+  all_lists_every_code_once_in_contract_order
 
 # E4 a code renamed on the wire
 t '            ErrorCode::WebNotBuilt => "web_not_built",' \
