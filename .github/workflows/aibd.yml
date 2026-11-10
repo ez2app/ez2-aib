@@ -762,6 +762,27 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+      # B9/B10 aib-seatops (1ced7, a63ab 11-10 D1-D4): dm close inside the seat's transition lock,
+      # atomic with the Python queue; the status line refresh changes only the time.
+      - name: aib-seatops dm close knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-seatops/src/$1" "$2" "$3" --expect-fail "$5" \
+                   -- cargo test -p aib-seatops --locked $4 "$5"; }
+          # S1 a dm changed after the snapshot is closed anyway
+          sk close.rs 'verify_snapshot_from_paths(&snap, &item_path, &roots.relay_dirs, &req.expect)' \
+             "{ let _ = verify_snapshot_from_paths(&snap, &item_path, &roots.relay_dirs, &req.expect); Ok::<(), &'static str>(()) } /* knife */" \
+             '--test close' content_changed_after_the_snapshot_is_not_closed
+          # S2 the transition lock is let go at once: Python closes the same dm too
+          sk close.rs 'lock_file(&roots.seat_dir(&req.seat).join(TRANSITION_LOCK), LOCK_TIMEOUT)' \
+             'lock_file(&roots.seat_dir(&req.seat).join(TRANSITION_LOCK), LOCK_TIMEOUT).map(drop) /* knife */' \
+             '--test close' python_waits_for_a_rust_close_of_the_same_dm
+          # S5 the refresh changes more than the time
+          sk nowline.rs 'rec["at"] = json!(now);' \
+             'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
+             '--lib' only_the_time_changes
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

@@ -84,7 +84,9 @@ pub fn refresh(state: &Path, seat: &str, now: u64) -> Result<(), String> {
     let line = std::fs::read_to_string(&lpath).map_err(|_| "no status line file".to_string())?;
     let (body, old_s) = (line.trim_end_matches('\n'), stamp(old));
     if !body.ends_with(&old_s) || body.matches(&old_s).count() != 1 {
-        return Err(format!("the status line does not end with its time {old_s}; left as it is"));
+        return Err(format!(
+            "the status line does not end with its time {old_s}; left as it is"
+        ));
     }
     let new_line = format!("{}{}\n", &body[..body.len() - old_s.len()], stamp(now));
     replace(&lpath, new_line.as_bytes()).map_err(|e| e.to_string())
@@ -105,7 +107,12 @@ mod tests {
     }
 
     fn read(p: &Path, ext: &str) -> String {
-        std::fs::read_to_string(p.join("state").join("seat-now").join(format!("1ced7.{ext}"))).expect("r")
+        std::fs::read_to_string(
+            p.join("state")
+                .join("seat-now")
+                .join(format!("1ced7.{ext}")),
+        )
+        .expect("r")
     }
 
     #[test]
@@ -113,7 +120,10 @@ mod tests {
         let old = 1_794_311_000;
         let rec = json!({"at": old, "code": "1ced7", "item": "B9 開工", "pct": 20, "started_at": 1_794_274_991,
                          "state": "reply", "steps_done": 1, "steps_total": 5});
-        let line = format!("📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n", stamp(old));
+        let line = format!(
+            "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
+            stamp(old)
+        );
         let (_t, p) = setup(rec.clone(), &line);
         let now = old + 3600;
         refresh(&p, "1ced7", now).expect("refresh");
@@ -123,7 +133,10 @@ mod tests {
         assert_eq!(got, want);
         assert_eq!(
             read(&p, "line"),
-            format!("📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n", stamp(now))
+            format!(
+                "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
+                stamp(now)
+            )
         );
     }
 
@@ -138,7 +151,10 @@ mod tests {
         // idle and missing records are not touched
         let (_t, p) = setup(json!({"at": old, "idle": true}), "");
         assert!(refresh(&p, "1ced7", old + 60).is_err());
-        assert_eq!(read(&p, "json"), json!({"at": old, "idle": true}).to_string());
+        assert_eq!(
+            read(&p, "json"),
+            json!({"at": old, "idle": true}).to_string()
+        );
         let t = tempfile::tempdir().expect("tempdir");
         assert!(refresh(t.path(), "1ced7", old).is_err());
     }

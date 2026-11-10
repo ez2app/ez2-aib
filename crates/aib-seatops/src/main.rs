@@ -29,7 +29,9 @@ fn run(argv: &[String]) -> Result<String, (u8, String)> {
     use std::path::PathBuf;
 
     let usage = |m: String| Err((2, m));
-    if argv.first().map(String::as_str) != Some("dm") || argv.get(1).map(String::as_str) != Some("close") {
+    if argv.first().map(String::as_str) != Some("dm")
+        || argv.get(1).map(String::as_str) != Some("close")
+    {
         return usage("unknown command (dm close)".into());
     }
     let mut opt = std::collections::BTreeMap::<String, String>::new();
@@ -61,15 +63,24 @@ fn run(argv: &[String]) -> Result<String, (u8, String)> {
         evidence: opt.get("--evidence").cloned(),
         why: opt.get("--why").cloned(),
     };
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let env_path = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let env_path = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     let state = env_path("EZ2_AIB_STATE_ROOT")
         .or_else(|| env_path("EZ2_AIB_HOME"))
         .unwrap_or_else(|| home.join(".ez2-aib"));
     // relay files: <state>/pending, and <state>/instances/<cabin>/state/relay[/<YYYYMMDD>]
     let mut relay_dirs = vec![state.join("pending")];
     if let Ok(rd) = std::fs::read_dir(state.join("instances")) {
-        relay_dirs.extend(rd.filter_map(|e| e.ok()).map(|e| e.path().join("state").join("relay")));
+        relay_dirs.extend(
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path().join("state").join("relay")),
+        );
     }
     let roots = Roots {
         repo: env_path("EZ2_AIB_REPO").unwrap_or_else(|| home.join("ez2-aib")),
@@ -96,14 +107,25 @@ fn run(argv: &[String]) -> Result<String, (u8, String)> {
         Ok(c) => Ok(format!(
             "CLOSED {} ({})",
             c.id,
-            if c.done_kind == "reason" { "why" } else { "evidence" }
+            if c.done_kind == "reason" {
+                "why"
+            } else {
+                "evidence"
+            }
         )),
         Err(r) => {
             let rc = if r.broken { 3 } else { 2 };
             if json_out {
-                Err((rc, serde_json::json!({"ok": false, "reason": r.reason, "message": r.message}).to_string()))
+                Err((
+                    rc,
+                    serde_json::json!({"ok": false, "reason": r.reason, "message": r.message})
+                        .to_string(),
+                ))
             } else {
-                Err((rc, format!("NOT CLOSED {} :: {}: {}", req.id, r.reason, r.message)))
+                Err((
+                    rc,
+                    format!("NOT CLOSED {} :: {}: {}", req.id, r.reason, r.message),
+                ))
             }
         }
     }
@@ -115,7 +137,11 @@ fn run(_argv: &[String]) -> Result<String, (u8, String)> {
 }
 
 fn main() -> ExitCode {
-    let argv: Vec<String> = match std::env::args_os().skip(1).map(|a| a.into_string()).collect() {
+    let argv: Vec<String> = match std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect()
+    {
         Ok(v) => v,
         Err(a) => {
             eprintln!("aib-seatops: argument {a:?} is not UTF-8");

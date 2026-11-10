@@ -39,13 +39,32 @@ const MEASURED_SOURCES: [&str; 2] = ["pane_pid_chain", "bg_fork_chain"];
 /// Python `V2_FIELDS`: (field, default); `kind` defaults to "other", `attempts` to 0, the rest
 /// to null.
 const V2_DEFAULTS: [(&str, Option<&str>); 26] = [
-    ("thread", None), ("kind", Some("other")), ("sender_seat", None), ("human_id", None),
-    ("sender_source", None), ("sent_at", None), ("delivered_at", None), ("read_at", None),
-    ("done_at", None), ("done_evidence", None), ("archived_at", None), ("archived_why", None),
-    ("deleted_at", None), ("deleted_by", None), ("deleted_why", None), ("supersedes", None),
-    ("superseded_by", None), ("superseded_at", None), ("expires", None), ("expired", None),
-    ("expired_at", None), ("expired_why", None), ("attempts", Some("0")), ("hold_why", None),
-    ("hold_rc", None), ("held_at", None),
+    ("thread", None),
+    ("kind", Some("other")),
+    ("sender_seat", None),
+    ("human_id", None),
+    ("sender_source", None),
+    ("sent_at", None),
+    ("delivered_at", None),
+    ("read_at", None),
+    ("done_at", None),
+    ("done_evidence", None),
+    ("archived_at", None),
+    ("archived_why", None),
+    ("deleted_at", None),
+    ("deleted_by", None),
+    ("deleted_why", None),
+    ("supersedes", None),
+    ("superseded_by", None),
+    ("superseded_at", None),
+    ("expires", None),
+    ("expired", None),
+    ("expired_at", None),
+    ("expired_why", None),
+    ("attempts", Some("0")),
+    ("hold_why", None),
+    ("hold_rc", None),
+    ("held_at", None),
 ];
 /// Statuses Python's waiting tab can show; the selection file is dropped only when none is left.
 const WAITING_STATUSES: [&str; 4] = ["queued", "claimed", "delivered", "hold_human"];
@@ -118,14 +137,18 @@ fn broken(reason: &str, message: impl Into<String>) -> Refused {
 
 /// Python SEAT_RE: `^[0-9a-z]{4,8}$`.
 pub fn seat_ok(s: &str) -> bool {
-    (4..=8).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+    (4..=8).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
 }
 
 /// Python ITEM_RE: `^q_[0-9a-f]{16}$`.
 pub fn item_id_ok(s: &str) -> bool {
     s.len() == 18
         && s.starts_with("q_")
-        && s.bytes().skip(2).all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && s.bytes()
+            .skip(2)
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn hex_lower(s: &str, min: usize, max: usize) -> bool {
@@ -160,7 +183,9 @@ pub fn pr_url_ok(s: &str) -> bool {
 fn expand_home(p: &str) -> PathBuf {
     match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(h)) => PathBuf::from(h).join(rest),
-        _ if p == "~" => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
+        _ if p == "~" => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
         _ => PathBuf::from(p),
     }
 }
@@ -298,10 +323,14 @@ fn lock_file(path: &Path, timeout: Duration) -> Result<Held, Refused> {
 }
 
 fn lock_dir(dir: &Path, timeout: Duration) -> Result<Held, Refused> {
-    let f = File::open(dir).map_err(|e| broken("write_failed", format!("{}: {e}", dir.display())))?;
+    let f =
+        File::open(dir).map_err(|e| broken("write_failed", format!("{}: {e}", dir.display())))?;
     match flock_ex(&f, timeout) {
         Ok(()) => Ok(Held(f)),
-        Err(e) => Err(broken("write_failed", format!("{} folder lock: {e}", dir.display()))),
+        Err(e) => Err(broken(
+            "write_failed",
+            format!("{} folder lock: {e}", dir.display()),
+        )),
     }
 }
 
@@ -318,7 +347,11 @@ fn rand_hex(n: usize) -> String {
 fn replace_file(path: &Path, payload: &[u8]) -> Result<(), Refused> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("x");
-    let tmp = dir.join(format!(".{name}.tmp.{}.{}", std::process::id(), rand_hex(6)));
+    let tmp = dir.join(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        rand_hex(6)
+    ));
     let w = |e: std::io::Error| broken("write_failed", format!("{}: {e}", path.display()));
     let res = (|| {
         let mut f = OpenOptions::new()
@@ -465,7 +498,12 @@ fn audit(roots: &Roots, seat: &str, fields: Value) {
         }
     }
     let path = roots.seat_dir(seat).join("audit.jsonl");
-    if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(path) {
+    if let Ok(mut f) = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+    {
         let _ = f.write_all(format!("{rec}\n").as_bytes());
     }
 }
@@ -488,18 +526,29 @@ pub fn close_with(
         return Err(refused("usage", format!("bad --seat {:?}", req.seat)));
     }
     if !item_id_ok(&req.id) {
-        return Err(refused("usage", format!("bad --id {:?} (q_<16 hex>)", req.id)));
+        return Err(refused(
+            "usage",
+            format!("bad --id {:?} (q_<16 hex>)", req.id),
+        ));
     }
     let why = req.why.as_deref().map(str::trim).filter(|w| !w.is_empty());
-    let ev = req.evidence.as_deref().map(str::trim).filter(|e| !e.is_empty());
+    let ev = req
+        .evidence
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty());
     let item_path = roots.seat_dir(&req.seat).join(format!("{}.json", req.id));
     // 1. snapshot outside the lock: the relay is read, --expect is in the content
-    let snap: Snapshot = prepare_from_paths(&item_path, &roots.relay_dirs, &req.id, req.rev, &req.expect)
-        .map_err(|e| match e {
-            "file unreadable" => refused("not_found", format!("{}: no such dm", req.id)),
-            "revision mismatch" => refused("rev_mismatch", "the dm changed since you read it (rev)"),
-            other => refused("snapshot", other),
-        })?;
+    let snap: Snapshot =
+        prepare_from_paths(&item_path, &roots.relay_dirs, &req.id, req.rev, &req.expect).map_err(
+            |e| match e {
+                "file unreadable" => refused("not_found", format!("{}: no such dm", req.id)),
+                "revision mismatch" => {
+                    refused("rev_mismatch", "the dm changed since you read it (rev)")
+                }
+                other => refused("snapshot", other),
+            },
+        )?;
     // 2. evidence is checked before the lock (it may run git), as #552 r1 L2 does
     let ev_kind = ev.and_then(|e| evidence_kind(roots, &req.seat, e));
     let done_kind = match (ev_kind, why) {
@@ -518,7 +567,11 @@ pub fn close_with(
         audit(roots, &req.seat, json!({"id": req.id, "to": "done", "actor": format!("seat:{}", req.seat), "ok": false, "reason": r.reason}));
     })?;
     let refuse_in = |rs: &str, msg: String, from: Option<&str>| {
-        audit(roots, &req.seat, json!({"id": req.id, "from": from, "to": "done", "actor": format!("seat:{}", req.seat), "ok": false, "reason": rs, "rev": req.rev}));
+        audit(
+            roots,
+            &req.seat,
+            json!({"id": req.id, "from": from, "to": "done", "actor": format!("seat:{}", req.seat), "ok": false, "reason": rs, "rev": req.rev}),
+        );
         refused(rs, msg)
     };
     verify_snapshot_from_paths(&snap, &item_path, &roots.relay_dirs, &req.expect)
@@ -530,21 +583,52 @@ pub fn close_with(
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     let from = s(&item, "status").unwrap_or_default();
     if s(&item, "schema").as_deref() != Some(ITEM_SCHEMA) {
-        return Err(refuse_in("use_python", "an old (v1) dm: close it with aib dm-queue read --done".into(), Some(&from)));
+        return Err(refuse_in(
+            "use_python",
+            "an old (v1) dm: close it with aib dm-queue read --done".into(),
+            Some(&from),
+        ));
     }
-    if item.get("global").is_some_and(|g| !g.is_null() && g != &json!(false))
-        || item.get("im").is_some_and(|g| !g.is_null() && g != &json!(false))
+    if item
+        .get("global")
+        .is_some_and(|g| !g.is_null() && g != &json!(false))
+        || item
+            .get("im")
+            .is_some_and(|g| !g.is_null() && g != &json!(false))
         || s(&item, "sender_kind").as_deref() == Some("external_im")
     {
-        return Err(refuse_in("use_python", "a global / Telegram dm (it sends a receipt): close it with aib dm-queue read --done".into(), Some(&from)));
+        return Err(refuse_in(
+            "use_python",
+            "a global / Telegram dm (it sends a receipt): close it with aib dm-queue read --done"
+                .into(),
+            Some(&from),
+        ));
     }
     match from.as_str() {
         "delivered" | "read" => {}
-        "deleted" => return Err(refuse_in("not_found", "this dm is no longer there".into(), Some(&from))),
-        "queued" | "claimed" | "hold_human" => {
-            return Err(refuse_in("use_python", format!("the dm is {from}: aib dm-queue read --done takes it off the send queue first"), Some(&from)))
+        "deleted" => {
+            return Err(refuse_in(
+                "not_found",
+                "this dm is no longer there".into(),
+                Some(&from),
+            ))
         }
-        other => return Err(refuse_in("transition", format!("a dm that is {other} cannot be closed"), Some(&from))),
+        "queued" | "claimed" | "hold_human" => {
+            return Err(refuse_in(
+                "use_python",
+                format!(
+                    "the dm is {from}: aib dm-queue read --done takes it off the send queue first"
+                ),
+                Some(&from),
+            ))
+        }
+        other => {
+            return Err(refuse_in(
+                "transition",
+                format!("a dm that is {other} cannot be closed"),
+                Some(&from),
+            ))
+        }
     }
     std::thread::sleep(hold);
     // Python `_upgrade_item` fills the v2 fields an item lacks before it writes the item back
