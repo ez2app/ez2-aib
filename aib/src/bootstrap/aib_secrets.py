@@ -112,7 +112,7 @@ LAYOUT = (
       ("SSH_HOST_SIN01_KEY", "~/.ssh 檔名(SIN01)", "dev", "dev", False))),
     # 11-08 @4542e(代管節點,Andy「我不想我去操作」):供應商後台 webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
     #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
-    #   不送伺服器(被救的那台不能是唯一副本);讀端只給 Robot API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
+    #   不送伺服器(被救的那台不能是唯一副本);讀端只給後台 API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
     #   #528 審(ebb36 / f1fae 定):同機每個席都讀得到這檔 ⇒ 會改機器的 rescue / reset --apply 在讀值前走 approve_gate
     #   「cloud_robot.apply」彈窗 + Touch ID(tools/cloud-host/robot.py);status / keys 唯讀不用。缺值不補填(NO_FILL_FILES)、
     #   只登記 HETZNER_ROBOT_ 前綴(NO_SEGMENT_PREFIX_FILES),HETZNER_CLOUD_… 要另開一格。
