@@ -16,7 +16,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   dirty is refused; one that does not contain the host's build (`not_a_descendant`) or a host
   without build info (`current_unknown`) passes only with `--allow-downgrade WHY` /
   `--allow-unknown-current WHY`, and the reason is in the JSON answer the approval is made from
-  (`allowed`; a reason given but not needed is in `unused_allow`). Every `GIT_*` variable is
+  (`allowed`; a reason given but not needed is in `unused_allow`). With `--candidate-bin` the
+  answer carries the file's `candidate_sha256`, so the file installed can be the file checked. Every `GIT_*` variable is
   dropped before git is asked.
   Exit 0 ok, 2 refused, 3 git could not answer (fetch first), 64 usage.
 - `aibd ctl web [--no-open]` (also `aib web`, which hands over to it; aibd from `AIBD_BIN` or

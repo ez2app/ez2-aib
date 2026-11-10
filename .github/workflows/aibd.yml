@@ -1185,6 +1185,12 @@ jobs:
           hk 'pub const MAIN_REF: &str = "refs/remotes/origin/main";' \
              'pub const MAIN_REF: &str = "HEAD"; // knife' \
              the_main_line_is_origin_main_and_not_what_is_checked_out
+          # H6 the answer does not name the file it checked (4542e, #650 L1: A checked, B swapped in)
+          python3 -I scripts/knife.py crates/aib-release/src/main.rs \
+            '            Ok((info, Some(host_build::sha256_hex(&bytes))))' \
+            '            Ok((info, None)) // knife' \
+            --expect-fail a_candidate_file_is_named_by_its_sha256 \
+            -- cargo test -p aib-release --locked --bin aib-release a_candidate_file_is_named_by_its_sha256
       # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
       # and health stays public and minimal.
       - name: aib web knives (macOS)

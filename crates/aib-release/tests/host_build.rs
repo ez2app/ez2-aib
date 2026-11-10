@@ -5,8 +5,8 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aib_release::host_build::{
-    check, exit_code, info_in_binary, parse_info, to_json, BuildInfo, Current, GitCli, Request,
-    Verdict, MAIN_REF,
+    check, exit_code, info_in_binary, parse_info, sha256_hex, to_json, BuildInfo, Current, GitCli,
+    Request, Verdict, MAIN_REF,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -104,6 +104,7 @@ fn built(commit: &str) -> BuildInfo {
 fn ask(candidate: BuildInfo, current: Current) -> Request {
     Request {
         candidate,
+        candidate_sha256: None,
         current,
         main: "main".into(),
         allow_downgrade: None,
@@ -292,4 +293,9 @@ fn the_host_line_reads_back() {
     file.extend_from_slice(printed.as_bytes());
     file.extend_from_slice(b"\0\0");
     assert_eq!(info_in_binary(&file).unwrap(), built(&l.c));
+    // the hash the approval and the swap step compare is the usual sha256 of the file
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }

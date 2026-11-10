@@ -180,17 +180,22 @@ fn why(flag: &str, v: String) -> Result<String, String> {
     Ok(t.to_owned())
 }
 
+/// The build info, and the file's sha256 when it came from a file (read once: the hash is
+/// of the same bytes the build info was read from).
 fn info_of(
     flag: &str,
     file: Option<String>,
     line: Option<String>,
-) -> Result<host_build::BuildInfo, String> {
+) -> Result<(host_build::BuildInfo, Option<String>), String> {
     match (file, line) {
         (Some(f), None) => {
             let bytes = std::fs::read(&f).map_err(|e| format!("{flag}-bin {f}: {e}"))?;
-            host_build::info_in_binary(&bytes).map_err(|e| format!("{flag}-bin {f}: {e}"))
+            let info =
+                host_build::info_in_binary(&bytes).map_err(|e| format!("{flag}-bin {f}: {e}"))?;
+            Ok((info, Some(host_build::sha256_hex(&bytes))))
         }
         (None, Some(l)) => host_build::parse_info(&l)
+            .map(|i| (i, None))
             .ok_or_else(|| format!("{flag}-info: not a build info line: {l:?}")),
         _ => Err(format!("give exactly one of {flag}-bin and {flag}-info")),
     }
@@ -219,11 +224,11 @@ fn parse_host_build(argv: &[String]) -> Result<(std::path::PathBuf, host_build::
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let candidate = info_of("--candidate", cbin, cinfo)?;
+    let (candidate, candidate_sha256) = info_of("--candidate", cbin, cinfo)?;
     let current = match (hbin, hinfo, hunknown) {
         (None, None, true) => host_build::Current::Unknown,
         (f, l, false) if f.is_some() != l.is_some() => {
-            host_build::Current::Known(info_of("--current", f, l)?)
+            host_build::Current::Known(info_of("--current", f, l)?.0)
         }
         _ => {
             return Err(
@@ -235,6 +240,7 @@ fn parse_host_build(argv: &[String]) -> Result<(std::path::PathBuf, host_build::
         dir.unwrap_or_else(|| ".".into()),
         // the main line is not the caller's to name (2240e, #650 M1)
         host_build::Request {
+            candidate_sha256,
             allow_downgrade: down,
             allow_unknown_current: unknown,
             ..host_build::Request::for_host(candidate, current)
@@ -336,6 +342,41 @@ mod tests {
         ] {
             assert!(parse_host_build(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// #650 L1 (4542e): the answer names the file it checked, by the sha256 of the bytes the
+    /// build info was read from, so the swap step can install only that file.
+    #[test]
+    fn a_candidate_file_is_named_by_its_sha256() {
+        let bytes = format!("\x7fELF\0aib-build-info version=1.0.0 commit={SHA} dirty=0;\0");
+        let path = std::env::temp_dir().join(format!(
+            "aib-release-cand-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, bytes.as_bytes()).unwrap();
+        let argv: Vec<String> = [
+            "host-build",
+            "--candidate-bin",
+            path.to_str().unwrap(),
+            "--current-unknown",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let got = parse_host_build(&argv);
+        let _ = std::fs::remove_file(&path);
+        let (_, req) = got.unwrap();
+        assert_eq!(
+            req.candidate_sha256.as_deref(),
+            Some(host_build::sha256_hex(bytes.as_bytes()).as_str())
+        );
+        let line = format!("version=1.0.0 commit={SHA} dirty=0");
+        let argv: Vec<String> = ["host-build", "--candidate-info", &line, "--current-unknown"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(parse_host_build(&argv).unwrap().1.candidate_sha256, None);
     }
 
     #[test]

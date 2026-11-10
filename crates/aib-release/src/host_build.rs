@@ -98,6 +98,15 @@ pub fn parse_info(line: &str) -> Option<BuildInfo> {
 
 /// The build info written into a built file (any platform's: it is read as
 /// bytes, never run). Every copy in the file must say the same thing.
+/// sha256 of a file's bytes, lowercase hex: what `shasum -a 256` / `sha256sum` print.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn info_in_binary(bytes: &[u8]) -> Result<BuildInfo, String> {
     let mark = MARK.as_bytes();
     let mut found: Option<BuildInfo> = None;
@@ -146,6 +155,10 @@ pub enum Current {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub candidate: BuildInfo,
+    /// sha256 of the candidate file, when it was read from one (`--candidate-bin`): the
+    /// approval names this file, and the swap step installs only a file with the same hash
+    /// (4542e, #650 L1: otherwise A is checked and B goes on).
+    pub candidate_sha256: Option<String>,
     pub current: Current,
     /// The main line; [`Request::for_host`] sets [`MAIN_REF`].
     pub main: String,
@@ -160,6 +173,7 @@ impl Request {
     pub fn for_host(candidate: BuildInfo, current: Current) -> Self {
         Self {
             candidate,
+            candidate_sha256: None,
             current,
             main: MAIN_REF.to_owned(),
             allow_downgrade: None,
@@ -324,6 +338,7 @@ pub fn to_json(req: &Request, rep: &Report) -> Value {
         "main_ref": req.main,
         "main": rep.main,
         "candidate": info(&req.candidate),
+        "candidate_sha256": req.candidate_sha256,
         "current": match &req.current {
             Current::Known(i) => info(i),
             Current::Unknown => Value::Null,
