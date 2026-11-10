@@ -106,7 +106,9 @@ pub fn version_key(v: &str) -> Option<(u64, u64, u64, u64)> {
 /// `Err` when `wanted` is older than `current` and no `--allow-downgrade`.
 pub fn check_downgrade(wanted: &str, current: &str, allow: bool) -> Result<(), String> {
     let (Some(w), Some(c)) = (version_key(wanted), version_key(current)) else {
-        return Err(format!("cannot compare versions {wanted:?} and {current:?}"));
+        return Err(format!(
+            "cannot compare versions {wanted:?} and {current:?}"
+        ));
     };
     if w < c && !allow {
         return Err(format!(
@@ -296,7 +298,11 @@ pub fn main(args: &[String]) -> Result<u8, String> {
     }
 
     // 2. no accidental downgrade
-    check_downgrade(&plan.version, env!("CARGO_PKG_VERSION"), plan.allow_downgrade)?;
+    check_downgrade(
+        &plan.version,
+        env!("CARGO_PKG_VERSION"),
+        plan.allow_downgrade,
+    )?;
 
     // 3. fetch the sums first: a wrong version / missing release is found before the big file.
     //    pid + start time: a temp dir left by an earlier killed run cannot collide (c477a N2).
@@ -563,7 +569,11 @@ mod tests {
             vec!["0.2.0", "--dest", "relative/path"],
             // #612 c477a M1: no other source over the network — not https, not another repo
             vec!["0.2.0", "--base-url", "https://example.com/x"],
-            vec!["0.2.0", "--base-url", "https://github.com/ez2app/ez2-aib/releases/download/cloud-host-v0.2.0"],
+            vec![
+                "0.2.0",
+                "--base-url",
+                "https://github.com/ez2app/ez2-aib/releases/download/cloud-host-v0.2.0",
+            ],
             vec!["0.2.0", "--repo", "me/fork"],
             vec!["0.2.0", "--base-url", "http://github.com/x"],
             vec!["0.2.0", "--base-url", "ftp://x"],
