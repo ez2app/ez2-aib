@@ -14,7 +14,7 @@ k crates/aibd/src/static_files.rs '    if assets.is_empty() {' '    if assets.is
 k crates/aibd/src/static_files.rs '    if !hashed && etag_matches(h, a.etag) {' '    if !hashed && etag_matches(h, a.etag) && false { // knife' \
   a_matching_if_none_match_gives_304_with_no_body
 # T3 hashed assets lose their one-year immutable cache
-k crates/aibd/src/static_files.rs '        out.header(header::CACHE_CONTROL, IMMUTABLE)' '        out.header(header::CACHE_CONTROL, "no-cache") // knife' \
+k crates/aibd/src/static_files.rs '        out.header(header::CACHE_CONTROL, IMMUTABLE)' '        out.header(header::CACHE_CONTROL, if IMMUTABLE.is_empty() { IMMUTABLE } else { "no-cache" }) // knife: IMMUTABLE stays used (-D warnings)' \
   hashed_assets_are_immutable_for_a_year
 # T4 br is sent to a client that did not ask for it
 k crates/aibd/src/static_files.rs '        (Some(b), _) if accepts(h, "br") => (b, Some("br")),' '        (Some(b), _) if accepts(h, "br") || true => (b, Some("br")), // knife' \
