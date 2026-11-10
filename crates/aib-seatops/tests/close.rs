@@ -360,6 +360,27 @@ fn closes_of(q: &Q, i: &str) -> Vec<Value> {
         .collect()
 }
 
+/// True once someone else holds the seat's transition lock: a separate open of the file gets
+/// WouldBlock (flock is per open file, so this works inside one process too). Spins with
+/// `yield_now`, no sleep; gives up after `limit`.
+fn wait_until_locked(roots: &Roots, limit: Duration) -> bool {
+    let p = roots.seat_dir(SEAT).join("transition.lock");
+    let until = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < until {
+        if let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).open(&p) {
+            match f.try_lock() {
+                Err(std::fs::TryLockError::WouldBlock) => return true,
+                Ok(()) => {
+                    let _ = f.unlock();
+                }
+                Err(std::fs::TryLockError::Error(_)) => {}
+            }
+        }
+        std::thread::yield_now();
+    }
+    false
+}
+
 /// S2: Rust holds the seat's transition lock while Python tries to close the same dm. Python
 /// must wait and then find it closed; without the lock both would write `done`.
 #[test]
@@ -376,9 +397,11 @@ fn python_waits_for_a_rust_close_of_the_same_dm() {
                 &|| {},
             )
         });
-        // ADR 0005 named exception (test only): give the Rust close time to take the lock
-        #[allow(clippy::disallowed_methods)]
-        std::thread::sleep(Duration::from_millis(300)); // Rust is inside the lock now
+        // a signal, not a guess (a63ab 22:28, #614): go on only once Rust holds the lock
+        assert!(
+            wait_until_locked(&q.roots, Duration::from_secs(10)),
+            "the Rust close never held the seat's transition lock"
+        );
         py.send(&[id(1)]);
         assert!(rust.join().expect("join").is_ok());
     });
