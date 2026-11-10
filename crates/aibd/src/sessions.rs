@@ -2304,6 +2304,9 @@ mod tests {
             Some(THERMAL_RETRY_AFTER_SECS)
         );
         let other = ApiError::new(ErrorCode::ShuttingDown, "x").into_response();
-        assert!(other.headers().get(axum::http::header::RETRY_AFTER).is_none());
+        assert!(other
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none());
     }
 }
