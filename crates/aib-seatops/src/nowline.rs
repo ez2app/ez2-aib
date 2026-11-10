@@ -14,9 +14,11 @@ use std::path::Path;
 
 /// seat_now `_stamp`: `MM-DD HH:MM` in local time (the TZ this process runs in, like Python's
 /// `time.localtime`). Read from `date(1)` so the crate stays free of `unsafe` (workspace
-/// `unsafe_code = "forbid"`; localtime_r is the only libc way). BSD / macOS take `-r EPOCH`;
-/// GNU takes `-d @EPOCH` (its `-r` names a file, so the form is picked by the target).
-pub fn stamp(epoch: u64) -> Result<String, String> {
+/// `unsafe_code = "forbid"`; localtime_r is the only libc way), as aib-lease `iso` does. BSD /
+/// macOS take `-r EPOCH`; GNU takes `-d @EPOCH` (its `-r` names a file, so the form is picked
+/// by the target). No `date`, or an odd answer ⇒ UTC ([`stamp_utc`]): the close never fails on
+/// it; at worst the status line does not match and is left as it is.
+pub fn stamp(epoch: u64) -> String {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let args = ["-d".to_string(), format!("@{epoch}")];
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -26,22 +28,39 @@ pub fn stamp(epoch: u64) -> Result<String, String> {
         .arg("+%m-%d %H:%M")
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("date: {e}"))?;
-    let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+        .output();
+    if let Ok(out) = out {
+        let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+        if out.status.success() && stamp_shape(&s) {
+            return s;
+        }
+    }
+    stamp_utc(epoch)
+}
+
+fn stamp_shape(s: &str) -> bool {
     let b = s.as_bytes();
-    let shape = b.len() == 11
+    b.len() == 11
         && b.iter().enumerate().all(|(i, c)| match i {
             2 => *c == b'-',
             5 => *c == b' ',
             8 => *c == b':',
             _ => c.is_ascii_digit(),
-        });
-    if out.status.success() && shape {
-        Ok(s)
-    } else {
-        Err(format!("date gave {s:?} for {epoch}"))
-    }
+        })
+}
+
+/// UTC fallback (`date` missing): civil-from-days, no timezone database (aib-lease `iso_utc`).
+pub fn stamp_utc(epoch: u64) -> String {
+    let days = (epoch / 86_400) as i64;
+    let secs = epoch % 86_400;
+    let z = days + 719_468;
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{m:02}-{d:02} {:02}:{:02}", secs / 3600, (secs / 60) % 60)
 }
 
 fn replace(path: &Path, payload: &[u8]) -> std::io::Result<()> {
@@ -79,8 +98,7 @@ pub fn refresh(state: &Path, seat: &str, now: u64) -> Result<(), String> {
         .get("at")
         .and_then(Value::as_u64)
         .ok_or("the aib now record has no time")?;
-    // both times before anything is written: if `date` fails, neither file changes
-    let (old_s, new_s) = (stamp(old)?, stamp(now)?);
+    let (old_s, new_s) = (stamp(old), stamp(now));
     // the folder lock atomic_json takes, so a concurrent `aib now` is not overwritten half-way
     let d = File::open(&dir).map_err(|e| e.to_string())?;
     // flock(LOCK_EX) on the folder, released when `d` is closed
@@ -134,13 +152,22 @@ mod tests {
     }
 
     #[test]
+    fn the_utc_fallback_is_civil_time() {
+        assert_eq!(stamp_utc(0), "01-01 00:00");
+        // 2026-11-11 03:00 Taipei = 2026-11-10 19:00 UTC
+        assert_eq!(stamp_utc(1_794_337_200), "11-10 19:00");
+        assert_eq!(stamp_utc(1_835_481_599), "02-29 23:59"); // 2028 is a leap year
+        assert!(stamp_shape(&stamp(1_794_337_200)));
+    }
+
+    #[test]
     fn only_the_time_changes() {
         let old = 1_794_311_000;
         let rec = json!({"at": old, "code": "1ced7", "item": "B9 開工", "pct": 20, "started_at": 1_794_274_991,
                          "state": "reply", "steps_done": 1, "steps_total": 5});
         let line = format!(
             "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
-            stamp(old).expect("stamp")
+            stamp(old)
         );
         let (_t, p) = setup(rec.clone(), &line);
         let now = old + 3600;
@@ -153,7 +180,7 @@ mod tests {
             read(&p, "line"),
             format!(
                 "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
-                stamp(now).expect("stamp")
+                stamp(now)
             )
         );
     }
