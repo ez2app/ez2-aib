@@ -420,13 +420,25 @@ jobs:
              '            if said("provider_check") && exit == 0 { // knife' \
              every_answer_has_its_sentence
           # customer side: a request not offered yet is sent (Andy 11-10: hidden)
-          ck client.rs '    if !parse_request(line).is_ok_and(Request::offered) {' \
-             '    if !parse_request(line).is_ok_and(|r| r.offered() || true) { // knife' \
+          ck client.rs '    if !asked.offered() {' \
+             '    if !asked.offered() && false { // knife' \
              a_request_the_host_would_refuse_is_not_sent
           # customer side: a request the host would refuse is sent all the same
-          ck client.rs '    parse_request(line).map_err(NotSent::Request)?;' \
-             '    let _ = parse_request(line).map_err(NotSent::Request); // knife' \
+          ck client.rs '        _ => parse_request(line).map(Line::Site),' \
+             '        _ => parse_request(line).or(Ok(Request::Status)).map(Line::Site), // knife' \
              a_request_the_host_would_refuse_is_not_sent
+          # customer side: under a customer key a request not offered yet is sent (4.5 section 4)
+          ck client.rs '                request.offered()' \
+             '                request.offered() || matches!(self, Line::Owner(_)) // knife' \
+             a_customer_keys_lines_are_checked_by_their_own_grammar
+          # customer side: any first word is read as a site code (site status site3 would name a site)
+          ck client.rs '                && parse_request(&rest.join(" ")).is_ok() =>' \
+             '                && (parse_request(&rest.join(" ")).is_ok() || true) => // knife' \
+             a_code_in_front_of_a_request_names_the_site
+          # site record: a record that names no tenant belongs to the tenant called like the site
+          ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
+             '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
+             tenant_and_disk_are_optional_but_typed
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -470,9 +482,19 @@ jobs:
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
              a_tenant_key_reaches_its_own_sites_only
           # customer key: a tenant id equal to a site code owns the site that names no tenant
-          hk customercmd.rs '        if rec.get("tenant_id").and_then(Value::as_str) == Some(tenant) {' \
-             '        if aib_cloud::site::record_tenant(&rec) == Some(tenant) { // knife' \
+          hk customercmd.rs '        if aib_cloud::site::record_tenant(&rec) == Some(tenant) {' \
+             '        if aib_cloud::site::record_tenant(&rec).or(rec.get("site").and_then(Value::as_str)) == Some(tenant) { // knife' \
              a_tenant_key_reaches_its_own_sites_only
+          # customer key: the site list of the entry does not narrow (c477a: one member, some sites)
+          hk customercmd.rs '            if scope.is_none_or(|list| list.contains(&spec.code.as_str())) {' \
+             '            if scope.is_none_or(|list| list.contains(&spec.code.as_str()) || true) { // knife' \
+             a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # customer key: a site list that is not one is taken as it is
+          hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
+             the_site_list_of_an_entry_is_codes_or_an_error
+          # usage: a site that names no tenant is summed with the tenant called like it
+          hk usagecmd.rs '        None => format!("site:{site}"),' '        None => format!("tenant:{site}"), // knife' \
+             a_site_without_a_tenant_is_never_summed_with_a_tenant_of_its_name
           # customer key: the roles in the entry are not asked
           hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
              '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
