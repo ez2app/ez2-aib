@@ -7,9 +7,10 @@
 //!
 //! judge prints one JSON line per red job attempt (every run, every attempt) on the PR's
 //! current head, or with --head on an earlier commit of the PR (#644: the reds to register
-//! are often on an old head; its files are read from compare base...head) and, with --register, appends the ones not already there. --sha records a main push
-//! as precedent only. suggest prints fingerprints that keep going red (≥3 reds or ≥2 platforms,
-//! from ≥2 heads) for dispatch. Exit: 0 done (whatever the verdicts; there is no "pass"),
+//! are often on an old head; its files are read from compare base...head). With --register
+//! it appends the ones not already there. --sha records a main push as precedent only.
+//! suggest prints fingerprints that keep going red (≥3 reds or ≥2 platforms, from ≥2 heads)
+//! for dispatch. Exit: 0 done (whatever the verdicts; there is no "pass"),
 //! 2 usage, 3 a read failed or the register is unreadable. Never writes to GitHub.
 
 use aib_cireuse::gh::{FileSource, GhCli, Source};
