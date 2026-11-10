@@ -2,9 +2,10 @@
 //! What a site's container is **not** shown of the machine underneath (4.4.1 §23: the
 //! plan does not disclose the physical host; Andy 11-10: "CPU 型號先遮、能遮的預設全遮").
 //!
-//! Measured in a site CT on the first host (11-10, read-only): the CPU's model name, the
-//! provider's name and the board's model in DMI, the BIOS vendor, the disks' model, the
-//! RAID layout, the host's boot command line and its hardware sensors were all readable.
+//! Measured in a site CT (11-10, read-only): the CPU's model name, the provider's name
+//! and the board's model in DMI, the BIOS vendor, the disks' model, the RAID layout, the
+//! host's boot command line and its hardware sensors were all readable. (What exactly
+//! was read is in the private spec, not here: this repository is public.)
 //!
 //! This module says what is put in their place; the host shell does the mounting when
 //! the container starts. No I/O.
@@ -210,16 +211,16 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
-    // the first processor of the first host, flags shortened
-    const HOST: &str = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\nmodel\t\t: 113\nmodel name\t: AMD Ryzen 5 3600 6-Core Processor\nstepping\t: 0\nmicrocode\t: 0x8701034\ncpu MHz\t\t: 4139.606\ncache size\t: 512 KB\nphysical id\t: 0\nsiblings\t: 12\ncore id\t\t: 0\ncpu cores\t: 6\napicid\t\t: 0\ninitial apicid\t: 0\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 16\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr sse sse2 ht syscall nx\nbugs\t\t: sysret_ss_attrs spectre_v1 spectre_v2 retbleed\nbogomips\t: 7199.73\nTLB size\t: 3072 4K pages\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 43 bits physical, 48 bits virtual\npower management: ts ttp tm hwpstate\n\nprocessor\t: 1\nmodel name\t: AMD Ryzen 5 3600 6-Core Processor\n\n";
+    // shaped like a real host's first processor (made-up model; flags shortened)
+    const HOST: &str = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\nmodel\t\t: 113\nmodel name\t: Example Corp Model 9000 8-Core Processor\nstepping\t: 0\nmicrocode\t: 0x8701034\ncpu MHz\t\t: 4139.606\ncache size\t: 512 KB\nphysical id\t: 0\nsiblings\t: 12\ncore id\t\t: 0\ncpu cores\t: 6\napicid\t\t: 0\ninitial apicid\t: 0\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 16\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr sse sse2 ht syscall nx\nbugs\t\t: sysret_ss_attrs spectre_v1 spectre_v2 retbleed\nbogomips\t: 7199.73\nTLB size\t: 3072 4K pages\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 43 bits physical, 48 bits virtual\npower management: ts ttp tm hwpstate\n\nprocessor\t: 1\nmodel name\t: Example Corp Model 9000 8-Core Processor\n\n";
 
     #[test]
     fn the_machine_is_not_named_in_cpuinfo() {
         let text = cpuinfo(HOST, 2).unwrap();
         for word in [
-            "Ryzen",
-            "AMD R",
-            "3600",
+            "Example",
+            "Corp",
+            "9000",
             "0x8701034",
             "512 KB",
             "retbleed",
@@ -249,7 +250,8 @@ mod tests {
         assert!(!is_masked_cpuinfo(HOST));
         assert!(!is_masked_cpuinfo(""));
         // one honest processor among masked ones is not masked
-        let mixed = alloc::format!("{text}model name\t: AMD Ryzen 5 3600 6-Core Processor\n");
+        let mixed =
+            alloc::format!("{text}model name\t: Example Corp Model 9000 8-Core Processor\n");
         assert!(!is_masked_cpuinfo(&mixed));
     }
 
