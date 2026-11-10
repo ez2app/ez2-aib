@@ -184,6 +184,14 @@ jobs:
           tk '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) {' \
             '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) && false { // knife' \
             a17b_nan_or_infinite_is_corrupt
+          # K13 (#615 33e28) samples never count as continuous
+          tk '            [.., (a, _), (b, _)] => b - a <= SUSTAIN_GAP_S,' \
+            '            [.., (_a, _), (_b, _)] => false, // knife' \
+            l2_no_pressure_continuous_spike_not_reaped
+          # K14 (R1 PR 3 Q2) a lone spike with pressure unreadable reaps again (1.x)
+          tk '    if pressure.is_none() && level == Level::Crit {' \
+            '    if pressure.is_none() && level == Level::Crit && false { // knife' \
+            l1_fallback_lone_spike_never_reaps
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
