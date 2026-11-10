@@ -652,7 +652,9 @@ pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"];
 /// Run one change as an operation whose plan reads nothing of the host (tests, and plans
 /// built only from the command line). Anything that decides from host state — a
 /// Caddyfile, a site record, which CTs and IPs are in use, the quarantine marks — must be
-/// read under the lock: use [`run_op_prepared`] (c477a #635 seg. 2 M1).
+/// read under the lock: use [`run_op_prepared`] (c477a #635 seg. 2 M1). Every command
+/// the binary has decides from host state, so only the tests use this one.
+#[cfg(test)]
 pub fn run_op<T>(
     place: &OpPlace,
     command: &str,
