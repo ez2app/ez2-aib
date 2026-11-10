@@ -109,7 +109,8 @@ jobs:
           export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$h=/home --remap-path-prefix=$c=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src"
           cargo build --release --locked -p aibd -p aib-fixture-tree --target "$TARGET"
           bin="target/${TARGET}/release/aibd${EXE}"
-          if grep -a -q -F -e "$h" -e "$GITHUB_WORKSPACE" "$bin"; then
+          [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
+          if grep -a -q -F -e "$h" -e "$c" -e "$GITHUB_WORKSPACE" "$bin"; then
             echo "::error::a build machine path is in $bin"; exit 1
           fi
       - name: package

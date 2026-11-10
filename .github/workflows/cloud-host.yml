@@ -127,7 +127,9 @@ jobs:
           RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$HOME=/home --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src" \
             cargo build --release --locked -p aib-cloud-host --target "$TARGET"
           bin="target/$TARGET/release/aib-cloud-host"
-          if grep -a -q -F -e "$HOME/" -e "$GITHUB_WORKSPACE" "$bin"; then
+          c="${CARGO_HOME:-$HOME/.cargo}"
+          [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
+          if grep -a -q -F -e "$HOME/" -e "$c" -e "$GITHUB_WORKSPACE" "$bin"; then
             echo "::error::a build machine path is in $bin"; exit 1
           fi
       - name: smoke (static, --version exact)
