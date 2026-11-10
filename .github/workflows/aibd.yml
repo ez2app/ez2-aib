@@ -267,6 +267,10 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # site drift: any path on the mask's hook key passes (33e28: only the wrapper's)
+          ck site.rs '        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {' \
+             '        if k == "lxc.hook.mount" && (mask_hook_ok(v) || true) && mask_hooks == 1 { // knife' \
+             s6_each_drift_is_named
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
