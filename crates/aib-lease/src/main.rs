@@ -9,7 +9,8 @@
 //!   aib-lease heartbeat --run-id ID
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
 //!   aib-lease classify --host H [--step CMD]... [-- CMD ARGS...]   (D7, see `aib_lease::classify`)
-//!   aib-lease insert acquire --owner O --what W --run-id ID --pid P --hard-timeout-s S   (D4, off by default)
+//!   aib-lease insert acquire --owner O --what W --run-id ID --pid P --hard-timeout-s S
+//!       --reason TEXT --est-min M   (D4, off by default; M <= 15, at most 2 per long holder)
 //!   aib-lease insert release --run-id ID
 //!   global: --now EPOCH (fixtures)
 //!
@@ -41,6 +42,8 @@ struct Args {
     cwd: Option<String>,
     notify: Option<String>,
     hard_timeout_s: Option<i64>,
+    reason: Option<String>,
+    est_min: Option<i64>,
 }
 
 fn int(k: &str, v: String) -> Result<i64, String> {
@@ -68,6 +71,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--cwd" => a.cwd = Some(val()?),
             "--notify" => a.notify = Some(val()?),
             "--hard-timeout-s" => a.hard_timeout_s = Some(int(k, val()?)?),
+            "--reason" => a.reason = Some(val()?),
+            "--est-min" => a.est_min = Some(int(k, val()?)?),
             "--exclusive" => a.exclusive = true,
             "--priority" => a.priority = true,
             "--all" => a.all = true,
@@ -134,6 +139,8 @@ fn run(a: &Args) -> Result<Outcome, String> {
             let args = InsertArgs {
                 holder: a.holder.clone(),
                 hard_timeout_s: a.hard_timeout_s.ok_or("--hard-timeout-s is required")?,
+                reason: a.reason.clone().unwrap_or_default(),
+                est_min: a.est_min,
             };
             Ok(insert_acquire(&paths, &p, now, &args))
         }

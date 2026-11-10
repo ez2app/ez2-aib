@@ -97,16 +97,17 @@ fn long(ps: &Paths, p: &Fake, exclusive: bool) -> Outcome {
     )
 }
 
+fn args(run_id: &str, pid: i64) -> InsertArgs {
+    InsertArgs {
+        holder: holder(run_id, pid),
+        hard_timeout_s: 600,
+        reason: "EU02 receipt before tonight".into(),
+        est_min: Some(8),
+    }
+}
+
 fn ins(ps: &Paths, p: &Fake, now: f64, run_id: &str, pid: i64) -> Outcome {
-    insert_acquire(
-        ps,
-        p,
-        now,
-        &InsertArgs {
-            holder: holder(run_id, pid),
-            hard_timeout_s: 600,
-        },
-    )
+    insert_acquire(ps, p, now, &args(run_id, pid))
 }
 
 fn result(o: &Outcome) -> &str {
@@ -307,8 +308,97 @@ fn usage_insert_runs_here_with_a_bounded_hard_timeout() {
             &InsertArgs {
                 holder: h,
                 hard_timeout_s: t,
+                ..args("a", SHORT_PID)
             },
         );
         assert_eq!(o.rc, RC_USAGE, "{:?}", o.out);
     }
+}
+
+#[test]
+fn an_insert_must_say_why() {
+    let (ps, p) = (paths(true), Fake::new());
+    long(&ps, &p, false);
+    for r in ["", "   "] {
+        let o = insert_acquire(
+            &ps,
+            &p,
+            T0,
+            &InsertArgs {
+                reason: r.into(),
+                ..args("short-1", SHORT_PID)
+            },
+        );
+        assert_eq!((o.rc, result(&o)), (RC_USAGE, "reason_required"), "{r:?}");
+    }
+    assert!(read_insert(&ps).unwrap().is_none());
+    assert_eq!(ins(&ps, &p, T0, "short-1", SHORT_PID).rc, RC_OK);
+    let r = read_insert(&ps).unwrap().unwrap();
+    assert_eq!(r["reason"], "EU02 receipt before tonight");
+    assert_eq!(r["est_min"], 8);
+}
+
+#[test]
+fn an_insert_of_more_than_fifteen_minutes_queues() {
+    let (ps, p) = (paths(true), Fake::new());
+    long(&ps, &p, false);
+    let with = |m: Option<i64>| InsertArgs {
+        est_min: m,
+        ..args("short-1", SHORT_PID)
+    };
+    let o = insert_acquire(&ps, &p, T0, &with(Some(16)));
+    assert_eq!(
+        (o.rc, result(&o)),
+        (RC_USAGE, "est_too_long"),
+        "{:?}",
+        o.out
+    );
+    let o = insert_acquire(&ps, &p, T0, &with(None));
+    assert_eq!((o.rc, result(&o)), (RC_USAGE, "est_min_required"));
+    assert_eq!(insert_acquire(&ps, &p, T0, &with(Some(0))).rc, RC_USAGE);
+    assert!(read_insert(&ps).unwrap().is_none());
+    let o = insert_acquire(&ps, &p, T0, &with(Some(15)));
+    assert_eq!(o.rc, RC_OK, "15 is allowed: {:?}", o.out);
+}
+
+#[test]
+fn one_long_holder_is_gone_ahead_of_at_most_twice() {
+    let (ps, p) = (paths(true), Fake::new());
+    long(&ps, &p, false);
+    for (i, t) in [(1, 0.0), (2, 100.0)] {
+        let id = format!("short-{i}");
+        assert_eq!(ins(&ps, &p, T0 + t, &id, SHORT_PID).rc, RC_OK, "{id}");
+        // taking its own live slot again is not another insert
+        assert_eq!(ins(&ps, &p, T0 + t + 1.0, &id, SHORT_PID).rc, RC_OK);
+        assert_eq!(insert_release(&ps, &p, T0 + t + 50.0, &id).rc, RC_OK);
+    }
+    let o = ins(&ps, &p, T0 + 200.0, "short-3", SHORT_PID);
+    assert_eq!((o.rc, result(&o)), (RC_HELD, "insert_cap"), "{:?}", o.out);
+    assert_eq!(o.out["count"], 2);
+    assert_eq!(o.out["main_run_id"], "long-1");
+    let log = std::fs::read_to_string(ps.ledger()).unwrap();
+    assert!(log.contains("\"why\":\"insert_cap\""), "{log}");
+    // a new long holder starts at 0
+    p.kill(LONG_PID);
+    p.run(4700);
+    let o = acquire(
+        &ps,
+        &p,
+        T0 + 300.0,
+        &AcquireArgs {
+            holder: holder("long-2", 4700),
+            ttl: Some(3600),
+            ..AcquireArgs::default()
+        },
+    );
+    assert_eq!(o.rc, RC_OK, "{:?}", o.out);
+    assert_eq!(ins(&ps, &p, T0 + 310.0, "short-3", SHORT_PID).rc, RC_OK);
+}
+
+#[test]
+fn an_unreadable_tally_fails_closed() {
+    let (ps, p) = (paths(true), Fake::new());
+    long(&ps, &p, false);
+    std::fs::write(ps.insert_tally(), "{not json").unwrap();
+    assert_eq!(ins(&ps, &p, T0, "short-1", SHORT_PID).rc, RC_UNREADABLE);
 }

@@ -141,7 +141,8 @@ commands through the same gates.
 ## `aib-lease insert` — one short, light run next to a shared long holder (D4, off by default)
 
 ```sh
-aib-lease insert acquire --owner 043dd --what "cargo clippy -p x" --run-id R --pid $$ --hard-timeout-s 600
+aib-lease insert acquire --owner 043dd --what "cargo clippy -p x" --run-id R --pid $$ --hard-timeout-s 600 \
+  --reason "EU02 receipt before tonight" --est-min 8
 aib-lease insert release --run-id R
 ```
 
@@ -156,7 +157,14 @@ taking the slot are one critical section:
   lease itself) / `holder_exclusive`;
 * nobody in the queue has waited 30 min ⇒ else `long_waiter`;
 * the slot is free (its pid dead; a live pid keeps it even past its hard timeout) ⇒ else
-  `insert_taken`.
+  `insert_taken`;
+* fewer than 2 inserts have gone ahead of this long holder (`main_run_id`, counted in
+  `<lease>.insert-tally.json` under the same lock; a new holder starts at 0; the same run taking
+  its own live slot again does not count) ⇒ else `insert_cap` (rc 4).
+
+Limits (a63ab, Andy 11-10): `--reason` is required (`reason_required`, rc 2) and goes into the
+record and the ledger; `--est-min` is required and 1..=15 (`est_min_required` / `est_too_long`,
+rc 2: a longer run queues).
 
 An exclusive `acquire` waits for a running insert (`insert_running`). Hard timeout 300–900 s
 (max(p90 × 2, 5 min), at most 15 min). An unreadable record fails closed. rc 0 / 4 / 3 / 2 as
