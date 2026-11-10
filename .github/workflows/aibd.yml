@@ -299,6 +299,30 @@ jobs:
           ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
              '        .filter(|l| !l.is_empty())' \
              review_segment_5
+          # quarantine guard: a record on disk no longer counts (33e28, seg. 5 r2 N)
+          ck quarantine.rs '    if record.is_some() || is_quarantined(ct_fw) {' \
+             '    if record.is_some() && is_quarantined(ct_fw) { // knife' \
+             review_segment_5
+          # quarantine: the record's edge block may hold more than this site's block (33e28 N)
+          ck quarantine.rs "        return refuse(\"the record's edge block is not exactly this site's block\");" \
+             '        // knife: any block goes' \
+             review_segment_5
+          # quarantine: a stale record is archived whatever the firewall is now (1ced7 L)
+          ck quarantine.rs '    if ct_fw != restored_firewall {' \
+             '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # quarantine: a stale record is archived whatever the journal says (1ced7, #625 seg. 2 M1)
+          ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
+             '        None => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
+          ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
+             '        let unprintable = false; // knife' \
+             upward_paths_and_control_characters
+          # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
+          ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
+             '    value == "/" // knife' \
+             root_spellings_and_dashes_in_prose
           # site verify (c477a's list): one judgement out per knife
           ck verify.rs '    let on_every_card = !cards.is_empty()' \
              '    let on_every_card = cards.first().is_some_and(|n| n.contains("firewall=1")) || !cards.is_empty()' \
@@ -306,9 +330,9 @@ jobs:
           ck verify.rs '                Outcome::Red("ct_policy_open")' \
              '                Outcome::Green // knife' \
              review_segment_3
-          ck verify.rs '        (SiteState::Suspended, true) => Outcome::Red("suspended_but_running"),' \
-             '        (SiteState::Suspended, true) => Outcome::Green, // knife' \
-             s01_state_turns_the_expectation_round
+          ck verify.rs '        (SiteState::Active, false) => Outcome::Red("ct_down"),' \
+             '        (SiteState::Active, false) => Outcome::Green, // knife' \
+             s01_only_an_active_site_has_to_be_running
           ck verify.rs '        (u.thin_meta, 80, "thin_meta_full"),' \
              '        (u.thin_meta, 101, "thin_meta_full"), // knife' \
              h04_disk_thresholds
@@ -321,6 +345,20 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+      # aib-cloud-host: gates of the host commands (reviews of #625).
+      - name: aib-cloud-host command knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud-host --locked "$4"; }
+          # site quarantine without --plan goes on (33e28, seg. 4 L1)
+          hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
+             nothing_but_a_plan
+          # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
+          hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_checked_is_exit_3_never_2
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

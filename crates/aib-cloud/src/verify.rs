@@ -10,8 +10,9 @@
 //! * **What is expected comes from the site record**, read with
 //!   [`crate::site::spec_from_record_strict`]: a value nobody recorded is not an
 //!   expectation.
-//! * **The site's state turns expectations round**: a suspended or quarantined site whose
-//!   CT is running is red.
+//! * **The site's state changes what is expected**: a quarantined site must be on the
+//!   quarantine firewall group, not on its recorded one; only an active site's CT has to
+//!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
 //! This first slice holds the passive host checks H02–H05, H08, H09 and the passive site
@@ -242,8 +243,11 @@ pub fn h09_cluster_firewall(cluster_fw: Option<&str>) -> CheckResult {
     result("H09", outcome)
 }
 
-/// S01: the CT runs exactly when the site is active. `status` is the output of
-/// `pct status <ct>` (`status: running`).
+/// S01: an active site's CT runs. `status` is the output of `pct status <ct>`
+/// (`status: running`). A suspended site keeps its CT running by design (`site suspend`
+/// only swaps the edge block) and so does a quarantined one (cut off, kept as it is for
+/// whoever investigates), so for those either state is as expected; what keeps them off
+/// the network is checked by S03 / S04 and, with `--active`, at the edge.
 pub fn s01_ct_status(state: SiteState, status: Option<&str>) -> CheckResult {
     let running = match status.map(str::trim) {
         Some("status: running") => true,
@@ -251,12 +255,10 @@ pub fn s01_ct_status(state: SiteState, status: Option<&str>) -> CheckResult {
         _ => return result("S01", Outcome::Unknown("unread")),
     };
     let outcome = match (state, running) {
-        (SiteState::Active, true) | (SiteState::Suspended | SiteState::Quarantined, false) => {
+        (SiteState::Active, false) => Outcome::Red("ct_down"),
+        (SiteState::Active, true) | (SiteState::Suspended | SiteState::Quarantined, _) => {
             Outcome::Green
         }
-        (SiteState::Active, false) => Outcome::Red("ct_down"),
-        (SiteState::Suspended, true) => Outcome::Red("suspended_but_running"),
-        (SiteState::Quarantined, true) => Outcome::Red("quarantined_but_running"),
     };
     result("S01", outcome)
 }
@@ -665,41 +667,23 @@ mod tests {
     }
 
     #[test]
-    fn s01_state_turns_the_expectation_round() {
+    fn s01_only_an_active_site_has_to_be_running() {
         let run = Some("status: running\n");
         let stop = Some("status: stopped\n");
+        let s01 = |state, status| s01_ct_status(state, status).outcome;
+        assert_eq!(s01(SiteState::Active, run), Outcome::Green);
+        assert_eq!(s01(SiteState::Active, stop), Outcome::Red("ct_down"));
+        // suspend and quarantine both leave the CT as it is
+        for state in [SiteState::Suspended, SiteState::Quarantined] {
+            assert_eq!(s01(state, run), Outcome::Green);
+            assert_eq!(s01(state, stop), Outcome::Green);
+            assert_eq!(s01(state, None), Outcome::Unknown("unread"));
+        }
         assert_eq!(
-            s01_ct_status(SiteState::Active, run).outcome,
-            Outcome::Green
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Active, stop).outcome,
-            Outcome::Red("ct_down")
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Suspended, stop).outcome,
-            Outcome::Green
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Suspended, run).outcome,
-            Outcome::Red("suspended_but_running")
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Quarantined, run).outcome,
-            Outcome::Red("quarantined_but_running")
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Quarantined, stop).outcome,
-            Outcome::Green
-        );
-        assert_eq!(
-            s01_ct_status(SiteState::Active, Some("status: mounted")).outcome,
+            s01(SiteState::Active, Some("status: mounted")),
             Outcome::Unknown("unread")
         );
-        assert_eq!(
-            s01_ct_status(SiteState::Active, None).outcome,
-            Outcome::Unknown("unread")
-        );
+        assert_eq!(s01(SiteState::Active, None), Outcome::Unknown("unread"));
     }
 
     #[test]
