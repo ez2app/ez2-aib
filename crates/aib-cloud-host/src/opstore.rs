@@ -516,6 +516,34 @@ fn put_lock(
     sync_dir(lock.parent().unwrap_or(Path::new(".")))
 }
 
+/// Remove what a writer killed between writing its holder aside and renaming it left
+/// behind (`<lock>.<pid>.new`). Only called with the guard held, and only the guard holder
+/// ever writes one, so every such file found here belongs to a writer that is gone. They
+/// never decide who holds the lock; this only keeps them from piling up (#635 L1 N1, 1ced7).
+fn sweep_leftovers(lock: &Path) {
+    let (Some(dir), Some(name)) = (lock.parent(), lock.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let leftover = n
+            .strip_prefix(&prefix)
+            .and_then(|r| r.strip_suffix(".new"))
+            .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+        if leftover {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
 /// What `op status` says, and `acquire` points at, when the lock file cannot be read as a
 /// holder: nothing can start until a person has looked.
 pub const DAMAGED_LOCK_HELP: &str = "the host lock file cannot be read as a holder, so no operation can start. \
@@ -544,6 +572,7 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
     };
     let text = format!("{}\n", holder_json(&me));
     guarded(p, || {
+        sweep_leftovers(&p.lock);
         let current = match fs::read_to_string(&p.lock) {
             Ok(t) => Some(holder_from_text(&t).unwrap_or(Holder {
                 op: String::new(),
@@ -1315,6 +1344,27 @@ mod tests {
         fs::write(&p.lock, "").unwrap();
         let busy = acquire(&p, OP1, 200).unwrap_err();
         assert!(busy.contains("move the lock file aside"), "{busy}");
+    }
+
+    /// #635 L1 N1 (1ced7): a writer killed after writing its holder aside and before the
+    /// rename leaves `<lock>.<pid>.new`; the next operation to take the lock clears it, and
+    /// leaves files that only look alike.
+    #[test]
+    fn a_holder_written_aside_and_never_renamed_is_cleared() {
+        let d = scratch("leftover");
+        let p = paths(&d, BOOT_A);
+        let mut aside = p.lock.clone().into_os_string();
+        aside.push(".4242.new");
+        let aside = PathBuf::from(aside);
+        fs::write(&aside, "{\"op\":\"half\"}\n").unwrap();
+        let mut other = p.lock.clone().into_os_string();
+        other.push(".damaged");
+        let other = PathBuf::from(other);
+        fs::write(&other, "kept").unwrap();
+        fake_proc(&p.proc_root, 200, 6000);
+        assert_eq!(acquire(&p, OP2, 200).unwrap(), Got::Taken);
+        assert!(!aside.exists(), "the half-done holder was left behind");
+        assert!(other.exists(), "a file that is not a leftover was removed");
     }
 
     #[test]
