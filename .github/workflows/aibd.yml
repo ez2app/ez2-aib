@@ -464,6 +464,14 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
+          hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
+             '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: the roles in the entry are not asked
+          hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
+             '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
+             a_tenant_key_reaches_its_own_sites_only
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \
