@@ -240,6 +240,65 @@ pub fn clip_line(line: &str) -> &str {
 /// Deliberately broad: a masked harmless value costs a second look, a leaked credential
 /// costs the site.
 pub fn mask_line(line: &str) -> String {
+    plain(&mask_secrets(line))
+}
+
+/// `line` with nothing in it that a terminal would act on (ebb36, #641 seg. 2 L1). Part of
+/// a log comes from whoever visits the site — a URL, a user agent — and is shown in the
+/// customer's own terminal: control characters (ESC and the rest of C0 but the tab, DEL,
+/// C1) and the characters that reorder or hide text are written out as `\x1b` /
+/// `\u{202e}` instead of being sent.
+pub fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if c == '\t' || !(c.is_control() || unseen(c)) {
+            out.push(c);
+        } else if u32::from(c) < 0x100 {
+            out.push_str(&alloc::format!("\\x{:02x}", u32::from(c)));
+        } else {
+            out.push_str(&alloc::format!("\\u{{{:x}}}", u32::from(c)));
+        }
+    }
+    out
+}
+
+/// Characters a person does not see and a program — or the customer's AI reading the same
+/// output — does (ebb36, #648 L1): Unicode format characters (direction marks and
+/// overrides, zero-width and invisible operators, interlinear annotation marks, the tag
+/// block, which can carry a whole hidden sentence), line and paragraph separators,
+/// variation selectors, private-use characters and non-characters. Ranges, because this
+/// crate has no Unicode tables; a code point not assigned yet is not covered.
+fn unseen(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+            | '\u{e000}'..='\u{f8ff}'
+            | '\u{f0000}'..='\u{ffffd}'
+            | '\u{100000}'..='\u{10fffd}'
+            | '\u{fdd0}'..='\u{fdef}'
+    ) || (u32::from(c) & 0xfffe) == 0xfffe
+}
+
+fn mask_secrets(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -503,5 +562,43 @@ mod tests {
         let cut = clip_line(&wide);
         assert_eq!(cut.len(), 4095);
         assert!(wide.starts_with(cut));
+    }
+    /// ebb36, #641 seg. 2 L1: what a visitor put into a log does not drive the customer's terminal.
+    #[test]
+    fn nothing_in_a_line_reaches_the_terminal_as_a_control() {
+        assert_eq!(plain("GET /a\tb 200"), "GET /a\tb 200");
+        assert_eq!(plain("ua=\u{1b}]52;c;aGk=\u{7}"), "ua=\\x1b]52;c;aGk=\\x07");
+        assert_eq!(plain("a\u{1b}[2Jb\rc\u{7f}"), "a\\x1b[2Jb\\x0dc\\x7f");
+        assert_eq!(plain("x\u{9b}31m"), "x\\x9b31m");
+        assert_eq!(plain("evil\u{202e}gpj.exe"), "evil\\u{202e}gpj.exe");
+        assert_eq!(plain("中文 記錄 ok"), "中文 記錄 ok");
+        // what nobody sees and a reader's AI does (ebb36, #648 L1): the tag block, a soft
+        // hyphen, an invisible operator, private use, a non-character, a variation selector
+        assert_eq!(
+            plain("ok\u{e0049}\u{e0067}\u{e007f}"),
+            "ok\\u{e0049}\\u{e0067}\\u{e007f}"
+        );
+        assert_eq!(plain("a\u{ad}b\u{2062}c"), "a\\xadb\\u{2062}c");
+        assert_eq!(
+            plain("\u{e000}\u{fffe}\u{fe0f}"),
+            "\\u{e000}\\u{fffe}\\u{fe0f}"
+        );
+        // a control character inside a secret's value does not let the value out (N2)
+        let masked = mask_line("password=\u{1b}hunter2 next");
+        assert!(
+            !masked.contains("hunter2") && !masked.contains('\u{1b}'),
+            "{masked}"
+        );
+        assert_eq!(
+            plain("a\u{200f}b\u{200b}c\u{feff}d\u{061c}"),
+            "a\\u{200f}b\\u{200b}c\\u{feff}d\\u{61c}"
+        );
+        // and it is what the customer's log lines go through, after the secrets
+        let line = mask_line("password=hunter2 \u{1b}[31mred");
+        assert!(
+            !line.contains('\u{1b}') && !line.contains("hunter2"),
+            "{line}"
+        );
+        assert!(line.contains("\\x1b[31mred"));
     }
 }
