@@ -261,7 +261,10 @@ fn every_route_sits_under_api_and_has_handlers() {
         assert!(aibd::api::handlers(p).is_some(), "{p} has no handlers");
     }
     for p in aibd::guard::LOGGED_ROUTES {
-        assert!(aibd::guard::ROUTES.contains(p), "{p} is logged but not a route");
+        assert!(
+            aibd::guard::ROUTES.contains(p),
+            "{p} is logged but not a route"
+        );
     }
 }
 
@@ -327,7 +330,10 @@ async fn every_html_file_gets_the_page_policy() {
 /// to, so an open page reloads after an upgrade.
 #[tokio::test]
 async fn api_answers_carry_the_build() {
-    assert!(BUILD.starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")), "{BUILD}");
+    assert!(
+        BUILD.starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")),
+        "{BUILD}"
+    );
     for (p, bearer) in [
         ("/api/v1/health", true),
         ("/api/v1/events", true),

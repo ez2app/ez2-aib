@@ -49,9 +49,8 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM,
-        PAIR_REVOKE, PAIR_STATUS, SEAT, SEATS, SEAT_SESSIONS, SESSION, SESSIONS,
-        SESSION_OUTPUT,
+        EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
+        PAIR_STATUS, SEAT, SEATS, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
