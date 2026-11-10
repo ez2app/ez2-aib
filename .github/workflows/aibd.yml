@@ -146,6 +146,9 @@ jobs:
           # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
           ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
             ansi_c_quoted_anchors_are_read_like_bash
+          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
+          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
+            a_positional_inside_a_word_is_filled_in
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

@@ -63,13 +63,6 @@ impl Word {
         }
         Some(s)
     }
-    /// `$N` (alone, quoted or not) ⇒ N.
-    fn positional(&self) -> Option<usize> {
-        match self.parts.as_slice() {
-            [Part::Var(v)] => v.parse::<usize>().ok().filter(|n| (1..=9).contains(n)),
-            _ => None,
-        }
-    }
     fn is_knife(&self) -> bool {
         self.literal()
             .is_some_and(|t| t == KNIFE || t.ends_with("/scripts/knife.py"))
@@ -325,15 +318,29 @@ struct Template {
     old: Word,
 }
 
+/// The text of a FILE / OLD template: literal parts as they are, each `$1`..`$9`
+/// replaced by that plain-text argument (so `"crates/x/src/$1"` works, a63ab
+/// #590 / #623 `ck`); any other variable cannot be known and is unresolved.
 fn resolve(w: &Word, args: &[Word]) -> Result<String, String> {
-    if let Some(n) = w.positional() {
-        let a = args.get(n - 1).ok_or(format!("argument ${n} missing"))?;
-        return a
-            .literal()
-            .ok_or_else(|| format!("argument ${n} is not plain text"));
+    let mut s = String::new();
+    for p in &w.parts {
+        match p {
+            Part::Lit(t) => s.push_str(t),
+            Part::Var(v) => {
+                let n = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=9).contains(n))
+                    .ok_or("a variable that is not $1..$9 of the function")?;
+                let a = args.get(n - 1).ok_or(format!("argument ${n} missing"))?;
+                let t = a
+                    .literal()
+                    .ok_or_else(|| format!("argument ${n} is not plain text"))?;
+                s.push_str(&t);
+            }
+        }
     }
-    w.literal()
-        .ok_or_else(|| "a variable that is not $1..$9 of the function".into())
+    Ok(s)
 }
 
 /// Knife FILE/OLD right after the `scripts/knife.py` word at `k`.
@@ -608,6 +615,29 @@ mod tests {
         assert_eq!(olds, vec!["        self.job.terminate(1)", "say \"hi\" $x"]);
         assert!(s.knives.iter().all(|k| k.file == "crates/b.rs"));
         assert_eq!(s.knives[0].at, "w.yml:5");
+    }
+
+    /// a63ab #590: #623's `ck` builds FILE from a prefix and `$1`.
+    #[test]
+    fn a_positional_inside_a_word_is_filled_in() {
+        let s = one(concat!(
+            "      - name: knives\n",
+            "        run: |\n",
+            "          ck() { python3 -I scripts/knife.py \"crates/c/src/$1\" \"$2\" \"$3\" \\\n",
+            "                   --expect-fail \"$4\" -- cargo test \"$4\"; }\n",
+            "          ck site.rs '    old' '    new' t\n",
+            "          ck \"a$X.rs\" 'o' 'n' t\n",
+        ));
+        assert_eq!(s.knives.len(), 1, "{s:?}");
+        assert_eq!(s.knives[0].file, "crates/c/src/site.rs");
+        assert_eq!(s.knives[0].old, "    old");
+        // an argument that is not plain text stays unresolved, never guessed
+        assert_eq!(s.unresolved.len(), 1, "{:?}", s.unresolved);
+        assert!(
+            s.unresolved[0].contains("argument $1 is not plain text"),
+            "{:?}",
+            s.unresolved
+        );
     }
 
     #[test]
