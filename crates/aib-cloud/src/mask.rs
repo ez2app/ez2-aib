@@ -212,7 +212,7 @@ mod tests {
     use super::*;
 
     // shaped like a real host's first processor (made-up model; flags shortened)
-    const HOST: &str = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\nmodel\t\t: 113\nmodel name\t: Example Corp Model 9000 8-Core Processor\nstepping\t: 0\nmicrocode\t: 0x8701034\ncpu MHz\t\t: 4139.606\ncache size\t: 512 KB\nphysical id\t: 0\nsiblings\t: 12\ncore id\t\t: 0\ncpu cores\t: 6\napicid\t\t: 0\ninitial apicid\t: 0\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 16\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr sse sse2 ht syscall nx\nbugs\t\t: sysret_ss_attrs spectre_v1 spectre_v2 retbleed\nbogomips\t: 7199.73\nTLB size\t: 3072 4K pages\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 43 bits physical, 48 bits virtual\npower management: ts ttp tm hwpstate\n\nprocessor\t: 1\nmodel name\t: Example Corp Model 9000 8-Core Processor\n\n";
+    const HOST: &str = "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\nmodel\t\t: 113\nmodel name\t: Example Corp Model 9000 8-Core Processor\nstepping\t: 0\nmicrocode\t: 0x1234567\ncpu MHz\t\t: 4139.606\ncache size\t: 512 KB\nphysical id\t: 0\nsiblings\t: 12\ncore id\t\t: 0\ncpu cores\t: 6\napicid\t\t: 0\ninitial apicid\t: 0\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 16\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr sse sse2 ht syscall nx\nbugs\t\t: sysret_ss_attrs spectre_v1 spectre_v2 retbleed\nbogomips\t: 7199.73\nTLB size\t: 3072 4K pages\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 43 bits physical, 48 bits virtual\npower management: ts ttp tm hwpstate\n\nprocessor\t: 1\nmodel name\t: Example Corp Model 9000 8-Core Processor\n\n";
 
     #[test]
     fn the_machine_is_not_named_in_cpuinfo() {
@@ -221,7 +221,7 @@ mod tests {
             "Example",
             "Corp",
             "9000",
-            "0x8701034",
+            "0x1234567",
             "512 KB",
             "retbleed",
             "bogomips",
