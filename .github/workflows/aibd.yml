@@ -681,6 +681,26 @@ jobs:
           hk opstore.rs '    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {' \
              '    if approval == BY_CUSTOMER_KEY && CUSTOMER_COMMANDS.is_empty() { // knife' \
              a_customer_key_approves_only_the_customer_commands
+          # op archive: an unfinished operation's journal is moved aside (#635 seg. 1 N2)
+          hk opstore.rs '        Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),' \
+             '        Ok(Ok(last)) if last.state == op::State::Verified || true => "finished".to_owned(), // knife (a guard, so the next arm stays reachable under -D warnings)' \
+             a_damaged_journal_is_archived_and_an_unfinished_one_is_not
+          # op archive: a damaged journal is archived only with its target named (#638 M1)
+          hk opstore.rs '    let named = target.is_some_and(|t| match targets.as_slice() {' \
+             '    let named = target.is_none() || target.is_some_and(|t| match targets.as_slice() { // knife' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
+          # op archive: a journal naming more than one target says so (#638 r2 N1)
+          hk opstore.rs '    if !named && targets.len() > 1 {' \
+             '    if !named && targets.len() > 99 { // knife' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
+          # op archive: the note says who, not only the pid (#638 r2 L1)
+          hk opstore.rs '        "who": who(),' \
+             '        "who": ({ let _ = who; Value::Null }), // knife (parenthesised: json! reads a bare { } as an object)' \
+             a_damaged_journal_that_ran_is_archived_only_with_its_target_named
+          # host lock: a holder written aside and never renamed is cleared (#635 L1 N1)
+          hk opstore.rs '        sweep_leftovers(&p.lock);' \
+             '        let _ = sweep_leftovers; // knife: not called (still referenced, else dead_code under -D warnings)' \
+             a_holder_written_aside_and_never_renamed_is_cleared
           # host lock: the holder is written straight into the lock file (#635 seg. 1 L1)
           hk opstore.rs '    if let Err(e) = write(&tmp, text) {' \
              '    if let Err(e) = write(lock, text) { // knife' \
@@ -1192,14 +1212,19 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
-      # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
-      # Five runs in one job; each must be green.
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-pairing.sh
+      # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
+      - name: static file knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-static.sh
+      # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
+      # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

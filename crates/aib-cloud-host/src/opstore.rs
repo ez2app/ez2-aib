@@ -516,6 +516,34 @@ fn put_lock(
     sync_dir(lock.parent().unwrap_or(Path::new(".")))
 }
 
+/// Remove what a writer killed between writing its holder aside and renaming it left
+/// behind (`<lock>.<pid>.new`). Only called with the guard held, and only the guard holder
+/// ever writes one, so every such file found here belongs to a writer that is gone. They
+/// never decide who holds the lock; this only keeps them from piling up (#635 L1 N1, 1ced7).
+fn sweep_leftovers(lock: &Path) {
+    let (Some(dir), Some(name)) = (lock.parent(), lock.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let leftover = n
+            .strip_prefix(&prefix)
+            .and_then(|r| r.strip_suffix(".new"))
+            .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+        if leftover {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
 /// What `op status` says, and `acquire` points at, when the lock file cannot be read as a
 /// holder: nothing can start until a person has looked.
 pub const DAMAGED_LOCK_HELP: &str = "the host lock file cannot be read as a holder, so no operation can start. \
@@ -544,6 +572,7 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
     };
     let text = format!("{}\n", holder_json(&me));
     guarded(p, || {
+        sweep_leftovers(&p.lock);
         let current = match fs::read_to_string(&p.lock) {
             Ok(t) => Some(holder_from_text(&t).unwrap_or(Holder {
                 op: String::new(),
@@ -800,6 +829,182 @@ pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), Stri
     result
 }
 
+/// Where [`archive_op`] moves a journal: below the journal directory, out of what
+/// [`last_entries`] reads.
+pub const ARCHIVE_DIR: &str = "archive";
+/// One line per archived journal (when, which, why), below [`ARCHIVE_DIR`].
+pub const ARCHIVE_NOTES: &str = "notes.jsonl";
+
+/// Every line of a journal that reads as an entry on its own, and how many lines there
+/// were. For telling a person what a damaged journal was doing; never for deciding that
+/// an operation finished.
+fn salvage(text: &str) -> (Vec<Entry>, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let entries = lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| Entry::from_json(&v).ok())
+        .collect();
+    (entries, lines.len())
+}
+
+/// A journal that cannot be read or replayed may still be an operation that changed the
+/// host: `running` was written, then a later line was damaged. Archiving it would take
+/// its target out of `refuse_unfinished` with the host possibly half changed (#638 M1,
+/// 1ced7). So it is archived only when the person names the target, after checking the
+/// host for it; until then the refusal shows what could be read of it.
+fn damaged(path: &Path, op_id: &str, err: &str, target: Option<&str>) -> Result<String, String> {
+    let text = fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let (readable, total) = salvage(&text);
+    let mut targets: Vec<&str> = readable.iter().map(|e| e.target.as_str()).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let changed = readable.iter().any(|e| {
+        matches!(
+            e.state,
+            op::State::Running | op::State::Failed | op::State::Recovery
+        )
+    }) || readable
+        .last()
+        .is_some_and(|e| e.state == op::State::Approved);
+    let summary = format!(
+        "{err}; {}/{total} lines readable; target {}; command {}; last readable state {}{}",
+        readable.len(),
+        if targets.is_empty() {
+            "unreadable".to_owned()
+        } else {
+            targets.join(", ")
+        },
+        readable.last().map_or("unreadable", |e| e.command.as_str()),
+        readable.last().map_or("none", |e| e.state.as_str()),
+        if changed {
+            "; it may have changed the host (running, failed or recovery was written, or it stopped at approved)"
+        } else {
+            ""
+        },
+    );
+    let named = target.is_some_and(|t| match targets.as_slice() {
+        [only] => t == *only,
+        [] => !t.is_empty(),
+        _ => false,
+    });
+    if !named && targets.len() > 1 {
+        // one operation has one target: a journal naming several cannot be told apart
+        // by a command (#638 r2 N1, 1ced7)
+        return Err(format!(
+            "operation {op_id}: journal damaged ({summary}) and it names more than one target. Not archived, and `op archive` will not: check the host for every one of them, move the file aside by hand and write down what you did"
+        ));
+    }
+    if !named {
+        return Err(format!(
+            "operation {op_id}: journal damaged ({summary}). Not archived: check the host for that target, then run `op archive {op_id} --target <target>` naming it"
+        ));
+    }
+    Ok(format!(
+        "damaged ({summary}); host checked by hand for {}",
+        target.unwrap_or_default()
+    ))
+}
+
+/// Who ran this, for the archive note (#638 r2 L1, 1ced7): the effective uid (the owner
+/// of `/proc/self`), and `SUDO_USER` / `LOGNAME` as they were set. The names are only a
+/// lead: anyone can set them. Linux only, like the rest of the host side; what cannot be
+/// read is null.
+fn who() -> Value {
+    use std::os::unix::fs::MetadataExt;
+    let uid = fs::metadata("/proc/self").ok().map(|m| m.uid());
+    json!({
+        "uid": uid,
+        "sudo_user": std::env::var("SUDO_USER").ok(),
+        "logname": std::env::var("LOGNAME").ok(),
+    })
+}
+
+/// Append one note line and sync it. A file made by this call is also synced into its
+/// directory, so the note does not depend on a later sync of the directory (#638 r2 N2).
+fn append_note(path: &Path, note: &Value) -> Result<(), String> {
+    let new = !path.exists();
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(format!("{note}\n").as_bytes())
+        .and_then(|()| f.sync_all())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if new {
+        sync_dir(path.parent().unwrap_or(Path::new(".")))?;
+    }
+    Ok(())
+}
+
+/// Move one operation's journal out of the way, by hand, under the host lock (#635 seg. 1
+/// N2, 1ced7). Only a journal that cannot be read or replayed — which otherwise refuses
+/// every operation on every target — or one whose operation is verified. An operation
+/// that is running, failed or in recovery is refused here: a person closes it with
+/// `op recovered` after checking the host. Returns what was archived and why.
+pub fn archive_op(place: &OpPlace, op_id: &str, target: Option<&str>) -> Result<String, String> {
+    let path = journal_path(&place.ops_dir, op_id)?;
+    let pid = std::process::id();
+    // bound, not a bare call: a knife anchors on the bare form in mark_recovered
+    let _got = acquire(&place.lock, op_id, pid)?;
+    let result = archive_locked(&place.ops_dir, &path, op_id, target);
+    let _ = release(&place.lock, op_id, pid);
+    result
+}
+
+fn archive_locked(
+    dir: &Path,
+    path: &Path,
+    op_id: &str,
+    target: Option<&str>,
+) -> Result<String, String> {
+    if !path.exists() {
+        return Err(format!(
+            "operation {op_id} has no journal in {}",
+            dir.display()
+        ));
+    }
+    let journal = read_journal(path);
+    let why = match journal.as_ref().map(|(entries, _)| op::replay(entries)) {
+        Err(e) => damaged(path, op_id, e, target)?,
+        Ok(Err(e)) => damaged(path, op_id, &e.to_string(), target)?,
+        Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),
+        Ok(Ok(last)) => {
+            return Err(format!(
+            "operation {op_id} is {}: not archived; check the host, then `op recovered {op_id}`",
+            last.state.as_str()
+        ))
+        }
+    };
+    let archive = dir.join(ARCHIVE_DIR);
+    fs::create_dir_all(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+    let to = archive.join(format!("{op_id}.jsonl"));
+    if to.exists() {
+        return Err(format!("{} already exists; not overwritten", to.display()));
+    }
+    // the record goes first: a crash before the move leaves a note and the journal in
+    // place (run it again); never a journal moved with nothing saying why (#638 L1)
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let note = json!({
+        "at": at,
+        "op": op_id,
+        "why": why,
+        "pid": std::process::id(),
+        "who": who(),
+    });
+    append_note(&archive.join(ARCHIVE_NOTES), &note)?;
+    fs::rename(path, &to).map_err(|e| format!("{}: {e}", path.display()))?;
+    sync_dir(&archive)?;
+    sync_dir(dir)?;
+    Ok(format!("{op_id}: archived, {why} -> {}", to.display()))
+}
+
 /// The code of the lines `op recovered` writes. The approval column cannot say who closed
 /// the operation — one operation runs under one approval to its end, and a customer key's
 /// operation keeps `standing-customer-key` — so the code does: closed by a person as root
@@ -912,7 +1117,21 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             println!("{op_id}: recovered (closed by hand)");
             Ok(0)
         }
-        _ => Err("op needs status [<op id>] | unfinished <target> | recovered <op id>".to_owned()),
+        Some("archive") => {
+            // moves a damaged or finished journal aside; refuses an unfinished operation
+            let op_id = args.get(1).ok_or("op archive needs <op id> [--target <target>]")?;
+            let target = match args.get(2..).unwrap_or_default() {
+                [] => None,
+                [flag, t] if flag.as_str() == "--target" => Some(t.as_str()),
+                _ => return Err("op archive needs <op id> [--target <target>]".to_owned()),
+            };
+            println!("{}", archive_op(&OpPlace::host()?, op_id, target)?);
+            Ok(0)
+        }
+        _ => Err(
+            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id> [--target <target>]"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1259,6 +1478,27 @@ mod tests {
         assert!(busy.contains("move the lock file aside"), "{busy}");
     }
 
+    /// #635 L1 N1 (1ced7): a writer killed after writing its holder aside and before the
+    /// rename leaves `<lock>.<pid>.new`; the next operation to take the lock clears it, and
+    /// leaves files that only look alike.
+    #[test]
+    fn a_holder_written_aside_and_never_renamed_is_cleared() {
+        let d = scratch("leftover");
+        let p = paths(&d, BOOT_A);
+        let mut aside = p.lock.clone().into_os_string();
+        aside.push(".4242.new");
+        let aside = PathBuf::from(aside);
+        fs::write(&aside, "{\"op\":\"half\"}\n").unwrap();
+        let mut other = p.lock.clone().into_os_string();
+        other.push(".damaged");
+        let other = PathBuf::from(other);
+        fs::write(&other, "kept").unwrap();
+        fake_proc(&p.proc_root, 200, 6000);
+        assert_eq!(acquire(&p, OP2, 200).unwrap(), Got::Taken);
+        assert!(!aside.exists(), "the half-done holder was left behind");
+        assert!(other.exists(), "a file that is not a leftover was removed");
+    }
+
     #[test]
     fn only_the_holder_releases() {
         let d = scratch("release");
@@ -1518,6 +1758,196 @@ mod tests {
                 State::Verified
             ]
         );
+    }
+
+    /// #635 seg. 1 N2 (1ced7): one damaged journal refuses every operation on every
+    /// target; `op archive` is the way out, and it does not take an unfinished one.
+    /// #638 M1 (1ced7): a damaged journal of an operation that wrote `running` is not
+    /// archived on its own: the refusal shows the target and what was read, and only the
+    /// target named by the person (the one read from it) archives it, with a note.
+    #[test]
+    fn a_damaged_journal_that_ran_is_archived_only_with_its_target_named() {
+        let pl = place("archive-ran");
+        let mut ran = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site4",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op| {
+                ran = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        // it stopped after `running`, and a line before it was damaged
+        let path = journal_path(&pl.ops_dir, &ran).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.contains("\"verified\""))
+            .collect();
+        assert!(lines.iter().any(|l| l.contains("\"running\"")), "{text}");
+        lines.insert(1, "{damaged");
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let why = archive_op(&pl, &ran, None).unwrap_err();
+        assert!(
+            why.contains("running") && why.contains("site:site4") && why.contains("--target"),
+            "{why}"
+        );
+        assert!(path.exists());
+        // another target is not this one
+        assert!(archive_op(&pl, &ran, Some("site:site5")).is_err());
+        assert!(path.exists());
+        let done = archive_op(&pl, &ran, Some("site:site4")).unwrap();
+        assert!(
+            done.contains("damaged") && done.contains("site:site4"),
+            "{done}"
+        );
+        assert!(!path.exists());
+        let notes = fs::read_to_string(pl.ops_dir.join(ARCHIVE_DIR).join(ARCHIVE_NOTES)).unwrap();
+        assert!(
+            notes.contains(ran.as_str()) && notes.contains("site:site4"),
+            "{notes}"
+        );
+        // who did it, as far as the host can tell (#638 r2 L1)
+        let line: Value = serde_json::from_str(notes.lines().last().unwrap()).unwrap();
+        assert!(line["who"].get("uid").is_some(), "{line}");
+        assert!(line["who"].get("sudo_user").is_some(), "{line}");
+
+        // a journal naming more than one target has no command way out (#638 r2 N1)
+        let mut mixed = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site6",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_300,
+            |op| {
+                mixed = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let path = journal_path(&pl.ops_dir, &mixed).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let other = text
+            .lines()
+            .last()
+            .unwrap()
+            .replace("site:site6", "site:site7");
+        fs::write(&path, format!("{text}{{damaged\n{other}\n")).unwrap();
+        for t in [None, Some("site:site6"), Some("site:site7")] {
+            let why = archive_op(&pl, &mixed, t).unwrap_err();
+            assert!(
+                why.contains("more than one target") && why.contains("by hand"),
+                "{why}"
+            );
+        }
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn a_damaged_journal_is_archived_and_an_unfinished_one_is_not() {
+        let pl = place("archive");
+        let noop = |_: &str| -> Result<(), String> { Ok(()) };
+        // a finished operation, a failed one, and a journal that cannot be read
+        let mut done = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site1",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op| {
+                done = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut failed = String::new();
+        let _ = run_op(
+            &pl,
+            "site.restore",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_060,
+            |op| -> Result<(), String> {
+                failed = op.to_owned();
+                Err("502".to_owned())
+            },
+        );
+        fs::write(
+            pl.ops_dir.join(format!("{OP1}.jsonl")),
+            "{not a journal\n{}\n",
+        )
+        .unwrap();
+        // the damaged one holds up an unrelated site
+        assert!(run_op(
+            &pl,
+            "site.resume",
+            "site:site3",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_120,
+            noop
+        )
+        .is_err());
+
+        // unfinished: refused, and the journal stays where it is
+        let why = archive_op(&pl, &failed, None).unwrap_err();
+        assert!(
+            why.contains("failed") && why.contains("op recovered"),
+            "{why}"
+        );
+        assert!(journal_path(&pl.ops_dir, &failed).unwrap().exists());
+        // damaged and finished: moved below archive/, out of what is read
+        // nothing of it is readable: only with a target named by the person
+        let why = archive_op(&pl, OP1, None).unwrap_err();
+        assert!(
+            why.contains("--target") && why.contains("0/2 lines"),
+            "{why}"
+        );
+        assert!(archive_op(&pl, OP1, Some("site:site9"))
+            .unwrap()
+            .contains("damaged"));
+        assert!(archive_op(&pl, &done, None).unwrap().contains("finished"));
+        assert!(pl
+            .ops_dir
+            .join(ARCHIVE_DIR)
+            .join(format!("{OP1}.jsonl"))
+            .exists());
+        assert!(!journal_path(&pl.ops_dir, OP1).unwrap().exists());
+        // nothing to archive, and the lock is given back every time
+        assert!(archive_op(&pl, OP2, None).is_err());
+        assert!(!pl.lock.lock.exists());
+        // site3 goes on; site2 is still held by its failed operation
+        run_op(
+            &pl,
+            "site.resume",
+            "site:site3",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_180,
+            noop,
+        )
+        .unwrap();
+        assert!(run_op(
+            &pl,
+            "site.resume",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_240,
+            noop
+        )
+        .is_err());
     }
 
     #[test]

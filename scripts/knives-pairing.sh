@@ -50,9 +50,12 @@ k crates/aibd/src/guard.rs '    if path.starts_with("/api/v1/pair/") && req.uri(
 k crates/aibd/src/pair_api.rs '        Err(e) => pair_error(e, REDEEM_FAILED),' \
        '        Err(e) => pair_error(e, if e == PairError::Reused { "reused" } else { REDEEM_FAILED }), // knife' \
   every_redeem_failure_says_the_same_thing
-# P11 the exchange page (it carries the credential) may be cached
+# P11 the exchange page (it carries the credential) may be cached. The knife sets a
+# cacheable value instead of dropping the header: since the static-file PR every /api
+# answer without its own Cache-Control gets no-store from the outer layer, so deleting
+# the line here would be covered and the knife would miss.
 k crates/aibd/src/pair_api.rs '    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));' \
-       '    // knife: exchange page without no-store' \
+       '    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("max-age=3600")); // knife: exchange page cacheable' \
   the_exchange_page_is_not_cached_and_loads_nothing
 # P12 pairing on by default (the terminal y/N is UNVERIFIED; opt-in only)
 k crates/aibd/src/pairing.rs '            channel: ConfirmChannel::Off,' \
