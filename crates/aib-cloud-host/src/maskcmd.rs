@@ -14,10 +14,12 @@
 //!   entry of `mask::PROC_HIDE`: a directory by an empty directory, a file by an empty
 //!   file. A symbolic link is never mounted over (it could lead out of the container).
 //!
-//! **It never stops a site from starting**: when something cannot be covered it says
-//! `NOT MASKED` on standard error (the runtime logs it) and still exits 0. Whether a
-//! running CT is masked is for a check to tell, not for this hook to enforce by keeping a
-//! customer's site down.
+//! **It never stops a site from starting**: when something cannot be covered it writes
+//! `NOT MASKED <why>` to `/run/ez2-cloud/mask/<ct>/result` (and `ok <n>` when all is in
+//! place) and still exits 0; the runtime runs it through the wrapper
+//! `mask::HOOK_WRAPPER`, which adds a time limit and survives a missing or older binary.
+//! Whether a running CT is masked is for `site verify` to tell from that file, not for
+//! this hook to enforce by keeping a customer's site down.
 //!
 //! Limits, stated plainly: the covers are mounts inside the CT's own namespace, so the
 //! CT's root can take them off again; they hold against the site's users. And see
@@ -41,9 +43,16 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         Some("mask") => {
             let name = std::env::var("LXC_NAME").unwrap_or_default();
             let rootfs = std::env::var("LXC_ROOTFS_MOUNT").unwrap_or_default();
-            match apply(&name, &rootfs) {
-                Ok(n) => eprintln!("aib-cloud-host ct mask: {name}: {n} covers in place"),
-                Err(why) => eprintln!("aib-cloud-host ct mask: {name}: NOT MASKED: {why}"),
+            let verdict = match apply(&name, &rootfs) {
+                Ok(n) => mask::result_ok(n),
+                Err(why) => format!("NOT MASKED {why}\n"),
+            };
+            eprint!("aib-cloud-host ct mask: {name}: {verdict}");
+            // the verdict is what `site verify` reads; the runtime may not keep stderr
+            if let Some(ct) = mask::valid_ct_name(&name) {
+                let dir = format!("{STATE}/{ct}");
+                let _ = fs::create_dir_all(&dir);
+                let _ = fs::write(format!("{dir}/result"), &verdict);
             }
             Ok(0)
         }
@@ -187,6 +196,9 @@ fn apply(name: &str, rootfs: &str) -> Result<usize, String> {
     }
     for name in mask::PROC_HIDE {
         cover(&format!("proc/{name}"), None);
+    }
+    for rel in mask::EXTRA_HIDE {
+        cover(rel, None);
     }
     match first_failure {
         None => Ok(made),
