@@ -408,12 +408,33 @@ fn placeholders(text: &str) -> Result<Vec<&str>, String> {
     Ok(names)
 }
 
+/// Fill in the variables in one pass over `text`: what a value contains is never read
+/// again, so a value cannot combine with the text after it into a second placeholder.
+/// Anything [`placeholders`] would refuse is copied as it stands (lint has refused it).
 fn render(text: &str, vars: &[(String, String)]) -> String {
-    let mut out = text.to_owned();
-    for (name, value) in vars {
-        let needle = format!("{{{{{name}}}}}");
-        out = out.replace(&needle, value);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let known = after.find("}}").and_then(|end| {
+            let name = &after[..end];
+            vars.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, value)| (end, value))
+        });
+        match known {
+            Some((end, value)) => {
+                out.push_str(&rest[..start]);
+                out.push_str(value);
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str(&rest[..start + 2]);
+                rest = after;
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -908,7 +929,9 @@ fn parse_vars(v: Option<&Value>, out: &mut Vec<Finding>) -> Vec<(String, String)
                     continue;
                 }
                 let text = match value {
-                    Value::String(s) if !s.contains("{{") => s.clone(),
+                    // an empty value is a variable somebody forgot to fill in: `{{dir}}/cache`
+                    // would quietly become `/cache`
+                    Value::String(s) if !s.is_empty() && !s.contains("{{") => s.clone(),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     _ => {
@@ -951,7 +974,13 @@ fn check_texts(
                 for name in names {
                     match vars.iter().find(|(n, _)| n == name) {
                         None => sink.add("P07", format!("{{{{{name}}}}} is not defined in vars")),
-                        Some((_, value)) if in_shell && !shell_plain(value) => sink.add(
+                        // a value that starts with '-' is read as an option by whatever
+                        // program receives it
+                        Some((_, value)) if value.starts_with('-') => sink.add(
+                            "P07",
+                            format!("{{{{{name}}}}}: a value that starts with '-' would be read as an option"),
+                        ),
+                        Some((_, value)) if in_shell && (!shell_plain(value) || value == "/") => sink.add(
                             "P07",
                             format!("{{{{{name}}}}} is used in a shell command but its value is not plain"),
                         ),
@@ -1051,7 +1080,9 @@ impl Plan {
         &self.steps
     }
 
-    /// 16 hex digits over the rendered steps. An identifier, not a security hash.
+    /// 16 hex digits over the rendered steps. An identifier, not a security hash. It
+    /// covers what each step is, in run order, and not the `requires` that produced the
+    /// order: two specs that differ only there and order the same have the same id.
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1299,6 +1330,40 @@ mod tests {
             panic!("argv expected");
         };
         assert_eq!(args.len(), 3);
+    }
+
+    /// Values that would change what a command means (review of #619, M1): empty, an
+    /// option, and the root directory inside a shell line.
+    #[test]
+    fn variable_values_that_change_the_command_are_refused() {
+        let argv = json!([["rm", "-r", "{{dir}}"]]);
+        let sh = json!([{ "sh": "rm -rf {{dir}}/cache", "why": "glob" }]);
+        let with_dir = |apply: &Value, dir: &str| {
+            let mut v = with(1, "apply", apply.clone());
+            v["vars"]["dir"] = json!(dir);
+            v
+        };
+        for apply in [&argv, &sh] {
+            assert!(lint(&with_dir(apply, "/var/lib/x")).is_ok());
+            assert_eq!(codes(&with_dir(apply, "")), ["P01", "P07"]);
+            assert_eq!(codes(&with_dir(apply, "--no-preserve-root")), ["P07"]);
+        }
+        assert_eq!(codes(&with_dir(&sh, "/")), ["P07"]);
+        // as one whole argument the root directory is what the spec says, not an accident
+        assert!(lint(&with_dir(&argv, "/")).is_ok());
+    }
+
+    /// A value is never read again after it is filled in (review of #619, L2).
+    #[test]
+    fn render_is_one_pass() {
+        let vars = [
+            ("a".to_owned(), "x{".to_owned()),
+            ("b".to_owned(), "SECOND".to_owned()),
+        ];
+        assert_eq!(render("{{a}}{b}}", &vars), "x{{b}}");
+        assert_eq!(render("{{b}}-{{a}}-{{b}}", &vars), "SECOND-x{-SECOND");
+        assert_eq!(render("{{nope}} {{a", &vars), "{{nope}} {{a");
+        assert_eq!(render("plain", &vars), "plain");
     }
 
     #[test]
