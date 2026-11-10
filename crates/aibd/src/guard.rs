@@ -284,8 +284,7 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         // W1: the person types the code into a page aibd serves, so the form comes from our
         // own origin. `null` (the P2 local-file form) is not taken until P2 is built: today
         // it would only let any web page's sandboxed frame fill the failure limit (043dd L1)
-        let ok =
-            origin.is_some_and(|o| cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)));
+        let ok = origin.is_some_and(|o| cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)));
         if !ok {
             return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"));
         }

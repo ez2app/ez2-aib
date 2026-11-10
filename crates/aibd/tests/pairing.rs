@@ -626,14 +626,21 @@ async fn a_confirmed_page_can_only_read_and_never_send_argv() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     // writes do not: no argv, no seats, no deletes (a9136 A4 M1; Q2)
     for (m, p, body) in [
-        ("POST", "/api/v1/sessions", Some(r#"{"argv": ["/bin/echo", "x"]}"#)),
+        (
+            "POST",
+            "/api/v1/sessions",
+            Some(r#"{"argv": ["/bin/echo", "x"]}"#),
+        ),
         ("POST", "/api/v1/seats", Some("{}")),
         ("DELETE", "/api/v1/sessions/x", None),
         ("POST", "/api/v1/pair/codes", None),
     ] {
         let r = t.call(m, p, Some(&cred), body).await;
         assert_ne!(r.status, StatusCode::OK, "{m} {p}");
-        assert!(r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED, "{m} {p}");
+        assert!(
+            r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED,
+            "{m} {p}"
+        );
     }
     let r = t
         .call(
@@ -655,7 +662,9 @@ async fn a_confirmed_page_can_only_read_and_never_send_argv() {
         .await;
     assert_ne!(code_of(&r), "page_write_not_allowed");
     // and the page can still revoke itself
-    let r = t.call("POST", "/api/v1/pair/revoke", Some(&cred), None).await;
+    let r = t
+        .call("POST", "/api/v1/pair/revoke", Some(&cred), None)
+        .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
 }
 
@@ -696,7 +705,12 @@ async fn a_page_credential_in_the_url_is_refused() {
     // a 43-character value that is no credential is fine
     let fake = "A".repeat(43);
     let r = t
-        .call("GET", &format!("/api/v1/events?x={fake}"), Some(&cred), None)
+        .call(
+            "GET",
+            &format!("/api/v1/events?x={fake}"),
+            Some(&cred),
+            None,
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
 }
