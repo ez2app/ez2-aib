@@ -367,53 +367,103 @@ pub struct EntrySudoers<'a> {
     pub account: Option<(u32, &'a [String])>,
 }
 
-/// Whether `text` (a sudoers file other than ours) may grant the entry account anything
-/// (33e28, #655 M1): a line naming the account anywhere (a rule, an alias), a rule for
-/// `ALL`, for its uid (`#<uid>`) or for one of its groups (`%group`). `None` when the file
-/// pulls in something other than `/etc/sudoers.d` (the caller has not read it).
-fn grants_elsewhere(text: &str, uid: u32, groups: &[String]) -> Option<bool> {
-    let joined = text.replace("\\\n", " ");
-    let me = alloc::format!("#{uid}");
-    for line in joined.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with("Defaults") {
-            continue;
+/// The user list at the start of `spec`: the words up to the first gap that is not after
+/// or before a comma (`root, cloudgate host=…` lists two users; the host list follows).
+fn user_list(spec: &str) -> Vec<&str> {
+    let head = spec.split('=').next().unwrap_or("");
+    let mut out = Vec::new();
+    let mut words = head.split_whitespace().peekable();
+    while let Some(w) = words.next() {
+        out.extend(w.split(',').map(str::trim).filter(|u| !u.is_empty()));
+        if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {
+            break;
         }
-        if line.starts_with("#include") || line.starts_with("@include") {
-            let mut w = line.split_whitespace();
-            match (w.next(), w.next(), w.next()) {
-                (Some("#includedir" | "@includedir"), Some("/etc/sudoers.d"), None) => continue,
-                _ => return None,
+    }
+    out
+}
+
+/// Whether the sudoers files in `files` (all but ours) may grant the entry account anything
+/// (33e28, #655 M1 and r2): a line naming the account anywhere; a rule or a `Defaults:`
+/// line whose users are `ALL`, its uid (`#<uid>`), one of its groups (`%name`, `%#gid`;
+/// `groups` holds both spellings) or a `User_Alias` that comes down to one of these, an
+/// alias of aliases included, across files. `None` when a file pulls in something other
+/// than `/etc/sudoers.d` (the caller has not read it).
+fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Option<bool> {
+    let me = alloc::format!("#{uid}");
+    let mut lines: Vec<String> = Vec::new();
+    for text in files {
+        for line in text.replace("\\\n", " ").lines().map(str::trim) {
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with("#include") || line.starts_with("@include") {
+                let mut w = line.split_whitespace();
+                match (w.next(), w.next(), w.next()) {
+                    (Some("#includedir" | "@includedir"), Some("/etc/sudoers.d"), None) => continue,
+                    _ => return None,
+                }
+            }
+            // `#` and then a digit is a uid; any other `#` line is a comment
+            if line
+                .strip_prefix('#')
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                continue;
+            }
+            lines.push(line.to_owned());
+        }
+    }
+    let plain = |u: &str| {
+        let u = u.trim_start_matches('!');
+        u == ENTRY_ACCOUNT
+            || u == "ALL"
+            || u == me
+            || u.strip_prefix('%')
+                .map(|g| g.trim_start_matches(':'))
+                .is_some_and(|g| groups.iter().any(|x| x == g))
+    };
+    // User_Alias A = x, y : B = z — the aliases that come down to us, to a fixed point
+    let mut aliases: Vec<(&str, Vec<&str>)> = Vec::new();
+    for l in &lines {
+        if let Some(rest) = l.strip_prefix("User_Alias") {
+            for part in rest.split(':') {
+                if let Some((name, members)) = part.split_once('=') {
+                    aliases.push((name.trim(), members.split(',').map(str::trim).collect()));
+                }
             }
         }
-        // `#` and then a digit is a uid; any other `#` line is a comment
-        if line
-            .strip_prefix('#')
-            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
-        {
-            continue;
+    }
+    let mut ours: Vec<&str> = Vec::new();
+    loop {
+        let before = ours.len();
+        for (name, members) in &aliases {
+            if !ours.contains(name)
+                && members
+                    .iter()
+                    .any(|m| plain(m) || ours.contains(&m.trim_start_matches('!')))
+            {
+                ours.push(name);
+            }
         }
-        let named = line
+        if ours.len() == before {
+            break;
+        }
+    }
+    let us = |u: &str| plain(u) || ours.contains(&u.trim_start_matches('!'));
+    for l in &lines {
+        let named = l
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
             .any(|w| w == ENTRY_ACCOUNT);
-        // the user list: the words before `=` up to the first gap that is not after or
-        // before a comma (`root, cloudgate host=…` lists two users; the host list follows)
-        let head = line.split('=').next().unwrap_or("");
-        let mut who = String::new();
-        let mut words = head.split_whitespace().peekable();
-        while let Some(w) = words.next() {
-            who.push_str(w);
-            if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {
-                break;
-            }
-        }
-        let for_us = who.split(',').map(str::trim).any(|u| {
-            u == "ALL"
-                || u == me
-                || u.strip_prefix('%')
-                    .map(|g| g.trim_start_matches(':'))
-                    .is_some_and(|g| groups.iter().any(|x| x == g))
-        });
-        if named || for_us {
+        let first = l.split_whitespace().next().unwrap_or("");
+        let users = if let Some(rest) = l.strip_prefix("Defaults") {
+            // only `Defaults:<users>` binds to users; `@host`, `>runas`, `!cmnd` and plain do not
+            rest.strip_prefix(':').map(user_list).unwrap_or_default()
+        } else if first.ends_with("_Alias") {
+            Vec::new()
+        } else {
+            user_list(l)
+        };
+        if named || users.iter().any(|u| us(u)) {
             return Some(true);
         }
     }
@@ -457,10 +507,7 @@ pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
                     .collect();
                 let mut rules = lines.iter().filter(|l| **l != SUDOERS_DEFAULTS);
                 let elsewhere = match (seen.others, seen.account) {
-                    (Some(files), Some((uid, groups))) => files
-                        .iter()
-                        .map(|t| grants_elsewhere(t, uid, groups))
-                        .try_fold(false, |any, g| g.map(|g| any || g)),
+                    (Some(files), Some((uid, groups))) => grants_elsewhere(files, uid, groups),
                     _ => None,
                 };
                 if text.contains('*') {
@@ -1313,7 +1360,11 @@ mod tests {
         }
         // another sudoers file that grants the entry account anything (33e28, #655 M1)
         let debian = "# comment cloudgate\nDefaults\tenv_reset\nroot\tALL=(ALL:ALL) ALL\n%sudo\tALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n".to_string();
-        let groups = ["cloudgate".to_string(), "users".to_string()];
+        let groups = [
+            "cloudgate".to_string(),
+            "users".to_string(),
+            "#2000".to_string(),
+        ];
         let with = |extra: &str| alloc::vec![debian.clone(), extra.to_string()];
         let judge = |files: &[String], groups: &[String]| {
             h14(EntrySudoers {
@@ -1342,6 +1393,27 @@ mod tests {
                 "%nobody, \\\n    #1001 ALL=(ALL) ALL",
                 "by uid on a continued line",
             ),
+            (
+                "User_Alias OPS = %users\nOPS ALL=(ALL) ALL",
+                "through an alias of its group",
+            ),
+            (
+                "User_Alias OPS = #1001\nroot, OPS ALL=(ALL) ALL",
+                "through an alias of its uid",
+            ),
+            (
+                "User_Alias A = %users : B = nobody\nUser_Alias C = A\nC ALL=(ALL) ALL",
+                "through an alias of an alias",
+            ),
+            ("%#2000 ALL=(ALL) ALL", "by gid"),
+            (
+                "Defaults:%users env_keep += \"LD_PRELOAD\"",
+                "a Defaults bound to its group",
+            ),
+            (
+                "Defaults:OPS2 !env_reset\nUser_Alias OPS2 = ALL",
+                "a Defaults bound to an alias of ALL",
+            ),
         ] {
             let files = with(extra);
             assert_eq!(
@@ -1350,6 +1422,16 @@ mod tests {
                 "{why}"
             );
         }
+        // an alias that does not come down to us, used in a rule; Defaults not bound to users
+        let fine = with("User_Alias OPS = alice, %sudo\nOPS ALL=(ALL) ALL\nDefaults@host1 env_reset\nDefaults>root !lecture\nDefaults\tsecure_path=\"/usr/bin\"");
+        assert_eq!(judge(&fine, &groups), Outcome::Green);
+        // an alias defined in one file and used in another
+        let split = alloc::vec![
+            debian.clone(),
+            "User_Alias OPS = %users".to_string(),
+            "OPS ALL=(ALL) ALL".to_string()
+        ];
+        assert_eq!(judge(&split, &groups), Outcome::Red("sudoers_elsewhere"));
         // the sudo group is not the account's: green; a group the account is in: red
         let sudo_member = ["cloudgate".to_string(), "sudo".to_string()];
         assert_eq!(

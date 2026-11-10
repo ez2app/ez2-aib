@@ -105,13 +105,18 @@ fn other_sudoers(main: &str, ours: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// The entry account's uid and group names, from `id`.
+/// The entry account's uid and its groups, each by name and as `#<gid>` (sudoers takes
+/// `%name` and `%#gid`), from `id`.
 fn account_of(name: &str) -> Option<(u32, Vec<String>)> {
     let uid = observe("id", &["-u", name], 3)?.trim().parse().ok()?;
-    let groups = observe("id", &["-nG", name], 3)?
+    let mut groups: Vec<String> = observe("id", &["-nG", name], 3)?
         .split_whitespace()
         .map(str::to_owned)
         .collect();
+    for gid in observe("id", &["-G", name], 3)?.split_whitespace() {
+        gid.parse::<u32>().ok()?;
+        groups.push(format!("#{gid}"));
+    }
     Some((uid, groups))
 }
 

@@ -496,8 +496,16 @@ jobs:
              '                } else if false && elsewhere == Some(true) { // knife' \
              h14_the_entry_sudoers_file_is_the_generated_one
           # H14: only the first name of a spaced user list (root, #uid) is read
-          ck verify.rs "            if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {" \
-             '            if true { // knife' \
+          ck verify.rs "        if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {" \
+             '        if true { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a User_Alias that comes down to the entry account is not expanded (33e28, #655 r2 M1)
+          ck verify.rs '        if let Some(rest) = l.strip_prefix("User_Alias") {' \
+             '        if let Some(rest) = l.strip_prefix("User_Alias_knife") { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a Defaults line bound to the entry account in another file is skipped (33e28, #655 r2 L2)
+          ck verify.rs "            rest.strip_prefix(':').map(user_list).unwrap_or_default()" \
+             "            rest.strip_prefix('\\u{0}').map(user_list).unwrap_or_default() // knife" \
              h14_the_entry_sudoers_file_is_the_generated_one
           # H14: owner and mode are not looked at
           ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
