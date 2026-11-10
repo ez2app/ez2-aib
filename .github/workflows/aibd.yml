@@ -421,7 +421,8 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
-      # aib-cloud-host: gates of the host commands (reviews of #625).
+      # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
+      # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -459,6 +460,97 @@ jobs:
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
+          # plan hash: the host is not hashed
+          hk opstore.rs '        "aib-cloud-plan-v1\n{}\nhost {fingerprint}\nversion {version}\n",' \
+             '        "aib-cloud-plan-v1\n{}\nhost \nversion {version}\n{fingerprint:.0}", // knife' \
+             the_plan_hash_covers_host_and_version
+          # journal: a line counts before it is synced
+          hk opstore.rs '    sink.sync().map_err(|e| format!("journal sync: {e}"))' \
+             '    let _ = S::sync; Ok(()) // knife: no sync (S::sync stays referenced, else dead_code under -D warnings)' \
+             a_line_is_synced_before_it_counts
+          # journal: a line that does not follow is appended anyway
+          hk opstore.rs '    may_append(&entries, entry)?;' \
+             '    let _ = may_append(&entries, entry); // knife' \
+             a_journal_only_grows_by_lines_that_follow
+          # journal: a cut-short fragment is left in front of the next line
+          hk opstore.rs '    if cut {' \
+             '    if cut && false { // knife' \
+             a_cut_short_last_line_is_cut_off_before_the_next
+          # /proc stat: fields counted from the first space instead of the last paren
+          hk opstore.rs "    let rest = &stat[stat.rfind(')')? + 1..];" \
+             "    let rest = &stat[stat.find(')')? + 1..]; // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # liveness: an unreadable stat is taken as proof of death
+          hk opstore.rs '        Err(_) => Liveness::Unknown,' \
+             '        Err(_) => Liveness::Gone, // knife' \
+             liveness_from_proc
+          # lock: a damaged lock file is read as free
+          hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
+             '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
+             a_damaged_lock_file_keeps_the_lock
+          # lock: anyone may release it
+          hk opstore.rs '            Some(h) if h.op == op && h.pid == pid => {' \
+             '            Some(_) => { let _ = pid; // knife' \
+             only_the_holder_releases
+          # unfinished: a journal that does not replay is skipped
+          hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
+             '        let Ok(last) = op::replay(&entries) else { continue }; // knife' \
+             unfinished_operations_block_their_target
+          # run_op: the change runs before `running` is on disk (33e28 B1 wiring)
+          hk opstore.rs '    step(op::State::Running, "ok")?;' \
+             '    // knife: no running line' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: an unfinished operation on the same target does not block a new one
+          hk opstore.rs '    refuse_unfinished(&place.ops_dir, target, op_id)?;' \
+             '    let _ = (&place.ops_dir, target, op_id); // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # run_op: the host lock is kept after the operation
+          hk opstore.rs '    if let Err(e) = release(&place.lock, &op_id, pid) {' \
+             '    if let Err(e) = Ok::<(), String>(()) { let _ = pid; // knife' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: a change that failed is not journaled as failed
+          hk opstore.rs '        Err(e) => match step(op::State::Failed, "error") {' \
+             '        Err(e) => match Ok::<(), String>(()) { // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # what an operation decides from is read outside the host lock (c477a #635 seg. 2 M1)
+          hk opstore.rs '    let Some((plan, input)) = prepare()? else {' \
+             '    let _ = release(&place.lock, op_id, std::process::id()); let Some((plan, input)) = prepare()? else { // knife' \
+             what_an_operation_decides_from_is_read_under_the_lock
+          # a held target does not say which operation holds it or what to run (f1fae 11-10)
+          hk opstore.rs '        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",' \
+             '        "operation {} ({} {}, {}): check the host{}", // knife' \
+             a_held_target_names_its_operation_and_the_command
+          # op recovered closes an operation whose process still runs (c477a #635 seg. 2 L2)
+          hk opstore.rs '    acquire(&place.lock, op_id, pid)?;' \
+             '    let _ = acquire(&place.lock, op_id, pid); // knife' \
+             a_running_operation_cannot_be_closed_by_hand
+          # any string is an approval (c477a #635 seg. 2 L3)
+          hk opstore.rs '    if approval != BY_LOCAL_ROOT && approval != BY_CUSTOMER_KEY {' \
+             '    if approval.is_empty() && approval != BY_CUSTOMER_KEY { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # restore --switch without the typed site code (4542e 11-10 condition c)
+          hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
+             a_switch_needs_the_site_code_typed
+          # run_op: a customer key approves any command (4542e 11-10 condition a)
+          hk opstore.rs '    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {' \
+             '    if approval == BY_CUSTOMER_KEY && CUSTOMER_COMMANDS.is_empty() { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # host lock: the holder is written straight into the lock file (#635 seg. 1 L1)
+          hk opstore.rs '    if let Err(e) = write(&tmp, text) {' \
+             '    if let Err(e) = write(lock, text) { // knife' \
+             a_crash_while_taking_the_lock_leaves_no_lock_file
+          # archive: the quarantine journal is not read (#625 seg. 2 M1 left unwired)
+          hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
+             '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
+             the_archive_plan_reads_the_quarantine_journal
+          # quarantine guard on the host: resume / suspend / restore reopen a quarantined site (33e28 deep review)
+          hk quarantinecmd.rs '    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())' \
+             '    { let _ = (code, &ct_fw, record, what); Ok(()) } // knife' \
+             a_quarantined_site_is_not_reopened
+          # quarantine guard on the host: a record that cannot be read counts as none
+          hk quarantinecmd.rs '    let record = load_record(code, quarantine_dir)?;' \
+             '    let record = load_record(code, quarantine_dir).unwrap_or(None); // knife' \
+             a_quarantined_site_is_not_reopened
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

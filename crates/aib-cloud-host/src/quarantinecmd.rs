@@ -7,14 +7,19 @@
 //! the host lock (`aib_cloud::op`), which are not wired to the host yet.
 //!
 //! The plan is printed as what would happen to this one site: the edge configuration is
-//! shown as this site's new block, not as the whole file.
+//! shown as this site's new block, not as the whole file. It carries the operation id an
+//! apply will bring back and is sealed ([`opstore::seal`]): `plan_sha256` covers the plan,
+//! the SHA-256 of this host's machine id and the crate version. No readable machine id ⇒
+//! no plan.
 
 use std::fs;
-use std::io::Read;
+use std::path::Path;
 
 use aib_cloud::quarantine::{self, Action, Quarantine, Record};
 use aib_cloud::site::{spec_from_record_strict, valid_code, SiteSpec};
 use serde_json::{json, Value};
+
+use crate::opstore;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const QUARANTINE_RECORDS: &str = "/var/lib/ez2-cloud/quarantine";
@@ -26,46 +31,6 @@ pub enum Mode {
     Quarantine,
     Unquarantine,
     Archive,
-}
-
-/// Days since 1970-01-01 to (year, month, day), proleptic Gregorian (Howard Hinnant's
-/// `civil_from_days`).
-fn civil(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
-/// An operation id for `now` (seconds since the epoch, UTC) and four random bytes.
-pub fn op_id(now: u64, random: [u8; 4]) -> String {
-    let secs = i64::try_from(now).unwrap_or(0);
-    let (y, m, d) = civil(secs.div_euclid(86_400));
-    let t = secs.rem_euclid(86_400);
-    format!(
-        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z-{:02x}{:02x}{:02x}{:02x}",
-        t / 3600,
-        t % 3600 / 60,
-        t % 60,
-        random[0],
-        random[1],
-        random[2],
-        random[3]
-    )
-}
-
-fn random4() -> Result<[u8; 4], String> {
-    let mut b = [0u8; 4];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut b))
-        .map_err(|e| format!("/dev/urandom: {e}"))?;
-    Ok(b)
 }
 
 /// A file that may legitimately be absent: `Ok(None)` when it is not there, an error when
@@ -93,10 +58,11 @@ pub fn action_json(spec: &SiteSpec, action: &Action) -> Value {
         }),
         Action::ApplyFirewall => json!({ "do": "apply_firewall" }),
         Action::DropConnections { ip } => json!({ "do": "drop_connections", "ip": ip }),
-        Action::WriteCaddyfile { text } => json!({
-            "do": "write_edge_block",
-            "block": quarantine::caddy_block_text(text, &spec.code).ok(),
-        }),
+        // a block that cannot be taken out is shown as an error, not as a silent null (#625 seg. 4 N1)
+        Action::WriteCaddyfile { text } => match quarantine::caddy_block_text(text, &spec.code) {
+            Ok(block) => json!({ "do": "write_edge_block", "block": block }),
+            Err(e) => json!({ "do": "write_edge_block", "block": null, "error": e.to_string() }),
+        },
         Action::Verify { quarantined } => json!({ "do": "verify", "quarantined": quarantined }),
         Action::ArchiveRecord => json!({ "do": "archive_record" }),
     }
@@ -127,6 +93,36 @@ pub(crate) fn load_record(code: &str, dir: &str) -> Result<Option<Record>, Strin
     Record::from_json(&v)
         .map(Some)
         .map_err(|e| format!("{path}: {e}"))
+}
+
+/// Refuse a command that would put a quarantined site back on the network or overwrite
+/// its quarantine (`site resume` / `suspend`, `site restore`): the decision is
+/// `quarantine::guard`, the facts are the CT's firewall file and the quarantine record.
+/// A record that cannot be read refuses too — it is not "no record" (DESIGN-eu02-quarantine
+/// rule 4; 33e28 deep review 11-10: the guard had no caller on the host).
+pub fn refuse_if_quarantined(
+    code: &str,
+    ct_fw_path: &str,
+    quarantine_dir: &str,
+    what: quarantine::Reopens,
+) -> Result<(), String> {
+    let ct_fw = read_optional(ct_fw_path)?.unwrap_or_default();
+    let record = load_record(code, quarantine_dir)?;
+    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())
+}
+
+/// [`refuse_if_quarantined`] with this host's paths.
+pub fn refuse_if_quarantined_here(
+    code: &str,
+    ct: u32,
+    what: quarantine::Reopens,
+) -> Result<(), String> {
+    refuse_if_quarantined(
+        code,
+        &format!("/etc/pve/firewall/{ct}.fw"),
+        QUARANTINE_RECORDS,
+        what,
+    )
 }
 
 /// What was read from the host for one site.
@@ -199,6 +195,37 @@ pub fn plan_doc(
     }))
 }
 
+/// Last journal state of the quarantine operation `record` names (B1 b; #625 seg. 2 M1).
+/// `None` when there is no record or no journal for it — an archive plan is then refused.
+/// A journal that is there but does not replay is an error, not "none": it is evidence.
+pub fn record_op_state(
+    ops_dir: &Path,
+    record: Option<&Record>,
+) -> Result<Option<aib_cloud::op::State>, String> {
+    let Some(r) = record else {
+        return Ok(None);
+    };
+    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let last = aib_cloud::op::replay(&entries).map_err(|e| format!("journal of {}: {e}", r.op))?;
+    Ok(Some(last.state))
+}
+
+/// Put the operation id into the plan and seal it: `plan_sha256` covers the plan with its
+/// id, the host and the crate version.
+pub fn seal_with_op(
+    doc: &mut Value,
+    op: &str,
+    fingerprint: &str,
+    version: &str,
+) -> Result<(), String> {
+    let obj = doc.as_object_mut().ok_or("a plan is a JSON object")?;
+    obj.insert("op".to_owned(), json!(op));
+    opstore::seal(doc, fingerprint, version)
+}
+
 pub fn cmd(args: &[String], mode: Mode) -> Result<u8, String> {
     let code = args
         .first()
@@ -242,16 +269,24 @@ pub fn cmd(args: &[String], mode: Mode) -> Result<u8, String> {
     let ct_fw = read_optional(&format!("/etc/pve/firewall/{}.fw", spec.ct))?.unwrap_or_default();
     let caddyfile = crate::probe::edge_caddyfile()?;
     let record = load_record(&code, &qdir)?;
-    let op = op_id(crate::probe::unix_now(), random4()?);
+    let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
+    let fingerprint = opstore::host_fingerprint(Path::new(opstore::MACHINE_ID))?;
+    // only an archive plan needs the journal of the quarantine the record names (#625
+    // seg. 2 M1); the other plans must not be refused over a journal they do not use
+    let quarantine_op_state = if mode == Mode::Archive {
+        record_op_state(Path::new(opstore::OPS_DIR), record.as_ref())?
+    } else {
+        None
+    };
     let seen = Seen {
         ct_fw: &ct_fw,
         caddyfile: &caddyfile,
         record: record.as_ref(),
-        // the operation journal is not wired to the host yet: without it an archive plan
-        // is refused (it cannot tell an interrupted quarantine from a finished way out)
-        quarantine_op_state: None,
+        quarantine_op_state,
     };
-    let doc = plan_doc(mode, &spec, &op, &reason, &seen)?;
+    let mut doc = plan_doc(mode, &spec, &op, &reason, &seen)?;
+    // the id an apply brings back, and the seal an approval is bound to (B1 a)
+    seal_with_op(&mut doc, &op, &fingerprint, env!("CARGO_PKG_VERSION"))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
@@ -278,22 +313,6 @@ mod tests {
         .unwrap()
         .with_fw_group("ez2-site-v2")
         .unwrap()
-    }
-
-    #[test]
-    fn op_ids_are_what_the_journal_accepts() {
-        assert_eq!(op_id(0, [0, 0, 0, 0]), "19700101T000000Z-00000000");
-        // 2026-11-10 01:45:00 UTC
-        assert_eq!(
-            op_id(1_794_275_100, [0x0a, 0x1b, 0x2c, 0x3d]),
-            "20261110T014500Z-0a1b2c3d"
-        );
-        // a leap day and the last second of a year
-        assert_eq!(op_id(1_709_164_800, [255; 4]), "20240229T000000Z-ffffffff");
-        assert_eq!(op_id(1_735_689_599, [1; 4]), "20241231T235959Z-01010101");
-        for now in [0, 1_794_275_100, 1_709_164_800, 4_102_444_799] {
-            assert!(aib_cloud::op::valid_op_id(&op_id(now, [7; 4])), "{now}");
-        }
     }
 
     #[test]
@@ -381,6 +400,144 @@ mod tests {
         assert!(plan_doc(Mode::Archive, &s, "x", "", &seen(Some(&record), None)).is_err());
         assert!(plan_doc(Mode::Archive, &s, "x", "", &seen(Some(&record), running)).is_err());
         assert!(plan_doc(Mode::Unquarantine, &s, "x", "", &seen(Some(&record), done)).is_err());
+    }
+
+    /// B1 (a): the printed plan carries its operation id, and its hash is over the plan
+    /// with that id, this host and this version.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_printed_plan_is_sealed_with_its_op() {
+        let s = spec();
+        let fw = desired_firewall("ez2-site-v2", None);
+        let file = caddy_block_upstream(&s, "10.77.0.12");
+        let op = "20261110T014500Z-0a1b2c3d";
+        let seen = Seen {
+            ct_fw: &fw,
+            caddyfile: &file,
+            record: None,
+            quarantine_op_state: None,
+        };
+        let mut doc = plan_doc(Mode::Quarantine, &s, op, "operator", &seen).unwrap();
+        seal_with_op(&mut doc, op, "f1", "0.2.0").unwrap();
+        assert_eq!(doc["op"], op);
+        let sha = doc["plan_sha256"].as_str().unwrap().to_owned();
+        let again = opstore::sha256_hex(
+            opstore::plan_hash_input(&opstore::unsealed(&doc), "f1", "0.2.0").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(sha, again);
+        let mut other = plan_doc(Mode::Quarantine, &s, op, "operator", &seen).unwrap();
+        seal_with_op(&mut other, op, "f2", "0.2.0").unwrap();
+        assert_ne!(other["plan_sha256"], doc["plan_sha256"], "another host");
+    }
+
+    /// #625 seg. 2 M1 wired to the journal (B1): the archive plan sees the state of the
+    /// quarantine the record names — none, unfinished or verified.
+    #[test]
+    fn the_archive_plan_reads_the_quarantine_journal() {
+        use aib_cloud::op::{Entry, State};
+        let dir = std::env::temp_dir().join(format!(
+            "aib-qcmd-journal-{}-{}",
+            std::process::id(),
+            crate::probe::unix_now()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let op = "20261110T014500Z-0a1b2c3d";
+        let record = Record {
+            site: "site2".to_owned(),
+            ct: 112,
+            op: op.to_owned(),
+            reason: "operator".to_owned(),
+            prev_firewall: String::new(),
+            prev_caddy_block: String::new(),
+        };
+        assert_eq!(record_op_state(&dir, None).unwrap(), None);
+        assert_eq!(
+            record_op_state(&dir, Some(&record)).unwrap(),
+            None,
+            "no journal"
+        );
+        let line = |seq, state, approval: &str| Entry {
+            op: op.to_owned(),
+            seq,
+            at: 1_794_300_000,
+            state,
+            command: "site.quarantine".to_owned(),
+            target: "site:site2".to_owned(),
+            plan_sha256: "a".repeat(64),
+            code: "ok".to_owned(),
+            approval: approval.to_owned(),
+        };
+        opstore::append_entry(&dir, &line(1, State::Planned, "")).unwrap();
+        opstore::append_entry(&dir, &line(2, State::Approved, "n1")).unwrap();
+        opstore::append_entry(&dir, &line(3, State::Running, "n1")).unwrap();
+        assert_eq!(
+            record_op_state(&dir, Some(&record)).unwrap(),
+            Some(State::Running)
+        );
+        opstore::append_entry(&dir, &line(4, State::Verified, "n1")).unwrap();
+        assert_eq!(
+            record_op_state(&dir, Some(&record)).unwrap(),
+            Some(State::Verified)
+        );
+        // a journal that does not replay is not read as "no journal"
+        fs::write(
+            opstore::journal_path(&dir, op).unwrap(),
+            format!("{}\n", line(2, State::Approved, "n1").to_json()),
+        )
+        .unwrap();
+        assert!(record_op_state(&dir, Some(&record)).is_err());
+    }
+
+    /// The guard has a caller on the host: a record on disk or the quarantine firewall
+    /// refuses; a damaged record refuses; a plain site passes.
+    #[test]
+    fn a_quarantined_site_is_not_reopened() {
+        use quarantine::Reopens;
+        let dir = std::env::temp_dir().join(format!(
+            "aib-qcmd-guard-{}-{}",
+            std::process::id(),
+            crate::probe::unix_now()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("q")).unwrap();
+        let fw = dir.join("112.fw");
+        let (fwp, qd) = (fw.to_str().unwrap(), dir.join("q"));
+        let qd = qd.to_str().unwrap();
+        fs::write(&fw, desired_firewall("ez2-site-v2", None)).unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_ok());
+        // no firewall file at all is not "quarantined" either
+        assert!(
+            refuse_if_quarantined("site2", &format!("{fwp}.none"), qd, Reopens::Resume).is_ok()
+        );
+        // a record on disk
+        let record = Record {
+            site: "site2".to_owned(),
+            ct: 112,
+            op: "20261110T014500Z-0a1b2c3d".to_owned(),
+            reason: "operator".to_owned(),
+            prev_firewall: String::new(),
+            // a record must name the block it replaced (#625: empty is refused as unreadable)
+            prev_caddy_block: "site2.example.test {\n    reverse_proxy 10.77.0.12:80\n}\n"
+                .to_owned(),
+        };
+        fs::write(
+            dir.join("q").join("site2.json"),
+            record.to_json().to_string(),
+        )
+        .unwrap();
+        for what in [Reopens::Resume, Reopens::Restore] {
+            let err = refuse_if_quarantined("site2", fwp, qd, what).unwrap_err();
+            assert!(err.contains("quarantined"), "{err}");
+        }
+        // a record that cannot be read is not "no record"
+        fs::write(dir.join("q").join("site2.json"), "{broken").unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_err());
+        // the quarantine firewall without a record
+        fs::remove_file(dir.join("q").join("site2.json")).unwrap();
+        fs::write(&fw, quarantine::firewall()).unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_err());
     }
 
     #[test]
