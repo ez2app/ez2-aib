@@ -212,7 +212,14 @@ impl ApiError {
     }
 
     pub(crate) fn into_response(self) -> Response {
-        error_response(self.0, &self.1, &guard::request_id())
+        let mut r = error_response(self.0, &self.1, &guard::request_id());
+        if self.0 == ErrorCode::ThermalNogo {
+            r.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static(THERMAL_RETRY_AFTER_SECS),
+            );
+        }
+        r
     }
 }
 
@@ -465,6 +472,8 @@ pub struct Sessions {
     /// The M1 gate, run again when a queued session leaves the queue.
     /// Set by the server ([`Sessions::set_policy`]); `None` = no re-check.
     policy: Mutex<Option<Arc<SessionPolicy>>>,
+    /// Set once by the server ([`Sessions::set_hooks`]); unset = defaults.
+    hooks: std::sync::OnceLock<Hooks>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -496,6 +505,33 @@ fn row_of(s: &Session) -> SessionRow {
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `Retry-After` on `thermal_nogo`: the guard re-reads no faster than this.
+const THERMAL_RETRY_AFTER_SECS: &str = "600";
+
+/// What the thermal guard (ADR 0005 §1, R1 PR 3) plugs into the sessions.
+///
+/// Both are called **with the sessions lock held**: they may only read or
+/// write their own state (atomics) and must never call back into
+/// [`Sessions`], which would deadlock. To make the queue move after a NOGO
+/// ends, call [`Sessions::kick_now`] from outside the hook.
+pub struct Hooks {
+    /// `false` ⇒ no session starts: a POST answers `thermal_nogo` (not
+    /// queued) and the queue holds what it has.
+    pub launch_allowed: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// `(old, new)` count of `live` entries (running and stop_unconfirmed),
+    /// called only when it changed.
+    pub on_running_changed: Arc<dyn Fn(usize, usize) + Send + Sync>,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Hooks {
+            launch_allowed: Arc::new(|| true),
+            on_running_changed: Arc::new(|_, _| {}),
+        }
+    }
 }
 
 /// 043dd f6500f85 L1: a dequeue thread that panics must not leave
@@ -546,6 +582,7 @@ impl Sessions {
             rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
             rejections: allowlist::RejectLog::default(),
             policy: Mutex::new(None),
+            hooks: std::sync::OnceLock::new(),
             me: me.clone(),
         })
     }
@@ -554,6 +591,34 @@ impl Sessions {
     /// leaves the queue (the same one the POST gate used).
     pub fn set_policy(&self, p: Arc<SessionPolicy>) {
         *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+    }
+
+    /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
+    /// refused (`false`) and the first stays.
+    pub fn set_hooks(&self, h: Hooks) -> bool {
+        self.hooks.set(h).is_ok()
+    }
+
+    /// Caller holds the lock.
+    fn launch_allowed(&self) -> bool {
+        self.hooks.get().is_none_or(|h| (h.launch_allowed)())
+    }
+
+    /// Caller holds the lock; `old` = `live.len()` before the change.
+    fn running_changed(&self, old: usize, g: &Inner) {
+        let new = g.live.len();
+        if old != new {
+            if let Some(h) = self.hooks.get() {
+                (h.on_running_changed)(old, new);
+            }
+        }
+    }
+
+    /// Start waiting sessions now if slots are free: the thermal guard calls
+    /// this when a NOGO ends, or the queue would wait for the next slot change.
+    pub fn kick_now(&self) {
+        let mut g = lock(&self.inner);
+        self.kick(&mut g);
     }
 
     /// Test hook: a shorter background re-check window (and, since test
@@ -666,6 +731,13 @@ impl Sessions {
                 return Err(ApiError::new(
                     ErrorCode::ShuttingDown,
                     "aibd is shutting down",
+                ));
+            }
+            if !self.launch_allowed() {
+                // not queued: a hot machine is not a full one (R1 PR 3)
+                return Err(ApiError::new(
+                    ErrorCode::ThermalNogo,
+                    "the machine is too hot to start a session; try again later",
                 ));
             }
             // FIFO: a new POST never overtakes one that is already waiting
@@ -840,6 +912,7 @@ impl Sessions {
         let exit_wait = run.exit_wait();
         let output = run.take_output();
         let shutting = g.shutting;
+        let old = g.live.len();
         g.live.insert(
             id.clone(),
             Entry {
@@ -851,6 +924,7 @@ impl Sessions {
                 rescanning: false,
             },
         );
+        self.running_changed(old, &g);
         self.event(
             &mut g,
             &id,
@@ -933,7 +1007,10 @@ impl Sessions {
         loop {
             let q = {
                 let mut g = lock(&self.inner);
-                if g.shutting || g.live.len() + g.reserved + g.held_unknown >= self.max {
+                if g.shutting
+                    || g.live.len() + g.reserved + g.held_unknown >= self.max
+                    || !self.launch_allowed()
+                {
                     g.dequeuing = false; // under the lock that checked: a kick after this starts a new one
                     return;
                 }
@@ -1104,10 +1181,12 @@ impl Sessions {
             unreadable = ?stop.candidates.unreadable,
             other_coalition = ?stop.candidates.other_coalition, "session stop");
         if stop.releases_slot() {
+            let old = g.live.len();
             if let Some(e) = g.live.remove(id) {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
+            self.running_changed(old, &g);
             self.kick(&mut g);
         } else if worth_rescanning(&stop) && !g.shutting {
             // nothing known alive, but the stop could not look everywhere
@@ -1328,10 +1407,12 @@ impl Sessions {
                     serde_json::json!({"id": id, "reason": stop.status.reason(), "tries": tries}),
                 );
                 tracing::info!(session = %id, tries, "slot released after re-check");
+                let old = g.live.len();
                 if let Some(e) = g.live.remove(id) {
                     g.ended.push_front((e.order, e.rec));
                     g.ended.truncate(KEEP_ENDED);
                 }
+                self.running_changed(old, g);
                 self.kick(g);
             }
             None => {
@@ -2202,5 +2283,20 @@ mod tests {
             validate(&vec![b' '; MAX_BODY + 1]).unwrap_err().0,
             ErrorCode::PayloadTooLarge
         );
+    }
+
+    /// R1 PR 3a: a NOGO answer tells the client when to try again.
+    #[test]
+    fn a_thermal_nogo_answers_503_with_retry_after() {
+        let r = ApiError::new(ErrorCode::ThermalNogo, "hot").into_response();
+        assert_eq!(r.status().as_u16(), 503);
+        assert_eq!(
+            r.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some(THERMAL_RETRY_AFTER_SECS)
+        );
+        let other = ApiError::new(ErrorCode::ShuttingDown, "x").into_response();
+        assert!(other.headers().get(axum::http::header::RETRY_AFTER).is_none());
     }
 }
