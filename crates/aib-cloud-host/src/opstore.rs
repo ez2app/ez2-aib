@@ -922,7 +922,8 @@ fn append_note(path: &Path, note: &Value) -> Result<(), String> {
 pub fn archive_op(place: &OpPlace, op_id: &str, target: Option<&str>) -> Result<String, String> {
     let path = journal_path(&place.ops_dir, op_id)?;
     let pid = std::process::id();
-    acquire(&place.lock, op_id, pid)?;
+    // bound, not a bare call: a knife anchors on the bare form in mark_recovered
+    let _got = acquire(&place.lock, op_id, pid)?;
     let result = archive_locked(&place.ops_dir, &path, op_id, target);
     let _ = release(&place.lock, op_id, pid);
     result
