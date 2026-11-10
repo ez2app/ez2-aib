@@ -95,6 +95,22 @@ pub fn read_spec(path: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+/// Text as it is safe to show to whoever approves a plan: control characters are written
+/// out as `\u{..}` instead of being sent to the terminal. `provision::lint` refuses them
+/// already; this is the second lock on the same door, for a plan that reached here some
+/// other way.
+pub fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn command_text(c: &Command) -> String {
     match c {
         Command::Argv(args) => args
@@ -105,7 +121,11 @@ fn command_text(c: &Command) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
-        Command::Shell { sh, why } => format!("sh: {sh}   (shell because: {why})"),
+        Command::Shell { sh, why } => format!(
+            "sh: {}   (shell because: {})",
+            printable(sh),
+            printable(why)
+        ),
     }
 }
 
@@ -123,7 +143,11 @@ pub fn step_text(n: usize, s: &Step, assumed: bool) -> String {
     } else {
         format!("{n:>3}")
     };
-    out.push_str(&format!("{head}  {}  [{level}]  {}\n", s.id, s.title));
+    out.push_str(&format!(
+        "{head}  {}  [{level}]  {}\n",
+        printable(&s.id),
+        printable(&s.title)
+    ));
     if assumed {
         for v in &s.verify {
             out.push_str(&format!("       verify  {}\n", command_text(&v.run)));
@@ -131,10 +155,10 @@ pub fn step_text(n: usize, s: &Step, assumed: bool) -> String {
         return out;
     }
     if let Some(c) = &s.consent {
-        out.push_str(&format!("       approver confirms: {c}\n"));
+        out.push_str(&format!("       approver confirms: {}\n", printable(c)));
     }
     if let Some(d) = &s.destroys {
-        out.push_str(&format!("       DESTROYS: {d}\n"));
+        out.push_str(&format!("       DESTROYS: {}\n", printable(d)));
     }
     match s.disruption {
         Disruption::None => {}
@@ -155,7 +179,7 @@ pub fn step_text(n: usize, s: &Step, assumed: bool) -> String {
     }
     if s.kind == Kind::Manual {
         for i in &s.instructions {
-            out.push_str(&format!("       a person: {i}\n"));
+            out.push_str(&format!("       a person: {}\n", printable(i)));
         }
     }
     for c in &s.apply {
@@ -173,10 +197,14 @@ pub fn step_text(n: usize, s: &Step, assumed: bool) -> String {
             }
         }
         Recovery::Rescue(path) => out.push_str(&format!(
-            "       no rollback — rescue system and a person: {path}\n"
+            "       no rollback — rescue system and a person: {}\n",
+            printable(path)
         )),
         Recovery::Unsupported(path) => {
-            out.push_str(&format!("       no rollback — recovery path: {path}\n"));
+            out.push_str(&format!(
+                "       no rollback — recovery path: {}\n",
+                printable(path)
+            ));
         }
     }
     out
@@ -334,6 +362,24 @@ mod tests {
         assert!(cmd(&["apply".to_owned(), "x".to_owned()]).is_err());
         assert!(cmd(&["lint".to_owned()]).is_err());
         assert!(cmd(&["lint".to_owned(), "a".to_owned(), "--json".to_owned()]).is_err());
+    }
+
+    /// f1fae / ebb36 (#625 seg. 5 L1): what the approver sees cannot be repainted.
+    #[test]
+    fn control_characters_never_reach_the_terminal() {
+        assert_eq!(printable("plain 中文 ok"), "plain 中文 ok");
+        assert_eq!(printable("a\u{1b}[2Kb\rc"), "a\\u{1b}[2Kb\\u{d}c");
+        // a step that got past lint some other way: build it by hand
+        let value: Value = serde_json::from_str(&spec_text("")).unwrap();
+        let spec = provision::lint(&value).unwrap();
+        let plan = provision::plan(&spec, None).unwrap();
+        let mut step = plan.steps()[1].clone();
+        step.destroys = Some("everything\u{1b}[1A\u{1b}[2K".to_owned());
+        step.title = "two\nlines".to_owned();
+        let text = step_text(1, &step, false);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+        assert!(text.contains("DESTROYS: everything\\u{1b}[1A"));
+        assert!(text.contains("two\\u{a}lines"));
     }
 
     #[test]

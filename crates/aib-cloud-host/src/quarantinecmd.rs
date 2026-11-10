@@ -129,6 +129,19 @@ fn load_record(code: &str, dir: &str) -> Result<Option<Record>, String> {
         .map_err(|e| format!("{path}: {e}"))
 }
 
+/// What was read from the host for one site.
+#[derive(Clone, Copy)]
+pub struct Seen<'a> {
+    /// The CT's firewall file; empty when there is none.
+    pub ct_fw: &'a str,
+    /// The edge configuration.
+    pub caddyfile: &'a str,
+    /// The site's quarantine record, if one is on disk.
+    pub record: Option<&'a Record>,
+    /// Last journal state of the operation that record names, if a journal was found.
+    pub quarantine_op_state: Option<aib_cloud::op::State>,
+}
+
 /// Build the plan document from what was read. Separate from [`cmd`] so it can be tested
 /// without a host.
 pub fn plan_doc(
@@ -136,11 +149,14 @@ pub fn plan_doc(
     spec: &SiteSpec,
     op: &str,
     reason: &str,
-    ct_fw: &str,
-    caddyfile: &str,
-    record: Option<&Record>,
-    quarantine_op_state: Option<aib_cloud::op::State>,
+    seen: &Seen<'_>,
 ) -> Result<Value, String> {
+    let Seen {
+        ct_fw,
+        caddyfile,
+        record,
+        quarantine_op_state,
+    } = *seen;
     let (what, actions, already) = match mode {
         Mode::Quarantine => {
             match quarantine::quarantine_plan(spec, op, reason, PAGE, ct_fw, caddyfile, record)
@@ -227,18 +243,15 @@ pub fn cmd(args: &[String], mode: Mode) -> Result<u8, String> {
     let caddyfile = crate::probe::edge_caddyfile()?;
     let record = load_record(&code, &qdir)?;
     let op = op_id(crate::probe::unix_now(), random4()?);
-    let doc = plan_doc(
-        mode,
-        &spec,
-        &op,
-        &reason,
-        &ct_fw,
-        &caddyfile,
-        record.as_ref(),
+    let seen = Seen {
+        ct_fw: &ct_fw,
+        caddyfile: &caddyfile,
+        record: record.as_ref(),
         // the operation journal is not wired to the host yet: without it an archive plan
         // is refused (it cannot tell an interrupted quarantine from a finished way out)
-        None,
-    )?;
+        quarantine_op_state: None,
+    };
+    let doc = plan_doc(mode, &spec, &op, &reason, &seen)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
@@ -291,15 +304,18 @@ mod tests {
             "{}\n# site:other\nother.example.test {{\n\treverse_proxy 10.77.0.20:80\n}}\n",
             caddy_block_upstream(&s, "10.77.0.12")
         );
+        let seen = Seen {
+            ct_fw: &fw,
+            caddyfile: &file,
+            record: None,
+            quarantine_op_state: None,
+        };
         let doc = plan_doc(
             Mode::Quarantine,
             &s,
             "20261110T014500Z-0a1b2c3d",
             "abuse_report",
-            &fw,
-            &file,
-            None,
-            None,
+            &seen,
         )
         .unwrap();
         assert_eq!(doc["plan"], "quarantine");
@@ -335,10 +351,6 @@ mod tests {
         let s = spec();
         let fw = desired_firewall("ez2-site-v2", None);
         let file = caddy_block_upstream(&s, "10.77.0.12");
-        for mode in [Mode::Unquarantine, Mode::Archive] {
-            let err = plan_doc(mode, &s, "x", "", &fw, &file, None, None).unwrap_err();
-            assert!(err.contains("no quarantine record"), "{err}");
-        }
         // a record whose host is fully restored: archive is the plan, unquarantine is not
         let record = Record {
             site: "site2".to_owned(),
@@ -348,37 +360,27 @@ mod tests {
             prev_firewall: fw.clone(),
             prev_caddy_block: file.clone(),
         };
+        let seen = |record, quarantine_op_state| Seen {
+            ct_fw: &fw,
+            caddyfile: &file,
+            record,
+            quarantine_op_state,
+        };
+        for mode in [Mode::Unquarantine, Mode::Archive] {
+            let err = plan_doc(mode, &s, "x", "", &seen(None, None)).unwrap_err();
+            assert!(err.contains("no quarantine record"), "{err}");
+        }
         let done = Some(aib_cloud::op::State::Verified);
-        let doc = plan_doc(Mode::Archive, &s, "x", "", &fw, &file, Some(&record), done).unwrap();
+        let running = Some(aib_cloud::op::State::Running);
+        let doc = plan_doc(Mode::Archive, &s, "x", "", &seen(Some(&record), done)).unwrap();
+        assert_eq!(doc["level"], "L2");
+        assert_eq!(doc["steps"][1]["do"], "archive_record");
         assert_eq!(doc["record_op"], "20261110T014500Z-0a1b2c3d");
         assert_eq!(doc["record_reason"], "operator");
         // without the journal, or with an unfinished quarantine, there is no archive plan
-        let running = Some(aib_cloud::op::State::Running);
-        assert!(plan_doc(Mode::Archive, &s, "x", "", &fw, &file, Some(&record), None).is_err());
-        assert!(plan_doc(
-            Mode::Archive,
-            &s,
-            "x",
-            "",
-            &fw,
-            &file,
-            Some(&record),
-            running
-        )
-        .is_err());
-        assert_eq!(doc["level"], "L2");
-        assert_eq!(doc["steps"][1]["do"], "archive_record");
-        assert!(plan_doc(
-            Mode::Unquarantine,
-            &s,
-            "x",
-            "",
-            &fw,
-            &file,
-            Some(&record),
-            done
-        )
-        .is_err());
+        assert!(plan_doc(Mode::Archive, &s, "x", "", &seen(Some(&record), None)).is_err());
+        assert!(plan_doc(Mode::Archive, &s, "x", "", &seen(Some(&record), running)).is_err());
+        assert!(plan_doc(Mode::Unquarantine, &s, "x", "", &seen(Some(&record), done)).is_err());
     }
 
     #[test]
