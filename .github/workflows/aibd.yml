@@ -535,6 +535,10 @@ jobs:
           hk opstore.rs '    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {' \
              '    if approval == BY_CUSTOMER_KEY && CUSTOMER_COMMANDS.is_empty() { // knife' \
              a_customer_key_approves_only_the_customer_commands
+          # op archive: an unfinished operation's journal is moved aside (#635 seg. 1 N2)
+          hk opstore.rs '        Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),' \
+             '        Ok(Ok(last)) if last.state == op::State::Verified || true => "finished".to_owned(), // knife (a guard, so the next arm stays reachable under -D warnings)' \
+             a_damaged_journal_is_archived_and_an_unfinished_one_is_not
           # host lock: the holder is written straight into the lock file (#635 seg. 1 L1)
           hk opstore.rs '    if let Err(e) = write(&tmp, text) {' \
              '    if let Err(e) = write(lock, text) { // knife' \

@@ -800,6 +800,55 @@ pub fn mark_recovered(place: &OpPlace, op_id: &str, now: u64) -> Result<(), Stri
     result
 }
 
+/// Where [`archive_op`] moves a journal: below the journal directory, out of what
+/// [`last_entries`] reads.
+pub const ARCHIVE_DIR: &str = "archive";
+
+/// Move one operation's journal out of the way, by hand, under the host lock (#635 seg. 1
+/// N2, 1ced7). Only a journal that cannot be read or replayed — which otherwise refuses
+/// every operation on every target — or one whose operation is verified. An operation
+/// that is running, failed or in recovery is refused here: a person closes it with
+/// `op recovered` after checking the host. Returns what was archived and why.
+pub fn archive_op(place: &OpPlace, op_id: &str) -> Result<String, String> {
+    let path = journal_path(&place.ops_dir, op_id)?;
+    let pid = std::process::id();
+    acquire(&place.lock, op_id, pid)?;
+    let result = archive_locked(&place.ops_dir, &path, op_id);
+    let _ = release(&place.lock, op_id, pid);
+    result
+}
+
+fn archive_locked(dir: &Path, path: &Path, op_id: &str) -> Result<String, String> {
+    if !path.exists() {
+        return Err(format!(
+            "operation {op_id} has no journal in {}",
+            dir.display()
+        ));
+    }
+    let journal = read_journal(path);
+    let why = match journal.as_ref().map(|(entries, _)| op::replay(entries)) {
+        Err(e) => format!("damaged ({e})"),
+        Ok(Err(e)) => format!("damaged ({e})"),
+        Ok(Ok(last)) if last.state == op::State::Verified => "finished".to_owned(),
+        Ok(Ok(last)) => {
+            return Err(format!(
+            "operation {op_id} is {}: not archived; check the host, then `op recovered {op_id}`",
+            last.state.as_str()
+        ))
+        }
+    };
+    let archive = dir.join(ARCHIVE_DIR);
+    fs::create_dir_all(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+    let to = archive.join(format!("{op_id}.jsonl"));
+    if to.exists() {
+        return Err(format!("{} already exists; not overwritten", to.display()));
+    }
+    fs::rename(path, &to).map_err(|e| format!("{}: {e}", path.display()))?;
+    sync_dir(&archive)?;
+    sync_dir(dir)?;
+    Ok(format!("{op_id}: archived, {why} -> {}", to.display()))
+}
+
 /// The code of the lines `op recovered` writes. The approval column cannot say who closed
 /// the operation — one operation runs under one approval to its end, and a customer key's
 /// operation keeps `standing-customer-key` — so the code does: closed by a person as root
@@ -912,7 +961,16 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             println!("{op_id}: recovered (closed by hand)");
             Ok(0)
         }
-        _ => Err("op needs status [<op id>] | unfinished <target> | recovered <op id>".to_owned()),
+        Some("archive") => {
+            // moves a damaged or finished journal aside; refuses an unfinished operation
+            let op_id = args.get(1).ok_or("op archive needs <op id>")?;
+            println!("{}", archive_op(&OpPlace::host()?, op_id)?);
+            Ok(0)
+        }
+        _ => Err(
+            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id>"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1518,6 +1576,99 @@ mod tests {
                 State::Verified
             ]
         );
+    }
+
+    /// #635 seg. 1 N2 (1ced7): one damaged journal refuses every operation on every
+    /// target; `op archive` is the way out, and it does not take an unfinished one.
+    #[test]
+    fn a_damaged_journal_is_archived_and_an_unfinished_one_is_not() {
+        let pl = place("archive");
+        let noop = |_: &str| -> Result<(), String> { Ok(()) };
+        // a finished operation, a failed one, and a journal that cannot be read
+        let mut done = String::new();
+        run_op(
+            &pl,
+            "site.suspend",
+            "site:site1",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            |op| {
+                done = op.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut failed = String::new();
+        let _ = run_op(
+            &pl,
+            "site.restore",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_060,
+            |op| -> Result<(), String> {
+                failed = op.to_owned();
+                Err("502".to_owned())
+            },
+        );
+        fs::write(
+            pl.ops_dir.join(format!("{OP1}.jsonl")),
+            "{not a journal\n{}\n",
+        )
+        .unwrap();
+        // the damaged one holds up an unrelated site
+        assert!(run_op(
+            &pl,
+            "site.resume",
+            "site:site3",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_120,
+            noop
+        )
+        .is_err());
+
+        // unfinished: refused, and the journal stays where it is
+        let why = archive_op(&pl, &failed).unwrap_err();
+        assert!(
+            why.contains("failed") && why.contains("op recovered"),
+            "{why}"
+        );
+        assert!(journal_path(&pl.ops_dir, &failed).unwrap().exists());
+        // damaged and finished: moved below archive/, out of what is read
+        assert!(archive_op(&pl, OP1).unwrap().contains("damaged"));
+        assert!(archive_op(&pl, &done).unwrap().contains("finished"));
+        assert!(pl
+            .ops_dir
+            .join(ARCHIVE_DIR)
+            .join(format!("{OP1}.jsonl"))
+            .exists());
+        assert!(!journal_path(&pl.ops_dir, OP1).unwrap().exists());
+        // nothing to archive, and the lock is given back every time
+        assert!(archive_op(&pl, OP2).is_err());
+        assert!(!pl.lock.lock.exists());
+        // site3 goes on; site2 is still held by its failed operation
+        run_op(
+            &pl,
+            "site.resume",
+            "site:site3",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_180,
+            noop,
+        )
+        .unwrap();
+        assert!(run_op(
+            &pl,
+            "site.resume",
+            "site:site2",
+            &json!({}),
+            BY_LOCAL_ROOT,
+            1_794_300_240,
+            noop
+        )
+        .is_err());
     }
 
     #[test]

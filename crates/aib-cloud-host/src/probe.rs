@@ -1351,7 +1351,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
     }
 }
 
