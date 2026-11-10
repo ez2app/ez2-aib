@@ -285,7 +285,11 @@ mod tests {
         let got: std::vec::Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(got, CONTRACT, "ALL differs from the contract list");
         for (i, c) in ErrorCode::ALL.iter().enumerate() {
-            assert_eq!(c.ordinal(), i, "{c} sits at {i} but its ordinal says otherwise");
+            assert_eq!(
+                c.ordinal(),
+                i,
+                "{c} sits at {i} but its ordinal says otherwise"
+            );
         }
     }
 }
