@@ -9,8 +9,9 @@
 //!
 //! * `/proc/cpuinfo` is covered by the text `aib_cloud::mask::cpuinfo` makes, with as
 //!   many processors as the CT's configuration gives it.
-//! * Each directory of `mask::HIDE_DIRS` that exists is covered by an empty directory,
-//!   each file of `mask::HIDE_FILES` by an empty file.
+//! * Under `/sys` everything but `mask::SYS_KEEP` is covered, and under `/proc` every
+//!   entry of `mask::PROC_HIDE`: a directory by an empty directory, a file by an empty
+//!   file. A symbolic link is never mounted over (it could lead out of the container).
 //!
 //! **It never stops a site from starting**: when something cannot be covered it says
 //! `NOT MASKED` on standard error (the runtime logs it) and still exits 0. Whether a
@@ -72,34 +73,42 @@ fn checked_root(rootfs: &str) -> Result<PathBuf, String> {
 }
 
 /// `root`/`rel` when that is a real path under `root` — no symbolic link anywhere on the
-/// way (a link could lead back out to the host) — and of the kind asked for.
-fn target(root: &Path, rel: &str, dir: bool) -> Option<PathBuf> {
+/// way (a link could lead back out to the host) — and whether it is a directory.
+fn target(root: &Path, rel: &str) -> Option<(PathBuf, bool)> {
     let path = root.join(rel);
     let real = fs::canonicalize(&path).ok()?;
-    (real == path && real.is_dir() == dir).then_some(real)
+    (real == path).then(|| {
+        let dir = real.is_dir();
+        (real, dir)
+    })
 }
 
-/// Every directory to cover: [`mask::HIDE_DIRS`] with `pci*` spelled out.
-fn hide_dirs(root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    for rel in mask::HIDE_DIRS {
-        match rel.strip_suffix("/pci*") {
-            None => out.push((*rel).to_owned()),
-            Some(parent) => {
-                let mut found: Vec<String> = fs::read_dir(root.join(parent))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|n| n.starts_with("pci"))
-                    .map(|n| format!("{parent}/{n}"))
-                    .collect();
-                found.sort();
-                out.extend(found);
-            }
-        }
+/// The names in a directory, sorted; none when it cannot be read.
+fn names(dir: &Path) -> Vec<String> {
+    let mut found: Vec<String> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Everything to cover under `/sys` (as paths below the container's root): walk from the
+/// top, asking [`mask::sys_step`] at each directory that leads to something kept.
+fn sys_covers(root: &Path) -> Vec<String> {
+    let mut cover = Vec::new();
+    let mut open = vec![String::new()];
+    while let Some(dir) = open.pop() {
+        let listing = names(&root.join("sys").join(&dir));
+        let refs: Vec<&str> = listing.iter().map(String::as_str).collect();
+        let step = mask::sys_step(&dir, &refs);
+        cover.extend(step.cover.into_iter().map(|p| format!("sys/{p}")));
+        open.extend(step.descend);
     }
-    out
+    cover.sort();
+    cover
 }
 
 fn bind(source: &Path, over: &Path) -> Result<(), String> {
@@ -135,11 +144,16 @@ fn apply(name: &str, rootfs: &str) -> Result<usize, String> {
 
     let mut made = 0;
     let mut first_failure: Option<String> = None;
-    let mut cover = |source: &Path, rel: &str, dir: bool| {
-        // a path the container does not have needs no cover
-        let Some(over) = target(&root, rel, dir) else {
+    let mut cover = |rel: &str, with: Option<&Path>| {
+        // a path the container does not have, or a link, gets no cover
+        let Some((over, dir)) = target(&root, rel) else {
             return;
         };
+        let source = with.unwrap_or(if dir {
+            empty_dir.as_path()
+        } else {
+            empty_file.as_path()
+        });
         match bind(source, &over) {
             Ok(()) => made += 1,
             Err(why) => {
@@ -147,12 +161,12 @@ fn apply(name: &str, rootfs: &str) -> Result<usize, String> {
             }
         }
     };
-    cover(&cpuinfo, "proc/cpuinfo", false);
-    for rel in hide_dirs(&root) {
-        cover(&empty_dir, &rel, true);
+    cover("proc/cpuinfo", Some(cpuinfo.as_path()));
+    for rel in sys_covers(&root) {
+        cover(&rel, None);
     }
-    for rel in mask::HIDE_FILES {
-        cover(&empty_file, rel, false);
+    for name in mask::PROC_HIDE {
+        cover(&format!("proc/{name}"), None);
     }
     match first_failure {
         None => Ok(made),
@@ -187,42 +201,61 @@ mod tests {
         assert!(apply("113", "/").is_err());
         assert!(apply("../113", root.to_str().unwrap()).is_err());
 
-        // targets: real paths only, of the right kind
+        // targets: real paths only, and what kind they are
         fs::create_dir_all(root.join("sys/firmware")).unwrap();
         fs::create_dir_all(root.join("proc")).unwrap();
         fs::write(root.join("proc/mdstat"), "x").unwrap();
         assert_eq!(
-            target(&root, "sys/firmware", true),
-            Some(root.join("sys/firmware"))
+            target(&root, "sys/firmware"),
+            Some((root.join("sys/firmware"), true))
         );
-        assert_eq!(target(&root, "sys/firmware", false), None);
         assert_eq!(
-            target(&root, "proc/mdstat", false),
-            Some(root.join("proc/mdstat"))
+            target(&root, "proc/mdstat"),
+            Some((root.join("proc/mdstat"), false))
         );
-        assert_eq!(target(&root, "proc/cmdline", false), None);
+        assert_eq!(target(&root, "proc/cmdline"), None);
         // a link in the container's tree that leads out is not followed
         let outside = scratch("outside");
         std::os::unix::fs::symlink(&outside, root.join("sys/class")).unwrap();
         fs::create_dir_all(outside.join("dmi")).unwrap();
-        assert_eq!(target(&root, "sys/class/dmi", true), None);
+        assert_eq!(target(&root, "sys/class/dmi"), None);
+        assert_eq!(target(&root, "sys/class"), None);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
-    fn every_pci_root_is_covered() {
-        let root = scratch("pci");
-        for d in ["pci0000:00", "pci0000:40", "system", "virtual"] {
-            fs::create_dir_all(root.join("sys/devices").join(d)).unwrap();
+    fn the_walk_under_sys_covers_all_but_what_is_kept() {
+        let root = scratch("sys");
+        for d in [
+            "sys/firmware/dmi",
+            "sys/block",
+            "sys/devices/pci0000:00/0000:00:01.1/nvme",
+            "sys/devices/pci0000:40",
+            "sys/devices/system/cpu/cpu0",
+            "sys/devices/system/node/node0",
+            "sys/devices/virtual/dmi/id",
+            "sys/devices/virtual/net/eth0",
+            "sys/class/net",
+            "sys/class/hwmon",
+            "sys/fs/cgroup/system.slice",
+            "sys/fs/ext4/dm-13",
+        ] {
+            fs::create_dir_all(root.join(d)).unwrap();
         }
-        let dirs = hide_dirs(&root);
-        assert!(dirs.contains(&"sys/devices/pci0000:00".to_owned()));
-        assert!(dirs.contains(&"sys/devices/pci0000:40".to_owned()));
-        assert!(!dirs
-            .iter()
-            .any(|d| d.contains('*') || d.ends_with("system")));
-        assert!(dirs.contains(&"sys/firmware".to_owned()));
+        assert_eq!(
+            sys_covers(&root),
+            [
+                "sys/block",
+                "sys/class/hwmon",
+                "sys/devices/pci0000:00",
+                "sys/devices/pci0000:40",
+                "sys/devices/system/node",
+                "sys/devices/virtual/dmi",
+                "sys/firmware",
+                "sys/fs/ext4",
+            ]
+        );
         let _ = fs::remove_dir_all(&root);
         // the entry point takes one word and never fails a start
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
