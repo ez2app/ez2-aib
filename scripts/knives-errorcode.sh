@@ -38,6 +38,17 @@ sys.stdout.write(sys.argv[1].replace("        ErrorCode::WebNotBuilt,\n    ];",
     "        ErrorCode::PairingFailed, // knife\n    ];", 1))')
 b "$B" "$N2" 'ErrorCode::ALL is out of step with ErrorCode::ordinal'
 
+# E0 negative arm: the build breaks for ANOTHER reason (a type error) on the very line
+# that holds the assert's message. rustc prints that line, so the message is in the
+# output, but it is not the const assert that stopped the build: knife-build must MISS.
+if b '    const { assert!(N < ErrorCode::ALL.len(), "ErrorCode ordinal is outside ALL") };' \
+     '    const { assert!(N < ErrorCode::ALL.len() as u8, "ErrorCode ordinal is outside ALL") }; // knife' \
+     'ErrorCode ordinal is outside ALL'; then
+  echo "knives-errorcode: E0 counted a type error as the const assert (knife-build too loose)"
+  exit 1
+fi
+echo "E0 negative arm: knife-build misses a build broken for another reason (as it should)"
+
 # E3 two codes swap places on the wire (builds, round-trips): the contract order catches it
 t $'            ErrorCode::HostNotAllowed => "host_not_allowed",\n            ErrorCode::OriginNotAllowed => "origin_not_allowed",' \
   $'            ErrorCode::HostNotAllowed => "origin_not_allowed", // knife\n            ErrorCode::OriginNotAllowed => "host_not_allowed",' \
@@ -48,4 +59,4 @@ t '            ErrorCode::WebNotBuilt => "web_not_built",' \
   '            ErrorCode::WebNotBuilt => "web_missing", // knife' \
   all_lists_every_code_once_in_contract_order
 
-echo "knives-errorcode: 4/4 bite"
+echo "knives-errorcode: 4/4 bite, E0 negative arm misses"
