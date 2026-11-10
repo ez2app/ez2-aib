@@ -1,5 +1,10 @@
 //! Read-only guards for DM closure. A verified snapshot is not authority to close:
 //! a backend must revalidate it atomically with the state transition.
+#[cfg(unix)]
+pub mod close;
+#[cfg(unix)]
+pub mod nowline;
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Read;
