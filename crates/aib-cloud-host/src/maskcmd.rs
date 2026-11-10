@@ -7,7 +7,8 @@
 //! switched: the host's files are still reachable, and what is mounted under
 //! `$LXC_ROOTFS_MOUNT` is what the container will see.
 //!
-//! * `/proc/cpuinfo` is covered by the text `aib_cloud::mask::cpuinfo` makes, with as
+//! * `/proc/cpuinfo` is covered by the text `aib_cloud::mask::cpuinfo` makes, and
+//!   `/sys/devices/system/cpu` by the directory `mask::cpu_dir` describes, both with as
 //!   many processors as the CT's configuration gives it.
 //! * Under `/sys` everything but `mask::SYS_KEEP` is covered, and under `/proc` every
 //!   entry of `mask::PROC_HIDE`: a directory by an empty directory, a file by an empty
@@ -65,8 +66,15 @@ fn checked_root(rootfs: &str) -> Result<PathBuf, String> {
         return Err(format!("{rootfs} is not a container root"));
     }
     let ns = |pid: &str| fs::read_link(format!("/proc/{pid}/ns/mnt")).ok();
-    match (ns("self"), ns("1")) {
-        (Some(ours), Some(hosts)) if ours != hosts => Ok(root),
+    own_namespace(ns("self").as_deref(), ns("1").as_deref())?;
+    Ok(root)
+}
+
+/// Our mount namespace against the host's (that of process 1): they must both be known
+/// and must differ.
+fn own_namespace(ours: Option<&Path>, hosts: Option<&Path>) -> Result<(), String> {
+    match (ours, hosts) {
+        (Some(ours), Some(hosts)) if ours != hosts => Ok(()),
         (Some(_), Some(_)) => Err("running in the host's mount namespace".to_owned()),
         _ => Err("mount namespace could not be read".to_owned()),
     }
@@ -133,14 +141,25 @@ fn apply(name: &str, rootfs: &str) -> Result<usize, String> {
     let text = mask::cpuinfo(&host, cores).ok_or("the host's cpuinfo could not be rebuilt")?;
 
     let state = PathBuf::from(format!("{STATE}/{ct}"));
-    let (empty_dir, empty_file, cpuinfo) = (
+    let (empty_dir, empty_file, cpuinfo, cpu_dir) = (
         state.join("empty"),
         state.join("none"),
         state.join("cpuinfo"),
+        state.join("cpu"),
     );
     fs::create_dir_all(&empty_dir).map_err(|e| format!("{}: {e}", empty_dir.display()))?;
     fs::write(&empty_file, "").map_err(|e| format!("{}: {e}", empty_file.display()))?;
     fs::write(&cpuinfo, text).map_err(|e| format!("{}: {e}", cpuinfo.display()))?;
+    // the processor directory, rebuilt from nothing each start (the count may have changed)
+    let (files, dirs) = mask::cpu_dir(cores).ok_or("no processor directory for that count")?;
+    let _ = fs::remove_dir_all(&cpu_dir);
+    for d in &dirs {
+        fs::create_dir_all(cpu_dir.join(d)).map_err(|e| format!("{}: {e}", cpu_dir.display()))?;
+    }
+    for (name, content) in &files {
+        fs::write(cpu_dir.join(name), content)
+            .map_err(|e| format!("{}: {e}", cpu_dir.display()))?;
+    }
 
     let mut made = 0;
     let mut first_failure: Option<String> = None;
@@ -162,6 +181,7 @@ fn apply(name: &str, rootfs: &str) -> Result<usize, String> {
         }
     };
     cover("proc/cpuinfo", Some(cpuinfo.as_path()));
+    cover("sys/devices/system/cpu", Some(cpu_dir.as_path()));
     for rel in sys_covers(&root) {
         cover(&rel, None);
     }
@@ -195,6 +215,12 @@ mod tests {
             why.contains("mount namespace"),
             "a test process is not inside a container: {why}"
         );
+        // the rule itself, with made-up namespaces: both known, and different
+        let (a, b) = (Path::new("mnt:[4026531841]"), Path::new("mnt:[4026532999]"));
+        assert_eq!(own_namespace(Some(b), Some(a)), Ok(()));
+        assert!(own_namespace(Some(a), Some(a)).is_err());
+        assert!(own_namespace(None, Some(a)).is_err());
+        assert!(own_namespace(Some(a), None).is_err());
         assert!(checked_root("/").is_err());
         assert!(checked_root("relative/path").is_err());
         assert!(checked_root("/nonexistent/aib-mask").is_err());

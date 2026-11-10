@@ -467,6 +467,18 @@ jobs:
           ck client.rs '        && edge(b.first())' \
              '        && b.first().is_some() // knife' \
              nothing_can_be_read_as_an_option
+          # mask: a cpuinfo field nobody named reaches the container
+          ck mask.rs '        _ => None,' \
+             '        _ => Some(value.into()), // knife' \
+             a_field_nobody_named_is_not_passed_on
+          # mask: the real model name reaches the container
+          ck mask.rs '        "model name" => Some(CPU_MODEL.into()),' \
+             '        "model name" => Some(value.into()), // knife' \
+             the_machine_is_not_named_in_cpuinfo
+          # mask: under /sys something nobody named is left readable
+          ck mask.rs '            step.cover.push(path);' \
+             '            step.descend.push(path); // knife' \
+             under_sys_only_what_is_named_stays
           # customer wording: a row or a code the table does not know is shown all the same
           ck wording.rs '        if let (Some(name), Some(sentence)) = (name, sentence) {' \
              '        if let (Some(name), Some(sentence)) = (name.or(Some("?")), sentence.or(Some("?"))) { // knife' \
@@ -806,6 +818,13 @@ jobs:
           hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
              '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
              a_tenant_key_reaches_its_own_sites_only
+          # ct mask: a cover is mounted through a link that leads out of the container
+          hk maskcmd.rs '    (real == path).then(|| {' '    (real == path || true).then(|| { // knife' \
+             nothing_is_mounted_on_the_host_or_through_a_link
+          # ct mask: the hook goes on inside the host own mount namespace
+          hk maskcmd.rs '        (Some(ours), Some(hosts)) if ours != hosts => Ok(()),' \
+             '        (Some(ours), Some(hosts)) if ours != hosts || true => Ok(()), // knife' \
+             nothing_is_mounted_on_the_host_or_through_a_link
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \
