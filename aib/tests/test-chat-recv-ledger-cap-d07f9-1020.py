@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""收件去重紀錄(recv-state.json)不能長過 atomic_json 64 KB 上限(10-20 實機:Pro 13 收得兇,一週內的去重
+"""收件去重紀錄(recv-state.json)不能長過 atomic_json 64 KB 上限(10-20 實機:Mac B 收得兇,一週內的去重
 紀錄 984 筆全長鍵 = 65,527 bytes ⇒ 每次存檔 AtomicWriteError ⇒ 收件整條斷線 5 秒重來,中繼站永遠 0/3)。
 
 L1 去重鍵只存短鍵(e:/m: + 16 碼);seen / mark 用全長鍵照樣認得

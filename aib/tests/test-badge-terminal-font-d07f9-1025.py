@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""AI 符號:字型檔裝了,但 Apple Terminal 設定檔字型畫不出 ⇒ 老實退字母(10-25 Mac Pro 13 / @ae6a1;Andy「預設優化」)。
+"""AI 符號:字型檔裝了,但 Apple Terminal 設定檔字型畫不出 ⇒ 老實退字母(10-25 Mac B / @ae6a1;Andy「預設優化」)。
 
 B1 外層終端機:EZ2_AIB_OUTER_TERM 優先;在 tmux 裡讀 tmux 全域 TERM_PROGRAM;不在 tmux 讀自己的(tmux 本身不算)
 B2 Apple Terminal 設定檔字型畫不出 ⇒ icon_available 全 False、missing_reason=terminal_font、理由寫設定檔與字型名

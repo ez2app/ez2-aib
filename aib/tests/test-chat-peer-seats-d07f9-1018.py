@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""通訊錄的席位跟著名冊汰換(10-18 @74e8b 回報、Andy 實測:Mac Pro 13 開新艙 5a97、隱藏舊席 7fb66,
+"""通訊錄的席位跟著名冊汰換(10-18 @74e8b 回報、Andy 實測:Mac B 開新艙 5a97、隱藏舊席 7fb66,
 Pro 通訊錄還是只有 7fb66 而且排第一 ⇒ 艦長室一直寄到死席)。
 
 P1 聯絡人快照:拿到不比快照舊的名冊(帶 roster_seats)⇒ seats 整份換成名冊目前公開的席、順序照名冊、死席拿掉;
@@ -54,9 +54,9 @@ class Snapshot(unittest.TestCase):
 
     def test_p1_replace_on_newer_roster(self):
         old, new, other = seat("436f", "7fb66", 1), seat("5a97", "4345c", 2), seat("5a97", "aaaa2", 3)
-        GF.note_peer(self.root, OWNER, "Mac Pro 13", "TW", old, 1000, direction="out")
+        GF.note_peer(self.root, OWNER, "Mac B", "TW", old, 1000, direction="out")
         self.assertEqual(self.seats(), [("436f", "7fb66")])
-        GF.note_peer(self.root, OWNER, "Mac Pro 13", "TW", new, 2000, direction="out",
+        GF.note_peer(self.root, OWNER, "Mac B", "TW", new, 2000, direction="out",
                      claims={"nip05": None, "roster_seats": [new, other]})
         self.assertEqual(self.seats(), [("5a97", "4345c"), ("5a97", "aaaa2")], "死席拿掉、順序照名冊")
         GF.note_peer(self.root, OWNER, None, None, old, 1500, claims={"nip05": None, "roster_seats": [old]})

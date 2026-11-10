@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """AI 符號字型:安裝 / 更新 aib 時一併補好(10-25 Andy「把 @ae6a1 的建議拿回來,預設在安裝或更新 aib 時一併優化」)。
 
-起因:Mac Pro 13(fishmac)右欄 / 狀態列的 AI 符號是空白 —— 沒有含 U+EC82 的字型,而且 Apple Terminal 不能設備用字型。
+起因:Mac B 右欄 / 狀態列的 AI 符號是空白 —— 沒有含 U+EC82 的字型,而且 Apple Terminal 不能設備用字型。
 @ae6a1 實際跑過的解法(pending/NOTE-icon-font-install-ae6a1-1025.md):
 
   status    只讀:字型檔有沒有、外層終端機畫不畫得出(engine_badge_mode 同一套判法)

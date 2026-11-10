@@ -1519,7 +1519,7 @@ mod tests {
         // the "open" half alone).
         // the port we just released: nothing listens now. Only asserted on Linux, where
         // this binary runs: on a shared macOS machine the port was seen answering again
-        // straight after the release (c477a, andymini, two runs).
+        // straight after the release (c477a, mac-c, two runs).
         // Another test of this binary may bind the port in the instant after the release
         // (seen twice in a row on CI, #641): a few fresh ports are tried, and one seen
         // closed is enough — the probe saying "open" for every one of them is the failure.
