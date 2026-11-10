@@ -1173,6 +1173,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-static.sh
+      # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
+      # must turn its own test red.
+      - name: aib-signlint knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-signlint.sh
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
