@@ -979,7 +979,7 @@ fn canonical(v: &Value, out: &mut String) {
     }
 }
 
-fn fnv1a64(bytes: &[u8]) -> String {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         h ^= u64::from(*b);

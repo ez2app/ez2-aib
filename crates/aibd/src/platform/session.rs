@@ -159,6 +159,14 @@ pub struct CandidateDiag {
     /// when 0. `count` is always the real total.
     #[serde(skip_serializing_if = "is_zero")]
     pub unreadable_more: usize,
+    /// G1 coalition: unreadable candidates let go because they run in a
+    /// coalition other than the session's (launchd services). Left out of
+    /// the JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_coalition: Vec<UnreadableCandidate>,
+    /// Same limit for the coalition list.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub other_coalition_more: usize,
 }
 
 /// The most unreadable candidates one stop record lists.
@@ -168,7 +176,7 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// One unreadable candidate: pid and the process name (not its arguments).
+/// One candidate: pid and the process name (not its arguments).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct UnreadableCandidate {
     pub pid: u32,
@@ -245,6 +253,24 @@ impl Stop {
                         pid,
                         comm: r
                             .candidates_unreadable_comm
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+                other_coalition_more: r
+                    .candidates_other_coalition
+                    .len()
+                    .saturating_sub(UNREADABLE_LISTED),
+                other_coalition: r
+                    .candidates_other_coalition
+                    .iter()
+                    .take(UNREADABLE_LISTED)
+                    .enumerate()
+                    .map(|(i, &pid)| UnreadableCandidate {
+                        pid,
+                        comm: r
+                            .candidates_other_coalition_comm
                             .get(i)
                             .cloned()
                             .unwrap_or_default(),
@@ -471,9 +497,48 @@ mod tests {
                         comm: "followupd".into()
                     },
                 ],
+                other_coalition: vec![],
                 unreadable_more: 0,
+                other_coalition_more: 0,
             }
         );
+    }
+
+    /// G1 coalition, the 1ced7 c25144e1 desktop stop (VERIFY-F-diag): the
+    /// only candidate was pid 43028 DockHelper, a launchd service. Let go by
+    /// its coalition, the stop no longer holds the slot, and it says so.
+    #[test]
+    fn the_dockhelper_stop_gives_the_slot_back_and_names_what_it_let_go() {
+        let held = Report {
+            candidates: 1,
+            candidates_unreadable: vec![43028],
+            candidates_unreadable_comm: vec!["DockHelper".into()],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        assert_eq!(
+            Stop::from_report(&held).status.reason(),
+            Some("candidates_unreadable"),
+            "before: the slot is held"
+        );
+        let r = Report {
+            candidates: 1,
+            candidates_other_coalition: vec![43028],
+            candidates_other_coalition_comm: vec!["DockHelper".into()],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let s = Stop::from_report(&r);
+        assert_ne!(s.status.reason(), Some("candidates_unreadable"));
+        assert!(s.releases_slot(), "{:?}", s.status);
+        assert_eq!(
+            s.candidates.other_coalition,
+            vec![UnreadableCandidate {
+                pid: 43028,
+                comm: "DockHelper".into()
+            }]
+        );
+        assert!(s.candidates.unreadable.is_empty());
     }
 
     /// 043dd #607 L1: a long run of unreadable candidates is listed up to
