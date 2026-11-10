@@ -335,6 +335,14 @@ jobs:
           ck edge.rs '            refuse("already on another site", name)' \
              '            Ok(alloc::vec![]) // knife' \
              add_refusals
+          # backup check: a CT missing from the off-site backup goes unnoticed (4.4.1 10)
+          ck backup.rs '        } else if missing {' \
+             '        } else if missing && must_have.len() > 99 { // knife' \
+             b02_every_ct_and_b03_config
+          # backup check: an unencrypted object off-site is fine
+          ck backup.rs '        if plain {' \
+             '        if plain && newest.is_empty() { // knife' \
+             b04_nothing_unencrypted_leaves_the_host
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
