@@ -376,6 +376,8 @@ fn python_waits_for_a_rust_close_of_the_same_dm() {
                 &|| {},
             )
         });
+        // ADR 0005 named exception (test only): give the Rust close time to take the lock
+        #[allow(clippy::disallowed_methods)]
         std::thread::sleep(Duration::from_millis(300)); // Rust is inside the lock now
         py.send(&[id(1)]);
         assert!(rust.join().expect("join").is_ok());
