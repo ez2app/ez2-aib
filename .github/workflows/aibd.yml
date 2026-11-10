@@ -375,6 +375,18 @@ jobs:
           ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
              '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
              a_customer_is_not_told_what_is_wrong_on_our_side
+          # roles: an editor may restart a site (the table is Ez2.PAGE's: live changes are the publisher's)
+          ck customer.rs '            Operation::Publish => matches!(self, Owner | Admin | Publisher),' \
+             '            Operation::Publish => matches!(self, Owner | Admin | Publisher | Editor), // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          # roles: restarting a site counts as editing it (so an editor could)
+          ck customer.rs '            Request::Restart => Operation::Publish,' \
+             '            Request::Restart => Operation::Edit, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          # customer key: a site name that is not a site code gets as far as the host records
+          ck customer.rs '            if !crate::site::valid_code(site) {' \
+             '            if site.is_empty() { // knife' \
+             a_customer_key_names_the_site_and_nothing_else
           # customer entry: a request may carry extra words (another site, say)
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
@@ -395,6 +407,54 @@ jobs:
           ck usage.rs '    u32::try_from(current.saturating_sub(inactive).div_ceil(1024 * 1024)).ok()' \
              '    u32::try_from((current + inactive * 0).div_ceil(1024 * 1024)).ok()' \
              the_working_set_leaves_the_cache_out
+          # customer side: a host that starts with a dash reaches ssh as an option
+          ck client.rs '        && edge(b.first())' \
+             '        && b.first().is_some() // knife' \
+             nothing_can_be_read_as_an_option
+          # customer wording: a row or a code the table does not know is shown all the same
+          ck wording.rs '        if let (Some(name), Some(sentence)) = (name, sentence) {' \
+             '        if let (Some(name), Some(sentence)) = (name.or(Some("?")), sentence.or(Some("?"))) { // knife' \
+             status_reads_as_sentences_and_shows_nothing_it_does_not_know
+          # customer wording: the neutral answer gives way to "could not be read"
+          ck wording.rs '            if said("provider_check") {' \
+             '            if said("provider_check") && exit == 0 { // knife' \
+             every_answer_has_its_sentence
+          # customer side: a request not offered yet is sent (Andy 11-10: hidden)
+          ck client.rs '    if !asked.offered() {' \
+             '    if !asked.offered() && false { // knife' \
+             a_request_the_host_would_refuse_is_not_sent
+          # customer side: a request the host would refuse is sent all the same
+          ck client.rs '        _ => parse_request(line).map(Line::Site),' \
+             '        _ => parse_request(line).or(Ok(Request::Status)).map(Line::Site), // knife' \
+             a_request_the_host_would_refuse_is_not_sent
+          # customer side: under a customer key a request not offered yet is sent (4.5 section 4)
+          ck client.rs '                request.offered()' \
+             '                request.offered() || matches!(self, Line::Owner(_)) // knife' \
+             a_customer_keys_lines_are_checked_by_their_own_grammar
+          # customer side: any first word is read as a site code (site status site3 would name a site)
+          ck client.rs '                && parse_request(&rest.join(" ")).is_ok() =>' \
+             '                && (parse_request(&rest.join(" ")).is_ok() || true) => // knife' \
+             a_code_in_front_of_a_request_names_the_site
+          # roster: a tenant id that is a site code is read all the same (4.5 r4 section 14.1 #3)
+          ck roster.rs '    if site_codes.contains(&tenant_id) {' \
+             '    if site_codes.contains(&tenant_id) && site_codes.is_empty() { // knife' \
+             a_tenant_id_that_is_a_site_code_refuses_the_whole_roster
+          # roster: a revoked entry key still gets its line
+          ck roster.rs '            if k.usage == KeyUse::Entry && !k.revoked {' \
+             '            if k.usage == KeyUse::Entry && (!k.revoked || true) { // knife' \
+             a_revoked_key_or_member_writes_no_line
+          # roster: a member who may not edit gets a login to the site
+          ck roster.rs '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Edit)) {' \
+             '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::ReadPrivate)) { // knife' \
+             one_roster_writes_both_kinds_of_lines
+          # roster: a field nobody named is skipped
+          ck roster.rs '    if map.keys().any(|k| !named.contains(&k.as_str())) {' \
+             '    if map.keys().any(|k| !named.contains(&k.as_str()) && k.is_empty()) { // knife' \
+             strict_reading
+          # site record: a record that names no tenant belongs to the tenant called like the site
+          ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
+             '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
+             tenant_and_disk_are_optional_but_typed
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -433,6 +493,36 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
+          hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
+             '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: a tenant id equal to a site code owns the site that names no tenant
+          hk customercmd.rs '        if aib_cloud::site::record_tenant(&rec) == Some(tenant) {' \
+             '        if aib_cloud::site::record_tenant(&rec).or(rec.get("site").and_then(Value::as_str)) == Some(tenant) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: the site list of the entry does not narrow (c477a: one member, some sites)
+          hk customercmd.rs '            if scope.is_none_or(|list| list.contains(&spec.code.as_str())) {' \
+             '            if scope.is_none_or(|list| list.contains(&spec.code.as_str()) || true) { // knife' \
+             a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # customer key: a list of one site turns any line into that site's, owner words too
+          hk customercmd.rs '        Some([only]) if !is_owner_word(line) && !line.trim().is_empty() => {' \
+             '        Some([only, ..]) if !is_owner_word(line) && !line.trim().is_empty() => { // knife' \
+             a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # customer key: a site list that is not one is taken as it is
+          hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
+             the_site_list_of_an_entry_is_codes_or_an_error
+          # usage: a site that names no tenant is summed with the tenant called like it
+          hk usagecmd.rs '        None => format!("site:{site}"),' '        None => format!("tenant:{site}"), // knife' \
+             a_site_without_a_tenant_is_never_summed_with_a_tenant_of_its_name
+          # customer key: the roles in the entry are not asked
+          hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
+             '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
+          hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
+             '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \
+             a_quarantined_site_is_not_entered_for_its_logs
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)

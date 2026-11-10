@@ -5,8 +5,9 @@
 //! config`, `lvs` and `/proc`; prints usage and advice. **Nothing is changed**: applying a
 //! raise is a write and is not part of this command.
 //!
-//! Sites are grouped by the `owner` their record names (the site itself when it names
-//! none): the plan's envelope is the customer's. CPU is a short sample between two
+//! Sites are grouped by the `tenant_id` their record names: the plan's envelope is the
+//! customer's. A site whose record names none is its own envelope and is reported with
+//! `tenant_id: null` — it is never added to a tenant whose id happens to equal its code. CPU is a short sample between two
 //! readings, not yet the 95th percentile of a long window; that needs a sampler.
 
 use std::collections::BTreeMap;
@@ -15,7 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use aib_cloud::arc::{self, Advice, HostRoom, Usage};
-use aib_cloud::site::{record_owner, spec_from_record, Limits};
+use aib_cloud::site::{record_tenant, spec_from_record, Limits};
 use aib_cloud::usage;
 use serde_json::{json, Value};
 
@@ -81,11 +82,30 @@ pub fn host_room(
     }
 }
 
+/// The tenant a record names: `Ok(None)` when it names none, `Err` when what it names is
+/// not a customer code (the record is wrong, and the report says so rather than guess).
+fn owner_of(rec: &Value) -> Result<Option<String>, ()> {
+    match rec.get("tenant_id") {
+        None => Ok(None),
+        Some(_) => record_tenant(rec).map(|t| Some(t.to_owned())).ok_or(()),
+    }
+}
+
+/// Whose envelope a site counts against. The two kinds of key cannot meet: a code has no
+/// `:` in it, so a site without a tenant is never summed with a tenant of the same name.
+fn envelope_key(site: &str, tenant: Option<&str>) -> String {
+    match tenant {
+        Some(t) => format!("tenant:{t}"),
+        None => format!("site:{site}"),
+    }
+}
+
 struct Site {
     /// Logical volume of the root disk (`vm-112-disk-0`), from `pct config`.
     volume: Option<String>,
     code: String,
-    owner: String,
+    /// The tenant the record names outright; `None` when it names none.
+    owner: Option<String>,
     ct: u32,
     limits: Limits,
     disk_gb: u32,
@@ -202,9 +222,8 @@ fn run(args: &[String]) -> Result<u8, String> {
         let rec: Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let spec = spec_from_record(&rec).map_err(|e| format!("{}: {e}", path.display()))?;
-        let owner = record_owner(&rec)
-            .ok_or_else(|| format!("{}: owner is not a customer code", path.display()))?
-            .to_owned();
+        let owner = owner_of(&rec)
+            .map_err(|()| format!("{}: tenant_id is not a customer code", path.display()))?;
         // what the CT has is what is judged, not what the record hopes: limits from pct config
         let config = observe("pct", &["config", &spec.ct.to_string()]);
         let get = |key: &str| {
@@ -288,10 +307,10 @@ fn run(args: &[String]) -> Result<u8, String> {
 
     let room = measure_room(&pool);
 
-    let mut by_owner: BTreeMap<&str, Vec<(Limits, u32)>> = BTreeMap::new();
+    let mut by_owner: BTreeMap<String, Vec<(Limits, u32)>> = BTreeMap::new();
     for s in &sites {
         by_owner
-            .entry(s.owner.as_str())
+            .entry(envelope_key(&s.code, s.owner.as_deref()))
             .or_default()
             .push((s.limits.clone(), s.disk_gb));
     }
@@ -299,7 +318,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     let mut findings = false;
     let mut out: Vec<Value> = Vec::new();
     for s in &sites {
-        let held = arc::held(&by_owner[s.owner.as_str()]);
+        let held = arc::held(&by_owner[&envelope_key(&s.code, s.owner.as_deref())]);
         let advice = match (&s.usage, &room) {
             (Some(u), Some(r)) => Some(arc::advise(&arc::PLAN, &s.limits, s.disk_gb, &held, u, r)),
             _ => None,
@@ -307,13 +326,13 @@ fn run(args: &[String]) -> Result<u8, String> {
         unread |= advice.is_none();
         findings |= advice.as_ref().is_some_and(|a| !a.is_empty());
         out.push(json!({
-            "site": s.code, "owner": s.owner, "ct": s.ct,
+            "site": s.code, "tenant_id": s.owner, "ct": s.ct,
             "limits": { "cores": s.limits.cores, "cpulimit_x100": s.limits.cpulimit_x100,
                         "memory_mb": s.limits.memory_mb, "disk_gb": s.disk_gb },
             "usage": s.usage.map(|u| json!({ "cpu_x100": u.cpu_x100_p95,
                 "memory_mb_working": u.memory_mb_working, "oom_kills": u.oom_kills,
                 "disk_used_gb": u.disk_used_gb })),
-            "owner_holds": { "cpu_x100": held.cpu_x100, "memory_mb": held.memory_mb, "disk_gb": held.disk_gb },
+            "tenant_holds": { "cpu_x100": held.cpu_x100, "memory_mb": held.memory_mb, "disk_gb": held.disk_gb },
             "advice": advice.map(|a| a.iter().map(advice_json).collect::<Vec<_>>()),
         }));
     }
@@ -331,7 +350,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         for s in doc["sites"].as_array().into_iter().flatten() {
             eprintln!(
                 "{} ({}): usage {} advice {}",
-                s["site"], s["owner"], s["usage"], s["advice"]
+                s["site"], s["tenant_id"], s["usage"], s["advice"]
             );
         }
         eprintln!("host room: {}", doc["host_room"]);
@@ -350,6 +369,27 @@ fn run(args: &[String]) -> Result<u8, String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_site_without_a_tenant_is_never_summed_with_a_tenant_of_its_name() {
+        let named = json!({"site": "site7", "tenant_id": "site5"});
+        let bare = json!({"site": "site5"});
+        assert_eq!(owner_of(&named), Ok(Some("site5".to_owned())));
+        assert_eq!(owner_of(&bare), Ok(None));
+        assert_eq!(
+            owner_of(&json!({"site": "site5", "tenant_id": "Not A Code"})),
+            Err(())
+        );
+        assert_eq!(owner_of(&json!({"site": "site5", "tenant_id": 5})), Err(()));
+        let a = envelope_key("site7", owner_of(&named).unwrap().as_deref());
+        let b = envelope_key("site5", owner_of(&bare).unwrap().as_deref());
+        assert_eq!(a, "tenant:site5");
+        assert_eq!(b, "site:site5");
+        assert_ne!(
+            a, b,
+            "tenant site5 must not hold the bare site5's resources"
+        );
+    }
 
     #[test]
     fn host_numbers() {
