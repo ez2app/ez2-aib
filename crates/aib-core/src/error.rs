@@ -49,10 +49,13 @@ pub enum ErrorCode {
     ProgramNotAllowed,
     /// The listed provider is an npm (node) install; only standalone signed builds run.
     ProviderInstallUnsupported,
+    /// The machine is too hot to start another session (ADR 0005 §1 thermal guard).
+    /// Not queued; answered with `Retry-After`.
+    ThermalNogo,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 19] = [
+    pub const ALL: [ErrorCode; 20] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -72,6 +75,7 @@ impl ErrorCode {
         ErrorCode::ProgramNotAllowed,
         ErrorCode::ProviderInstallUnsupported,
         ErrorCode::SessionQueueFull,
+        ErrorCode::ThermalNogo,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -95,6 +99,7 @@ impl ErrorCode {
             ErrorCode::ProgramNotAllowed => "program_not_allowed",
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
             ErrorCode::SessionQueueFull => "session_queue_full",
+            ErrorCode::ThermalNogo => "thermal_nogo",
         }
     }
 
@@ -111,7 +116,7 @@ impl ErrorCode {
             ErrorCode::SessionNotFound => 404,
             ErrorCode::TooManySessions | ErrorCode::SessionQueueFull => 429,
             ErrorCode::SpawnFailed => 422,
-            ErrorCode::ShuttingDown => 503,
+            ErrorCode::ShuttingDown | ErrorCode::ThermalNogo => 503,
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,
