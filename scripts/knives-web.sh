@@ -20,7 +20,7 @@ k "$C" '            Some("awaiting_confirmation") => {' \
        '            Some("awaiting_confirmation") | Some("expired") | Some("revoked") | Some("confirmed") => { // knife' \
   web_never_confirms_an_ended_pairing
 # W4 pairing off is reported as a bare HTTP error, without how to turn it on
-k "$C" '            if e.starts_with("HTTP 404") {' '            if false { // knife' \
+k "$C" '        if e.starts_with("HTTP 404") {' '        if false { // knife' \
   web_says_how_to_turn_pairing_on
 # W5 health stops telling a restarted aibd apart
 k "$A" '        "instance_id": PROCESS.instance_id,' '        // knife: no instance_id' \

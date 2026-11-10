@@ -391,17 +391,15 @@ fn web(
     if health.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(format!("aibd is not healthy: {health}"));
     }
-    let created = c
-        .request("POST", "/api/v1/pair/codes", None)
-        .map_err(|e| {
-            if e.starts_with("HTTP 404") {
-                "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified (the y/N \
+    let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
+        if e.starts_with("HTTP 404") {
+            "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified (the y/N \
                  answer below does not stop an AI running as your account; ADR 0006 §7)"
-                    .to_string()
-            } else {
-                e
-            }
-        })?;
+                .to_string()
+        } else {
+            e
+        }
+    })?;
     let pair_id = id(created
         .get("pair_id")
         .and_then(Value::as_str)
@@ -888,8 +886,7 @@ mod tests {
     const HEALTH: &str = r#"{"status":"ok","api_version":"v1"}"#;
     const CREATED: &str = r#"{"pair_id":"p_1","code":"ABCDE-FGHIJ","expires_in":120}"#;
     const ISSUED: &str = r#"{"pair_id":"p_1","state":"issued","expires_in":100}"#;
-    const AWAITING: &str =
-        r#"{"pair_id":"p_1","state":"awaiting_confirmation","expires_in":110,"short_code":"123456"}"#;
+    const AWAITING: &str = r#"{"pair_id":"p_1","state":"awaiting_confirmation","expires_in":110,"short_code":"123456"}"#;
 
     fn first_lines(requests: &[String]) -> Vec<&str> {
         requests.iter().map(|r| r.lines().next().unwrap()).collect()
@@ -917,7 +914,11 @@ mod tests {
                 "POST /api/v1/pair/codes/p_1/confirm HTTP/1.1",
             ]
         );
-        assert!(requests[4].ends_with(r#"{"short_code":"123456"}"#), "{}", requests[4]);
+        assert!(
+            requests[4].ends_with(r#"{"short_code":"123456"}"#),
+            "{}",
+            requests[4]
+        );
         // the pairing code is typed into the page; it never travels back to aibd from here
         assert!(requests.iter().all(|r| !r.contains("ABCDE")));
     }
@@ -940,7 +941,10 @@ mod tests {
                 "DELETE /api/v1/pair/codes/p_1 HTTP/1.1",
                 "{answer:?}"
             );
-            assert!(requests.iter().all(|r| !r.contains("/confirm")), "{answer:?}");
+            assert!(
+                requests.iter().all(|r| !r.contains("/confirm")),
+                "{answer:?}"
+            );
         }
     }
 
@@ -948,7 +952,10 @@ mod tests {
     fn web_says_how_to_turn_pairing_on() {
         let (c, server) = fake_with(vec![
             ("200 OK", HEALTH),
-            ("404 Not Found", r#"{"code":"not_found","message":"pairing is off"}"#),
+            (
+                "404 Not Found",
+                r#"{"code":"not_found","message":"pairing is off"}"#,
+            ),
         ]);
         let mut input = std::io::Cursor::new(Vec::new());
         let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();

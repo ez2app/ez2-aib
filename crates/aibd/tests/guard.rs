@@ -74,7 +74,13 @@ async fn health_is_public_and_minimal() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["api_version", "instance_id", "started_at", "status", "version"]
+        [
+            "api_version",
+            "instance_id",
+            "started_at",
+            "status",
+            "version"
+        ]
     );
     assert_eq!(j["status"], "ok");
     assert_eq!(j["api_version"], "v1");

@@ -50,8 +50,8 @@ static PROCESS: std::sync::LazyLock<Process> = std::sync::LazyLock::new(|| {
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
     std::sync::LazyLock::force(&PROCESS); // started_at = when the router was built
-    // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
-    // the list is tested to sit under `/api/` (a9136 A3 L1)
+                                          // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
+                                          // the list is tested to sit under `/api/` (a9136 A3 L1)
     let mut r = Router::new();
     for path in guard::ROUTES {
         if let Some(h) = handlers(path) {
