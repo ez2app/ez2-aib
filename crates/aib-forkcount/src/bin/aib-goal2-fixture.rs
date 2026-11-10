@@ -1105,18 +1105,22 @@ mod tests {
                 .name,
             "default"
         );
-        assert!(r(
-            &["-S", "/private/tmp/tmux-501/default", "kill-server"],
-            None,
-            None
-        )
-        .is_err());
-        assert!(r(
-            &["-S", "/private/tmp/tmux-501/aihub-ab12", "ls"],
-            Some("aihub-ab12"),
-            None
-        )
-        .is_err());
+        // RULES §15.17: the refusal is the -S check itself; `admit` would refuse these too, so
+        // checking only is_err() let knife KF3 miss (andymini receipt 11-10 21:34)
+        const OUTSIDE: &str = "-S is not a socket of this sandbox";
+        for (args, bound) in [
+            (["-S", "/private/tmp/tmux-501/default", "kill-server"], None),
+            (
+                ["-S", "/private/tmp/tmux-501/aihub-ab12", "ls"],
+                Some("aihub-ab12"),
+            ),
+        ] {
+            let why = match r(&args, bound, None) {
+                Err(Refused(m)) => m,
+                Ok(x) => panic!("{args:?} routed to {}", x.name),
+            };
+            assert_eq!(why, OUTSIDE, "{args:?}");
+        }
         assert!(r(
             &["-S", "/sb/t/tmux-501/aihub-zz", "ls"],
             Some("aihub-ab12"),
