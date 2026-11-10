@@ -73,6 +73,7 @@ impl Running for UnixRunning {
                 tree_size: 0,
                 signals: Vec::new(),
                 blind_spots: super::tree::BLIND_SPOTS_UNCONTAINED.to_vec(),
+                candidates: Default::default(),
             },
         }
     }
@@ -260,6 +261,7 @@ mod tests {
             tree_size: 1,
             signals: Vec::new(),
             blind_spots: Vec::new(),
+            candidates: Default::default(),
         }
     }
 

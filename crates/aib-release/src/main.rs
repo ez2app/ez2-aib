@@ -5,13 +5,21 @@
 //! originals that pass every check get the label and their queued / running
 //! runs cancelled. Exit: 0 done / nothing to do, 2 gate refused, 3 unknown or
 //! failed, 64 usage.
+//!
+//! `aib-release trial --base REF [--repo-dir DIR] [--expect-tree REF]
+//!     [--integ-branch NAME] HEAD…` trial-merges the heads with
+//! `git merge-tree` (nothing written to the repository) and prints the
+//! conflicts and a stacking order (JSON). Exit: 0 clean, 2 not ready, 3 git
+//! could not answer, 64 usage.
 
 use aib_release::gh::GhCli;
+use aib_release::trial;
 use aib_release::yield_integ::{self, Request, DEFAULT_LABEL};
 
 const USAGE: &str =
     "usage: aib-release yield --repo OWNER/NAME --integ N --orig N:FULLSHA[,N:FULLSHA…] \
-[--need-workflow NAME]… [--label NAME] [--apply]";
+[--need-workflow NAME]… [--label NAME] [--apply]
+       aib-release trial --base REF [--repo-dir DIR] [--expect-tree REF] [--integ-branch NAME] HEAD…";
 
 struct Args {
     repo: String,
@@ -23,7 +31,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     let mut it = argv.iter();
     match it.next().map(String::as_str) {
         Some("yield") => {}
-        _ => return Err("the only command is `yield`".into()),
+        _ => return Err("the commands are `yield` and `trial`".into()),
     }
     let (mut repo, mut integ, mut origs, mut need, mut label, mut apply) =
         (None, None, Vec::new(), Vec::new(), None, false);
@@ -96,8 +104,63 @@ fn settle() {
     std::thread::sleep(SETTLE);
 }
 
+fn parse_trial(argv: &[String]) -> Result<(std::path::PathBuf, trial::Request), String> {
+    let mut it = argv.iter().skip(1);
+    let (mut dir, mut base, mut expect, mut integ, mut heads) =
+        (None, None, None, None, Vec::new());
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{a} needs a value"))
+        };
+        match a.as_str() {
+            "--repo-dir" => dir = Some(std::path::PathBuf::from(val()?)),
+            "--base" => base = Some(val()?),
+            "--expect-tree" => expect = Some(val()?),
+            "--integ-branch" => integ = Some(val()?),
+            s if s.starts_with('-') => return Err(format!("unknown argument {s}")),
+            s => heads.push(s.to_owned()),
+        }
+    }
+    if heads.is_empty() {
+        return Err("trial needs at least one HEAD".into());
+    }
+    Ok((
+        dir.unwrap_or_else(|| ".".into()),
+        trial::Request {
+            base: base.ok_or("--base is required")?,
+            heads,
+            expect_tree: expect,
+            integ_branch: integ,
+        },
+    ))
+}
+
+fn main_trial(argv: &[String]) -> ! {
+    let (dir, req) = match parse_trial(argv) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}\n{USAGE}");
+            std::process::exit(64);
+        }
+    };
+    let rep = match trial::GitCli::new(&dir) {
+        Ok(git) => trial::run(&git, &req),
+        Err(e) => {
+            println!("{}", serde_json::json!({"verdict": "error", "error": e}));
+            std::process::exit(3);
+        }
+    };
+    println!("{}", trial::to_json(&rep));
+    std::process::exit(trial::exit_code(&rep));
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("trial") {
+        main_trial(&argv);
+    }
     let args = match parse(&argv) {
         Ok(a) => a,
         Err(e) => {
@@ -138,6 +201,21 @@ mod tests {
             let e = parse(&v(&format!("yield --repo o/r --integ 1 --orig {bad}"))).err();
             assert!(e.is_some_and(|e| e.contains("full 40-hex")), "{bad}");
         }
+    }
+
+    #[test]
+    fn trial_needs_a_base_and_a_head_and_knows_its_flags() {
+        assert!(parse_trial(&v("trial a b")).is_err_and(|e| e.contains("--base")));
+        assert!(parse_trial(&v("trial --base main")).is_err_and(|e| e.contains("HEAD")));
+        assert!(parse_trial(&v("trial --base main --bogus a")).is_err());
+        let (dir, r) = parse_trial(&v(
+            "trial --base origin/main --expect-tree x --integ-branch int/m1 a b",
+        ))
+        .unwrap();
+        assert_eq!(dir, std::path::PathBuf::from("."));
+        assert_eq!(r.heads, vec!["a", "b"]);
+        assert_eq!(r.expect_tree.as_deref(), Some("x"));
+        assert_eq!(r.integ_branch.as_deref(), Some("int/m1"));
     }
 
     #[test]
