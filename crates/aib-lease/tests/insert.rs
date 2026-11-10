@@ -37,7 +37,7 @@ impl Fake {
 
 impl Probe for Fake {
     fn hostname(&self) -> String {
-        "pro13".into()
+        "host-a".into()
     }
     fn proc_start(&self, pid: i64) -> ProcState {
         match self.procs.borrow().get(&pid) {
@@ -101,7 +101,7 @@ fn args(run_id: &str, pid: i64) -> InsertArgs {
     InsertArgs {
         holder: holder(run_id, pid),
         hard_timeout_s: 600,
-        reason: "EU02 receipt before tonight".into(),
+        reason: "receipt before tonight".into(),
         est_min: Some(8),
     }
 }
@@ -334,7 +334,7 @@ fn an_insert_must_say_why() {
     assert!(read_insert(&ps).unwrap().is_none());
     assert_eq!(ins(&ps, &p, T0, "short-1", SHORT_PID).rc, RC_OK);
     let r = read_insert(&ps).unwrap().unwrap();
-    assert_eq!(r["reason"], "EU02 receipt before tonight");
+    assert_eq!(r["reason"], "receipt before tonight");
     assert_eq!(r["est_min"], 8);
 }
 

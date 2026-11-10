@@ -142,7 +142,7 @@ commands through the same gates.
 
 ```sh
 aib-lease insert acquire --owner 043dd --what "cargo clippy -p x" --run-id R --pid $$ --hard-timeout-s 600 \
-  --reason "EU02 receipt before tonight" --est-min 8
+  --reason "receipt before tonight" --est-min 8
 aib-lease insert release --run-id R
 ```
 
