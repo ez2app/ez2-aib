@@ -3,7 +3,7 @@
 # aib dm — 異質艦隊 DM CLI(2026-08-14 the maintainer 核准;E2.7 咽喉+v3 引擎接線)
 #
 #   aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]
-#              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other|notice]
+#              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other|notice|ack]
 #              [--close|--closes <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
 #              [--expires <epoch> | --ttl-min <分鐘>]          ← 第 70 項 P3(接口 IFACE-dm-queue-v2 §1/§3)
 #              [--retry-until <秒>] [--retry-every <秒>]       ← 被擋(rc=2)時重試;沒給 --retry-until 則行為與從前逐位元組相同
@@ -985,8 +985,8 @@ if [ -n "$DM_THREAD" ]; then
 fi
 if [ -n "$DM_KIND" ]; then
   case "$DM_KIND" in
-    order|rule|pipeline|deliver|decide|report|other|notice) ;;
-    *) die "--kind 只認 order/rule/pipeline/deliver/decide/report/other/notice(接口 §1):$DM_KIND" 2 ;;
+    order|rule|pipeline|deliver|decide|report|other|notice|ack) ;;
+    *) die "--kind 只認 order/rule/pipeline/deliver/decide/report/other/notice/ack(接口 §1):$DM_KIND" 2 ;;
   esac
 fi
 if [ -n "$DM_CLOSE" ]; then
@@ -2444,6 +2444,31 @@ if [ "$_XH_IN" = "1" ]; then
 fi
 [ -n "${_SENDER_HUB:-$HUB}" ] && _V2_ARGS+=("--sender-hub=${_SENDER_HUB:-$HUB}")
 [ -n "${S_ORIGIN:-}" ] && _V2_ARGS+=("--sender-origin=${S_ORIGIN}")
+
+# ── B11 --kind ack(11-10 a63ab D3 選 A;相容層):單純「收到」 ─────────────────────────────
+#   不貼進對方框、不排隊、不叫醒:直接在對方佇列記一封系統代標已讀的信(dm_queue.py record --status read,
+#   read_by=system、read_why=ack)⇒ 不進待審、不觸發 aib-dm-gate;滿 12 小時備存。
+#   只收一行 ≤200 字、不落檔;不收 --close(回信結原信要真的送達才算)。寄件身分、抬頭欄位跟一般 dm 同一組。
+if [ "$DM_KIND" = "ack" ]; then
+  [ -n "$DM_CLOSE" ] && die "--kind ack 不收 --close(收到不是做完;做完用一般回信 --close 或 dm_queue.py close)" 2
+  [ -n "${T_CODE:-}" ] && [ -f "$HERE/dm_queue.py" ] || die "--kind ack 要寄給本機量得到席碼的席位" 2
+  if [ "${DRYRUN:-0}" = "1" ]; then
+    _RESULT_STAGE="dry-run"; exit 0
+  fi
+  _ACK_OUT="$(printf '%s' "$MSG" | "$PY3" "$HERE/dm_queue.py" record \
+      --seat "$T_CODE" --sender-label "${S_LABEL:-}" --sender-kind "$(_dm_queue_kind "${S_LABEL:-}")" \
+      --session-uuid "${_Q_UUID:-}" --wid "${T_WID:-}" --provider "${T_PROVIDER:-}" \
+      --priority "${AIB_DM_QUEUE_PRIORITY:-normal}" --status read \
+      ${_V2_ARGS[@]+"${_V2_ARGS[@]}"} 2>/dev/null)" || _ACK_OUT=""
+  _ACK_ID="$("$PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$_ACK_OUT" 2>/dev/null || true)"
+  if [ -z "$_ACK_ID" ]; then
+    _RESULT_REASON="ack-refused"
+    die "--kind ack 沒記成:只收一行、≤200 字、不是長訊($(printf '%s' "$_ACK_OUT" | tail -c 200))" 2
+  fi
+  _RESULT_STAGE="acked"; _RESULT_ID="$_ACK_ID"
+  echo "aib-dm-ctl: 已記成對方已讀的「收到」(不貼框、不進待審):$_ACK_ID"
+  exit 0
+fi
 
 _HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""; _HDR_GLOBAL=0; _G_FRAME=""
 _xh_hdr() { _HDR_S_ADDR="${1#xhost:}"; _HDR_S_NOTE="跨主機·經SSH"; }

@@ -99,7 +99,10 @@ ACTIVE_STATUSES = ("queued", "claimed", HOLD_STATUS)
 WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 # 用途:只有 order/rule/pipeline(順位/規矩/管線起停)這三種廣播可被同 thread 的新版取代;
 # deliver/decide/report(交件/要裁/自報)永遠追加。沒帶 = other(也永遠追加)。
-KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
+KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice", "ack")   # notice:10-13 S7-2 知會,讀過即備存
+# ack(11-10 B11,a63ab D3 選 A;相容層,寄信路仍是 dm-ctl.sh + 本檔):單純「收到」。dm-ctl 不貼框、不排隊,
+#   直接 record --status read(read_by=system、read_why=ack)⇒ 不進待審、不觸發 aib-dm-gate;滿 12 小時照 done 的節奏備存。
+#   只收一行 ≤ ACK_MAX_CHARS 字:真交辦用 ack 寄掉會被擋,不會讓對方永遠看不到。
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 10-25 @ee4f8 / @abb89(派工 C 補):派工類(要動手)的來信,回信不算做完 ⇒ --closes 不結,要 close --evidence
 CLOSE_BY_REPLY_REFUSED_KINDS = frozenset(("order", "pipeline"))
@@ -173,7 +176,10 @@ AUTO_READ_WHY = "auto_notice"
 #   seat_onboard 的回執守望看到「已就緒 / 已更新」時,替那一席把**它自己投遞的那一封**(投遞時拿到的 id)標已讀。
 #   只認這個 why、只走 queued/delivered → read;別封信不會因此被標。
 ONBOARD_ACK_WHY = "onboard_acked"
-SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
+ACK_READ_WHY = "ack"          # B11:kind=ack 寄出即標已讀
+ACK_MAX_CHARS = 200
+ACK_ARCHIVE_WHY = "ack_12h"
+SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)   # ack 不經轉移:record 直接落成已讀
 # 開席單一定帶的回執字(放在「」裡;seat_onboard.ACK_TOKENS 一改這裡要跟著改,測試會比對)
 ONBOARD_MARKERS = ("「已就緒」", "「已更新」")
 TRANSITIONS[("queued", "read")] = ("seat", "system")
@@ -197,7 +203,7 @@ TRANSITIONS[("done", "read")] = ("seat", "human")
 # 進行中(read)超過這麼久沒動、也沒寫「等什麼」⇒ 提醒(只提醒,不自動結;Andy 10-25 20:1x 選 4 小時)
 STALE_WAIT_S = 4 * 3600
 WAIT_MAX_CHARS = 300
-ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
+ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read", "ack_12h")   # 後兩個:stage-tidy 機器層(10-13)
 TRANSITION_REASON = {
     "ok": "",
     "transition": "這個狀態不能這樣改",
@@ -2006,6 +2012,18 @@ def retention_sweep(env=None, now=None, dry_run=False, seat=None):
                 if not dry_run:
                     row["ok"] = bool(archive_item(s, item["id"], "system", AUTO_ARCHIVE_WHY, env=env, now=now).get("ok"))
                 archived.append(row)
+            elif st == "read" and item.get("read_why") == ACK_READ_WHY:
+                # B11:ack 沒有人會去結它 ⇒ 跟 done 同一個 12 小時節奏備存
+                try:
+                    at = int(item.get("read_at"))
+                except (TypeError, ValueError):
+                    continue
+                if at >= done_cut:
+                    continue
+                row = {"seat": s, "id": item["id"], "read_at": at, "why": ACK_ARCHIVE_WHY}
+                if not dry_run:
+                    row["ok"] = bool(archive_item(s, item["id"], "system", ACK_ARCHIVE_WHY, env=env, now=now).get("ok"))
+                archived.append(row)
             elif st == "archived":
                 try:
                     at = int(item.get("archived_at"))
@@ -3674,16 +3692,38 @@ def upsert(seat, msg, sender_label, env=None, now=None, hold=None, hub="", **kw)
     return out
 
 
+def ack_text_ok(msg):
+    """B11:ack 只收一行、≤ ACK_MAX_CHARS 字、不是長訊指標。"""
+    m = msg if isinstance(msg, str) else ""
+    return bool(m.strip()) and len(m) <= ACK_MAX_CHARS and "\n" not in m and "\r" not in m \
+        and not DR.relay_path_of(m)
+
+
 def record(seat, msg, sender_label, status="delivered", rc=None, env=None, now=None, attempts=None, **kw):
     """直送(沒經佇列、對方閒著直接貼進去)之後把這一則也記進歷史(接口 §3 record):
     status=delivered(rc0)或 hold_human(rc3/4;第 159 項起 rc2 + attempts=1 = 自動重送一次仍沒進目標)。
     不進 order.json,永遠不會被排空器再投。"""
     now = int(time.time() if now is None else now)
-    if status not in ("delivered", HOLD_STATUS):
+    if status not in ("delivered", HOLD_STATUS, "read"):
         raise ValueError("status")
-    item = _new_item(seat, msg, sender_label, env=env, now=now, status=status, **kw)
+    if (status == "read") != (kw.get("kind") == "ack"):
+        raise ValueError("status")      # B11:只有 ack 直接記成已讀;ack 也只能這樣記
+    if status == "read" and not ack_text_ok(msg):
+        raise ValueError("ack")
+    item = _new_item(seat, msg, sender_label, env=env, now=now,
+                     status=("delivered" if status == "read" else status), **kw)
     if str(_env(env).get("AIB_DM_RELAY_BYTES") or "") == "0":
         item["no_relay"] = True        # review r13 M1:人審後重排也要整行貼(同 enqueue)
+    if status == "read":
+        # B11 ack:沒貼進框(delivered_at 留空),系統代標已讀;不進 order、不結原信、不走取代鏈
+        item["status"] = "read"
+        item["read_at"] = now
+        item["read_by"] = "system"
+        item["read_why"] = ACK_READ_WHY
+        _write_item(seat, item, env)
+        _audit(seat, env, ts=now, id=item["id"], **{"from": None}, to="read", actor="system", ok=True,
+               reason="record", why=ACK_READ_WHY)
+        return item
     if status == "delivered":
         item["delivered_at"] = now
     else:
@@ -5905,7 +5945,7 @@ def main(argv=None, env=None):
 
     rc_ = sub.add_parser("record")     # 直送之後把這則記進歷史(P3 的 dm-ctl 在 rc0/3/4 後呼叫)
     _sender_args(rc_)
-    rc_.add_argument("--status", required=True, choices=("delivered", HOLD_STATUS))
+    rc_.add_argument("--status", required=True, choices=("delivered", HOLD_STATUS, "read"))   # read 只給 kind=ack(B11)
     rc_.add_argument("--rc", type=int, default=None)
     rc_.add_argument("--attempts", type=int, default=None)   # 第 159 項:自動重送過幾次(dm-ctl 上限 1)
 
@@ -6187,12 +6227,16 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd == "record":
-        item = record(
-            args.seat, _read_msg(args), args.sender_label, status=args.status, rc=args.rc,
-            attempts=args.attempts,
-            sender_kind=args.sender_kind, session_uuid=args.session_uuid,
-            wid=args.wid, provider=args.provider, priority=args.priority,
-            origin=args.origin, env=env, **_v2_kw(args))
+        try:
+            item = record(
+                args.seat, _read_msg(args), args.sender_label, status=args.status, rc=args.rc,
+                attempts=args.attempts,
+                sender_kind=args.sender_kind, session_uuid=args.session_uuid,
+                wid=args.wid, provider=args.provider, priority=args.priority,
+                origin=args.origin, env=env, **_v2_kw(args))
+        except ValueError as err:     # B11:ack 的字不合 / status 與 kind 不配
+            _print_json({"ok": False, "reason": "usage", "message": "record: %s" % err})
+            return 2
         _print_json(_strip_private(item))
         return 0
 
