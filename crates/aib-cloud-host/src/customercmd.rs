@@ -389,9 +389,11 @@ mod tests {
         assert_eq!(answer_tenant("t-aaa", None, d, "usage", &[Role::Viewer]), 2);
         assert_eq!(answer("site2", d, "restart", &[Role::Editor]), 2);
         assert_eq!(answer("site2", d, "logs nginx", &[Role::Editor]), 2);
+        // (the status is named so that the knife on `serve`'s own `4` finds one line)
+        let not_yet = 4;
         assert_eq!(
             answer("site2", d, "restart", &[Role::Editor, Role::Publisher]),
-            4
+            not_yet
         );
         // the role is asked before the site: no way to probe for sites without the right
         assert_eq!(
