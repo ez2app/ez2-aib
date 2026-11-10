@@ -48,6 +48,9 @@ pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 pub const MAX_FAILURES: usize = 10;
 /// Pairing records kept at once (each is kept long enough to recognise a late re-send).
 pub const MAX_PAIRS: usize = 256;
+/// Live page credentials (awaiting or confirmed) at once. The credential lookup scans
+/// all of them in constant time, so its cost grows with this number (a9136 11-10).
+pub const MAX_CREDENTIALS: usize = 16;
 /// Characters in a pairing code (Crockford base32, 5 bits each: 50 bits).
 pub const CODE_LEN: usize = 10;
 
@@ -226,7 +229,8 @@ impl Pair {
 #[derive(Default)]
 struct Inner {
     pairs: HashMap<String, Pair>,
-    /// credential digest -> pair id
+    /// live credential digest -> pair id (a revoked or expired one is dropped here; its
+    /// pair record stays, so a late re-send of the code is still seen as reuse)
     creds: HashMap<Hash, String>,
     failures: VecDeque<Instant>,
     /// Totals since start, for `/api/v1/metrics` (a lock-out by another account's wrong
@@ -363,6 +367,15 @@ impl Pairing {
                 }
             }
         }
+        let pairs = &inner.pairs;
+        inner.creds.retain(|_, id| {
+            pairs.get(id).is_some_and(|p| {
+                matches!(
+                    p.state(now),
+                    PairState::AwaitingConfirmation | PairState::Confirmed
+                )
+            })
+        });
         while inner
             .failures
             .front()
@@ -391,6 +404,9 @@ impl Pairing {
             if p.stored != Stored::Revoked {
                 p.stored = Stored::Revoked;
                 inner.revocations += 1;
+            }
+            if let Some(c) = p.cred {
+                inner.creds.remove(&c);
             }
         }
     }
@@ -462,6 +478,10 @@ impl Pairing {
             Self::revoke(&mut inner, &id);
             return Err(Self::fail(&mut inner, now, PairError::Failed));
         }
+        if inner.creds.len() >= MAX_CREDENTIALS {
+            // not a failure of the code: it stays unredeemed and can be used later
+            return Err(PairError::Full);
+        }
         let raw: [u8; 32] = random().map_err(|_| PairError::Failed)?;
         use base64::Engine;
         let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
@@ -483,7 +503,8 @@ impl Pairing {
     pub fn access(&self, presented: &str) -> Option<PageAccess> {
         let now = (self.clock)();
         let digest = sha(presented.as_bytes());
-        let inner = self.lock();
+        let mut inner = self.lock();
+        Self::purge(&mut inner, now);
         // constant time over every stored digest: no early exit, no hash-table probe
         let mut found: Option<&String> = None;
         for (k, id) in &inner.creds {
@@ -508,7 +529,8 @@ impl Pairing {
     /// `GET /api/v1/pair/status` (the page's own credential).
     pub fn status(&self, digest: &Hash) -> Option<PairView> {
         let now = (self.clock)();
-        let inner = self.lock();
+        let mut inner = self.lock();
+        Self::purge(&mut inner, now);
         let id = inner.creds.get(digest)?;
         inner.pairs.get(id).map(|p| p.view(now))
     }
@@ -620,7 +642,10 @@ mod tests {
             .and_then(|s| s.split("pub fn status(").next())
             .unwrap();
         assert!(body.contains("k.ct_eq(&digest)"));
+        // no table probe, no `==` on the digest, no early exit from the scan
         assert!(!body.contains("creds.get("));
+        assert!(!body.contains("=="));
+        assert!(!body.contains("break") && !body.contains("return"));
     }
 
     fn advance(o: &AtomicU64, d: Duration) {
@@ -780,7 +805,8 @@ mod tests {
         let d = p.access(&r2.credential).unwrap().digest;
         p.revoke_credential(&d);
         assert!(p.access(&r2.credential).is_none());
-        assert_eq!(p.status(&d).unwrap().state, PairState::Revoked);
+        assert!(p.status(&d).is_none());
+        assert_eq!(p.view(&c2.pair_id).unwrap().state, PairState::Revoked);
     }
 
     #[test]
@@ -797,6 +823,22 @@ mod tests {
         let keys: Vec<_> = inner.creds.keys().copied().collect();
         assert_eq!(keys, vec![sha(r.credential.as_bytes())]);
         assert!(!format!("{r:?}").contains(&r.credential));
+    }
+
+    #[test]
+    fn live_credentials_are_capped_and_freed_by_revoke() {
+        let p = on();
+        let mut last = None;
+        for _ in 0..MAX_CREDENTIALS {
+            let c = p.create_code().unwrap();
+            last = Some(p.redeem(&c.code).unwrap());
+        }
+        let c = p.create_code().unwrap();
+        assert_eq!(p.redeem(&c.code).unwrap_err(), PairError::Full);
+        let d = p.access(&last.unwrap().credential).unwrap().digest;
+        p.revoke_credential(&d);
+        // the refused code was not used up
+        assert!(p.redeem(&c.code).is_ok());
     }
 
     #[test]

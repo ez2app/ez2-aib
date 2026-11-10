@@ -71,4 +71,16 @@ kl "$P" '        let p = inner.pairs.get(found?)?;' \
 kl crates/aibd/src/token.rs '        self.0.as_bytes().ct_eq(presented.as_bytes()).into()' \
         '        { let _ = self.0.as_bytes().ct_eq(b""); self.0 == presented } // knife (keeps the import used)' \
   start_up_token_is_compared_in_constant_time
-echo "pairing knives: 15/15 bite"
+# P16 the credential scan stops at the first match (early exit)
+kl "$P" '                found = Some(id);' \
+        '                found = Some(id); break; // knife' \
+  credential_lookup_is_constant_time
+# P17 the start-up token check returns early on a length mismatch
+kl crates/aibd/src/token.rs '        self.0.as_bytes().ct_eq(presented.as_bytes()).into()' \
+        '        if self.0.len() != presented.len() { return false; } self.0.as_bytes().ct_eq(presented.as_bytes()).into() // knife' \
+  start_up_token_is_compared_in_constant_time
+# P18 no cap on live credentials (the constant-time scan grows with them)
+kl "$P" '        if inner.creds.len() >= MAX_CREDENTIALS {' \
+        '        if inner.creds.len() >= MAX_CREDENTIALS && false { // knife' \
+  live_credentials_are_capped_and_freed_by_revoke
+echo "pairing knives: 18/18 bite"

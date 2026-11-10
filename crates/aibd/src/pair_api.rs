@@ -219,6 +219,7 @@ pub async fn redeem(
     let code = code_field(&bytes).unwrap_or_default();
     match p.redeem(&code) {
         Ok(r) => exchange_page(&r.credential),
+        Err(PairError::Full) => pair_error(PairError::Full, "too many paired pages; revoke one"),
         Err(e) => pair_error(e, REDEEM_FAILED),
     }
 }

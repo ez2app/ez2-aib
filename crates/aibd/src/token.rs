@@ -62,6 +62,8 @@ mod tests {
             .and_then(|s| s.split("#[cfg(test)]").next())
             .unwrap();
         assert!(body.contains(".ct_eq(presented.as_bytes())"));
+        // no `==`, no early exit (a length check that returns first leaks the length)
         assert!(!body.contains("=="));
+        assert!(!body.contains("return"));
     }
 }
