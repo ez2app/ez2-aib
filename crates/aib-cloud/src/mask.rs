@@ -13,13 +13,19 @@
 //!   [`CPU_MODEL`], family / model / stepping become 0, and a field not named here is
 //!   dropped (microcode, cache size, bugs, power management …). The feature flags stay:
 //!   programs choose code paths by them.
-//! * The directories in [`HIDE_DIRS`] are covered by an empty read-only directory and
-//!   the files in [`HIDE_FILES`] by an empty file.
+//! * Under `/sys` only what [`SYS_KEEP`] names stays readable; everything else is covered
+//!   by an empty directory or an empty file. Under `/proc` the entries of [`PROC_HIDE`]
+//!   are covered.
 //!
-//! **What this cannot hide**, and so does not claim to: the kernel's release string
-//! (`uname`), and whatever a program asks the processor itself (the CPUID instruction
-//! answers with the real brand string). This keeps the machine from being named to
-//! someone looking around, not from someone measuring.
+//! **What this cannot hide**, and so does not claim to:
+//! * the kernel's release string (`uname`), which names the virtualisation platform;
+//! * whatever a program asks the processor itself (the CPUID instruction answers with
+//!   the real brand string);
+//! * **who owns the IP address** the container reaches the internet from and is reached
+//!   at: that is a public record, and it names the provider. Hiding it is a matter of
+//!   where traffic enters and leaves (a relay, a proxy), not of this module;
+//! * a container's own root can take the covers off again; they hold against the site's
+//!   users, which is what a customer's key and seat are given.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -30,26 +36,95 @@ pub const CPU_MODEL: &str = "Virtual CPU";
 /// Most processors one container is given a `cpuinfo` for.
 pub const CORES_MAX: u32 = 256;
 
-/// Paths under the container's root covered by an empty read-only directory: firmware
-/// tables and DMI (provider, board, BIOS), the PCI tree (disk and controller models,
-/// sensors), block devices and their classes. `pci*` stands for every PCI root.
-pub const HIDE_DIRS: &[&str] = &[
-    "sys/firmware",
-    "sys/devices/virtual/dmi",
-    "sys/class/dmi",
-    "sys/devices/pci*",
-    "sys/devices/virtual/block",
-    "sys/block",
-    "sys/class/block",
-    "sys/class/nvme",
-    "sys/class/scsi_host",
-    "sys/class/hwmon",
-    "proc/scsi",
+/// What stays readable under `/sys`, as paths below it. **Everything else under `/sys`
+/// is covered** — an allowlist, because a customer's AI seat works inside the container
+/// (Andy 11-10: "要讓 ai 也盡量找不出主機與主機商的任何資訊") and a list of what to hide
+/// would always be one entry short. Kept: the container's own cgroup tree, fuse, its
+/// processors as lxcfs shows them, and its network interfaces.
+pub const SYS_KEEP: &[&str] = &[
+    "fs/cgroup",
+    "fs/fuse",
+    "devices/system/cpu",
+    "devices/virtual/net",
+    "class/net",
 ];
 
-/// Paths under the container's root covered by an empty file: the RAID layout and the
-/// host's boot command line.
-pub const HIDE_FILES: &[&str] = &["proc/mdstat", "proc/cmdline"];
+/// What to do with the entries of one directory under `/sys`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SysStep {
+    /// Entries to cover (paths below `/sys`).
+    pub cover: Vec<String>,
+    /// Directories to open and decide again, because something kept lies below them.
+    pub descend: Vec<String>,
+}
+
+/// Decide for the directory `dir` below `/sys` (`""` for `/sys` itself) and the names
+/// found in it: an entry that is kept is left alone, one that leads to something kept
+/// is opened, every other one is covered.
+pub fn sys_step(dir: &str, names: &[&str]) -> SysStep {
+    let mut step = SysStep::default();
+    for name in names {
+        let path = if dir.is_empty() {
+            String::from(*name)
+        } else {
+            alloc::format!("{dir}/{name}")
+        };
+        if SYS_KEEP.contains(&path.as_str()) {
+            continue;
+        }
+        let leads_to_kept = SYS_KEEP.iter().any(|k| {
+            k.strip_prefix(path.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        if leads_to_kept {
+            step.descend.push(path);
+        } else {
+            step.cover.push(path);
+        }
+    }
+    step
+}
+
+/// Entries of `/proc` that are covered, files and directories alike: hardware and
+/// driver lists, interrupt and scheduler tables (one column per host processor), memory
+/// zone tables (the host's real size), the RAID layout, the host's boot command line,
+/// host file-system device names. `/proc` cannot be an allowlist: it is where the
+/// container's own processes live.
+///
+/// Left alone on purpose: `/proc/version` and `/proc/sys/kernel/osrelease` — the same
+/// string is what `uname` answers, which no mount can change, and two different answers
+/// would only draw the eye.
+pub const PROC_HIDE: &[&str] = &[
+    "acpi",
+    "asound",
+    "buddyinfo",
+    "bus",
+    "cmdline",
+    "consoles",
+    "devices",
+    "dma",
+    "driver",
+    "fb",
+    "fs",
+    "interrupts",
+    "iomem",
+    "ioports",
+    "irq",
+    "kallsyms",
+    "mdstat",
+    "misc",
+    "modules",
+    "mtrr",
+    "pagetypeinfo",
+    "partitions",
+    "sched_debug",
+    "schedstat",
+    "scsi",
+    "softirqs",
+    "timer_list",
+    "vmallocinfo",
+    "zoneinfo",
+];
 
 /// The line in a container's configuration that runs the mask when it starts.
 pub const HOOK_LINE: &str = "lxc.hook.mount: /usr/local/sbin/aib-cloud-host ct mask";
@@ -206,11 +281,77 @@ mod tests {
         assert_eq!(conf_cores(conf), Some(4));
         assert_eq!(conf_cores("arch: amd64\n[snap]\ncores: 8\n"), None);
         assert_eq!(conf_cores("cores: many\n"), None);
-        // the lists say what they say: the provider's name lives under these
-        assert!(
-            HIDE_DIRS.contains(&"sys/devices/virtual/dmi") && HIDE_DIRS.contains(&"sys/firmware")
-        );
-        assert!(HIDE_FILES.contains(&"proc/mdstat"));
         assert!(HOOK_LINE.starts_with("lxc.hook.mount: /"));
+        assert!(PROC_HIDE.contains(&"mdstat") && PROC_HIDE.contains(&"cmdline"));
+        // what a container needs of /proc is not on the list
+        for needed in [
+            "cpuinfo", "meminfo", "stat", "self", "sys", "mounts", "net", "version",
+        ] {
+            assert!(!PROC_HIDE.contains(&needed), "{needed}");
+        }
+    }
+
+    /// Andy 11-10: the customer's AI seat is inside; a list of what to hide is always short.
+    #[test]
+    fn under_sys_only_what_is_named_stays() {
+        // /sys itself, as the first host shows it
+        let top = sys_step(
+            "",
+            &[
+                "block",
+                "bus",
+                "class",
+                "dev",
+                "devices",
+                "firmware",
+                "fs",
+                "hypervisor",
+                "kernel",
+                "module",
+                "power",
+            ],
+        );
+        assert_eq!(top.descend, ["class", "devices", "fs"]);
+        assert_eq!(
+            top.cover,
+            [
+                "block",
+                "bus",
+                "dev",
+                "firmware",
+                "hypervisor",
+                "kernel",
+                "module",
+                "power"
+            ]
+        );
+        // the provider's name (dmi), the disks (block) and the PCI tree go; net stays
+        let devices = sys_step("devices", &["pci0000:00", "platform", "system", "virtual"]);
+        assert_eq!(devices.cover, ["devices/pci0000:00", "devices/platform"]);
+        assert_eq!(devices.descend, ["devices/system", "devices/virtual"]);
+        let virt = sys_step("devices/virtual", &["block", "dmi", "net", "thermal"]);
+        assert_eq!(
+            virt.cover,
+            [
+                "devices/virtual/block",
+                "devices/virtual/dmi",
+                "devices/virtual/thermal"
+            ]
+        );
+        assert!(virt.descend.is_empty());
+        let system = sys_step("devices/system", &["cpu", "memory", "node"]);
+        assert_eq!(
+            system.cover,
+            ["devices/system/memory", "devices/system/node"]
+        );
+        let class = sys_step("class", &["dmi", "hwmon", "net", "nvme"]);
+        assert_eq!(class.cover, ["class/dmi", "class/hwmon", "class/nvme"]);
+        let fs = sys_step("fs", &["cgroup", "ext4", "fuse"]);
+        assert_eq!(fs.cover, ["fs/ext4"]);
+        // something new the kernel grows is covered without anyone adding it
+        assert_eq!(sys_step("", &["brand_new"]).cover, ["brand_new"]);
+        // a name that only starts like a kept one is not kept
+        assert_eq!(sys_step("class", &["net2"]).cover, ["class/net2"]);
+        assert_eq!(sys_step("", &["f"]).cover, ["f"]);
     }
 }
