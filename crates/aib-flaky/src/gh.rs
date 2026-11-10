@@ -218,19 +218,100 @@ fn head_rust(src: &dyn Source, repo: &str, head: &str) -> Option<RustMap> {
     rust_map(&files, &|p| read_file(src, repo, head, p)).ok()
 }
 
-/// PR mode (`pr` = Some) or main push mode (`sha` given, `pr` = None).
+/// GitHub lists at most this many commits of a PR.
+const PR_COMMITS_CAP: usize = 250;
+/// GitHub's compare lists at most this many files.
+const COMPARE_FILES_CAP: usize = 300;
+
+/// The full SHA of one of the PR's own commits, given in full or as a prefix of at least
+/// 7 characters that names exactly one of them. A list that may have been cut off, or a
+/// SHA that is not the PR's, is an error (the run is then `unknown`).
+fn pr_commit(src: &dyn Source, repo: &str, pr: u64, want: &str) -> Result<String, String> {
+    if want.len() < 7 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("head_bad: {want} is not a commit SHA"));
+    }
+    let want = want.to_ascii_lowercase();
+    let mut shas = vec![];
+    for page in 1..=PR_COMMITS_CAP.div_ceil(100) {
+        let v = json(
+            src,
+            &format!("repos/{repo}/pulls/{pr}/commits?per_page=100&page={page}"),
+        )?;
+        let arr = v.as_array().ok_or("pull commits: not a list")?;
+        for c in arr {
+            shas.push(str_at(c, "/sha")?.to_string());
+        }
+        if arr.len() < 100 {
+            break;
+        }
+    }
+    if shas.len() >= PR_COMMITS_CAP {
+        return Err(format!(
+            "head_unknown: PR #{pr} has {PR_COMMITS_CAP} or more commits; the list may be cut off"
+        ));
+    }
+    let hits: Vec<&String> = shas.iter().filter(|s| s.starts_with(&want)).collect();
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(format!(
+            "head_not_in_pr: {want} is not a commit of PR #{pr}"
+        )),
+        _ => Err(format!(
+            "head_ambiguous: {want} names several commits of PR #{pr}"
+        )),
+    }
+}
+
+/// The files changed from `base` to `head` (three dots: from where they meet). A list at
+/// the API's cap may be cut off and is an error.
+fn compare_files(
+    src: &dyn Source,
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> Result<Vec<Changed>, String> {
+    let v = json(src, &format!("repos/{repo}/compare/{base}...{head}"))?;
+    let arr = v
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or("compare: no files")?;
+    if arr.len() >= COMPARE_FILES_CAP {
+        return Err(format!(
+            "compare_truncated: {base}...{head} lists {} files, at the API cap",
+            arr.len()
+        ));
+    }
+    arr.iter()
+        .map(|f| {
+            Ok(Changed {
+                path: str_at(f, "/filename")?.to_string(),
+                status: str_at(f, "/status")?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// PR mode (`pr` = Some; `sha` empty = the PR's current head, else an earlier head of
+/// the PR) or main push mode (`sha` given, `pr` = None).
 pub fn gather(src: &dyn Source, repo: &str, pr: Option<u64>, sha: &str) -> Result<Facts, String> {
     let (head, base, changed, ctx) = match pr {
         Some(n) => {
             let p = json(src, &format!("repos/{repo}/pulls/{n}"))?;
-            let head = str_at(&p, "/head/sha")?.to_string();
             let base = str_at(&p, "/base/sha")?.to_string();
             let head_ref = str_at(&p, "/head/ref")?.to_string();
-            let count = p
-                .get("changed_files")
-                .and_then(Value::as_u64)
-                .ok_or("pull: no changed_files")?;
-            let files = pr_files(src, repo, n, count)?;
+            let (head, files) = if sha.is_empty() {
+                let count = p
+                    .get("changed_files")
+                    .and_then(Value::as_u64)
+                    .ok_or("pull: no changed_files")?;
+                let files = pr_files(src, repo, n, count)?;
+                (str_at(&p, "/head/sha")?.to_string(), files)
+            } else {
+                // an earlier head of the PR (#644): its reds are what the register needs
+                let head = pr_commit(src, repo, n, sha)?;
+                let files = compare_files(src, repo, &base, &head)?;
+                (head, files)
+            };
             (
                 head,
                 base,

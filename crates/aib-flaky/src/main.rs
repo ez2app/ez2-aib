@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! aib-flaky — read-only suspected-flaky register.
 //!
-//!   aib-flaky judge --repo OWNER/NAME --pr N [--register FILE] [--offline DIR]
+//!   aib-flaky judge --repo OWNER/NAME --pr N [--head SHA] [--register FILE] [--offline DIR]
 //!   aib-flaky judge --repo OWNER/NAME --sha MAIN_SHA [--register FILE] [--offline DIR]
 //!   aib-flaky suggest --register FILE
 //!
-//! judge prints one JSON line per red job attempt on the PR's current head (every run, every
-//! attempt) and, with --register, appends the ones not already there. --sha records a main push
+//! judge prints one JSON line per red job attempt on the PR's current head, or with --head on
+//! an earlier commit of the PR (#644: the reds to register are often on an old head; the
+//! files are then read from compare base...head) (every run, every attempt) and, with --register, appends the ones not already there. --sha records a main push
 //! as precedent only. suggest prints fingerprints that keep going red (≥3 reds or ≥2 platforms,
 //! from ≥2 heads) for dispatch. Exit: 0 done (whatever the verdicts; there is no "pass"),
 //! 2 usage, 3 a read failed or the register is unreadable. Never writes to GitHub.
@@ -25,6 +26,7 @@ struct Args {
     repo: String,
     pr: Option<u64>,
     sha: String,
+    head: String,
     register: Option<PathBuf>,
     offline: Option<PathBuf>,
 }
@@ -46,6 +48,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--repo" => a.repo = val()?,
             "--pr" => a.pr = Some(val()?.parse().map_err(|_| "--pr: integer")?),
             "--sha" => a.sha = val()?,
+            "--head" => a.head = val()?,
             "--register" => a.register = Some(PathBuf::from(val()?)),
             "--offline" => a.offline = Some(PathBuf::from(val()?)),
             _ => return Err(format!("unknown argument {k}")),
@@ -119,6 +122,10 @@ fn cmd_judge(a: &Args, src: &dyn Source) -> i32 {
         eprintln!("aib-flaky: judge needs --repo and exactly one of --pr / --sha");
         return 2;
     }
+    if !a.head.is_empty() && a.pr.is_none() {
+        eprintln!("aib-flaky: --head goes with --pr (an earlier head of that PR)");
+        return 2;
+    }
     let prior = match load(a.register.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -126,7 +133,8 @@ fn cmd_judge(a: &Args, src: &dyn Source) -> i32 {
             return 3;
         }
     };
-    let f = match gather(src, &a.repo, a.pr, &a.sha) {
+    let sha = if a.pr.is_some() { &a.head } else { &a.sha };
+    let f = match gather(src, &a.repo, a.pr, sha) {
         Ok(f) => f,
         Err(e) => {
             println!("{}", json!({"state": "unknown", "note": e}));
@@ -203,7 +211,7 @@ fn run(argv: &[String]) -> i32 {
         "judge" => cmd_judge(&a, src),
         "suggest" => cmd_suggest(&a),
         _ => {
-            eprintln!("usage: aib-flaky judge --repo R (--pr N | --sha S) [--register F] | suggest --register F");
+            eprintln!("usage: aib-flaky judge --repo R (--pr N [--head S] | --sha S) [--register F] | suggest --register F");
             2
         }
     }

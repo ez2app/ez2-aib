@@ -254,6 +254,18 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
+          # #644 --head: an earlier head must be one of the PR's own commits
+          fk '                let head = pr_commit(src, repo, n, sha)?;' \
+             '                let head = sha.to_string(); // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a commit list at GitHub's cap may be cut off
+          fk '    if shas.len() >= PR_COMMITS_CAP {' \
+             '    if shas.len() >= PR_COMMITS_CAP && false { // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a compare at the file cap may be cut off
+          fk '    if arr.len() >= COMPARE_FILES_CAP {' \
+             '    if arr.len() >= COMPARE_FILES_CAP && false { // knife' \
+             a_compare_at_the_file_cap_is_unknown
       # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
