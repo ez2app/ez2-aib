@@ -99,12 +99,15 @@ pub async fn run(
         cfg.max_sessions,
         sessions_dir,
     );
+    let session_policy = Arc::new(cfg.session_policy.clone());
+    // 043dd M2-1: the queue runs the same gate again when a session leaves it
+    sessions.set_policy(session_policy.clone());
     let app = api::router(
         AppState {
             store,
             lineage,
             sessions: sessions.clone(),
-            session_policy: Arc::new(cfg.session_policy.clone()),
+            session_policy,
         },
         guard_cfg,
     );

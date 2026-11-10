@@ -115,6 +115,40 @@ jobs:
       - name: clippy
         if: env.RUN == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # merge-ops v2 §7.2 (a9136 11-09): every knife.py anchor in the workflows
+      # and scripts must occur exactly once in its file, before the long test
+      # and knife steps (#578 lost a round to anchors main had moved away).
+      - name: knife anchors
+        if: env.RUN == 'true'
+        shell: bash
+        run: cargo run -q --locked -p aib-xtask -- knife-anchors
+      - name: knife anchors knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        # the checker itself: a moved anchor must stay red, and a knife line it
+        # cannot read must never be skipped. Each knife must hit its own test.
+        run: |
+          set -eu
+          ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
+          ka '    text.matches(old).count()' '    let _ = (text, old); 1 // knife: always once' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
+            '                    Err(_) => {} // knife: skip what cannot be read' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
+          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA4 (1ced7 #590 L3) no knife found reads as clean
+          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
+            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
+          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
+            ansi_c_quoted_anchors_are_read_like_bash
+          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
+          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
+            a_positional_inside_a_word_is_filled_in
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
@@ -127,6 +161,204 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
+      # rule of the pure decision and must turn its own test red (knife.py restores the file).
+      - name: aib-thermal knives
+        if: env.RUN == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-thermal/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-thermal --locked --lib "$3"; }
+          # K1 pressure ignored
+          tk '        if p != 0 {' \
+            '        if p != 0 && false { // knife' \
+            a5_pressure_reaps_now
+          # K2 fallback ignores avg
+          tk '    if value >= REAP_AVG_C {' \
+            '    if value >= REAP_AVG_C && false { // knife' \
+            a18_fallback_honours_avg
+          # K3 instant crit lost
+          tk '    if max >= CPU_CRIT_C {' \
+            '    if max >= CPU_CRIT_C && false { // knife' \
+            a7_no_history_falls_back_to_instant
+          # K4 no_signal fallback skipped
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && !history.continuous() && false { // knife' \
+            a15_gap_without_pressure_falls_back
+          # K5 gaps count as continuous
+          tk '        if v < limit || t_prev - t > SUSTAIN_GAP_S {' \
+            '        if v < limit || t_prev - t > SUSTAIN_GAP_S * 100.0 { // knife' \
+            a4_broken_streak_restarts
+          # K6 two samples are enough
+          tk '        if n >= SUSTAIN_MIN_SAMPLES {' \
+            '        if n >= 1 { // knife' \
+            a16_two_samples_across_pause_not_sustained
+          # K7 same-moment panels counted twice
+          tk '            if t_counted - t >= SAMPLE_SPACING_S {' \
+            '            if t_counted - t >= 0.0 { // knife' \
+            a16b_same_moment_panels_are_one_sample
+          # K8 slow writer drops newer rows
+          tk '            (-SUSTAIN_GAP_S..=HISTORY_KEEP_S).contains(&age)' \
+            '            (0.0..=HISTORY_KEEP_S).contains(&age) // knife' \
+            a14c_slow_writer_keeps_newer_low_sample
+          # K9 no nogo level
+          tk '    for (level, limit) in [(Level::Crit, REAP_AVG_C), (Level::Hot, NOGO_AVG_C)] {' \
+            '    for (level, limit) in [(Level::Crit, REAP_AVG_C)] { // knife' \
+            a9_nogo_at_85_without_reap
+          # K10 hot reaps
+          tk '        self.level == Level::Crit' \
+            '        matches!(self.level, Level::Hot | Level::Crit) // knife' \
+            a9_nogo_at_85_without_reap
+          # K11 max instead of avg
+          tk '        Some(self.avg.filter(|v| v.is_finite()).unwrap_or(max))' \
+            '        Some(self.avg.filter(|v| v.is_finite()).map(|_| max).unwrap_or(max)) // knife' \
+            a1_spike_not_reaped
+          # K12 corrupt rows accepted
+          tk '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) {' \
+            '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) && false { // knife' \
+            a17b_nan_or_infinite_is_corrupt
+          # K13 (#615 33e28) samples never count as continuous
+          tk '            [.., (a, _), (b, _)] => b - a <= SUSTAIN_GAP_S,' \
+            '            [.., (_a, _), (_b, _)] => false, // knife' \
+            l2_no_pressure_continuous_spike_not_reaped
+          # K14 (R1 PR 3 Q2) a lone spike with pressure unreadable reaps again (1.x)
+          tk '    if pressure.is_none() && level == Level::Crit {' \
+            '    if pressure.is_none() && level == Level::Crit && false { // knife' \
+            l1_fallback_lone_spike_never_reaps
+          # K15 (a63ab #626 L1) with pressure unreadable every round takes the capped fallback: never reaps
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && (!history.continuous() || true) { // knife' \
+            no_pressure_sustained_heat_still_reaps
+      # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
+      # judged count. Each knife drops one condition and must turn its own test red.
+      - name: aib-flaky run context knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          fk() { python3 -I scripts/knife.py crates/aib-flaky/src/gh.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # M1: main mode takes any run, not just a main push
+          fk '        Context::MainPush => event == Some("push") && branch == Some("main"),' \
+             '        Context::MainPush => event.is_some() || branch.is_some() || true,' \
+             run_counts_main_push_only
+          # M2: the PR number is not checked
+          fk '                            .any(|p| p.get("number").and_then(Value::as_u64) == Some(*number))' \
+             '                            .any(|p| p.get("number").is_some() || *number > 0)' \
+             run_counts_this_pr_only
+          # M2: the head branch is not checked
+          fk '                && branch == Some(head_ref.as_str())' \
+             '                && (branch == Some(head_ref.as_str()) || !head_ref.is_empty())' \
+             run_counts_this_pr_only
+          # M2 end to end: the run filter is dropped from the listing
+          fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
+             '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
+             m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
+      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+      # pure decision code and must turn the test that guards it red.
+      - name: aib-cloud decision knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
+          ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
+             '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
+             values_the_lenient_read_would_not_use_are_gaps
+          # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
+          ck verify.rs '        .filter(|v| *v != Some(0));' \
+             '        .filter(|v| v.is_some()); // knife' \
+             review_segment_3
+          # host lock: any two different strings mean "another boot" (1ced7, seg. 4 M1)
+          ck op.rs '        Some(h) if valid_boot_id(&h.boot_id) && valid_boot_id(boot_id) && h.boot_id != boot_id => {' \
+             '        Some(h) if h.boot_id != boot_id => { // knife' \
+             slow_is_not_dead
+          # approval: a spent nonce is good for any operation (ebb36, seg. 4 M1)
+          ck op.rs '    } else if used_by(&approval.nonce).is_some_and(|other| other != op) {' \
+             '    } else if used_by(&approval.nonce).is_some_and(|other| other != op && op.is_empty()) { // knife' \
+             an_approval_covers_one_plan_for_one_operation
+          # quarantine: an old record is reused whatever the host looks like now (1ced7, seg. 5 M1)
+          ck quarantine.rs '            if r.prev_firewall != ct_fw' \
+             '            if r.prev_firewall.is_empty()' \
+             a_stale_record_is_not_reused
+          # quarantine: existing connections are left alone (33e28 K1)
+          ck quarantine.rs '    actions.push(cut.clone());' \
+             '    let _ = cut.clone(); // knife: no drop' \
+             plan_order_is_record_egress_connections_route_verify
+          # quarantine: no second drop after the route (33e28, seg. 5 M1)
+          ck quarantine.rs '    actions.push(cut);' \
+             '    let _ = cut; // knife: one drop only' \
+             review_segment_5
+          # quarantine: a CT that had no firewall file gets "no firewall" back (33e28, seg. 5 M2)
+          ck quarantine.rs '    let firewall_back = if record.prev_firewall.is_empty() {' \
+             '    let firewall_back = if record.prev_firewall.is_empty() && false {' \
+             review_segment_5
+          # quarantine: comment lines count as rules again (33e28, seg. 5 L1)
+          ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
+             '        .filter(|l| !l.is_empty())' \
+             review_segment_5
+          # quarantine guard: a record on disk no longer counts (33e28, seg. 5 r2 N)
+          ck quarantine.rs '    if record.is_some() || is_quarantined(ct_fw) {' \
+             '    if record.is_some() && is_quarantined(ct_fw) { // knife' \
+             review_segment_5
+          # quarantine: the record's edge block may hold more than this site's block (33e28 N)
+          ck quarantine.rs "        return refuse(\"the record's edge block is not exactly this site's block\");" \
+             '        // knife: any block goes' \
+             review_segment_5
+          # quarantine: a stale record is archived whatever the firewall is now (1ced7 L)
+          ck quarantine.rs '    if ct_fw != restored_firewall {' \
+             '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # quarantine: a stale record is archived whatever the journal says (1ced7, #625 seg. 2 M1)
+          ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
+             '        None => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
+          ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
+             '        let unprintable = false; // knife' \
+             upward_paths_and_control_characters
+          # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
+          ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
+             '    value == "/" // knife' \
+             root_spellings_and_dashes_in_prose
+          # site verify (c477a's list): one judgement out per knife
+          ck verify.rs '    let on_every_card = !cards.is_empty()' \
+             '    let on_every_card = cards.first().is_some_and(|n| n.contains("firewall=1")) || !cards.is_empty()' \
+             review_segment_3
+          ck verify.rs '                Outcome::Red("ct_policy_open")' \
+             '                Outcome::Green // knife' \
+             review_segment_3
+          ck verify.rs '        (SiteState::Active, false) => Outcome::Red("ct_down"),' \
+             '        (SiteState::Active, false) => Outcome::Green, // knife' \
+             s01_only_an_active_site_has_to_be_running
+          ck verify.rs '        (u.thin_meta, 80, "thin_meta_full"),' \
+             '        (u.thin_meta, 101, "thin_meta_full"), // knife' \
+             h04_disk_thresholds
+          ck verify.rs '        result("H05", Outcome::Red("inactive"))' \
+             '        result("H05", Outcome::Green) // knife' \
+             review_segment_3
+          ck verify.rs '        if in_options {' \
+             '        if in_options || true { // knife' \
+             h08_h09_firewall_is_on
+          ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
+             '        return result("H04", Outcome::Green); // knife' \
+             h04_disk_thresholds
+      # aib-cloud-host: gates of the host commands (reviews of #625).
+      - name: aib-cloud-host command knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud-host --locked "$4"; }
+          # site quarantine without --plan goes on (33e28, seg. 4 L1)
+          hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
+             nothing_but_a_plan
+          # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
+          hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_checked_is_exit_3_never_2
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -168,6 +400,23 @@ jobs:
             '        let a_p = (adopted.values().filter(|q| *q == p).count() as u64).min(c_p); // knife' \
             --expect-fail one_missed_and_one_foreign_is_caught_although_totals_match \
             -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KT1 procwatch trace (a63ab 11-10): the listing is not recorded, so a miss cannot be explained
+          fc crates/aib-procwatch/src/lib.rs \
+            '            g.record(t0, ppid, TraceKind::List { end_ns, result });' \
+            '            let _ = (t0, end_ns, result, &mut g); // knife' \
+            calibrate_mid_exit_trace_explains_every_miss
+          # KT2 forkcount: the parent's own stamp is ignored, so a listing while it was alive is never a tool problem
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '            .any(|(_, end, r)| *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c)))' \
+            '            .any(|(_, end, r)| s.exiting == 0 && *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c))) // knife' \
+            --expect-fail a_listing_while_the_parent_was_alive_is_a_tool_problem \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KT3 forkcount (a63ab 11-10): a listed child whose start time was unreadable is dropped again
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '    let mut m = start_unknown.clone();' \
+            '    let mut m = BTreeMap::new(); let _ = start_unknown; // knife' \
+            --expect-fail a_listed_child_with_no_start_time_counts_and_adoption_wins \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
           # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
           python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
             '    if need < 0 || (need == 0 && errno() != 0) {' \
@@ -180,6 +429,53 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+          # KT4 aib-sys T1 (R1, a63ab / a9136): a private SPI symbol that is missing taken as found
+          python3 -I scripts/knife.py crates/aib-sys/src/thermal_macos.rs \
+            '    if p.is_null() {' \
+            '    if p.is_null() && false { // knife' \
+            --expect-fail missing_spi_symbols_are_spi_missing_not_a_crash \
+            -- cargo test -p aib-sys --locked --lib thermal_macos::
+      # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
+      # OS. Each knife breaks one rule and must turn its own test red.
+      - name: aib-sys thermal knives
+        if: env.RUN == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          tt() { python3 -I scripts/knife.py crates/aib-sys/src/thermal.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-sys --locked --lib "thermal::tests::$3"; }
+          # KT1 a Get-rule object (CFArrayGetValueAtIndex) released ⇒ double free on the real OS
+          tt '        let Some(service) = api.at(services.r, i) else {' \
+            $'        let _k = api.at(services.r, i).map(|s| Owned::new(api, s)); // knife\n        let Some(service) = api.at(services.r, i) else {' \
+            walk_reads_tdie_and_releases_only_create_copy_results
+          # KT2 an implausible reading skipped instead of failing the read
+          tt '            return Err(SysError::Implausible);' \
+            '            continue; // knife' \
+            t1_implausible_value_is_an_error_not_skipped
+          # KT3 no tdie sensor read as a (NaN) reading instead of Unsupported
+          tt '    if seen.is_empty() {' \
+            '    if seen.is_empty() && false { // knife' \
+            t1_no_tdie_is_unsupported_not_cool
+          # KT5 a T2 level above 4 accepted
+          tt '        Ok(v) if v <= PRESSURE_MAX => Ok(v),' \
+            '        Ok(v) => Ok(v), // knife' \
+            t2_levels
+          # KT6 Create / Copy results never released (leak on every round)
+          tt '        self.api.release(self.r);' \
+            '        let _ = (self.api, self.r); // knife' \
+            walk_releases_on_every_error_path
+          # KT7 a tdie sensor whose event cannot be read skipped (could drop the hottest; 043dd M1)
+          tt $'        let Some(event) = api.event(service) else {\n            return Err(SysError::Unknown);' \
+            $'        let Some(event) = api.event(service) else {\n            continue; // knife' \
+            walk_tdie_without_event_fails_the_read
+          # KT8 a broken value hidden as a duplicate listing (043dd N1)
+          tt '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) {' \
+            '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) && !seen.contains(&name) { // knife' \
+            t1_duplicate_with_a_broken_value_fails
+          # KT9 no services array read as "no sensors" (Unsupported switches T1 off; 043dd #617 r2 L1)
+          tt $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unknown);' \
+            $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unsupported); // knife' \
+            walk_releases_on_every_error_path
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its
@@ -264,10 +560,73 @@ jobs:
             $'// knife: unknown fields accepted\nstruct PolicyFile {' \
             --expect-fail allowlist::tests::the_file_is_checked_field_by_field \
             -- cargo test -p aibd --locked --lib allowlist::tests::the_file_is_checked_field_by_field
+          # ADR 0005 §5 queue (a63ab 19:13). Q1 LIFO instead of FIFO
+          qk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test session_queue "$3"; }
+          qk '                let Some(q) = g.queue.pop_front() else {' \
+            '                let Some(q) = g.queue.pop_back() else { // knife' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q2 a slot coming back starts nobody (no kick at the end of a stop)
+          qk $'            self.kick(&mut g);\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            $'            // knife: no kick\n        } else if worth_rescanning(&stop) && !g.shutting {' \
+            a_full_limit_queues_and_the_waiting_start_in_arrival_order
+          # Q3 the queue has no bound
+          qk '                if g.queue.len() >= MAX_QUEUE {' \
+            '                if g.queue.len() >= MAX_QUEUE && false { // knife' \
+            the_queue_is_bounded_and_the_waiting_end_interrupted_at_shutdown
+          # Q4 DELETE does not look in the queue: a waiting session cannot be cancelled
+          qk '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id) {' \
+            '                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id && false) { // knife' \
+            a_cancelled_queued_session_never_starts
+          # Q5 a session left pending by a crash is not interrupted at the next start
+          python3 -I scripts/knife.py crates/aib-store/src/sessions.rs \
+            "holds_slot = 1 OR state = 'pending'" "holds_slot = 1 -- knife" \
+            --expect-fail pending_and_running_are_interrupted_with_previous_state_and_process_flag \
+            -- cargo test -p aib-store --locked --test sessions pending_and_running_are_interrupted_with_previous_state_and_process_flag
+          # Q6 (043dd 11-10 M1) a session leaving the queue is not gated again
+          qk '            let argv = match self.regate(&q) {' \
+            '            let argv = match self.regate(&q).map(|_| q.rec.argv.clone()).or(Ok::<Vec<String>, ErrorCode>(q.rec.argv.clone())) { // knife: the gate runs, its answer is dropped' \
+            a_queued_session_is_gated_again_when_it_leaves_the_queue
+          # Q7 (043dd M2) a pending session does not say what it waits for
+          qk '                rec.queue = Some(self.queue_view(&g, i + 1));' \
+            '                rec.queue = None; let _ = self.queue_view(&g, i + 1); // knife' \
+            a_pending_session_shows_its_place_and_who_holds_the_slots
+          # Q8 (043dd f6500f85 L1) a dequeue thread that panics leaves the queue stopped
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '        if std::thread::panicking() {' \
+            '        if std::thread::panicking() && false { // knife' \
+            --expect-fail sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue \
+            -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
+          # R1 PR 3a thermal hooks (a9136 11-10 15:18). T-a a NOGO POST starts or queues
+          hk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test thermal_hooks "$3"; }
+          hk '            if !self.launch_allowed() {' \
+            '            if !self.launch_allowed() && false { // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-b the queue starts a waiting session while NOGO
+          hk '                    || !self.launch_allowed()' \
+            '                    || (!self.launch_allowed() && false) // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-c kick_now kicks nobody: the queue stays after NOGO ends
+          hk $'        self.kick(&mut g);\n    }\n\n    /// Test hook: a shorter' \
+            $'        let _ = &mut g; // knife: no kick\n    }\n\n    /// Test hook: a shorter' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-d a stop that frees the slot does not tell the hook
+          hk $'            self.running_changed(old, &g);\n            self.kick(&mut g);' \
+            $'            let _ = (old, &g); // knife: no hook\n            self.kick(&mut g);' \
+            running_count_changes_reach_the_hook_once_each
+          # T-e a start does not tell the hook (a9136 3a N2)
+          hk $'        self.running_changed(old, &g);\n        self.event(' \
+            $'        let _ = (old, &g); // knife: no hook\n        self.event(' \
+            running_count_changes_reach_the_hook_once_each
+          # T-f hooks set late are not told the current count (a9136 3a L1)
+          hk '        self.running_changed(0, &g);' \
+            '        let _ = &g; // knife: not told' \
+            hooks_set_late_hear_the_current_count
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match gate(&st, req).await {' \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let req = match Ok::<Request, Response>(req) { // knife: no gate' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \
+            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let asked = req.argv.first().cloned();\n    let (req, asked) = match Ok::<(Request, Option<String>), ApiError>((req, asked)) { // knife: no gate' \
             --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
             -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
           # S6 an over-long line is not marked as cut
@@ -294,6 +653,18 @@ jobs:
             '        if (a.is_empty() || i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
             --expect-fail sessions::tests::argv_rules \
             -- cargo test -p aibd --locked --lib sessions::tests::argv_rules
+          # GW-S1a (043dd, gameworld 2.0 S1) seat open creates the seat before checking the program
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            $'    let resolved = resolve_argv(argv)?;\n    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;' \
+            $'    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;\n    let resolved = resolve_argv(argv)?; // knife' \
+            --expect-fail ctl::tests::seat_open_with_a_relative_program_sends_nothing \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_with_a_relative_program_sends_nothing
+          # GW-S1b a session start that fails after the seat was created is reported as success
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            '            Err(format!("session start for {seat_id}: {e}"))' \
+            '            { let _ = (seat_id, e); Ok(()) } // knife' \
+            --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
@@ -349,6 +720,42 @@ jobs:
             '    i != Ident::Gone' \
             '    i == Ident::Running // knife' \
             platform::tree::tests::an_unverified_process_still_counts_as_alive
+          # F1 (1ced7 11-09 23:38) the stop drops which rule added the candidates
+          gk crates/aibd/src/platform/session.rs \
+            '                orphan_extra: r.orphan_candidates_extra,' \
+            '                orphan_extra: 0, // knife' \
+            platform::session::tests::a_macos_report_carries_its_candidate_check_into_the_stop
+          # F2 slot_held without the candidate check (the record 1ced7 could not read)
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '                        "candidates": cand}),' \
+            '                        "cand": cand}), // knife' \
+            --expect-fail a_slot_that_stays_unreadable_stays_held_with_the_reason \
+            -- cargo test -p aibd --locked --test sessions a_slot_that_stays_unreadable_stays_held_with_the_reason
+          # C1 (1ced7 c25144e1 DockHelper) a launchd service in its own coalition holds the slot again
+          gk crates/aibd/src/platform/tree.rs \
+            '        None if other_coalition(session, coalition()) => Candidate::OtherCoalition,' \
+            '        None if other_coalition(session, coalition()) => Candidate::Unreadable, // knife' \
+            platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
+          # C2 the coalition is checked before the marker: a marked process of ours is let go
+          gk crates/aibd/src/platform/tree.rs \
+            '        Some(true) => Candidate::Ours,' \
+            '        Some(true) => if other_coalition(session, coalition()) { Candidate::OtherCoalition } else { Candidate::Ours }, // knife' \
+            platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
+          # C3 the self-check is gone: a root read as another coalition keeps the filter on
+          gk crates/aibd/src/platform/tree.rs \
+            '        (Ok(m), Ok(r)) if r != m => (None, true),' \
+            '        (Ok(m), Ok(r)) if r != m && false => (None, true), // knife' \
+            platform::tree::tests::the_coalition_self_check
+          # C4 (bb7dc H1) a candidate coalition read as 0 counts as another one
+          gk crates/aibd/src/platform/tree.rs \
+            '    matches!((session, candidate), (Some(s), Ok(c)) if c != 0 && c != s)' \
+            '    matches!((session, candidate), (Some(s), Ok(c)) if c != s) // knife' \
+            platform::tree::tests::the_dockhelper_candidate_is_let_go_and_our_orphan_is_kept
+          # C5 (bb7dc M1) any root read error, not only Gone, turns the filter on
+          gk crates/aibd/src/platform/tree.rs \
+            '        (Ok(_), Err(_)) => (None, false),' \
+            '        (Ok(m), Err(_)) => (Some(m), false), // knife' \
+            platform::tree::tests::the_coalition_self_check
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
@@ -380,6 +787,107 @@ jobs:
             '            event_type: "session.spawn_rejected".into(),' \
             '            event_type: "session.knife_no_audit".into(), // knife' \
             the_audit_record_has_the_ruled_keys_and_no_request_value
+          # M1 batch 2 (1ced7, TESTPLAN L / a63ab 21:58)
+          # K2 the request's text is compared, not the real paths: a link / another
+          # spelling of the listed program is refused
+          ak crates/aibd/src/allowlist.rs \
+            '            .map(|r| same_path(&r, &real))' \
+            '            .map(|_r| same_path(&e.path, a)) // knife' \
+            other_spellings_and_links_of_a_listed_program_run_its_real_path
+          # K3 the checked real path is not what runs (argv[0] kept as sent)
+          ak crates/aibd/src/sessions.rs \
+            '    req.argv[0] = real;' \
+            '    let _ = real; req.argv[0].push_str(""); // knife' \
+            every_start_resolves_the_real_path_again
+          # K5 Unix env names compared without case: `my_var` passes as `MY_VAR`
+          ak crates/aibd/src/allowlist.rs \
+            'fn env_name_eq(a: &str, b: &str) -> bool {' \
+            '#[allow(unreachable_code)] fn env_name_eq(a: &str, b: &str) -> bool { return a.eq_ignore_ascii_case(b); // knife' \
+            both_routes_refuse_what_is_not_listed_and_start_what_is
+          # K6 an empty list allows everything
+          ak crates/aibd/src/allowlist.rs \
+            '    let listed = p.programs.iter().any(|e| {' \
+            '    let listed = p.programs.is_empty() || p.programs.iter().any(|e| { // knife' \
+            no_policy_starts_nothing_on_either_route
+          # K7 the child inherits aibd's environment (no env_clear): AIBD_* leaks
+          ak crates/aibd/src/platform/session_unix.rs \
+            '        env_clear: true,' \
+            '        env_clear: false, // knife' \
+            the_child_sees_listed_env_and_its_session_id_but_no_aibd_variable
+          # K8 a refusal keeps a slot
+          ak crates/aibd/src/sessions.rs \
+            '        let program = allowlist::audit_name(program);' \
+            '        let program = allowlist::audit_name(program); lock(&self.inner).reserved += 1; // knife' \
+            refusals_use_no_slot
+          # K10 the deny table sees only the request's name, not the real file's (start)
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&real) || is_interpreter(a) {' \
+            '        if is_interpreter(a) { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K10b the same at load: only the listed name is checked
+          ak crates/aibd/src/allowlist.rs \
+            '        if is_interpreter(&p.path) || real_is_interp {' \
+            '        if is_interpreter(&p.path) || (real_is_interp && false) { // knife' \
+            a_listed_link_to_a_shell_is_refused_at_load_and_at_start
+          # K11 the real path is cached per argv[0]: a moved link keeps the old target
+          ak crates/aibd/src/allowlist.rs \
+            '    let real = std::fs::canonicalize(a).map_err(|_| Refused::Program)?;' \
+            '    static KC: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> = std::sync::OnceLock::new(); let hit = KC.get_or_init(Default::default).lock().unwrap().get(a).cloned(); let real = match hit { Some(r) => r, None => { let r = std::fs::canonicalize(a).map_err(|_| Refused::Program)?; KC.get_or_init(Default::default).lock().unwrap().insert(a.to_path_buf(), r.clone()); r } }; // knife' \
+            every_start_resolves_the_real_path_again
+          # K12 no npm (node) detection: a node install gets the generic code
+          ak crates/aibd/src/allowlist.rs \
+            '            Kind::Node => return Err(Refused::ProviderInstall),' \
+            '            Kind::Node => return Err(Refused::Program), // knife' \
+            scripts_are_refused_and_node_installs_get_their_own_code
+          # K14 the record keeps the full argv[0] (directories included)
+          ak crates/aibd/src/sessions.rs \
+            '        program: name(argv0),' \
+            '        program: { let _ = &name; argv0.to_owned() }, // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K15 the record carries an env name and value
+          ak crates/aibd/src/sessions.rs \
+            '                "folded_before": folded_before,' \
+            '                "folded_before": folded_before, "env": "NOT_LISTED_1CED7=VALSECRET-1ced7", // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K16 no one-minute fold: every refusal is its own record
+          ak crates/aibd/src/allowlist.rs \
+            '            Some(w) if now.saturating_duration_since(w.start) < REJECT_WINDOW => {' \
+            '            Some(w) if now.saturating_duration_since(w.start) < REJECT_WINDOW && false => { // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K17 the fold keys on the token only, not token + code
+          ak crates/aibd/src/sessions.rs \
+            '        match self.rejections.note(now, token_id, code, &program) {' \
+            '        match self.rejections.note(now, token_id, "any_code", &program) { // knife' \
+            the_audit_record_has_the_ruled_keys_and_no_request_value
+          # K18 deny-listed env (DYLD_* / LD_* / AIBD_* / PATH) refused early is not audited
+          ak crates/aibd/src/sessions.rs \
+            '            if audit {' \
+            '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
+            deny_listed_env_is_refused_and_audited_on_both_routes
+      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
+      - name: aib-release trial knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          tk() { python3 -I scripts/knife.py crates/aib-release/src/trial.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-release --locked --test trial "$3"; }
+          # T1 pairwise conflicts are not recorded: no stacking hint
+          tk '                Ok(m) if !m.clean() => rep.pairs.push(Pair {' \
+             '                Ok(m) if !m.clean() && false => rep.pairs.push(Pair { // knife' \
+             two_heads_on_the_same_lines_name_the_file_and_say_stack_on_the_first
+          # T2 a reported head with a different tree still passes (A9)
+          tk '        && rep.expect.as_ref().is_none_or(|e| e.matches);' \
+             '        && rep.expect.as_ref().is_none_or(|e| e.matches || true); // knife' \
+             a_reported_head_whose_tree_is_not_the_stack_lists_the_files_that_differ
+          # T3 an `integ/` integration branch passes
+          tk '        && rep.prefixes.iter().all(|p| p.refused.is_none())' \
+             '        && rep.prefixes.iter().all(|p| p.refused.is_none() || true) // knife' \
+             integration_branches_must_be_int_slash
+          # T4 the merge runs in the repository: its objects, config and drivers
+          tk '            .scratch_git(&args)' \
+             '            .src_git(&args) // knife: merge in the repository itself' \
+             heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -390,6 +898,30 @@ jobs:
             echo "== run $i/5"
             cargo test -q -p aib-sys --locked || exit 1
           done
+      # DIAG-win-session-flake (a9136 11-09): the three "failed root open"
+      # session tests used to wait for "2 active processes", which cmd +
+      # conhost can reach before ping exists. They now wait for PING.EXE.
+      # No Windows machine here: 20 runs in a row, one test at a time, all
+      # 20 must pass; every run is printed, a red one with its member list.
+      - name: aib-sys session failed-open tests (Windows) 20x
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u -o pipefail
+          cargo test -q -p aib-sys --locked --lib --no-run
+          pass=0
+          for i in $(seq 1 20); do
+            # a filter that matches nothing is green too: require all 3 ran
+            if cargo test -p aib-sys --locked --lib session::tests::a_failed_root_open \
+                 -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/failed-open.log" \
+               && grep -q "test result: ok. 3 passed" "$RUNNER_TEMP/failed-open.log"; then
+              pass=$((pass + 1)); echo "== run $i/20 ok"
+            else
+              echo "== run $i/20 FAILED"
+            fi
+          done
+          echo "session failed-open: $pass/20 passed"
+          test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
@@ -421,6 +953,11 @@ jobs:
           k2 '                    return Err((SpawnError::Spawn(e), Some(Box::new(left))));' \
             '                    drop(left); return Err((SpawnError::Spawn(e), None)); // knife: drop the tree' \
             a_failed_root_open_whose_child_outlives_the_root_is_not_reaped
+          # DIAG-win-session-flake: the tests really wait for ping; an image
+          # that never comes must turn them red in hold_members
+          k2 '    const AWAITED_IMAGE: &str = "PING.EXE";' \
+            '    const AWAITED_IMAGE: &str = "NOPE.EXE"; // knife: wait for nothing real' \
+            a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

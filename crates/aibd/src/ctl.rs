@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -321,11 +321,14 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 .get("state")
                 .and_then(Value::as_str)
                 .ok_or("session state missing")?;
-            if status != "running" {
+            // ADR 0005 §5 queue (bb7dc 11-09): `pending` = queued, keep waiting
+            if status != "running" && status != "pending" {
                 println!("{state}");
                 return match status {
                     "exited" | "killed" => Ok(()),
-                    "interrupted" | "stop_unconfirmed" => Err(format!("session ended as {status}")),
+                    "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" => {
+                        Err(format!("session ended as {status}"))
+                    }
                     _ => Err(format!("unrecognized session state: {status}")),
                 };
             }
@@ -337,13 +340,17 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 .get("state")
                 .and_then(Value::as_str)
                 .ok_or("session state missing")?;
-            if status == "interrupted" || status == "stop_unconfirmed" {
+            if matches!(
+                status,
+                "interrupted" | "stop_unconfirmed" | "cancelled" | "failed"
+            ) {
                 println!("{state}");
                 return Err(format!(
                     "session ended as {status} before both output streams closed"
                 ));
             }
-            if status == "running" {
+            // a queued session (ADR 0005 §5) has no output yet: no grace runs
+            if status == "running" || status == "pending" {
                 terminal_seen = None;
             } else if matches!(status, "exited" | "killed") {
                 let since = *terminal_seen.get_or_insert_with(Instant::now);
@@ -399,24 +406,58 @@ fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
         }
         ["watch", session] => return watch(c, session),
         ["session", "start", seat, "--", argv @ ..] if !argv.is_empty() => {
-            if !Path::new(argv[0]).is_absolute() {
-                return Err("program must be an absolute path".into());
-            }
-            let program =
-                std::fs::canonicalize(argv[0]).map_err(|e| format!("resolve program: {e}"))?;
-            let program = program.to_str().ok_or("program path is not valid UTF-8")?;
-            let mut resolved = argv.to_vec();
-            resolved[0] = program;
+            let resolved = resolve_argv(argv)?;
             c.request(
                 "POST",
                 &format!("/api/v1/seats/{}/sessions", id(seat)?),
                 Some(json!({"argv":resolved})),
             )?
         }
+        ["seat", "open", name, "--", argv @ ..] if !argv.is_empty() => {
+            return seat_open(c, name, argv);
+        }
         _ => return Err(USAGE.into()),
     };
     println!("{value}");
     Ok(())
+}
+
+/// argv for a session start: the program must be an absolute path; it is
+/// sent resolved (symlinks followed), the arguments unchanged.
+fn resolve_argv(argv: &[&str]) -> Result<Vec<String>, String> {
+    if !Path::new(argv[0]).is_absolute() {
+        return Err("program must be an absolute path".into());
+    }
+    let program = std::fs::canonicalize(argv[0]).map_err(|e| format!("resolve program: {e}"))?;
+    let program = program.to_str().ok_or("program path is not valid UTF-8")?;
+    let mut resolved: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+    resolved[0] = program.to_string();
+    Ok(resolved)
+}
+
+/// `seat open` (gameworld 2.0 S1, a63ab 11-10 Q2 b): one step for seat
+/// create + session start. The program is checked before anything is sent,
+/// so a bad argv leaves no seat behind. A session start that fails after the
+/// seat was created prints the seat (so `session start <seat-id>` can be
+/// retried) and returns the server's own error unchanged. Opens no window.
+fn seat_open(c: &Client, name: &str, argv: &[&str]) -> Result<(), String> {
+    let resolved = resolve_argv(argv)?;
+    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;
+    let seat_id = seat
+        .get("seat_id")
+        .and_then(Value::as_str)
+        .ok_or("seat create answered without a seat_id")?;
+    let path = format!("/api/v1/seats/{}/sessions", id(seat_id)?);
+    match c.request("POST", &path, Some(json!({"argv":resolved}))) {
+        Ok(session) => {
+            println!("{}", json!({"seat": seat, "session": session}));
+            Ok(())
+        }
+        Err(e) => {
+            println!("{}", json!({"seat": seat, "session": null}));
+            Err(format!("session start for {seat_id}: {e}"))
+        }
+    }
 }
 
 /// Initialize an advisory user-owned allowlist. This is not a defense against
@@ -572,11 +613,17 @@ mod tests {
     }
 
     fn fake(responses: Vec<&'static str>) -> (Client, std::thread::JoinHandle<Vec<String>>) {
+        fake_status(responses.into_iter().map(|r| (200, r)).collect())
+    }
+
+    fn fake_status(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (Client, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for response in responses {
+            for (status, response) in responses {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -599,7 +646,7 @@ mod tests {
                 requests.push(format!("{header}{}", String::from_utf8(body).unwrap()));
                 write!(
                     socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
                     response.len()
                 )
                 .unwrap();
@@ -649,6 +696,92 @@ mod tests {
         assert!(requests[2].starts_with("DELETE /api/v1/sessions/session_1 HTTP/1.1"));
     }
 
+    fn body_of(request: &str) -> Value {
+        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+
+    #[test]
+    fn seat_open_creates_the_seat_then_starts_its_session() {
+        let (c, server) = fake(vec![
+            r#"{"seat_id":"seat_9","name":"One","state":"created"}"#,
+            r#"{"session_id":"session_9","state":"starting"}"#,
+        ]);
+        let program = std::env::current_exe().unwrap();
+        execute(
+            &c,
+            &["seat", "open", "One", "--", program.to_str().unwrap(), "x"],
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("POST /api/v1/seats HTTP/1.1"));
+        assert_eq!(body_of(&requests[0]), json!({"name":"One"}));
+        assert!(requests[1].starts_with("POST /api/v1/seats/seat_9/sessions HTTP/1.1"));
+        let canon = std::fs::canonicalize(&program).unwrap();
+        assert_eq!(
+            body_of(&requests[1]),
+            json!({"argv":[canon.to_str().unwrap(), "x"]})
+        );
+    }
+
+    #[test]
+    fn seat_open_with_a_relative_program_sends_nothing() {
+        let (c, server) = fake(vec![]);
+        let err = execute(&c, &["seat", "open", "One", "--", "sleep", "1"]).unwrap_err();
+        assert_eq!(err, "program must be an absolute path");
+        assert!(server.join().unwrap().is_empty());
+    }
+
+    #[test]
+    fn seat_open_keeps_the_session_error_and_names_the_seat() {
+        let (c, server) = fake_status(vec![
+            (
+                201,
+                r#"{"seat_id":"seat_9","name":"One","state":"created"}"#,
+            ),
+            (
+                403,
+                r#"{"error":{"code":"forbidden_program","message":"not on the allowlist"}}"#,
+            ),
+        ]);
+        let program = std::env::current_exe().unwrap();
+        let err = execute(
+            &c,
+            &["seat", "open", "One", "--", program.to_str().unwrap()],
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("session start for seat_9: HTTP 403: "),
+            "{err}"
+        );
+        assert!(err.contains("forbidden_program"), "{err}");
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn seat_open_stops_when_the_seat_is_refused() {
+        let (c, server) = fake_status(vec![(
+            400,
+            r#"{"error":{"code":"bad_request","message":"name must be 1-128 characters"}}"#,
+        )]);
+        let program = std::env::current_exe().unwrap();
+        let err = execute(&c, &["seat", "open", "", "--", program.to_str().unwrap()]).unwrap_err();
+        assert!(err.starts_with("HTTP 400: "), "{err}");
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn seat_open_needs_an_id_shaped_seat_id() {
+        let (c, server) = fake(vec![r#"{"seat_id":"../x"}"#]);
+        let program = std::env::current_exe().unwrap();
+        assert!(execute(
+            &c,
+            &["seat", "open", "One", "--", program.to_str().unwrap()]
+        )
+        .is_err());
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+
     #[test]
     fn watch_waits_for_both_streams_and_terminal_state() {
         let page = r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":2}"#;
@@ -665,6 +798,44 @@ mod tests {
             .starts_with("GET /api/v1/events?cursor=0&limit=500&aggregate_id=session_1 HTTP/1.1"));
         assert!(requests[2].starts_with("GET /api/v1/sessions/session_1 HTTP/1.1"));
     }
+    /// ADR 0005 §5 queue (bb7dc 11-09): a queued session is waited for
+    /// with no grace, then watched as usual once it runs.
+    #[test]
+    fn watch_keeps_waiting_while_the_session_is_queued() {
+        let closed = r#"{"output":[{"type":"session.output_closed","payload":{"stream":"stdout","why":"eof"}},{"type":"session.output_closed","payload":{"stream":"stderr","why":"eof"}}],"next":2}"#;
+        let (c, server) = fake(vec![
+            r#"{"output":[],"next":0}"#,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"pending"}"#,
+            closed,
+            r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+            r#"{"state":"exited"}"#,
+        ]);
+        watch_with_grace(&c, "session_1", Duration::ZERO).unwrap();
+        assert_eq!(server.join().unwrap().len(), 6);
+    }
+
+    /// ... and a queued session that was cancelled or failed to start is
+    /// an error, never success.
+    #[test]
+    fn a_cancelled_or_failed_queued_session_is_not_success() {
+        for end in ["cancelled", "failed"] {
+            let st: &'static str = if end == "cancelled" {
+                r#"{"state":"cancelled"}"#
+            } else {
+                r#"{"state":"failed"}"#
+            };
+            let (c, server) = fake(vec![
+                r#"{"output":[],"next":0}"#,
+                r#"{"events":[],"next_cursor":0,"filter_applied":true}"#,
+                st,
+            ]);
+            let e = watch(&c, "session_1").unwrap_err();
+            assert!(e.contains(end), "{e}");
+            assert_eq!(server.join().unwrap().len(), 3);
+        }
+    }
+
     #[test]
     fn interrupted_history_with_unclosed_streams_is_not_success() {
         let (c, server) = fake(vec![

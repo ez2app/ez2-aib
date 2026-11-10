@@ -1,6 +1,6 @@
 [package]
 name = "aib-sys"
-description = "The one crate allowed to call OS process APIs directly (ADR 0004, API list v0.2)"
+description = "The one crate allowed to call OS APIs directly: process M1–M5 (ADR 0004) and thermal T1–T2 (R1); API list v0.4"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
