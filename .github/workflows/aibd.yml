@@ -555,6 +555,9 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # ct mask: the wrapper leaves the last start's verdict in place (c477a, #642 seg. 1 M1)
+          hk ../../aib-cloud/src/mask.rs '*) rm -f ' '*) : ' \
+             a_start_whose_hook_cannot_run_leaves_no_old_verdict
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error

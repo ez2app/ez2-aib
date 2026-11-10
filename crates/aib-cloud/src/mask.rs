@@ -137,10 +137,13 @@ pub const PROC_HIDE: &[&str] = &[
 /// the mask must never be why a customer's site is down.
 pub const HOOK_LINE: &str = "lxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook";
 
-/// The wrapper [`HOOK_LINE`] names: a time limit, and exit 0 whatever happens. The hook
+/// The wrapper [`HOOK_LINE`] names: the last start's verdict removed first (the verdict
+/// file is on the host and outlives a restart: a hook that cannot run, or is cut off by
+/// the time limit, must not leave an old `ok` standing — c477a, #642 seg. 1 M1), a time
+/// limit, and exit 0 whatever happens. The hook
 /// leaves its verdict in a file for `site verify` to read; a wrapper that could not even
 /// start the binary leaves none, which reads as not masked.
-pub const HOOK_WRAPPER: &str = "#!/bin/sh\n# installed by aib-cloud-host; see aib_cloud::mask\ntimeout 20 /usr/local/sbin/aib-cloud-host ct mask >/dev/null 2>&1\nexit 0\n";
+pub const HOOK_WRAPPER: &str = "#!/bin/sh\n# installed by aib-cloud-host; see aib_cloud::mask\n# the verdict of an earlier start must not stand for this one\ncase \"${LXC_NAME:-}\" in ''|*[!0-9]*) ;; *) rm -f \"/run/ez2-cloud/mask/$LXC_NAME/result\" ;; esac\n/usr/bin/timeout 20 /usr/local/sbin/aib-cloud-host ct mask >/dev/null 2>&1\nexit 0\n";
 
 /// Other full views of `/proc` and `/sys` a container has and that must be covered too:
 /// with nesting on, the runtime keeps an unmasked copy of each for nested containers
