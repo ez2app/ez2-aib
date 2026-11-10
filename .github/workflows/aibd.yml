@@ -1156,6 +1156,12 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+      # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
+      # and health stays public and minimal.
+      - name: aib web knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-web.sh
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)

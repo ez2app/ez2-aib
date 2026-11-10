@@ -201,6 +201,33 @@ pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
+/// Open `url` in the person's default browser (`aibd ctl web`, PLAN A5). Best effort: the
+/// caller prints the address anyway. The url carries nothing secret (ADR 0006 §7: the
+/// pairing code is typed in, never put in a link).
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    let st = c
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if st.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("browser opener: {st}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
