@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each, hands what it saw to `aib_cloud::verify`, prints the
+//! commands with a timeout each (host H01–H10, H12, H13; per site S00–S06), hands what it saw to `aib_cloud::verify`, prints the
 //! verdicts. Nothing here writes, enters a CT or opens a connection; `--active` checks are
 //! a later slice.
 //!
@@ -26,6 +26,8 @@ const LAST_PLATFORM_OK: &str = "/var/lib/ez2-cloud/last-platform-ok";
 const LAST_EXPORT_OK: &str = "/var/lib/ez2-cloud/last-export-ok";
 const DUMP_DIR: &str = "/var/lib/vz";
 const CLUSTER_FW: &str = "/etc/pve/firewall/cluster.fw";
+const HOST_HEALTH: &str = "/run/ez2-host-health.json";
+const REBOOT_REQUIRED: &str = "/var/run/reboot-required";
 
 /// Run a read-only command; `None` when it could not be run, timed out or failed.
 fn observe(program: &str, args: &[&str], seconds: u64) -> Option<String> {
@@ -104,12 +106,30 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
         verify::h05_raid(fs::read_to_string("/proc/mdstat").ok().as_deref()),
         verify::h08_firewall_running(observe("pve-firewall", &["status"], 5).as_deref()),
         verify::h09_cluster_firewall(fs::read_to_string(CLUSTER_FW).ok().as_deref()),
+        verify::h01_health_fresh(now, mtime(HOST_HEALTH)),
+        verify::h06_load(
+            fs::read_to_string("/proc/loadavg").ok().as_deref(),
+            std::thread::available_parallelism()
+                .ok()
+                .and_then(|n| u32::try_from(n.get()).ok())
+                .unwrap_or(0),
+        ),
+        verify::h07_reboot_required(fs::exists(REBOOT_REQUIRED).ok()),
+        verify::h10_fail2ban(observe("fail2ban-client", &["status", "sshd"], 5).as_deref()),
+        verify::h12_time_sync(
+            observe(
+                "timedatectl",
+                &["show", "-p", "NTPSynchronized", "--value"],
+                3,
+            )
+            .as_deref(),
+        ),
     ]
 }
 
 /// The checks of one site, from its record file. A record that is not complete is one red
 /// finding (`S00`): nothing else can be judged against values nobody recorded.
-fn site_checks(record_path: &std::path::Path) -> (String, Vec<CheckResult>) {
+fn site_checks(record_path: &std::path::Path) -> (String, Option<u32>, Vec<CheckResult>) {
     let name = record_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -124,13 +144,13 @@ fn site_checks(record_path: &std::path::Path) -> (String, Vec<CheckResult>) {
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     else {
-        return (name, s00("record_unreadable"));
+        return (name, None, s00("record_unreadable"));
     };
     let Ok(spec) = spec_from_record_strict(&rec) else {
-        return (name, s00("record_incomplete"));
+        return (name, None, s00("record_incomplete"));
     };
     if spec.code != name {
-        return (name, s00("record_name_mismatch"));
+        return (name, None, s00("record_name_mismatch"));
     }
     let ct = spec.ct.to_string();
     let status = observe("pct", &["status", &ct], 5);
@@ -144,14 +164,26 @@ fn site_checks(record_path: &std::path::Path) -> (String, Vec<CheckResult>) {
     } else {
         SiteState::Active
     };
+    // S06: everything `site drift` compares. For a quarantined site the firewall file is
+    // meant to differ from the record (S04 checks it is the quarantine one), so that one
+    // key is left out of the count.
+    let drifted = config.as_deref().and_then(|cfg| {
+        let all = aib_cloud::site::drift(&spec, cfg, ct_fw.as_deref()).ok()?;
+        Some(
+            all.iter()
+                .filter(|d| !(state == SiteState::Quarantined && d.key == "firewall"))
+                .count(),
+        )
+    });
     let results = vec![
         verify::s01_ct_status(state, status.as_deref()),
         verify::s02_unprivileged(config.as_deref()),
         verify::s03_firewall_attached(config.as_deref(), ct_fw.as_deref()),
         verify::s04_firewall_group(&spec, state, quarantine::GROUP, ct_fw.as_deref()),
         verify::s05_limits(&spec, config.as_deref()),
+        verify::s06_drift(drifted),
     ];
-    (name, results)
+    (name, Some(spec.ct), results)
 }
 
 fn print_text(scope: &str, results: &[CheckResult]) {
@@ -232,8 +264,21 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
     }
 
-    let host = host_checks(now, &thin_pool);
-    let sites: Vec<(String, Vec<CheckResult>)> = paths.iter().map(|p| site_checks(p)).collect();
+    let mut host = host_checks(now, &thin_pool);
+    let checked: Vec<(String, Option<u32>, Vec<CheckResult>)> =
+        paths.iter().map(|p| site_checks(p)).collect();
+    // the inventory only makes sense over every record, not when one site was asked for
+    if only.is_none() {
+        let record_cts: Vec<u32> = checked.iter().filter_map(|(_, ct, _)| *ct).collect();
+        let cts = observe("pct", &["list"], 5).and_then(|o| verify::parse_pct_list(&o));
+        host.push(verify::h13_inventory(
+            cts.as_deref(),
+            &record_cts,
+            &[aib_cloud::site::EDGE_CT, aib_cloud::site::TEMPLATE_CT],
+        ));
+    }
+    let sites: Vec<(String, Vec<CheckResult>)> =
+        checked.into_iter().map(|(n, _, r)| (n, r)).collect();
     let mut all: Vec<CheckResult> = host.clone();
     for (_, results) in &sites {
         all.extend(results.iter().cloned());
@@ -307,7 +352,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aib-sv-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let missing = dir.join("nosuch.json");
-        let (name, r) = site_checks(&missing);
+        let (name, _, r) = site_checks(&missing);
         assert_eq!(name, "nosuch");
         assert_eq!(r.len(), 1);
         assert_eq!(
@@ -317,7 +362,7 @@ mod tests {
         // a record the lenient reader accepts but that leaves the limits to a default
         let poc = dir.join("site2.json");
         fs::write(&poc, r#"{"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"s2.example.test","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112}"#).unwrap();
-        let (_, r) = site_checks(&poc);
+        let (_, _, r) = site_checks(&poc);
         assert_eq!(
             (r[0].id, r[0].outcome),
             ("S00", Outcome::Red("record_incomplete"))
@@ -326,7 +371,7 @@ mod tests {
         let full = r#"{"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"s2.example.test","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112,"limits":{"cores":2,"cpulimit_x100":200,"memory_mb":2048,"swap_mb":512,"pids_max":2048}}"#;
         let wrong = dir.join("site9.json");
         fs::write(&wrong, full).unwrap();
-        let (_, r) = site_checks(&wrong);
+        let (_, _, r) = site_checks(&wrong);
         assert_eq!(
             (r[0].id, r[0].outcome),
             ("S00", Outcome::Red("record_name_mismatch"))
@@ -335,8 +380,8 @@ mod tests {
         // is green
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
-        let (_, r) = site_checks(&ok);
-        assert_eq!(r.len(), 5);
+        let (_, _, r) = site_checks(&ok);
+        assert_eq!(r.len(), 6);
         if Command::new("pct").arg("--version").output().is_err() {
             assert!(r.iter().all(|x| x.outcome != Outcome::Green), "{r:?}");
             assert_ne!(verify::exit_code(&r), 0);

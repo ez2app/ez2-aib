@@ -319,6 +319,14 @@ jobs:
           ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
              '        let unprintable = false; // knife' \
              upward_paths_and_control_characters
+          # site verify: a CT nobody recorded goes unnoticed (c477a's list, H13)
+          ck verify.rs '        .any(|c| !record_cts.contains(c) && !platform.contains(c))' \
+             '        .any(|c| !record_cts.contains(c) && !platform.contains(c) && c == &0)' \
+             h13_every_ct_is_accounted_for
+          # site verify: a stale host-health file is fine (H01)
+          ck verify.rs '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),' \
+             '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Green, // knife' \
+             h01_h06_h07_h10_h12
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
