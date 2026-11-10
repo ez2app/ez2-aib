@@ -367,6 +367,14 @@ jobs:
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
              everything_else_is_refused_whole
+          # ARC: a raise goes past what the plan allows (4.4.1 23)
+          ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
+             '            let next = limits.cpulimit_x100 + 100; // knife' \
+             never_past_the_plan
+          # ARC: a raise the host cannot back is proposed all the same
+          ck arc.rs '            if room.memory_mb < next - limits.memory_mb {' \
+             '            if room.memory_mb == u32::MAX { // knife' \
+             never_past_what_the_host_can_back
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
