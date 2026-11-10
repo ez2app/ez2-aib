@@ -468,6 +468,10 @@ jobs:
           hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
              a_tenant_key_reaches_its_own_sites_only
+          # customer key: a tenant id equal to a site code owns the site that names no tenant
+          hk customercmd.rs '        if rec.get("tenant_id").and_then(Value::as_str) == Some(tenant) {' \
+             '        if aib_cloud::site::record_tenant(&rec) == Some(tenant) { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
           # customer key: the roles in the entry are not asked
           hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
              '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \

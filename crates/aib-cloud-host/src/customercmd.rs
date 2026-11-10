@@ -30,7 +30,7 @@ use std::time::Duration;
 use aib_cloud::customer::{
     parse_owner_request, parse_request, parse_roles, OwnerRequest, Request, Role,
 };
-use aib_cloud::site::{record_tenant, spec_from_record};
+use aib_cloud::site::spec_from_record;
 use aib_cloud::svc;
 use aib_cloud::verify;
 use serde_json::{json, Value};
@@ -151,8 +151,7 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
     }
 }
 
-/// The sites whose record names `tenant` (a site whose record names no tenant is its
-/// own tenant), as (site code, record). An unreadable directory or record is an error:
+/// The sites whose record names `tenant` outright, as (site code, record). An unreadable directory or record is an error:
 /// a list that silently leaves a site out would hide it from its owner.
 fn tenant_sites(tenant: &str, records: &str) -> Result<Vec<(String, Value)>, String> {
     let mut out = Vec::new();
@@ -163,7 +162,9 @@ fn tenant_sites(tenant: &str, records: &str) -> Result<Vec<(String, Value)>, Str
         }
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let rec: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        if record_tenant(&rec) == Some(tenant) {
+        // only a tenant the record names outright: a record without one falls back to its own
+        // site code elsewhere, and a tenant id that happened to equal that code must not own it
+        if rec.get("tenant_id").and_then(Value::as_str) == Some(tenant) {
             let spec = spec_from_record(&rec).map_err(|e| e.to_string())?;
             out.push((spec.code, rec));
         }
@@ -312,6 +313,10 @@ mod tests {
         let mine = tenant_sites("t-aaa", d).unwrap();
         let codes: Vec<&str> = mine.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(codes, ["site2", "site3"]);
+        // a site whose record names no tenant belongs to no customer key, whatever the key is called
+        record(&dir, "site5", 115, None);
+        assert!(tenant_sites("site5", d).unwrap().is_empty());
+        assert_eq!(answer_tenant("site5", d, "site site5 status", ALL), 2);
         assert_eq!(answer_tenant("t-aaa", d, "sites", ALL), 0);
         assert_eq!(answer_tenant("t-aaa", d, "usage", ALL), 0);
         // someone else's site and a site that does not exist: the same refusal
