@@ -40,8 +40,10 @@ pub const CORES_MAX: u32 = 256;
 /// What stays readable under `/sys`, as paths below it. **Everything else under `/sys`
 /// is covered** — an allowlist, because a customer's AI seat works inside the container
 /// (Andy 11-10: "要讓 ai 也盡量找不出主機與主機商的任何資訊") and a list of what to hide
-/// would always be one entry short. Kept: the container's own cgroup tree, fuse, its
-/// processors as lxcfs shows them, and its network interfaces.
+/// would always be one entry short. Kept: the container's own cgroup tree, fuse and its
+/// network interfaces. `devices/system/cpu` is left by the walk only to be covered whole
+/// by the directory [`cpu_dir`] describes: what lxcfs shows there still lists every
+/// processor of the host and the processor's model code (c477a, measured 11-10).
 pub const SYS_KEEP: &[&str] = &[
     "fs/cgroup",
     "fs/fuse",
@@ -177,6 +179,27 @@ pub fn cpuinfo(host: &str, cores: u32) -> Option<String> {
     Some(out)
 }
 
+/// What the container sees as `/sys/devices/system/cpu`, for `cores` processors: files
+/// (name, content) and the names of the per-processor directories. Programs count
+/// processors from `online` and from the `cpuN` entries; nothing else of the host's
+/// directory is carried over.
+pub fn cpu_dir(cores: u32) -> Option<(Vec<(&'static str, String)>, Vec<String>)> {
+    if !(1..=CORES_MAX).contains(&cores) {
+        return None;
+    }
+    let range = if cores == 1 {
+        String::from("0\n")
+    } else {
+        alloc::format!("0-{}\n", cores - 1)
+    };
+    let files = ["online", "possible", "present"]
+        .into_iter()
+        .map(|name| (name, range.clone()))
+        .collect();
+    let dirs = (0..cores).map(|i| alloc::format!("cpu{i}")).collect();
+    Some((files, dirs))
+}
+
 /// Whether a `cpuinfo` text is one this module wrote: every processor carries
 /// [`CPU_MODEL`] and nothing else. For the check that a running container is masked.
 pub fn is_masked_cpuinfo(text: &str) -> bool {
@@ -281,6 +304,20 @@ mod tests {
         assert_eq!(conf_cores("arch: amd64\n[snap]\ncores: 8\n"), None);
         assert_eq!(conf_cores("cores: many\n"), None);
         assert!(HOOK_LINE.starts_with("lxc.hook.mount: /"));
+        // the processor directory a container sees: its own count and nothing of the host's
+        let (files, dirs) = cpu_dir(2).unwrap();
+        assert_eq!(
+            files,
+            [
+                ("online", String::from("0-1\n")),
+                ("possible", String::from("0-1\n")),
+                ("present", String::from("0-1\n")),
+            ]
+        );
+        assert_eq!(dirs, ["cpu0", "cpu1"]);
+        assert_eq!(cpu_dir(1).unwrap().0[0].1, "0\n");
+        assert_eq!(cpu_dir(0), None);
+        assert_eq!(cpu_dir(CORES_MAX + 1), None);
         assert!(PROC_HIDE.contains(&"mdstat") && PROC_HIDE.contains(&"cmdline"));
         // what a container needs of /proc is not on the list
         for needed in [
