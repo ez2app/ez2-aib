@@ -363,6 +363,14 @@ jobs:
           ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
              '            .all(|c| c != 0)' \
              everything_else_is_refused_whole
+          # customer status: a code nobody named is shown to the customer as it is (c477a 11-10)
+          ck customer.rs '            (_, _) => None,' \
+             '            (_, Outcome::Red(c)) => Some(("red", Some(c))), (_, _) => None, // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
+          # customer status: what is wrong on our side does not show at all
+          ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
+             '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
           # customer entry: a request may carry extra words (another site, say)
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \

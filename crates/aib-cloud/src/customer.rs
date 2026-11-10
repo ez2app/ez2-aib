@@ -19,7 +19,10 @@
 //! Not offered to customers: start / stop, domains, resources, quarantine, anything about
 //! another site or the host.
 
+use serde_json::{json, Value};
+
 use crate::svc::{LogSource, LOG_LINES_MAX, LOG_MINUTES_MAX};
+use crate::verify::{exit_code, CheckResult, Outcome};
 
 /// Longest request line accepted, in bytes.
 pub const REQUEST_MAX: usize = 200;
@@ -139,6 +142,52 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
     }
 }
 
+/// What a customer is shown of their site's checks (c477a 11-10,
+/// PROPOSAL-customer-status-codes): a **whitelist**.
+///
+/// * `S01` (is the site up) and `S05` (does it have what the plan gives) are shown as
+///   their own rows, under customer-facing codes: `site_down`, `below_plan`, `unknown`.
+/// * Everything else — every other check, and any code of `S01` / `S05` not named here —
+///   is folded into one row `P` that carries the worst of them as `provider_check`. Red
+///   stays red; which check and why does not leave the host: a firewall that is off, or
+///   the way a site is isolated, is not something to tell whoever holds a customer's key.
+/// * A check added later lands in `P` until it is named here.
+/// * `exit` is computed over **all** checks, exactly as `site verify` does.
+pub fn status_view(site: Option<&str>, results: &[CheckResult]) -> Value {
+    // the order `verify::exit_code` uses: red, then unknown, then warn
+    let rank = |o: Outcome| match o {
+        Outcome::Green => 0u8,
+        Outcome::Warn(_) => 1,
+        Outcome::Unknown(_) => 2,
+        Outcome::Red(_) => 3,
+    };
+    let mut shown: alloc::vec::Vec<Value> = alloc::vec::Vec::new();
+    let mut provider = 0u8;
+    for r in results {
+        let own = match (r.id, r.outcome) {
+            ("S01" | "S05", Outcome::Green) => Some(("green", None)),
+            ("S01", Outcome::Red("ct_down")) => Some(("red", Some("site_down"))),
+            ("S05", Outcome::Warn("under_record")) => Some(("warn", Some("below_plan"))),
+            ("S01" | "S05", Outcome::Unknown(_)) => Some(("unknown", Some("unknown"))),
+            (_, _) => None,
+        };
+        match own {
+            Some((result, code)) => {
+                shown.push(json!({ "id": r.id, "result": result, "code": code }));
+            }
+            None => provider = provider.max(rank(r.outcome)),
+        }
+    }
+    let (result, code) = match provider {
+        0 => ("green", None),
+        1 => ("warn", Some("provider_check")),
+        2 => ("unknown", Some("unknown")),
+        _ => ("red", Some("provider_check")),
+    };
+    shown.push(json!({ "id": "P", "result": result, "code": code }));
+    json!({ "site": site, "exit": exit_code(results), "checks": shown })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -214,5 +263,130 @@ mod tests {
         let long = "status ".repeat(40);
         assert_eq!(parse_request(&long), Err(Refused::Malformed));
         assert_eq!(Refused::Malformed.as_str(), "malformed_request");
+    }
+
+    fn checks(list: &[(&'static str, Outcome)]) -> alloc::vec::Vec<CheckResult> {
+        list.iter()
+            .map(|&(id, outcome)| CheckResult { id, outcome })
+            .collect()
+    }
+
+    fn all_green_but(change: &[(&'static str, Outcome)]) -> alloc::vec::Vec<CheckResult> {
+        let ids = ["S00", "S01", "S02", "S03", "S04", "S05", "S06"];
+        let list: alloc::vec::Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let o = change.iter().find(|c| c.0 == *id).map(|c| c.1);
+                (*id, o.unwrap_or(Outcome::Green))
+            })
+            .collect();
+        checks(&list)
+    }
+
+    #[test]
+    fn a_customer_is_not_told_what_is_wrong_on_our_side() {
+        use std::string::ToString;
+        // the firewall is off and the group is wrong: one red row, no word of either
+        let view = status_view(
+            Some("site2"),
+            &all_green_but(&[
+                ("S03", Outcome::Red("fw_disabled")),
+                ("S04", Outcome::Red("wrong_group")),
+            ]),
+        );
+        assert_eq!(
+            view,
+            json!({ "site": "site2", "exit": 1, "checks": [
+                { "id": "S01", "result": "green", "code": null },
+                { "id": "S05", "result": "green", "code": null },
+                { "id": "P", "result": "red", "code": "provider_check" },
+            ]})
+        );
+        let text = view.to_string();
+        for word in ["fw_", "group", "policy", "S03", "S04"] {
+            assert!(!text.contains(word), "{word}");
+        }
+        // a site we isolated: nothing says so, whatever the checks found
+        let view = status_view(
+            Some("site2"),
+            &all_green_but(&[("S04", Outcome::Red("quarantine_group_missing"))]),
+        );
+        assert!(!view.to_string().contains("quarantine"));
+        assert_eq!(view["exit"], 1);
+        // all quiet: three green rows
+        let view = status_view(Some("site2"), &all_green_but(&[]));
+        assert_eq!(view["exit"], 0);
+        assert_eq!(
+            view["checks"][2],
+            json!({ "id": "P", "result": "green", "code": null })
+        );
+    }
+
+    #[test]
+    fn only_named_checks_and_codes_are_shown_as_they_are() {
+        use std::string::ToString;
+        // the two things a customer can see for themselves or paid for
+        let view = status_view(
+            None,
+            &all_green_but(&[
+                ("S01", Outcome::Red("ct_down")),
+                ("S05", Outcome::Warn("under_record")),
+            ]),
+        );
+        assert_eq!(
+            view["checks"],
+            json!([
+                { "id": "S01", "result": "red", "code": "site_down" },
+                { "id": "S05", "result": "warn", "code": "below_plan" },
+                { "id": "P", "result": "green", "code": null },
+            ])
+        );
+        assert_eq!(view["exit"], 1);
+        // unread on either is "unknown", and so is an unknown on our side
+        let view = status_view(
+            None,
+            &all_green_but(&[
+                ("S01", Outcome::Unknown("unread")),
+                ("S05", Outcome::Unknown("unparsed")),
+                ("S02", Outcome::Unknown("unread")),
+            ]),
+        );
+        assert_eq!(
+            view["checks"],
+            json!([
+                { "id": "S01", "result": "unknown", "code": "unknown" },
+                { "id": "S05", "result": "unknown", "code": "unknown" },
+                { "id": "P", "result": "unknown", "code": "unknown" },
+            ])
+        );
+        assert_eq!(view["exit"], 3);
+        // more than the plan is ours to deal with: no S05 row, the provider row is red
+        let view = status_view(
+            None,
+            &all_green_but(&[("S05", Outcome::Red("over_record"))]),
+        );
+        assert_eq!(
+            view["checks"],
+            json!([
+                { "id": "S01", "result": "green", "code": null },
+                { "id": "P", "result": "red", "code": "provider_check" },
+            ])
+        );
+        // a check added later, and a new code on a shown check, are not shown until named
+        let mut later = all_green_but(&[("S01", Outcome::Red("brand_new_code"))]);
+        later.extend(checks(&[("S99", Outcome::Warn("new_thing"))]));
+        let view = status_view(None, &later);
+        let text = view.to_string();
+        assert!(!text.contains("brand_new_code") && !text.contains("new_thing"));
+        assert!(!text.contains("S99"));
+        assert_eq!(view["exit"], 1);
+        // a warning on our side alone is a warning
+        let view = status_view(None, &checks(&[("S99", Outcome::Warn("new_thing"))]));
+        assert_eq!(
+            view,
+            json!({ "site": null, "exit": 2, "checks": [
+                { "id": "P", "result": "warn", "code": "provider_check" },
+            ]})
+        );
     }
 }

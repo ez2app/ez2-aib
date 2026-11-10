@@ -10,8 +10,9 @@
 //! What the customer typed arrives in `SSH_ORIGINAL_COMMAND`. It is parsed as data, never
 //! run; the site is the one on our side of the entry, never one the customer names.
 //!
-//! Available now: `status` (the site's own checks, no host checks) and `logs` (bounded,
-//! masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
+//! Available now: `status` (the site's own checks, no host checks; only the checks and
+//! codes `aib_cloud::customer::status_view` names are shown, the rest is one
+//! `provider_check` row) and `logs` (bounded, masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
 //!
 //! Exit status: as `site verify` for `status`; 0 for `logs`; 2 a refused request;
@@ -44,7 +45,11 @@ pub fn answer(site: &str, records: &str, line: &str) -> u8 {
         Request::Status => {
             let path = std::path::PathBuf::from(format!("{records}/{site}.json"));
             let (name, _, results) = crate::siteverify::site_checks(&path);
-            println!("{}", verify::report(Some(&name), &results));
+            // the customer's view: a whitelist of checks and codes (aib_cloud::customer)
+            println!(
+                "{}",
+                aib_cloud::customer::status_view(Some(&name), &results)
+            );
             verify::exit_code(&results)
         }
         Request::Logs {
