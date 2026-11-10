@@ -101,7 +101,7 @@ pub fn run_counts(r: &Value, ctx: &Context) -> bool {
         Context::MainPush => event == Some("push") && branch == Some("main"),
         Context::PrClosed { number, head_ref } => {
             event == Some("pull_request")
-                && branch == Some(head_ref.as_str())
+                && branch.is_some_and(|b| b == head_ref)
                 && r.get("pull_requests")
                     .and_then(Value::as_array)
                     .is_some_and(|a| {
