@@ -454,6 +454,37 @@ fn write_new(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Put a holder in the lock file in one step: the text goes to a file of its own and is
+/// synced, then renamed over the lock, then the directory is synced. A crash at any point
+/// leaves either no lock file, the old one, or the whole new one — never an empty or half
+/// written lock file, which would read as "cannot be proven free" and keep every
+/// operation out until a person removes it (#635 seg. 1 L1, 1ced7). `write` makes the
+/// file it is given; tests hand it one that fails half way.
+fn put_lock(
+    lock: &Path,
+    pid: u32,
+    text: &str,
+    write: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut tmp = lock.to_path_buf().into_os_string();
+    tmp.push(format!(".{pid}.new"));
+    let tmp = PathBuf::from(tmp);
+    let _ = fs::remove_file(&tmp);
+    if let Err(e) = write(&tmp, text) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, lock).map_err(|e| format!("{}: {e}", lock.display()))?;
+    sync_dir(lock.parent().unwrap_or(Path::new(".")))
+}
+
+/// What `op status` says, and `acquire` points at, when the lock file cannot be read as a
+/// holder: nothing can start until a person has looked.
+pub const DAMAGED_LOCK_HELP: &str = "the host lock file cannot be read as a holder, so no operation can start. \
+Make sure no aib-cloud-host operation is running (`pgrep -a aib-cloud-host`), run `op unfinished <target>` \
+for the targets you are about to touch, then move the lock file aside (keep it): \
+mv /var/lib/aib-cloud/host.lock /var/lib/aib-cloud/host.lock.damaged";
+
 #[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Take the host lock for operation `op`, as process `pid`. `Busy` is an error: the caller
 /// waits or gives up and writes nothing.
@@ -493,16 +524,11 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
         };
         match op::lock(current.as_ref(), &boot_id, live) {
             Lock::Take => {
-                write_new(&p.lock, &text)?;
+                put_lock(&p.lock, pid, &text, write_new)?;
                 Ok(Got::Taken)
             }
             Lock::TakeOver => {
-                let mut tmp = p.lock.clone().into_os_string();
-                tmp.push(format!(".{pid}.new"));
-                let tmp = PathBuf::from(tmp);
-                let _ = fs::remove_file(&tmp);
-                write_new(&tmp, &text)?;
-                fs::rename(&tmp, &p.lock).map_err(|e| format!("{}: {e}", p.lock.display()))?;
+                put_lock(&p.lock, pid, &text, write_new)?;
                 Ok(Got::TookOver(current.unwrap_or_else(|| me.clone())))
             }
             Lock::Busy => Err(match &current {
@@ -511,7 +537,7 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
                     h.op, h.pid
                 ),
                 _ => format!(
-                    "{} cannot be read as a holder and cannot be proven free; not writing",
+                    "{} cannot be read as a holder and cannot be proven free; not writing ({DAMAGED_LOCK_HELP})",
                     p.lock.display()
                 ),
             }),
@@ -527,7 +553,10 @@ pub fn release(p: &LockPaths, op: &str, pid: u32) -> Result<(), String> {
         let text = fs::read_to_string(&p.lock).map_err(|e| format!("{}: {e}", p.lock.display()))?;
         match holder_from_text(&text) {
             Some(h) if h.op == op && h.pid == pid => {
-                fs::remove_file(&p.lock).map_err(|e| format!("{}: {e}", p.lock.display()))
+                fs::remove_file(&p.lock).map_err(|e| format!("{}: {e}", p.lock.display()))?;
+                // a removal that is not synced can come back after a crash: the next
+                // operation would then take over a holder that had finished
+                sync_dir(p.lock.parent().unwrap_or(Path::new(".")))
             }
             _ => Err(format!(
                 "{} is not held by operation {op}; left as it is",
@@ -779,7 +808,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                         };
                         json!({ "op": h.op, "pid": h.pid, "boot_id": h.boot_id, "liveness": live })
                     }
-                    None => json!({ "damaged": true }),
+                    None => json!({ "damaged": true, "what_to_do": DAMAGED_LOCK_HELP }),
                 },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
                 Err(e) => return Err(format!("{LOCK_FILE}: {e}")),
@@ -1135,6 +1164,37 @@ mod tests {
         fake_proc(&q.proc_root, 200, 6000);
         assert!(acquire(&q, OP2, 200).is_err());
         assert!(!q.lock.exists());
+    }
+
+    /// #635 seg. 1 L1 (1ced7): a crash between making the lock file and writing it left an
+    /// empty lock file, which no reboot clears. Now the holder is written aside first.
+    #[test]
+    fn a_crash_while_taking_the_lock_leaves_no_lock_file() {
+        let d = scratch("crash-take");
+        let p = paths(&d, BOOT_A);
+        // the writer dies after the file exists and before anything is in it
+        let died = put_lock(&p.lock, 200, "{}\n", |path, _| {
+            File::create(path).unwrap();
+            Err("killed".to_owned())
+        });
+        assert!(died.is_err());
+        assert!(!p.lock.exists(), "an empty lock file was left behind");
+        // nothing of it is left to trip over: the next operation simply takes the lock
+        fake_proc(&p.proc_root, 200, 6000);
+        assert_eq!(acquire(&p, OP2, 200).unwrap(), Got::Taken);
+        let held = fs::read_to_string(&p.lock).unwrap();
+        assert_eq!(holder_from_text(&held).unwrap().op, OP2);
+        let left: Vec<_> = fs::read_dir(p.lock.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".new"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        // a lock file that is damaged anyway says what to do
+        fs::write(&p.lock, "").unwrap();
+        let busy = acquire(&p, OP1, 200).unwrap_err();
+        assert!(busy.contains("move the lock file aside"), "{busy}");
     }
 
     #[test]
