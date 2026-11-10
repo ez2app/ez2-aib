@@ -34,4 +34,10 @@ k "$G" '    crate::static_files::api_no_store(&raw_path, &mut resp);' '    let _
 # T9 every path made public, the API included
 k "$G" '    if PUBLIC_PATHS.contains(&path) || !is_api(path) {' '    if PUBLIC_PATHS.contains(&path) || !is_api(path) || true { // knife' \
   api_paths_keep_the_bearer_rule_and_answer_no_store
-echo "static knives: 9/9 bite"
+# T10 a route mounted outside /api/ answers without the token (a9136 A3 L1)
+k "$G" 'pub const METRICS: &str = "/api/v1/metrics";' 'pub const METRICS: &str = "/metrics"; // knife' \
+  every_route_but_the_public_ones_wants_the_token
+# T11 a public route moved outside /api/ (the token test skips it; the list test does not)
+k "$G" 'pub const HEALTH: &str = "/api/v1/health";' 'pub const HEALTH: &str = "/healthz"; // knife' \
+  every_route_sits_under_api_and_has_handlers
+echo "static knives: 11/11 bite"

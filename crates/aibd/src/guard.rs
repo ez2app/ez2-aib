@@ -17,24 +17,57 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
+pub const HEALTH: &str = "/api/v1/health";
+pub const EVENTS: &str = "/api/v1/events";
+pub const METRICS: &str = "/api/v1/metrics";
+pub const SEATS: &str = "/api/v1/seats";
+pub const SEAT: &str = "/api/v1/seats/{id}";
+pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
+pub const SESSIONS: &str = "/api/v1/sessions";
+pub const SESSION: &str = "/api/v1/sessions/{id}";
+pub const SESSION_OUTPUT: &str = "/api/v1/sessions/{id}/output";
 pub const PAIR_CODES: &str = "/api/v1/pair/codes";
+pub const PAIR_CODE: &str = "/api/v1/pair/codes/{id}";
+pub const PAIR_CONFIRM: &str = "/api/v1/pair/codes/{id}/confirm";
 pub const PAIR_REDEEM: &str = "/api/v1/pair/redeem";
 pub const PAIR_STATUS: &str = "/api/v1/pair/status";
 pub const PAIR_REVOKE: &str = "/api/v1/pair/revoke";
 
+/// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
+/// `api::handlers` has no route of its own). The guard skips the bearer check for paths
+/// outside `/api/` (static files), so each entry must sit under `/api/`: a route added
+/// elsewhere, say `/healthz`, would answer without the token (a9136 A3 L1; tested).
+pub const ROUTES: &[&str] = &[
+    HEALTH,
+    EVENTS,
+    METRICS,
+    SEATS,
+    SEAT,
+    SEAT_SESSIONS,
+    SESSIONS,
+    SESSION,
+    SESSION_OUTPUT,
+    PAIR_CODES,
+    PAIR_CODE,
+    PAIR_CONFIRM,
+    PAIR_REDEEM,
+    PAIR_STATUS,
+    PAIR_REVOKE,
+];
+
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
 /// authenticated by the pairing code in its body.
-const PUBLIC_PATHS: &[&str] = &["/api/v1/health", PAIR_REDEEM];
+const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM];
 
 /// What an unconfirmed page credential may call (ADR 0006 §7); health is public anyway.
 const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE];
 
-/// Routes whose path may appear in logs. Anything else is logged as
-/// `UNMATCHED_PATH`, so a path like `/api/v1/<token>` never reaches the log.
+/// Routes whose path may appear in logs (a subset of `ROUTES`, tested). Anything else is
+/// logged as `UNMATCHED_PATH`, so a path like `/api/v1/<token>` never reaches the log.
 pub const LOGGED_ROUTES: &[&str] = &[
-    "/api/v1/health",
-    "/api/v1/events",
-    "/api/v1/metrics",
+    HEALTH,
+    EVENTS,
+    METRICS,
     PAIR_CODES,
     PAIR_REDEEM,
     PAIR_STATUS,

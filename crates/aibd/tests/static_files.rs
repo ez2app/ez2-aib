@@ -240,3 +240,31 @@ async fn a_static_path_still_refuses_a_token_in_the_url_and_a_foreign_host() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
+
+/// a9136 A3 L1: paths outside `/api/` skip the bearer check, so every mounted route must
+/// sit under `/api/`. `ROUTES` is the only list the router mounts from.
+#[test]
+fn every_route_sits_under_api_and_has_handlers() {
+    for p in aibd::guard::ROUTES {
+        assert!(
+            aibd::guard::is_api(p),
+            "{p} is outside /api/, so it would answer without the token"
+        );
+        assert!(aibd::api::handlers(p).is_some(), "{p} has no handlers");
+    }
+    for p in aibd::guard::LOGGED_ROUTES {
+        assert!(aibd::guard::ROUTES.contains(p), "{p} is logged but not a route");
+    }
+}
+
+#[tokio::test]
+async fn every_route_but_the_public_ones_wants_the_token() {
+    for p in aibd::guard::ROUTES {
+        if *p == aibd::guard::HEALTH || *p == aibd::guard::PAIR_REDEEM {
+            continue;
+        }
+        let path = p.replace("{id}", "x");
+        let (s, _, body) = get(&path, false).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}: {body}");
+    }
+}

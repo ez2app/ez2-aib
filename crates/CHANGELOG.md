@@ -14,7 +14,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   caller); Host and token-in-URL checks still apply. Without the feature every non-API path is
   `404 web_not_built` (new). Every `/api/` answer now carries `Cache-Control: no-store`
   unless it set its own. W1 ships one bundle: after an upgrade the previous version's hashed
-  files are gone and the page reloads on their 404.
+  files are gone and the page reloads on their 404. Routes are mounted only from
+  `guard::ROUTES`, which is tested to sit under `/api/` (a route outside it would skip the
+  bearer check). No SPA fallback: an unknown page path is `404`, so the front end uses hash
+  routes.
 - Pairing (ADR 0006 §7, W1 manual entry), **off by default**; `AIBD_PAIRING=terminal-unverified`
   turns it on (off: pair/codes and pair/redeem are `404`, nothing is counted). `POST
   /api/v1/pair/codes` (start-up token) gives a 10-character code that a person types into the
