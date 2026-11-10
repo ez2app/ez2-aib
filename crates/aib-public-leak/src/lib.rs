@@ -188,30 +188,50 @@ pub fn parse_diff(diff: &str) -> Vec<AddedFile> {
     let mut in_hunk = false;
     let mut next_line: u32 = 0;
     let mut deleted = false;
+    // this file's entry came from its `diff --git` line (043dd #636 L2: a new empty file or
+    // a mode-only change has no `+++` line, and its path must still be checked)
+    let mut from_header = false;
     for l in diff.lines() {
-        if l.starts_with("diff --git ") {
+        if let Some(rest) = l.strip_prefix("diff --git ") {
             in_hunk = false;
             deleted = false;
+            from_header = false;
+            if let Some(p) = header_path(rest) {
+                files.push(AddedFile {
+                    path: p.to_string(),
+                    lines: Vec::new(),
+                });
+                from_header = true;
+            }
             continue;
         }
         if !in_hunk {
-            if l.starts_with("+++ /dev/null") {
+            if l.starts_with("deleted file mode ") || l.starts_with("+++ /dev/null") {
+                if from_header && !deleted {
+                    files.pop(); // a removed path adds nothing
+                }
                 deleted = true;
             } else if let Some(p) = l.strip_prefix("+++ b/") {
-                files.push(AddedFile {
-                    path: p.trim_end_matches('\t').to_string(),
-                    lines: Vec::new(),
-                });
+                let p = p.trim_end_matches('\t').to_string();
+                match files.last_mut() {
+                    Some(f) if from_header => f.path = p,
+                    _ => files.push(AddedFile {
+                        path: p,
+                        lines: Vec::new(),
+                    }),
+                }
             } else if let Some(rest) = l.strip_prefix("Binary files ") {
                 if let Some(p) = rest
                     .split(" and b/")
                     .nth(1)
                     .and_then(|s| s.strip_suffix(" differ"))
                 {
-                    files.push(AddedFile {
-                        path: p.to_string(),
-                        lines: Vec::new(),
-                    });
+                    if !from_header {
+                        files.push(AddedFile {
+                            path: p.to_string(),
+                            lines: Vec::new(),
+                        });
+                    }
                 }
             }
         }
@@ -233,6 +253,21 @@ pub fn parse_diff(diff: &str) -> Vec<AddedFile> {
         }
     }
     files
+}
+
+/// The path of `a/P b/P` (the rest of a `diff --git` line; with `--no-renames` both sides are
+/// the same path, so a path holding " b/" is still split right). Quoted paths (git quotes
+/// `"`, `\` and control characters even with core.quotePath=false) ⇒ None: the `+++` line is
+/// then the only source, as before.
+fn header_path(rest: &str) -> Option<&str> {
+    let s = rest.strip_prefix("a/")?;
+    // s = P + " b/" + P
+    let n = s.len().checked_sub(3)?;
+    if n % 2 != 0 {
+        return None;
+    }
+    let (p, tail) = (s.get(..n / 2)?, s.get(n / 2..)?);
+    (tail.strip_prefix(" b/")? == p && !p.is_empty()).then_some(p)
 }
 
 /// `-a,b +c,d @@ …` ⇒ c.
@@ -478,6 +513,49 @@ deleted file mode 100644
                 (11, "third".to_string()),
             ]
         );
+    }
+
+    /// 043dd #636 L2: no `+++` line, the path is still checked.
+    #[test]
+    fn a_new_empty_file_or_a_mode_change_still_has_its_path_checked() {
+        let diff = "\
+diff --git a/examplehost/empty b/examplehost/empty
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tools/examplehost.sh b/tools/examplehost.sh
+old mode 100644
+new mode 100755
+diff --git a/old/examplehost b/old/examplehost
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1 @@
+-a
++b
+";
+        let f = parse_diff(diff);
+        let paths: Vec<&str> = f.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["examplehost/empty", "tools/examplehost.sh", "x"]);
+        let found = scan(
+            &Input {
+                files: f,
+                ..Input::default()
+            },
+            &Denylist::parse("examplehost"),
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].place, Place::Path { file: 1 });
+        assert_eq!(found[1].place, Place::Path { file: 2 });
+    }
+
+    #[test]
+    fn the_header_path_survives_spaces_and_a_b_slash_inside() {
+        assert_eq!(header_path("a/x b/x"), Some("x"));
+        assert_eq!(header_path("a/my b/file b/my b/file"), Some("my b/file"));
+        assert_eq!(header_path("\"a/q\\\"x\" \"b/q\\\"x\""), None);
+        assert_eq!(header_path("a/x b/y"), None);
     }
 
     #[test]

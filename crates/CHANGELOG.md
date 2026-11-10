@@ -10,8 +10,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   secret denylist (`AIB_PUBLIC_DENYLIST`, case-insensitive) and for public IPv4 addresses
   (documentation, private, shared, loopback and non-unicast ranges pass). Prints place and rule
   number only, never the text; no denylist ⇒ `denylist_absent` and only the IPv4 rule. Exit 0 / 1
-  findings / 2 usage or git error. CI: `public-leak` job in ci.yml (PRs). Becomes `aib-verify
-  public-leak` once aib-verify is on main.
+  findings / 2 usage or git error. Paths come from the `diff --git` line too, so a new empty
+  file or a mode-only change has its path checked. CI: `public-leak` job in ci.yml (PRs) and
+  `public-leak-text.yml` (title / body edited after the last push; not a required check); both
+  build the gate from the base commit and run it on the PR checkout, and only that binary gets
+  the denylist. Becomes `aib-verify public-leak` once aib-verify is on main.
 - Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
   `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
   and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`

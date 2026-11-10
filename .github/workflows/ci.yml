@@ -47,6 +47,10 @@ jobs:
   #   不能寫出主機。名單是 repository secret AIB_PUBLIC_DENYLIST(fork PR 讀不到 ⇒ 只查公網 IPv4、印 denylist_absent)。
   #   報表只印位置與第幾條,不印字本身。PR 標題 / 說明從事件檔讀,不展開進 shell。
   public-leak:
+    # RULES §16 / C10. The gate is built from the BASE commit and run against the PR's checkout
+    # (043dd #636 M1, a63ab): a PR cannot change the gate that checks it, and the denylist goes
+    # only to that base-built binary, never to code from the PR. Base without the crate yet
+    # (the PR that adds it) ⇒ says so and passes.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -55,13 +59,32 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Toolchain (pinned by rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
+          path: pr
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: gate
+          persist-credentials: false
+      - name: build the gate from the base commit
+        id: b
+        working-directory: gate
+        run: |
+          if [ ! -f crates/aib-public-leak/Cargo.toml ]; then
+            echo "public-leak: not on the base commit yet; nothing to run"
+            echo "bin=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          rustup show active-toolchain || rustup toolchain install
+          cargo build -q -p aib-public-leak --locked
+          echo "bin=$PWD/target/debug/aib-public-leak" >> "$GITHUB_OUTPUT"
       - name: public-leak (added lines, commit messages, PR title / body)
+        if: steps.b.outputs.bin != ''
         env:
           AIB_PUBLIC_DENYLIST: ${{ secrets.AIB_PUBLIC_DENYLIST }}
           BASE: ${{ github.event.pull_request.base.sha }}
-        run: cargo run -q -p aib-public-leak --locked -- --base "$BASE" --head HEAD --github-event "$GITHUB_EVENT_PATH"
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BIN: ${{ steps.b.outputs.bin }}
+        run: '"$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH"'
   # 11-08 PROPOSAL-19(a63ab 總結):只改文件的 PR 只跑文件檢查。
   #   main 有 6 個 smoke 必過格 ⇒ 不能 paths-ignore(必過格會一直等),也不能 job 層 if 跳過矩陣(只回一個沒格名的 smoke)。
   #   這裡先判斷(白名單、混合改動 / 算不出來 / main 推送一律 false),只改文件時順便做文件檢查;
