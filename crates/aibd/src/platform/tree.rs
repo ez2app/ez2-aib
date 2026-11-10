@@ -1230,7 +1230,14 @@ impl TreeHandle {
         let want = format!("{SESSION_ENV}={}", self.session_id);
         for pid in c.pids {
             let Some(p) = sys.process(Pid::from_u32(pid)) else {
-                continue; // gone since the list was read
+                // #614 CI (macOS 26): not in the process table read is not
+                // proof it is gone. Still there by its unique id = it might be
+                // ours and could not be read: report it, never drop it.
+                if l.unique_of(pid).is_some() {
+                    out.unreadable.push(pid);
+                    out.unreadable_comm.push(String::new());
+                }
+                continue;
             };
             let env = p.environ();
             let marked =

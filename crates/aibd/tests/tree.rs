@@ -828,6 +828,17 @@ fn an_instant_program_is_recorded_before_it_can_exit() {
     );
 }
 
+/// For a failure message only: the process line with its environment
+/// (`ps -E`), to tell "not a candidate" from "read as not ours".
+#[cfg(target_os = "macos")]
+fn ps_env(pid: u32) -> String {
+    Command::new("ps")
+        .args(["-wwE", "-o", "pid,ppid,stat,command", "-p", &pid.to_string()])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
 /// 043dd / bb7dc / Codex counterexample: the root forks at once, the child
 /// clears the environment, leaves the session (`setsid`) and execs a long
 /// sleep, the root exits. Held from before exec, the root is recorded. The
@@ -876,7 +887,8 @@ fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
     if !left.is_empty() {
         assert!(
             rep.candidates_unreadable.contains(&gc),
-            "grandchild {gc} left running and not reported: {rep:?}"
+            "grandchild {gc} left running and not reported: {rep:?}\nps: {}",
+            ps_env(gc)
         );
         assert_eq!(
             rep.unverified_reason(),
