@@ -462,6 +462,93 @@ pub fn spec_from_record(rec: &Value) -> Result<SiteSpec, Error> {
     Ok(spec)
 }
 
+/// One way a host record falls short of being a complete statement of what its CT must
+/// look like. [`spec_from_record`] is lenient on purpose (the 11-09 PoC records predate
+/// some fields and `site drift` must still read them); a check that is going to report
+/// "this site is as recorded" must not pass on values nobody recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordGap {
+    /// Stable code: `R01` required field missing or of the wrong type, `R02` a field
+    /// [`spec_from_record`] would fill with a default, `R03` a limit missing, `R04` a key
+    /// this version does not know (a different spelling of a known one included).
+    pub code: &'static str,
+    /// The key, `limits.<name>` for a limit.
+    pub key: String,
+}
+
+const RECORD_KEYS: &[&str] = &[
+    "site", "ct", "ip", "hosts", "wp", "locale", "created", "template", "fw_group", "ssh_port",
+    "limits",
+];
+const LIMIT_KEYS: &[&str] = &["cores", "cpulimit_x100", "memory_mb", "swap_mb", "pids_max"];
+
+/// Everything that keeps `rec` from being a complete record: fields that are missing,
+/// fields a lenient read would default, and keys nobody reads. Empty means
+/// [`spec_from_record`] uses no default for this record. `ssh_port` may be absent or
+/// `null` (a site without customer ssh).
+pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
+    let gap = |code: &'static str, key: &str| RecordGap {
+        code,
+        key: key.to_owned(),
+    };
+    let Some(obj) = rec.as_object() else {
+        return alloc::vec![gap("R01", "")];
+    };
+    let mut out = Vec::new();
+    for key in ["site", "ip", "hosts", "created"] {
+        if !obj.get(key).is_some_and(Value::is_string) {
+            out.push(gap("R01", key));
+        }
+    }
+    if !obj.get("ct").is_some_and(Value::is_u64) {
+        out.push(gap("R01", "ct"));
+    }
+    if !obj.get("wp").is_some_and(Value::is_u64) {
+        out.push(gap("R02", "wp"));
+    }
+    for key in ["locale", "fw_group"] {
+        if !obj.get(key).is_some_and(Value::is_string) {
+            out.push(gap("R02", key));
+        }
+    }
+    match obj.get("limits").and_then(Value::as_object) {
+        None => out.push(gap("R02", "limits")),
+        Some(limits) => {
+            for key in LIMIT_KEYS {
+                if !limits.get(*key).is_some_and(Value::is_u64) {
+                    out.push(gap("R03", &alloc::format!("limits.{key}")));
+                }
+            }
+            for key in limits.keys() {
+                if !LIMIT_KEYS.contains(&key.as_str()) {
+                    out.push(gap("R04", &alloc::format!("limits.{key}")));
+                }
+            }
+        }
+    }
+    for key in obj.keys() {
+        if !RECORD_KEYS.contains(&key.as_str()) {
+            out.push(gap("R04", key));
+        }
+    }
+    out
+}
+
+/// [`spec_from_record`] for callers that must not accept a defaulted value: any
+/// [`RecordGap`] is an error.
+pub fn spec_from_record_strict(rec: &Value) -> Result<SiteSpec, Error> {
+    let gaps = record_gaps(rec);
+    if let Some(first) = gaps.first() {
+        return Err(Error::Observed(alloc::format!(
+            "record incomplete: {} {} ({} gap(s) in all)",
+            first.code,
+            first.key,
+            gaps.len()
+        )));
+    }
+    spec_from_record(rec)
+}
+
 /// One step of `site create`, as an argument list (never a shell string).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -1466,5 +1553,82 @@ mod tests {
             &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","fw_group":"other"})
         )
         .is_err());
+    }
+
+    fn gaps(rec: &Value) -> Vec<(&'static str, String)> {
+        record_gaps(rec)
+            .into_iter()
+            .map(|g| (g.code, g.key))
+            .collect()
+    }
+
+    #[test]
+    fn a_record_written_by_this_crate_has_no_gaps() {
+        let rec = record(&site2(), "2026-11-10T01:00:00Z");
+        assert_eq!(gaps(&rec), []);
+        assert_eq!(spec_from_record_strict(&rec).unwrap(), site2());
+    }
+
+    #[test]
+    fn the_three_shapes_found_on_the_first_host() {
+        // site2: written by the bash PoC, no limits at all. The lenient read fills in the
+        // test tier; the strict one says so.
+        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(gaps(&site2), [("R02", "limits".to_owned())]);
+        assert!(spec_from_record(&site2).is_ok());
+        assert!(spec_from_record_strict(&site2).is_err());
+        // site3: another spelling (`cpulimit`, in cores) and two limits missing. A lenient
+        // read ignores the unknown key and defaults the rest.
+        let mut site3 = site2.clone();
+        site3["limits"] = json!({"cpulimit": 2, "memory_mb": 2048, "pids_max": 2048});
+        assert_eq!(
+            gaps(&site3),
+            [
+                ("R03", "limits.cores".to_owned()),
+                ("R03", "limits.cpulimit_x100".to_owned()),
+                ("R03", "limits.swap_mb".to_owned()),
+                ("R04", "limits.cpulimit".to_owned()),
+            ]
+        );
+        // site1: the full form.
+        let mut site1 = site2.clone();
+        site1["limits"] =
+            json!({"cores":2,"cpulimit_x100":200,"memory_mb":2048,"swap_mb":512,"pids_max":2048});
+        assert_eq!(gaps(&site1), []);
+    }
+
+    #[test]
+    fn record_gaps_by_kind() {
+        let full = record(&site2(), "2026-11-10T01:00:00Z");
+        let without = |key: &str| {
+            let mut r = full.clone();
+            r.as_object_mut().unwrap().remove(key);
+            r
+        };
+        assert_eq!(gaps(&json!([])), [("R01", String::new())]);
+        for key in ["site", "ct", "ip", "hosts", "created"] {
+            assert_eq!(gaps(&without(key)), [("R01", key.to_owned())], "{key}");
+        }
+        for key in ["wp", "locale", "fw_group", "limits"] {
+            assert_eq!(gaps(&without(key)), [("R02", key.to_owned())], "{key}");
+        }
+        // no customer ssh is a complete statement, absent or null
+        assert_eq!(gaps(&without("ssh_port")), []);
+        let mut r = full.clone();
+        r["ssh_port"] = Value::Null;
+        assert_eq!(gaps(&r), []);
+        // wrong types are gaps too, and unknown keys are reported
+        let mut r = full.clone();
+        r["ct"] = json!("112");
+        r["limits"]["cores"] = json!("2");
+        r["state"] = json!("active");
+        assert_eq!(
+            gaps(&r),
+            [
+                ("R01", "ct".to_owned()),
+                ("R03", "limits.cores".to_owned()),
+                ("R04", "state".to_owned()),
+            ]
+        );
     }
 }
