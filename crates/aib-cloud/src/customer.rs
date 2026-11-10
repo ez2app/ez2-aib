@@ -149,6 +149,79 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
     }
 }
 
+/// One thing the holder of a **customer** key asked for. A customer key reaches every
+/// site whose record names that customer as its owner; a site key reaches one site and
+/// speaks [`Request`] directly (Andy 11-10: "要能綁站、也綁客戶、因為客戶底下可能有
+/// 單一客戶" — an agency holds the customer key, the client of one of its sites a site
+/// key).
+///
+/// ```text
+/// sites
+/// usage
+/// site <code> <a site request, as in the grammar at the top>
+/// ```
+///
+/// The site named here is **data**: whether it exists and whether it is this customer's
+/// is for the host to decide from its own records, with one answer for both "no such
+/// site" and "not yours".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerRequest<'a> {
+    /// The customer's sites.
+    Sites,
+    /// What the customer's sites hold of the plan together.
+    Usage,
+    /// A request about one site.
+    Site {
+        /// The site's code as sent; checked for shape only.
+        site: &'a str,
+        /// What is asked of it.
+        request: Request,
+    },
+}
+
+/// Turn a customer key's line into a request.
+pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
+    if line.trim().is_empty() {
+        return Err(Refused::Empty);
+    }
+    // a site code may carry dots; nothing else is added to the site grammar's characters
+    if line.len() > REQUEST_MAX
+        || !line.bytes().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.' || c == b' '
+        })
+    {
+        return Err(Refused::Malformed);
+    }
+    let mut words = line.split(' ').filter(|w| !w.is_empty());
+    let first = words.next().ok_or(Refused::Empty)?;
+    match first {
+        "sites" | "usage" => {
+            if words.next().is_some() {
+                return Err(Refused::BadArguments);
+            }
+            Ok(if first == "sites" {
+                OwnerRequest::Sites
+            } else {
+                OwnerRequest::Usage
+            })
+        }
+        "site" => {
+            let site = words.next().ok_or(Refused::BadArguments)?;
+            if !crate::site::valid_code(site) {
+                return Err(Refused::BadArguments);
+            }
+            let rest = words.collect::<alloc::vec::Vec<_>>().join(" ");
+            // the rest is a site request, checked by the site grammar (no dots there)
+            let request = parse_request(&rest).map_err(|why| match why {
+                Refused::Empty => Refused::BadArguments,
+                other => other,
+            })?;
+            Ok(OwnerRequest::Site { site, request })
+        }
+        _ => Err(Refused::UnknownRequest),
+    }
+}
+
 /// What a customer is shown of their site's checks (c477a 11-10,
 /// PROPOSAL-customer-status-codes): a **whitelist**.
 ///
@@ -275,6 +348,52 @@ mod tests {
         for hidden in ["php-reload", "restart", "backup"] {
             assert!(!parse_request(hidden).unwrap().offered(), "{hidden}");
         }
+    }
+
+    /// Andy 11-10: a key may be bound to a customer as well as to one site.
+    #[test]
+    fn a_customer_key_names_the_site_and_nothing_else() {
+        assert_eq!(parse_owner_request("sites"), Ok(OwnerRequest::Sites));
+        assert_eq!(parse_owner_request(" usage "), Ok(OwnerRequest::Usage));
+        assert_eq!(
+            parse_owner_request("site shop.a status"),
+            Ok(OwnerRequest::Site {
+                site: "shop.a",
+                request: Request::Status
+            })
+        );
+        assert_eq!(
+            parse_owner_request("site site2  logs php lines 50"),
+            Ok(OwnerRequest::Site {
+                site: "site2",
+                request: parse_request("logs php lines 50").unwrap()
+            })
+        );
+        // a site key's own words are not a customer key's: the site has to be named
+        assert_eq!(parse_owner_request("status"), Err(Refused::UnknownRequest));
+        for (line, why) in [
+            ("", Refused::Empty),
+            ("sites all", Refused::BadArguments),
+            ("usage site2", Refused::BadArguments),
+            ("site", Refused::BadArguments),
+            ("site site2", Refused::BadArguments),
+            ("site -x status", Refused::BadArguments),
+            ("site a status", Refused::BadArguments),
+            ("site site2 stop", Refused::UnknownRequest),
+            ("site site2 status site3", Refused::BadArguments),
+            ("site site2 logs php.ini", Refused::Malformed),
+            ("site ../site3 status", Refused::Malformed),
+            ("site site2 status; id", Refused::Malformed),
+            ("SITES", Refused::Malformed),
+        ] {
+            assert_eq!(parse_owner_request(line), Err(why), "{line:?}");
+        }
+        // and the site grammar still takes no site name and no dots
+        assert_eq!(
+            parse_request("site site2 status"),
+            Err(Refused::UnknownRequest)
+        );
+        assert_eq!(parse_request("status shop.a"), Err(Refused::Malformed));
     }
 
     fn checks(list: &[(&'static str, Outcome)]) -> alloc::vec::Vec<CheckResult> {
