@@ -28,6 +28,14 @@ tower = "0.5.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
+[features]
+# Embed the built web workbench (apps/web/dist, or AIBD_WEB_DIST) into aibd (build.rs).
+# Off by default: without it every non-API path is `404 web_not_built` and no node is needed.
+web = []
+
+[build-dependencies]
+sha2 = "0.10.9"
+
 [dev-dependencies]
 http-body-util = "0.1.5"
 tempfile = "3.27.0"

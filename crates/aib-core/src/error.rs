@@ -65,10 +65,12 @@ pub enum ErrorCode {
     /// A page credential sent a write (anything but GET / HEAD, and pair/revoke). Until the
     /// launch-profile routes exist a page credential may only read (ADR 0006 §7; Q2).
     PageWriteNotAllowed,
+    /// A non-API path on an aibd built without the web workbench (cargo feature `web`).
+    WebNotBuilt,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 25] = [
+    pub const ALL: [ErrorCode; 26] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -94,6 +96,7 @@ impl ErrorCode {
         ErrorCode::PairingRateLimited,
         ErrorCode::PairingFailed,
         ErrorCode::PageWriteNotAllowed,
+        ErrorCode::WebNotBuilt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -123,6 +126,7 @@ impl ErrorCode {
             ErrorCode::PairingRateLimited => "pairing_rate_limited",
             ErrorCode::PairingFailed => "pairing_failed",
             ErrorCode::PageWriteNotAllowed => "page_write_not_allowed",
+            ErrorCode::WebNotBuilt => "web_not_built",
         }
     }
 
@@ -149,6 +153,7 @@ impl ErrorCode {
             ErrorCode::PairingRateLimited => 429,
             ErrorCode::PairingFailed => 401,
             ErrorCode::PageWriteNotAllowed => 403,
+            ErrorCode::WebNotBuilt => 404,
         }
     }
 }

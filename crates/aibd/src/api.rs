@@ -10,7 +10,7 @@ use aib_core::ErrorCode;
 use aib_store::Store;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, MethodRouter};
 use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -29,74 +29,54 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
-    Router::new()
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/events", get(events))
-        .route("/api/v1/metrics", get(metrics))
-        .route(
-            "/api/v1/seats",
-            get(seats::list)
-                .post(seats::create)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/seats/{id}",
-            get(seats::get_one).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/seats/{id}/sessions",
-            get(sessions::list_for_seat)
-                .post(sessions::create_for_seat)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions",
-            get(sessions::list)
-                .post(sessions::create)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions/{id}",
-            get(sessions::get_one)
-                .delete(sessions::delete_one)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/sessions/{id}/output",
-            get(sessions::output).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/codes",
-            post(pair_api::create_code).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/codes/{id}",
-            get(pair_api::get_code)
-                .delete(pair_api::cancel)
-                .fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/codes/{id}/confirm",
-            post(pair_api::confirm).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/redeem",
-            post(pair_api::redeem).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/status",
-            get(pair_api::status).fallback(sessions::method_not_allowed),
-        )
-        .route(
-            "/api/v1/pair/revoke",
-            post(pair_api::revoke).fallback(sessions::method_not_allowed),
-        )
-        .fallback(not_found)
+    // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
+    // the list is tested to sit under `/api/` (a9136 A3 L1)
+    let mut r = Router::new();
+    for path in guard::ROUTES {
+        if let Some(h) = handlers(path) {
+            r = r.route(path, h);
+        }
+    }
+    r.fallback(crate::static_files::fallback)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
             guard_cfg,
             guard::guard,
         ))
+}
+
+/// The handlers of one `guard::ROUTES` entry (`None` for any other path, which is
+/// never mounted).
+pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
+    use guard::{
+        EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
+        PAIR_STATUS, SEAT, SEATS, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
+    };
+    let nope = sessions::method_not_allowed;
+    Some(match path {
+        HEALTH => get(health),
+        EVENTS => get(events),
+        METRICS => get(metrics),
+        SEATS => get(seats::list).post(seats::create).fallback(nope),
+        SEAT => get(seats::get_one).fallback(nope),
+        SEAT_SESSIONS => get(sessions::list_for_seat)
+            .post(sessions::create_for_seat)
+            .fallback(nope),
+        SESSIONS => get(sessions::list).post(sessions::create).fallback(nope),
+        SESSION => get(sessions::get_one)
+            .delete(sessions::delete_one)
+            .fallback(nope),
+        SESSION_OUTPUT => get(sessions::output).fallback(nope),
+        PAIR_CODES => post(pair_api::create_code).fallback(nope),
+        PAIR_CODE => get(pair_api::get_code)
+            .delete(pair_api::cancel)
+            .fallback(nope),
+        PAIR_CONFIRM => post(pair_api::confirm).fallback(nope),
+        PAIR_REDEEM => post(pair_api::redeem).fallback(nope),
+        PAIR_STATUS => get(pair_api::status).fallback(nope),
+        PAIR_REVOKE => post(pair_api::revoke).fallback(nope),
+        _ => return None,
+    })
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -113,10 +93,6 @@ async fn metrics(
 ) -> Json<serde_json::Value> {
     let pairing = pairing.map(|p| p.0.metrics());
     Json(serde_json::json!({"lineage": st.lineage.status(), "pairing": pairing}))
-}
-
-async fn not_found() -> Response {
-    error_response(ErrorCode::NotFound, "no such route", &guard::request_id())
 }
 
 #[derive(Deserialize)]
