@@ -201,10 +201,44 @@ const SECRET_KEYS: &[&str] = &[
     "signature",
 ];
 
-/// One log line with secret-looking values replaced by `***`. A value runs from after
-/// `key=` / `key:` (any case, also inside a longer name such as `db_password`) to the next
-/// space, `&`, quote or end of line. Deliberately broad: a masked harmless value costs a
-/// second look, a leaked credential costs the site.
+/// Longest log line passed on, in bytes; what a longer line has beyond that is dropped.
+pub const LOG_LINE_MAX: usize = 4096;
+
+/// Most bytes of output the host reads for a request of `lines` lines: room for every
+/// line at its longest, and never more than 8 MiB. The count is kept **on the host**:
+/// the program that prints the log runs inside the customer's container and is not
+/// trusted to stop by itself (33e28, #631 seg. 5 M1).
+pub fn log_bytes_max(lines: u32) -> usize {
+    usize::try_from(lines)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(LOG_LINE_MAX)
+        .min(8 * 1024 * 1024)
+}
+
+/// `line` cut to [`LOG_LINE_MAX`] bytes, on a character boundary.
+pub fn clip_line(line: &str) -> &str {
+    if line.len() <= LOG_LINE_MAX {
+        return line;
+    }
+    let mut end = LOG_LINE_MAX;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
+/// One log line with secret-looking values replaced by `***`.
+///
+/// A key is any of `SECRET_KEYS`, in any case, also inside a longer name such as
+/// `db_password`. It may be closed by a quote or a bracket and followed by blanks before
+/// its `=`, `:` or `=>` — `"password":"x"`, `'password' => 'x'`, `[password] => x`,
+/// `password = x` (33e28, #631 seg. 5 M2). The value runs to its closing quote, or to the
+/// next space, `&`, quote, `;` or `,`. Two keys are secret **to the end of the line**: a
+/// cookie header (every cookie in it), and an `Authorization` whose scheme is not Bearer
+/// or Basic (Digest and the like spread the credential over several fields).
+///
+/// Deliberately broad: a masked harmless value costs a second look, a leaked credential
+/// costs the site.
 pub fn mask_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let bytes = line.as_bytes();
@@ -212,28 +246,49 @@ pub fn mask_line(line: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let hit = SECRET_KEYS.iter().find_map(|k| {
-            let after = i + k.len();
-            (lower[i..].starts_with(k) && matches!(bytes.get(after), Some(b'=' | b':')))
-                .then_some(after + 1)
+            if !lower[i..].starts_with(k) {
+                return None;
+            }
+            let mut at = i + k.len();
+            while matches!(bytes.get(at), Some(b'"' | b'\'' | b']')) {
+                at += 1;
+            }
+            while matches!(bytes.get(at), Some(b' ' | b'\t')) {
+                at += 1;
+            }
+            let separator = match (bytes.get(at), bytes.get(at + 1)) {
+                (Some(b'='), Some(b'>')) => 2,
+                (Some(b'=' | b':'), _) => 1,
+                _ => return None,
+            };
+            Some((*k, at + separator))
         });
         match hit {
-            Some(mut value) => {
+            Some((key, mut value)) => {
                 out.push_str(&line[i..value]);
-                // `Authorization: Bearer xyz`: skip one blank and one scheme word
                 while bytes.get(value) == Some(&b' ') {
                     out.push(' ');
                     value += 1;
                 }
                 let rest = &line[value..];
-                let scheme = ["Bearer ", "Basic ", "bearer ", "basic "]
-                    .iter()
-                    .find(|s| rest.starts_with(**s))
-                    .map_or(0, |s| s.len());
+                // `Authorization: Bearer xyz`: the scheme word stays, the credential goes
+                let scheme = if key == "authorization" {
+                    ["bearer ", "basic "]
+                        .iter()
+                        .find(|s| lower[value..].starts_with(**s))
+                        .map_or(0, |s| s.len())
+                } else {
+                    0
+                };
                 out.push_str(&rest[..scheme]);
                 let mut secret = &rest[scheme..];
                 let mut skipped = scheme;
+                let whole = key == "cookie" || (key == "authorization" && scheme == 0);
                 // a quoted value runs to its closing quote
-                let quote = secret.chars().next().filter(|c| *c == '"' || *c == '\'');
+                let quote = secret
+                    .chars()
+                    .next()
+                    .filter(|c| !whole && (*c == '"' || *c == '\''));
                 let end = match quote {
                     Some(q) => {
                         out.push(q);
@@ -241,6 +296,7 @@ pub fn mask_line(line: &str) -> String {
                         skipped += 1;
                         secret.find(q).unwrap_or(secret.len())
                     }
+                    None if whole => secret.len(),
                     None => secret
                         .find([' ', '&', '"', '\'', ';', ','])
                         .unwrap_or(secret.len()),
@@ -388,8 +444,35 @@ mod tests {
             ),
             (
                 "Set-Cookie: wordpress_logged_in=abc123; path=/",
-                "Set-Cookie: ***; path=/",
+                "Set-Cookie: ***",
             ),
+            // 33e28, #631 seg. 5 M2: one sample per shape that used to pass unmasked
+            (
+                "{\"user\":\"a\",\"password\":\"hunter2\"}",
+                "{\"user\":\"a\",\"password\":\"***\"}",
+            ),
+            (
+                "\"api_key\": \"k1\", \"n\": 1",
+                "\"api_key\": \"***\", \"n\": 1",
+            ),
+            ("password = hunter2 next", "password = *** next"),
+            ("'password' => 'hunter2',", "'password' => '***',"),
+            ("[password] => hunter2", "[password] => ***"),
+            ("    [db_password] =>hunter2", "    [db_password] =>***"),
+            (
+                "Cookie: a=1; wordpress_logged_in_abc=SECRET; b=2",
+                "Cookie: ***",
+            ),
+            (
+                "Authorization: Digest username=\"u\", response=\"6629fae4\"",
+                "Authorization: ***",
+            ),
+            (
+                "authorization: BEARER abc.def next",
+                "authorization: BEARER *** next",
+            ),
+            // a key that is only a word in a sentence is left alone
+            ("password reset requested", "password reset requested"),
             ("token=abc123", "token=***"),
             ("api_key=\"k1\" other", "api_key=\"***\" other"),
             ("X-Signature: deadbeef", "X-Signature: ***"),
@@ -402,5 +485,23 @@ mod tests {
         ] {
             assert_eq!(mask_line(line), want, "{line}");
         }
+    }
+
+    #[test]
+    fn the_host_keeps_its_own_count_of_log_output() {
+        assert_eq!(log_bytes_max(1), 4096);
+        assert_eq!(log_bytes_max(200), 819_200);
+        // the largest request a customer can make stays under the fixed ceiling
+        assert_eq!(log_bytes_max(LOG_LINES_MAX), 8_192_000);
+        assert!(log_bytes_max(LOG_LINES_MAX) < 8 * 1024 * 1024);
+        assert_eq!(log_bytes_max(u32::MAX), 8 * 1024 * 1024);
+        assert_eq!(clip_line("short"), "short");
+        let long = "a".repeat(LOG_LINE_MAX + 100);
+        assert_eq!(clip_line(&long).len(), LOG_LINE_MAX);
+        // a line of three-byte characters is cut between characters, not inside one
+        let wide = "密".repeat(2000);
+        let cut = clip_line(&wide);
+        assert_eq!(cut.len(), 4095);
+        assert!(wide.starts_with(cut));
     }
 }

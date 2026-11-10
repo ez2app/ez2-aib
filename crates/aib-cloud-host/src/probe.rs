@@ -326,6 +326,78 @@ pub(crate) fn run_capture(cmd: &mut Command, timeout: Duration) -> Result<String
     Ok(out)
 }
 
+/// [`run_capture`] for a child whose output is **not trusted to end**: at most `max_bytes`
+/// of its standard output are read, and once that much has arrived — or the time is up —
+/// the child's whole process group is killed. Returns what was read and whether the child
+/// had more to say. Standard error is not read at all.
+///
+/// 33e28, #631 seg. 5 M1: `pct exec <ct> -- journalctl -n N` leaves the counting to a
+/// program inside the customer's container; whoever replaces that program must not be
+/// able to fill this host's memory.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_capture_bounded(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<(String, bool), String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let pipe = child.stdout.take();
+    let cap = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut more = false;
+        if let Some(p) = pipe {
+            let mut limited = p.take(cap);
+            let _ = limited.read_to_end(&mut buf);
+            // one byte past the cap tells "exactly that much" from "more than that"
+            more = matches!(limited.into_inner().read(&mut [0u8; 1]), Ok(1));
+        }
+        (buf, more)
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let finished = reader.is_finished();
+    let (buf, more) = if finished {
+        reader.join().unwrap_or_default()
+    } else {
+        (Vec::new(), false)
+    };
+    // the reader is done (end of output, or the cap) or the time is up: in every case
+    // nothing more is wanted from the group
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    if !finished || more {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        if !finished {
+            return Err(format!("{:?}: timeout", cmd.get_program()));
+        }
+        return Ok((String::from_utf8_lossy(&buf).into_owned(), true));
+    }
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status =
+        wait_with_timeout(&mut child, left).map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    kill_group(child.id());
+    if !status.success() {
+        return Err(format!("{:?} exited {status}", cmd.get_program()));
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), false))
+}
+
 // ---------------------------------------------------------------- container namespaces
 
 fn netns_of(pid: &str) -> Result<String, String> {

@@ -359,6 +359,10 @@ jobs:
           ck svc.rs '                if end > 0 {' \
              '                if end > usize::MAX - 1 { // knife' \
              secrets_do_not_leave_with_the_logs
+          # site logs: only the first cookie of a header is masked, a Digest credential not at all (33e28, #631 seg. 5 M2)
+          ck svc.rs '                let whole = key == "cookie" || (key == "authorization" && scheme == 0);' \
+             '                let whole = false && key == "cookie"; // knife' \
+             secrets_do_not_leave_with_the_logs
           # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
           ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
              '            .all(|c| c != 0)' \
@@ -430,6 +434,10 @@ jobs:
              nothing_but_a_plan
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
+          # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
+          hk probe.rs '            let mut limited = p.take(cap);' \
+             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+             output_that_does_not_end_is_cut_on_the_host
           # site usage: the host offers its reserve too
           hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb,' \
              the_host_keeps_its_reserve

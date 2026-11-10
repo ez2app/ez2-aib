@@ -25,7 +25,7 @@ use aib_cloud::customer::{parse_request, Request};
 use aib_cloud::svc;
 use aib_cloud::verify;
 
-use crate::probe::run_capture;
+use crate::probe::run_capture_bounded;
 use crate::quarantinecmd::load_spec;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
@@ -68,10 +68,16 @@ pub fn answer(site: &str, records: &str, line: &str) -> u8 {
             };
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]).env("LC_ALL", "C");
-            match run_capture(&mut cmd, Duration::from_secs(30)) {
-                Ok(out) => {
-                    for l in out.lines() {
-                        println!("{}", svc::mask_line(l));
+            // the host counts bytes and lines itself: what prints the log runs in the CT
+            let wanted = usize::try_from(lines).unwrap_or(usize::MAX);
+            match run_capture_bounded(&mut cmd, Duration::from_secs(30), svc::log_bytes_max(lines))
+            {
+                Ok((out, more)) => {
+                    for l in out.lines().take(wanted) {
+                        println!("{}", svc::mask_line(svc::clip_line(l)));
+                    }
+                    if more || out.lines().count() > wanted {
+                        eprintln!("output cut at the limit");
                     }
                     0
                 }
@@ -134,6 +140,32 @@ mod tests {
         // a request that is fine for a site whose record cannot be read: not done, not green
         assert_eq!(answer("site2", dir, "logs nginx"), 3);
         assert_eq!(answer("site2", dir, "status"), 1);
+    }
+
+    /// 33e28, #631 seg. 5 M1: what prints the log runs inside the customer's container.
+    #[test]
+    fn output_that_does_not_end_is_cut_on_the_host() {
+        let sh = |script: &str| {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", script]);
+            run_capture_bounded(&mut cmd, Duration::from_secs(20), 10_000)
+        };
+        // three megabytes where ten thousand bytes were asked for
+        let (out, more) = sh("head -c 3000000 /dev/zero | tr '\\0' a").unwrap();
+        assert_eq!(out.len(), 10_000);
+        assert!(more);
+        // a program that never stops is stopped, long before the time is up
+        let t0 = std::time::Instant::now();
+        let (out, more) = sh("while :; do echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; done").unwrap();
+        assert_eq!(out.len(), 10_000);
+        assert!(more);
+        assert!(t0.elapsed() < Duration::from_secs(10));
+        // output under the cap arrives whole; a program that fails is an error
+        assert_eq!(
+            sh("printf 'a\\nb\\n'").unwrap(),
+            ("a\nb\n".to_owned(), false)
+        );
+        assert!(sh("echo x; exit 3").is_err());
     }
 
     #[test]
