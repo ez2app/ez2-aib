@@ -11,6 +11,14 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   number points outside `ALL` or an `ALL` entry is not at its own number (missing or
   repeated codes, wrong order). A test pins the wire order. `ALL` stays a public array.
   Knives: `scripts/knives-errorcode.sh` (build-time knives use `scripts/knife-build.py`).
+- `aibd ctl web [--no-open]` (also `aib web`, which hands over to it; aibd from `AIBD_BIN` or
+  `PATH`): checks aibd answers, asks for a pairing code, prints it with the page address (the
+  address carries nothing) and opens the browser, waits until the page has redeemed the code,
+  then shows the short code and confirms only on `y`; any other answer cancels the pairing.
+  Pairing off ⇒ says how to turn it on. Needs `AIBD_PAIRING=terminal-unverified` (ADR 0006 §7:
+  the y/N answer does not stop an AI running as the same account).
+- `GET /api/v1/health` adds `version`, `started_at` (Unix seconds) and `instance_id` (random
+  per start), so a restarted aibd can be told apart; still no path in it (043dd S3).
 - Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
   default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
   aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding
