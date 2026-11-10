@@ -115,6 +115,40 @@ jobs:
       - name: clippy
         if: env.RUN == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # merge-ops v2 §7.2 (a9136 11-09): every knife.py anchor in the workflows
+      # and scripts must occur exactly once in its file, before the long test
+      # and knife steps (#578 lost a round to anchors main had moved away).
+      - name: knife anchors
+        if: env.RUN == 'true'
+        shell: bash
+        run: cargo run -q --locked -p aib-xtask -- knife-anchors
+      - name: knife anchors knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        # the checker itself: a moved anchor must stay red, and a knife line it
+        # cannot read must never be skipped. Each knife must hit its own test.
+        run: |
+          set -eu
+          ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
+          ka '    text.matches(old).count()' '    let _ = (text, old); 1 // knife: always once' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
+            '                    Err(_) => {} // knife: skip what cannot be read' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
+          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA4 (1ced7 #590 L3) no knife found reads as clean
+          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
+            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
+          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
+            ansi_c_quoted_anchors_are_read_like_bash
+          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
+          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
+            a_positional_inside_a_word_is_filled_in
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
