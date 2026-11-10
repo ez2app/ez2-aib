@@ -101,7 +101,17 @@ jobs:
       - name: build
         shell: bash
         # aib-fixture-tree: the sessions smoke's program (M1 gate refuses shells / interpreters). Test only, never a release asset.
-        run: cargo build --release --locked -p aibd -p aib-fixture-tree --target "$TARGET"
+        # No build machine path in the shipped file (DEV 4.6 S): home, cargo registry and checkout
+        # are remapped (later prefixes win, home first); Windows paths in their own form.
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then h="$USERPROFILE"; else h="$HOME"; fi
+          c="${CARGO_HOME:-$h/.cargo}"
+          export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$h=/home --remap-path-prefix=$c=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src"
+          cargo build --release --locked -p aibd -p aib-fixture-tree --target "$TARGET"
+          bin="target/${TARGET}/release/aibd${EXE}"
+          if grep -a -q -F -e "$h" -e "$GITHUB_WORKSPACE" "$bin"; then
+            echo "::error::a build machine path is in $bin"; exit 1
+          fi
       - name: package
         shell: bash
         run: |
