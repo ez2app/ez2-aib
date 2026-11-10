@@ -349,6 +349,8 @@ fn the_ledger_is_never_written_through_a_link() {
     std::os::unix::fs::symlink(&e.outside, e.cand.join("p1")).expect("ln");
     let (rc, _, err) = e.add("deadbee", "a", "seat:aaaaa");
     assert_eq!(rc, 3, "{err}");
+    // RULES §15.17: the refusal is the candidate-root check, not something else on the way
+    assert!(err.contains("outside the candidate root"), "{err}");
     assert!(!e.outside.join("evidence.jsonl").exists());
 }
 

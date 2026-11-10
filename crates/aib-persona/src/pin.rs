@@ -15,10 +15,13 @@ pub const PINNED: &str = "PINNED.json";
 pub const SCHEMA: &str = "aib-persona-tools-pin/v1";
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    // LC_ALL=C: the caller reads git's own words ("already locked"), which a git built with
+    // gettext would translate (043dd #627 N2)
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
