@@ -143,7 +143,12 @@ def _web(args):
     if not aibd:
         sys.stderr.write("aib web: aibd not found (set AIBD_BIN, or build it: cargo build -p aibd --features web)\n")
         return 3
-    os.execv(aibd, [aibd, "ctl", "web"] + list(args))
+    argv = [aibd, "ctl", "web"] + list(args)
+    if os.name == "nt":
+        # Windows' execv does not replace this process: cmd / PowerShell get their prompt back at once and read
+        # the console together with aibd, right at its y/N question. Wait for aibd instead (a9136 A5 L1).
+        return subprocess.run(argv).returncode
+    os.execv(aibd, argv)
 
 
 def _ui_mod():
