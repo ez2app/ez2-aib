@@ -12,6 +12,9 @@ assert's message sits on that line, so a plain "TEXT is somewhere in the output"
 would count a build that broke for another reason (a typo in the knife) as a bite.
 Both rustc wordings are read: `evaluation panicked: TEXT` (1.88+) and the older
 `the evaluated program panicked at 'TEXT', file:line:col`.
+CI sets CARGO_TERM_COLOR=always, so rustc's output carries ANSI colour codes in front of
+`error[E0080]`; they are stripped before reading (#643: without that every knife MISSED
+on CI and BIT on a plain terminal). `--self-test` checks the reader on a coloured sample.
 """
 import argparse
 import re
@@ -20,12 +23,14 @@ import sys
 
 # One rustc diagnostic runs from its `error...:` / `warning...:` line to the next one.
 _DIAG = re.compile(r"(?m)^(?=(?:error|warning)(?:\[[A-Z]\d{4}\])?:)")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _PANIC = re.compile(r"evaluation panicked: (.*)$|panicked at '(.*?)', \S+:\d+:\d+", re.M)
 
 
 def const_panics(out):
     """Panic messages of the const-evaluation errors (E0080) in rustc's output."""
     found = []
+    out = _ANSI.sub("", out)
     for diag in _DIAG.split(out):
         if not diag.startswith("error[E0080]"):
             continue
@@ -34,8 +39,24 @@ def const_panics(out):
     return found
 
 
+def self_test():
+    """The reader on rustc output as CI prints it (coloured) and as a terminal does."""
+    msg = "ErrorCode ordinal is outside ALL"
+    plain = (f"error[E0080]: evaluation panicked: {msg}\n  --> src/error.rs:9:5\n"
+             f"error: could not compile `aib-core`\n")
+    coloured = (f"\x1b[0m\x1b[1m\x1b[38;5;9merror[E0080]\x1b[0m\x1b[0m\x1b[1m: evaluation panicked: {msg}\x1b[0m\n"
+                f"\x1b[0m\x1b[1m\x1b[38;5;9merror\x1b[0m\x1b[1m: could not compile `aib-core`\x1b[0m\n")
+    other = f"error[E0308]: mismatched types\n9 |     const {{ assert!(N < 1u8, \"{msg}\") }};\n"
+    checks = [(plain, [msg]), (coloured, [msg]), (other, [])]
+    bad = [i for i, (out, want) in enumerate(checks) if const_panics(out) != want]
+    print(f"knife-build self-test: {len(checks) - len(bad)}/{len(checks)} ok" + (f", bad={bad}" if bad else ""))
+    return 1 if bad else 0
+
+
 def main():
     argv = sys.argv[1:]
+    if argv == ["--self-test"]:
+        return self_test()
     if "--" not in argv:
         sys.exit("knife-build: missing `-- CMD...`")
     cut = argv.index("--")

@@ -19,6 +19,8 @@ s = open(sys.argv[1], encoding="utf-8").read()
 a = s.index("    pub const ALL: [ErrorCode; ")
 b = s.index("    pub fn as_str(self)")
 sys.stdout.write(s[a:b])' "$E"; }
+# The reader first, on coloured rustc output like CI's (CARGO_TERM_COLOR=always, #643)
+python3 -I scripts/knife-build.py --self-test
 B=$(block)
 [ -n "$B" ] || { echo "knives-errorcode: ALL block not found"; exit 2; }
 edit() { python3 -I -c "$1" "$B"; }
