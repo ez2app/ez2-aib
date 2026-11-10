@@ -303,10 +303,18 @@ fn a_bare_file_name_in_the_working_folder_is_a_path() {
     let e = env();
     std::fs::write(e.root.join("SUMMARY-x.md"), "one\ntwo\n").expect("w");
     let (rc, v, err) = e.add("SUMMARY-x.md:2", "a", "seat:aaaaa");
-    assert_eq!((rc, &v["pointer_kind"]), (0, &Value::from("file_line")), "{err}");
+    assert_eq!(
+        (rc, &v["pointer_kind"]),
+        (0, &Value::from("file_line")),
+        "{err}"
+    );
     assert_eq!(v["resolved"], s(&e.root.join("SUMMARY-x.md")));
     let (rc, v, err) = e.add("SUMMARY-x.md", "b", "seat:aaaaa");
-    assert_eq!((rc, &v["pointer_kind"]), (0, &Value::from("receipt")), "{err}");
+    assert_eq!(
+        (rc, &v["pointer_kind"]),
+        (0, &Value::from("receipt")),
+        "{err}"
+    );
     // still checked: a name that is not there, and a FIFO in the root
     assert_eq!(e.add("NOPE.md:1", "c", "seat:aaaaa").0, 2);
     let st = Command::new("mkfifo")
