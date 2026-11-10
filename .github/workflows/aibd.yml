@@ -127,6 +127,42 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
+      # turn its own test red.
+      - name: aib-persona knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          pk() { python3 -I scripts/knife.py "crates/aib-persona/src/$1" "$2" "$3" --expect-fail "$5" \
+                   -- cargo test -p aib-persona --locked $4 "$5"; }
+          # P1 a receipt outside the allowed roots is taken
+          pk pointer.rs '        .any(|r| real.starts_with(&r));' \
+             '        .any(|r| real.starts_with(&r) || true); // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P2 the path is compared as spelled: `..` and links escape the root
+          pk pointer.rs '    let real = std::fs::canonicalize(expand(path, w))' \
+             '    let real = Ok::<_, std::io::Error>(expand(path, w)) // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P3 a dm id is taken without looking in the queue
+          pk pointer.rs '        return if (w.dm_exists)(p) {' \
+             '        return if (w.dm_exists)(p) || true { // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
+          # P4 another writer's line is voided without a dm id
+          pk lib.rs '    if owner != Some(by) {' \
+             '    if owner != Some(by) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P5 groups still count voided lines
+          pk lib.rs '        if voided.contains_key(&l.id) {' \
+             '        if voided.contains_key(&l.id) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P6 the same pointer under two lanes is two groups
+          pk lib.rs '        if !seen_ptr.insert(ptr_key) {' \
+             '        if !seen_ptr.insert(ptr_key) && false { // knife' \
+             '--lib' one_pointer_counts_once_across_lanes
+          # P7 a pinned tree with local changes is used
+          pk pin.rs '    if !dirty.is_empty() {' \
+             '    if !dirty.is_empty() && false { // knife' \
+             '--test persona' doctor_pins_a_sha_and_refuses_anything_else
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives

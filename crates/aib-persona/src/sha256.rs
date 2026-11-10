@@ -17,10 +17,11 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-fn block(h: &mut [u32; 8], b: &[u8]) {
+fn block(h: &mut [u32; 8], b: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for (i, c) in b.chunks_exact(4).enumerate().take(16) {
-        w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+    let (words, _) = b.as_chunks::<4>();
+    for (i, c) in words.iter().enumerate() {
+        w[i] = u32::from_be_bytes(*c);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -59,23 +60,22 @@ fn block(h: &mut [u32; 8], b: &[u8]) {
 /// The 32-byte digest of `data`.
 pub fn digest(data: &[u8]) -> [u8; 32] {
     let mut h = H0;
-    let mut chunks = data.chunks_exact(64);
-    for c in &mut chunks {
+    let (blocks, rest) = data.as_chunks::<64>();
+    for c in blocks {
         block(&mut h, c);
     }
-    let rest = chunks.remainder();
     let mut tail = [0u8; 128];
     tail[..rest.len()].copy_from_slice(rest);
     tail[rest.len()] = 0x80;
     let n = if rest.len() < 56 { 64 } else { 128 };
     let bits = (data.len() as u64).wrapping_mul(8);
     tail[n - 8..n].copy_from_slice(&bits.to_be_bytes());
-    for c in tail[..n].chunks_exact(64) {
+    for c in tail[..n].as_chunks::<64>().0 {
         block(&mut h, c);
     }
     let mut out = [0u8; 32];
-    for (o, v) in out.chunks_exact_mut(4).zip(h) {
-        o.copy_from_slice(&v.to_be_bytes());
+    for (o, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(h) {
+        *o = v.to_be_bytes();
     }
     out
 }

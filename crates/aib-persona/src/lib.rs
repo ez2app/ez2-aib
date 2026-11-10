@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn a_void_line_cannot_be_voided() {
         let a = ev("a", "2026-11-09", "deadbee", Some("seat:aaaaa"));
-        let l = led(&[a.clone()]);
+        let l = led(std::slice::from_ref(&a));
         let VoidPlan::Write(v) = plan_void(
             &l,
             "p1",

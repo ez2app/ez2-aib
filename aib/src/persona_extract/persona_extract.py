@@ -490,7 +490,24 @@ def _help_t():
     return T
 
 
+# 11-10(1ced7,a63ab q_6e4e907edefd84cc):evidence / groups 改由 Rust 版 aib-persona 單一寫入
+# (收據絕對路徑、檔:行號、dm q_、pr:、evidence list / void)。下面的 Python 版只是相容入口，
+# 找不到 Rust 執行檔時才用、只支援舊的 add / groups,一版後刪。
+RUST_COMMANDS = ("evidence", "groups")
+
+
+def _delegate_to_rust(argv):
+    if not argv or argv[0] not in RUST_COMMANDS:
+        return None
+    b = toolroots.rust_bin()
+    if b:
+        os.execv(b, [b] + list(argv))
+    sys.stderr.write(_t("rust_missing") + "\n")
+    return None
+
+
 def main(argv=None):
+    _delegate_to_rust(sys.argv[1:] if argv is None else argv)
     T = _help_t()
     ap = argparse.ArgumentParser(prog="aib persona", description=T("description"))
     sub = ap.add_subparsers(dest="command")
