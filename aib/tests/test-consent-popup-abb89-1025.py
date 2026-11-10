@@ -507,7 +507,7 @@ class SignLint(Base):
         with mock.patch.object(C, "run_signlint", self.fake_lint(ok=False, findings=bad, seen=seen)):
             self.drain(ask_strong_fn=self.strong(True))
         d = C.status("hand-s", self.env)
-        self.assertEqual((d["result"], d["why"]), ("not_allowed", "sign_lint"))
+        self.assertEqual((d["result"], d.get("why")), ("not_allowed", "sign_lint"))
         self.assertEqual(d["lint"]["findings"], bad)
         self.assertEqual(self.run_.calls, [])
         self.assertEqual(self.asked, [], "lint 沒過不跳窗")
