@@ -641,7 +641,9 @@ impl OpPlace {
 /// this program. That is closed by process, not by code: until the remote CLI with
 /// one-time approvals exists, writes on the first host keep going through `pending/SIGN-*.sh` and a
 /// human approving in the window — having this value does **not** let an AI run writes
-/// directly.
+/// directly. That covers every writing subcommand: `site suspend / resume / restore`
+/// **and `op recovered`**, which puts a possibly half-changed site back in reach of new
+/// operations (c477a #635 seg. 2 L4).
 pub const BY_LOCAL_ROOT: &str = "standing-local-root";
 pub const BY_CUSTOMER_KEY: &str = "standing-customer-key";
 /// The only commands a customer's key may approve (the customer entry's writing requests).
