@@ -408,8 +408,12 @@ jobs:
              '        if rest.len() < 9 { // knife' \
              everything_else_is_refused_whole
           # customer key: `site create` takes more than its one name (a code or a size the customer chose) (Andy 11-11)
-          ck customer.rs '                return match (words.next(), words.next()) {' \
-             '                return match (words.next(), None::<&str>) { // knife' \
+          ck customer.rs '                    (Some("blank"), None) => true,' \
+             '                    (Some(_), _) => true, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a new site's address is not checked to be a name (ebb36, #652 N1)
+          ck customer.rs '                let name = name.filter(|n| crate::edge::valid_domain(n));' \
+             '                let name = name.filter(|n| !n.is_empty()); // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # customer key: a word of the request line is taken as a site's code (one table for parser, records and roster)
           ck site.rs '    !RESERVED_CODES.contains(&code)' \
@@ -529,11 +533,15 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
-          # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
           # customer key: opening a site goes past "not available yet" before the host can do it (Andy 11-11)
           hk customercmd.rs '    if coming_later {' \
              '    if coming_later && false { // knife' \
              a_tenant_key_reaches_its_own_sites_only
+          # customer key: a key for some of the customer's sites opens a new one (33e28, #652 M1)
+          hk customercmd.rs '    if scoped_create {' \
+             '    if scoped_create && false { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
           hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
              a_tenant_key_reaches_its_own_sites_only

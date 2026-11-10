@@ -164,7 +164,7 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
 /// sites
 /// usage
 /// site <code> <a site request, as in the grammar at the top>
-/// site create <name>
+/// site create <name> [blank]
 /// site <code> domain check <name>
 /// site <code> domain add <name>
 /// ```
@@ -173,8 +173,9 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
 /// 11-11: 「客戶可以透過 aib 的 skill 完成新網站含網址的建立」, and no address of ours is given
 /// to it: 「不用預設主機網址」). The host chooses the site's code; the name is the only
 /// thing about the new site said on the line. `create` is therefore not a site's code
-/// here. A domain is a name the customer points at us; `check` looks, `add` puts one more
-/// on a site.
+/// here. The new site gets our WordPress package unless the customer asks for a `blank`
+/// one (Andy 11-11: 「除非客戶說空白wp，不然都用我們的wp模版包」). A domain is a name the
+/// customer points at us; `check` looks, `add` puts one more on a site.
 ///
 /// The site named here is **data**: whether it exists and whether it is this customer's
 /// is for the host to decide from its own records, with one answer for both "no such
@@ -197,6 +198,8 @@ pub enum OwnerRequest<'a> {
     Create {
         /// The name as sent; checked for shape only ([`crate::edge::valid_domain`]).
         name: &'a str,
+        /// A WordPress with nothing of ours added, instead of our package.
+        blank: bool,
     },
     /// A domain of the customer's own, for one of their sites.
     Domain {
@@ -271,14 +274,18 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
         "site" => {
             let site = words.next().ok_or(Refused::BadArguments)?;
             // `create` is the request, never a site's code (`site::RESERVED_CODES`): one
-            // name follows it, the new site's domain, and nothing else
+            // name follows it, the new site's domain, then `blank` or nothing
             if site == "create" {
-                return match (words.next(), words.next()) {
-                    (Some(name), None) if crate::edge::valid_domain(name) => {
-                        Ok(OwnerRequest::Create { name })
-                    }
-                    _ => Err(Refused::BadArguments),
+                let (name, option, more) = (words.next(), words.next(), words.next());
+                let blank = match (option, more) {
+                    (None, None) => false,
+                    (Some("blank"), None) => true,
+                    _ => return Err(Refused::BadArguments),
                 };
+                let name = name.filter(|n| crate::edge::valid_domain(n));
+                return name
+                    .map(|name| OwnerRequest::Create { name, blank })
+                    .ok_or(Refused::BadArguments);
             }
             if !crate::site::valid_code(site) {
                 return Err(Refused::BadArguments);
@@ -626,7 +633,17 @@ mod tests {
     fn a_customer_key_opens_a_site_and_names_a_domain() {
         let create = OwnerRequest::Create {
             name: "www.example.com",
+            blank: false,
         };
+        // the domain itself (no `www`) is a name like any other; `blank` asks for a
+        // WordPress without our package
+        assert_eq!(
+            parse_owner_request("site create example.com blank"),
+            Ok(OwnerRequest::Create {
+                name: "example.com",
+                blank: true
+            })
+        );
         assert_eq!(
             parse_owner_request("site create www.example.com"),
             Ok(create)
@@ -658,6 +675,10 @@ mod tests {
             ("site create site9", Refused::BadArguments),
             ("site create status", Refused::BadArguments),
             ("site create example.org site9", Refused::BadArguments),
+            ("site create example.org blank blank", Refused::BadArguments),
+            ("site create example.org blank site9", Refused::BadArguments),
+            ("site create blank", Refused::BadArguments),
+            ("site create blank example.org", Refused::BadArguments),
             ("site create domain add example.org", Refused::BadArguments),
             ("site create 192.0.2.7", Refused::BadArguments),
             ("site create *.example.org", Refused::Malformed),

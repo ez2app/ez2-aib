@@ -195,9 +195,25 @@ const NET: &str = "10.77.0.";
 /// code or a customer's id, anywhere: in a request, in a record, in a roster, or out of
 /// the generator that names a new site. One table, read by all of them (f1fae, c477a,
 /// ebb36 11-11).
+///
+/// **Before a word is added**: read the host's site records and rosters for it. A record
+/// or a roster holding a code that is in this table is refused whole (33e28, #652 L1).
 pub const RESERVED_CODES: &[&str] = &[
-    "create", "delete", "domain", "help", "list", "logs", "restart", "rm", "site", "sites",
-    "status", "usage",
+    "admin-link",
+    "backup",
+    "create",
+    "delete",
+    "domain",
+    "help",
+    "list",
+    "logs",
+    "php-reload",
+    "restart",
+    "rm",
+    "site",
+    "sites",
+    "status",
+    "usage",
 ];
 
 /// Site code: 2–41 chars of `[a-z0-9.-]`, starting with a letter or digit (it becomes a hostname,

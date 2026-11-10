@@ -254,6 +254,14 @@ pub fn answer_tenant(
         eprintln!("refused: role_forbidden");
         return 2;
     }
+    // opening a site is for a key that reaches every site of the customer: a member's
+    // key for some of the sites, whatever its roles, would open a site it cannot see on
+    // the owner's plan (33e28, #652 M1). The same answer as a role that may not.
+    let scoped_create = matches!(request, OwnerRequest::Create { .. }) && scope.is_some();
+    if scoped_create {
+        eprintln!("refused: role_forbidden");
+        return 2;
+    }
     // opening a site and a site's domains parse and are checked against the roles, and
     // nothing is done yet (PLAN-customer-site-create: the journal and the host lock come
     // with the part that does them). The role came first: a key that may not ask learns
@@ -486,6 +494,14 @@ mod tests {
                 ALL
             ),
             coming
+        );
+        let blank = "site create example.com blank";
+        assert_eq!(answer_tenant("t-aaa", None, d, blank, ALL), coming);
+        // a key for some of the customer's sites opens none, whatever its roles (33e28)
+        assert_eq!(answer_tenant("t-aaa", Some(&["site2"]), d, open, ALL), 2);
+        assert_eq!(
+            answer_tenant("t-aaa", Some(&["site2", "site3"]), d, open, ALL),
+            2
         );
         // a site is not opened without its address, and nothing else is the customer's to choose
         assert_eq!(answer_tenant("t-aaa", None, d, "site create", ALL), 2);
