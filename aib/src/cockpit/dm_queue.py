@@ -3924,10 +3924,15 @@ def _touched_at(item):
     return max(got) if got else None
 
 
+def _system_read(item):
+    """系統代標已讀(B11 ack、自動已讀)不是本席手上在做的事 ⇒ 不算進行中逾時、不催(#632 a9136 M1)。"""
+    return item.get("read_by") == "system"
+
+
 def wait_overdue(item, now):
     """Andy 10-25 22:5x 同意(0.1.61):寫了等什麼、之後超過 STALE_WAIT_S 沒人動它 ⇒ True(提醒本席看一下還在等嗎;
     重寫一次等什麼就重新算)。不自動結、不叫子代理。"""
-    if item.get("status") != "read":
+    if item.get("status") != "read" or _system_read(item):
         return False
     w = item.get("wait")
     if not (isinstance(w, dict) and str(w.get("text") or "").strip()):
@@ -3938,7 +3943,7 @@ def wait_overdue(item, now):
 
 def wait_stale(item, now):
     """進行中(read)、沒寫等什麼、最後一次動它(讀 / 寫等待 / take)超過 STALE_WAIT_S ⇒ True。"""
-    if item.get("status") != "read":
+    if item.get("status") != "read" or _system_read(item):
         return False
     w = item.get("wait")
     if isinstance(w, dict) and str(w.get("text") or "").strip():

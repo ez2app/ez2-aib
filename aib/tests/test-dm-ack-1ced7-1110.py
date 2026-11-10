@@ -4,7 +4,8 @@
 
 A1 record(kind=ack, status=read) ⇒ 信檔 status=read、read_by=system、read_why=ack、delivered_at 空;不進 order.json;
    audit 一行 to=read
-A2 待審頁沒有它(dm_pending_gate.pending_rows 看不到);「進行中」計數不算它(系統代標)
+A2 待審頁沒有它(dm_pending_gate.pending_rows 看不到);「進行中」計數不算它(系統代標);
+   過 4 小時 stale_wait / wait_overdue 也不算它(#632 a9136 M1;刀拿掉 _system_read 必紅)
 A3 只收一行、≤200 字、不是長訊;status=read 只給 kind=ack,ack 也只能用 read 記 ⇒ 其餘 ValueError,不寫檔
 A4 retention_sweep:已讀滿 12 小時 ⇒ 備存(why=ack_12h);不滿 12 小時不動
 A5 CLI:dm_queue.py record --kind ack --status read 寫成;字太長 ⇒ rc 2、JSON reason=usage
@@ -66,6 +67,14 @@ class Ack(unittest.TestCase):
         self.assertEqual(G.pending_rows(tabs["tabs"]["waiting"]["rows"], SEAT, NOW + 600), [])
         inprog = [r for r in tabs["tabs"]["read"]["rows"] if not r.get("wait") and r.get("read_by") != "system"]
         self.assertEqual(inprog, [])
+        # #632 a9136 M1: past the 4-hour mark the reminders (badges / aib now / inbox hook / handoff) all read
+        # stale_wait / wait_overdue; an ack must not show up in either (RULES §15.17: the message names which).
+        later = NOW + 5 * 3600
+        b = Q.tabs_payload(SEAT, env=self.env, now=later)["badges"]
+        self.assertEqual(b["stale_wait"], 0, "stale_wait counts a system-read ack")
+        self.assertEqual(b["wait_overdue"], 0, "wait_overdue counts a system-read ack")
+        self.assertEqual(Q.brief_payload(SEAT, env=self.env, now=later)["stale_wait"], 0,
+                         "brief stale_wait counts a system-read ack")
 
     def test_a3_only_a_short_line_and_only_as_read(self):
         relay = "長訊已落檔(9 位元組),請讀:%s/pending/RELAY-dm-x.txt" % self.tmp.name
