@@ -14,6 +14,7 @@ aib-cloud-host edge domain preflight <網域> --ip <Edge 公網 IPv4>   # 上線
 aib-cloud-host edge domain add|rm <站> <網域> --plan              # 只出計畫(只改該站那一行網域);不帶 --plan 拒絕
 aib-cloud-host site usage [--json]          # 每站真正用量(從宿主讀 cgroup,不進 CT)+ ARC 建議;只讀、不套用;以紀錄的 owner 合計客戶額度
 aib-cloud-host backup check [--json]        # 離站備份檢查(只列清單):B01 新鮮 / B02 每個 CT 都有 / B03 設定包 / B04 沒有未加密檔 / B05 大小合理;結束碼同 site verify
+aib-cloud-host ct mask                      # 由容器執行環境在站 CT 啟動時呼叫(lxc.hook.mount):蓋掉 CT 內看得到的實體主機資訊(cpuinfo 型號、DMI、PCI / 磁碟型號、RAID、開機參數);蓋不上只記錄、不擋站啟動
 aib-cloud-host --version                    # aib-cloud-host <version> <os>-<arch>
 ```
 
