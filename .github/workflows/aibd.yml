@@ -299,6 +299,106 @@ jobs:
           ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
              '        .filter(|l| !l.is_empty())' \
              review_segment_5
+          # quarantine guard: a record on disk no longer counts (33e28, seg. 5 r2 N)
+          ck quarantine.rs '    if record.is_some() || is_quarantined(ct_fw) {' \
+             '    if record.is_some() && is_quarantined(ct_fw) { // knife' \
+             review_segment_5
+          # quarantine: the record's edge block may hold more than this site's block (33e28 N)
+          ck quarantine.rs "        return refuse(\"the record's edge block is not exactly this site's block\");" \
+             '        // knife: any block goes' \
+             review_segment_5
+          # quarantine: a stale record is archived whatever the firewall is now (1ced7 L)
+          ck quarantine.rs '    if ct_fw != restored_firewall {' \
+             '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # quarantine: a stale record is archived whatever the journal says (1ced7, #625 seg. 2 M1)
+          ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
+             '        None => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
+          ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
+             '        let unprintable = false; // knife' \
+             upward_paths_and_control_characters
+          # site verify: a CT nobody recorded goes unnoticed (c477a's list, H13)
+          ck verify.rs '        .any(|c| !record_cts.contains(c) && !platform.contains(c))' \
+             '        .any(|c| !record_cts.contains(c) && !platform.contains(c) && c == &0)' \
+             h13_every_ct_is_accounted_for
+          # site verify: a stale host-health file is fine (H01)
+          ck verify.rs '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),' \
+             '        Some(t) if now.saturating_sub(t) > 900 => Outcome::Green, // knife' \
+             h01_h06_h07_h10_h12
+          # edge domain: an AAAA record no longer blocks a domain (4.4.1 6.2)
+          ck edge.rs '        out.push(NotReady::HasAaaa);' \
+             '        // knife: AAAA ignored' \
+             preflight_reads_a_aaaa_and_caa
+          # edge domain: a name already on another site is added again
+          ck edge.rs '            refuse("already on another site", name)' \
+             '            Ok(alloc::vec![]) // knife' \
+             add_refusals
+          # backup check: a CT missing from the off-site backup goes unnoticed (4.4.1 10)
+          ck backup.rs '        } else if missing {' \
+             '        } else if missing && must_have.len() > 99 { // knife' \
+             b02_every_ct_and_b03_config
+          # backup check: an unencrypted object off-site is fine
+          ck backup.rs '        if plain {' \
+             '        if plain && newest.is_empty() { // knife' \
+             b04_nothing_unencrypted_leaves_the_host
+          # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
+          ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
+             '        Some(_) if true => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: a refused placeholder is echoed raw to the terminal (ebb36, #625 seg. 5 r2)
+          ck provision.rs '            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));' \
+             '            return Err(format!("{name} is not a variable name"));' \
+             a_refused_placeholder_is_quoted_in_the_finding
+          # site svc: a quarantined site can be started (4.4.1 1.3)
+          ck svc.rs '    if action != Svc::Stop {' \
+             '    if action != Svc::Stop && action != Svc::Start { // knife' \
+             a_quarantined_site_is_not_started_and_stopping_it_says_what_is_lost
+          # site logs: values after secret-looking keys are shown
+          ck svc.rs '                if end > 0 {' \
+             '                if end > usize::MAX - 1 { // knife' \
+             secrets_do_not_leave_with_the_logs
+          # site logs: only the first cookie of a header is masked, a Digest credential not at all (33e28, #631 seg. 5 M2)
+          ck svc.rs '                let whole = key == "cookie" || (key == "authorization" && scheme == 0);' \
+             '                let whole = false && key == "cookie"; // knife' \
+             secrets_do_not_leave_with_the_logs
+          # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
+          ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
+             '            .all(|c| c != 0)' \
+             everything_else_is_refused_whole
+          # customer status: a code nobody named is shown to the customer as it is (c477a 11-10)
+          ck customer.rs '            (_, _) => None,' \
+             '            (_, Outcome::Red(c)) => Some(("red", Some(c))), (_, _) => None, // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
+          # customer status: what is wrong on our side does not show at all
+          ck customer.rs '            None => provider = provider.max(rank(r.outcome)),' \
+             '            None => provider = provider.max(rank(r.outcome) * 0), // knife' \
+             a_customer_is_not_told_what_is_wrong_on_our_side
+          # customer entry: a request may carry extra words (another site, say)
+          ck customer.rs '        if rest.is_empty() {' \
+             '        if rest.len() < 9 { // knife' \
+             everything_else_is_refused_whole
+          # ARC: a raise goes past what the plan allows (4.4.1 23)
+          ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
+             '            let next = limits.cpulimit_x100 + 100; // knife' \
+             never_past_the_plan
+          # ARC: each site gets the whole plan to itself (Andy 11-10: the envelope is the customer's)
+          ck arc.rs '    let memory_left = plan.memory_mb.saturating_sub(held.memory_mb);' \
+             '    let memory_left = plan.memory_mb; // knife' \
+             sites_of_one_customer_share_the_envelope
+          # ARC: a raise the host cannot back is proposed all the same
+          ck arc.rs '            if room.memory_mb < next - limits.memory_mb {' \
+             '            if room.memory_mb == u32::MAX { // knife' \
+             never_past_what_the_host_can_back
+          # usage: memory is judged on current use, cache included (measured 11-10: every site would be raised)
+          ck usage.rs '    u32::try_from(current.saturating_sub(inactive).div_ceil(1024 * 1024)).ok()' \
+             '    u32::try_from((current + inactive * 0).div_ceil(1024 * 1024)).ok()' \
+             the_working_set_leaves_the_cache_out
+          # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
+          ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
+             '    value == "/" // knife' \
+             root_spellings_and_dashes_in_prose
           # site verify (c477a's list): one judgement out per knife
           ck verify.rs '    let on_every_card = !cards.is_empty()' \
              '    let on_every_card = cards.first().is_some_and(|n| n.contains("firewall=1")) || !cards.is_empty()' \
@@ -306,9 +406,9 @@ jobs:
           ck verify.rs '                Outcome::Red("ct_policy_open")' \
              '                Outcome::Green // knife' \
              review_segment_3
-          ck verify.rs '        (SiteState::Suspended, true) => Outcome::Red("suspended_but_running"),' \
-             '        (SiteState::Suspended, true) => Outcome::Green, // knife' \
-             s01_state_turns_the_expectation_round
+          ck verify.rs '        (SiteState::Active, false) => Outcome::Red("ct_down"),' \
+             '        (SiteState::Active, false) => Outcome::Green, // knife' \
+             s01_only_an_active_site_has_to_be_running
           ck verify.rs '        (u.thin_meta, 80, "thin_meta_full"),' \
              '        (u.thin_meta, 101, "thin_meta_full"), // knife' \
              h04_disk_thresholds
@@ -321,6 +421,136 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+      # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
+      # (33e28): each knife takes one rule out and must turn its test red.
+      - name: aib-cloud-host command knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud-host --locked "$4"; }
+          # site quarantine without --plan goes on (33e28, seg. 4 L1)
+          hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
+             nothing_but_a_plan
+          # customer entry: writes are answered as done
+          hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
+          # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
+          hk probe.rs '            let mut limited = p.take(cap);' \
+             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+             output_that_does_not_end_is_cut_on_the_host
+          # site usage: the host offers its reserve too
+          hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
+             the_host_keeps_its_reserve
+          # site usage: "nothing could be measured" exits like "ARC has advice" (c477a, #631 seg. 7 M1)
+          hk usagecmd.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_measured_is_exit_3
+          # edge domain add / rm without --plan goes on
+          hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
+             usage_and_gates
+          # edge domain: a resolver error reads as "no record"
+          hk edgecmd.rs "    if lines.iter().any(|l| l.starts_with(';')) {" "    if lines.is_empty() && lines.iter().any(|l| l.starts_with(';')) { // knife" \
+             dig_output
+          # backup check: a remote that is a local path or an option is accepted
+          hk backupcmd.rs '        && plain(name, b"_-")' '        && (plain(name, b"_-") || true)' \
+             remotes
+          # backup check: rclone runs without the backup job's settings (ebb36, #631 seg. 4 M1)
+          hk backupcmd.rs '    cmd.envs(env.iter().map(|(k, v)| (k, v)));' '    let _ = env; // knife' \
+             rclone_runs_with_the_backup_jobs_settings
+          # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
+          hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_checked_is_exit_3_never_2
+          # plan hash: the host is not hashed
+          hk opstore.rs '        "aib-cloud-plan-v1\n{}\nhost {fingerprint}\nversion {version}\n",' \
+             '        "aib-cloud-plan-v1\n{}\nhost \nversion {version}\n{fingerprint:.0}", // knife' \
+             the_plan_hash_covers_host_and_version
+          # journal: a line counts before it is synced
+          hk opstore.rs '    sink.sync().map_err(|e| format!("journal sync: {e}"))' \
+             '    let _ = S::sync; Ok(()) // knife: no sync (S::sync stays referenced, else dead_code under -D warnings)' \
+             a_line_is_synced_before_it_counts
+          # journal: a line that does not follow is appended anyway
+          hk opstore.rs '    may_append(&entries, entry)?;' \
+             '    let _ = may_append(&entries, entry); // knife' \
+             a_journal_only_grows_by_lines_that_follow
+          # journal: a cut-short fragment is left in front of the next line
+          hk opstore.rs '    if cut {' \
+             '    if cut && false { // knife' \
+             a_cut_short_last_line_is_cut_off_before_the_next
+          # /proc stat: fields counted from the first space instead of the last paren
+          hk opstore.rs "    let rest = &stat[stat.rfind(')')? + 1..];" \
+             "    let rest = &stat[stat.find(')')? + 1..]; // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # liveness: an unreadable stat is taken as proof of death
+          hk opstore.rs '        Err(_) => Liveness::Unknown,' \
+             '        Err(_) => Liveness::Gone, // knife' \
+             liveness_from_proc
+          # lock: a damaged lock file is read as free
+          hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
+             '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
+             a_damaged_lock_file_keeps_the_lock
+          # lock: anyone may release it
+          hk opstore.rs '            Some(h) if h.op == op && h.pid == pid => {' \
+             '            Some(_) => { let _ = pid; // knife' \
+             only_the_holder_releases
+          # unfinished: a journal that does not replay is skipped
+          hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
+             '        let Ok(last) = op::replay(&entries) else { continue }; // knife' \
+             unfinished_operations_block_their_target
+          # run_op: the change runs before `running` is on disk (33e28 B1 wiring)
+          hk opstore.rs '    step(op::State::Running, "ok")?;' \
+             '    // knife: no running line' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: an unfinished operation on the same target does not block a new one
+          hk opstore.rs '    refuse_unfinished(&place.ops_dir, target, op_id)?;' \
+             '    let _ = (&place.ops_dir, target, op_id); // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # run_op: the host lock is kept after the operation
+          hk opstore.rs '    if let Err(e) = release(&place.lock, &op_id, pid) {' \
+             '    if let Err(e) = Ok::<(), String>(()) { let _ = pid; // knife' \
+             an_operation_is_journaled_and_gives_the_lock_back
+          # run_op: a change that failed is not journaled as failed
+          hk opstore.rs '        Err(e) => match step(op::State::Failed, "error") {' \
+             '        Err(e) => match Ok::<(), String>(()) { // knife' \
+             a_failed_operation_blocks_its_target_until_recovered
+          # what an operation decides from is read outside the host lock (c477a #635 seg. 2 M1)
+          hk opstore.rs '    let Some((plan, input)) = prepare()? else {' \
+             '    let _ = release(&place.lock, op_id, std::process::id()); let Some((plan, input)) = prepare()? else { // knife' \
+             what_an_operation_decides_from_is_read_under_the_lock
+          # a held target does not say which operation holds it or what to run (f1fae 11-10)
+          hk opstore.rs '        "operation {} ({} {}, {}): check the host, then `aib-cloud-host op recovered {}`",' \
+             '        "operation {} ({} {}, {}): check the host{}", // knife' \
+             a_held_target_names_its_operation_and_the_command
+          # op recovered closes an operation whose process still runs (c477a #635 seg. 2 L2)
+          hk opstore.rs '    acquire(&place.lock, op_id, pid)?;' \
+             '    let _ = acquire(&place.lock, op_id, pid); // knife' \
+             a_running_operation_cannot_be_closed_by_hand
+          # any string is an approval (c477a #635 seg. 2 L3)
+          hk opstore.rs '    if approval != BY_LOCAL_ROOT && approval != BY_CUSTOMER_KEY {' \
+             '    if approval.is_empty() && approval != BY_CUSTOMER_KEY { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # restore --switch without the typed site code (4542e 11-10 condition c)
+          hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
+             a_switch_needs_the_site_code_typed
+          # run_op: a customer key approves any command (4542e 11-10 condition a)
+          hk opstore.rs '    if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {' \
+             '    if approval == BY_CUSTOMER_KEY && CUSTOMER_COMMANDS.is_empty() { // knife' \
+             a_customer_key_approves_only_the_customer_commands
+          # host lock: the holder is written straight into the lock file (#635 seg. 1 L1)
+          hk opstore.rs '    if let Err(e) = write(&tmp, text) {' \
+             '    if let Err(e) = write(lock, text) { // knife' \
+             a_crash_while_taking_the_lock_leaves_no_lock_file
+          # archive: the quarantine journal is not read (#625 seg. 2 M1 left unwired)
+          hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
+             '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
+             the_archive_plan_reads_the_quarantine_journal
+          # quarantine guard on the host: resume / suspend / restore reopen a quarantined site (33e28 deep review)
+          hk quarantinecmd.rs '    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())' \
+             '    { let _ = (code, &ct_fw, record, what); Ok(()) } // knife' \
+             a_quarantined_site_is_not_reopened
+          # quarantine guard on the host: a record that cannot be read counts as none
+          hk quarantinecmd.rs '    let record = load_record(code, quarantine_dir)?;' \
+             '    let record = load_record(code, quarantine_dir).unwrap_or(None); // knife' \
+             a_quarantined_site_is_not_reopened
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -581,6 +811,18 @@ jobs:
             '        if (a.is_empty() || i == 0 && a.is_empty()) || a.len() > MAX_ARG_BYTES' \
             --expect-fail sessions::tests::argv_rules \
             -- cargo test -p aibd --locked --lib sessions::tests::argv_rules
+          # GW-S1a (043dd, gameworld 2.0 S1) seat open creates the seat before checking the program
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            $'    let resolved = resolve_argv(argv)?;\n    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;' \
+            $'    let seat = c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?;\n    let resolved = resolve_argv(argv)?; // knife' \
+            --expect-fail ctl::tests::seat_open_with_a_relative_program_sends_nothing \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_with_a_relative_program_sends_nothing
+          # GW-S1b a session start that fails after the seat was created is reported as success
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            '            Err(format!("session start for {seat_id}: {e}"))' \
+            '            { let _ = (seat_id, e); Ok(()) } // knife' \
+            --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
