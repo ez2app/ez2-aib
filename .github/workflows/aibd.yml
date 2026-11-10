@@ -828,6 +828,9 @@ jobs:
           # customer entry: through sudo any records directory is taken (33e28, #642 L2)
           hk customercmd.rs '    !under_sudo || records == RECORDS' '    !under_sudo || !records.is_empty() // knife' \
              through_sudo_the_records_directory_is_ours_only
+          # ct mask: the wrapper leaves the last start's verdict in place (c477a, #642 seg. 1 M1)
+          hk ../../aib-cloud/src/mask.rs '*) rm -f ' '*) : ' \
+             a_start_whose_hook_cannot_run_leaves_no_old_verdict
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error

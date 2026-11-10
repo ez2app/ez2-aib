@@ -310,4 +310,49 @@ mod tests {
         assert!(cmd(&args(&[])).is_err());
         assert!(cmd(&args(&["unmask"])).is_err());
     }
+    /// c477a, #642 seg. 1 M1: the verdict file lives on the host and outlives a restart.
+    /// A start whose hook cannot even run must not be read as the last start's `ok`.
+    #[test]
+    fn a_start_whose_hook_cannot_run_leaves_no_old_verdict() {
+        let dir = std::env::temp_dir().join(format!("aib-mask-wrap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let state = dir.join("mask");
+        fs::create_dir_all(state.join("113")).unwrap();
+        let result = state.join("113").join("result");
+        // the wrapper as installed, pointed at this directory and at a binary that is not there
+        let wrapper = mask::HOOK_WRAPPER
+            .replace(STATE, state.to_str().unwrap())
+            .replace(
+                "/usr/local/sbin/aib-cloud-host",
+                "/nonexistent/aib-cloud-host",
+            );
+        assert!(
+            wrapper.contains(state.to_str().unwrap()),
+            "the wrapper names the state directory"
+        );
+        let script = dir.join("hook");
+        fs::write(&script, &wrapper).unwrap();
+        let run = |name: &str| {
+            std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .env("LXC_NAME", name)
+                .status()
+                .unwrap()
+        };
+        fs::write(&result, mask::result_ok(212)).unwrap();
+        assert!(mask::result_is_masked(
+            fs::read_to_string(&result).ok().as_deref()
+        ));
+        // the start is never failed by the wrapper, and the old verdict is gone
+        assert!(run("113").success());
+        let now = fs::read_to_string(&result).ok();
+        assert!(!mask::result_is_masked(now.as_deref()), "{now:?}");
+        // a name that is not a container id removes nothing and still does not fail the start
+        fs::write(&result, mask::result_ok(212)).unwrap();
+        for odd in ["", "../113", "113/..", "a b"] {
+            assert!(run(odd).success(), "{odd:?}");
+        }
+        assert!(result.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
