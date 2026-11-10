@@ -365,6 +365,27 @@ pub struct EntrySudoers<'a> {
     pub others: Option<&'a [String]>,
     /// The entry account's uid and the names of its groups.
     pub account: Option<(u32, &'a [String])>,
+    /// Whether sudo takes its rules from files only (`sudoers:` in nsswitch.conf; see
+    /// [`nss_sudoers_files_only`]).
+    pub nss_files_only: Option<bool>,
+}
+
+/// Whether nsswitch.conf (`None`: could not be read; `Some("")`: there is none) has sudo
+/// read its rules from files only. No `sudoers:` line means files. Any other source (sss,
+/// ldap, …) holds rules no file here shows (33e28, #655 r3 L1).
+pub fn nss_sudoers_files_only(nsswitch: Option<&str>) -> Option<bool> {
+    let text = nsswitch?;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if let Some(rest) = line.strip_prefix("sudoers:") {
+            return Some(
+                rest.split_whitespace()
+                    .filter(|w| !w.starts_with('['))
+                    .all(|w| w == "files"),
+            );
+        }
+    }
+    Some(true)
 }
 
 /// The user list at the start of `spec`: the words up to the first gap that is not after
@@ -387,8 +408,10 @@ fn user_list(spec: &str) -> Vec<&str> {
 /// line whose users are `ALL`, its uid (`#<uid>`), one of its groups (`%name`, `%#gid`;
 /// `groups` holds both spellings) or a `User_Alias` that comes down to one of these, an
 /// alias of aliases included, across files. `None` when a file pulls in something other
-/// than `/etc/sudoers.d` (the caller has not read it).
-fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Option<bool> {
+/// than `/etc/sudoers.d` (the caller has not read it): `Err("others_unread")`; when a user
+/// position names a netgroup (`+name`), whose members no file here shows and nothing above
+/// granted: `Err("netgroup_unread")` (33e28, #655 r3 M1).
+fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<bool, &'static str> {
     let me = alloc::format!("#{uid}");
     let mut lines: Vec<String> = Vec::new();
     for text in files {
@@ -400,7 +423,7 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Option<boo
                 let mut w = line.split_whitespace();
                 match (w.next(), w.next(), w.next()) {
                     (Some("#includedir" | "@includedir"), Some("/etc/sudoers.d"), None) => continue,
-                    _ => return None,
+                    _ => return Err("others_unread"),
                 }
             }
             // `#` and then a digit is a uid; any other `#` line is a comment
@@ -450,6 +473,8 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Option<boo
         }
     }
     let us = |u: &str| plain(u) || ours.contains(&u.trim_start_matches('!'));
+    let netgroup = |u: &str| u.trim_start_matches('!').starts_with('+');
+    let mut unread_netgroup = aliases.iter().any(|(_, m)| m.iter().any(|u| netgroup(u)));
     for l in &lines {
         let named = l
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
@@ -464,10 +489,15 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Option<boo
             user_list(l)
         };
         if named || users.iter().any(|u| us(u)) {
-            return Some(true);
+            return Ok(true);
         }
+        unread_netgroup |= users.iter().any(|u| netgroup(u));
     }
-    Some(false)
+    if unread_netgroup {
+        Err("netgroup_unread")
+    } else {
+        Ok(false)
+    }
 }
 
 /// One rule line's arguments, after [`SUDOERS_RULE_HEAD`]: exactly what
@@ -508,7 +538,7 @@ pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
                 let mut rules = lines.iter().filter(|l| **l != SUDOERS_DEFAULTS);
                 let elsewhere = match (seen.others, seen.account) {
                     (Some(files), Some((uid, groups))) => grants_elsewhere(files, uid, groups),
-                    _ => None,
+                    _ => Err("others_unread"),
                 };
                 if text.contains('*') {
                     Outcome::Red("sudoers_wildcard")
@@ -519,10 +549,16 @@ pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
                         .is_some_and(entry_rule_args)
                 }) {
                     Outcome::Red("sudoers_rule")
-                } else if elsewhere == Some(true) {
+                } else if elsewhere == Ok(true) {
                     Outcome::Red("sudoers_elsewhere")
-                } else if elsewhere.is_none() {
-                    Outcome::Unknown("others_unread")
+                } else if let Err(why) = elsewhere {
+                    Outcome::Unknown(why)
+                } else if seen.nss_files_only != Some(true) {
+                    Outcome::Unknown(if seen.nss_files_only.is_none() {
+                        "nsswitch_unread"
+                    } else {
+                        "sudoers_source"
+                    })
                 } else {
                     match seen.visudo_ok {
                         None => Outcome::Unknown("visudo_unread"),
@@ -1328,6 +1364,7 @@ mod tests {
                 visudo_ok: Some(true),
                 others: Some(&NONE),
                 account: Some((1001, &NONE)),
+                nss_files_only: Some(true),
             }
         }
         let h14 = |e: EntrySudoers<'_>| h14_entry_sudoers(e).outcome;
@@ -1432,6 +1469,58 @@ mod tests {
             "OPS ALL=(ALL) ALL".to_string()
         ];
         assert_eq!(judge(&split, &groups), Outcome::Red("sudoers_elsewhere"));
+        // a netgroup in a user position: who is in it no file here says (33e28, #655 r3 M1)
+        for extra in [
+            "+ops ALL=(ALL) ALL",
+            "User_Alias OPS = +ops\nOPS ALL=(ALL) ALL",
+            "Defaults:+ops !env_reset",
+            "root, !+ops ALL=(ALL) ALL",
+        ] {
+            assert_eq!(
+                judge(&with(extra), &groups),
+                Outcome::Unknown("netgroup_unread"),
+                "{extra}"
+            );
+        }
+        // ... unless something else already grants: red wins
+        assert_eq!(
+            judge(
+                &with("+ops ALL=(ALL) ALL\ncloudgate ALL=(ALL) ALL"),
+                &groups
+            ),
+            Outcome::Red("sudoers_elsewhere")
+        );
+        // where sudo takes its rules from (33e28, #655 r3 L1)
+        assert_eq!(nss_sudoers_files_only(Some("")), Some(true));
+        assert_eq!(
+            nss_sudoers_files_only(Some("passwd: files systemd\n")),
+            Some(true)
+        );
+        assert_eq!(nss_sudoers_files_only(Some("sudoers: files\n")), Some(true));
+        assert_eq!(
+            nss_sudoers_files_only(Some("sudoers:\tfiles [NOTFOUND=return]\n")),
+            Some(true)
+        );
+        assert_eq!(
+            nss_sudoers_files_only(Some("#sudoers: sss\nsudoers: files sss\n")),
+            Some(false)
+        );
+        assert_eq!(nss_sudoers_files_only(Some("sudoers: ldap\n")), Some(false));
+        assert_eq!(nss_sudoers_files_only(None), None);
+        assert_eq!(
+            h14(EntrySudoers {
+                nss_files_only: Some(false),
+                ..seen(&good)
+            }),
+            Outcome::Unknown("sudoers_source")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                nss_files_only: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("nsswitch_unread")
+        );
         // the sudo group is not the account's: green; a group the account is in: red
         let sudo_member = ["cloudgate".to_string(), "sudo".to_string()];
         assert_eq!(

@@ -148,6 +148,11 @@ fn entry_sudoers(path: &str, main: &str) -> verify::CheckResult {
         .filter(|there| *there)
         .map(|_| observe(VISUDO, &["-c", "-f", path], 5).is_some());
     let others = other_sudoers(main, path);
+    let nsswitch = match fs::read_to_string("/etc/nsswitch.conf") {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+        Err(_) => None,
+    };
     let account = account_of(ENTRY_ACCOUNT);
     verify::h14_entry_sudoers(EntrySudoers {
         present,
@@ -156,6 +161,7 @@ fn entry_sudoers(path: &str, main: &str) -> verify::CheckResult {
         visudo_ok,
         others: others.as_deref(),
         account: account.as_ref().map(|(u, g)| (*u, g.as_slice())),
+        nss_files_only: verify::nss_sudoers_files_only(nsswitch.as_deref()),
     })
 }
 

@@ -507,6 +507,14 @@ jobs:
           ck verify.rs "            rest.strip_prefix(':').map(user_list).unwrap_or_default()" \
              "            rest.strip_prefix('\\u{0}').map(user_list).unwrap_or_default() // knife" \
              h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a netgroup (+name) in a rule's users reads as nobody (33e28, #655 r3 M1)
+          ck verify.rs '        unread_netgroup |= users.iter().any(|u| netgroup(u));' \
+             '        unread_netgroup |= users.iter().any(|u| netgroup(u)) && false; // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: rules from sss / ldap (nsswitch sudoers:) are not looked for (33e28, #655 r3 L1)
+          ck verify.rs '                } else if seen.nss_files_only != Some(true) {' \
+             '                } else if false && seen.nss_files_only != Some(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
           # H14: owner and mode are not looked at
           ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
              '            (Some(om), _) if false && om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"), // knife' \
