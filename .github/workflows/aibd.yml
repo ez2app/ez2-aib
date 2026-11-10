@@ -218,6 +218,18 @@ jobs:
           tk '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) {' \
             '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) && false { // knife' \
             a17b_nan_or_infinite_is_corrupt
+          # K13 (#615 33e28) samples never count as continuous
+          tk '            [.., (a, _), (b, _)] => b - a <= SUSTAIN_GAP_S,' \
+            '            [.., (_a, _), (_b, _)] => false, // knife' \
+            l2_no_pressure_continuous_spike_not_reaped
+          # K14 (R1 PR 3 Q2) a lone spike with pressure unreadable reaps again (1.x)
+          tk '    if pressure.is_none() && level == Level::Crit {' \
+            '    if pressure.is_none() && level == Level::Crit && false { // knife' \
+            l1_fallback_lone_spike_never_reaps
+          # K15 (a63ab #626 L1) with pressure unreadable every round takes the capped fallback: never reaps
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && (!history.continuous() || true) { // knife' \
+            no_pressure_sustained_heat_still_reaps
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
@@ -287,6 +299,30 @@ jobs:
           ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
              '        .filter(|l| !l.is_empty())' \
              review_segment_5
+          # quarantine guard: a record on disk no longer counts (33e28, seg. 5 r2 N)
+          ck quarantine.rs '    if record.is_some() || is_quarantined(ct_fw) {' \
+             '    if record.is_some() && is_quarantined(ct_fw) { // knife' \
+             review_segment_5
+          # quarantine: the record's edge block may hold more than this site's block (33e28 N)
+          ck quarantine.rs "        return refuse(\"the record's edge block is not exactly this site's block\");" \
+             '        // knife: any block goes' \
+             review_segment_5
+          # quarantine: a stale record is archived whatever the firewall is now (1ced7 L)
+          ck quarantine.rs '    if ct_fw != restored_firewall {' \
+             '    if ct_fw.is_empty() && ct_fw != restored_firewall { // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # quarantine: a stale record is archived whatever the journal says (1ced7, #625 seg. 2 M1)
+          ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
+             '        None => {} // knife' \
+             a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
+          ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
+             '        let unprintable = false; // knife' \
+             upward_paths_and_control_characters
+          # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
+          ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
+             '    value == "/" // knife' \
+             root_spellings_and_dashes_in_prose
           # site verify (c477a's list): one judgement out per knife
           ck verify.rs '    let on_every_card = !cards.is_empty()' \
              '    let on_every_card = cards.first().is_some_and(|n| n.contains("firewall=1")) || !cards.is_empty()' \
@@ -294,9 +330,9 @@ jobs:
           ck verify.rs '                Outcome::Red("ct_policy_open")' \
              '                Outcome::Green // knife' \
              review_segment_3
-          ck verify.rs '        (SiteState::Suspended, true) => Outcome::Red("suspended_but_running"),' \
-             '        (SiteState::Suspended, true) => Outcome::Green, // knife' \
-             s01_state_turns_the_expectation_round
+          ck verify.rs '        (SiteState::Active, false) => Outcome::Red("ct_down"),' \
+             '        (SiteState::Active, false) => Outcome::Green, // knife' \
+             s01_only_an_active_site_has_to_be_running
           ck verify.rs '        (u.thin_meta, 80, "thin_meta_full"),' \
              '        (u.thin_meta, 101, "thin_meta_full"), // knife' \
              h04_disk_thresholds
@@ -309,6 +345,20 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+      # aib-cloud-host: gates of the host commands (reviews of #625).
+      - name: aib-cloud-host command knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud-host --locked "$4"; }
+          # site quarantine without --plan goes on (33e28, seg. 4 L1)
+          hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
+             nothing_but_a_plan
+          # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
+          hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_checked_is_exit_3_never_2
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -422,6 +472,10 @@ jobs:
           tt '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) {' \
             '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) && !seen.contains(&name) { // knife' \
             t1_duplicate_with_a_broken_value_fails
+          # KT9 no services array read as "no sensors" (Unsupported switches T1 off; 043dd #617 r2 L1)
+          tt $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unknown);' \
+            $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unsupported); // knife' \
+            walk_releases_on_every_error_path
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its
@@ -509,6 +563,32 @@ jobs:
             '        if std::thread::panicking() && false { // knife' \
             --expect-fail sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue \
             -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
+          # R1 PR 3a thermal hooks (a9136 11-10 15:18). T-a a NOGO POST starts or queues
+          hk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test thermal_hooks "$3"; }
+          hk '            if !self.launch_allowed() {' \
+            '            if !self.launch_allowed() && false { // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-b the queue starts a waiting session while NOGO
+          hk '                    || !self.launch_allowed()' \
+            '                    || (!self.launch_allowed() && false) // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-c kick_now kicks nobody: the queue stays after NOGO ends
+          hk $'        self.kick(&mut g);\n    }\n\n    /// Test hook: a shorter' \
+            $'        let _ = &mut g; // knife: no kick\n    }\n\n    /// Test hook: a shorter' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-d a stop that frees the slot does not tell the hook
+          hk $'            self.running_changed(old, &g);\n            self.kick(&mut g);' \
+            $'            let _ = (old, &g); // knife: no hook\n            self.kick(&mut g);' \
+            running_count_changes_reach_the_hook_once_each
+          # T-e a start does not tell the hook (a9136 3a N2)
+          hk $'        self.running_changed(old, &g);\n        self.event(' \
+            $'        let _ = (old, &g); // knife: no hook\n        self.event(' \
+            running_count_changes_reach_the_hook_once_each
+          # T-f hooks set late are not told the current count (a9136 3a L1)
+          hk '        self.running_changed(0, &g);' \
+            '        let _ = &g; // knife: not told' \
+            hooks_set_late_hear_the_current_count
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \

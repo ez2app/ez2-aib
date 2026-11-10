@@ -14,6 +14,9 @@
 //!   fails, so one broken sensor cannot make a hot die look cool.
 //! - No `PMU tdie` sensor at all (Intel, a future model) is [`SysError::Unsupported`], never
 //!   an empty set read as "cool".
+//! - The HID client giving no services array at all is [`SysError::Unknown`] (a failed call,
+//!   maybe passing), not `Unsupported`: one such failure in [`selfcheck_t1`] must not switch
+//!   T1 off until restart (043dd #617 r2 L1).
 //! - A private symbol that cannot be found is [`SysError::SpiMissing`]; nothing private is
 //!   linked statically, so a macOS that removes it still loads aibd.
 //! - [`selfcheck_t1`] runs once at start-up (like M1's [`crate::selfcheck`]); if it fails the
@@ -116,8 +119,10 @@ pub fn pressure_level(raw: u64) -> Result<i64, SysError> {
     }
 }
 
-/// Start-up check for T1: one read must succeed. On `Err` the caller turns T1 off until
-/// restart (T2 stays), and records [`SysError::tag`] in metrics.
+/// Start-up check for T1: one read must succeed. On [`SysError::Unsupported`] or
+/// [`SysError::SpiMissing`] the caller turns T1 off until restart (T2 stays); any other error
+/// (e.g. [`SysError::Unknown`]) is a failed round, tried again later. Either way the caller
+/// records [`SysError::tag`] in metrics.
 pub fn selfcheck_t1(info: &dyn ThermalInfo) -> Result<DieTemps, SysError> {
     info.die_temps()
 }
@@ -174,7 +179,8 @@ pub fn read_die_temps<A: HidApi>(api: &A) -> Result<DieTemps, SysError> {
     let client = Owned::new(api, api.client()?);
     api.set_matching(client.r, matching.r);
     let Some(services) = api.services(client.r) else {
-        return Err(SysError::Unsupported);
+        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)
+        return Err(SysError::Unknown);
     };
     let services = Owned::new(api, services);
     let mut readings: Vec<(String, f64)> = Vec::new();
@@ -411,7 +417,11 @@ mod tests {
             no_services: true,
             ..FakeHid::default()
         };
-        assert_eq!(read_die_temps(&hid), Err(SysError::Unsupported));
+        assert_eq!(
+            read_die_temps(&hid),
+            Err(SysError::Unknown),
+            "no services array is a failed call, not 'no sensors' (043dd #617 r2 L1)"
+        );
         hid.assert_balanced();
 
         let hid = FakeHid {
