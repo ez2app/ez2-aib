@@ -2,12 +2,12 @@
 //! Host provisioning as data (4.4.1 §22 / §24-4: `host spec lint` and the plan half of
 //! `host provision --spec F [--from <step>]`).
 //!
-//! A provisioning spec is the machine-readable ledger of how a bare host becomes a host
-//! that can carry sites: ordered steps, each with its approval level, what it runs, how
-//! the result is checked and what the way back is. This module reads such a spec (as a
-//! JSON value; the caller owns the file format and the file system), refuses anything a
-//! one-command provision could not act on, and turns an accepted spec into an ordered
-//! [`Plan`] with a hash an approval can be bound to. No I/O here: nothing is run.
+//! A provisioning spec is the machine-readable description of how a bare host becomes a
+//! host that can carry sites: steps, each with its approval level, what it runs, how the
+//! result is checked and what the way back is. This module reads such a spec (as a JSON
+//! value; the caller owns the file and the file system), refuses anything a one-command
+//! provision could not act on, and turns an accepted spec into an ordered [`Plan`] with an
+//! identifier. No I/O here: nothing is run.
 //!
 //! Spec, version 2:
 //!
@@ -16,27 +16,49 @@
 //!   "vars": { "hostname": "host1", "public_ipv4": "203.0.113.10" },
 //!   "steps": [
 //!     { "id": "B0.precheck", "level": "L0", "kind": "check", "title": "…",
-//!       "verify": [ { "run": "hostname -f", "expect": { "eq": "{{hostname}}" } } ] },
+//!       "verify": [ { "run": ["hostname", "-f"], "expect": { "eq": "{{hostname}}" } } ] },
 //!     { "id": "B2.repo", "level": "L1", "kind": "run", "title": "…",
 //!       "requires": ["B0.precheck"],
-//!       "apply": ["apt-get update"],
-//!       "verify": [ { "run": "apt-cache policy proxmox-ve", "expect": { "rc": 0 } } ],
-//!       "recovery": { "kind": "rollback", "run": ["rm /etc/apt/sources.list.d/pve.sources"] } }
+//!       "apply": [ ["apt-get", "update"] ],
+//!       "verify": [ { "run": ["apt-cache", "policy", "proxmox-ve"], "expect": { "rc": 0 } } ],
+//!       "recovery": { "kind": "rollback",
+//!                     "run": [ ["rm", "/etc/apt/sources.list.d/pve.sources"] ] } }
 //!   ] }
 //! ```
 //!
+//! A command is an **argument list**, never a shell line: `["pvesm", "status"]`. A variable
+//! fills in part of one argument and cannot add arguments. A secret is a reference,
+//! `{"secret": "name"}`, resolved outside this crate at run time; its value never enters a
+//! spec or a plan. When a shell is really needed the command says so and says why:
+//! `{"sh": "a | b", "why": "…"}` — and variables used inside it must hold plain values.
+//! For a `manual` step, `apply` is the instructions for a person, as text.
+//!
+//! A spec holds no progress: which steps a given host has done is that host's state, kept
+//! elsewhere and re-verified, never trusted. The `level` a step states is a floor that
+//! this module raises where it must (`P03`); what a level *allows* is the caller's policy.
+//! [`Plan::id`] identifies a plan (same spec, same variables, same starting point ⇒ same
+//! id); it is not a cryptographic hash and must not be the only thing an approval is
+//! bound to — the caller hashes [`Plan::to_json`] together with the target host.
+//!
 //! What [`lint`] refuses (every finding carries a stable code):
-//! * `P01` wrong shape or version; `P10` a key this version does not know (typos).
+//! * `P01` wrong shape or version; `P10` a key this version does not know (typos, and the
+//!   `status` lines of a hand-kept ledger).
 //! * `P02` step id missing, malformed or used twice.
-//! * `P03` / `P04` level or kind unknown, or a pair that makes no sense (`check` is `L0`
-//!   and runs nothing; `run` / `manual` write, so they are `L1` or `L2` and say what to do).
+//! * `P03` level unknown, or too low: a step that destroys something or reboots is `L2`.
+//! * `P04` kind unknown, or a pair that makes no sense (`check` is `L0`, runs nothing and
+//!   disturbs nothing; `run` / `manual` write, so they are `L1` or `L2` and say what to do).
 //! * `P05` a step without a decidable verify (a command plus exactly one expectation).
-//! * `P06` a writing step without an explicit way back: `rollback` with commands, or
-//!   `unsupported` with the recovery path spelled out (§1.1: never pretend).
-//! * `P07` a `{{name}}` that `vars` does not define, or an unclosed `{{`.
-//! * `P08` a host-specific value written out in a step instead of `{{name}}` — the spec
-//!   must provision the next host too, and must be publishable as a fixture.
+//! * `P06` a writing step without an explicit way back: `rollback` with commands, `rescue`
+//!   (a person and the rescue system) or `unsupported`, both with the path spelled out.
+//! * `P07` a `{{name}}` that `vars` does not define, an unclosed `{{`, or a variable used
+//!   inside a shell command whose value is not plain (`A-Z a-z 0-9 . _ : / @ , = + -`).
+//! * `P08` a host-specific value written out in a step instead of `{{name}}`.
 //! * `P09` `requires` naming an unknown step, itself, or forming a cycle.
+//! * `P11` a malformed command, a shell command without `why`, or text that looks like a
+//!   secret written out.
+//! * `P12` a step that cuts the connection without saying how long to wait; a network
+//!   change without a timed automatic revert; an `L2` step without the exact sentence the
+//!   approver confirms (`consent`).
 
 use alloc::borrow::ToOwned;
 use alloc::collections::BTreeSet;
@@ -52,11 +74,13 @@ pub const VERSION: u64 = 2;
 /// Shortest variable value that [`lint`] treats as host-specific (`P08`). Shorter values
 /// ("2", "vg0", "bios") appear in ordinary command text too often to be told apart.
 const LITERAL_MIN: usize = 6;
+/// Longest wait for a host to come back, and longest timed revert, in seconds.
+const WAIT_MAX: u64 = 3600;
 
 /// One reason a spec was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
-    /// Stable rule code, `P01` … `P10`.
+    /// Stable rule code, `P01` … `P12`.
     pub code: &'static str,
     /// The step the finding is about, when there is one.
     pub step: Option<String>,
@@ -111,8 +135,8 @@ pub enum Kind {
     Check,
     /// Commands the tool runs.
     Run,
-    /// Something only a person can do (a rescue boot, a password, a hardware token);
-    /// `apply` holds the instructions and the tool stops there until the verify passes.
+    /// Something only a person can do (a rescue boot, a password, a hardware token): the
+    /// tool shows the instructions and stops there until the verify passes.
     Manual,
 }
 
@@ -136,6 +160,49 @@ impl Kind {
     }
 }
 
+/// One argument of a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Arg {
+    /// Literal text (variables filled in once the step is in a [`Plan`]).
+    Text(String),
+    /// A secret, by name. Resolved outside this crate when the command runs.
+    Secret(String),
+}
+
+/// One command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    /// A program and its arguments; no shell is involved.
+    Argv(Vec<Arg>),
+    /// A shell line, with the reason a shell is needed.
+    Shell {
+        /// The line.
+        sh: String,
+        /// Why an argument list would not do.
+        why: String,
+    },
+}
+
+/// What a step does to the connection it is run over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disruption {
+    /// Nothing.
+    None,
+    /// The network path may drop: a timed revert is armed on the host first and disarmed
+    /// only after a new connection verifies.
+    Network {
+        /// Seconds to wait for the host to answer again.
+        reconnect_timeout_s: u32,
+        /// Seconds after which the host reverts the change by itself.
+        auto_revert_s: u32,
+    },
+    /// The host reboots.
+    Reboot {
+        /// Seconds to wait for the host to answer again.
+        reconnect_timeout_s: u32,
+    },
+}
+
 /// What a verify command must show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expect {
@@ -151,7 +218,7 @@ pub enum Expect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verify {
     /// The command.
-    pub run: String,
+    pub run: Command,
     /// What it must show.
     pub expect: Expect,
     /// `true` when the check probes actively (opens connections, sends traffic) rather
@@ -165,12 +232,15 @@ pub enum Recovery {
     /// Nothing to undo (checks only).
     None,
     /// Commands that undo the step.
-    Rollback(Vec<String>),
+    Rollback(Vec<Command>),
+    /// A person has to repair it from the rescue system; this is how, in words.
+    Rescue(String),
     /// No rollback exists; this is the recovery path, in words.
     Unsupported(String),
 }
 
-/// One accepted step. Variables are still `{{name}}` here; [`plan`] fills them in.
+/// One accepted step. In a [`Spec`] variables are still `{{name}}`; in a [`Plan`] they
+/// are filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     /// Unique id.
@@ -183,14 +253,23 @@ pub struct Step {
     pub title: String,
     /// Steps that must be done first.
     pub requires: Vec<String>,
-    /// Commands (`run`) or instructions (`manual`); empty for `check`.
-    pub apply: Vec<String>,
+    /// Commands of a `run` step; empty otherwise.
+    pub apply: Vec<Command>,
+    /// Instructions of a `manual` step, for a person; empty otherwise.
+    pub instructions: Vec<String>,
     /// At least one.
     pub verify: Vec<Verify>,
     /// The way back.
     pub recovery: Recovery,
     /// What the step destroys, if anything, in words.
     pub destroys: Option<String>,
+    /// What the step does to the connection.
+    pub disruption: Disruption,
+    /// `true`: started as a unit on the host and polled, so a dropped connection does not
+    /// stop it half way.
+    pub detach: bool,
+    /// The exact sentence the approver confirms; present on every `L2` step.
+    pub consent: Option<String>,
 }
 
 /// An accepted spec. Only [`lint`] builds one.
@@ -215,49 +294,98 @@ impl Spec {
 
 const TOP_KEYS: &[&str] = &["version", "vars", "steps"];
 const STEP_KEYS: &[&str] = &[
-    "id", "level", "kind", "title", "requires", "apply", "verify", "recovery", "destroys", "note",
+    "id",
+    "level",
+    "kind",
+    "title",
+    "requires",
+    "apply",
+    "verify",
+    "recovery",
+    "destroys",
+    "note",
+    "disruption",
+    "detach",
+    "consent",
 ];
 const VERIFY_KEYS: &[&str] = &["run", "expect", "active"];
 const EXPECT_KEYS: &[&str] = &["rc", "eq", "contains"];
 const RECOVERY_KEYS: &[&str] = &["kind", "run", "path"];
+const DISRUPTION_KEYS: &[&str] = &["kind", "reconnect_timeout_s", "auto_revert_s"];
+const SHELL_KEYS: &[&str] = &["sh", "why"];
 
-fn finding(code: &'static str, step: Option<&str>, msg: String) -> Finding {
+/// Findings of one step, collected with the step's id attached.
+struct Sink<'a> {
+    step: &'a str,
+    out: &'a mut Vec<Finding>,
+}
+
+impl Sink<'_> {
+    fn add(&mut self, code: &'static str, msg: String) {
+        self.out.push(Finding {
+            code,
+            step: Some(self.step.to_owned()),
+            msg,
+        });
+    }
+
+    fn unknown_keys(&mut self, obj: &Map<String, Value>, known: &[&str], what: &str) {
+        for k in obj.keys() {
+            if !known.contains(&k.as_str()) {
+                self.add("P10", format!("{what}: unknown key {k:?}"));
+            }
+        }
+    }
+}
+
+fn top(code: &'static str, msg: String) -> Finding {
     Finding {
         code,
-        step: step.map(ToOwned::to_owned),
+        step: None,
         msg,
     }
 }
 
+fn name_ok(name: &str, max: usize, extra: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= max
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || extra.contains(&c))
+}
+
 fn valid_id(id: &str) -> bool {
-    let b = id.as_bytes();
-    !b.is_empty()
-        && b.len() <= 64
-        && b[0].is_ascii_alphanumeric()
-        && b.iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    name_ok(id, 64, b"._-") && id.as_bytes()[0].is_ascii_alphanumeric()
 }
 
 fn valid_var_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 40
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    name_ok(name, 40, b"_") && !name.bytes().any(|c| c.is_ascii_uppercase())
 }
 
-fn unknown_keys(
-    obj: &Map<String, Value>,
-    known: &[&str],
-    step: Option<&str>,
-    what: &str,
-    out: &mut Vec<Finding>,
-) {
-    for k in obj.keys() {
-        if !known.contains(&k.as_str()) {
-            out.push(finding("P10", step, format!("{what}: unknown key {k:?}")));
-        }
-    }
+fn valid_secret_name(name: &str) -> bool {
+    name_ok(name, 64, b"._-")
+}
+
+/// A value that can sit inside a shell line without changing its meaning.
+fn shell_plain(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || b"._:/@,=+-".contains(&c))
+}
+
+/// Text that looks like key material written out: a PEM header, or a run of 40 or more
+/// key-alphabet characters that mixes letters and digits and is not plain hex (checksums
+/// are hex and belong in specs).
+fn looks_secret(text: &str) -> bool {
+    text.contains("-----BEGIN ")
+        || text
+            .split(|c: char| !(c.is_ascii_alphanumeric() || "+=_".contains(c)))
+            .any(|run| {
+                run.len() >= 40
+                    && run.bytes().any(|c| c.is_ascii_digit())
+                    && run.bytes().any(|c| c.is_ascii_alphabetic())
+                    && !run.bytes().all(|c| c.is_ascii_hexdigit())
+            })
 }
 
 /// `{{name}}` occurrences in `text`. `Err` when a `{{` is not closed or the name is not a
@@ -283,100 +411,186 @@ fn placeholders(text: &str) -> Result<Vec<&str>, String> {
 fn render(text: &str, vars: &[(String, String)]) -> String {
     let mut out = text.to_owned();
     for (name, value) in vars {
-        let mut needle = String::from("{{");
-        needle.push_str(name);
-        needle.push_str("}}");
+        let needle = format!("{{{{{name}}}}}");
         out = out.replace(&needle, value);
     }
     out
 }
 
-fn string_list(v: Option<&Value>, step: &str, what: &str, out: &mut Vec<Finding>) -> Vec<String> {
+fn string_list(v: Option<&Value>, what: &str, sink: &mut Sink<'_>) -> Vec<String> {
     let Some(v) = v else {
         return Vec::new();
     };
     let Some(arr) = v.as_array() else {
-        out.push(finding(
-            "P01",
-            Some(step),
-            format!("{what} must be a list of strings"),
-        ));
+        sink.add("P01", format!("{what} must be a list of strings"));
         return Vec::new();
     };
     let mut items = Vec::new();
     for item in arr {
         match item.as_str() {
             Some(s) if !s.trim().is_empty() => items.push(s.to_owned()),
-            _ => out.push(finding(
+            _ => sink.add(
                 "P01",
-                Some(step),
                 format!("{what}: every entry must be a non-empty string"),
-            )),
+            ),
         }
     }
     items
 }
 
-fn parse_verify(v: &Value, step: &str, out: &mut Vec<Finding>) -> Option<Verify> {
+fn parse_arg(item: &Value) -> Option<Arg> {
+    match item {
+        Value::String(s) => Some(Arg::Text(s.clone())),
+        Value::Object(o) if o.len() == 1 => o
+            .get("secret")
+            .and_then(Value::as_str)
+            .filter(|n| valid_secret_name(n))
+            .map(|n| Arg::Secret(n.to_owned())),
+        _ => None,
+    }
+}
+
+fn parse_command(v: &Value, what: &str, sink: &mut Sink<'_>) -> Option<Command> {
+    match v {
+        Value::Array(items) if !items.is_empty() => {
+            let args: Option<Vec<Arg>> = items.iter().map(parse_arg).collect();
+            match args {
+                Some(args) if matches!(args.first(), Some(Arg::Text(p)) if !p.trim().is_empty()) => {
+                    Some(Command::Argv(args))
+                }
+                _ => {
+                    sink.add(
+                        "P11",
+                        format!(
+                            "{what}: arguments are strings or {{\"secret\": \"name\"}}, and the first is the program"
+                        ),
+                    );
+                    None
+                }
+            }
+        }
+        Value::Object(o) => {
+            sink.unknown_keys(o, SHELL_KEYS, what);
+            let text = |k: &str| {
+                o.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+            };
+            match (text("sh"), text("why")) {
+                (Some(sh), Some(why)) => Some(Command::Shell {
+                    sh: sh.to_owned(),
+                    why: why.to_owned(),
+                }),
+                _ => {
+                    sink.add(
+                        "P11",
+                        format!("{what}: a shell command needs both `sh` and `why`"),
+                    );
+                    None
+                }
+            }
+        }
+        _ => {
+            sink.add(
+                "P11",
+                format!("{what}: a command is a non-empty argument list, or {{\"sh\", \"why\"}}"),
+            );
+            None
+        }
+    }
+}
+
+fn command_list(v: Option<&Value>, what: &str, sink: &mut Sink<'_>) -> Vec<Command> {
+    let Some(v) = v else {
+        return Vec::new();
+    };
+    let Some(arr) = v.as_array() else {
+        sink.add("P11", format!("{what} must be a list of commands"));
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in arr {
+        if let Some(c) = parse_command(item, what, sink) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn seconds(obj: &Map<String, Value>, key: &str) -> Option<u32> {
+    obj.get(key)
+        .and_then(Value::as_u64)
+        .filter(|n| (1..=WAIT_MAX).contains(n))
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+fn parse_disruption(v: Option<&Value>, sink: &mut Sink<'_>) -> Option<Disruption> {
+    let Some(v) = v else {
+        return Some(Disruption::None);
+    };
+    let parsed = v.as_object().and_then(|obj| {
+        sink.unknown_keys(obj, DISRUPTION_KEYS, "disruption");
+        let wait = seconds(obj, "reconnect_timeout_s");
+        let revert = seconds(obj, "auto_revert_s");
+        match obj.get("kind").and_then(Value::as_str) {
+            Some("none") if obj.len() == 1 => Some(Disruption::None),
+            Some("network") => Some(Disruption::Network {
+                reconnect_timeout_s: wait?,
+                auto_revert_s: revert?,
+            }),
+            Some("reboot") if !obj.contains_key("auto_revert_s") => Some(Disruption::Reboot {
+                reconnect_timeout_s: wait?,
+            }),
+            _ => None,
+        }
+    });
+    if parsed.is_none() {
+        sink.add(
+            "P12",
+            format!(
+                "disruption: none | network (reconnect_timeout_s and auto_revert_s) | reboot (reconnect_timeout_s); seconds 1..={WAIT_MAX}"
+            ),
+        );
+    }
+    parsed
+}
+
+fn parse_verify(v: &Value, sink: &mut Sink<'_>) -> Option<Verify> {
     let Some(obj) = v.as_object() else {
-        out.push(finding(
-            "P05",
-            Some(step),
-            "verify entry must be an object".to_owned(),
-        ));
+        sink.add("P05", "verify entry must be an object".to_owned());
         return None;
     };
-    unknown_keys(obj, VERIFY_KEYS, Some(step), "verify", out);
-    let run = match obj.get("run").and_then(Value::as_str) {
-        Some(s) if !s.trim().is_empty() => s.to_owned(),
-        _ => {
-            out.push(finding(
-                "P05",
-                Some(step),
-                "verify needs a command in `run`".to_owned(),
-            ));
-            return None;
-        }
+    sink.unknown_keys(obj, VERIFY_KEYS, "verify");
+    let Some(run) = obj.get("run") else {
+        sink.add("P05", "verify needs a command in `run`".to_owned());
+        return None;
     };
+    let run = parse_command(run, "verify.run", sink)?;
     let active = match obj.get("active") {
         None => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => {
-            out.push(finding(
-                "P05",
-                Some(step),
-                "verify `active` must be true or false".to_owned(),
-            ));
+            sink.add("P05", "verify `active` must be true or false".to_owned());
             return None;
         }
     };
-    let Some(exp) = obj.get("expect").and_then(Value::as_object) else {
-        out.push(finding(
-            "P05",
-            Some(step),
-            "verify needs `expect` with exactly one of rc / eq / contains".to_owned(),
-        ));
-        return None;
-    };
-    unknown_keys(exp, EXPECT_KEYS, Some(step), "expect", out);
-    if exp.len() != 1 {
-        out.push(finding(
-            "P05",
-            Some(step),
-            "expect must hold exactly one of rc / eq / contains".to_owned(),
-        ));
-        return None;
-    }
-    let expect = if let Some(rc) = exp.get("rc") {
-        rc.as_i64().map(Expect::Rc)
-    } else if let Some(eq) = exp.get("eq") {
-        eq.as_str().map(|s| Expect::Eq(s.to_owned()))
-    } else {
-        exp.get("contains")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(|s| Expect::Contains(s.to_owned()))
-    };
+    let expect = obj
+        .get("expect")
+        .and_then(Value::as_object)
+        .filter(|exp| exp.len() == 1)
+        .and_then(|exp| {
+            sink.unknown_keys(exp, EXPECT_KEYS, "expect");
+            if let Some(rc) = exp.get("rc") {
+                rc.as_i64().map(Expect::Rc)
+            } else if let Some(eq) = exp.get("eq") {
+                eq.as_str().map(|s| Expect::Eq(s.to_owned()))
+            } else {
+                exp.get("contains")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Expect::Contains(s.to_owned()))
+            }
+        });
     match expect {
         Some(expect) => Some(Verify {
             run,
@@ -384,221 +598,205 @@ fn parse_verify(v: &Value, step: &str, out: &mut Vec<Finding>) -> Option<Verify>
             active,
         }),
         None => {
-            out.push(finding(
+            sink.add(
                 "P05",
-                Some(step),
-                "expect: rc is an integer, eq a string, contains a non-empty string".to_owned(),
-            ));
+                "verify needs `expect` with exactly one of rc (integer) / eq (string) / contains (non-empty string)"
+                    .to_owned(),
+            );
             None
         }
     }
 }
 
-fn parse_recovery(v: Option<&Value>, step: &str, out: &mut Vec<Finding>) -> Option<Recovery> {
+fn parse_recovery(v: Option<&Value>, sink: &mut Sink<'_>) -> Option<Recovery> {
     let Some(v) = v else {
         return Some(Recovery::None);
     };
     let Some(obj) = v.as_object() else {
-        out.push(finding(
-            "P06",
-            Some(step),
-            "recovery must be an object".to_owned(),
-        ));
+        sink.add("P06", "recovery must be an object".to_owned());
         return None;
     };
-    unknown_keys(obj, RECOVERY_KEYS, Some(step), "recovery", out);
-    match obj.get("kind").and_then(Value::as_str) {
-        Some("rollback") => {
-            let run = string_list(obj.get("run"), step, "recovery.run", out);
-            if run.is_empty() || obj.contains_key("path") {
-                out.push(finding(
-                    "P06",
-                    Some(step),
-                    "rollback needs its commands in `run` (and no `path`)".to_owned(),
-                ));
-                return None;
-            }
-            Some(Recovery::Rollback(run))
+    sink.unknown_keys(obj, RECOVERY_KEYS, "recovery");
+    let path = obj
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|p| !p.trim().is_empty() && !obj.contains_key("run"));
+    let parsed = match obj.get("kind").and_then(Value::as_str) {
+        Some("rollback") if !obj.contains_key("path") => {
+            let run = command_list(obj.get("run"), "recovery.run", sink);
+            (!run.is_empty()).then_some(Recovery::Rollback(run))
         }
-        Some("unsupported") => match obj.get("path").and_then(Value::as_str) {
-            Some(p) if !p.trim().is_empty() && !obj.contains_key("run") => {
-                Some(Recovery::Unsupported(p.to_owned()))
-            }
-            _ => {
-                out.push(finding(
-                    "P06",
-                    Some(step),
-                    "unsupported needs the recovery path in `path` (and no `run`)".to_owned(),
-                ));
-                None
-            }
-        },
-        _ => {
-            out.push(finding(
-                "P06",
-                Some(step),
-                "recovery.kind must be rollback or unsupported".to_owned(),
-            ));
-            None
-        }
+        Some("rescue") => path.map(|p| Recovery::Rescue(p.to_owned())),
+        Some("unsupported") => path.map(|p| Recovery::Unsupported(p.to_owned())),
+        _ => None,
+    };
+    if parsed.is_none() {
+        sink.add(
+            "P06",
+            "recovery: rollback with commands in `run`, or rescue / unsupported with the path in `path`"
+                .to_owned(),
+        );
     }
+    parsed
 }
 
 fn parse_step(v: &Value, index: usize, out: &mut Vec<Finding>) -> Option<Step> {
     let label = format!("#{index}");
     let Some(obj) = v.as_object() else {
-        out.push(finding(
-            "P01",
-            Some(label.as_str()),
-            "step must be an object".to_owned(),
-        ));
+        out.push(Finding {
+            code: "P01",
+            step: Some(label),
+            msg: "step must be an object".to_owned(),
+        });
         return None;
     };
     let id = match obj.get("id").and_then(Value::as_str) {
         Some(s) if valid_id(s) => s.to_owned(),
-        Some(s) => {
-            out.push(finding(
-                "P02",
-                Some(label.as_str()),
-                format!(
-                    "id {s:?} refused (A-Z a-z 0-9 . _ -, 1..=64, starts with a letter or digit)"
-                ),
-            ));
-            return None;
-        }
-        None => {
-            out.push(finding(
-                "P02",
-                Some(label.as_str()),
-                "step has no id".to_owned(),
-            ));
+        other => {
+            out.push(Finding {
+                code: "P02",
+                step: Some(label),
+                msg: match other {
+                    Some(s) => format!(
+                        "id {s:?} refused (A-Z a-z 0-9 . _ -, 1..=64, starts with a letter or digit)"
+                    ),
+                    None => "step has no id".to_owned(),
+                },
+            });
             return None;
         }
     };
     let before = out.len();
-    unknown_keys(obj, STEP_KEYS, Some(id.as_str()), "step", out);
+    let mut sink = Sink {
+        step: id.as_str(),
+        out,
+    };
+    sink.unknown_keys(obj, STEP_KEYS, "step");
 
     let level = obj
         .get("level")
         .and_then(Value::as_str)
         .and_then(Level::parse);
     if level.is_none() {
-        out.push(finding(
-            "P03",
-            Some(id.as_str()),
-            "level must be L0, L1 or L2".to_owned(),
-        ));
+        sink.add("P03", "level must be L0, L1 or L2".to_owned());
     }
     let kind = obj
         .get("kind")
         .and_then(Value::as_str)
         .and_then(Kind::parse);
     if kind.is_none() {
-        out.push(finding(
-            "P04",
-            Some(id.as_str()),
-            "kind must be check, run or manual".to_owned(),
-        ));
+        sink.add("P04", "kind must be check, run or manual".to_owned());
     }
     let title = match obj.get("title").and_then(Value::as_str) {
         Some(s) if !s.trim().is_empty() => s.to_owned(),
         _ => {
-            out.push(finding(
-                "P01",
-                Some(id.as_str()),
-                "step needs a title".to_owned(),
-            ));
+            sink.add("P01", "step needs a title".to_owned());
             String::new()
         }
     };
-    let requires = string_list(obj.get("requires"), &id, "requires", out);
-    let apply = string_list(obj.get("apply"), &id, "apply", out);
-    let destroys = match obj.get("destroys") {
+    let requires = string_list(obj.get("requires"), "requires", &mut sink);
+    let (apply, instructions) = if kind == Some(Kind::Manual) {
+        (
+            Vec::new(),
+            string_list(obj.get("apply"), "apply", &mut sink),
+        )
+    } else {
+        (
+            command_list(obj.get("apply"), "apply", &mut sink),
+            Vec::new(),
+        )
+    };
+    let has_apply = obj.contains_key("apply");
+    let text_field = |key: &str, code: &'static str, sink: &mut Sink<'_>| match obj.get(key) {
         None => None,
         Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
         Some(_) => {
-            out.push(finding(
-                "P01",
-                Some(id.as_str()),
-                "destroys must be a non-empty string".to_owned(),
-            ));
+            sink.add(code, format!("{key} must be a non-empty string"));
             None
         }
     };
+    let destroys = text_field("destroys", "P01", &mut sink);
+    let consent = text_field("consent", "P12", &mut sink);
     if obj.get("note").is_some_and(|n| !n.is_string()) {
-        out.push(finding(
-            "P01",
-            Some(id.as_str()),
-            "note must be a string".to_owned(),
-        ));
+        sink.add("P01", "note must be a string".to_owned());
     }
+    let detach = match obj.get("detach") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            sink.add("P01", "detach must be true or false".to_owned());
+            false
+        }
+    };
+    let disruption = parse_disruption(obj.get("disruption"), &mut sink);
 
     let mut verify = Vec::new();
     match obj.get("verify").and_then(Value::as_array) {
         Some(arr) if !arr.is_empty() => {
             for item in arr {
-                if let Some(one) = parse_verify(item, &id, out) {
+                if let Some(one) = parse_verify(item, &mut sink) {
                     verify.push(one);
                 }
             }
         }
-        _ => out.push(finding(
+        _ => sink.add(
             "P05",
-            Some(id.as_str()),
             "step needs at least one verify (a command and what it must show)".to_owned(),
-        )),
+        ),
     }
-    let recovery = parse_recovery(obj.get("recovery"), &id, out);
+    let recovery = parse_recovery(obj.get("recovery"), &mut sink);
 
     if let (Some(level), Some(kind)) = (level, kind) {
+        let disturbs = disruption.is_some_and(|d| d != Disruption::None);
         match kind {
             Kind::Check => {
                 if level != Level::L0 {
-                    out.push(finding(
-                        "P04",
-                        Some(id.as_str()),
-                        "a check is L0".to_owned(),
-                    ));
+                    sink.add("P04", "a check is L0".to_owned());
                 }
-                if !apply.is_empty() {
-                    out.push(finding(
+                if has_apply || destroys.is_some() || disturbs || detach {
+                    sink.add(
                         "P04",
-                        Some(id.as_str()),
-                        "a check has no apply".to_owned(),
-                    ));
-                }
-                if destroys.is_some() {
-                    out.push(finding(
-                        "P04",
-                        Some(id.as_str()),
-                        "a check destroys nothing".to_owned(),
-                    ));
+                        "a check has no apply, destroys nothing and disturbs nothing".to_owned(),
+                    );
                 }
             }
             Kind::Run | Kind::Manual => {
                 if level == Level::L0 {
-                    out.push(finding(
+                    sink.add(
                         "P04",
-                        Some(id.as_str()),
                         "run / manual steps write: L1 or L2, not L0".to_owned(),
-                    ));
+                    );
                 }
-                if apply.is_empty() {
-                    out.push(finding(
+                if apply.is_empty() && instructions.is_empty() {
+                    sink.add(
                         "P04",
-                        Some(id.as_str()),
-                        "run / manual steps need apply (commands, or instructions for a person)"
+                        "run steps need commands in apply; manual steps need instructions"
                             .to_owned(),
-                    ));
+                    );
                 }
                 if recovery == Some(Recovery::None) {
-                    out.push(finding(
+                    sink.add(
                         "P06",
-                        Some(id.as_str()),
-                        "a writing step needs recovery: rollback commands, or `unsupported` with the recovery path".to_owned(),
-                    ));
+                        "a writing step needs recovery: rollback, rescue or unsupported".to_owned(),
+                    );
                 }
             }
+        }
+        let reboots = matches!(disruption, Some(Disruption::Reboot { .. }));
+        if level != Level::L2 && kind != Kind::Check && (destroys.is_some() || reboots) {
+            sink.add(
+                "P03",
+                "a step that destroys something or reboots is L2".to_owned(),
+            );
+        }
+        if level == Level::L2 && consent.is_none() {
+            sink.add(
+                "P12",
+                "an L2 step needs `consent`: the exact sentence the approver confirms".to_owned(),
+            );
+        }
+        if level != Level::L2 && consent.is_some() {
+            sink.add("P12", "consent belongs to L2 steps only".to_owned());
         }
     }
 
@@ -612,30 +810,56 @@ fn parse_step(v: &Value, index: usize, out: &mut Vec<Finding>) -> Option<Step> {
         title,
         requires,
         apply,
+        instructions,
         verify,
         recovery: recovery?,
         destroys,
+        disruption: disruption?,
+        detach,
+        consent,
     })
 }
 
-fn step_texts(step: &Step) -> Vec<&str> {
-    let mut texts: Vec<&str> = Vec::new();
-    texts.push(&step.title);
-    texts.extend(step.apply.iter().map(String::as_str));
+/// Every piece of text in a step, with `true` for text that a shell will read.
+fn step_texts(step: &Step) -> Vec<(&str, bool)> {
+    fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, bool)>) {
+        match c {
+            Command::Argv(args) => {
+                for a in args {
+                    if let Arg::Text(t) = a {
+                        texts.push((t, false));
+                    }
+                }
+            }
+            Command::Shell { sh, why } => {
+                texts.push((sh, true));
+                texts.push((why, false));
+            }
+        }
+    }
+    let mut texts: Vec<(&str, bool)> = Vec::new();
+    texts.push((&step.title, false));
+    for c in &step.apply {
+        command(c, &mut texts);
+    }
+    texts.extend(step.instructions.iter().map(|t| (t.as_str(), false)));
     for v in &step.verify {
-        texts.push(&v.run);
-        match &v.expect {
-            Expect::Eq(s) | Expect::Contains(s) => texts.push(s),
-            Expect::Rc(_) => {}
+        command(&v.run, &mut texts);
+        if let Expect::Eq(s) | Expect::Contains(s) = &v.expect {
+            texts.push((s, false));
         }
     }
     match &step.recovery {
-        Recovery::Rollback(run) => texts.extend(run.iter().map(String::as_str)),
-        Recovery::Unsupported(path) => texts.push(path),
+        Recovery::Rollback(run) => {
+            for c in run {
+                command(c, &mut texts);
+            }
+        }
+        Recovery::Rescue(path) | Recovery::Unsupported(path) => texts.push((path, false)),
         Recovery::None => {}
     }
-    if let Some(d) = &step.destroys {
-        texts.push(d);
+    for t in [&step.destroys, &step.consent].into_iter().flatten() {
+        texts.push((t, false));
     }
     texts
 }
@@ -670,30 +894,15 @@ fn order(steps: &[Step]) -> Result<Vec<usize>, Vec<String>> {
     Ok(out)
 }
 
-/// Read a spec. Every problem is reported, not only the first.
-pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
-    let mut out = Vec::new();
-    let Some(top) = spec.as_object() else {
-        return Err(vec![finding(
-            "P01",
-            None,
-            "spec must be an object".to_owned(),
-        )]);
-    };
-    unknown_keys(top, TOP_KEYS, None, "spec", &mut out);
-    if top.get("version").and_then(Value::as_u64) != Some(VERSION) {
-        out.push(finding("P01", None, format!("version must be {VERSION}")));
-    }
-
-    let mut vars: Vec<(String, String)> = Vec::new();
-    match top.get("vars") {
+fn parse_vars(v: Option<&Value>, out: &mut Vec<Finding>) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    match v {
         None => {}
         Some(Value::Object(map)) => {
             for (name, value) in map {
                 if !valid_var_name(name) {
-                    out.push(finding(
+                    out.push(top(
                         "P01",
-                        None,
                         format!("variable name {name:?} refused (a-z 0-9 _)"),
                     ));
                     continue;
@@ -703,32 +912,107 @@ pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     _ => {
-                        out.push(finding(
+                        out.push(top(
                             "P01",
-                            None,
-                            format!("variable {name}: value must be a string, number or boolean, without {{{{"),
+                            format!(
+                                "variable {name}: value must be a string, number or boolean, without {{{{"
+                            ),
                         ));
                         continue;
                     }
                 };
+                if looks_secret(&text) {
+                    out.push(top(
+                        "P11",
+                        format!("variable {name} looks like a secret; use a secret reference"),
+                    ));
+                }
                 vars.push((name.clone(), text));
             }
         }
-        Some(_) => out.push(finding("P01", None, "vars must be an object".to_owned())),
+        Some(_) => out.push(top("P01", "vars must be an object".to_owned())),
     }
+    vars
+}
+
+fn check_texts(
+    step: &Step,
+    vars: &[(String, String)],
+    ids: &BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
+    let mut sink = Sink {
+        step: step.id.as_str(),
+        out,
+    };
+    for (text, in_shell) in step_texts(step) {
+        match placeholders(text) {
+            Ok(names) => {
+                for name in names {
+                    match vars.iter().find(|(n, _)| n == name) {
+                        None => sink.add("P07", format!("{{{{{name}}}}} is not defined in vars")),
+                        Some((_, value)) if in_shell && !shell_plain(value) => sink.add(
+                            "P07",
+                            format!("{{{{{name}}}}} is used in a shell command but its value is not plain"),
+                        ),
+                        Some(_) => {}
+                    }
+                }
+            }
+            Err(why) => sink.add("P07", why),
+        }
+        for (name, value) in vars {
+            if value.len() >= LITERAL_MIN && text.contains(value.as_str()) {
+                sink.add(
+                    "P08",
+                    format!("the value of {name} is written out; use {{{{{name}}}}}"),
+                );
+            }
+        }
+        if looks_secret(text) {
+            sink.add(
+                "P11",
+                "text looks like a secret written out; use {\"secret\": \"name\"}".to_owned(),
+            );
+        }
+    }
+    for req in &step.requires {
+        if req == &step.id {
+            sink.add("P09", "requires itself".to_owned());
+        } else if !ids.contains(req) {
+            sink.add("P09", format!("requires unknown step {req:?}"));
+        }
+    }
+}
+
+/// Read a spec. Every problem is reported, not only the first.
+pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
+    let mut out = Vec::new();
+    let Some(obj) = spec.as_object() else {
+        return Err(vec![top("P01", "spec must be an object".to_owned())]);
+    };
+    for k in obj.keys() {
+        if !TOP_KEYS.contains(&k.as_str()) {
+            out.push(top("P10", format!("spec: unknown key {k:?}")));
+        }
+    }
+    if obj.get("version").and_then(Value::as_u64) != Some(VERSION) {
+        out.push(top("P01", format!("version must be {VERSION}")));
+    }
+    let vars = parse_vars(obj.get("vars"), &mut out);
 
     let mut steps: Vec<Step> = Vec::new();
-    let mut raw_ids: BTreeSet<String> = BTreeSet::new();
-    match top.get("steps").and_then(Value::as_array) {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    match obj.get("steps").and_then(Value::as_array) {
         Some(arr) if !arr.is_empty() => {
             for (i, item) in arr.iter().enumerate() {
                 if let Some(id) = item.get("id").and_then(Value::as_str) {
-                    if !raw_ids.insert(id.to_owned()) {
-                        out.push(finding(
-                            "P02",
-                            Some(id),
-                            "id used more than once".to_owned(),
-                        ));
+                    if !ids.insert(id.to_owned()) {
+                        out.push(Finding {
+                            code: "P02",
+                            step: Some(id.to_owned()),
+                            msg: "id used more than once".to_owned(),
+                        });
                         continue;
                     }
                 }
@@ -737,107 +1021,39 @@ pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
                 }
             }
         }
-        _ => out.push(finding(
-            "P01",
-            None,
-            "steps must be a non-empty list".to_owned(),
-        )),
+        _ => out.push(top("P01", "steps must be a non-empty list".to_owned())),
     }
-
     for step in &steps {
-        for text in step_texts(step) {
-            match placeholders(text) {
-                Ok(names) => {
-                    for name in names {
-                        if !vars.iter().any(|(n, _)| n == name) {
-                            out.push(finding(
-                                "P07",
-                                Some(step.id.as_str()),
-                                format!("{{{{{name}}}}} is not defined in vars"),
-                            ));
-                        }
-                    }
-                }
-                Err(why) => out.push(finding("P07", Some(step.id.as_str()), why)),
-            }
-            for (name, value) in &vars {
-                if value.len() >= LITERAL_MIN && text.contains(value.as_str()) {
-                    out.push(finding(
-                        "P08",
-                        Some(step.id.as_str()),
-                        format!("the value of {name} is written out; use {{{{{name}}}}}"),
-                    ));
-                }
-            }
-        }
-        for req in &step.requires {
-            if req == &step.id {
-                out.push(finding(
-                    "P09",
-                    Some(step.id.as_str()),
-                    "requires itself".to_owned(),
-                ));
-            } else if !raw_ids.contains(req) {
-                out.push(finding(
-                    "P09",
-                    Some(step.id.as_str()),
-                    format!("requires unknown step {req:?}"),
-                ));
-            }
-        }
+        check_texts(step, &vars, &ids, &mut out);
     }
-
     if !out.is_empty() {
         return Err(out);
     }
     match order(&steps) {
         Ok(order) => Ok(Spec { vars, steps, order }),
-        Err(left) => Err(vec![finding(
+        Err(left) => Err(vec![top(
             "P09",
-            None,
             format!("requires form a cycle among: {}", left.join(", ")),
         )]),
     }
 }
 
-/// One step of a plan: variables filled in, ready to show to a person or to run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanStep {
-    /// Step id.
-    pub id: String,
-    /// Approval level.
-    pub level: Level,
-    /// Check, run or manual.
-    pub kind: Kind,
-    /// One line for a person.
-    pub title: String,
-    /// Commands or instructions.
-    pub apply: Vec<String>,
-    /// Checks.
-    pub verify: Vec<Verify>,
-    /// The way back.
-    pub recovery: Recovery,
-    /// What the step destroys.
-    pub destroys: Option<String>,
-}
-
-/// An ordered plan and the hash an approval is bound to (§1.3: an approval covers this
-/// plan and no other; any change to a step, a variable or the starting point changes it).
+/// An ordered plan: steps in run order with the variables filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    steps: Vec<PlanStep>,
-    hash: String,
+    steps: Vec<Step>,
+    id: String,
 }
 
 impl Plan {
     /// Steps in the order they run.
-    pub fn steps(&self) -> &[PlanStep] {
+    pub fn steps(&self) -> &[Step] {
         &self.steps
     }
 
-    /// 16 hex digits over the rendered steps.
-    pub fn hash(&self) -> &str {
-        &self.hash
+    /// 16 hex digits over the rendered steps. An identifier, not a security hash.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// Ids of the steps a person must approve.
@@ -849,13 +1065,28 @@ impl Plan {
             .collect()
     }
 
-    /// The plan as JSON: `{"plan_hash", "steps": [...]}`.
+    /// The plan as JSON: `{"plan_id", "steps": [...]}`. Secrets appear as references.
     pub fn to_json(&self) -> Value {
-        json!({ "plan_hash": self.hash, "steps": steps_json(&self.steps) })
+        json!({ "plan_id": self.id, "steps": steps_json(&self.steps) })
     }
 }
 
-fn steps_json(steps: &[PlanStep]) -> Value {
+fn command_json(c: &Command) -> Value {
+    match c {
+        Command::Argv(args) => Value::Array(
+            args.iter()
+                .map(|a| match a {
+                    Arg::Text(t) => Value::String(t.clone()),
+                    Arg::Secret(n) => json!({ "secret": n }),
+                })
+                .collect(),
+        ),
+        Command::Shell { sh, why } => json!({ "sh": sh, "why": why }),
+    }
+}
+
+fn steps_json(steps: &[Step]) -> Value {
+    let commands = |cs: &[Command]| Value::Array(cs.iter().map(command_json).collect());
     Value::Array(
         steps
             .iter()
@@ -869,31 +1100,102 @@ fn steps_json(steps: &[PlanStep]) -> Value {
                             Expect::Eq(t) => json!({ "eq": t }),
                             Expect::Contains(t) => json!({ "contains": t }),
                         };
-                        json!({ "run": v.run, "expect": expect, "active": v.active })
+                        json!({ "run": command_json(&v.run), "expect": expect, "active": v.active })
                     })
                     .collect();
                 let recovery = match &s.recovery {
                     Recovery::None => json!({ "kind": "none" }),
-                    Recovery::Rollback(run) => json!({ "kind": "rollback", "run": run }),
+                    Recovery::Rollback(run) => json!({ "kind": "rollback", "run": commands(run) }),
+                    Recovery::Rescue(path) => json!({ "kind": "rescue", "path": path }),
                     Recovery::Unsupported(path) => json!({ "kind": "unsupported", "path": path }),
+                };
+                let disruption = match s.disruption {
+                    Disruption::None => json!({ "kind": "none" }),
+                    Disruption::Network {
+                        reconnect_timeout_s,
+                        auto_revert_s,
+                    } => json!({ "kind": "network", "reconnect_timeout_s": reconnect_timeout_s,
+                                 "auto_revert_s": auto_revert_s }),
+                    Disruption::Reboot {
+                        reconnect_timeout_s,
+                    } => json!({ "kind": "reboot", "reconnect_timeout_s": reconnect_timeout_s }),
                 };
                 json!({
                     "id": s.id,
                     "level": s.level.as_str(),
                     "kind": s.kind.as_str(),
                     "title": s.title,
-                    "apply": s.apply,
+                    "apply": commands(&s.apply),
+                    "instructions": s.instructions,
                     "verify": verify,
                     "recovery": recovery,
                     "destroys": s.destroys,
+                    "disruption": disruption,
+                    "detach": s.detach,
+                    "consent": s.consent,
                 })
             })
             .collect(),
     )
 }
 
+fn render_command(c: &Command, vars: &[(String, String)]) -> Command {
+    match c {
+        Command::Argv(args) => Command::Argv(
+            args.iter()
+                .map(|a| match a {
+                    Arg::Text(t) => Arg::Text(render(t, vars)),
+                    Arg::Secret(n) => Arg::Secret(n.clone()),
+                })
+                .collect(),
+        ),
+        Command::Shell { sh, why } => Command::Shell {
+            sh: render(sh, vars),
+            why: why.clone(),
+        },
+    }
+}
+
+fn render_step(s: &Step, vars: &[(String, String)]) -> Step {
+    let r = |t: &str| render(t, vars);
+    let rc = |c: &Command| render_command(c, vars);
+    Step {
+        id: s.id.clone(),
+        level: s.level,
+        kind: s.kind,
+        title: r(&s.title),
+        requires: s.requires.clone(),
+        apply: s.apply.iter().map(rc).collect(),
+        instructions: s.instructions.iter().map(|t| r(t)).collect(),
+        verify: s
+            .verify
+            .iter()
+            .map(|v| Verify {
+                run: rc(&v.run),
+                expect: match &v.expect {
+                    Expect::Rc(n) => Expect::Rc(*n),
+                    Expect::Eq(t) => Expect::Eq(r(t)),
+                    Expect::Contains(t) => Expect::Contains(r(t)),
+                },
+                active: v.active,
+            })
+            .collect(),
+        recovery: match &s.recovery {
+            Recovery::None => Recovery::None,
+            Recovery::Rollback(run) => Recovery::Rollback(run.iter().map(rc).collect()),
+            Recovery::Rescue(path) => Recovery::Rescue(r(path)),
+            Recovery::Unsupported(path) => Recovery::Unsupported(r(path)),
+        },
+        destroys: s.destroys.as_deref().map(r),
+        disruption: s.disruption,
+        detach: s.detach,
+        consent: s.consent.as_deref().map(r),
+    }
+}
+
 /// Order the steps and fill in the variables. With `from`, the plan starts at that step
-/// (in run order) and assumes everything before it is done; an unknown id is refused.
+/// (in run order); an unknown id is refused. Starting later does **not** mean the earlier
+/// steps are trusted: whoever runs the plan re-verifies what the first step requires.
 pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
     let mut start = 0;
     if let Some(from) = from {
@@ -901,45 +1203,14 @@ pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
             .order
             .iter()
             .position(|&i| spec.steps[i].id == from)
-            .ok_or_else(|| finding("P09", None, format!("--from names unknown step {from:?}")))?;
+            .ok_or_else(|| top("P09", format!("--from names unknown step {from:?}")))?;
     }
-    let r = |t: &str| render(t, &spec.vars);
-    let steps: Vec<PlanStep> = spec.order[start..]
+    let steps: Vec<Step> = spec.order[start..]
         .iter()
-        .map(|&i| {
-            let s = &spec.steps[i];
-            PlanStep {
-                id: s.id.clone(),
-                level: s.level,
-                kind: s.kind,
-                title: r(&s.title),
-                apply: s.apply.iter().map(|t| r(t)).collect(),
-                verify: s
-                    .verify
-                    .iter()
-                    .map(|v| Verify {
-                        run: r(&v.run),
-                        expect: match &v.expect {
-                            Expect::Rc(n) => Expect::Rc(*n),
-                            Expect::Eq(t) => Expect::Eq(r(t)),
-                            Expect::Contains(t) => Expect::Contains(r(t)),
-                        },
-                        active: v.active,
-                    })
-                    .collect(),
-                recovery: match &s.recovery {
-                    Recovery::None => Recovery::None,
-                    Recovery::Rollback(run) => {
-                        Recovery::Rollback(run.iter().map(|t| r(t)).collect())
-                    }
-                    Recovery::Unsupported(path) => Recovery::Unsupported(r(path)),
-                },
-                destroys: s.destroys.as_deref().map(&r),
-            }
-        })
+        .map(|&i| render_step(&spec.steps[i], &spec.vars))
         .collect();
-    let hash = crate::isolation::fnv1a64(steps_json(&steps).to_string().as_bytes());
-    Ok(Plan { steps, hash })
+    let id = crate::isolation::fnv1a64(steps_json(&steps).to_string().as_bytes());
+    Ok(Plan { steps, id })
 }
 
 #[cfg(test)]
@@ -953,18 +1224,19 @@ mod tests {
             "vars": { "hostname": "host1", "public_ipv4": "203.0.113.10", "vg": "vg0" },
             "steps": [
                 { "id": "B0.precheck", "level": "L0", "kind": "check", "title": "host is {{hostname}}",
-                  "verify": [ { "run": "hostname -f", "expect": { "eq": "{{hostname}}" } } ] },
+                  "verify": [ { "run": ["hostname", "-f"], "expect": { "eq": "{{hostname}}" } } ] },
                 { "id": "B2.repo", "level": "L1", "kind": "run", "title": "package source",
                   "requires": ["B0.precheck"],
-                  "apply": ["apt-get update"],
-                  "verify": [ { "run": "apt-cache policy proxmox-ve", "expect": { "rc": 0 } } ],
-                  "recovery": { "kind": "rollback", "run": ["rm /etc/apt/sources.list.d/pve.sources"] } },
+                  "apply": [ ["apt-get", "update"] ],
+                  "verify": [ { "run": ["apt-cache", "policy", "proxmox-ve"], "expect": { "rc": 0 } } ],
+                  "recovery": { "kind": "rollback", "run": [ ["rm", "/etc/apt/sources.list.d/pve.sources"] ] } },
                 { "id": "A.reinstall", "level": "L2", "kind": "manual", "title": "reinstall",
                   "requires": ["B2.repo"],
                   "apply": ["boot the rescue system and run installimage"],
-                  "verify": [ { "run": "ping -c1 {{public_ipv4}}", "expect": { "rc": 0 }, "active": true } ],
+                  "verify": [ { "run": ["ping", "-c1", "{{public_ipv4}}"], "expect": { "rc": 0 }, "active": true } ],
                   "recovery": { "kind": "unsupported", "path": "install again" },
-                  "destroys": "everything on both disks" }
+                  "destroys": "everything on both disks",
+                  "consent": "reinstall {{hostname}}" }
             ]
         })
     }
@@ -973,8 +1245,16 @@ mod tests {
         lint(spec).unwrap_err().iter().map(|f| f.code).collect()
     }
 
-    fn step_mut(spec: &mut Value, i: usize) -> &mut Map<String, Value> {
-        spec["steps"][i].as_object_mut().unwrap()
+    /// The good spec with one key of one step replaced (or removed with `Value::Null`).
+    fn with(i: usize, key: &str, value: Value) -> Value {
+        let mut v = good();
+        let step = v["steps"][i].as_object_mut().unwrap();
+        if value.is_null() {
+            step.remove(key);
+        } else {
+            step.insert(key.to_owned(), value);
+        }
+        v
     }
 
     #[test]
@@ -985,56 +1265,83 @@ mod tests {
         let ids: Vec<&str> = plan.steps().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["B0.precheck", "B2.repo", "A.reinstall"]);
         assert_eq!(plan.needs_approval(), ["A.reinstall"]);
-        assert_eq!(plan.hash().len(), 16);
+        assert_eq!(plan.id().len(), 16);
     }
 
     #[test]
     fn plan_fills_variables_everywhere() {
-        let spec = lint(&good()).unwrap();
-        let plan = plan(&spec, None).unwrap();
+        let plan = plan(&lint(&good()).unwrap(), None).unwrap();
         assert_eq!(plan.steps()[0].title, "host is host1");
         assert_eq!(
             plan.steps()[0].verify[0].expect,
             Expect::Eq("host1".to_owned())
         );
-        assert_eq!(plan.steps()[2].verify[0].run, "ping -c1 203.0.113.10");
+        assert_eq!(
+            plan.steps()[2].verify[0].run,
+            Command::Argv(vec![
+                Arg::Text("ping".to_owned()),
+                Arg::Text("-c1".to_owned()),
+                Arg::Text("203.0.113.10".to_owned())
+            ])
+        );
         assert!(plan.steps()[2].verify[0].active);
+        assert_eq!(plan.steps()[2].consent.as_deref(), Some("reinstall host1"));
+        assert_eq!(plan.steps()[2].instructions.len(), 1);
         assert!(!plan.to_json().to_string().contains("{{"));
+    }
+
+    #[test]
+    fn a_variable_cannot_add_arguments() {
+        let mut v = good();
+        v["vars"]["public_ipv4"] = json!("203.0.113.10 --force; reboot");
+        let plan = plan(&lint(&v).unwrap(), None).unwrap();
+        let Command::Argv(args) = &plan.steps()[2].verify[0].run else {
+            panic!("argv expected");
+        };
+        assert_eq!(args.len(), 3);
     }
 
     #[test]
     fn order_follows_requires_not_position() {
         let mut v = good();
-        let steps = v["steps"].as_array_mut().unwrap();
-        steps.reverse();
-        let spec = lint(&v).unwrap();
-        let plan = plan(&spec, None).unwrap();
+        v["steps"].as_array_mut().unwrap().reverse();
+        let plan = plan(&lint(&v).unwrap(), None).unwrap();
         let ids: Vec<&str> = plan.steps().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["B0.precheck", "B2.repo", "A.reinstall"]);
     }
 
     #[test]
-    fn from_starts_there_and_changes_the_hash() {
+    fn from_starts_there_and_changes_the_id() {
         let spec = lint(&good()).unwrap();
         let all = plan(&spec, None).unwrap();
         let tail = plan(&spec, Some("B2.repo")).unwrap();
         assert_eq!(tail.steps().len(), 2);
-        assert_ne!(all.hash(), tail.hash());
+        assert_ne!(all.id(), tail.id());
         assert_eq!(plan(&spec, Some("nope")).unwrap_err().code, "P09");
     }
 
     #[test]
-    fn hash_moves_with_a_variable_and_with_a_command() {
+    fn id_moves_with_a_variable_and_with_a_command() {
         let base = plan(&lint(&good()).unwrap(), None).unwrap();
         let mut v = good();
         v["vars"]["hostname"] = json!("host2");
-        assert_ne!(plan(&lint(&v).unwrap(), None).unwrap().hash(), base.hash());
-        let mut v = good();
-        step_mut(&mut v, 1).insert("apply".to_owned(), json!(["apt-get update -q"]));
-        assert_ne!(plan(&lint(&v).unwrap(), None).unwrap().hash(), base.hash());
+        assert_ne!(plan(&lint(&v).unwrap(), None).unwrap().id(), base.id());
+        let v = with(1, "apply", json!([["apt-get", "update", "-q"]]));
+        assert_ne!(plan(&lint(&v).unwrap(), None).unwrap().id(), base.id());
+        assert_eq!(plan(&lint(&good()).unwrap(), None).unwrap().id(), base.id());
+    }
+
+    #[test]
+    fn secrets_stay_references() {
+        let v = with(
+            1,
+            "apply",
+            json!([["tailscale", "up", "--authkey", { "secret": "tailscale-authkey" }]]),
+        );
+        let plan = plan(&lint(&v).unwrap(), None).unwrap();
         assert_eq!(
-            plan(&lint(&good()).unwrap(), None).unwrap().hash(),
-            base.hash()
+            plan.to_json()["steps"][1]["apply"][0][3],
+            json!({ "secret": "tailscale-authkey" })
         );
     }
 
@@ -1054,131 +1361,191 @@ mod tests {
 
     #[test]
     fn p02_duplicate_and_malformed_ids() {
-        let mut v = good();
-        step_mut(&mut v, 1).insert("id".to_owned(), json!("B0.precheck"));
-        assert!(codes(&v).contains(&"P02"));
-        let mut v = good();
-        step_mut(&mut v, 0).insert("id".to_owned(), json!("has space"));
-        assert!(codes(&v).contains(&"P02"));
-        let mut v = good();
-        step_mut(&mut v, 0).remove("id");
-        assert!(codes(&v).contains(&"P02"));
+        assert!(codes(&with(1, "id", json!("B0.precheck"))).contains(&"P02"));
+        assert!(codes(&with(0, "id", json!("has space"))).contains(&"P02"));
+        assert!(codes(&with(0, "id", Value::Null)).contains(&"P02"));
     }
 
     #[test]
-    fn p03_p04_level_and_kind() {
-        let mut v = good();
-        step_mut(&mut v, 0).insert("level".to_owned(), json!("L3"));
+    fn p03_level_unknown_or_too_low() {
+        assert_eq!(codes(&with(0, "level", json!("L3"))), ["P03"]);
+        // destroying something as L1
+        let mut v = with(2, "level", json!("L1"));
+        v["steps"][2].as_object_mut().unwrap().remove("consent");
         assert_eq!(codes(&v), ["P03"]);
-        let mut v = good();
-        step_mut(&mut v, 0).insert("kind".to_owned(), json!("cmd"));
-        assert_eq!(codes(&v), ["P04"]);
-        // a check that claims to write, and a write that claims to be read-only
-        let mut v = good();
-        step_mut(&mut v, 0).insert("level".to_owned(), json!("L1"));
-        assert_eq!(codes(&v), ["P04"]);
-        let mut v = good();
-        step_mut(&mut v, 0).insert("apply".to_owned(), json!(["rm -rf /tmp/x"]));
-        assert_eq!(codes(&v), ["P04"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert("level".to_owned(), json!("L0"));
-        assert_eq!(codes(&v), ["P04"]);
-        let mut v = good();
-        step_mut(&mut v, 1).remove("apply");
-        assert_eq!(codes(&v), ["P04"]);
+        // rebooting as L1
+        let v = with(
+            1,
+            "disruption",
+            json!({ "kind": "reboot", "reconnect_timeout_s": 300 }),
+        );
+        assert_eq!(codes(&v), ["P03"]);
+    }
+
+    #[test]
+    fn p04_kind_and_level_must_agree() {
+        assert_eq!(codes(&with(0, "kind", json!("cmd"))), ["P04"]);
+        assert_eq!(codes(&with(0, "level", json!("L1"))), ["P04"]);
+        assert_eq!(
+            codes(&with(0, "apply", json!([["rm", "-rf", "/tmp/x"]]))),
+            ["P04"]
+        );
+        assert_eq!(codes(&with(0, "detach", json!(true))), ["P04"]);
+        assert_eq!(codes(&with(1, "level", json!("L0"))), ["P04"]);
+        assert_eq!(codes(&with(1, "apply", Value::Null)), ["P04"]);
     }
 
     #[test]
     fn p05_verify_must_be_decidable() {
-        let mut v = good();
-        step_mut(&mut v, 1).remove("verify");
-        assert_eq!(codes(&v), ["P05"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert("verify".to_owned(), json!(["rc 0"]));
-        assert_eq!(codes(&v), ["P05"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert(
-            "verify".to_owned(),
-            json!([{ "run": "true", "expect": { "rc": 0, "eq": "x" } }]),
-        );
-        assert_eq!(codes(&v), ["P05"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert(
-            "verify".to_owned(),
-            json!([{ "run": "true", "expect": { "rc": "zero" } }]),
-        );
-        assert_eq!(codes(&v), ["P05"]);
+        assert_eq!(codes(&with(1, "verify", Value::Null)), ["P05"]);
+        assert_eq!(codes(&with(1, "verify", json!(["rc 0"]))), ["P05"]);
+        let two = json!([{ "run": ["true"], "expect": { "rc": 0, "eq": "x" } }]);
+        assert_eq!(codes(&with(1, "verify", two)), ["P05"]);
+        let wrong = json!([{ "run": ["true"], "expect": { "rc": "zero" } }]);
+        assert_eq!(codes(&with(1, "verify", wrong)), ["P05"]);
+        let none = json!([{ "run": ["true"] }]);
+        assert_eq!(codes(&with(1, "verify", none)), ["P05"]);
     }
 
     #[test]
     fn p06_writes_need_an_explicit_way_back() {
-        let mut v = good();
-        step_mut(&mut v, 1).remove("recovery");
-        assert_eq!(codes(&v), ["P06"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert("recovery".to_owned(), json!({ "kind": "rollback" }));
-        assert_eq!(codes(&v), ["P06"]);
-        let mut v = good();
-        step_mut(&mut v, 2).insert("recovery".to_owned(), json!({ "kind": "unsupported" }));
-        assert_eq!(codes(&v), ["P06"]);
-        let mut v = good();
-        step_mut(&mut v, 2).insert("recovery".to_owned(), json!({ "kind": "none" }));
-        assert_eq!(codes(&v), ["P06"]);
+        assert_eq!(codes(&with(1, "recovery", Value::Null)), ["P06"]);
+        assert_eq!(
+            codes(&with(1, "recovery", json!({ "kind": "rollback" }))),
+            ["P06"]
+        );
+        assert_eq!(
+            codes(&with(2, "recovery", json!({ "kind": "unsupported" }))),
+            ["P06"]
+        );
+        assert_eq!(
+            codes(&with(2, "recovery", json!({ "kind": "none" }))),
+            ["P06"]
+        );
+        let rescue = json!({ "kind": "rescue", "path": "boot rescue, chroot, reinstall grub" });
+        assert!(lint(&with(2, "recovery", rescue)).is_ok());
     }
 
     #[test]
-    fn p07_undefined_and_unclosed_placeholders() {
-        let mut v = good();
-        step_mut(&mut v, 1).insert("apply".to_owned(), json!(["echo {{nope}}"]));
-        assert_eq!(codes(&v), ["P07"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert("apply".to_owned(), json!(["echo {{hostname"]));
+    fn p07_placeholders_and_shell_values() {
+        assert_eq!(
+            codes(&with(1, "apply", json!([["echo", "{{nope}}"]]))),
+            ["P07"]
+        );
+        assert_eq!(
+            codes(&with(1, "apply", json!([["echo", "{{hostname"]]))),
+            ["P07"]
+        );
+        // a plain value may be used inside a shell line; a value with a space may not
+        let sh = json!([{ "sh": "echo {{hostname}} | tee /etc/hostname", "why": "pipe" }]);
+        assert!(lint(&with(1, "apply", sh.clone())).is_ok());
+        let mut v = with(1, "apply", sh);
+        v["vars"]["hostname"] = json!("host1; reboot");
         assert_eq!(codes(&v), ["P07"]);
     }
 
     #[test]
     fn p08_host_values_are_not_written_out() {
-        let mut v = good();
-        step_mut(&mut v, 1).insert("apply".to_owned(), json!(["curl http://203.0.113.10/"]));
+        let v = with(1, "apply", json!([["curl", "http://203.0.113.10/"]]));
         assert_eq!(codes(&v), ["P08"]);
         // short values are ordinary words: "vg0" in a command is not a finding
-        let mut v = good();
-        step_mut(&mut v, 1).insert("apply".to_owned(), json!(["vgs vg0"]));
-        assert!(lint(&v).is_ok());
+        assert!(lint(&with(1, "apply", json!([["vgs", "vg0"]]))).is_ok());
     }
 
     #[test]
     fn p09_requires_unknown_self_and_cycle() {
-        let mut v = good();
-        step_mut(&mut v, 1).insert("requires".to_owned(), json!(["nope"]));
-        assert_eq!(codes(&v), ["P09"]);
-        let mut v = good();
-        step_mut(&mut v, 1).insert("requires".to_owned(), json!(["B2.repo"]));
-        assert_eq!(codes(&v), ["P09"]);
-        let mut v = good();
-        step_mut(&mut v, 0).insert("requires".to_owned(), json!(["A.reinstall"]));
-        let found = lint(&v).unwrap_err();
+        assert_eq!(codes(&with(1, "requires", json!(["nope"]))), ["P09"]);
+        assert_eq!(codes(&with(1, "requires", json!(["B2.repo"]))), ["P09"]);
+        let found = lint(&with(0, "requires", json!(["A.reinstall"]))).unwrap_err();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].code, "P09");
         assert!(found[0].msg.contains("cycle"));
     }
 
     #[test]
-    fn p10_unknown_keys_are_typos() {
-        let mut v = good();
-        step_mut(&mut v, 1).insert("verfy".to_owned(), json!([]));
-        assert_eq!(codes(&v), ["P10"]);
+    fn p10_unknown_keys_and_ledger_status() {
+        assert_eq!(codes(&with(1, "verfy", json!([]))), ["P10"]);
+        assert_eq!(codes(&with(1, "status", json!("done@2026-11-09"))), ["P10"]);
         let mut v = good();
         v["stages"] = json!([]);
         assert_eq!(codes(&v), ["P10"]);
     }
 
     #[test]
+    fn p11_commands_are_argument_lists() {
+        assert_eq!(
+            codes(&with(1, "apply", json!(["apt-get update"]))),
+            ["P11", "P04"]
+        );
+        assert_eq!(codes(&with(1, "apply", json!([[]]))), ["P11", "P04"]);
+        assert_eq!(
+            codes(&with(1, "apply", json!([["apt-get", 3]]))),
+            ["P11", "P04"]
+        );
+        assert_eq!(
+            codes(&with(1, "apply", json!([[{ "secret": "k" }, "x"]]))),
+            ["P11", "P04"]
+        );
+        assert_eq!(
+            codes(&with(1, "apply", json!([{ "sh": "a | b" }]))),
+            ["P11", "P04"]
+        );
+        let verify = json!([{ "run": "apt-cache policy", "expect": { "rc": 0 } }]);
+        assert_eq!(codes(&with(1, "verify", verify)), ["P11"]);
+    }
+
+    #[test]
+    fn p11_secrets_are_not_written_out() {
+        let key = "tskey-kQ9x7Lm2aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zAb4Cd6Ef8";
+        let v = with(1, "apply", json!([["tailscale", "up", "--authkey", key]]));
+        assert_eq!(codes(&v), ["P11"]);
+        let pem = with(
+            1,
+            "apply",
+            json!([["tee", "-----BEGIN OPENSSH PRIVATE KEY-----"]]),
+        );
+        assert_eq!(codes(&pem), ["P11"]);
+        // a sha256 checksum is hex and is fine
+        let sum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        assert!(lint(&with(1, "apply", json!([["sha256sum", "-c", sum]]))).is_ok());
+    }
+
+    #[test]
+    fn p12_disruption_and_consent() {
+        // a network change must say how long to wait and when the host reverts by itself
+        let v = with(
+            1,
+            "disruption",
+            json!({ "kind": "network", "reconnect_timeout_s": 60 }),
+        );
+        assert_eq!(codes(&v), ["P12"]);
+        let v = with(1, "disruption", json!({ "kind": "reboot" }));
+        assert_eq!(codes(&v), ["P12"]);
+        let v = with(
+            1,
+            "disruption",
+            json!({ "kind": "network", "reconnect_timeout_s": 60, "auto_revert_s": 99999 }),
+        );
+        assert_eq!(codes(&v), ["P12"]);
+        let ok = json!({ "kind": "network", "reconnect_timeout_s": 60, "auto_revert_s": 180 });
+        let spec = lint(&with(1, "disruption", ok)).unwrap();
+        assert_eq!(
+            spec.steps()[1].disruption,
+            Disruption::Network {
+                reconnect_timeout_s: 60,
+                auto_revert_s: 180
+            }
+        );
+        // L2 without the sentence; the sentence on a step that is not L2
+        assert_eq!(codes(&with(2, "consent", Value::Null)), ["P12"]);
+        assert_eq!(codes(&with(1, "consent", json!("yes"))), ["P12"]);
+    }
+
+    #[test]
     fn every_problem_is_reported_at_once() {
-        let mut v = good();
-        step_mut(&mut v, 0).insert("level".to_owned(), json!("L9"));
-        step_mut(&mut v, 1).remove("recovery");
-        step_mut(&mut v, 2).insert("apply".to_owned(), json!(["echo {{nope}}"]));
+        let mut v = with(0, "level", json!("L9"));
+        v["steps"][1].as_object_mut().unwrap().remove("recovery");
+        v["steps"][2]["apply"] = json!(["say {{nope}}"]);
         let got = codes(&v);
         assert!(
             got.contains(&"P03") && got.contains(&"P06") && got.contains(&"P07"),
@@ -1188,9 +1555,7 @@ mod tests {
 
     #[test]
     fn finding_prints_code_step_and_reason() {
-        let mut v = good();
-        step_mut(&mut v, 1).remove("recovery");
-        let found = lint(&v).unwrap_err();
+        let found = lint(&with(1, "recovery", Value::Null)).unwrap_err();
         let line = found[0].to_string();
         assert!(line.starts_with("P06 [B2.repo] "), "{line}");
     }
