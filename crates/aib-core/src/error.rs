@@ -49,10 +49,20 @@ pub enum ErrorCode {
     ProgramNotAllowed,
     /// The listed provider is an npm (node) install; only standalone signed builds run.
     ProviderInstallUnsupported,
+    /// A page credential that is not confirmed yet (ADR 0006 §7): only pair/status,
+    /// pair/revoke and health answer until the short code is confirmed in the terminal.
+    PairingUnconfirmed,
+    /// A pairing code was redeemed a second time; the first redemption's credential is
+    /// revoked too (ADR 0006 §7).
+    PairingCodeReused,
+    /// Too many failed pairing attempts in the window.
+    PairingRateLimited,
+    /// Pairing failed (unknown, expired or wrong code); deliberately says no more.
+    PairingFailed,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 19] = [
+    pub const ALL: [ErrorCode; 23] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -72,6 +82,10 @@ impl ErrorCode {
         ErrorCode::ProgramNotAllowed,
         ErrorCode::ProviderInstallUnsupported,
         ErrorCode::SessionQueueFull,
+        ErrorCode::PairingUnconfirmed,
+        ErrorCode::PairingCodeReused,
+        ErrorCode::PairingRateLimited,
+        ErrorCode::PairingFailed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -95,6 +109,10 @@ impl ErrorCode {
             ErrorCode::ProgramNotAllowed => "program_not_allowed",
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
             ErrorCode::SessionQueueFull => "session_queue_full",
+            ErrorCode::PairingUnconfirmed => "pairing_unconfirmed",
+            ErrorCode::PairingCodeReused => "pairing_code_reused",
+            ErrorCode::PairingRateLimited => "pairing_rate_limited",
+            ErrorCode::PairingFailed => "pairing_failed",
         }
     }
 
@@ -116,6 +134,10 @@ impl ErrorCode {
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,
             ErrorCode::ProgramNotAllowed | ErrorCode::ProviderInstallUnsupported => 403,
+            ErrorCode::PairingUnconfirmed => 403,
+            ErrorCode::PairingCodeReused => 409,
+            ErrorCode::PairingRateLimited => 429,
+            ErrorCode::PairingFailed => 401,
         }
     }
 }

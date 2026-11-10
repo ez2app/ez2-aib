@@ -521,6 +521,12 @@ jobs:
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
+      # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
+      # test red; the whole flow test is the positive path.
+      - name: pairing knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-pairing.sh
       - name: aib-sys job (Windows) 5x
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

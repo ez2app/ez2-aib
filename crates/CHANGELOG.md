@@ -5,6 +5,23 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- Pairing (ADR 0006 §7, W1 manual entry), **off by default**; `AIBD_PAIRING=terminal-unverified`
+  turns it on. `POST /api/v1/pair/codes` (start-up token) gives a 10-character code that a
+  person types into the page; the page redeems it with a form `POST /api/v1/pair/redeem`
+  (`Origin` `null` or aibd's own, ≤ 1 KiB, field `code`) and gets a page credential in the
+  exchange page body (no-store, no-referrer, CSP `default-src 'none'`). The credential is
+  restricted until the short code shown on the page (`GET /api/v1/pair/status`) and in the
+  terminal (`GET /api/v1/pair/codes/{id}`) is confirmed with
+  `POST /api/v1/pair/codes/{id}/confirm` (start-up token); until then only pair/status,
+  pair/revoke and health answer, everything else is `403 pairing_unconfirmed` (new). A second
+  redemption is `409 pairing_code_reused` (new) and revokes the first credential; failures are
+  `401 pairing_failed` (new, one message for all); 10 failures a minute per aibd give
+  `429 pairing_rate_limited` (new). Credentials live 12 h, only as SHA-256, in memory.
+  `Origin: null` is refused on every other path, even if listed. `/api/v1/metrics` has
+  `pairing {channel, failures_total, rate_limited_total, pairs}`. Known limits: the terminal
+  y/N confirmation does **not** stop an AI on the same OS account (it can read the token file
+  and confirm itself), so it is UNVERIFIED and opt-in; another local account can keep pairing
+  locked by sending wrong codes (rate limit is per aibd; visible in metrics).
 - Session queue (ADR 0005 §5): when every slot is taken a POST is no longer refused with
   `429 too_many_sessions`; it answers `202` with the session `pending` (no process, `pid` 0,
   event `session.queued` with its `position`). Waiting sessions start in arrival order as

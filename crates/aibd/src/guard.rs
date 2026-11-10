@@ -1,6 +1,13 @@
 //! Request guard applied to every route (ADR 0003). Order matters:
 //! Host (DNS rebinding) -> Origin -> token-in-URL -> bearer token.
+//!
+//! Since pairing (ADR 0006 §7) the bearer is either the start-up token or a page
+//! credential. A page credential never reaches `/api/v1/pair/codes*` (start-up token
+//! only), and until it is confirmed it reaches only pair/status, pair/revoke and health.
+//! `Origin: null` is accepted on `/api/v1/pair/redeem` only, and that endpoint accepts
+//! nothing else but `null` or aibd's own origin.
 
+use crate::pairing::{PageAccess, Pairing};
 use crate::token::Token;
 use aib_core::ErrorCode;
 use axum::body::Body;
@@ -10,12 +17,29 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 
-/// Paths reachable without the bearer token (Host/Origin still apply).
-const PUBLIC_PATHS: &[&str] = &["/api/v1/health"];
+pub const PAIR_CODES: &str = "/api/v1/pair/codes";
+pub const PAIR_REDEEM: &str = "/api/v1/pair/redeem";
+pub const PAIR_STATUS: &str = "/api/v1/pair/status";
+pub const PAIR_REVOKE: &str = "/api/v1/pair/revoke";
+
+/// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
+/// authenticated by the pairing code in its body.
+const PUBLIC_PATHS: &[&str] = &["/api/v1/health", PAIR_REDEEM];
+
+/// What an unconfirmed page credential may call (ADR 0006 §7); health is public anyway.
+const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE];
 
 /// Routes whose path may appear in logs. Anything else is logged as
 /// `UNMATCHED_PATH`, so a path like `/api/v1/<token>` never reaches the log.
-pub const LOGGED_ROUTES: &[&str] = &["/api/v1/health", "/api/v1/events", "/api/v1/metrics"];
+pub const LOGGED_ROUTES: &[&str] = &[
+    "/api/v1/health",
+    "/api/v1/events",
+    "/api/v1/metrics",
+    PAIR_CODES,
+    PAIR_REDEEM,
+    PAIR_STATUS,
+    PAIR_REVOKE,
+];
 pub const UNMATCHED_PATH: &str = "<unmatched>";
 
 /// Query parameter names that look like credentials; any of them is refused.
@@ -35,6 +59,20 @@ pub struct GuardConfig {
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
     pub token: Token,
+    /// aibd's own origins (`http://` + each allowed host); only pair/redeem uses them.
+    pub own_origins: Vec<String>,
+    pub pairing: Arc<Pairing>,
+}
+
+/// Who made the request; the guard puts it in the request extensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// No bearer (public paths).
+    Anonymous,
+    /// The start-up token (owner-only token file).
+    StartupToken,
+    /// A page credential from pairing.
+    Page(PageAccess),
 }
 
 impl GuardConfig {
@@ -43,11 +81,20 @@ impl GuardConfig {
         if ipv6 {
             allowed_hosts.push(format!("[::1]:{port}"));
         }
+        let own_origins = allowed_hosts.iter().map(|h| format!("http://{h}")).collect();
         GuardConfig {
             allowed_hosts,
             allowed_origins,
             token,
+            own_origins,
+            pairing: Arc::new(Pairing::default()),
         }
+    }
+
+    /// Use this pairing state (tests pass one with a fake clock).
+    pub fn with_pairing(mut self, pairing: Arc<Pairing>) -> Self {
+        self.pairing = pairing;
+        self
     }
 }
 
@@ -84,7 +131,7 @@ fn single_header(h: &HeaderMap, name: header::HeaderName) -> Result<Option<&str>
 
 /// `application/x-www-form-urlencoded` decoding: `+` is a space, `%XX` a byte.
 /// Invalid escapes are kept literally (the check below still sees them).
-fn form_decode(s: &str) -> String {
+pub(crate) fn form_decode(s: &str) -> String {
     fn hex(c: u8) -> Option<u8> {
         match c {
             b'0'..=b'9' => Some(c - b'0'),
@@ -171,7 +218,7 @@ pub fn loggable_method(m: &axum::http::Method) -> &'static str {
 
 pub async fn guard(
     State(cfg): State<Arc<GuardConfig>>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     let rid = request_id();
@@ -181,13 +228,17 @@ pub async fn guard(
     let verdict = check(&cfg, &req);
     let resp = match verdict {
         Err((code, msg)) => error_response(code, msg, &rid),
-        Ok(()) => next.run(req).await,
+        Ok(caller) => {
+            req.extensions_mut().insert(caller);
+            req.extensions_mut().insert(cfg.pairing.clone());
+            next.run(req).await
+        }
     };
     tracing::info!(request_id = %rid, %method, %path, status = resp.status().as_u16(), "request");
     resp
 }
 
-fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<(), (ErrorCode, &'static str)> {
+fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &'static str)> {
     let h = req.headers();
 
     let host = single_header(h, header::HOST)
@@ -204,12 +255,26 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<(), (ErrorCode, &'sta
         ));
     }
 
-    match single_header(h, header::ORIGIN) {
-        Err(_) => return Err((ErrorCode::OriginNotAllowed, "bad Origin header")),
-        Ok(Some(o)) if !cfg.allowed_origins.iter().any(|a| a == o) => {
-            return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"))
+    let path = req.uri().path();
+    let origin =
+        single_header(h, header::ORIGIN).map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
+    if path == PAIR_REDEEM {
+        // a browser form POST always sends Origin: `null` from a local file, or ours
+        let ok = origin.is_some_and(|o| {
+            o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))
+        });
+        if !ok {
+            return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"));
         }
-        _ => {}
+    } else {
+        match origin {
+            // `null` identifies nothing (sandboxed frames, data: pages, any local file)
+            Some("null") => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")),
+            Some(o) if !cfg.allowed_origins.iter().any(|a| a == o) => {
+                return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"))
+            }
+            _ => {}
+        }
     }
 
     let raw_path = req.uri().path();
@@ -235,8 +300,16 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<(), (ErrorCode, &'sta
         }
     }
 
-    if PUBLIC_PATHS.contains(&req.uri().path()) {
-        return Ok(());
+    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {
+        // pairing codes and credentials travel only in bodies and headers
+        return Err((
+            ErrorCode::TokenInUrl,
+            "credentials must not be sent in the URL",
+        ));
+    }
+
+    if PUBLIC_PATHS.contains(&path) {
+        return Ok(Caller::Anonymous);
     }
     let auth = single_header(h, header::AUTHORIZATION)
         .map_err(|_| (ErrorCode::Unauthorized, "bad Authorization header"))?
@@ -244,8 +317,20 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<(), (ErrorCode, &'sta
     let presented = auth
         .strip_prefix("Bearer ")
         .ok_or((ErrorCode::Unauthorized, "expected Bearer token"))?;
-    if !cfg.token.matches(presented) {
-        return Err((ErrorCode::Unauthorized, "wrong token"));
+    if cfg.token.matches(presented) {
+        return Ok(Caller::StartupToken);
     }
-    Ok(())
+    let Some(page) = cfg.pairing.access(presented) else {
+        return Err((ErrorCode::Unauthorized, "wrong token"));
+    };
+    if path == PAIR_CODES || path.starts_with("/api/v1/pair/codes/") {
+        return Err((ErrorCode::Unauthorized, "this endpoint takes the start-up token only"));
+    }
+    if !page.confirmed && !UNCONFIRMED_PATHS.contains(&path) {
+        return Err((
+            ErrorCode::PairingUnconfirmed,
+            "confirm the short code in the terminal first",
+        ));
+    }
+    Ok(Caller::Page(page))
 }

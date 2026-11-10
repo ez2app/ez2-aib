@@ -9,6 +9,8 @@ pub mod api;
 pub mod config;
 pub mod guard;
 pub mod lineage;
+pub mod pair_api;
+pub mod pairing;
 pub mod platform;
 pub mod runtime;
 pub mod seats;

@@ -51,4 +51,17 @@ mod tests {
         assert!(!a.matches(""));
         assert_eq!(format!("{a:?}"), "Token(<redacted>)");
     }
+
+    /// Timing is not measurable reliably here; the rule is checked on the source.
+    #[test]
+    fn start_up_token_is_compared_in_constant_time() {
+        let src = include_str!("token.rs");
+        let body = src
+            .split("pub fn matches(")
+            .nth(1)
+            .and_then(|s| s.split("#[cfg(test)]").next())
+            .unwrap();
+        assert!(body.contains(".ct_eq(presented.as_bytes())"));
+        assert!(!body.contains("=="));
+    }
 }
