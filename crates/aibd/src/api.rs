@@ -25,6 +25,8 @@ pub struct AppState {
     pub sessions: Arc<crate::sessions::Sessions>,
     /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
     pub session_policy: Arc<crate::config::SessionPolicy>,
+    /// The thermal guard (R1, dry run); `None` = no sensor on this machine.
+    pub thermal: Option<Arc<crate::thermal::Guard>>,
 }
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
@@ -78,9 +80,11 @@ async fn health() -> Json<serde_json::Value> {
 
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
 /// `unsupported`; `lineage.failures` counts M1 reads that failed after
-/// start-up (a process being gone is not a failure).
+/// start-up (a process being gone is not a failure). `thermal` is the
+/// guard's dry-run counters, or `null` when this machine has no sensor.
 async fn metrics(State(st): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"lineage": st.lineage.status()}))
+    let thermal = st.thermal.as_ref().map(|g| g.metrics());
+    Json(serde_json::json!({"lineage": st.lineage.status(), "thermal": thermal}))
 }
 
 async fn not_found() -> Response {

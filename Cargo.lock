@@ -132,6 +132,7 @@ dependencies = [
  "aib-core",
  "aib-store",
  "aib-sys",
+ "aib-thermal",
  "axum",
  "base64",
  "directories",

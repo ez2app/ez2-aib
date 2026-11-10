@@ -166,11 +166,19 @@ pub static SESSION_REJECT_FLUSH: Timer = Timer::operation(
     "when a window of folded spawn rejections closes, write how many were folded (a63ab 11-09 19:23, 1ced7 #593 M1)",
 );
 
+pub static THERMAL_SAMPLE: Timer = Timer::operation(
+    "thermal_sample",
+    secs(5),
+    secs(12 * 3600),
+    "sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SESSION_REJECT_FLUSH,
+    &THERMAL_SAMPLE,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,4 +309,27 @@ mod tests {
         drop(op);
         assert_eq!(TREE_CANCEL_WAIT.active(), before);
     }
+}
+
+/// Test-only timers (after the first `#[cfg(test)]`, so the registry test does
+/// not count them): the thermal sampler with a short period and lifetime.
+#[cfg(test)]
+pub(crate) mod test_timers {
+    use super::{ms, secs, Timer};
+
+    /// Short period and lifetime: the sampler's life and re-begin.
+    pub static THERMAL_FAST: Timer = Timer::operation(
+        "test.thermal_fast",
+        ms(20),
+        ms(120),
+        "thermal sampler life in tests",
+    );
+
+    /// One round, then asleep: tests that drive rounds by hand.
+    pub static THERMAL_SLOW: Timer = Timer::operation(
+        "test.thermal_slow",
+        secs(3600),
+        secs(7200),
+        "thermal sampler kept out of the way in tests",
+    );
 }

@@ -438,6 +438,51 @@ jobs:
           tt $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unknown);' \
             $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unsupported); // knife' \
             walk_releases_on_every_error_path
+      # R1 PR 3a step 2: the aibd thermal guard (dry run). Each knife must turn
+      # its own test red; a knife keeps every binding used (`&& false`).
+      - name: aibd thermal guard knives
+        if: env.RUN == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          tg() { python3 -I scripts/knife.py crates/aibd/src/thermal.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --lib "thermal::tests::$3"; }
+          # KG1 the dry run refuses POSTs (3a must never act)
+          tg '            launch_allowed: Arc::new(|| true),' \
+            '            launch_allowed: Arc::new(|| false), // knife' \
+            a_reap_is_only_recorded_and_names_the_newest_session
+          # KG2 a would-reap names the oldest session, not the newest (Q1)
+          tg '                .max_by(|a, b| a.started_at.cmp(&b.started_at))' \
+            '                .min_by(|a, b| a.started_at.cmp(&b.started_at)) // knife' \
+            a_reap_is_only_recorded_and_names_the_newest_session
+          # KG3 thermal.would_reap written every round for the same session
+          tg '                if *last == key && now - at < WOULD_REAP_EVERY_S {' \
+            '                if *last == key && now - at < WOULD_REAP_EVERY_S && false { // knife' \
+            a_reap_is_only_recorded_and_names_the_newest_session
+          # KG4 `unknown` switches T1 off for good (043dd #626 N1, a63ab Q3)
+          tg '        SysError::Unsupported | SysError::SpiMissing => T1::Off(err.tag()),' \
+            '        _ if true => T1::Off(err.tag()), // knife' \
+            an_unknown_t1_is_tried_again_after_ten_minutes_on_a_first_round
+          # KG5 T1 re-checked without waiting T1_RECHECK_S
+          tg '        let due = matches!(self.st().t1, Some(T1::Retry { at, .. }) if now - at >= T1_RECHECK_S);' \
+            '        let due = matches!(self.st().t1, Some(T1::Retry { at, .. }) if now - at >= 0.0); // knife' \
+            an_unknown_t1_is_tried_again_after_ten_minutes_on_a_first_round
+          # KG6 T1 re-checked on any round, not only the first after 0 -> n
+          tg $'        if first {\n            self.maybe_recheck_t1(now);' \
+            $'        if first || now >= 0.0 { // knife\n            self.maybe_recheck_t1(now);' \
+            an_unknown_t1_is_tried_again_after_ten_minutes_on_a_first_round
+          # KG7 no sensor at all still sets the guard up (a63ab #616 L1)
+          tg '        if matches!(t1, T1::Off(_)) && !t2_ok {' \
+            '        if matches!(t1, T1::Off(_)) && !t2_ok && false { // knife' \
+            no_sensor_at_all_sets_nothing_up
+          # KG8 the sampler keeps running with 0 sessions (ADR 0005 §1 condition 2)
+          tg '            if self.running.load(Ordering::SeqCst) == 0 {' \
+            '            if self.running.load(Ordering::SeqCst) == 0 && false { // knife' \
+            the_sampler_lives_with_the_sessions_and_begins_again_at_its_lifetime
+          # KG9 the sampler stops at the timer's maximum lifetime instead of beginning again (Q4)
+          tg '                drop(op);' \
+            $'                if true { self.sampling.store(false, Ordering::SeqCst); return; } // knife\n                drop(op);' \
+            the_sampler_lives_with_the_sessions_and_begins_again_at_its_lifetime
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its

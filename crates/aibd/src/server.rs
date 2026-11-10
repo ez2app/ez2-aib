@@ -102,12 +102,24 @@ pub async fn run(
     let session_policy = Arc::new(cfg.session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
+    // R1 thermal guard, dry run (ADR 0005 §1): before the router takes requests,
+    // so it hears the first 0 → 1. Its start-up T1 check reads sensors once.
+    let thermal = {
+        let (st, ss) = (store.clone(), sessions.clone());
+        tokio::task::spawn_blocking(move || {
+            crate::thermal::Guard::install(platform::thermal_info(), st, &ss)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
     let app = api::router(
         AppState {
             store,
             lineage,
             sessions: sessions.clone(),
             session_policy,
+            thermal,
         },
         guard_cfg,
     );

@@ -16,5 +16,6 @@ pub mod selfcheck;
 pub mod server;
 pub mod session_output;
 pub mod sessions;
+pub mod thermal;
 pub mod timers;
 pub mod token;

@@ -5,6 +5,18 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- Thermal guard, dry run (R1 PR 3a step 2, ADR 0005 §1): on macOS aibd now wires the guard
+  into the session hooks. While at least one of its own processes runs, one sampler thread
+  (new timer `thermal_sample`: 5 s, begun again at 12 h without a gap; it exists only while
+  sessions run) reads CPU die temperature (T1) and thermal pressure (T2) and runs
+  `aib_thermal::step`. It **only records**: `GET /api/v1/metrics` has a `thermal` object
+  (`mode: dry_run`, T1 state, error counts by tag, rounds, would-reap / would-nogo counts,
+  last decision), and the events `thermal.would_reap` (the most recently started running
+  session, at most once a minute per session) and `thermal.would_nogo` (on each change).
+  No session is stopped and no POST is refused (`launch_allowed` stays true) until PR 3b.
+  T1 `unsupported` / `spi_missing` turns T1 off until restart; any other failure is checked
+  again in the first round after 0 → n, at most every 10 minutes. With neither sensor (or
+  not macOS) the guard is not set up and `thermal` is `null`.
 - Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
   `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
   and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`
