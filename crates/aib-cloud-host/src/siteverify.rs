@@ -129,7 +129,9 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
 
 /// The checks of one site, from its record file. A record that is not complete is one red
 /// finding (`S00`): nothing else can be judged against values nobody recorded.
-fn site_checks(record_path: &std::path::Path) -> (String, Option<u32>, Vec<CheckResult>) {
+pub(crate) fn site_checks(
+    record_path: &std::path::Path,
+) -> (String, Option<u32>, Vec<CheckResult>) {
     let name = record_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

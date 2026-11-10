@@ -359,6 +359,14 @@ jobs:
           ck svc.rs '                if end > 0 {' \
              '                if end > usize::MAX - 1 { // knife' \
              secrets_do_not_leave_with_the_logs
+          # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
+          ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
+             '            .all(|c| c != 0)' \
+             everything_else_is_refused_whole
+          # customer entry: a request may carry extra words (another site, say)
+          ck customer.rs '        if rest.is_empty() {' \
+             '        if rest.len() < 9 { // knife' \
+             everything_else_is_refused_whole
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
@@ -396,6 +404,8 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer entry: writes are answered as done
+          hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # edge domain add / rm without --plan goes on
           hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
              usage_and_gates

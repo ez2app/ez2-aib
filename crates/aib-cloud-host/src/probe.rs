@@ -1174,6 +1174,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             _ => Err("site needs drift | verify [<code>] [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
+        Some("customer") => crate::customercmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
             Some("check") => crate::backupcmd::cmd(&args[2..]),
