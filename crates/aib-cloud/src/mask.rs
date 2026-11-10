@@ -104,7 +104,9 @@ pub const PROC_HIDE: &[&str] = &[
     "bus",
     "cmdline",
     "consoles",
+    "crypto",
     "devices",
+    "diskstats",
     "dma",
     "driver",
     "fb",
@@ -129,8 +131,34 @@ pub const PROC_HIDE: &[&str] = &[
     "zoneinfo",
 ];
 
-/// The line in a container's configuration that runs the mask when it starts.
-pub const HOOK_LINE: &str = "lxc.hook.mount: /usr/local/sbin/aib-cloud-host ct mask";
+/// The line in a container's configuration that runs the mask when it starts. It names
+/// a wrapper, not the binary: the runtime treats a hook that is missing, that an older
+/// binary does not know, or that hangs, as a failed start (33e28, measured 11-10) — and
+/// the mask must never be why a customer's site is down.
+pub const HOOK_LINE: &str = "lxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook";
+
+/// The wrapper [`HOOK_LINE`] names: a time limit, and exit 0 whatever happens. The hook
+/// leaves its verdict in a file for `site verify` to read; a wrapper that could not even
+/// start the binary leaves none, which reads as not masked.
+pub const HOOK_WRAPPER: &str = "#!/bin/sh\n# installed by aib-cloud-host; see aib_cloud::mask\ntimeout 20 /usr/local/sbin/aib-cloud-host ct mask >/dev/null 2>&1\nexit 0\n";
+
+/// Other full views of `/proc` and `/sys` a container has and that must be covered too:
+/// with nesting on, the runtime keeps an unmasked copy of each for nested containers
+/// (33e28, measured 11-10: only the AppArmor profile stood between a site user and them).
+pub const EXTRA_HIDE: &[&str] = &["dev/.lxc/proc", "dev/.lxc/sys"];
+
+/// What the hook writes to its result file when every cover is in place.
+pub fn result_ok(covers: usize) -> String {
+    alloc::format!("ok {covers}\n")
+}
+
+/// Whether a result file says the container is masked. A missing or empty file, or
+/// anything but `ok <n>` with n above zero, is "not masked".
+pub fn result_is_masked(text: Option<&str>) -> bool {
+    text.and_then(|t| t.trim().strip_prefix("ok "))
+        .and_then(|n| n.parse::<usize>().ok())
+        .is_some_and(|n| n > 0)
+}
 
 /// What a field of the host's `cpuinfo` becomes for processor `i` of `cores`. `None`
 /// drops the field: only what is named here is passed on.
@@ -141,8 +169,10 @@ fn field(key: &str, value: &str, i: u32, cores: u32) -> Option<String> {
         "model name" => Some(CPU_MODEL.into()),
         "cpu family" | "model" | "stepping" | "physical id" => number(0),
         "siblings" | "cpu cores" => number(cores),
-        "vendor_id" | "cpu MHz" | "fpu" | "fpu_exception" | "cpuid level" | "wp" | "flags"
-        | "clflush size" | "cache_alignment" | "address sizes" => Some(value.into()),
+        // no clock speed, CPUID level or address sizes: with the flags they narrow the
+        // model down to a few (33e28). The flags stay because programs need them.
+        "vendor_id" | "fpu" | "fpu_exception" | "wp" | "flags" | "clflush size"
+        | "cache_alignment" => Some(value.into()),
         _ => None,
     }
 }
@@ -260,6 +290,9 @@ mod tests {
         assert!(text.starts_with("processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 0\nmodel\t: 0\nmodel name\t: vCPU\nstepping\t: 0\n"));
         assert!(text.contains("\n\nprocessor\t: 1\n"));
         assert_eq!(text.matches("siblings\t: 2\n").count(), 2);
+        for dropped in ["cpu MHz", "cpuid level", "address sizes", "4139"] {
+            assert!(!text.contains(dropped), "{dropped}");
+        }
         assert_eq!(text.matches("cpu cores\t: 2\n").count(), 2);
         assert!(text.contains("core id\t: 1\n") && text.contains("apicid\t: 1\n"));
         // what programs choose code paths by stays
@@ -304,6 +337,23 @@ mod tests {
         assert_eq!(conf_cores("arch: amd64\n[snap]\ncores: 8\n"), None);
         assert_eq!(conf_cores("cores: many\n"), None);
         assert!(HOOK_LINE.starts_with("lxc.hook.mount: /"));
+        // the wrapper cannot fail a start: a time limit, and exit 0 on its last line
+        assert!(HOOK_WRAPPER.starts_with("#!/bin/sh\n"));
+        assert!(HOOK_WRAPPER.contains("timeout 20 ") && HOOK_WRAPPER.ends_with("\nexit 0\n"));
+        assert!(HOOK_LINE.ends_with("/ez2-ct-mask-hook"));
+        // the verdict file: only "ok <n>", n above zero, says masked
+        assert!(result_is_masked(Some(&result_ok(212))));
+        for not in [
+            None,
+            Some(""),
+            Some("ok 0\n"),
+            Some("ok\n"),
+            Some("NOT MASKED mount\n"),
+            Some("ok many"),
+        ] {
+            assert!(!result_is_masked(not), "{not:?}");
+        }
+        assert!(EXTRA_HIDE.contains(&"dev/.lxc/proc") && EXTRA_HIDE.contains(&"dev/.lxc/sys"));
         // the processor directory a container sees: its own count and nothing of the host's
         let (files, dirs) = cpu_dir(2).unwrap();
         assert_eq!(
