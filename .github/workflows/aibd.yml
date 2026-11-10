@@ -1199,6 +1199,41 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+      # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
+      # the test that asserts its refusal code red
+      - name: aib-release host-build knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py crates/aib-release/src/host_build.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-release --locked --test host_build "$3"; }
+          # H1 a build from a PR head passes (the 11-11 B build)
+          hk '    match git.is_ancestor(cand, &main) {' \
+             '    match git.is_ancestor(cand, &main).map(|_| true) { // knife' \
+             a_build_from_a_pr_head_never_goes_on
+          # H2 a build that does not contain the host's build passes
+          hk '            match git.is_ancestor(cur, cand) {' \
+             '            match git.is_ancestor(cur, cand).map(|_| true) { // knife' \
+             a_build_that_does_not_contain_the_hosts_build_is_refused_unless_a_downgrade_is_asked_for
+          # H3 a dirty build counts as clean
+          hk '    if req.candidate.dirty {' \
+             '    if req.candidate.dirty && false { // knife' \
+             a_candidate_that_does_not_say_where_it_came_from_or_was_built_dirty_is_refused
+          # H4 a host build without build info passes with no reason
+          hk '        None => match &req.allow_unknown_current {' \
+             '        None => match &Some(String::new()) { // knife' \
+             a_host_build_without_build_info_needs_a_reason
+          # H5 the main line is whatever is checked out (2240e, #650 M1: a PR head named as main)
+          hk 'pub const MAIN_REF: &str = "refs/remotes/origin/main";' \
+             'pub const MAIN_REF: &str = "HEAD"; // knife' \
+             the_main_line_is_origin_main_and_not_what_is_checked_out
+          # H6 the answer does not name the file it checked (4542e, #650 L1: A checked, B swapped in)
+          python3 -I scripts/knife.py crates/aib-release/src/main.rs \
+            '            Ok((info, Some(host_build::sha256_hex(&bytes))))' \
+            '            Ok((info, None)) // knife' \
+            --expect-fail a_candidate_file_is_named_by_its_sha256 \
+            -- cargo test -p aib-release --locked --bin aib-release a_candidate_file_is_named_by_its_sha256
       # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
       # and health stays public and minimal.
       - name: aib web knives (macOS)

@@ -18,6 +18,7 @@
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
 //! aib-cloud-host --version                                    (aib-cloud-host <version> <os>-<arch>)
+//! aib-cloud-host build-info     (aib-build-info version=<v> commit=<40 hex|unknown> dirty=<0|1>;)
 //! ```
 //!
 //! `plan.json` is `aib_cloud::isolation::probe_plan()`; the report is what
