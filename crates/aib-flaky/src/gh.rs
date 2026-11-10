@@ -107,7 +107,8 @@ pub fn run_counts(r: &Value, ctx: &Context) -> bool {
                     .is_some_and(|a| {
                         a.is_empty()
                             || a.iter()
-                                .any(|p| p.get("number").and_then(Value::as_u64) == Some(*number))
+                                .filter_map(|p| p.get("number")?.as_u64())
+                                .any(|x| x == *number)
                     })
         }
         Context::Pr { number, head_ref } => {
