@@ -195,7 +195,7 @@ jobs:
           # KT1 procwatch trace (a63ab 11-10): the listing is not recorded, so a miss cannot be explained
           fc crates/aib-procwatch/src/lib.rs \
             '            g.record(t0, ppid, TraceKind::List { end_ns, result });' \
-            '            let _ = (t0, end_ns, result); // knife' \
+            '            let _ = (t0, end_ns, result, &mut g); // knife' \
             calibrate_mid_exit_trace_explains_every_miss
           # KT2 forkcount: the parent's own stamp is ignored, so a listing while it was alive is never a tool problem
           python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
