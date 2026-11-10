@@ -115,6 +115,40 @@ jobs:
       - name: clippy
         if: env.RUN == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # merge-ops v2 §7.2 (a9136 11-09): every knife.py anchor in the workflows
+      # and scripts must occur exactly once in its file, before the long test
+      # and knife steps (#578 lost a round to anchors main had moved away).
+      - name: knife anchors
+        if: env.RUN == 'true'
+        shell: bash
+        run: cargo run -q --locked -p aib-xtask -- knife-anchors
+      - name: knife anchors knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        # the checker itself: a moved anchor must stay red, and a knife line it
+        # cannot read must never be skipped. Each knife must hit its own test.
+        run: |
+          set -eu
+          ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
+          ka '    text.matches(old).count()' '    let _ = (text, old); 1 // knife: always once' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
+            '                    Err(_) => {} // knife: skip what cannot be read' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
+          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
+            what_cannot_be_read_is_unresolved_not_skipped
+          # KA4 (1ced7 #590 L3) no knife found reads as clean
+          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
+            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
+            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
+          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
+          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
+            ansi_c_quoted_anchors_are_read_like_bash
+          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
+          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
+            a_positional_inside_a_word_is_filled_in
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
@@ -184,6 +218,18 @@ jobs:
           tk '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) {' \
             '        if rows.iter().any(|(t, v)| !t.is_finite() || !v.is_finite()) && false { // knife' \
             a17b_nan_or_infinite_is_corrupt
+          # K13 (#615 33e28) samples never count as continuous
+          tk '            [.., (a, _), (b, _)] => b - a <= SUSTAIN_GAP_S,' \
+            '            [.., (_a, _), (_b, _)] => false, // knife' \
+            l2_no_pressure_continuous_spike_not_reaped
+          # K14 (R1 PR 3 Q2) a lone spike with pressure unreadable reaps again (1.x)
+          tk '    if pressure.is_none() && level == Level::Crit {' \
+            '    if pressure.is_none() && level == Level::Crit && false { // knife' \
+            l1_fallback_lone_spike_never_reaps
+          # K15 (a63ab #626 L1) with pressure unreadable every round takes the capped fallback: never reaps
+          tk '    if pressure.is_none() && !history.continuous() {' \
+            '    if pressure.is_none() && (!history.continuous() || true) { // knife' \
+            no_pressure_sustained_heat_still_reaps
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
@@ -388,6 +434,10 @@ jobs:
           tt '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) {' \
             '        if !(t.is_finite() && t > T_MIN_C && t < T_MAX_C) && !seen.contains(&name) { // knife' \
             t1_duplicate_with_a_broken_value_fails
+          # KT9 no services array read as "no sensors" (Unsupported switches T1 off; 043dd #617 r2 L1)
+          tt $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unknown);' \
+            $'        // a failed copy, not "no sensors": try again next round (043dd #617 r2 L1)\n        return Err(SysError::Unsupported); // knife' \
+            walk_releases_on_every_error_path
       # M1 seats (a9136): an Idempotency-Key is bound to its request, a seat
       # is written together with its event, a session row follows its events
       # and open sessions are interrupted at start. Each knife must turn its
@@ -475,6 +525,32 @@ jobs:
             '        if std::thread::panicking() && false { // knife' \
             --expect-fail sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue \
             -- cargo test -p aibd --locked --lib sessions::tests::a_dequeue_thread_that_panics_does_not_stop_the_queue
+          # R1 PR 3a thermal hooks (a9136 11-10 15:18). T-a a NOGO POST starts or queues
+          hk() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test thermal_hooks "$3"; }
+          hk '            if !self.launch_allowed() {' \
+            '            if !self.launch_allowed() && false { // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-b the queue starts a waiting session while NOGO
+          hk '                    || !self.launch_allowed()' \
+            '                    || (!self.launch_allowed() && false) // knife' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-c kick_now kicks nobody: the queue stays after NOGO ends
+          hk $'        self.kick(&mut g);\n    }\n\n    /// Test hook: a shorter' \
+            $'        let _ = &mut g; // knife: no kick\n    }\n\n    /// Test hook: a shorter' \
+            a_nogo_refuses_posts_holds_the_queue_and_kick_now_resumes_it
+          # T-d a stop that frees the slot does not tell the hook
+          hk $'            self.running_changed(old, &g);\n            self.kick(&mut g);' \
+            $'            let _ = (old, &g); // knife: no hook\n            self.kick(&mut g);' \
+            running_count_changes_reach_the_hook_once_each
+          # T-e a start does not tell the hook (a9136 3a N2)
+          hk $'        self.running_changed(old, &g);\n        self.event(' \
+            $'        let _ = (old, &g); // knife: no hook\n        self.event(' \
+            running_count_changes_reach_the_hook_once_each
+          # T-f hooks set late are not told the current count (a9136 3a L1)
+          hk '        self.running_changed(0, &g);' \
+            '        let _ = &g; // knife: not told' \
+            hooks_set_late_hear_the_current_count
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \
