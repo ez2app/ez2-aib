@@ -105,6 +105,16 @@ pub enum TraceKind {
         end_ns: u64,
         result: Result<Vec<u32>, String>,
     },
+    /// `child` was listed under `pid` but not recorded: its start time could
+    /// not be read (it had already exited), or it is older than `pid` (pid
+    /// reuse).
+    NotAdopted { child: u32, why: NotAdoptedWhy },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAdoptedWhy {
+    StartUnreadable,
+    OlderThanParent,
 }
 
 /// What [`ForkWatch::trace`] returns.
@@ -119,7 +129,7 @@ pub struct Trace {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{ListFault, Stats, Trace, TraceEvent, TraceKind, TRACE_CAP};
+    use super::{ListFault, NotAdoptedWhy, Stats, Trace, TraceEvent, TraceKind, TRACE_CAP};
     use aib_sys::{Macos, ProcessInfo, SysError};
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::{name, pidinfo};
@@ -276,10 +286,30 @@ mod imp {
                 if k == 0 || lock(sh).seen.contains_key(&k) {
                     continue;
                 }
-                let Some(ks) = start_time(k) else { continue };
+                let Some(ks) = start_time(k) else {
+                    let t = uptime_ns().unwrap_or(0);
+                    lock(sh).record(
+                        t,
+                        p,
+                        TraceKind::NotAdopted {
+                            child: k,
+                            why: NotAdoptedWhy::StartUnreadable,
+                        },
+                    );
+                    continue;
+                };
                 // A child cannot be older than its recorded parent; an older
                 // one means the parent pid was reused.
                 if pstart.is_some_and(|ps| ks < ps) {
+                    let t = uptime_ns().unwrap_or(0);
+                    lock(sh).record(
+                        t,
+                        p,
+                        TraceKind::NotAdopted {
+                            child: k,
+                            why: NotAdoptedWhy::OlderThanParent,
+                        },
+                    );
                     continue;
                 }
                 let ok = watch(kq, k);

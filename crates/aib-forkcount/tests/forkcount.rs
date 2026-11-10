@@ -197,7 +197,10 @@ fn calibrate_mid_exit_trace_explains_every_miss() {
             [
                 "no_fork_event",
                 "listed_but_absent",
+                "listed_start_unreadable",
+                "listed_older_than_parent",
                 "parent_exited_before_list",
+                "exit_race_unresolved",
                 "unknown"
             ]
             .contains(&c),

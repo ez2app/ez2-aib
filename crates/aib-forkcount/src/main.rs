@@ -17,7 +17,8 @@
 #![allow(clippy::disallowed_methods)]
 
 use aib_procwatch::{
-    program_name, start_time, uptime_ns, ForkWatch, ListFault, Stats, Trace, TraceKind,
+    program_name, start_time, uptime_ns, ForkWatch, ListFault, NotAdoptedWhy, Stats, Trace,
+    TraceKind,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -573,7 +574,7 @@ fn missing_identities(
                 "parent_watched": roots.contains(p) || adopted.contains_key(p),
                 "parent_fork_events": forks_by_pid.get(p).copied().unwrap_or(0),
                 "cause": miss_cause(*p, *c, adopted.get(c).copied(), st, trace),
-                "timeline": timeline(&[*p, *c], st, trace, 40),
+                "timeline": timeline(&[*p, *c], *c, st, trace, 40),
             })
         })
         .collect()
@@ -615,13 +616,21 @@ type Listing<'a> = (u64, u64, &'a Result<Vec<u32>, String>);
 ///   event, the listing ended before the parent's own `exiting` stamp (so the
 ///   parent was alive and the child was its child), and the child was not in
 ///   the list. Not a known blind spot: a tool problem;
+/// - `listed_start_unreadable`: the child was in a listing of the parent but
+///   its start time could not be read (it had already exited), so it was not
+///   recorded. Blind spot of short-lived children;
+/// - `listed_older_than_parent`: listed, refused as older than the parent
+///   (the pid-reuse rule);
 /// - `parent_exited_before_list`: every listing of the parent after its fork
 ///   event started after its exit was observed (`NOTE_EXIT`, possibly in the
 ///   same event as the fork) or failed with `gone`. The registered blind
 ///   spot: the child was re-parented before it could be listed;
-/// - `unknown`: anything else (no trace, a dropped trace event, a listing
-///   that cannot be placed before or after the exit, the child adopted under
-///   another parent). Stays unverified.
+/// - `exit_race_unresolved`: (stamped parents) a listing without the child
+///   started after the parent's last own stamp but before its exit was read:
+///   the trace cannot tell whether the parent had exited by then;
+/// - `unknown`: anything else (no trace, a dropped trace event, the child
+///   adopted under another parent, a listing that cannot be placed). Stays
+///   unverified.
 fn miss_cause(
     p: u32,
     c: u32,
@@ -633,6 +642,15 @@ fn miss_cause(
         return "unknown";
     }
     let of_p = || trace.events.iter().filter(move |e| e.pid == p);
+    let refused = of_p().find_map(|e| match e.kind {
+        TraceKind::NotAdopted { child, why } if child == c => Some(why),
+        _ => None,
+    });
+    match refused {
+        Some(NotAdoptedWhy::StartUnreadable) => return "listed_start_unreadable",
+        Some(NotAdoptedWhy::OlderThanParent) => return "listed_older_than_parent",
+        None => {}
+    }
     let Some(first_fork) = of_p()
         .filter(|e| matches!(e.kind, TraceKind::Fork { .. }))
         .map(|e| e.t_ns)
@@ -662,18 +680,45 @@ fn miss_cause(
     let after_exit = |t: u64, r: &Result<Vec<u32>, String>| {
         matches!(r, Err(tag) if tag == "gone") || exit_seen.is_some_and(|x| x <= t)
     };
-    if !lists.is_empty() && lists.iter().all(|(t, _, r)| after_exit(*t, *r)) {
+    if !lists.is_empty() && lists.iter().all(|(t, _, r)| after_exit(*t, r)) {
         return "parent_exited_before_list";
+    }
+    if let Some(s) = stamps {
+        // every listing is either after the exit was read, or in the window
+        // between the parent's last stamp and that read
+        let in_race = |t: u64, r: &Result<Vec<u32>, String>| {
+            after_exit(t, r) || (t >= s.exiting && exit_seen.is_some_and(|x| t < x))
+        };
+        if !lists.is_empty() && lists.iter().all(|(t, _, r)| in_race(*t, r)) {
+            return "exit_race_unresolved";
+        }
     }
     "unknown"
 }
 
 /// Up to `max` trace events of `pids`, oldest first, for a human to read.
-fn timeline(pids: &[u32], stamps: Option<Stamps>, trace: &Trace, max: usize) -> Value {
-    let mut ev: Vec<Value> = trace
+fn timeline(pids: &[u32], child: u32, stamps: Option<Stamps>, trace: &Trace, max: usize) -> Value {
+    let mine: Vec<&aib_procwatch::TraceEvent> = trace
         .events
         .iter()
         .filter(|e| pids.contains(&e.pid))
+        .collect();
+    // centre on the first event that names the child, else on the stamp,
+    // else show the last events
+    let names_child = |e: &&aib_procwatch::TraceEvent| match &e.kind {
+        TraceKind::List { result: Ok(k), .. } => k.contains(&child),
+        TraceKind::NotAdopted { child: k, .. } => *k == child,
+        _ => false,
+    };
+    let centre = mine
+        .iter()
+        .position(names_child)
+        .or_else(|| stamps.and_then(|s| mine.iter().position(|e| e.t_ns >= s.before)))
+        .unwrap_or(mine.len());
+    let from = centre.saturating_sub(max / 2);
+    let mut ev: Vec<Value> = mine
+        .iter()
+        .skip(from)
         .take(max)
         .map(|e| match &e.kind {
             TraceKind::Fork { exited } => {
@@ -684,6 +729,13 @@ fn timeline(pids: &[u32], stamps: Option<Stamps>, trace: &Trace, max: usize) -> 
                 Ok(k) => json!({"t_ns": e.t_ns, "end_ns": end_ns, "pid": e.pid, "event": "list", "children": k}),
                 Err(tag) => json!({"t_ns": e.t_ns, "end_ns": end_ns, "pid": e.pid, "event": "list", "error": tag}),
             },
+            TraceKind::NotAdopted { child, why } => json!({
+                "t_ns": e.t_ns, "pid": e.pid, "event": "not_adopted", "child": child,
+                "why": match why {
+                    NotAdoptedWhy::StartUnreadable => "start_unreadable",
+                    NotAdoptedWhy::OlderThanParent => "older_than_parent",
+                },
+            }),
         })
         .collect();
     if let Some(s) = stamps {
@@ -1173,8 +1225,49 @@ mod tests {
             list(101, 102, 7, &[]),
         ]);
         assert_eq!(
-            miss_cause(7, 8, None, st(120), &t),
+            miss_cause(7, 8, None, st(90), &t),
             "parent_exited_before_list"
+        );
+    }
+
+    #[test]
+    fn a_listing_between_the_last_stamp_and_the_exit_read_is_a_race() {
+        // Pro 13 11-10 mid-exit #2: stamp 79, fork read 80, empty listing
+        // 81-82, exit read 83. Whether the parent had exited is not known.
+        let t = tr(vec![
+            list(10, 11, 7, &[]),
+            ev(80, 7, TraceKind::Fork { exited: false }),
+            list(81, 82, 7, &[]),
+            ev(83, 7, TraceKind::Exit),
+        ]);
+        assert_eq!(miss_cause(7, 8, None, st(79), &t), "exit_race_unresolved");
+        // without the parent's stamp the same trace is unknown
+        assert_eq!(miss_cause(7, 8, None, None, &t), "unknown");
+    }
+
+    #[test]
+    fn a_listed_child_that_was_not_recorded_says_why() {
+        // Pro 13 11-10 parallel #1: the child was in the list, its start
+        // time could not be read
+        let na = |why| {
+            tr(vec![
+                ev(100, 7, TraceKind::Fork { exited: false }),
+                list(101, 102, 7, &[8, 9]),
+                ev(103, 7, TraceKind::NotAdopted { child: 8, why }),
+            ])
+        };
+        assert_eq!(
+            miss_cause(7, 8, None, None, &na(NotAdoptedWhy::StartUnreadable)),
+            "listed_start_unreadable"
+        );
+        assert_eq!(
+            miss_cause(7, 8, None, None, &na(NotAdoptedWhy::OlderThanParent)),
+            "listed_older_than_parent"
+        );
+        // another child's refusal says nothing about this one
+        assert_eq!(
+            miss_cause(7, 9, None, None, &na(NotAdoptedWhy::StartUnreadable)),
+            "unknown"
         );
     }
 
