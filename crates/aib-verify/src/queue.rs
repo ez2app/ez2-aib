@@ -248,16 +248,19 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
     let werr = wout
         .try_clone()
         .map_err(|e| format!("ctl watch log: {e}"))?;
-    let mut watch = std::process::Command::new(&o.bin)
-        .args(["ctl", "watch", &b])
-        .env("AIBD_DATA_DIR", dir.join("data"))
-        .stdin(std::process::Stdio::null())
-        .stdout(wout)
-        .stderr(werr)
-        .spawn()
-        .map_err(|e| format!("ctl watch: {e}"))?;
+    // Reap: killed and waited for on every way out, including an early `?` below (043dd #604 L1)
+    let mut watch = Reap(
+        std::process::Command::new(&o.bin)
+            .args(["ctl", "watch", &b])
+            .env("AIBD_DATA_DIR", dir.join("data"))
+            .stdin(std::process::Stdio::null())
+            .stdout(wout)
+            .stderr(werr)
+            .spawn()
+            .map_err(|e| format!("ctl watch: {e}"))?,
+    );
     std::thread::sleep(Duration::from_secs(2));
-    let watch_waiting_pending = matches!(watch.try_wait(), Ok(None));
+    let watch_waiting_pending = matches!(watch.0.try_wait(), Ok(None));
 
     // Q2: the holder ends ⇒ the waiting one starts by itself (pid > 0)
     std::fs::write(&stop_a, b"").map_err(|e| format!("stop file: {e}"))?;
@@ -266,7 +269,7 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
         v["state"] == "running" && v["pid"].as_u64().is_some_and(|p| p > 0)
     });
     let a_end = d.session(&a).map(|v| short(&v)).unwrap_or_default();
-    let watch_still = matches!(watch.try_wait(), Ok(None));
+    let watch_still = matches!(watch.0.try_wait(), Ok(None));
     let watch_ok = watch_waiting_pending && watch_still;
     let watch_note = format!(
         "ctl watch:pending 時{}、開跑後{}(log {})",
@@ -282,8 +285,7 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
         },
         watch_log.display()
     );
-    let _ = watch.kill();
-    let _ = watch.wait();
+    drop(watch);
     match &started {
         Ok(v) => checks.push(check(
             "Q2",
@@ -396,6 +398,16 @@ fn run_checks(o: &Opts, checks: &mut Vec<Check>) -> Result<(), String> {
     ));
     drop(d2);
     Ok(())
+}
+
+/// A child that is killed and waited for when this is dropped.
+struct Reap(std::process::Child);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 #[cfg(test)]
