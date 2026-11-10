@@ -332,3 +332,80 @@ fn m5_wait_retries_when_a_signal_interrupts_it() {
     assert_eq!(t.join().unwrap().unwrap(), ExitState::Signaled(9));
     c.wait().unwrap();
 }
+
+// ---- T1 / T2 (R1 thermal protection) ----------------------------------------------------------
+
+/// Is this a virtual machine (`kern.hv_vmm_present = 1`)? CI's macOS runners are; they have no
+/// PMU temperature sensors, so a T1 result there is not evidence for the private signatures.
+fn in_vm() -> bool {
+    Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.hv_vmm_present"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Must T1 give a reading here? Only on physical Apple Silicon.
+fn t1_required() -> bool {
+    cfg!(target_arch = "aarch64") && !in_vm()
+}
+
+/// T1 on the real machine. Physical Apple Silicon must give a plausible reading: this is the
+/// check that the private signatures are right (a wrong one is undefined behaviour, not a red
+/// test), so it must have passed on a physical Apple Silicon Mac before aibd uses T1. Intel and
+/// VMs have no `PMU tdie` sensors and must say `Unsupported` (or `SpiMissing`), never a number;
+/// they print UNVERIFIED (a9136 #617 M2).
+#[test]
+fn t1_die_temps_real() {
+    let r = aib_sys::ThermalInfo::die_temps(&Macos);
+    if t1_required() {
+        let d = r.unwrap();
+        assert!(d.n >= 1, "{d:?}");
+        assert!(d.max > 0.0 && d.max < 150.0, "{d:?}");
+        assert!(d.avg > 0.0 && d.avg <= d.max, "{d:?}");
+        eprintln!(
+            "T1: max {:.2} avg {:.2} n {} (physical Apple Silicon)",
+            d.max, d.avg, d.n
+        );
+    } else {
+        match r {
+            Ok(d) => eprintln!("T1: UNVERIFIED (vm or not arm64), read {d:?}"),
+            Err(e) => {
+                assert!(
+                    matches!(e, SysError::Unsupported | SysError::SpiMissing),
+                    "{e:?}"
+                );
+                eprintln!("T1: UNVERIFIED (vm or not arm64), {}", e.tag());
+            }
+        }
+    }
+    // repeated reads keep working (nothing over-released on the first one)
+    let first_ok = aib_sys::ThermalInfo::die_temps(&Macos).is_ok();
+    for _ in 0..20 {
+        let again = aib_sys::ThermalInfo::die_temps(&Macos);
+        assert_eq!(again.is_ok(), first_ok, "{again:?}");
+    }
+    if t1_required() {
+        assert!(first_ok);
+    }
+}
+
+/// T2 on the real machine: a level in `0..=4`.
+#[test]
+fn t2_pressure_real() {
+    let p = aib_sys::ThermalInfo::pressure(&Macos).unwrap();
+    assert!((0..=4).contains(&p), "{p}");
+    eprintln!("T2: pressure level {p}");
+}
+
+/// The start-up check passes where T1 is usable and reports a tag where it is not.
+#[test]
+fn t1_selfcheck_real() {
+    match aib_sys::thermal::selfcheck_t1(&Macos) {
+        Ok(d) => assert!(d.n >= 1),
+        Err(e) => {
+            assert!(!t1_required(), "{e:?}");
+            assert!(["unsupported", "spi_missing"].contains(&e.tag()));
+        }
+    }
+}
