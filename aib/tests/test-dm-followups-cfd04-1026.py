@@ -95,7 +95,7 @@ class F5PreviewOnlyMine(unittest.TestCase):
         td = tempfile.TemporaryDirectory(prefix="aib-dmfu5-")
         self.addCleanup(td.cleanup)
         self.tmp = Path(td.name)
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.114.152.121"}
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.64.0.121"}
         self.pend = self.tmp / ".ez2-aib" / "pending"
         self.pend.mkdir(parents=True)
         self.idx = Q.relay_index_path(self.env)

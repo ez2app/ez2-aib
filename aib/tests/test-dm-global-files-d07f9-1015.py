@@ -177,7 +177,7 @@ class Inbox(Base):
         ok = {"Andy": "Andy", "  安迪  ": "安迪", "Andy\u200b\nLin": "AndyLin", "a  b": "a b", "店長 小美": "店長 小美"}
         for raw, want in ok.items():
             self.assertEqual(G.clean_display_name(raw), want, raw)
-        for raw in ("", "   ", "x" * 33, "IP:100.114.152.121/6ddf/AIB工程師", "Andy >> 你", "andy@ez2.app",
+        for raw in ("", "   ", "x" * 33, "IP:100.64.0.121/6ddf/AIB工程師", "Andy >> 你", "andy@ez2.app",
                     "Andy(全球·已驗證)", "Andy(全球·已驗證)", None, 42):
             self.assertIsNone(G.clean_display_name(raw), raw)
         # 顯示名稱 → 人格名 → npub 前 12 碼

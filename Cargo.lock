@@ -95,6 +95,7 @@ name = "aib-release"
 version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

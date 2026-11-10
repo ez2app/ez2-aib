@@ -130,6 +130,12 @@ jobs:
           out=$("$bin" --version) || { echo "::error::--version failed"; exit 1; }
           echo "--version: $out"
           [ "$out" = "aib-cloud-host $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aib-cloud-host $VERSION $PLAT'"; exit 1; }
+          # DEV 4.6 P1: the build names the commit it was made from, clean, and the same words sit in the file
+          info=$("$bin" build-info) || { echo "::error::build-info failed"; exit 1; }
+          echo "build-info: $info"
+          want="aib-build-info version=$VERSION commit=$(git rev-parse HEAD) dirty=0;"
+          [ "$info" = "$want" ] || { echo "::error::build-info printed '$info', want exactly '$want'"; exit 1; }
+          [ "$(grep -c -a -F "$want" "$bin")" -ge 1 ] || { echo "::error::build info not found in the file"; exit 1; }
           name="aib-cloud-host-${VERSION}-${TARGET}"
           mkdir -p dist && cp "$bin" "dist/$name"
           (cd dist && sha256sum "$name" > SHA256SUMS && cat SHA256SUMS)
