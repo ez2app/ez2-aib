@@ -385,6 +385,16 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - Telling launchd's own services apart from "re-parented, then exec'd" session processes
   is a separate item. Directions to measure first: responsible pid / coalition, platform
   binary paths.
+- Every stop record (`stop.candidates` in the session, `session.killed` /
+  `session.stop_unconfirmed` / `session.slot_held` events, the `session stop` log line)
+  carries the candidate check: `count`, `orphan_extra` (added only by the widened orphan
+  check) and the unreadable candidates as pid + process name (never arguments). A
+  `candidates_unreadable` stop then shows which processes held the slot and which rule
+  took them (1ced7 2026-11-09: the record had neither).
+- At most 16 unreadable candidates are listed; the rest is `unreadable_more` (left out
+  when 0), and `count` is always the real total (043dd #607 L1).
+- A `slot_held` event after a re-check that timed out carries the candidates of the last
+  pass that answered (043dd #607 N1).
 
 **Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
 records. A child that the watcher reads after that point, and that has already exited, sets

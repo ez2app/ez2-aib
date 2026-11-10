@@ -13,10 +13,15 @@
 //! runs; `from = ct:<id>` cells are executed by re-running this same binary under
 //! `nsenter -t <init pid> -n` after proving the namespace it lands in is that container's.
 
+// This binary runs on the Proxmox host (Linux) only: nsenter / lxc-info / pct, process groups,
+// unix file modes. On any other OS it compiles to a stub that says so (f1fae 11-10: decide once
+// at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
+#[cfg(unix)]
 mod probe;
 
 use std::process::ExitCode;
 
+#[cfg(unix)]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match probe::main(&args) {
@@ -26,4 +31,10 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+#[cfg(not(unix))]
+fn main() -> ExitCode {
+    eprintln!("aib-cloud-host runs on the Proxmox host (Linux) only; nothing to do on this OS");
+    ExitCode::from(2)
 }

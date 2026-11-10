@@ -35,7 +35,7 @@ use crate::allowlist::{self, SessionPolicy};
 use crate::api::AppState;
 use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
-use crate::platform::session::{Running, SpawnFn, Spec, Stop};
+use crate::platform::session::{CandidateDiag, Running, SpawnFn, Spec, Stop};
 use aib_core::ErrorCode;
 use aib_store::{NewEvent, SessionRow, Store};
 use axum::body::Body;
@@ -113,6 +113,10 @@ pub struct StopView {
     pub tree_size: usize,
     pub signals: Vec<SignalView>,
     pub blind_spots: Vec<&'static str>,
+    /// F (1ced7 11-09): the late-exec candidate check behind `reason`
+    /// (count, how many only the widened orphan check added, unreadable
+    /// pid + process name). macOS only; zero / empty elsewhere.
+    pub candidates: CandidateDiag,
 }
 
 impl StopView {
@@ -131,6 +135,7 @@ impl StopView {
                 })
                 .collect(),
             blind_spots: s.blind_spots.clone(),
+            candidates: s.candidates.clone(),
         }
     }
 }
@@ -1081,19 +1086,22 @@ impl Sessions {
                 "session.killed",
                 serde_json::json!({"id": id, "ended_by": by, "stop_status": stop.status.as_str(),
                     "reason": stop.status.reason(), "survivors": stop.survivors,
-                    "tree_size": stop.tree_size}),
+                    "tree_size": stop.tree_size, "candidates": stop.candidates}),
             ),
             _ => (
                 "session.stop_unconfirmed",
                 serde_json::json!({"id": id, "ended_by": by, "exit_code": rec.exit_code,
                     "signal": rec.signal, "stop_status": stop.status.as_str(),
                     "reason": stop.status.reason(), "survivors": stop.survivors,
-                    "tree_size": stop.tree_size, "blind_spots": stop.blind_spots}),
+                    "tree_size": stop.tree_size, "blind_spots": stop.blind_spots,
+                    "candidates": stop.candidates}),
             ),
         };
         self.event(&mut g, id, kind, payload);
         tracing::info!(session = %id, state = rec.state, ended_by = by,
-            stop = stop.status.as_str(), survivors = stop.survivors.len(), "session stop");
+            stop = stop.status.as_str(), survivors = stop.survivors.len(),
+            candidates = stop.candidates.count, orphan_extra = stop.candidates.orphan_extra,
+            unreadable = ?stop.candidates.unreadable, "session stop");
         if stop.releases_slot() {
             if let Some(e) = g.live.remove(id) {
                 g.ended.push_front((e.order, e.rec));
@@ -1326,13 +1334,23 @@ impl Sessions {
                 self.kick(g);
             }
             None => {
+                // F: the last pass's candidate check (the record keeps it)
+                let cand = g
+                    .live
+                    .get(id)
+                    .and_then(|e| e.rec.stop.as_ref())
+                    .map(|s| s.candidates.clone())
+                    .unwrap_or_default();
+                tracing::warn!(session = %id, tries, reason = ?last,
+                    candidates = cand.count, orphan_extra = cand.orphan_extra,
+                    unreadable = ?cand.unreadable, "slot still held after re-check");
                 self.event(
                     g,
                     id,
                     "session.slot_held",
-                    serde_json::json!({"id": id, "reason": last, "tries": tries}),
+                    serde_json::json!({"id": id, "reason": last, "tries": tries,
+                        "candidates": cand}),
                 );
-                tracing::warn!(session = %id, tries, reason = ?last, "slot still held after re-check");
             }
         }
         self.cv.notify_all();
