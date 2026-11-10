@@ -251,7 +251,8 @@ pub fn mask_line(line: &str) -> String {
 pub fn plain(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     for c in line.chars() {
-        let reorders = matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+        // direction marks and overrides, line / paragraph separators, zero-width characters
+        let reorders = matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
         if c == '\t' || !(c.is_control() || reorders) {
             out.push(c);
         } else if u32::from(c) < 0x100 {
@@ -537,6 +538,10 @@ mod tests {
         assert_eq!(plain("x\u{9b}31m"), "x\\x9b31m");
         assert_eq!(plain("evil\u{202e}gpj.exe"), "evil\\u{202e}gpj.exe");
         assert_eq!(plain("中文 記錄 ok"), "中文 記錄 ok");
+        assert_eq!(
+            plain("a\u{200f}b\u{200b}c\u{feff}d\u{061c}"),
+            "a\\u{200f}b\\u{200b}c\\u{feff}d\\u{61c}"
+        );
         // and it is what the customer's log lines go through, after the secrets
         let line = mask_line("password=hunter2 \u{1b}[31mred");
         assert!(
