@@ -529,6 +529,32 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # leak-words: the container's own bridge network goes into the list (hits everywhere, says nothing)
+          hk leakwordscmd.rs '            Class::Private | Class::Other => {}' \
+             '            Class::Private | Class::Other => net(&mut out, "host address", ip.to_string()), // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a value holding the list's comment mark is written
+          hk leakwordscmd.rs "        && !v.contains('#')" "        && (!v.contains('#') || true) // knife" \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a public resolver anyone uses is listed as ours
+          hk leakwordscmd.rs '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) {' \
+             '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) && false { // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: names of other machines in /etc/hosts are taken as the host's
+          hk leakwordscmd.rs '            .any(|(a, _)| *a == ip && class(ip) != Class::Private)' \
+             '            .any(|_| true) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a bridge's MAC is taken as a network card's
+          hk leakwordscmd.rs '        if root.join(format!("sys/class/net/{nic}/device")).exists() {' \
+             '        if root.join(format!("sys/class/net/{nic}/device")).exists() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: a source that could not be read still exits 0
+          hk leakwordscmd.rs '    if f.unread.is_empty() {' '    if f.unread.is_empty() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: the printed summary names the values
+          hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}"))' \
+             '.map(|(why, n)| format!("{why}: {n} {rules:?}")) // knife' \
+             the_printed_summary_never_names_a_value
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \
