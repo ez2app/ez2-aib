@@ -31,7 +31,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The model name a container sees.
-pub const CPU_MODEL: &str = "Virtual CPU";
+pub const CPU_MODEL: &str = "vCPU";
 
 /// Most processors one container is given a `cpuinfo` for.
 pub const CORES_MAX: u32 = 256;
@@ -231,9 +231,9 @@ mod tests {
         ] {
             assert!(!text.contains(word), "{word}");
         }
-        assert_eq!(text.matches("model name\t: Virtual CPU\n").count(), 2);
+        assert_eq!(text.matches("model name\t: vCPU\n").count(), 2);
         // two processors, numbered, and the counts say two
-        assert!(text.starts_with("processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 0\nmodel\t: 0\nmodel name\t: Virtual CPU\nstepping\t: 0\n"));
+        assert!(text.starts_with("processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 0\nmodel\t: 0\nmodel name\t: vCPU\nstepping\t: 0\n"));
         assert!(text.contains("\n\nprocessor\t: 1\n"));
         assert_eq!(text.matches("siblings\t: 2\n").count(), 2);
         assert_eq!(text.matches("cpu cores\t: 2\n").count(), 2);
@@ -258,10 +258,7 @@ mod tests {
         // a kernel that grows a new field: it does not reach the container
         let host = "processor\t: 0\nmodel name\t: X\nserial number\t: ABC123\nflags\t: fpu\n\n";
         let text = cpuinfo(host, 1).unwrap();
-        assert_eq!(
-            text,
-            "processor\t: 0\nmodel name\t: Virtual CPU\nflags\t: fpu\n\n"
-        );
+        assert_eq!(text, "processor\t: 0\nmodel name\t: vCPU\nflags\t: fpu\n\n");
         // not a cpuinfo, or a count that makes no sense: nothing is made up
         assert_eq!(cpuinfo("", 2), None);
         assert_eq!(cpuinfo("model name\t: X\n", 2), None);
