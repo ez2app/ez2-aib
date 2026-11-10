@@ -39,6 +39,28 @@ is registered, budgeted and stops by itself; a lost event is detected and repair
 - At run time each timer counts its wakeups by name. That count says *which* registered
   timer caused a regression; it is one of two separate inputs to the idle-wakeup gate (B2),
   see below.
+- **Exception: thermal protection sampling** (R1, 2026-11-10; DECISION-r1-thermal-c477a-1110,
+  approved by 9320/a63ab). aibd must stop its own work before the machine overheats (1.x
+  `cooldown.py`, after the 11-03 andymini incident), and the reap rule needs an average
+  held ≥ 60 s over ≥ 3 samples, which a "sample only when a viewer asks" rule (§4) cannot
+  provide. So one named timer, `thermal_sample`, samples CPU die temperature and thermal
+  pressure without a viewer, under these conditions:
+  1. It is an `Operation` timer registered through `aibd::timers` like any other, listed in
+     `docs/perf/timers.md`, and its wakeups appear in the §4 counters by name. This is the
+     exception: its maximum lifetime is not a fixed duration but the life of aibd's own
+     process set (condition 2), which is the stop condition the timer declares.
+  2. It exists **only while aibd has at least one process of its own running**; the round in
+     which the last one ends drops it. With 0 own processes it does not exist, so the idle
+     gate B2 still expects 0 registered wakeups.
+  3. The period is **fixed at 5 s**, the same as its lower and upper bound; it is not
+     configurable. A thermal-pressure event may trigger one early decision, never a shorter
+     period.
+  4. On Windows there is no thermal protection (the sampling calls are `Unsupported`); the
+     status line and the background-run view say so, and the 1.x retirement table records it.
+
+  The sampling calls themselves live in `aib-sys` (T1 CPU die temperature, T2 thermal
+  pressure); the decision rules are pure functions in `aib-thermal`. This exception is the
+  only machine-state sampling without a viewer; §4 stays as written for everything else.
 
 ### 1a. What the idle-wakeup gate (B2) can and cannot see
 
@@ -88,7 +110,8 @@ B2 reports two columns that are never merged into one number:
   edge-triggered (one event when crossing, one when clearing) and never polled.
 - Machine state (CPU, temperature, memory, process table) is sampled **only when a visible
   client asks**, cached 5 s and shared by all clients; with no viewer it is not sampled
-  at all.
+  at all. The one exception is thermal protection sampling while aibd has its own
+  processes running (§1, `thermal_sample`).
 - aibd counts GET requests per route template and flags a client that polls (high-rate
   GETs on a route that has an SSE equivalent) in the metrics output. Clients must use
   SSE; periodic GET is a bug.

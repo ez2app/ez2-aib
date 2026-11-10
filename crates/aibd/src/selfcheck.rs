@@ -515,6 +515,7 @@ mod tests {
                 tree_size: 2,
                 signals: Vec::new(),
                 blind_spots: Vec::new(),
+                candidates: Default::default(),
             },
             child_started: true,
             tree_running: true,

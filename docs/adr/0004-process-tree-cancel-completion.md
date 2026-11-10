@@ -385,6 +385,44 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - Telling launchd's own services apart from "re-parented, then exec'd" session processes
   is a separate item. Directions to measure first: responsible pid / coalition, platform
   binary paths.
+- Every stop record (`stop.candidates` in the session, `session.killed` /
+  `session.stop_unconfirmed` / `session.slot_held` events, the `session stop` log line)
+  carries the candidate check: `count`, `orphan_extra` (added only by the widened orphan
+  check) and the unreadable candidates as pid + process name (never arguments). A
+  `candidates_unreadable` stop then shows which processes held the slot and which rule
+  took them (1ced7 2026-11-09: the record had neither).
+- At most 16 unreadable candidates are listed; the rest is `unreadable_more` (left out
+  when 0), and `count` is always the real total (043dd #607 L1).
+- A `slot_held` event after a re-check that timed out carries the candidates of the last
+  pass that answered (043dd #607 N1).
+
+**Coalition filter (043dd MEASURE-G1-coalition, 1ced7 c25144e1 DockHelper).**
+- A process starts in its parent's resource coalition and keeps it when it is re-parented
+  to launchd. launchd starts each service it launches in a coalition of its own. On the
+  measured desktop, 77 of 88 new same-uid `ppid` 1 processes in an hour were in another
+  coalition than the shell aibd ran under; the session's own re-parented orphan was not.
+- Right after spawn aibd reads the root's coalition (`PROC_PIDCOALITIONINFO`, a private
+  `proc_pidinfo` flavor) and its own. This is the self-check of the private interface:
+  - equal ⇒ the filter is on for that session;
+  - the root read as another coalition ⇒ no filter, and none again for the rest of that
+    aibd process (the read is not trusted);
+  - the root already gone (an instant program; Mac Pro 13 2026-11-09: `printenv` held its
+    slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
+    coalition is used;
+  - any other error reading the root, or aibd's own not readable (or 0) ⇒ no filter for
+    that session.
+- A candidate whose coalition reads as 0 is not "another coalition": 0 is not an id.
+- A candidate whose environment cannot be read, and whose coalition is read as different
+  from the session's, is let go (`stop.candidates.other_coalition`, pid + name, same
+  16-entry limit with `other_coalition_more`). It is not
+  signalled and does not make the stop `candidates_unreadable`.
+- Kept as before: a candidate with the session marker (whatever its coalition), a
+  candidate whose coalition cannot be read, and every candidate when the self-check failed.
+- Blind spot: a process the session asks launchd / LaunchServices to start (`open -a`, an
+  XPC service) gets a coalition of its own. It is not in the session's process tree either
+  way; if its environment cannot be read it is now let go instead of holding the slot.
+- The interface is private: an OS update may change the struct. `pidinfo` refuses any
+  answer that is not exactly 40 bytes, and an unread coalition keeps the rule before.
 
 **Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
 records. A child that the watcher reads after that point, and that has already exited, sets
