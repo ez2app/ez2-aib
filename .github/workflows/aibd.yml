@@ -400,6 +400,14 @@ jobs:
           hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
              '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
              the_archive_plan_reads_the_quarantine_journal
+          # quarantine guard on the host: resume / suspend / restore reopen a quarantined site (33e28 deep review)
+          hk quarantinecmd.rs '    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())' \
+             '    { let _ = (code, &ct_fw, record, what); Ok(()) } // knife' \
+             a_quarantined_site_is_not_reopened
+          # quarantine guard on the host: a record that cannot be read counts as none
+          hk quarantinecmd.rs '    let record = load_record(code, quarantine_dir)?;' \
+             '    let record = load_record(code, quarantine_dir).unwrap_or(None); // knife' \
+             a_quarantined_site_is_not_reopened
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

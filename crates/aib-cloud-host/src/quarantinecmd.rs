@@ -58,10 +58,11 @@ pub fn action_json(spec: &SiteSpec, action: &Action) -> Value {
         }),
         Action::ApplyFirewall => json!({ "do": "apply_firewall" }),
         Action::DropConnections { ip } => json!({ "do": "drop_connections", "ip": ip }),
-        Action::WriteCaddyfile { text } => json!({
-            "do": "write_edge_block",
-            "block": quarantine::caddy_block_text(text, &spec.code).ok(),
-        }),
+        // a block that cannot be taken out is shown as an error, not as a silent null (#625 seg. 4 N1)
+        Action::WriteCaddyfile { text } => match quarantine::caddy_block_text(text, &spec.code) {
+            Ok(block) => json!({ "do": "write_edge_block", "block": block }),
+            Err(e) => json!({ "do": "write_edge_block", "block": null, "error": e.to_string() }),
+        },
         Action::Verify { quarantined } => json!({ "do": "verify", "quarantined": quarantined }),
         Action::ArchiveRecord => json!({ "do": "archive_record" }),
     }
@@ -92,6 +93,36 @@ fn load_record(code: &str, dir: &str) -> Result<Option<Record>, String> {
     Record::from_json(&v)
         .map(Some)
         .map_err(|e| format!("{path}: {e}"))
+}
+
+/// Refuse a command that would put a quarantined site back on the network or overwrite
+/// its quarantine (`site resume` / `suspend`, `site restore`): the decision is
+/// `quarantine::guard`, the facts are the CT's firewall file and the quarantine record.
+/// A record that cannot be read refuses too — it is not "no record" (DESIGN-eu02-quarantine
+/// rule 4; 33e28 deep review 11-10: the guard had no caller on the host).
+pub fn refuse_if_quarantined(
+    code: &str,
+    ct_fw_path: &str,
+    quarantine_dir: &str,
+    what: quarantine::Reopens,
+) -> Result<(), String> {
+    let ct_fw = read_optional(ct_fw_path)?.unwrap_or_default();
+    let record = load_record(code, quarantine_dir)?;
+    quarantine::guard(code, &ct_fw, record.as_ref(), what).map_err(|e| e.to_string())
+}
+
+/// [`refuse_if_quarantined`] with this host's paths.
+pub fn refuse_if_quarantined_here(
+    code: &str,
+    ct: u32,
+    what: quarantine::Reopens,
+) -> Result<(), String> {
+    refuse_if_quarantined(
+        code,
+        &format!("/etc/pve/firewall/{ct}.fw"),
+        QUARANTINE_RECORDS,
+        what,
+    )
 }
 
 /// What was read from the host for one site.
@@ -457,6 +488,54 @@ mod tests {
         )
         .unwrap();
         assert!(record_op_state(&dir, Some(&record)).is_err());
+    }
+
+    /// The guard has a caller on the host: a record on disk or the quarantine firewall
+    /// refuses; a damaged record refuses; a plain site passes.
+    #[test]
+    fn a_quarantined_site_is_not_reopened() {
+        use quarantine::Reopens;
+        let dir = std::env::temp_dir().join(format!(
+            "aib-qcmd-guard-{}-{}",
+            std::process::id(),
+            crate::probe::unix_now()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("q")).unwrap();
+        let fw = dir.join("112.fw");
+        let (fwp, qd) = (fw.to_str().unwrap(), dir.join("q"));
+        let qd = qd.to_str().unwrap();
+        fs::write(&fw, desired_firewall("ez2-site-v2", None)).unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_ok());
+        // no firewall file at all is not "quarantined" either
+        assert!(
+            refuse_if_quarantined("site2", &format!("{fwp}.none"), qd, Reopens::Resume).is_ok()
+        );
+        // a record on disk
+        let record = Record {
+            site: "site2".to_owned(),
+            ct: 112,
+            op: "20261110T014500Z-0a1b2c3d".to_owned(),
+            reason: "operator".to_owned(),
+            prev_firewall: String::new(),
+            prev_caddy_block: String::new(),
+        };
+        fs::write(
+            dir.join("q").join("site2.json"),
+            record.to_json().to_string(),
+        )
+        .unwrap();
+        for what in [Reopens::Resume, Reopens::Restore] {
+            let err = refuse_if_quarantined("site2", fwp, qd, what).unwrap_err();
+            assert!(err.contains("quarantined"), "{err}");
+        }
+        // a record that cannot be read is not "no record"
+        fs::write(dir.join("q").join("site2.json"), "{broken").unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_err());
+        // the quarantine firewall without a record
+        fs::remove_file(dir.join("q").join("site2.json")).unwrap();
+        fs::write(&fw, quarantine::firewall()).unwrap();
+        assert!(refuse_if_quarantined("site2", fwp, qd, Reopens::Resume).is_err());
     }
 
     #[test]

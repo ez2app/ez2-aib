@@ -984,6 +984,13 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
         return Err(format!("unknown arguments {rest:?}"));
     }
     let spec = load_site(&code, &records)?;
+    // a quarantined site is neither reopened (resume) nor has its quarantine block replaced
+    // by the suspension page (suspend): only unquarantine ends a quarantine
+    crate::quarantinecmd::refuse_if_quarantined_here(
+        &code,
+        spec.ct,
+        aib_cloud::quarantine::Reopens::Resume,
+    )?;
     let current = edge_caddyfile()?;
     let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
     if now == suspend {
@@ -1044,6 +1051,13 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
         }
     }
     let spec = load_site(&code, &records)?;
+    // restoring a quarantined site would bring its backup up with egress (and, with
+    // --switch, back on the edge): refused until unquarantine
+    crate::quarantinecmd::refuse_if_quarantined_here(
+        &code,
+        spec.ct,
+        aib_cloud::quarantine::Reopens::Restore,
+    )?;
     let taken = occupied_ip_lasts(&records)?;
     let plan = restore_plan(
         &spec,
