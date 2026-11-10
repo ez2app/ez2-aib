@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-cloud site <request…> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]`
-//! — a customer asks the host for something about **their own site** (4.4.1 §1).
+//! `aib-cloud <site <request…> | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]`
+//! — a customer asks the host for something about **their own sites** (4.4.1 §1, 4.5 §4).
 //!
 //! ```text
-//! aib-cloud site status
-//! aib-cloud site logs <nginx|php|db> [lines N] [minutes N]
+//! a key for one site:    aib-cloud site status
+//!                        aib-cloud site logs <nginx|php|db> [lines N] [minutes N]
+//! a key for a customer:  aib-cloud sites
+//!                        aib-cloud usage
+//!                        aib-cloud site <code> status
+//!                        aib-cloud site <code> logs <nginx|php|db> [lines N] [minutes N]
 //! ```
 //!
-//! Which site is not said here: the host knows it from the key. Where to connect comes
+//! With a key for one site, which site is not said here: the host knows it from the key.
+//! With a key for a customer the site is named, and the host decides from its own records
+//! whether it is that customer's. Where to connect comes
 //! from the flags, or from `EZ2_CLOUD_HOST`, `EZ2_CLOUD_USER`, `EZ2_CLOUD_KNOWN_HOSTS`,
 //! `EZ2_CLOUD_PORT` and `EZ2_CLOUD_KEY` when a flag is not given.
 //!
@@ -17,8 +23,10 @@
 //! arguments and sends nothing.
 //!
 //! The host answers in codes. What is shown is the sentence `aib_cloud::wording` has for
-//! each code (zh-TW, final wording); a code it does not know is not shown. `--raw` shows
-//! the host's answer as it came, for scripts.
+//! each code (zh-TW, final wording); a code it does not know is not shown. `sites`,
+//! `usage` and a customer key's refusals have no final wording yet: the host's document,
+//! or the refusal's code alone, is shown as it is. `--raw` shows the host's answer as it
+//! came, for scripts.
 //!
 //! Exit status: the host's own for an answered request (see `aib-cloud-host customer`);
 //! 2 the request or a flag was refused here and nothing was sent; 3 the host could not
@@ -26,11 +34,11 @@
 
 use std::process::{Command, ExitCode, Stdio};
 
-use aib_cloud::client::{ssh_args, NotSent, Target};
-use aib_cloud::customer::parse_request;
+use aib_cloud::client::{parse_line, site_line, ssh_args, Line, NotSent, Target};
+use aib_cloud::customer::OwnerRequest;
 use aib_cloud::wording;
 
-const USAGE: &str = "aib-cloud site <status | logs <nginx|php|db> [lines N] [minutes N]> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
+const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N]> | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -45,7 +53,7 @@ struct Asked {
     print: bool,
 }
 
-/// Read the words after `site`. Flags may come anywhere; every other word is part of the
+/// Read the words after the command. Flags may come anywhere; every other word is part of the
 /// request. A flag given twice, a flag without its value, or an unknown flag is an error.
 fn read_args(args: &[String]) -> Result<Asked, String> {
     let mut asked = Asked::default();
@@ -141,11 +149,7 @@ fn plan(asked: &Asked) -> Result<Vec<String>, Stop> {
 }
 
 fn run(args: &[String]) -> Result<u8, String> {
-    let rest = match args.split_first() {
-        Some((first, rest)) if first == "site" => rest,
-        _ => return Err(USAGE.to_owned()),
-    };
-    let asked = with_env(read_args(rest)?, |name| std::env::var(name).ok());
+    let asked = with_env(command(args)?, |name| std::env::var(name).ok());
     let ssh = match plan(&asked) {
         Ok(a) => a,
         Err(stop) => {
@@ -194,10 +198,39 @@ fn run(args: &[String]) -> Result<u8, String> {
         return Ok(code);
     }
     // plan() checked the request; one that does not parse was never sent
-    if let Ok(request) = parse_request(&asked.request) {
-        println!("{}", wording::reply(request, code, &out, &err));
+    match parse_line(&asked.request) {
+        Ok(Line::Site(request)) => println!("{}", wording::reply(request, code, &out, &err)),
+        Ok(Line::Owner(owner)) => match (refusal(&err), owner) {
+            // no final wording for these yet: the code alone, the document as it came
+            (Some(word), _) if code == 2 => println!("{word}"),
+            (_, OwnerRequest::Site { request, .. }) => {
+                println!("{}", wording::reply(request, code, &out, &err));
+            }
+            (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{out}"),
+        },
+        Err(_) => {}
     }
     Ok(code)
+}
+
+/// The command and its words as one request line: `site …` as [`site_line`] reads it,
+/// `sites` and `usage` as they are (a word after them is sent along to be refused).
+fn command(args: &[String]) -> Result<Asked, String> {
+    let (first, rest) = args.split_first().ok_or_else(|| USAGE.to_owned())?;
+    let mut asked = read_args(rest)?;
+    asked.request = match first.as_str() {
+        "site" => site_line(&asked.request),
+        "sites" | "usage" => format!("{first} {}", asked.request).trim_end().to_owned(),
+        _ => return Err(USAGE.to_owned()),
+    };
+    Ok(asked)
+}
+
+/// The code of the host's `refused: <code>` line, when it is a plain code word.
+fn refusal(err: &str) -> Option<&str> {
+    err.lines()
+        .filter_map(|l| l.trim().strip_prefix("refused: "))
+        .find(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'))
 }
 
 fn main() -> ExitCode {
@@ -331,8 +364,65 @@ mod tests {
             .unwrap_err()
             .raw()
             .contains("--port"));
-        // and the whole command needs `site` first
+        // and the whole command needs `site`, `sites` or `usage` first
         assert!(run(&words(&["status"])).is_err());
         assert!(run(&[]).is_err());
+    }
+
+    #[test]
+    fn a_customer_keys_commands_become_its_lines() {
+        let line = |a: &[&str]| command(&words(a)).unwrap().request;
+        assert_eq!(line(&["site", "status"]), "status");
+        assert_eq!(
+            line(&["site", "site3", "status", "--raw"]),
+            "site site3 status"
+        );
+        assert_eq!(
+            line(&["site", "site3", "logs", "php"]),
+            "site site3 logs php"
+        );
+        assert_eq!(line(&["sites"]), "sites");
+        assert_eq!(line(&["usage", "--print"]), "usage");
+        // a word too many is sent on to be refused, not dropped
+        assert_eq!(line(&["sites", "all"]), "sites all");
+        assert!(command(&words(&["list"])).is_err());
+        let full = |a: &[&str]| {
+            let mut a = words(a);
+            a.extend(words(&[
+                "--host",
+                "host1.example.net",
+                "--user",
+                "t1",
+                "--known-hosts",
+                "/k",
+            ]));
+            plan(&with_env(command(&a).unwrap(), no_env))
+        };
+        assert_eq!(full(&["sites"]).unwrap().last().unwrap(), "sites");
+        assert_eq!(
+            full(&["site", "site3", "status"]).unwrap().last().unwrap(),
+            "site site3 status"
+        );
+        assert_eq!(
+            full(&["sites", "all"]).unwrap_err().raw(),
+            "not sent: bad_arguments"
+        );
+        assert_eq!(
+            full(&["site", "site3", "restart"]).unwrap_err().raw(),
+            "not sent: unknown_request"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_shown_as_its_code_only() {
+        assert_eq!(refusal("refused: role_forbidden\n"), Some("role_forbidden"));
+        assert_eq!(
+            refusal("noise\nrefused: tenant_mismatch\n"),
+            Some("tenant_mismatch")
+        );
+        // anything that is not a plain code word is not shown
+        assert_eq!(refusal("refused: see /var/lib/x\n"), None);
+        assert_eq!(refusal("refused: \n"), None);
+        assert_eq!(refusal("could not read the site records\n"), None);
     }
 }

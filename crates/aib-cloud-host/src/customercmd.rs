@@ -187,7 +187,10 @@ fn tenant_sites(
 fn parse_scope(list: &str) -> Option<Vec<&str>> {
     let codes: Vec<&str> = list.split(',').collect();
     let ok = codes.iter().all(|c| aib_cloud::site::valid_code(c))
-        && codes.iter().enumerate().all(|(i, c)| !codes[..i].contains(c));
+        && codes
+            .iter()
+            .enumerate()
+            .all(|(i, c)| !codes[..i].contains(c));
     ok.then_some(codes)
 }
 
@@ -423,13 +426,27 @@ mod tests {
         assert_eq!(parse_scope("site2"), Some(vec!["site2"]));
         assert_eq!(parse_scope("site2,site3"), Some(vec!["site2", "site3"]));
         // empty, an empty item, the same site twice, not a code: an error, never "every site"
-        for bad in ["", "site2,", ",site2", "site2,site2", "site2, site3", "*", "../site2"] {
+        for bad in [
+            "",
+            "site2,",
+            ",site2",
+            "site2,site2",
+            "site2, site3",
+            "*",
+            "../site2",
+        ] {
             assert_eq!(parse_scope(bad), None, "{bad:?}");
         }
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         // a list without a customer, and a list that is not one, stop the entry
-        assert!(cmd(&args(&["--site", "site2", "--sites", "site2", "--roles", "owner"])).is_err());
-        assert!(cmd(&args(&["--tenant", "t-aaa", "--sites", "", "--roles", "owner"])).is_err());
+        assert!(cmd(&args(&[
+            "--site", "site2", "--sites", "site2", "--roles", "owner"
+        ]))
+        .is_err());
+        assert!(cmd(&args(&[
+            "--tenant", "t-aaa", "--sites", "", "--roles", "owner"
+        ]))
+        .is_err());
     }
 
     #[test]

@@ -13,7 +13,9 @@
 //!   to, and nobody is asked a question.
 //! * **Nothing is forwarded** and no terminal is requested: the connection carries one
 //!   request and its answer.
-//! * **The request is checked here first**, with the parser the host uses, so a mistyped
+//! * **The request is checked here first**, with the parser the host uses for that kind
+//!   of line ([`parse_line`]: a site key's request, or a customer key's `sites`, `usage`
+//!   and `site <code> …`), so a mistyped
 //!   request is refused before a connection is made; a request not offered to customers
 //!   yet is refused the same way. The host checks again: this side is
 //!   a convenience, not the gate.
@@ -23,7 +25,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::customer::{parse_request, Refused, Request};
+use crate::customer::{parse_owner_request, parse_request, OwnerRequest, Refused, Request};
 
 /// Where a customer's requests go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,56 @@ pub fn valid_path(path: &str) -> bool {
             .all(|c| !c.is_whitespace() && !c.is_control() && !"\"'%=,".contains(c))
 }
 
+/// What a line asks for, by the grammar the host will read it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Line<'a> {
+    /// A site key's request: the key says which site.
+    Site(Request),
+    /// A customer key's request: every site of the customer, or one named site.
+    Owner(OwnerRequest<'a>),
+}
+
+impl Line<'_> {
+    /// Whether this is offered to customers yet: the lists are, and of a site whatever
+    /// [`Request::offered`] says, under either kind of key.
+    pub fn offered(self) -> bool {
+        match self {
+            Line::Site(request) | Line::Owner(OwnerRequest::Site { request, .. }) => {
+                request.offered()
+            }
+            Line::Owner(OwnerRequest::Sites | OwnerRequest::Usage) => true,
+        }
+    }
+}
+
+/// Check a line with the parser the host uses for it. `sites`, `usage` and `site` are
+/// words of a customer key only, and no site request starts with them, so the first word
+/// decides; which kind of key the customer really holds is for the host to say.
+pub fn parse_line(line: &str) -> Result<Line<'_>, Refused> {
+    match line.split(' ').find(|w| !w.is_empty()) {
+        Some("sites" | "usage" | "site") => parse_owner_request(line).map(Line::Owner),
+        _ => parse_request(line).map(Line::Site),
+    }
+}
+
+/// The line for what was typed after `site`: a site request as it is (`status`), or with
+/// a site code in front (`site3 status`) the customer key's `site site3 status`. Only
+/// words that are a whole request after a code are read that way; anything else is left
+/// alone, to be refused as the site request it is not.
+pub fn site_line(typed: &str) -> String {
+    let words: Vec<&str> = typed.split(' ').filter(|w| !w.is_empty()).collect();
+    match words.as_slice() {
+        [code, rest @ ..]
+            if parse_request(typed).is_err()
+                && crate::site::valid_code(code)
+                && parse_request(&rest.join(" ")).is_ok() =>
+        {
+            format!("site {code} {}", rest.join(" "))
+        }
+        _ => String::from(typed),
+    }
+}
+
 /// The arguments for `ssh` that send `line` to `target` — the program name not included.
 /// The request is normalised to single blanks and travels as one argument.
 pub fn ssh_args(target: &Target<'_>, line: &str) -> Result<Vec<String>, NotSent> {
@@ -115,9 +167,9 @@ pub fn ssh_args(target: &Target<'_>, line: &str) -> Result<Vec<String>, NotSent>
     if !valid_path(target.known_hosts) || target.key.is_some_and(|k| !valid_path(k)) {
         return Err(NotSent::BadPath);
     }
-    parse_request(line).map_err(NotSent::Request)?;
+    let asked = parse_line(line).map_err(NotSent::Request)?;
     // what is not offered yet is answered as if the word did not exist (Andy 11-10)
-    if !parse_request(line).is_ok_and(Request::offered) {
+    if !asked.offered() {
         return Err(NotSent::Request(Refused::UnknownRequest));
     }
     let request = line
@@ -320,5 +372,80 @@ mod tests {
             "unknown_request"
         );
         assert_eq!(NotSent::BadHost.as_str(), "bad_host");
+    }
+
+    /// DEV 4.5 §4: a customer key asks `sites`, `usage` and `site <code> …`.
+    #[test]
+    fn a_customer_keys_lines_are_checked_by_their_own_grammar() {
+        for line in [
+            "sites",
+            "usage",
+            "site site3 status",
+            "site  site3 logs php lines 20",
+        ] {
+            let args = ssh_args(&T, line).unwrap();
+            let sent = args.last().unwrap();
+            assert!(!sent.contains("  "), "{sent:?}");
+            assert!(matches!(parse_line(line), Ok(Line::Owner(_))), "{line}");
+        }
+        assert_eq!(
+            ssh_args(&T, "site site3 logs php lines 20")
+                .unwrap()
+                .last()
+                .unwrap(),
+            "site site3 logs php lines 20"
+        );
+        // the same refusals as the host's, before a connection
+        assert_eq!(
+            ssh_args(&T, "sites all"),
+            Err(NotSent::Request(Refused::BadArguments))
+        );
+        assert_eq!(
+            ssh_args(&T, "site site3"),
+            Err(NotSent::Request(Refused::BadArguments))
+        );
+        assert_eq!(
+            ssh_args(&T, "site ../x status"),
+            Err(NotSent::Request(Refused::Malformed))
+        );
+        assert_eq!(
+            ssh_args(&T, "site site3 stop"),
+            Err(NotSent::Request(Refused::UnknownRequest))
+        );
+        // not offered yet stays unsent under a customer key too
+        for hidden in [
+            "site site3 restart",
+            "site site3 php-reload",
+            "site site3 backup",
+        ] {
+            assert_eq!(
+                ssh_args(&T, hidden),
+                Err(NotSent::Request(Refused::UnknownRequest)),
+                "{hidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_in_front_of_a_request_names_the_site() {
+        assert_eq!(site_line("status"), "status");
+        assert_eq!(site_line("logs nginx lines 50"), "logs nginx lines 50");
+        assert_eq!(site_line("site3 status"), "site site3 status");
+        assert_eq!(site_line(" site3  logs php "), "site site3 logs php");
+        // a site that is called like a request is still a site when a request follows
+        assert_eq!(site_line("status status"), "site status status");
+        // not a request after a code, or not a code: left as typed, and refused as typed
+        for typed in [
+            "",
+            "stop",
+            "status site3",
+            "site3 stop",
+            "site3",
+            "Site3 status",
+            "site3 status;id",
+        ] {
+            assert_eq!(site_line(typed), typed, "{typed:?}");
+            assert!(ssh_args(&T, &site_line(typed)).is_err(), "{typed:?}");
+        }
     }
 }
