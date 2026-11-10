@@ -11,8 +11,8 @@ k '    early_stop(last) && !PRINTERS.contains(&producer.cmd.as_str())' \
   '    early_stop(last) && !PRINTERS.contains(&producer.cmd.as_str()) && false // knife' \
   s1_pipefail_with_an_early_stop
 # K2 S2: `|| true` is not seen
-k '                    if (st.cmd == "true" || st.cmd == ":")' \
-  '                    if (st.cmd == "true" || st.cmd == ":") && false // knife' \
+k '                        ((st.cmd == "true" || st.cmd == ":") && st.args.is_empty()) || zero;' \
+  '                        ((st.cmd == "true" || st.cmd == ":") && false) || zero; // knife' \
   s2_swallowed_failures
 # K3 S2: `a && b || c` is not seen
 k '                if !b_print && !c_stops {' \
@@ -54,4 +54,28 @@ k '    RULES.iter().any(|(c, a, _)| *c == code && *a)' \
 k '            if body != Some(o.body) {' \
   '            if body != Some(o.body) && false { // knife' \
   a_set_inside_a_function_body_does_not_leak_out
-echo "signlint knives: 12/12 bite"
+# K13 U1: a variable as the command is let through (ebb36 #653 L1)
+k '                    && !shape.is_readable_var_cmd(c)' \
+  '                    && false && !shape.is_readable_var_cmd(c) // knife' \
+  u1_a_command_that_is_built_at_run_time_is_unknown
+# K14 U1: a here-string into a shell is let through
+k '                if shell && st.text.contains("<<<") {' \
+  '                if shell && st.text.contains("<<<") && false { // knife' \
+  u1_a_command_that_is_built_at_run_time_is_unknown
+# K15 S2: `|| exit 0` is not seen (L2)
+k '                        && st.args[0] == "0";' \
+  '                        && st.args[0] == "0" && false; // knife' \
+  s2_exit_0_and_a_bare_bang_swallow_the_failure
+# K16 S2: a bare `! cmd` is not seen (L3)
+k '            && first.words.first().map(String::as_str) == Some("!")' \
+  '            && first.words.first().map(String::as_str) == Some("!") && false // knife' \
+  s2_exit_0_and_a_bare_bang_swallow_the_failure
+# K17 S4: `<(remote …)` is not seen (L4)
+k '        if s.code.split("<(").skip(1).any(|r| {' \
+  '        if false && s.code.split("<(").skip(1).any(|r| { // knife' \
+  s4_a_remote_call_in_a_process_substitution
+# K18 R1: a rehearsal line with bidi controls or a long value counts (M1)
+k '        if !shown_ok(env, REHEARSAL_ENV_MAX) || !shown_ok(receipt, REHEARSAL_RECEIPT_MAX) {' \
+  '        if false && (!shown_ok(env, REHEARSAL_ENV_MAX) || !shown_ok(receipt, REHEARSAL_RECEIPT_MAX)) { // knife' \
+  r1_a_rehearsal_line_that_would_mislead_the_dialog_does_not_count
+echo "signlint knives: 18/18 bite"

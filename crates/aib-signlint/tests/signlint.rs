@@ -287,3 +287,78 @@ fn a_set_inside_a_function_body_does_not_leak_out() {
     assert_eq!(of(&t, "S2"), Vec::<usize>::new());
     assert_eq!(of(&t, "S3"), Vec::<usize>::new());
 }
+
+#[test]
+fn u1_a_command_that_is_built_at_run_time_is_unknown() {
+    // ebb36 #653 L1: a variable as the command, a here-string or a pipe into a shell, xargs sh
+    let t = script(
+        "set -euo pipefail\n\
+         c=\"rm -rf $X\"\n\
+         $c\n\
+         bash <<<\"$PAYLOAD\"\n\
+         curl -s https://example.test/x | bash\n\
+         echo \"$C\" | xargs -I{} sh -c {}\n",
+    );
+    assert_eq!(of(&t, "U1"), vec![5, 6, 7, 8]);
+    // what such a variable runs can be read here: a fixed text, ssh, a positional parameter
+    let t = script(
+        "set -euo pipefail\n\
+         A=/usr/local/sbin/tool\n\
+         SSH=\"ssh -o BatchMode=yes host-a\"\n\
+         run() { \"$@\"; }\n\
+         $A --version\n\
+         \"${A}\" check\n\
+         $SSH true\n\
+         run ls\n",
+    );
+    assert_eq!(of(&t, "U1"), Vec::<usize>::new());
+}
+
+#[test]
+fn s2_exit_0_and_a_bare_bang_swallow_the_failure() {
+    // ebb36 #653 L2 / L3
+    let t = script(
+        "set -euo pipefail\n\
+         systemctl restart x || exit 0\n\
+         f() {\n\
+         \x20 cp a b || return 0\n\
+         }\n\
+         ! systemctl restart y\n\
+         ! grep -q x /etc/y\n\
+         [ $? -eq 0 ] || exit 3\n\
+         cp c d || exit 4\n",
+    );
+    assert_eq!(of(&t, "S2"), vec![4, 6, 8]);
+}
+
+#[test]
+fn s4_a_remote_call_in_a_process_substitution() {
+    // ebb36 #653 L4: `< <(ssh …)` reads nothing when the host is gone, and says nothing
+    let t = script(
+        "set -euo pipefail\n\
+         H() { ssh -o BatchMode=yes host-a \"$@\"; }\n\
+         while read -r f; do echo \"$f\"; done < <(H ls /srv)\n\
+         while read -r f; do echo \"$f\"; done < <(ls /srv)\n",
+    );
+    assert_eq!(of(&t, "S4"), vec![5]);
+}
+
+#[test]
+fn r1_a_rehearsal_line_that_would_mislead_the_dialog_does_not_count() {
+    // ebb36 #653 M1: the values are shown in the consent dialog
+    let t = "#!/bin/bash\n# 可丟環境: ct-900\u{202E}lmth 收據: r.json\n";
+    assert!(rehearsal(t).is_none());
+    assert_eq!(found(t, "SIGN-x.sh"), vec![("R1", 1)]);
+    let t = format!(
+        "#!/bin/bash\n# 可丟環境: ct-900 收據: {}\n",
+        "x".repeat(300)
+    );
+    assert!(rehearsal(&t).is_none());
+    let t = format!(
+        "#!/bin/bash\n# 可丟環境: ct-900 收據: {}\n",
+        "x".repeat(160)
+    );
+    assert!(rehearsal(&t).is_some());
+    let t = "#!/bin/bash\n# 可丟環境: ct\u{200B}900 收據: r.json\n";
+    assert!(rehearsal(t).is_none());
+}

@@ -566,6 +566,33 @@ class SignLint(Base):
             r = ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), [], env, run=out(rc, text)[0])
             self.assertEqual((r["ok"], r["why"]), (False, why), (rc, text))
 
+    def test_p7_rehearsal_is_cleaned_before_the_dialog_and_the_record(self):
+        # ebb36 #653 M1:預演行兩欄來自腳本,進加強版框與 done 紀錄前要濾掉改方向 / 看不見的字、截長
+        exe = self.td / "aib-signlint"
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(exe, 0o755)
+        env = dict(self.env, AIB_SIGNLINT=str(exe))
+        evil = {"env": "mac-b\u202eabc\u200b", "receipt": "r" * 300}
+        many = [{"rule": "S2", "line": n, "state": "yes", "msg": "x"} for n in range(25)]
+        text = json.dumps({"ok": True, "findings": [], "acked": many, "rehearsal": evil})
+        r = ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), ["S2"], env,
+                              run=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, text, ""))
+        reh = r["rehearsal"]
+        self.assertNotIn("\u202e", reh["env"])
+        self.assertNotIn("\u200b", reh["env"])
+        self.assertLessEqual(len(reh["receipt"]), C.REHEARSAL_RECEIPT_MAX)
+        self.assertEqual((len(r["acked"]), r["acked_more"]), (C.LINT_SHOW_MAX, 5))
+        # 框:就算拿到沒清過的 rehearsal,ask_strong 自己也再清一次
+        bodies = []
+        req = {"argv": ["bash", "/x/SIGN-a.sh"], "summary": "s", "seat": "abb89", "sign": None,
+               "lint": {"acked": r["acked"], "acked_more": 5, "rehearsal": evil}}
+        with mock.patch.object(C, "ask_checkbox", lambda title, body, check, **kw: bodies.append(body) or {"ok": True}):
+            C.ask_strong(req, env=self.env)
+        self.assertEqual(len(bodies), 1)
+        self.assertNotIn("\u202e", bodies[0])
+        self.assertNotIn("r" * (C.REHEARSAL_RECEIPT_MAX + 1), bodies[0])
+        self.assertIn("+5", bodies[0])
+
     def test_p6_agent_loaded_needs_all_three(self):
         import plistlib
         home = self.td / "agent-home"
@@ -629,6 +656,10 @@ class Knife(unittest.TestCase):
 
     def test_k9_no_agent_probe(self):
         self._knife("        if not agent_loaded(env):\n", "        if False:\n", "SignLint.test_p1_agent_missing")
+
+    def test_k11_rehearsal_not_cleaned(self):
+        self._knife('        r_env = _plain(reh.get("env") or "-", REHEARSAL_ENV_MAX)\n',
+                    '        r_env = reh.get("env") or "-"\n', "SignLint.test_p7_rehearsal_is_cleaned_before_the_dialog_and_the_record")
 
     def test_k10_ack_takes_any_code(self):
         self._knife('_LINT_ACK_RE = re.compile(r"^S[1-5]$")', '_LINT_ACK_RE = re.compile(r"^[SUR][0-9]$")',

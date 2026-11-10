@@ -10,14 +10,15 @@
 //! | code | what |
 //! |---|---|
 //! | S1 | under `pipefail`, a pipeline whose last stage stops early (`grep -q`, `grep -m`, `head`): the stage before it can die of SIGPIPE, and a match reads as a failure |
-//! | S2 | a failure swallowed: `\|\| true`, `\|\| :`, `a && b \|\| c`, `set +e` never undone, a command left unchecked while `set -e` is off |
+//! | S2 | a failure swallowed: `\|\| true`, `\|\| :`, `\|\| exit 0`, `\|\| return 0`, a bare `! cmd` (no `set -e` stop), `a && b \|\| c`, `set +e` never undone, a command left unchecked while `set -e` is off |
 //! | S3 | only the output is looked at: `local`/`export x=$(…)`, `$(…)` inside `[ ]`, `for … in $(…)`, `x=$(…)` unchecked while `set -e` is off |
-//! | S4 | "could not ask" taken as "is not there": a call through ssh used as a condition with no separate 255, or, on a restore path, a missing backup that is skipped |
+//! | S4 | "could not ask" taken as "is not there": a call through ssh used as a condition with no separate 255, `<(ssh …)` (its exit code is never seen), or, on a restore path, a missing backup that is skipped |
 //! | S5 | a restore path that writes files and never reads them back (`cmp`, `sha256sum`, `diff`) |
-//! | U1 | this reader cannot follow the script: `eval`, `source`, `bash -c "$x"`, a quote or heredoc left open |
-//! | R1 | no `# 可丟環境: <where> 收據: <receipt>` line in the first 30 lines |
+//! | U1 | this reader cannot follow the script: `eval`, `source`, `bash -c "$x"`, a variable as the command (unless it only ever holds a fixed text, ssh, or is `"$@"`), `bash <<<`, a pipe into a shell, `xargs … sh`, a quote or heredoc left open |
+//! | R1 | no `# 可丟環境: <where> 收據: <receipt>` line in the first 30 lines (values with control, bidi or zero-width characters, or longer than 80 / 160 characters, do not count: they are shown in the consent dialog) |
 //!
-//! S1–S5 can be acknowledged by name (`--ack`); U1 and R1 cannot.
+//! S1–S5 can be acknowledged by name (`--ack`); U1 and R1 cannot. This helps the author catch
+//! mistakes; it is not a security boundary (the consent dialog, Touch ID and the script hash are).
 //!
 //! The reader is a shape reader, not a shell: it masks quoted text, follows heredocs (a
 //! heredoc fed to `bash -s` / `sh -s` is read as a script of its own, with its own `set`
@@ -96,6 +97,22 @@ pub struct Rehearsal {
     pub receipt: String,
 }
 
+/// Longest rehearsal values taken, in characters (they are shown in the consent dialog).
+pub const REHEARSAL_ENV_MAX: usize = 80;
+pub const REHEARSAL_RECEIPT_MAX: usize = 160;
+
+/// Plain, short text: no control character and no character that is invisible or
+/// reorders text (bidi controls, zero-width, soft hyphen, tag characters, BOM).
+fn shown_ok(s: &str, max: usize) -> bool {
+    s.chars().count() <= max
+        && !s.chars().any(|c| {
+            c.is_control()
+                || matches!(c as u32,
+                    0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
+                    | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
+        })
+}
+
 /// The rehearsal line in the first 30 lines, if any (empty or placeholder values do not count).
 pub fn rehearsal(text: &str) -> Option<Rehearsal> {
     for l in text.lines().take(30) {
@@ -117,6 +134,10 @@ pub fn rehearsal(text: &str) -> Option<Rehearsal> {
             continue;
         };
         let (env, receipt) = (env.trim(), receipt.trim());
+        // the values go into the consent dialog: nothing that hides or reorders text, and short
+        if !shown_ok(env, REHEARSAL_ENV_MAX) || !shown_ok(receipt, REHEARSAL_RECEIPT_MAX) {
+            continue;
+        }
         let empty =
             |s: &str| s.is_empty() || matches!(s, "-" | "—" | "無" | "none" | "n/a" | "TODO" | "?");
         if !empty(env) && !empty(receipt) {
@@ -828,13 +849,47 @@ struct Shape {
     remote_funcs: BTreeSet<String>,
     remote_vars: BTreeSet<String>,
     stop_funcs: BTreeSet<String>,
+    /// variables only ever set to a fixed text (no `$`, no backquote): `$A` as a command
+    /// runs something that can be read here
+    literal_vars: BTreeSet<String>,
+}
+
+/// The value text of an assignment that starts at `from` (just after `=`): a quoted
+/// string up to its closing quote, else up to the next blank or `;`.
+fn assigned_value(raw: &str, from: usize) -> &str {
+    let rest = &raw[from..];
+    match rest.chars().next() {
+        Some(q @ ('"' | '\'')) => match rest[1..].find(q) {
+            Some(end) => &rest[1..=end],
+            None => rest,
+        },
+        _ => rest
+            .split(|c: char| c.is_whitespace() || c == ';')
+            .next()
+            .unwrap_or(""),
+    }
 }
 
 fn shape_of(lines: &[Logical]) -> Shape {
     let funcs = funcs_of(lines);
     let mut remote_vars = BTreeSet::new();
+    let (mut fixed, mut varied) = (BTreeSet::new(), BTreeSet::new());
     for l in lines {
+        let mut from = 0;
         for w in l.raw.split_whitespace() {
+            let at = l.raw[from..].find(w).map_or(from, |p| from + p);
+            from = at + w.len();
+            if is_assignment(w) {
+                if let Some((name, _)) = w.split_once('=') {
+                    let v = assigned_value(&l.raw, at + name.len() + 1);
+                    let name = name.strip_suffix('+').unwrap_or(name).to_owned();
+                    if v.contains('$') || v.contains('`') || v.starts_with('(') {
+                        varied.insert(name);
+                    } else {
+                        fixed.insert(name);
+                    }
+                }
+            }
             if let Some((name, val)) = w.split_once('=') {
                 let val = val.trim_start_matches(['"', '\'', '(']);
                 if is_assignment(w) && (val == "ssh" || val.starts_with("ssh")) {
@@ -880,6 +935,7 @@ fn shape_of(lines: &[Logical]) -> Shape {
         remote_funcs,
         remote_vars,
         stop_funcs,
+        literal_vars: fixed.difference(&varied).cloned().collect(),
     }
 }
 
@@ -904,6 +960,24 @@ impl Shape {
             let v = v.split('[').next().unwrap_or(v);
             self.remote_vars.contains(v)
         })
+    }
+
+    /// `$A` / `${A}` / `"$A"` where A only ever holds a fixed text, or a positional
+    /// parameter (`"$@"`, `$1`: what it runs is written at each call).
+    fn is_readable_var_cmd(&self, w: &str) -> bool {
+        let w = w.trim_matches('"');
+        let Some(v) = w
+            .strip_prefix("${")
+            .and_then(|v| v.strip_suffix('}'))
+            .or_else(|| w.strip_prefix('$'))
+        else {
+            return false;
+        };
+        let v = v.split('[').next().unwrap_or(v);
+        matches!(v, "@" | "*")
+            || (v.len() == 1 && v.as_bytes()[0].is_ascii_digit())
+            || self.literal_vars.contains(v)
+            || self.remote_vars.contains(v)
     }
 
     fn is_remote(&self, st: &Stage) -> bool {
@@ -1241,7 +1315,51 @@ fn lint_script(text: &str, offset: usize, whole_restore: bool, out: &mut Vec<Fin
 
         for (k, e) in s.elems.iter().enumerate() {
             // ---- U1
-            for st in &e.stages {
+            for (j, st) in e.stages.iter().enumerate() {
+                let shell = matches!(st.cmd.as_str(), "bash" | "sh" | "zsh" | "dash" | "ksh");
+                if shell && st.text.contains("<<<") {
+                    push(
+                        "U1",
+                        at,
+                        State::Unknown,
+                        format!("`{} <<<`:跑的字串這裡看不到", st.cmd),
+                    );
+                }
+                if shell && j > 0 && st.args.iter().all(|a| a.starts_with('-')) {
+                    push(
+                        "U1",
+                        at,
+                        State::Unknown,
+                        format!("管線餵給 `{}`:它跑的內容這裡看不到", st.cmd),
+                    );
+                }
+                if st.cmd == "xargs"
+                    && st.args.iter().any(|a| {
+                        matches!(
+                            a.rsplit('/').next().unwrap_or(a),
+                            "sh" | "bash" | "zsh" | "dash" | "ksh"
+                        )
+                    })
+                {
+                    push(
+                        "U1",
+                        at,
+                        State::Unknown,
+                        "`xargs … sh`:shell 跑的字串來自輸入,這裡看不到".to_owned(),
+                    );
+                }
+                let c = st.cmd.trim_matches('"');
+                if (c.starts_with('$') || c.starts_with('`'))
+                    && !shape.is_readable_var_cmd(c)
+                    && !shape.is_remote_word(c)
+                {
+                    push(
+                        "U1",
+                        at,
+                        State::Unknown,
+                        format!("指令本身是變數 `{c}`,它會跑什麼這裡看不到"),
+                    );
+                }
                 if matches!(st.cmd.as_str(), "eval" | "source" | ".") {
                     push(
                         "U1",
@@ -1281,15 +1399,21 @@ fn lint_script(text: &str, offset: usize, whole_restore: bool, out: &mut Vec<Fin
             // ---- S2: swallowed
             if k > 0 && s.ops[k - 1] == Op::Or {
                 if let Some(st) = e.stages.first() {
-                    if (st.cmd == "true" || st.cmd == ":")
-                        && st.args.is_empty()
-                        && e.stages.len() == 1
-                    {
+                    let zero = matches!(st.cmd.as_str(), "exit" | "return")
+                        && st.args.len() == 1
+                        && st.args[0] == "0";
+                    let swallow =
+                        ((st.cmd == "true" || st.cmd == ":") && st.args.is_empty()) || zero;
+                    if swallow && e.stages.len() == 1 {
                         push(
                             "S2",
                             at,
                             State::Yes,
-                            format!("`|| {}` 把失敗吞掉了", st.cmd),
+                            format!(
+                                "`|| {}{}` 把失敗吞掉了",
+                                st.cmd,
+                                if zero { " 0" } else { "" }
+                            ),
                         );
                     }
                 }
@@ -1390,6 +1514,37 @@ fn lint_script(text: &str, offset: usize, whole_restore: bool, out: &mut Vec<Fin
                 at,
                 State::Yes,
                 format!("set -e 沒開:`{}` 失敗了沒人看,照樣往下", first.cmd),
+            );
+        }
+        // ---- S2: `! cmd` on its own line: bash does not stop on it under set -e
+        if s.ops.is_empty()
+            && s.elems.len() == 1
+            && first.words.first().map(String::as_str) == Some("!")
+            && !checked_next
+            && !cx.returns_to_caller(i)
+        {
+            push(
+                "S2",
+                at,
+                State::Yes,
+                format!(
+                    "`! {}` 單獨一行:! 開頭的指令不觸發 set -e,失敗了照樣往下",
+                    first.cmd
+                ),
+            );
+        }
+        // ---- S4: `<(remote …)`: its exit code is not seen
+        if s.code.split("<(").skip(1).any(|r| {
+            r.split_whitespace()
+                .next()
+                .is_some_and(|w| shape.is_remote_word(w))
+        }) {
+            let where_ = if restore { "還原路徑裡:" } else { "" };
+            push(
+                "S4",
+                at,
+                State::Yes,
+                format!("{where_}`<(遠端 …)`:拿不到它的結束碼,連不上時只是讀到空的;先存成檔、看過結束碼再讀"),
             );
         }
         // ---- S4: a remote call as a condition, 255 not told apart

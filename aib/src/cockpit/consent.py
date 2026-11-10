@@ -75,6 +75,8 @@ MAX_CMD_LEN = 1500
 MAX_SIGN_BYTES = 256 * 1024
 SIGNLINT_TIMEOUT_S = 30
 LINT_SHOW_MAX = 20
+REHEARSAL_ENV_MAX = 80        # 預演行兩欄進加強版框:濾掉看不見 / 改方向的字再截(ebb36 #653 M1)
+REHEARSAL_RECEIPT_MAX = 160
 SIGN_HEAD_LINES = 12
 SUMMARY_MAX = 200
 REASON_CMD_MAX = 120
@@ -375,10 +377,13 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
         lint = req["lint"]
         reh = lint.get("rehearsal") or {}
         acked = "\n".join(_lint_line(f) for f in lint.get("acked") or []) or "-"
-        body += "\n\n" + _t("aib.consent.sign_lint",
-                            {"env": reh.get("env", "-"), "receipt": reh.get("receipt", "-"), "acked": acked},
+        if lint.get("acked_more"):
+            acked += "\n… +%d" % lint["acked_more"]
+        r_env = _plain(reh.get("env") or "-", REHEARSAL_ENV_MAX)
+        r_rec = _plain(reh.get("receipt") or "-", REHEARSAL_RECEIPT_MAX)
+        body += "\n\n" + _t("aib.consent.sign_lint", {"env": r_env, "receipt": r_rec, "acked": acked},
                             "Rehearsed on: %s  receipt: %s\nRules the author let through (--lint-ack):\n%s"
-                            % (reh.get("env", "-"), reh.get("receipt", "-"), acked), env)
+                            % (r_env, r_rec, acked), env)
     return ask_checkbox(_t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
                         _t("aib.consent.strong_check", {}, "I have read this", env), env=env, run=run, wait=wait)
 
@@ -434,6 +439,11 @@ def _sign_info(path):
     return {"sha256": hashlib.sha256(raw).hexdigest(), "head": head, "raw": raw}
 
 
+def _plain(v, limit):
+    """進對話框的外來字:先拿掉控制 / 看不見 / 改方向的字,再照 TA.clean 截長。"""
+    return TA.clean("".join(ch for ch in str(v) if not _has_bad_char(ch)), limit)
+
+
 def _lint_line(f):
     return TA.clean("%s %s: %s" % (f.get("rule", "?"), f.get("line", "?"), f.get("msg", "")), 200)
 
@@ -465,10 +475,18 @@ def run_signlint(path, acks, env=None, run=None):
         return {"ok": False, "why": "signlint_output"}
     if p.returncode not in (0, 1) or not isinstance(out, dict) or (out.get("ok") is True) != (p.returncode == 0):
         return {"ok": False, "why": "signlint_rc:%s" % p.returncode}
-    keep = lambda k: [f for f in (out.get(k) or []) if isinstance(f, dict)][:LINT_SHOW_MAX]  # noqa: E731
+    every = lambda k: [f for f in (out.get(k) or []) if isinstance(f, dict)]  # noqa: E731
+    found, acked = every("findings"), every("acked")
+    reh = out.get("rehearsal")
+    if isinstance(reh, dict):   # 存進 done 紀錄的也是清過的版本(ebb36 #653 M1)
+        reh = {"env": _plain(reh.get("env") or "", REHEARSAL_ENV_MAX),
+               "receipt": _plain(reh.get("receipt") or "", REHEARSAL_RECEIPT_MAX)}
+    else:
+        reh = None
     return {"ok": p.returncode == 0, "why": "" if p.returncode == 0 else "sign_lint",
-            "findings": keep("findings"), "acked": keep("acked"), "acks": list(acks),
-            "rehearsal": out.get("rehearsal") if isinstance(out.get("rehearsal"), dict) else None}
+            "findings": found[:LINT_SHOW_MAX], "acked": acked[:LINT_SHOW_MAX], "acks": list(acks),
+            "findings_more": max(0, len(found) - LINT_SHOW_MAX), "acked_more": max(0, len(acked) - LINT_SHOW_MAX),
+            "rehearsal": reh}
 
 
 def agent_loaded(env=None, home=None, run=None):
@@ -559,12 +577,14 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
             shutil.rmtree(td, ignore_errors=True)
             return "failed", {"why": "sign_hash_changed"}, None, None
         lint = run_signlint(copy, acks, env)
-        lint_rec = {"lint": {k: lint.get(k) for k in ("acks", "acked", "rehearsal") if lint.get(k) is not None}}
+        lint_rec = {"lint": {k: lint.get(k) for k in ("acks", "acked", "acked_more", "rehearsal")
+                             if lint.get(k) is not None}}
         if not lint.get("ok"):
             shutil.rmtree(td, ignore_errors=True)
             why = lint.get("why") or "sign_lint"
             return ("not_allowed" if why == "sign_lint" else "failed"), \
                 {"why": why, "sha256": sign["sha256"], "lint": {"findings": lint.get("findings") or [],
+                                                               "findings_more": lint.get("findings_more") or 0,
                                                                "acks": acks}}, None, None
         view["lint"] = lint_rec["lint"]
 
@@ -835,6 +855,8 @@ def main(argv=None, env=None):
             out = {"result": "not_allowed", "why": why}
             if detail.get("lint", {}).get("findings"):
                 out["findings"] = detail["lint"]["findings"]
+                if detail["lint"].get("findings_more"):
+                    out["findings_more"] = detail["lint"]["findings_more"]   # 只列前 LINT_SHOW_MAX 條(ebb36 #653 N2)
             print(json.dumps(out, ensure_ascii=False))
             return 2
         out = {"id": req["id"], "result": "pending"}
