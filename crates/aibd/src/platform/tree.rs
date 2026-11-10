@@ -247,6 +247,29 @@ impl Report {
     }
 }
 
+/// `candidates_unreadable_comm` for a candidate the process table read did
+/// not list (its name was never read).
+const NOT_IN_TABLE: &str = "(not in process table)";
+
+/// A candidate missing from the process table read (c477a #614 M1 / M2).
+#[derive(Debug, PartialEq, Eq)]
+enum Missing {
+    /// Still there by its unique id: may be ours, could not be read.
+    Unreadable,
+    /// Really gone since the candidate list was read.
+    Gone,
+    /// Could not tell: the check is not complete (never `observed_clean`).
+    Incomplete,
+}
+
+fn missing_from_table(unique: Result<u64, SysError>) -> Missing {
+    match unique {
+        Ok(_) => Missing::Unreadable,
+        Err(SysError::Gone) => Missing::Gone,
+        Err(_) => Missing::Incomplete,
+    }
+}
+
 #[derive(Default)]
 struct CandidateCheck {
     count: usize,
@@ -1231,11 +1254,14 @@ impl TreeHandle {
         for pid in c.pids {
             let Some(p) = sys.process(Pid::from_u32(pid)) else {
                 // #614 CI (macOS 26): not in the process table read is not
-                // proof it is gone. Still there by its unique id = it might be
-                // ours and could not be read: report it, never drop it.
-                if l.unique_of(pid).is_some() {
-                    out.unreadable.push(pid);
-                    out.unreadable_comm.push(String::new());
+                // proof it is gone; never drop it on a guess.
+                match missing_from_table(l.unique_read(pid)) {
+                    Missing::Unreadable => {
+                        out.unreadable.push(pid);
+                        out.unreadable_comm.push(NOT_IN_TABLE.to_string());
+                    }
+                    Missing::Gone => {}
+                    Missing::Incomplete => out.complete = false,
                 }
                 continue;
             };
@@ -1433,6 +1459,23 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// c477a #614 M1 / M2: a candidate missing from the table is reported when
+    /// it is still there, skipped only when really gone, and an unreadable
+    /// answer leaves the check incomplete.
+    #[test]
+    fn a_candidate_missing_from_the_table_is_never_dropped_on_a_guess() {
+        assert_eq!(missing_from_table(Ok(7)), Missing::Unreadable);
+        assert_eq!(missing_from_table(Err(SysError::Gone)), Missing::Gone);
+        for e in [
+            SysError::PermissionDenied,
+            SysError::Os(5),
+            SysError::Unknown,
+            SysError::Unsupported,
+        ] {
+            assert_eq!(missing_from_table(Err(e)), Missing::Incomplete);
+        }
+    }
 
     /// G1 (043dd efbe548d M1): sysinfo's 0 for a setuid process is checked
     /// through the fallback; an unchecked one is never dropped from "alive"

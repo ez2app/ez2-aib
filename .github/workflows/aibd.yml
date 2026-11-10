@@ -453,6 +453,18 @@ jobs:
               --expect-fail "$t" \
               -- cargo test -p aibd --locked --test tree "$t"
           done
+          # c477a #614 M1 / M2: a candidate missing from the process table read is
+          # reported when still there, and an unknown answer leaves the check incomplete
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Ok(_) => Missing::Unreadable,' \
+            '        Ok(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Err(_) => Missing::Incomplete,' \
+            '        Err(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
