@@ -49,7 +49,9 @@ pub const PLAN: Plan = Plan {
 /// What a site was seen using over the look-back window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Usage {
-    /// CPU in hundredths of a core, 95th percentile.
+    /// CPU in hundredths of a core. Meant to be the 95th percentile of a long window;
+    /// until the host has a sampler, `site usage` fills it with one short sample, and
+    /// advice about CPU is only as good as that sample.
     pub cpu_x100_p95: u32,
     /// Memory the site cannot give back, in MiB: its working set
     /// ([`crate::usage::working_set_mb`]). **Not** the cgroup's peak or current use: those

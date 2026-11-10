@@ -82,6 +82,8 @@ pub fn host_room(
 }
 
 struct Site {
+    /// Logical volume of the root disk (`vm-112-disk-0`), from `pct config`.
+    volume: Option<String>,
     code: String,
     owner: String,
     ct: u32,
@@ -209,7 +211,17 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         if let Some(c) = get("cores").and_then(|v| v.parse().ok()) {
             limits.cores = c;
         }
+        // the volume's own name, as the CT's config gives it: not every host names it alike
+        let volume = get("rootfs").and_then(|r| {
+            let name = r.split(',').next()?.split_once(':')?.1.to_owned();
+            (!name.is_empty()
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)))
+            .then_some(name)
+        });
         sites.push(Site {
+            volume,
             code: spec.code.clone(),
             owner,
             ct: spec.ct,
@@ -241,7 +253,10 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             .zip(cgroup(s.ct, "memory.stat"))
             .and_then(|(c, st)| usage::working_set_mb(&c, &st));
         let oom = cgroup(s.ct, "memory.events").and_then(|e| usage::oom_kills(&e));
-        let disk = lv(&format!("{vg}/vm-{}-disk-0", s.ct))
+        let disk = s
+            .volume
+            .as_deref()
+            .and_then(|v| lv(&format!("{vg}/{v}")))
             .and_then(|(size, pct)| usage::used_gb(size, &pct));
         // every part must have been read: half a measurement is not a basis for advice
         s.usage = match (cpu, working, oom, disk) {
