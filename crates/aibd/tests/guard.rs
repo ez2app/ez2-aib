@@ -299,8 +299,9 @@ async fn metrics_needs_the_token_and_reports_lineage() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         j,
+        // `thermal` is null: this app has no thermal guard (R1 3a, dry run)
         serde_json::json!({"lineage": {
             "enabled": false, "selfcheck": "test", "failures": 0, "orphan_candidates_extra": 0
-        }})
+        }, "thermal": null})
     );
 }
