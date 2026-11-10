@@ -310,26 +310,3 @@ mod tests {
         assert_eq!(TREE_CANCEL_WAIT.active(), before);
     }
 }
-
-/// Test-only timers (after the first `#[cfg(test)]`, so the registry test does
-/// not count them): the thermal sampler with a short period and lifetime.
-#[cfg(test)]
-pub(crate) mod test_timers {
-    use super::{ms, secs, Timer};
-
-    /// Short period and lifetime: the sampler's life and re-begin.
-    pub static THERMAL_FAST: Timer = Timer::operation(
-        "test.thermal_fast",
-        ms(20),
-        ms(120),
-        "thermal sampler life in tests",
-    );
-
-    /// One round, then asleep: tests that drive rounds by hand.
-    pub static THERMAL_SLOW: Timer = Timer::operation(
-        "test.thermal_slow",
-        secs(3600),
-        secs(7200),
-        "thermal sampler kept out of the way in tests",
-    );
-}

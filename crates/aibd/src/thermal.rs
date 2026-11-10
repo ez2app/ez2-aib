@@ -36,6 +36,33 @@ pub const T1_RECHECK_S: f64 = 600.0;
 /// A `thermal.would_reap` event for the same session is written at most this often.
 pub const WOULD_REAP_EVERY_S: f64 = 60.0;
 
+/// What paces the sampler. In aibd it is the registered `thermal_sample` timer
+/// (ADR 0005: the only place that sleeps); tests give their own, so a round
+/// happens when the test lets it, not after real time has passed.
+pub(crate) trait Pace: Send + Sync {
+    /// Begin one period of the sampler.
+    fn begin(&self) -> Box<dyn Beat>;
+}
+
+/// One period of the sampler: [`Beat::tick`] waits for the next round and
+/// returns `false` once the period's maximum lifetime is reached. Dropping it
+/// ends the period.
+pub(crate) trait Beat: Send {
+    fn tick(&mut self) -> bool;
+}
+
+impl Pace for &'static Timer {
+    fn begin(&self) -> Box<dyn Beat> {
+        Box::new(Timer::begin(*self, None))
+    }
+}
+
+impl Beat for crate::timers::Op {
+    fn tick(&mut self) -> bool {
+        crate::timers::Op::tick(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum T1 {
     On,
@@ -89,7 +116,7 @@ pub struct Guard {
     info: Arc<dyn ThermalInfo>,
     store: Arc<Store>,
     sessions: Weak<Sessions>,
-    timer: &'static Timer,
+    pace: Arc<dyn Pace>,
     clock: Instant,
     running: AtomicUsize,
     sampling: AtomicBool,
@@ -106,14 +133,19 @@ impl Guard {
         store: Arc<Store>,
         sessions: &Arc<Sessions>,
     ) -> Option<Arc<Guard>> {
-        Self::install_with(info, store, sessions, &crate::timers::THERMAL_SAMPLE)
+        Self::install_with(
+            info,
+            store,
+            sessions,
+            Arc::new(&crate::timers::THERMAL_SAMPLE),
+        )
     }
 
     pub(crate) fn install_with(
         info: Arc<dyn ThermalInfo>,
         store: Arc<Store>,
         sessions: &Arc<Sessions>,
-        timer: &'static Timer,
+        pace: Arc<dyn Pace>,
     ) -> Option<Arc<Guard>> {
         let t1 = match aib_sys::thermal::selfcheck_t1(info.as_ref()) {
             Ok(_) => T1::On,
@@ -132,7 +164,7 @@ impl Guard {
             info,
             store,
             sessions: Arc::downgrade(sessions),
-            timer,
+            pace,
             clock: Instant::now(),
             running: AtomicUsize::new(0),
             sampling: AtomicBool::new(false),
@@ -193,7 +225,7 @@ impl Guard {
     /// At the timer's maximum lifetime it begins again in the same round (Q4).
     fn sample_loop(self: Arc<Self>) {
         self.threads.fetch_add(1, Ordering::Relaxed);
-        let mut op = self.timer.begin(None);
+        let mut op = self.pace.begin();
         let mut first = true;
         loop {
             if self.running.load(Ordering::SeqCst) == 0 {
@@ -211,7 +243,7 @@ impl Guard {
             first = false;
             if !op.tick() {
                 drop(op);
-                op = self.timer.begin(None);
+                op = self.pace.begin();
                 self.st().rebegins += 1;
             }
         }
@@ -413,7 +445,130 @@ mod tests {
     };
     use aib_sys::fake::FakeThermal;
     use aib_sys::DieTemps;
+    use std::sync::Condvar;
     use std::time::Duration;
+
+    /// A pace the test drives by hand (no real time passes): the sampler's
+    /// `tick` waits until the test lets one round go ([`ManualPace::step`]) or
+    /// ends the period at its lifetime ([`ManualPace::end_period`]).
+    #[derive(Clone, Default)]
+    struct ManualPace(Arc<PaceInner>);
+
+    #[derive(Default)]
+    struct PaceInner {
+        st: Mutex<PaceState>,
+        cv: Condvar,
+    }
+
+    #[derive(Default)]
+    struct PaceState {
+        /// rounds let go and not taken yet
+        steps: u64,
+        /// periods to end at their next tick
+        ends: u64,
+        /// `tick` calls so far: the sampler has finished that many rounds
+        ticks: u64,
+        /// periods begun and not dropped
+        active: u64,
+    }
+
+    struct ManualBeat(Arc<PaceInner>);
+
+    impl PaceInner {
+        fn st(&self) -> MutexGuard<'_, PaceState> {
+            self.st.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    impl Pace for ManualPace {
+        fn begin(&self) -> Box<dyn Beat> {
+            self.0.st().active += 1;
+            self.0.cv.notify_all();
+            Box::new(ManualBeat(self.0.clone()))
+        }
+    }
+
+    impl Beat for ManualBeat {
+        fn tick(&mut self) -> bool {
+            let mut s = self.0.st();
+            s.ticks += 1;
+            self.0.cv.notify_all();
+            loop {
+                if s.ends > 0 {
+                    s.ends -= 1;
+                    return false;
+                }
+                if s.steps > 0 {
+                    s.steps -= 1;
+                    return true;
+                }
+                s = self.0.cv.wait(s).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
+    impl Drop for ManualBeat {
+        fn drop(&mut self) {
+            self.0.st().active -= 1;
+            self.0.cv.notify_all();
+        }
+    }
+
+    impl ManualPace {
+        fn step(&self) {
+            self.0.st().steps += 1;
+            self.0.cv.notify_all();
+        }
+
+        fn end_period(&self) {
+            self.0.st().ends += 1;
+            self.0.cv.notify_all();
+        }
+
+        fn ticks(&self) -> u64 {
+            self.0.st().ticks
+        }
+
+        fn active(&self) -> u64 {
+            self.0.st().active
+        }
+
+        /// Wait until `f` holds. The bound is only there so a broken guard
+        /// fails the test instead of hanging it; nothing waits on it otherwise.
+        fn until(&self, what: &str, f: impl Fn(&PaceState) -> bool) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut s = self.0.st();
+            while !f(&s) {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                // named exception (ADR 0005): an upper bound for a failing test, not pacing
+                #[allow(clippy::disallowed_methods)]
+                let next = self.0.cv.wait_timeout(s, left);
+                s = next.unwrap_or_else(|e| e.into_inner()).0;
+            }
+        }
+
+        /// The sampler has finished `n` rounds and waits for the next.
+        fn rounds_done(&self, n: u64) {
+            self.until("the sampler's rounds", |s| s.ticks >= n);
+        }
+
+        /// Let rounds go until the sampler has left (its period dropped). A
+        /// sampler that never leaves fails here after a bounded number of rounds.
+        fn let_it_leave(&self) {
+            for _ in 0..100 {
+                if self.active() == 0 {
+                    return;
+                }
+                let n = self.ticks();
+                self.step();
+                self.until("the sampler to round or leave", |s| {
+                    s.active == 0 || s.ticks > n
+                });
+            }
+            assert_eq!(self.active(), 0, "the sampler did not leave");
+        }
+    }
 
     struct Quiet;
     struct NeverExits;
@@ -489,8 +644,14 @@ mod tests {
         }
     }
 
-    fn install(r: &Rig, timer: &'static Timer) -> Arc<Guard> {
-        Guard::install_with(r.fake.clone(), r.store.clone(), &r.sessions, timer).unwrap()
+    fn install(r: &Rig, pace: &ManualPace) -> Arc<Guard> {
+        Guard::install_with(
+            r.fake.clone(),
+            r.store.clone(),
+            &r.sessions,
+            Arc::new(pace.clone()),
+        )
+        .unwrap()
     }
 
     fn events(r: &Rig, kind: &str) -> Vec<serde_json::Value> {
@@ -503,29 +664,20 @@ mod tests {
             .collect()
     }
 
-    fn wait_until(mut f: impl FnMut() -> bool) -> bool {
-        for _ in 0..250 {
-            if f() {
-                return true;
-            }
-            #[allow(clippy::disallowed_methods)] // test pacing only
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        f()
-    }
-
     /// Dry run: pressure says reap; the newest running session is named in
     /// `thermal.would_reap`, nothing is stopped and new POSTs still start.
     #[test]
     fn a_reap_is_only_recorded_and_names_the_newest_session() {
         let r = rig();
-        let g = install(&r, &crate::timers::test_timers::THERMAL_SLOW);
+        let pace = ManualPace::default();
+        let g = install(&r, &pace);
         let a = r.sessions.start(req()).unwrap();
         #[allow(clippy::disallowed_methods)] // started_at has millisecond resolution
         std::thread::sleep(Duration::from_millis(5));
         let b = r.sessions.start(req()).unwrap();
-        // the sampler took its first round (cool) and now sleeps an hour
-        assert!(wait_until(|| g.metrics()["rounds"].as_u64() >= Some(1)));
+        // the sampler took its first round (cool) and now waits for the test
+        pace.rounds_done(1);
+        assert_eq!(g.metrics()["rounds"], 1);
         r.fake.set_pressure(Ok(2));
         g.round_at(false, 1_000.0);
         let reaps = events(&r, "thermal.would_reap");
@@ -560,7 +712,7 @@ mod tests {
     fn an_unknown_t1_is_tried_again_after_ten_minutes_on_a_first_round() {
         let r = rig();
         r.fake.set_die(Err(SysError::Unknown));
-        let g = install(&r, &crate::timers::test_timers::THERMAL_SLOW);
+        let g = install(&r, &ManualPace::default());
         assert_eq!(g.metrics()["t1"], "retry:unknown");
         r.fake.set_die(Ok(die(60.0, 55.0)));
         g.round_at(true, T1_RECHECK_S - 1.0);
@@ -577,7 +729,7 @@ mod tests {
     fn an_unsupported_t1_is_off_and_t2_alone_is_enough() {
         let r = rig();
         r.fake.set_die(Err(SysError::Unsupported));
-        let g = install(&r, &crate::timers::test_timers::THERMAL_SLOW);
+        let g = install(&r, &ManualPace::default());
         assert_eq!(g.metrics()["t1"], "off:unsupported");
         g.round_at(true, T1_RECHECK_S * 10.0);
         assert_eq!(g.metrics()["t1"], "off:unsupported");
@@ -594,7 +746,7 @@ mod tests {
             r.fake.clone(),
             r.store.clone(),
             &r.sessions,
-            &crate::timers::test_timers::THERMAL_SLOW
+            Arc::new(ManualPace::default())
         )
         .is_none());
         assert!(r.sessions.set_hooks(Hooks::default()), "hooks were taken");
@@ -604,37 +756,38 @@ mod tests {
     /// processes run, begins again at its maximum lifetime, and is gone after.
     #[test]
     fn the_sampler_lives_with_the_sessions_and_begins_again_at_its_lifetime() {
-        let t = &crate::timers::test_timers::THERMAL_FAST;
+        let pace = ManualPace::default();
         let r = rig();
-        let g = install(&r, t);
-        assert_eq!(t.active(), 0);
+        let g = install(&r, &pace);
+        assert_eq!(pace.active(), 0);
         let a = r.sessions.start(req()).unwrap();
-        assert!(wait_until(
-            || t.active() == 1 && g.metrics()["rounds"].as_u64() >= Some(3)
-        ));
-        assert!(
-            wait_until(|| g.metrics()["rebegins"].as_u64() >= Some(1)),
+        pace.rounds_done(1);
+        pace.step();
+        pace.step();
+        pace.rounds_done(3);
+        assert_eq!(pace.active(), 1);
+        assert_eq!(g.metrics()["rounds"], 3);
+        // the period's lifetime: a new one begins, in the same round, never two
+        pace.end_period();
+        pace.until("a re-begin", |s| s.ticks >= 4);
+        assert_eq!(
+            g.metrics()["rebegins"],
+            1,
             "no re-begin at the maximum lifetime"
         );
-        assert_eq!(t.active(), 1, "a re-begin must not leave two");
+        assert_eq!(pace.active(), 1, "a re-begin must not leave two");
         r.sessions.stop(&a.id, Duration::from_secs(1)).unwrap();
-        assert!(wait_until(
-            || t.active() == 0 && g.metrics()["sampling"] == false
-        ));
-        let rounds = g.metrics()["rounds"].as_u64();
-        #[allow(clippy::disallowed_methods)] // test pacing only
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(
-            g.metrics()["rounds"].as_u64(),
-            rounds,
-            "sampled with 0 sessions"
-        );
+        pace.let_it_leave();
+        assert_eq!(g.metrics()["sampling"], false);
+        // gone, not asleep: its period was dropped on the way out, so no
+        // round can follow (the old test slept 200 ms to see that)
+        assert_eq!(pace.active(), 0, "sampled with 0 sessions");
         assert_eq!(g.sampler_starts(), 1);
         // a new 0 → 1 starts it again
         let b = r.sessions.start(req()).unwrap();
-        assert!(wait_until(|| t.active() == 1));
+        pace.until("a new sampler", |s| s.active == 1);
         r.sessions.stop(&b.id, Duration::from_secs(1)).unwrap();
-        assert!(wait_until(|| t.active() == 0));
+        pace.let_it_leave();
         assert_eq!(g.sampler_starts(), 2);
     }
 }
