@@ -3,6 +3,8 @@
 //!
 //!   aib-goal2-fixture prepare --dir D
 //!   aib-goal2-fixture up      --dir D --aib PATH --role ROLE [--seats 6]
+//!   aib-goal2-fixture attach  --dir D --view cockpit|war-room|neutral   (macOS `script`)
+//!   aib-goal2-fixture detach  --dir D
 //!   aib-goal2-fixture status  --dir D
 //!   aib-goal2-fixture down    --dir D
 //!   aib-goal2-fixture shim    --dir D -- <tmux args>      (what D/bin/tmux runs)
@@ -28,6 +30,12 @@
 //! and confirms the recorded server pids are gone. It never kills by name.
 //! The idle stand-in for the AI CLI (`D/bin/claude`) prints one line and execs
 //! a long sleep: no fork, no network.
+//!
+//! `attach` puts one client on the sandbox outer session under a pseudo
+//! terminal (`script -q /dev/null`), never the caller's terminal, looking at
+//! the cockpit, the war-room, or a fixture-only `fx-neutral` window that runs
+//! a sleep. `detach` / `down` signal only the process group they recorded,
+//! after checking its start time.
 #![allow(clippy::disallowed_methods)] // measurement tool: plain sleeps are fine
 
 use serde_json::{json, Value};
@@ -265,13 +273,16 @@ impl Sandbox {
 
 // ---- process side ----------------------------------------------------------
 
+/// The real uid, as tmux uses for `tmux-<uid>`. A syscall, not `id -u`: the
+/// shim runs on every tmux call of the measured tree and must not fork.
+#[cfg(unix)]
 fn uid() -> String {
-    Command::new("/usr/bin/id")
-        .arg("-u")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    nix::unistd::getuid().to_string()
+}
+
+#[cfg(not(unix))]
+fn uid() -> String {
+    String::new()
 }
 
 fn arg(args: &[String], flag: &str) -> Option<String> {
@@ -520,7 +531,7 @@ fn server_status(sb: &Sandbox, name: &str) -> Result<Value, String> {
         &[
             "list-clients",
             "-F",
-            "#{client_pid}\t#{session_name}:#{window_index}",
+            "#{client_pid}\t#{session_name}:#{window_index}\t#{window_name}",
         ],
     )?);
     Ok(json!({
@@ -537,13 +548,220 @@ fn status(sb: &Sandbox) -> Result<Value, String> {
     for n in socket_names(sb)? {
         servers.insert(n.clone(), server_status(sb, &n)?);
     }
-    Ok(json!({"hub_alias": bound_hub(&sb.dir), "servers": servers}))
+    let attach = std::fs::read_to_string(sb.dir.join(ATTACH_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    Ok(json!({"hub_alias": bound_hub(&sb.dir), "servers": servers, "attach": attach}))
+}
+
+/// The outer window a fixture client looks at.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum View {
+    /// the cockpit window (hub viewer + right column)
+    Cockpit,
+    /// legacy aib's war-room window
+    WarRoom,
+    /// a window the fixture adds, running only a sleep
+    Neutral,
+}
+
+impl View {
+    pub fn parse(s: &str) -> Option<View> {
+        match s {
+            "cockpit" => Some(View::Cockpit),
+            "war-room" => Some(View::WarRoom),
+            "neutral" => Some(View::Neutral),
+            _ => None,
+        }
+    }
+
+    pub fn window(self) -> &'static str {
+        match self {
+            View::Cockpit => "cockpit",
+            View::WarRoom => "war-room",
+            View::Neutral => NEUTRAL_WINDOW,
+        }
+    }
+}
+
+const NEUTRAL_WINDOW: &str = "fx-neutral";
+const ATTACH_FILE: &str = "attach.json";
+
+/// The legacy aib outer session (`aib-<cabin>`) on the sandbox default server.
+fn outer_session(sb: &Sandbox) -> Result<String, String> {
+    let v: Vec<String> = lines(&tm(sb, OUTER, &["list-sessions", "-F", "#{session_name}"])?)
+        .into_iter()
+        .filter(|s| s.starts_with("aib-"))
+        .collect();
+    match v.as_slice() {
+        [one] => Ok(one.clone()),
+        _ => Err(format!(
+            "expected one aib-<cabin> outer session, found {v:?}"
+        )),
+    }
+}
+
+/// Clients of the sandbox default server: (pid, window name).
+fn outer_clients(sb: &Sandbox) -> Result<Vec<(u32, String)>, String> {
+    Ok(lines(&tm(
+        sb,
+        OUTER,
+        &["list-clients", "-F", "#{client_pid}\t#{window_name}"],
+    )?)
+    .iter()
+    .filter_map(|l| {
+        let (p, w) = l.split_once('\t')?;
+        Some((p.parse().ok()?, w.to_string()))
+    })
+    .collect())
+}
+
+/// Attach one client to the sandbox outer session under a pseudo terminal
+/// (`script`), never the caller's terminal. Its stdin is a pipe from a
+/// sleep that never writes, so the client stays until `detach` / `down`
+/// signals the process group recorded in D/attach.json.
+fn cmd_attach(args: &[String]) -> Result<Value, String> {
+    let dir = PathBuf::from(arg(args, "--dir").ok_or("--dir")?);
+    let view = arg(args, "--view")
+        .as_deref()
+        .and_then(View::parse)
+        .ok_or("--view cockpit|war-room|neutral")?;
+    let cfg = read_cfg(&dir)?;
+    let sb = Sandbox { dir: dir.clone() };
+    if dir.join(ATTACH_FILE).exists() {
+        return Err("a fixture client is already attached (detach it first)".into());
+    }
+    if !outer_clients(&sb)?.is_empty() {
+        return Err("the sandbox outer server already has a client".into());
+    }
+    let session = outer_session(&sb)?;
+    if view == View::Neutral {
+        let have = lines(&tm(
+            &sb,
+            OUTER,
+            &["list-windows", "-t", &session, "-F", "#{window_name}"],
+        )?);
+        if !have.iter().any(|w| w == NEUTRAL_WINDOW) {
+            let o = tm(
+                &sb,
+                OUTER,
+                &[
+                    "new-window",
+                    "-d",
+                    "-t",
+                    &format!("{session}:"),
+                    "-n",
+                    NEUTRAL_WINDOW,
+                    "exec /bin/sleep 2147483647",
+                ],
+            )?;
+            if !o.status.success() {
+                return Err(format!(
+                    "new-window {NEUTRAL_WINDOW}: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                ));
+            }
+        }
+    }
+    let target = format!("{session}:{}", view.window());
+    let o = tm(&sb, OUTER, &["select-window", "-t", &target])?;
+    if !o.status.success() {
+        return Err(format!(
+            "select-window {target}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        ));
+    }
+    let shim = dir.join("bin/tmux");
+    let mut c = Command::new("/bin/sh");
+    c.arg("-c")
+        .arg("/bin/sleep 2147483647 | /usr/bin/script -q /dev/null \"$0\" attach -t \"$1\"")
+        .arg(&shim)
+        .arg(&target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    sandbox_env(&mut c, &cfg);
+    c.env("TERM", "xterm-256color");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    let child = c.spawn().map_err(|e| format!("spawn attach: {e}"))?;
+    let pgid = child.id();
+    let rec = json!({"pgid": pgid, "start": aib_procwatch::start_time(pgid), "view": view.window(), "target": target});
+    std::fs::write(dir.join(ATTACH_FILE), rec.to_string()).map_err(|e| e.to_string())?;
+    let mut seen = vec![];
+    for _ in 0..100 {
+        seen = outer_clients(&sb)?;
+        if !seen.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    match seen.as_slice() {
+        [(_, w)] if w == view.window() => Ok(
+            json!({"attach": rec, "clients": seen.iter().map(|(p, w)| json!({"pid": p, "window": w})).collect::<Vec<_>>()}),
+        ),
+        _ => {
+            let _ = detach(&sb);
+            Err(format!(
+                "attach did not settle on {}: clients {seen:?}",
+                view.window()
+            ))
+        }
+    }
+}
+
+/// Signal the recorded attach process group, if it is still the one we
+/// started, and wait for the outer server to have no client.
+fn detach(sb: &Sandbox) -> Result<Value, String> {
+    let p = sb.dir.join(ATTACH_FILE);
+    let Ok(t) = std::fs::read_to_string(&p) else {
+        return Ok(json!({"attached": false}));
+    };
+    let rec: Value = serde_json::from_str(&t).map_err(|e| format!("{ATTACH_FILE}: {e}"))?;
+    let pgid = rec["pgid"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or("attach pgid")?;
+    let same =
+        rec["start"].as_u64().is_some() && aib_procwatch::start_time(pgid) == rec["start"].as_u64();
+    let mut kill_rc = None;
+    if same {
+        kill_rc = Command::new("/bin/kill")
+            .args(["-TERM", "--", &format!("-{pgid}")])
+            .status()
+            .ok()
+            .and_then(|s| s.code());
+    }
+    let mut left = vec![];
+    for _ in 0..50 {
+        left = outer_clients(sb).unwrap_or_default();
+        if left.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !left.is_empty() {
+        return Err(format!("clients still attached after detach: {left:?}"));
+    }
+    std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    Ok(json!({"attached": true, "pgid": pgid, "same_identity": same, "kill_rc": kill_rc}))
+}
+
+fn cmd_detach(args: &[String]) -> Result<Value, String> {
+    let dir = PathBuf::from(arg(args, "--dir").ok_or("--dir")?);
+    detach(&Sandbox { dir })
 }
 
 fn cmd_down(args: &[String]) -> Result<Value, String> {
     let dir = PathBuf::from(arg(args, "--dir").ok_or("--dir")?);
     let sb = Sandbox { dir: dir.clone() };
     let mut out = serde_json::Map::new();
+    if sb.dir.join(ATTACH_FILE).exists() && socket_names(&sb)?.iter().any(|n| n == OUTER) {
+        out.insert("detach".into(), detach(&sb)?);
+    }
     for name in socket_names(&sb)? {
         let pid = server_status(&sb, &name)?["server_pid"].as_u64();
         let kill = tm(&sb, &name, &["kill-server"])?;
@@ -643,9 +861,13 @@ fn main() -> ExitCode {
             }),
             None => Err("--dir".into()),
         },
+        Some("attach") => cmd_attach(rest),
+        Some("detach") => cmd_detach(rest),
         Some("down") => cmd_down(rest),
         _ => {
-            eprintln!("usage: aib-goal2-fixture prepare|up|status|down|shim --dir D …");
+            eprintln!(
+                "usage: aib-goal2-fixture prepare|up|attach|detach|status|down|shim --dir D …"
+            );
             return ExitCode::from(2);
         }
     };
@@ -779,6 +1001,17 @@ mod tests {
         )
         .is_err());
         assert!(r(&["-u", "-x", "-L", "aihub-ab12", "ls"], None, None).is_err());
+    }
+
+    #[test]
+    fn views_name_their_outer_window() {
+        assert_eq!(View::parse("cockpit").map(View::window), Some("cockpit"));
+        assert_eq!(View::parse("war-room").map(View::window), Some("war-room"));
+        assert_eq!(
+            View::parse("neutral").map(View::window),
+            Some(NEUTRAL_WINDOW)
+        );
+        assert_eq!(View::parse("other"), None);
     }
 
     #[test]
