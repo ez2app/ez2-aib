@@ -863,6 +863,17 @@ jobs:
           sk nowline.rs 'rec["at"] = json!(now);' \
              'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
              '--lib' only_the_time_changes
+          # B12 rules expiry (a63ab 11-10): E1 an expired temporary rule is not reported
+          sk rules.rs '    if now > due {' '    if now > due && false { // knife' \
+             '--lib' an_expired_entry_is_reported
+          # E2 a temporary rule missing a field passes
+          sk rules.rs '        .any(|e| matches!(e.verdict, Verdict::Missing(_)))' \
+             '        .any(|e| matches!(e.verdict, Verdict::Missing(_)) && false) // knife' \
+             '--lib' a_missing_field_is_an_error
+          # E3 a rule marked retired is still judged
+          sk rules.rs '    if RETIRED.iter().any(|r| heading.contains(r)) {' \
+             '    if RETIRED.iter().any(|r| heading.contains(r)) && false { // knife' \
+             '--lib' a_retired_entry_is_skipped
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
