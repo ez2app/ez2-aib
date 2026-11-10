@@ -574,6 +574,22 @@ jobs:
           hk opstore.rs '        Err(_) => Liveness::Unknown,' \
              '        Err(_) => Liveness::Gone, // knife' \
              liveness_from_proc
+          # liveness: a pid now started at another time (reused) is read as the holder (FOLLOWUP-635 N3)
+          hk opstore.rs '            Some(_) => Liveness::Gone,' \
+             '            Some(_) => Liveness::Alive, // knife' \
+             liveness_from_proc
+          # liveness: a zombie holder keeps the lock until it is reaped (FOLLOWUP-635 N1)
+          hk opstore.rs "            Some(st) if st == holder.start_time && stat_state(&t) == Some('Z') => Liveness::Gone," \
+             "            Some(st) if st == holder.start_time && stat_state(&t) == Some('?') => Liveness::Gone, // knife" \
+             liveness_from_proc
+          # /proc stat: the state letter read after the first paren instead of the last
+          hk opstore.rs "    stat.rsplit_once(')')?" \
+             "    stat.split_once(')')? // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # unfinished: an operation's own recovery is blocked by itself (FOLLOWUP-635 N3)
+          hk opstore.rs '        .filter(|e| e.target == target && e.op != own_op && is_unfinished(e))' \
+             '        .filter(|e| e.target == target && (e.op != own_op || true) && is_unfinished(e)) // knife' \
+             unfinished_operations_block_their_target
           # lock: a damaged lock file is read as free
           hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
              '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
