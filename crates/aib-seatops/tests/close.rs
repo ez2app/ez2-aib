@@ -479,7 +479,10 @@ fn the_command_closes_and_refreshes_the_status_line() {
     std::fs::write(now_dir.join(format!("{SEAT}.json")), rec.to_string()).expect("w");
     std::fs::write(
         now_dir.join(format!("{SEAT}.line")),
-        format!("x | {}\n", aib_seatops::nowline::stamp(1_000)),
+        format!(
+            "x | {}\n",
+            aib_seatops::nowline::stamp(1_000).expect("stamp")
+        ),
     )
     .expect("w");
     let out = run(&id(2), "review #629");
