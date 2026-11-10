@@ -306,8 +306,14 @@ mod imp {
                             why: NotAdoptedWhy::StartUnreadable,
                         },
                     );
-                    if !g.start_unknown.contains_key(&k) {
-                        g.start_unknown.insert(k, p);
+                    let fresh = match g.start_unknown.entry(k) {
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert(p);
+                            true
+                        }
+                        std::collections::btree_map::Entry::Occupied(_) => false,
+                    };
+                    if fresh {
                         g.stats.children_start_unknown += 1;
                         drop(g);
                         if p == parent {
