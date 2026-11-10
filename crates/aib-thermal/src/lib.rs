@@ -15,7 +15,10 @@
 //! - sustained ≥ [`NOGO_AVG_C`] only blocks new heavy work (no reap);
 //! - when no sustained value can be computed (no history, or pressure is
 //!   unreadable and samples are not continuous) fall back to the instantaneous
-//!   reading — prefer reaping over losing protection;
+//!   reading — but with pressure unreadable that fallback blocks new work at
+//!   most and never reaps (R1 PR 3 Q2, a63ab 11-10: a lone spike needs
+//!   [`SUSTAIN_MIN_SAMPLES`] samples to reap; **intended change from 1.x**,
+//!   which reaped and killed Chrome on andymini 11-03);
 //! - load average never grants reap authority (it is not an input here).
 //!
 //! Times are seconds on a monotonic clock chosen by the caller.
@@ -219,11 +222,16 @@ pub fn instant_level(max: f64) -> Level {
 }
 
 /// Fallback when no sustained value can be computed: instantaneous level, but
-/// an average already at the reap limit still reaps (1.x A18).
-fn instant(max: f64, value: f64, why: Why) -> Decision {
+/// an average already at the reap limit still reaps (1.x A18). With pressure
+/// unreadable nothing confirms one reading, so it never reaps: critical is
+/// held to hot (blocks new work only; R1 PR 3 Q2, intended change from 1.x).
+fn instant(max: f64, value: f64, why: Why, pressure: Option<i64>) -> Decision {
     let mut level = instant_level(max);
     if value >= REAP_AVG_C {
         level = Level::Crit;
+    }
+    if pressure.is_none() && level == Level::Crit {
+        level = Level::Hot;
     }
     Decision {
         level,
@@ -256,10 +264,10 @@ pub fn decide(reading: Reading, history: Option<&History>, pressure: Option<i64>
         };
     };
     let Some(history) = history else {
-        return instant(max, value, Why::NoHistory);
+        return instant(max, value, Why::NoHistory, pressure);
     };
     if pressure.is_none() && !history.continuous() {
-        return instant(max, value, Why::NoSignal);
+        return instant(max, value, Why::NoSignal, pressure);
     }
     for (level, limit) in [(Level::Crit, REAP_AVG_C), (Level::Hot, NOGO_AVG_C)] {
         let held = history.held_for(limit);
@@ -471,8 +479,11 @@ mod tests {
     fn a15_gap_without_pressure_falls_back() {
         let mut s = Sim::new();
         s.pressure = None;
-        s.step(95.0, Some(91.0), SUSTAIN_GAP_S + 1.0);
-        assert_eq!(s.reaps, vec![Why::NoSignal]);
+        let d = s.step(95.0, Some(91.0), SUSTAIN_GAP_S + 1.0);
+        // R1 PR 3 Q2 (intended change from 1.x, which reaped here): with
+        // pressure unreadable one reading blocks new work but never reaps
+        assert_eq!((d.level, d.why), (Level::Hot, Why::NoSignal));
+        assert!(s.reaps.is_empty() && s.nogo);
     }
 
     #[test]
@@ -520,6 +531,55 @@ mod tests {
         let mut s = Sim::new();
         s.step_no_history(89.0, Some(88.5));
         assert_eq!(s.reaps.len(), 1);
+    }
+
+    /// #615 33e28 L1, flipped by R1 PR 3 Q2 (a63ab 11-10). No pressure and
+    /// only one sample (first round after start / a pause): 1.x reaped a lone
+    /// spike (max 95, avg 80) via NoSignal; 11-03 that killed Chrome on
+    /// andymini. Now it only blocks new work until enough samples agree.
+    #[test]
+    fn l1_fallback_lone_spike_never_reaps() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        let d = s.step(95.0, Some(80.0), 20.0);
+        assert_eq!((d.level, d.why), (Level::Hot, Why::NoSignal));
+        assert!(s.reaps.is_empty(), "{:?}", s.reaps);
+        // the same with no history at all
+        let d = s.step_no_history(95.0, Some(89.0));
+        assert_eq!((d.level, d.why), (Level::Hot, Why::NoHistory));
+        assert!(s.reaps.is_empty(), "{:?}", s.reaps);
+    }
+
+    /// a63ab #626 L1: Q2 must not turn into "no pressure, never reap". With
+    /// pressure unreadable, continuous samples whose average holds at the reap
+    /// limit for SUSTAIN_S over SUSTAIN_MIN_SAMPLES samples still reap.
+    #[test]
+    fn no_pressure_sustained_heat_still_reaps() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        let mut last = s.step(95.0, Some(REAP_AVG_C + 1.0), 20.0);
+        assert!(s.reaps.is_empty(), "the first lone reading must not reap");
+        for _ in 0..4 {
+            last = s.step(95.0, Some(REAP_AVG_C + 1.0), 20.0);
+        }
+        assert_eq!((last.level, last.why), (Level::Crit, Why::Sustained));
+        assert_eq!(s.reaps.first(), Some(&Why::Sustained), "{:?}", s.reaps);
+    }
+
+    /// #615 33e28 L2: the Linux steady state (pressure never readable). Once
+    /// samples are continuous a spike with a low average is judged on the
+    /// average (`Below`), not on the fallback.
+    #[test]
+    fn l2_no_pressure_continuous_spike_not_reaped() {
+        let mut s = Sim::new();
+        s.pressure = None;
+        let mut last = s.step(91.9, Some(80.0), 20.0);
+        assert_eq!(last.why, Why::NoSignal, "first round has no pair yet");
+        for _ in 0..5 {
+            last = s.step(91.9, Some(80.0), 20.0);
+        }
+        assert_eq!(last.why, Why::Below);
+        assert!(s.reaps.is_empty(), "{:?}", s.reaps);
     }
 
     #[test]
