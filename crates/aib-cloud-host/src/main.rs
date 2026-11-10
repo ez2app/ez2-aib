@@ -8,6 +8,7 @@
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
+//! aib-cloud-host op status [<op id>] | op unfinished <target>   (read-only: journals and the host lock)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
@@ -22,6 +23,8 @@
 // This binary runs on the Proxmox host (Linux) only: nsenter / lxc-info / pct, process groups,
 // unix file modes. On any other OS it compiles to a stub that says so (f1fae 11-10: decide once
 // at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
+#[cfg(unix)]
+mod opstore;
 #[cfg(unix)]
 mod probe;
 #[cfg(unix)]

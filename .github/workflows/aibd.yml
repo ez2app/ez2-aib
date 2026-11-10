@@ -345,7 +345,8 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
-      # aib-cloud-host: gates of the host commands (reviews of #625).
+      # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
+      # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -359,6 +360,46 @@ jobs:
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
+          # plan hash: the host is not hashed
+          hk opstore.rs '        "aib-cloud-plan-v1\n{}\nhost {fingerprint}\nversion {version}\n",' \
+             '        "aib-cloud-plan-v1\n{}\nhost \nversion {version}\n{fingerprint:.0}", // knife' \
+             the_plan_hash_covers_host_and_version
+          # journal: a line counts before it is synced
+          hk opstore.rs '    sink.sync().map_err(|e| format!("journal sync: {e}"))' \
+             '    Ok(()) // knife: no sync' \
+             a_line_is_synced_before_it_counts
+          # journal: a line that does not follow is appended anyway
+          hk opstore.rs '    may_append(&entries, entry)?;' \
+             '    let _ = may_append(&entries, entry); // knife' \
+             a_journal_only_grows_by_lines_that_follow
+          # journal: a cut-short fragment is left in front of the next line
+          hk opstore.rs '    if cut {' \
+             '    if cut && false { // knife' \
+             a_cut_short_last_line_is_cut_off_before_the_next
+          # /proc stat: fields counted from the first space instead of the last paren
+          hk opstore.rs "    let rest = &stat[stat.rfind(')')? + 1..];" \
+             "    let rest = &stat[stat.find(')')? + 1..]; // knife" \
+             stat_start_time_counts_from_the_last_paren
+          # liveness: an unreadable stat is taken as proof of death
+          hk opstore.rs '        Err(_) => Liveness::Unknown,' \
+             '        Err(_) => Liveness::Gone, // knife' \
+             liveness_from_proc
+          # lock: a damaged lock file is read as free
+          hk opstore.rs '            Some(h) if h.pid == 0 => Liveness::Unknown,' \
+             '            Some(h) if h.pid == 0 => Liveness::Gone, // knife' \
+             a_damaged_lock_file_keeps_the_lock
+          # lock: anyone may release it
+          hk opstore.rs '            Some(h) if h.op == op && h.pid == pid => {' \
+             '            Some(_) => { // knife' \
+             only_the_holder_releases
+          # unfinished: a journal that does not replay is skipped
+          hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
+             '        let Ok(last) = op::replay(&entries) else { continue }; // knife' \
+             unfinished_operations_block_their_target
+          # archive: the quarantine journal is not read (#625 seg. 2 M1 left unwired)
+          hk quarantinecmd.rs '    let (entries, _) = opstore::read_journal(&opstore::journal_path(ops_dir, &r.op)?)?;' \
+             '    let (entries, _): (Vec<aib_cloud::op::Entry>, bool) = (Vec::new(), false); let _ = ops_dir; // knife' \
+             the_archive_plan_reads_the_quarantine_journal
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
