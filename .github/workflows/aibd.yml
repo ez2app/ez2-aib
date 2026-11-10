@@ -279,6 +279,10 @@ jobs:
           ck verify.rs '        ([one], _) if !crate::site::mask_hook_ok(one) => Outcome::Red("no_mask_hook"),' \
              '        ([one], _) if !crate::site::mask_hook_ok(one) && false => Outcome::Red("no_mask_hook"), // knife' \
              s10_to_s13_and_h14_the_site_is_masked
+          # site verify S11: a CT without a search domain passes (it would carry the host's)
+          ck verify.rs '    } else if get(&cfg, "searchdomain") != Some(SEARCH_DOMAIN) {' \
+             '    } else if get(&cfg, "searchdomain").is_some_and(|d| d != SEARCH_DOMAIN) { // knife' \
+             s10_to_s13_and_h14_the_site_is_masked
           # site verify S13: an IPv6 address on the CT is not seen
           ck verify.rs '    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {' \
              '    } else if net0(&cfg, "ip6").is_some() && net0(&cfg, "gw6").is_some() { // knife' \

@@ -414,17 +414,21 @@ pub fn s10_masked(
     result("S10", outcome)
 }
 
-/// S11: the CT has its own resolver and no search domain. Without `nameserver` the CT
-/// inherits the host's resolver settings, and a search domain is a name of ours in every
-/// lookup the site makes.
+/// The search domain a site CT is given: a name that resolves nowhere. It has to be set —
+/// a CT without one inherits the host's own search domain (seen 11-11: the site's
+/// `resolv.conf` and `hosts` carried the platform's private network name).
+pub const SEARCH_DOMAIN: &str = "invalid";
+
+/// S11: the CT has its own resolver and the neutral search domain ([`SEARCH_DOMAIN`]).
+/// Without `nameserver`, or without `searchdomain`, the CT inherits the host's.
 pub fn s11_resolver(pct_config: Option<&str>) -> CheckResult {
     let Some(cfg) = config(pct_config) else {
         return result("S11", Outcome::Unknown("unread"));
     };
-    let outcome = if get(&cfg, "searchdomain").is_some() {
-        Outcome::Red("search_domain")
-    } else if get(&cfg, "nameserver").is_none() {
+    let outcome = if get(&cfg, "nameserver").is_none() {
         Outcome::Red("host_resolver")
+    } else if get(&cfg, "searchdomain") != Some(SEARCH_DOMAIN) {
+        Outcome::Red("search_domain")
     } else {
         Outcome::Green
     };
@@ -1254,13 +1258,19 @@ mod tests {
             Outcome::Unknown("unread")
         );
 
-        assert_eq!(s11_resolver(Some(CT)).outcome, Outcome::Green);
+        // no search domain is the host's search domain; only the neutral one passes
+        assert_eq!(
+            s11_resolver(Some(CT)).outcome,
+            Outcome::Red("search_domain")
+        );
         assert_eq!(
             s11_resolver(Some(&alloc::format!("{CT}searchdomain: example.net\n"))).outcome,
             Outcome::Red("search_domain")
         );
+        let neutral = alloc::format!("{CT}searchdomain: {SEARCH_DOMAIN}\n");
+        assert_eq!(s11_resolver(Some(&neutral)).outcome, Outcome::Green);
         assert_eq!(
-            s11_resolver(Some(&swap(CT, "nameserver: 1.1.1.1\n", ""))).outcome,
+            s11_resolver(Some(&swap(&neutral, "nameserver: 1.1.1.1\n", ""))).outcome,
             Outcome::Red("host_resolver")
         );
         assert_eq!(s11_resolver(None).outcome, Outcome::Unknown("unread"));
