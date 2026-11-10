@@ -16,7 +16,9 @@
 //! the first two change something and wait for the operation journal and the host lock.
 //!
 //! Exit status: as `site verify` for `status`; 0 for `logs`; 2 a refused request;
-//! 4 not available yet; 3 could not be done.
+//! 4 not available yet; 3 could not be done. `logs` for a quarantined site is not run
+//! inside the CT: it answers the neutral word `provider_check` and exits 3, the same as
+//! when the site's state cannot be read (Andy 11-10: neutral, as `status`).
 
 use std::process::Command;
 use std::time::Duration;
@@ -29,6 +31,30 @@ use crate::probe::run_capture_bounded;
 use crate::quarantinecmd::load_spec;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
+const FIREWALL_DIR: &str = "/etc/pve/firewall";
+
+/// Whether a customer's `logs` request may enter their CT.
+#[derive(Debug, PartialEq, Eq)]
+enum LogsGate {
+    /// The site is in normal service.
+    Go,
+    /// The site is quarantined: its logs are read by us from the host, not handed out
+    /// by running a program inside a CT that may be under someone else's control
+    /// (33e28, #631 seg. 5 L2). Andy 11-10: the customer is told in neutral words, the
+    /// same as `status` — `provider_check`, nothing about a quarantine.
+    Quarantined,
+    /// The CT's firewall file could not be read, so which of the two is not known. That
+    /// is not a reason to go in.
+    Unknown,
+}
+
+fn logs_gate(ct_fw: Option<&str>) -> LogsGate {
+    match ct_fw {
+        None => LogsGate::Unknown,
+        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,
+        Some(_) => LogsGate::Go,
+    }
+}
 
 /// Answer one request for one site. `line` is what the customer sent.
 pub fn answer(site: &str, records: &str, line: &str) -> u8 {
@@ -57,14 +83,21 @@ pub fn answer(site: &str, records: &str, line: &str) -> u8 {
             lines,
             minutes,
         } => {
-            let argv = match load_spec(site, records).and_then(|spec| {
-                svc::logs_argv(&spec, source, lines, minutes).map_err(|e| e.to_string())
-            }) {
-                Ok(a) => a,
-                Err(_) => {
-                    eprintln!("could not read the site record");
-                    return 3;
-                }
+            let Ok(spec) = load_spec(site, records) else {
+                eprintln!("could not read the site record");
+                return 3;
+            };
+            // nothing is run inside a quarantined CT for its customer (Andy 11-10)
+            let ct_fw = std::fs::read_to_string(format!("{FIREWALL_DIR}/{}.fw", spec.ct)).ok();
+            // Either way the customer is told the same neutral word `status` uses, with
+            // the same exit status: a quarantine is not announced to whoever holds the key.
+            if logs_gate(ct_fw.as_deref()) != LogsGate::Go {
+                eprintln!("provider_check");
+                return 3;
+            }
+            let Ok(argv) = svc::logs_argv(&spec, source, lines, minutes) else {
+                eprintln!("could not read the site record");
+                return 3;
             };
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]).env("LC_ALL", "C");
@@ -166,6 +199,17 @@ mod tests {
             ("a\nb\n".to_owned(), false)
         );
         assert!(sh("echo x; exit 3").is_err());
+    }
+
+    /// 33e28, #631 seg. 5 L2; Andy 11-10.
+    #[test]
+    fn a_quarantined_site_is_not_entered_for_its_logs() {
+        let quarantined = aib_cloud::quarantine::firewall();
+        assert_eq!(logs_gate(Some(&quarantined)), LogsGate::Quarantined);
+        let normal = "[OPTIONS]\nenable: 1\npolicy_in: DROP\n\n[RULES]\nGROUP ez2-site-v2\n";
+        assert_eq!(logs_gate(Some(normal)), LogsGate::Go);
+        // a state that cannot be read is not a reason to go in
+        assert_eq!(logs_gate(None), LogsGate::Unknown);
     }
 
     #[test]
