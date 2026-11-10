@@ -403,14 +403,55 @@ fn user_list(spec: &str) -> Vec<&str> {
     out
 }
 
+/// One word where sudoers names users, in a shape this check reads word for word: a user
+/// name, `%group`, `%#gid`, `#uid`, `ALL`, or a `User_Alias` name, each maybe after `!`.
+/// Anything else (`+netgroup`, `%:group`, quoting, escapes, …) is not read: `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Who<'a> {
+    User(&'a str),
+    Group(&'a str),
+    Uid(&'a str),
+    All,
+    Alias(&'a str),
+}
+
+fn who(word: &str) -> Option<Who<'_>> {
+    let w = word.strip_prefix('!').unwrap_or(word);
+    let name = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+            && n.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    };
+    let digits = |n: &str| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit());
+    if w == "ALL" {
+        Some(Who::All)
+    } else if let Some(g) = w.strip_prefix("%#") {
+        digits(g).then_some(Who::Group(&w[1..]))
+    } else if let Some(g) = w.strip_prefix('%') {
+        name(g).then_some(Who::Group(g))
+    } else if let Some(u) = w.strip_prefix('#') {
+        digits(u).then_some(Who::Uid(w))
+    } else if w.starts_with(|c: char| c.is_ascii_uppercase())
+        && w.bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+    {
+        Some(Who::Alias(w))
+    } else {
+        name(w).then_some(Who::User(w))
+    }
+}
+
 /// Whether the sudoers files in `files` (all but ours) may grant the entry account anything
-/// (33e28, #655 M1 and r2): a line naming the account anywhere; a rule or a `Defaults:`
-/// line whose users are `ALL`, its uid (`#<uid>`), one of its groups (`%name`, `%#gid`;
-/// `groups` holds both spellings) or a `User_Alias` that comes down to one of these, an
-/// alias of aliases included, across files. `None` when a file pulls in something other
-/// than `/etc/sudoers.d` (the caller has not read it): `Err("others_unread")`; when a user
-/// position names a netgroup (`+name`), whose members no file here shows and nothing above
-/// granted: `Err("netgroup_unread")` (33e28, #655 r3 M1).
+/// (33e28, #655 M1 and r2–r3; f1fae: only what is read word for word counts as clean).
+///
+/// Every line must be one of: empty, a comment, `@includedir /etc/sudoers.d` (or the `#`
+/// spelling), `Defaults` not bound to users (plain, `@host`, `>runas`, `!cmnd`),
+/// `Host_Alias` / `Cmnd_Alias` / `Cmd_Alias` / `Runas_Alias`, `Defaults:<users>`,
+/// `User_Alias A = … [: B = …]`, or a rule `<users> <hosts>=…`, where every user word reads
+/// as [`who`] and every alias used is defined. `Ok(true)` when a user list or a used alias
+/// comes down to the account (by name, `ALL`, its uid, one of its groups — `groups` holds
+/// names and `#gid`s); otherwise `Err("others_unread")` when a file pulls in something other
+/// than `/etc/sudoers.d`, `Err("others_shape")` when any line is not read, `Ok(false)`.
 fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<bool, &'static str> {
     let me = alloc::format!("#{uid}");
     let mut lines: Vec<String> = Vec::new();
@@ -436,26 +477,38 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<boo
             lines.push(line.to_owned());
         }
     }
-    let plain = |u: &str| {
-        let u = u.trim_start_matches('!');
-        u == ENTRY_ACCOUNT
-            || u == "ALL"
-            || u == me
-            || u.strip_prefix('%')
-                .map(|g| g.trim_start_matches(':'))
-                .is_some_and(|g| groups.iter().any(|x| x == g))
-    };
-    // User_Alias A = x, y : B = z — the aliases that come down to us, to a fixed point
-    let mut aliases: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut shape_ok = true;
+    // User_Alias A = x, y : B = z
+    let mut aliases: Vec<(&str, Vec<Who<'_>>)> = Vec::new();
     for l in &lines {
-        if let Some(rest) = l.strip_prefix("User_Alias") {
-            for part in rest.split(':') {
-                if let Some((name, members)) = part.split_once('=') {
-                    aliases.push((name.trim(), members.split(',').map(str::trim).collect()));
-                }
+        let Some(rest) = l.strip_prefix("User_Alias") else {
+            continue;
+        };
+        if !rest.starts_with([' ', '\t']) {
+            shape_ok = false;
+            continue;
+        }
+        for part in rest.split(':') {
+            let Some((name, members)) = part.split_once('=') else {
+                shape_ok = false;
+                continue;
+            };
+            let members: Option<Vec<Who<'_>>> = members.split(',').map(|m| who(m.trim())).collect();
+            match (who(name.trim()), members) {
+                (Some(Who::Alias(n)), Some(m)) if !m.is_empty() => aliases.push((n, m)),
+                _ => shape_ok = false,
             }
         }
     }
+    let defined = |n: &str| aliases.iter().any(|(a, _)| *a == n);
+    let direct = |w: &Who<'_>| match *w {
+        Who::User(u) => u == ENTRY_ACCOUNT,
+        Who::All => true,
+        Who::Uid(u) => u == me,
+        Who::Group(g) => groups.iter().any(|x| x == g),
+        Who::Alias(_) => false,
+    };
+    // the aliases that come down to us, to a fixed point; one naming the account is red as it stands
     let mut ours: Vec<&str> = Vec::new();
     loop {
         let before = ours.len();
@@ -463,7 +516,7 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<boo
             if !ours.contains(name)
                 && members
                     .iter()
-                    .any(|m| plain(m) || ours.contains(&m.trim_start_matches('!')))
+                    .any(|m| direct(m) || matches!(m, Who::Alias(a) if ours.contains(a)))
             {
                 ours.push(name);
             }
@@ -472,31 +525,56 @@ fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<boo
             break;
         }
     }
-    let us = |u: &str| plain(u) || ours.contains(&u.trim_start_matches('!'));
-    let netgroup = |u: &str| u.trim_start_matches('!').starts_with('+');
-    let mut unread_netgroup = aliases.iter().any(|(_, m)| m.iter().any(|u| netgroup(u)));
+    let named = aliases
+        .iter()
+        .any(|(_, m)| m.contains(&Who::User(ENTRY_ACCOUNT)));
+    let mut granted = named;
     for l in &lines {
-        let named = l
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-            .any(|w| w == ENTRY_ACCOUNT);
         let first = l.split_whitespace().next().unwrap_or("");
-        let users = if let Some(rest) = l.strip_prefix("Defaults") {
-            // only `Defaults:<users>` binds to users; `@host`, `>runas`, `!cmnd` and plain do not
-            rest.strip_prefix(':').map(user_list).unwrap_or_default()
-        } else if first.ends_with("_Alias") {
-            Vec::new()
+        let users: Vec<&str> = if let Some(rest) = l.strip_prefix("Defaults") {
+            // only `Defaults:<users>` binds to users
+            match rest.chars().next() {
+                Some(':') => user_list(&rest[1..]),
+                Some(' ' | '\t' | '@' | '>' | '!') => continue,
+                _ => {
+                    shape_ok = false;
+                    continue;
+                }
+            }
+        } else if first == "User_Alias" {
+            continue;
+        } else if matches!(
+            first,
+            "Host_Alias" | "Cmnd_Alias" | "Cmd_Alias" | "Runas_Alias"
+        ) {
+            continue;
         } else {
+            if !l.contains('=') {
+                shape_ok = false;
+                continue;
+            }
             user_list(l)
         };
-        if named || users.iter().any(|u| us(u)) {
-            return Ok(true);
+        let read: Option<Vec<Who<'_>>> = users.iter().map(|u| who(u)).collect();
+        match read {
+            Some(ws) if !ws.is_empty() => {
+                for w in &ws {
+                    match w {
+                        Who::Alias(a) if !defined(a) => shape_ok = false,
+                        Who::Alias(a) if ours.contains(a) => granted = true,
+                        other => granted |= direct(other),
+                    }
+                }
+            }
+            _ => shape_ok = false,
         }
-        unread_netgroup |= users.iter().any(|u| netgroup(u));
     }
-    if unread_netgroup {
-        Err("netgroup_unread")
-    } else {
+    if granted {
+        Ok(true)
+    } else if shape_ok {
         Ok(false)
+    } else {
+        Err("others_shape")
     }
 }
 
@@ -1420,7 +1498,6 @@ mod tests {
             ("ALL ALL=(root) NOPASSWD: /bin/true", "for ALL"),
             ("#1001 ALL=(ALL) ALL", "by uid"),
             ("%users ALL=(ALL) ALL", "by group"),
-            ("%:users ALL=(ALL) ALL", "by group, other spelling"),
             ("root,cloudgate ALL=(ALL) ALL", "in a user list"),
             (
                 "root, #1001 ALL=(ALL) ALL",
@@ -1478,7 +1555,24 @@ mod tests {
         ] {
             assert_eq!(
                 judge(&with(extra), &groups),
-                Outcome::Unknown("netgroup_unread"),
+                Outcome::Unknown("others_shape"),
+                "{extra}"
+            );
+        }
+        // shapes this check does not read word for word: unknown, never green (f1fae 06:5x)
+        for extra in [
+            "%:users ALL=(ALL) ALL",
+            "\"root\" ALL=(ALL) ALL",
+            "OPS ALL=(ALL) ALL",
+            "User_Alias ops = root",
+            "User_Alias OPS = +ops",
+            "Defaults~x y",
+            "something odd",
+            "User_Alias OPS = %:users\nOPS ALL=(ALL) ALL",
+        ] {
+            assert_eq!(
+                judge(&with(extra), &groups),
+                Outcome::Unknown("others_shape"),
                 "{extra}"
             );
         }
