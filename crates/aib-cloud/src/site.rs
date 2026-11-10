@@ -303,8 +303,20 @@ pub fn desired(spec: &SiteSpec) -> Vec<(&'static str, String)> {
 /// The CT's own root volume: LVM-thin / dir storage names it `vm-<ct>-disk-N`, ZFS names it
 /// `subvol-<ct>-disk-N` (c477a #585 r3 N). Anything else is another CT's disk.
 pub fn rootfs_is_own(value: &str, ct: u32) -> bool {
-    value.contains(&alloc::format!("vm-{ct}-disk-"))
-        || value.contains(&alloc::format!("subvol-{ct}-disk-"))
+    // `<storage>:<volume>[,option…]`. The volume is matched whole: a substring test would
+    // accept `x:vm-900-disk-0,mp=/vm-112-disk-0` or a volume merely *named after* this CT
+    // inside another one's path.
+    let volume = value.split(',').next().unwrap_or("");
+    let Some((storage, name)) = volume.split_once(':') else {
+        return false;
+    };
+    if storage.is_empty() || name.contains(['/', ':']) {
+        return false;
+    }
+    ["vm", "subvol"].iter().any(|kind| {
+        name.strip_prefix(&alloc::format!("{kind}-{ct}-disk-"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+    })
 }
 
 /// Keys a site CT's `pct config` may carry without being drift: what `desired()` declares,
@@ -1251,6 +1263,13 @@ mod tests {
         assert!(
             rootfs_is_own("tank:subvol-112-disk-0,size=16G", 112)
                 && !rootfs_is_own("tank:subvol-110-disk-0", 112)
+                && rootfs_is_own("local-lvm:vm-112-disk-1", 112)
+                && !rootfs_is_own("local-lvm:vm-900-disk-0,mp=/vm-112-disk-0", 112)
+                && !rootfs_is_own("local-lvm:vm-112-disk-0x", 112)
+                && !rootfs_is_own("local-lvm:vm-112-disk-", 112)
+                && !rootfs_is_own("dir:900/vm-112-disk-0", 112)
+                && !rootfs_is_own("vm-112-disk-0", 112)
+                && !rootfs_is_own("local-lvm:vm-1120-disk-0", 112)
         );
         assert!(config_key_allowed("lxc.cgroup2.pids.max") && config_key_allowed("lxc.idmap"));
         assert!(
