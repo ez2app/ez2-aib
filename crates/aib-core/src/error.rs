@@ -49,6 +49,9 @@ pub enum ErrorCode {
     ProgramNotAllowed,
     /// The listed provider is an npm (node) install; only standalone signed builds run.
     ProviderInstallUnsupported,
+    /// The machine is too hot to start another session (ADR 0005 §1 thermal guard).
+    /// Not queued; answered with `Retry-After`.
+    ThermalNogo,
     /// A page credential that is not confirmed yet (ADR 0006 §7): only pair/status,
     /// pair/revoke and health answer until the short code is confirmed in the terminal.
     PairingUnconfirmed,
@@ -67,7 +70,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 25] = [
+    pub const ALL: [ErrorCode; 26] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -87,6 +90,7 @@ impl ErrorCode {
         ErrorCode::ProgramNotAllowed,
         ErrorCode::ProviderInstallUnsupported,
         ErrorCode::SessionQueueFull,
+        ErrorCode::ThermalNogo,
         ErrorCode::PairingUnconfirmed,
         ErrorCode::PairingCodeReused,
         ErrorCode::PairingRateLimited,
@@ -116,6 +120,7 @@ impl ErrorCode {
             ErrorCode::ProgramNotAllowed => "program_not_allowed",
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
             ErrorCode::SessionQueueFull => "session_queue_full",
+            ErrorCode::ThermalNogo => "thermal_nogo",
             ErrorCode::PairingUnconfirmed => "pairing_unconfirmed",
             ErrorCode::PairingCodeReused => "pairing_code_reused",
             ErrorCode::PairingRateLimited => "pairing_rate_limited",
@@ -138,7 +143,7 @@ impl ErrorCode {
             ErrorCode::SessionNotFound => 404,
             ErrorCode::TooManySessions | ErrorCode::SessionQueueFull => 429,
             ErrorCode::SpawnFailed => 422,
-            ErrorCode::ShuttingDown => 503,
+            ErrorCode::ShuttingDown | ErrorCode::ThermalNogo => 503,
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,

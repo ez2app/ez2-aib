@@ -112,6 +112,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-thermal"
+version = "0.2.0-preview.4"
+
+[[package]]
 name = "aib-xtask"
 version = "0.2.0-preview.4"
 dependencies = [
