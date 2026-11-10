@@ -14,9 +14,16 @@ fn content_type(p: &Path) -> &'static str {
         "json" | "map" => "application/json",
         "svg" => "image/svg+xml",
         "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
         "ico" => "image/x-icon",
         "webp" => "image/webp",
         "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "wasm" => "application/wasm",
         "txt" => "text/plain; charset=utf-8",
         "webmanifest" => "application/manifest+json",
         _ => "application/octet-stream",
@@ -30,6 +37,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         .collect();
     entries.sort_by_key(|e| e.path());
     for e in entries {
+        // hidden files (.DS_Store, .vite/) are not part of the page (1ced7 A3 N1)
+        if e.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let ft = e
             .file_type()
             .unwrap_or_else(|err| panic!("web: {}: {err}", e.path().display()));
@@ -48,6 +59,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=AIBD_WEB_DIST");
     if std::env::var_os("CARGO_FEATURE_WEB").is_none() {
+        // `X-Aibd-Build` = version + this (static_files::BUILD)
+        println!("cargo:rustc-env=AIBD_BUILD_DIST=nodist");
         return;
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
@@ -66,6 +79,7 @@ fn main() {
     walk(&dist, &mut files);
     let mut code = String::from("pub static ASSETS: &[Asset] = &[\n");
     let mut has_index = false;
+    let mut whole = Sha256::new();
     for f in &files {
         let name = f.to_string_lossy();
         if name.ends_with(".gz") || name.ends_with(".br") {
@@ -85,6 +99,10 @@ fn main() {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
+        whole.update(rel.as_bytes());
+        whole.update([0u8]);
+        whole.update(etag.as_bytes());
+        whole.update([0u8]);
         let variant = |ext: &str| {
             let p = PathBuf::from(format!("{name}.{ext}"));
             if p.is_file() {
@@ -105,6 +123,11 @@ fn main() {
     if !has_index {
         panic!("web: {} has no index.html", dist.display());
     }
+    let dist_hash: String = whole.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    println!("cargo:rustc-env=AIBD_BUILD_DIST={dist_hash}");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default()).join("web_assets.rs");
     std::fs::write(&out, code).unwrap_or_else(|e| panic!("web: write {}: {e}", out.display()));
 }

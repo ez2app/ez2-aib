@@ -6,7 +6,7 @@
 
 use aibd::api::{router, AppState};
 use aibd::guard::GuardConfig;
-use aibd::static_files::{serve, Asset, INDEX_CSP};
+use aibd::static_files::{serve, Asset, BUILD, PAGE_CSP};
 use aibd::token::Token;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
@@ -22,9 +22,17 @@ static FILES: &[Asset] = &[
         path: "index.html",
         content_type: "text/html; charset=utf-8",
         body: b"<!doctype html><script type=module src=/assets/app-1a2b3c.js></script>",
-        gz: None,
+        gz: Some(b"GZ-INDEX"),
         br: None,
         etag: "0123456789abcdef0123456789abcdef",
+    },
+    Asset {
+        path: "pair.html",
+        content_type: "text/html; charset=utf-8",
+        body: b"<!doctype html><title>pair</title>",
+        gz: None,
+        br: None,
+        etag: "11111111111111111111111111111111",
     },
     Asset {
         path: "assets/app-1a2b3c.js",
@@ -57,8 +65,8 @@ async fn index_has_a_strong_etag_no_cache_and_a_strict_policy() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(h["etag"], "\"0123456789abcdef0123456789abcdef\"");
     assert_eq!(h["cache-control"], "no-cache");
-    assert_eq!(h["content-security-policy"], INDEX_CSP);
-    assert!(INDEX_CSP.contains("frame-ancestors 'none'"));
+    assert_eq!(h["content-security-policy"], PAGE_CSP);
+    assert!(PAGE_CSP.contains("frame-ancestors 'none'"));
     assert_eq!(h["x-content-type-options"], "nosniff");
     assert_eq!(b, FILES[0].body);
     let (s2, _, b2) = body_of(serve(FILES, &Method::GET, "/index.html", &HeaderMap::new())).await;
@@ -266,5 +274,67 @@ async fn every_route_but_the_public_ones_wants_the_token() {
         let path = p.replace("{id}", "x");
         let (s, _, body) = get(&path, false).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}: {body}");
+    }
+}
+
+/// 1ced7 A3 L2: each content coding is its own representation with its own strong ETag;
+/// If-None-Match naming any of them gives 304.
+#[tokio::test]
+async fn each_encoding_has_its_own_etag_and_any_of_them_gives_304() {
+    let gz = hdr(&[("accept-encoding", "gzip")]);
+    let (s, h, b) = body_of(serve(FILES, &Method::GET, "/", &gz)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b, b"GZ-INDEX");
+    assert_eq!(h["content-encoding"], "gzip");
+    assert_eq!(h["etag"], "\"0123456789abcdef0123456789abcdef-gz\"");
+    let (_, h, _) = body_of(serve(FILES, &Method::GET, "/", &HeaderMap::new())).await;
+    assert_eq!(h["etag"], "\"0123456789abcdef0123456789abcdef\"");
+    // a cached plain copy, now asking with gzip
+    let h = hdr(&[
+        ("accept-encoding", "gzip"),
+        ("if-none-match", "\"0123456789abcdef0123456789abcdef\""),
+    ]);
+    let (s, hh, b) = body_of(serve(FILES, &Method::GET, "/", &h)).await;
+    assert_eq!(s, StatusCode::NOT_MODIFIED);
+    assert!(b.is_empty());
+    assert_eq!(hh["etag"], "\"0123456789abcdef0123456789abcdef-gz\"");
+    // a cached gzip copy, now asking without
+    let h = hdr(&[("if-none-match", "\"0123456789abcdef0123456789abcdef-gz\"")]);
+    let (s, _, _) = body_of(serve(FILES, &Method::GET, "/", &h)).await;
+    assert_eq!(s, StatusCode::NOT_MODIFIED);
+}
+
+/// 1ced7 A3 L1 / L3: every HTML file (not just index.html) gets the page policy, which
+/// takes Vite's inlined `data:` fonts.
+#[tokio::test]
+async fn every_html_file_gets_the_page_policy() {
+    assert!(PAGE_CSP.contains("font-src 'self' data:"), "{PAGE_CSP}");
+    let (s, h, _) = body_of(serve(FILES, &Method::GET, "/pair.html", &HeaderMap::new())).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h["content-security-policy"], PAGE_CSP);
+    assert_eq!(h["x-frame-options"], "DENY");
+    let (_, h, _) = body_of(serve(
+        FILES,
+        &Method::GET,
+        "/assets/app-1a2b3c.js",
+        &HeaderMap::new(),
+    ))
+    .await;
+    assert!(h.get("content-security-policy").is_none());
+}
+
+/// 1ced7 A3 M2: every API answer (refusals included) tells the page which aibd it talks
+/// to, so an open page reloads after an upgrade.
+#[tokio::test]
+async fn api_answers_carry_the_build() {
+    assert!(BUILD.starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")), "{BUILD}");
+    for (p, bearer) in [
+        ("/api/v1/health", true),
+        ("/api/v1/events", true),
+        ("/api/v1/events", false),
+        ("/api/v1/nope", true),
+    ] {
+        let (_, h, _) = get(p, bearer).await;
+        assert_eq!(h["x-aibd-build"], BUILD, "{p} {bearer}");
     }
 }

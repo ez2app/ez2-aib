@@ -7,14 +7,17 @@
 //! the table (no traversal, no symlinks).
 //!
 //! Rules (§6):
-//! - `index.html` (also `/`): strong `ETag` (content hash), `Cache-Control: no-cache`, a
-//!   matching `If-None-Match` gives `304` with no body.
+//! - `index.html` (also `/`) and other files outside `assets/`: strong `ETag` (content hash,
+//!   one per encoding: `"<hash>"`, `"<hash>-br"`, `"<hash>-gz"`), `Cache-Control: no-cache`;
+//!   a matching `If-None-Match` (any of the three) gives `304` with no body.
 //! - files under `assets/` carry a content hash in their name: one year, `immutable`.
 //! - a `.br` / `.gz` file next to the original is sent with `Content-Encoding` when the
 //!   client accepts it; every response has `Vary: Accept-Encoding`.
+//! - every `text/html` file gets the page policy (`PAGE_CSP`) and `X-Frame-Options: DENY`.
 //! - no file contains a credential: the table is identical for every caller.
-//! - W1 ships one bundle: a hashed file of the previous version is gone after an upgrade,
-//!   and the page reloads on its 404 (ADR 0006 §6 W1 note).
+//! - the front end uses hash routes; there is no deep-link fallback (ADR 0006 §6).
+//! - every `/api/` answer carries `X-Aibd-Build` (`BUILD`); an open page reloads when it
+//!   changes, so old page code never talks to a new API (ADR 0006 §6 W1 note, 1ced7 A3 M2).
 
 use crate::guard::{error_response, request_id};
 use aib_core::ErrorCode;
@@ -43,11 +46,16 @@ include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 #[cfg(not(feature = "web"))]
 pub static ASSETS: &[Asset] = &[];
 
-/// Page policy for `index.html`: only our own scripts, styles and API; the pairing form
+/// Page policy for every `text/html` file: only our own scripts, styles, fonts and API;
+/// `data:` images and fonts (Vite inlines files under 4 KB, 1ced7 A3 L1); the pairing form
 /// posts to our own origin; never framed.
-pub const INDEX_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; \
-frame-ancestors 'none'";
+pub const PAGE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; \
+form-action 'self'; frame-ancestors 'none'";
+
+/// `X-Aibd-Build`: aibd version + hash of the embedded `dist` (`nodist` without the feature).
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("AIBD_BUILD_DIST"));
+pub const BUILD_HEADER: &str = "x-aibd-build";
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
@@ -79,15 +87,30 @@ fn accepts(h: &HeaderMap, coding: &str) -> bool {
         })
 }
 
-fn etag_matches(h: &HeaderMap, etag: &str) -> bool {
-    let quoted = format!("\"{etag}\"");
+/// The strong ETag of one encoding: each content coding is its own representation
+/// (RFC 9110 §8.8.3; 1ced7 A3 L2).
+fn etag_of(hash: &str, coding: Option<&str>) -> String {
+    match coding {
+        Some("br") => format!("\"{hash}-br\""),
+        Some(_) => format!("\"{hash}-gz\""),
+        None => format!("\"{hash}\""),
+    }
+}
+
+/// Does `If-None-Match` name this file in any of its encodings (or `*`)?
+fn etag_matches(h: &HeaderMap, hash: &str) -> bool {
+    let known = [
+        etag_of(hash, None),
+        etag_of(hash, Some("br")),
+        etag_of(hash, Some("gzip")),
+    ];
     h.get_all(header::IF_NONE_MATCH)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
         .any(|t| {
             let t = t.trim();
-            t == quoted || t == "*"
+            t == "*" || known.iter().any(|k| k == t)
         })
 }
 
@@ -114,8 +137,13 @@ pub fn serve(assets: &[Asset], method: &Method, path: &str, h: &HeaderMap) -> Re
     let Some(a) = assets.iter().find(|a| a.path == rel) else {
         return error_response(ErrorCode::NotFound, "no such file", &request_id());
     };
-    let is_index = a.path == "index.html";
+    let is_html = a.content_type.starts_with("text/html");
     let hashed = a.path.starts_with("assets/");
+    let (body, coding) = match (a.br, a.gz) {
+        (Some(b), _) if accepts(h, "br") => (b, Some("br")),
+        (_, Some(g)) if accepts(h, "gzip") => (g, Some("gzip")),
+        _ => (a.body, None),
+    };
 
     let mut out = Response::builder()
         .header(header::VARY, "Accept-Encoding")
@@ -125,11 +153,11 @@ pub fn serve(assets: &[Asset], method: &Method, path: &str, h: &HeaderMap) -> Re
         out.header(header::CACHE_CONTROL, IMMUTABLE)
     } else {
         out.header(header::CACHE_CONTROL, "no-cache")
-            .header(header::ETAG, format!("\"{}\"", a.etag))
+            .header(header::ETAG, etag_of(a.etag, coding))
     };
-    if is_index {
+    if is_html {
         out = out
-            .header(header::CONTENT_SECURITY_POLICY, INDEX_CSP)
+            .header(header::CONTENT_SECURITY_POLICY, PAGE_CSP)
             .header(header::X_FRAME_OPTIONS, "DENY");
     }
     if !hashed && etag_matches(h, a.etag) {
@@ -138,11 +166,6 @@ pub fn serve(assets: &[Asset], method: &Method, path: &str, h: &HeaderMap) -> Re
             .body(Body::empty())
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
-    let (body, coding) = match (a.br, a.gz) {
-        (Some(b), _) if accepts(h, "br") => (b, Some("br")),
-        (_, Some(g)) if accepts(h, "gzip") => (g, Some("gzip")),
-        _ => (a.body, None),
-    };
     out = out
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, a.content_type)
@@ -159,11 +182,16 @@ pub fn serve(assets: &[Asset], method: &Method, path: &str, h: &HeaderMap) -> Re
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// `Cache-Control: no-store` on every API answer that set nothing itself (§6: static cache
-/// rules never apply to `/api/`). Called by the guard.
+/// Every API answer: `Cache-Control: no-store` unless it set its own (§6: static cache
+/// rules never apply to `/api/`), and `X-Aibd-Build` so an open page notices an upgraded
+/// aibd and reloads (1ced7 A3 M2). Called by the guard.
 pub fn api_no_store(path: &str, resp: &mut Response) {
-    if crate::guard::is_api(path) && !resp.headers().contains_key(header::CACHE_CONTROL) {
-        resp.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if !crate::guard::is_api(path) {
+        return;
     }
+    let h = resp.headers_mut();
+    if !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    h.insert(BUILD_HEADER, HeaderValue::from_static(BUILD));
 }

@@ -23,7 +23,7 @@ k "$S" '        (Some(b), _) if accepts(h, "br") => (b, Some("br")),' '        (
 k "$S" '            name.eq_ignore_ascii_case(coding) && !zero' '            name.eq_ignore_ascii_case(coding) && (!zero || true) // knife' \
   precompressed_files_follow_accept_encoding
 # T6 the index loses its content security policy
-k "$S" '            .header(header::CONTENT_SECURITY_POLICY, INDEX_CSP)' '            // knife: no CSP' \
+k "$S" '            .header(header::CONTENT_SECURITY_POLICY, PAGE_CSP)' '            // knife: no CSP' \
   index_has_a_strong_etag_no_cache_and_a_strict_policy
 # T7 HEAD sends the body
 k "$S" '    let body = if method == Method::HEAD {' '    let body = if method == Method::HEAD && false { // knife' \
@@ -40,4 +40,19 @@ k "$G" 'pub const METRICS: &str = "/api/v1/metrics";' 'pub const METRICS: &str =
 # T11 a public route moved outside /api/ (the token test skips it; the list test does not)
 k "$G" 'pub const HEALTH: &str = "/api/v1/health";' 'pub const HEALTH: &str = "/healthz"; // knife' \
   every_route_sits_under_api_and_has_handlers
-echo "static knives: 11/11 bite"
+# T12 only index.html gets the page policy (1ced7 A3 L3)
+k "$S" '    let is_html = a.content_type.starts_with("text/html");' '    let is_html = a.path == "index.html"; // knife' \
+  every_html_file_gets_the_page_policy
+# T13 one ETag for every encoding (1ced7 A3 L2)
+k "$S" '            .header(header::ETAG, etag_of(a.etag, coding))' '            .header(header::ETAG, etag_of(a.etag, None)) // knife' \
+  each_encoding_has_its_own_etag_and_any_of_them_gives_304
+# T14 If-None-Match recognises only the plain ETag
+k "$S" '            t == "*" || known.iter().any(|k| k == t)' '            t == "*" || known[..1].iter().any(|k| k == t) // knife' \
+  each_encoding_has_its_own_etag_and_any_of_them_gives_304
+# T15 API answers lose X-Aibd-Build (1ced7 A3 M2)
+k "$S" '    h.insert(BUILD_HEADER, HeaderValue::from_static(BUILD));' '    let _ = (BUILD_HEADER, BUILD); // knife' \
+  api_answers_carry_the_build
+# T16 the page policy drops data: fonts (1ced7 A3 L1)
+k "$S" "font-src 'self' data:; " '/*knife*/' \
+  every_html_file_gets_the_page_policy
+echo "static knives: 16/16 bite"

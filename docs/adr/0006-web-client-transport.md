@@ -104,11 +104,23 @@ a new ticket for every reconnect.
   still references them keeps working.
   - W1 (a9136 Q4, 2026-11-10): the files are compiled into aibd (cargo feature `web`), so
     the previous version's files live only in the previous binary. W1 ships one bundle with
-    no lazy chunks, and the page does a full reload when a hashed file returns `404`
-    (`index.html` is `no-cache`, so the reload gets the new version). That keeps an open page
-    from breaking. Once the bundle is split into chunks, the previous version's `dist` is
-    compiled in alongside the new one at release time.
-- API responses send `Cache-Control: no-store`; static cache rules never apply to `/api/`.
+    no lazy chunks, so a loaded page never fetches a hashed file again and never sees such a
+    `404`; the real risk after an upgrade is an open page's old code calling the new API
+    (1ced7 A3 M2). So every `/api/` response carries `X-Aibd-Build` (aibd version plus the
+    embedded `dist` hash); the page remembers the first value it sees and does a full reload
+    when it changes (`index.html` is `no-cache`, so the reload gets the new version). The page
+    also listens for `vite:preloadError` for when the bundle is split into chunks; at that
+    point the previous version's `dist` is compiled in alongside the new one at release time.
+- The front end uses hash routes only (`/#/pair/abc`); aibd has no deep-link fallback, so any
+  other unknown page path is `404` (1ced7 A3 M1, a9136 ruling 11-10).
+- Page policy (CSP) on every `text/html` file: `self` only for scripts, styles, connections,
+  fonts and images, plus `data:` for images and fonts (Vite inlines files under 4 KB);
+  `frame-ancestors 'none'`. So the front end uses no inline `<script>`, no CSS-in-JS that
+  injects `<style>` at run time, and no blob workers.
+- With a pre-compressed copy, each encoding has its own strong `ETag` (`"<hash>"`,
+  `"<hash>-br"`, `"<hash>-gz"`); `If-None-Match` matches any of the three.
+- API responses send `Cache-Control: no-store` and `X-Aibd-Build`; static cache rules never
+  apply to `/api/`.
 - **No page contains the token.** `index.html` and every static file are identical for
   every caller. Other OS accounts on the same machine can reach `127.0.0.1`, so a token
   embedded in HTML would bypass the owner-only token file. Test: an unauthenticated
