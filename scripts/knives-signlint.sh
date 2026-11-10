@@ -50,4 +50,8 @@ k '        if d.shell {' \
 k '    RULES.iter().any(|(c, a, _)| *c == code && *a)' \
   '    RULES.iter().any(|(c, _a, _)| *c == code) // knife: every rule ackable' \
   acks_let_s_rules_through_and_never_u1_or_r1
-echo "signlint knives: 11/11 bite"
+# K12 a `set` inside a function body leaks into the lines after the definition
+k '            if body != Some(key) {' \
+  '            if body != Some(key) && false { // knife' \
+  a_set_inside_a_function_body_does_not_leak_out
+echo "signlint knives: 12/12 bite"

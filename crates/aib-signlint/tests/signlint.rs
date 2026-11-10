@@ -267,3 +267,23 @@ fn acks_let_s_rules_through_and_never_u1_or_r1() {
     assert_eq!(left, vec!["R1", "U1"]);
     assert_eq!(acked, vec!["S2"]);
 }
+
+#[test]
+fn a_set_inside_a_function_body_does_not_leak_out() {
+    // real SIGN script (11-11): `undo() { set +e; … }` then trap; the lines after the
+    // definition still run with set -e on
+    let t = script(
+        "set -euo pipefail\n\
+         undo() {\n\
+         \x20 set +e\n\
+         \x20 cp -a /root/bak/a /etc/a || ok=0\n\
+         \x20 cmp -s /root/bak/a /etc/a || ok=0\n\
+         }\n\
+         trap undo EXIT\n\
+         cp -a /etc/a /etc/a.prev\n\
+         install -m 0755 /tmp/n /usr/local/sbin/n\n",
+    );
+    let s2 = of(&t, "S2");
+    // only the `set +e` itself, inside the body
+    assert_eq!(s2, vec![5]);
+}

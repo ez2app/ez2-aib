@@ -1192,8 +1192,21 @@ fn lint_script(text: &str, offset: usize, whole_restore: bool, out: &mut Vec<Fin
             msg,
         })
     };
+    // a function body is read where it is written, but a `set` in it changes nothing
+    // until it is called: the state outside goes on from before the definition
+    let mut outside: Option<((usize, usize), bool, bool, Option<usize>)> = None;
     for (i, s) in stmts.iter().enumerate() {
         let at = cx.at(s);
+        let body = shape.func_at(s.lix).map(|f| (f.from, f.to));
+        if let Some((key, p, e, pe)) = outside {
+            if body != Some(key) {
+                (pipefail, errexit, plus_e) = (p, e, pe);
+                outside = None;
+            }
+        }
+        if let (Some(key), None) = (body, outside) {
+            outside = Some((key, pipefail, errexit, plus_e));
+        }
         if let Some(st) = s.first() {
             let (p, e) = set_change(st);
             if let Some(p) = p {
