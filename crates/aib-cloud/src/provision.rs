@@ -405,7 +405,9 @@ fn placeholders(text: &str) -> Result<Vec<&str>, String> {
         };
         let name = &after[..end];
         if !valid_var_name(name) {
-            return Err(format!("{{{{{name}}}}} is not a variable name"));
+            // {:?}: the text between the braces is whatever the spec holds, and this
+            // message goes to a terminal
+            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));
         }
         names.push(name);
         rest = &after[end + 2..];
@@ -1471,6 +1473,17 @@ mod tests {
         let mut v = good();
         v["vars"]["hostname"] = json!("host1\u{7}");
         assert_eq!(codes(&v), ["P11"]);
+    }
+
+    /// ebb36 (#625 seg. 5 r2): a refused placeholder is quoted, not echoed.
+    #[test]
+    fn a_refused_placeholder_is_quoted_in_the_finding() {
+        let v = with(1, "apply", json!([["echo", "{{a\u{1b}[2K}}"]]));
+        let found = lint(&v).unwrap_err();
+        assert!(found.iter().any(|f| f.code == "P07"));
+        for f in &found {
+            assert!(!f.msg.contains('\u{1b}'), "{:?}", f.msg);
+        }
     }
 
     /// A value is never read again after it is filled in (review of #619, L2).
