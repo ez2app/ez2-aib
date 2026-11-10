@@ -151,9 +151,17 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
     }
 }
 
-/// The sites whose record names `tenant` outright, as (site code, record). An unreadable directory or record is an error:
-/// a list that silently leaves a site out would hide it from its owner.
-fn tenant_sites(tenant: &str, records: &str) -> Result<Vec<(String, Value)>, String> {
+/// The sites whose record names `tenant` outright, as (site code, record); with a `scope`
+/// (the key's `--sites` list), only those of them the list names. The record decides, the
+/// list only narrows: a code in the list whose record names another tenant, or none, is
+/// not this key's, so a mistyped entry cannot reach someone else's site. An unreadable
+/// directory or record is an error: a list that silently leaves a site out would hide it
+/// from its owner.
+fn tenant_sites(
+    tenant: &str,
+    scope: Option<&[&str]>,
+    records: &str,
+) -> Result<Vec<(String, Value)>, String> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(records).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -162,20 +170,37 @@ fn tenant_sites(tenant: &str, records: &str) -> Result<Vec<(String, Value)>, Str
         }
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let rec: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        // only a tenant the record names outright: a record without one falls back to its own
-        // site code elsewhere, and a tenant id that happened to equal that code must not own it
-        if rec.get("tenant_id").and_then(Value::as_str) == Some(tenant) {
+        // only a tenant the record names outright: a record without one has no tenant
+        if aib_cloud::site::record_tenant(&rec) == Some(tenant) {
             let spec = spec_from_record(&rec).map_err(|e| e.to_string())?;
-            out.push((spec.code, rec));
+            if scope.is_none_or(|list| list.contains(&spec.code.as_str())) {
+                out.push((spec.code, rec));
+            }
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
 
-/// Answer one request of a **customer** key: every site of that tenant, and no other.
-/// A site that does not exist and a site that is someone else's get the same answer.
-pub fn answer_tenant(tenant: &str, records: &str, line: &str, roles: &[Role]) -> u8 {
+/// The key's `--sites a,b`: site codes, at least one, none twice. `None` for anything else —
+/// a wrong entry is an error, never "every site".
+fn parse_scope(list: &str) -> Option<Vec<&str>> {
+    let codes: Vec<&str> = list.split(',').collect();
+    let ok = codes.iter().all(|c| aib_cloud::site::valid_code(c))
+        && codes.iter().enumerate().all(|(i, c)| !codes[..i].contains(c));
+    ok.then_some(codes)
+}
+
+/// Answer one request of a **customer** key: every site of that tenant (or, with a scope,
+/// the listed ones of them), and no other. A site that does not exist, a site that is
+/// someone else's and a site outside the scope get the same answer.
+pub fn answer_tenant(
+    tenant: &str,
+    scope: Option<&[&str]>,
+    records: &str,
+    line: &str,
+    roles: &[Role],
+) -> u8 {
     let request = match parse_owner_request(line) {
         Ok(r) => r,
         Err(why) => {
@@ -190,7 +215,7 @@ pub fn answer_tenant(tenant: &str, records: &str, line: &str, roles: &[Role]) ->
             eprintln!("refused: role_forbidden");
             return 2;
         }
-        let Ok(sites) = tenant_sites(tenant, records) else {
+        let Ok(sites) = tenant_sites(tenant, scope, records) else {
             eprintln!("could not read the site records");
             return 3;
         };
@@ -204,7 +229,7 @@ pub fn answer_tenant(tenant: &str, records: &str, line: &str, roles: &[Role]) ->
         eprintln!("refused: role_forbidden");
         return 2;
     }
-    let Ok(sites) = tenant_sites(tenant, records) else {
+    let Ok(sites) = tenant_sites(tenant, scope, records) else {
         eprintln!("could not read the site records");
         return 3;
     };
@@ -243,17 +268,19 @@ pub fn answer_tenant(tenant: &str, records: &str, line: &str, roles: &[Role]) ->
     }
 }
 
-/// `customer --site <code> --roles <r,…>` or `customer --tenant <code> --roles <r,…>`:
+/// `customer --site <code> --roles <r,…>` or `customer --tenant <code> [--sites a,b] --roles <r,…>`:
 /// the forced command of a key's entry. Which of the two, the code and the roles are
 /// written there by us; a wrong entry is an error here, never a wider right.
 pub fn cmd(args: &[String]) -> Result<u8, String> {
     let (mut site, mut tenant, mut roles) = (None::<&str>, None::<&str>, None::<&str>);
+    let mut scope = None::<&str>;
     let mut records = RECORDS.to_owned();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--site" => site = Some(it.next().ok_or("--site needs a site code")?.as_str()),
             "--tenant" => tenant = Some(it.next().ok_or("--tenant needs a tenant id")?.as_str()),
+            "--sites" => scope = Some(it.next().ok_or("--sites needs a list")?.as_str()),
             "--roles" => roles = Some(it.next().ok_or("--roles needs a list")?.as_str()),
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             // anything else on our side of the entry is a mistake in the entry itself
@@ -264,13 +291,22 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         .and_then(parse_roles)
         .ok_or("customer needs --roles <role,…> (set in the key's entry)")?;
     let line = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    let scope = match scope {
+        None => None,
+        Some(_) if tenant.is_none() => return Err("--sites goes with --tenant".to_owned()),
+        Some(list) => Some(parse_scope(list).ok_or("--sites is not a list of site codes")?),
+    };
     match (site, tenant) {
         (Some(code), None) if aib_cloud::site::valid_code(code) => {
             Ok(answer(code, &records, &line, &roles))
         }
-        (None, Some(code)) if aib_cloud::site::valid_code(code) => {
-            Ok(answer_tenant(code, &records, &line, &roles))
-        }
+        (None, Some(code)) if aib_cloud::site::valid_code(code) => Ok(answer_tenant(
+            code,
+            scope.as_deref(),
+            &records,
+            &line,
+            &roles,
+        )),
         (Some(_), Some(_)) => Err("customer takes --site or --tenant, not both".to_owned()),
         (None, None) => Err(
             "customer needs --site <code> or --tenant <id> (set in the key's entry, not by the customer)"
@@ -310,24 +346,24 @@ mod tests {
         record(&dir, "site3", 113, Some("t-aaa"));
         record(&dir, "site4", 114, Some("t-bbb"));
         let d = dir.to_str().unwrap();
-        let mine = tenant_sites("t-aaa", d).unwrap();
+        let mine = tenant_sites("t-aaa", None, d).unwrap();
         let codes: Vec<&str> = mine.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(codes, ["site2", "site3"]);
         // a site whose record names no tenant belongs to no customer key, whatever the key is called
         record(&dir, "site5", 115, None);
-        assert!(tenant_sites("site5", d).unwrap().is_empty());
-        assert_eq!(answer_tenant("site5", d, "site site5 status", ALL), 2);
-        assert_eq!(answer_tenant("t-aaa", d, "sites", ALL), 0);
-        assert_eq!(answer_tenant("t-aaa", d, "usage", ALL), 0);
+        assert!(tenant_sites("site5", None, d).unwrap().is_empty());
+        assert_eq!(answer_tenant("site5", None, d, "site site5 status", ALL), 2);
+        assert_eq!(answer_tenant("t-aaa", None, d, "sites", ALL), 0);
+        assert_eq!(answer_tenant("t-aaa", None, d, "usage", ALL), 0);
         // someone else's site and a site that does not exist: the same refusal
-        assert_eq!(answer_tenant("t-aaa", d, "site site4 status", ALL), 2);
-        assert_eq!(answer_tenant("t-aaa", d, "site site9 status", ALL), 2);
+        assert_eq!(answer_tenant("t-aaa", None, d, "site site4 status", ALL), 2);
+        assert_eq!(answer_tenant("t-aaa", None, d, "site site9 status", ALL), 2);
         // a site key's words are not a tenant key's, and the other way round
-        assert_eq!(answer_tenant("t-aaa", d, "status", ALL), 2);
+        assert_eq!(answer_tenant("t-aaa", None, d, "status", ALL), 2);
         assert_eq!(answer("site2", d, "sites", ALL), 2);
         // roles: a viewer may list, not read usage; an editor may not restart or read logs
-        assert_eq!(answer_tenant("t-aaa", d, "sites", &[Role::Viewer]), 0);
-        assert_eq!(answer_tenant("t-aaa", d, "usage", &[Role::Viewer]), 2);
+        assert_eq!(answer_tenant("t-aaa", None, d, "sites", &[Role::Viewer]), 0);
+        assert_eq!(answer_tenant("t-aaa", None, d, "usage", &[Role::Viewer]), 2);
         assert_eq!(answer("site2", d, "restart", &[Role::Editor]), 2);
         assert_eq!(answer("site2", d, "logs nginx", &[Role::Editor]), 2);
         assert_eq!(
@@ -336,15 +372,64 @@ mod tests {
         );
         // the role is asked before the site: no way to probe for sites without the right
         assert_eq!(
-            answer_tenant("t-aaa", d, "site site4 logs nginx", &[Role::Viewer]),
+            answer_tenant("t-aaa", None, d, "site site4 logs nginx", &[Role::Viewer]),
             2
         );
         // records that cannot be read are "could not", never an empty list
         assert_eq!(
-            answer_tenant("t-aaa", "/nonexistent/aib-tenant", "sites", ALL),
+            answer_tenant("t-aaa", None, "/nonexistent/aib-tenant", "sites", ALL),
             3
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// c477a: one member's key may be for some of the customer's sites. The list only
+    /// narrows what the records already give.
+    #[test]
+    fn a_site_list_narrows_a_tenant_key_and_never_widens_it() {
+        let dir = std::env::temp_dir().join(format!("aib-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        record(&dir, "site3", 113, Some("t-aaa"));
+        record(&dir, "site4", 114, Some("t-bbb"));
+        record(&dir, "site5", 115, None);
+        let d = dir.to_str().unwrap();
+        let codes = |scope: &[&str]| -> Vec<String> {
+            let sites = tenant_sites("t-aaa", Some(scope), d).unwrap();
+            sites.into_iter().map(|(c, _)| c).collect()
+        };
+        assert_eq!(codes(&["site3"]), ["site3"]);
+        // someone else's site, a site with no tenant and a site that does not exist, written
+        // into the list by mistake: the record decides, the key does not reach them
+        assert_eq!(codes(&["site3", "site4", "site5", "site9"]), ["site3"]);
+        assert!(codes(&["site4"]).is_empty());
+        // outside the list is refused like someone else's, without entering anything
+        let scope: &[&str] = &["site3"];
+        assert_eq!(answer_tenant("t-aaa", Some(scope), d, "sites", ALL), 0);
+        assert_eq!(
+            answer_tenant("t-aaa", Some(scope), d, "site site2 status", ALL),
+            2
+        );
+        assert_eq!(
+            answer_tenant("t-aaa", Some(scope), d, "site site4 status", ALL),
+            2
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_site_list_of_an_entry_is_codes_or_an_error() {
+        assert_eq!(parse_scope("site2"), Some(vec!["site2"]));
+        assert_eq!(parse_scope("site2,site3"), Some(vec!["site2", "site3"]));
+        // empty, an empty item, the same site twice, not a code: an error, never "every site"
+        for bad in ["", "site2,", ",site2", "site2,site2", "site2, site3", "*", "../site2"] {
+            assert_eq!(parse_scope(bad), None, "{bad:?}");
+        }
+        let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        // a list without a customer, and a list that is not one, stop the entry
+        assert!(cmd(&args(&["--site", "site2", "--sites", "site2", "--roles", "owner"])).is_err());
+        assert!(cmd(&args(&["--tenant", "t-aaa", "--sites", "", "--roles", "owner"])).is_err());
     }
 
     #[test]

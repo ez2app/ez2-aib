@@ -594,14 +594,11 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
 }
 
 /// The customer a site belongs to: the record's `tenant_id` (Ez2.PAGE's name for it; the
-/// two products are to share one account), or the site itself when the record names none
-/// (a customer with one site). The plan's envelope is per tenant. The id is an opaque
-/// code, never the customer's name.
+/// two products are to share one account). A record that names none belongs to **no**
+/// tenant: there is no falling back to the site's own code, or a tenant id that happened to
+/// equal a site code would own that site. The id is an opaque code, never the customer's name.
 pub fn record_tenant(rec: &Value) -> Option<&str> {
-    match rec.get("tenant_id") {
-        Some(v) => v.as_str().filter(|o| valid_code(o)),
-        None => rec.get("site").and_then(Value::as_str),
-    }
+    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))
 }
 
 /// [`spec_from_record`] for callers that must not accept a defaulted value: any
@@ -1677,6 +1674,9 @@ mod tests {
     #[test]
     fn tenant_and_disk_are_optional_but_typed() {
         let mut r = record(&site2(), "2026-11-10T01:00:00Z");
+        // no tenant named: no tenant, and never the site's own code
+        assert_eq!(record_tenant(&r), None);
+        r["tenant_id"] = json!("site2");
         assert_eq!(record_tenant(&r), Some("site2"));
         r["tenant_id"] = json!("t-3k9f2a");
         r["disk_gb"] = json!(16);
