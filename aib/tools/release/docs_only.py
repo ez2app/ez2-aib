@@ -82,6 +82,8 @@ RUST_CI_PATHS = (
     "scripts/knife.py",
     "scripts/knives-pairing.sh",
     "scripts/knives-static.sh",
+    "scripts/knives-errorcode.sh",
+    "scripts/knife-build.py",
     ".github/workflows/aibd.yml",
 )
 RUST_PREFIXES = ("crates/",)
