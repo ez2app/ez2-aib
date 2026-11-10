@@ -125,11 +125,11 @@ class Unit(unittest.TestCase):
         import dm_header as HD
         import dm_queue as Q
         with tempfile.TemporaryDirectory() as d:
-            env = {"EZ2_AIB_STATE_ROOT": d, "HOME": d, "AIB_DM_ADDR": "100.114.152.121", "EZ2_AIB_LOCALE": "zh-TW"}
+            env = {"EZ2_AIB_STATE_ROOT": d, "HOME": d, "AIB_DM_ADDR": "100.64.0.121", "EZ2_AIB_LOCALE": "zh-TW"}
             it = Q.enqueue("8f366", MSG, "Andy", sender_kind="owner_paired", sender_origin="nostr:" + NPUB, env=env,
                            global_info={"addr": ADDR, "shown": "Andy", "verified": True, "msgid": G.new_msgid()})
             head, frame = HD.build_from_global("8f366", it["id"], "@8f366(第二艦長)", when=1792045800, env=env)
-            self.assertTrue(head.startswith("Andy(全球·已驗證) >> IP:100.114.152.121/"), head)
+            self.assertTrue(head.startswith("Andy(全球·已驗證) >> IP:100.64.0.121/"), head)
             self.assertIn("第二艦長@8f366", head)
             self.assertTrue(frame.startswith("〔主人手機"))            # owner_paired 換另一句
             self.assertIn(it["global"]["reply_code"], frame)
