@@ -580,12 +580,10 @@ pub const BY_CUSTOMER_KEY: &str = "standing-customer-key";
 /// The only commands a customer's key may approve (the customer entry's writing requests).
 pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"];
 
-/// Run one change as an operation (4.4.1 §1.1): take the host lock, refuse while another
-/// operation on `target` is unfinished, journal `planned` → `approved` → `running` (synced
-/// before `change` runs), then `verified` when `change` returns `Ok` or `failed` when it
-/// returns an error. The lock is given back in every case. A `failed` operation blocks
-/// further operations on its target until `op recovered` closes it: the host may be half
-/// changed. So checks that change nothing belong **before** this call, not in `change`.
+/// Run one change as an operation whose plan reads nothing of the host (tests, and plans
+/// built only from the command line). Anything that decides from host state — a
+/// Caddyfile, a site record, which CTs and IPs are in use, the quarantine marks — must be
+/// read under the lock: use [`run_op_prepared`] (c477a #635 seg. 2 M1).
 pub fn run_op<T>(
     place: &OpPlace,
     command: &str,
@@ -595,13 +593,44 @@ pub fn run_op<T>(
     now: u64,
     change: impl FnOnce(&str) -> Result<T, String>,
 ) -> Result<T, String> {
+    run_op_prepared(
+        place,
+        command,
+        target,
+        approval,
+        now,
+        || Ok(Some((plan.clone(), ()))),
+        |op_id, ()| change(op_id),
+    )?
+    .ok_or_else(|| "nothing to do".to_owned())
+}
+
+/// Run one change as an operation (4.4.1 §1.1), in this order: take the host lock; refuse
+/// while another operation on `target` is unfinished; run `prepare`, which reads what the
+/// decision needs and checks it — **under the lock**, so no other operation can change
+/// what it read before `change` acts on it (c477a #635 seg. 2 M1); journal `planned` →
+/// `approved` → `running` (synced before `change` runs) with the plan `prepare` returned;
+/// run `change` with what `prepare` handed it; journal `verified` on `Ok`, `failed` on an
+/// error. The lock is given back in every case.
+///
+/// `prepare` changes nothing. Its error refuses the operation without any journal line
+/// (nothing was touched, so nothing is left blocked); `Ok(None)` means there is nothing to
+/// do, and the result is `Ok(None)` with no journal either. A `failed` operation blocks
+/// further operations on its target until `op recovered` closes it: the host may be half
+/// changed.
+pub fn run_op_prepared<P, T>(
+    place: &OpPlace,
+    command: &str,
+    target: &str,
+    approval: &str,
+    now: u64,
+    prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
+    change: impl FnOnce(&str, P) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {
         return Err(format!("{command} cannot be approved by a customer key"));
     }
     let op_id = op_id(now, random4()?);
-    let plan_sha256 = sha256_hex(
-        plan_hash_input(plan, &place.fingerprint, env!("CARGO_PKG_VERSION")).as_bytes(),
-    )?;
     let pid = std::process::id();
     if let Got::TookOver(h) = acquire(&place.lock, &op_id, pid)? {
         eprintln!(
@@ -609,8 +638,32 @@ pub fn run_op<T>(
             h.op, h.pid
         );
     }
+    let result = journaled(place, &op_id, command, target, approval, prepare, change);
+    if let Err(e) = release(&place.lock, &op_id, pid) {
+        eprintln!("{e}");
+    }
+    result
+}
+
+/// [`run_op_prepared`]'s part under the lock.
+fn journaled<P, T>(
+    place: &OpPlace,
+    op_id: &str,
+    command: &str,
+    target: &str,
+    approval: &str,
+    prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
+    change: impl FnOnce(&str, P) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    refuse_unfinished(&place.ops_dir, target, op_id)?;
+    let Some((plan, input)) = prepare()? else {
+        return Ok(None);
+    };
+    let plan_sha256 = sha256_hex(
+        plan_hash_input(&plan, &place.fingerprint, env!("CARGO_PKG_VERSION")).as_bytes(),
+    )?;
     let template = Entry {
-        op: op_id.clone(),
+        op: op_id.to_owned(),
         seq: 0,
         at: 0,
         state: op::State::Planned,
@@ -620,21 +673,6 @@ pub fn run_op<T>(
         code: String::new(),
         approval: approval.to_owned(),
     };
-    let result = journaled(place, &template, change);
-    if let Err(e) = release(&place.lock, &op_id, pid) {
-        eprintln!("{e}");
-    }
-    result
-}
-
-/// [`run_op`]'s part under the lock.
-fn journaled<T>(
-    place: &OpPlace,
-    template: &Entry,
-    change: impl FnOnce(&str) -> Result<T, String>,
-) -> Result<T, String> {
-    let op_id = template.op.as_str();
-    refuse_unfinished(&place.ops_dir, &template.target, op_id)?;
     let mut seq = 0;
     let mut step = |state: op::State, code: &str| {
         seq += 1;
@@ -657,14 +695,11 @@ fn journaled<T>(
     step(op::State::Planned, "ok")?;
     step(op::State::Approved, "ok")?;
     step(op::State::Running, "ok")?;
-    eprintln!(
-        "operation {op_id}: {} {}",
-        template.command, template.target
-    );
-    match change(op_id) {
+    eprintln!("operation {op_id}: {command} {target}");
+    match change(op_id, input) {
         Ok(v) => {
             step(op::State::Verified, "ok")?;
-            Ok(v)
+            Ok(Some(v))
         }
         Err(e) => match step(op::State::Failed, "error") {
             Ok(()) => Err(format!(
@@ -1208,6 +1243,90 @@ mod tests {
         .unwrap();
         assert!(entries.iter().all(|e| e.plan_sha256 == sha));
         assert!(!pl.lock.lock.exists(), "the lock is given back");
+    }
+
+    /// c477a #635 seg. 2 M1: what an operation decides from is read under the host lock,
+    /// so another operation cannot change it between the reading and the writing.
+    #[test]
+    fn what_an_operation_decides_from_is_read_under_the_lock() {
+        let pl = place("prepare");
+        let edge = pl.ops_dir.with_file_name("Caddyfile");
+        fs::write(&edge, "v1").unwrap();
+        // while operation A reads its base, operation B tries to rewrite it
+        let mut inner: Option<Result<Option<()>, String>> = None;
+        let mut inner_prepared = false;
+        let done = run_op_prepared(
+            &pl,
+            "site.suspend",
+            "site:site2",
+            BY_LOCAL_ROOT,
+            1_794_300_000,
+            || {
+                let base = fs::read_to_string(&edge).map_err(|e| e.to_string())?;
+                inner = Some(run_op_prepared(
+                    &pl,
+                    "site.restore",
+                    "site:site3",
+                    BY_LOCAL_ROOT,
+                    1_794_300_001,
+                    || {
+                        inner_prepared = true;
+                        fs::write(&edge, "v2").map_err(|e| e.to_string())?;
+                        Ok(Some((json!({}), ())))
+                    },
+                    |_, ()| Ok::<(), String>(()),
+                ));
+                Ok(Some((json!({ "base": base.clone() }), base)))
+            },
+            |_, base: String| fs::write(&edge, format!("{base}+site2")).map_err(|e| e.to_string()),
+        )
+        .unwrap();
+        assert_eq!(done, Some(()));
+        let busy = inner.unwrap().unwrap_err();
+        assert!(busy.contains("locked"), "{busy}");
+        assert!(!inner_prepared, "B read and wrote while A was deciding");
+        assert_eq!(fs::read_to_string(&edge).unwrap(), "v1+site2");
+
+        // a refusal while preparing leaves no journal, nothing blocked, the lock given back
+        let mut changed = false;
+        let err = run_op_prepared(
+            &pl,
+            "site.resume",
+            "site:site2",
+            BY_LOCAL_ROOT,
+            1_794_300_060,
+            || -> Result<Option<(Value, ())>, String> { Err("quarantined".to_owned()) },
+            |_, ()| {
+                changed = true;
+                Ok::<(), String>(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "quarantined");
+        // nothing to do: no journal either
+        let nothing = run_op_prepared(
+            &pl,
+            "site.resume",
+            "site:site2",
+            BY_LOCAL_ROOT,
+            1_794_300_120,
+            || Ok(None::<(Value, ())>),
+            |_, ()| {
+                changed = true;
+                Ok::<(), String>(())
+            },
+        )
+        .unwrap();
+        assert_eq!(nothing, None);
+        assert!(!changed);
+        let journals = fs::read_dir(&pl.ops_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .count();
+        assert_eq!(journals, 1, "only A's operation is journaled");
+        assert!(!pl.lock.lock.exists());
+        refuse_unfinished(&pl.ops_dir, "site:site2", "").unwrap();
     }
 
     #[test]

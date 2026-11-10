@@ -501,8 +501,8 @@ jobs:
              '    // knife: no running line' \
              an_operation_is_journaled_and_gives_the_lock_back
           # run_op: an unfinished operation on the same target does not block a new one
-          hk opstore.rs '    refuse_unfinished(&place.ops_dir, &template.target, op_id)?;' \
-             '    let _ = (&place.ops_dir, op_id); // knife' \
+          hk opstore.rs '    refuse_unfinished(&place.ops_dir, target, op_id)?;' \
+             '    let _ = (&place.ops_dir, target, op_id); // knife' \
              a_failed_operation_blocks_its_target_until_recovered
           # run_op: the host lock is kept after the operation
           hk opstore.rs '    if let Err(e) = release(&place.lock, &op_id, pid) {' \
@@ -512,6 +512,10 @@ jobs:
           hk opstore.rs '        Err(e) => match step(op::State::Failed, "error") {' \
              '        Err(e) => match Ok::<(), String>(()) { // knife' \
              a_failed_operation_blocks_its_target_until_recovered
+          # what an operation decides from is read outside the host lock (c477a #635 seg. 2 M1)
+          hk opstore.rs '    let Some((plan, input)) = prepare()? else {' \
+             '    let _ = release(&place.lock, op_id, std::process::id()); let Some((plan, input)) = prepare()? else { // knife' \
+             what_an_operation_decides_from_is_read_under_the_lock
           # restore --switch without the typed site code (4542e 11-10 condition c)
           hk probe.rs '    yes == Some(code)' '    yes.is_some() || code.is_empty() || true // knife' \
              a_switch_needs_the_site_code_typed

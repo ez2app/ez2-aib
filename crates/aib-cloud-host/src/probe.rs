@@ -1055,45 +1055,53 @@ fn cmd_site_suspend(args: &[String], suspend: bool) -> Result<u8, String> {
     if !rest.is_empty() {
         return Err(format!("unknown arguments {rest:?}"));
     }
-    let spec = load_site(&code, &records)?;
-    // a quarantined site is neither reopened (resume) nor has its quarantine block replaced
-    // by the suspension page (suspend): only unquarantine ends a quarantine
-    crate::quarantinecmd::refuse_if_quarantined_here(
-        &code,
-        spec.ct,
-        aib_cloud::quarantine::Reopens::Resume,
-    )?;
-    let current = edge_caddyfile()?;
-    let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
-    if now == suspend {
-        eprintln!(
-            "{code} already {}",
-            if suspend { "suspended" } else { "live" }
-        );
-        return Ok(0);
-    }
-    let block = if suspend {
-        caddy_block_suspended(&spec, SUSPENDED_PAGE)
-    } else {
-        caddy_block_upstream(&spec, &spec.ip())
-    };
-    let next = caddy_swap_block(&current, &code, &block).map_err(|e| e.to_string())?;
-    // 33e28 B1: the Edge change runs as an operation (host lock + journal)
+    // 33e28 B1: the Edge change runs as an operation (host lock + journal). Everything it
+    // decides from — the record, the quarantine marks, the Caddyfile — is read under the
+    // lock (c477a #635 seg. 2 M1), so a restore --switch of another site cannot land
+    // between the reading and the writing and be overwritten with the old Caddyfile.
     let command = if suspend {
         "site.suspend"
     } else {
         "site.resume"
     };
-    let plan = json!({ "command": command, "site": code, "edge_block": block });
-    let backup = crate::opstore::run_op(
+    let done = crate::opstore::run_op_prepared(
         &crate::opstore::OpPlace::host()?,
         command,
         &format!("site:{code}"),
-        &plan,
         crate::opstore::BY_LOCAL_ROOT,
         unix_now(),
-        |_| edge_apply_caddyfile(&next),
+        || {
+            let spec = load_site(&code, &records)?;
+            // a quarantined site is neither reopened (resume) nor has its quarantine block
+            // replaced by the suspension page (suspend): only unquarantine ends a quarantine
+            crate::quarantinecmd::refuse_if_quarantined_here(
+                &code,
+                spec.ct,
+                aib_cloud::quarantine::Reopens::Resume,
+            )?;
+            let current = edge_caddyfile()?;
+            let now = caddy_block_is_suspended(&current, &code).map_err(|e| e.to_string())?;
+            if now == suspend {
+                return Ok(None);
+            }
+            let block = if suspend {
+                caddy_block_suspended(&spec, SUSPENDED_PAGE)
+            } else {
+                caddy_block_upstream(&spec, &spec.ip())
+            };
+            let next = caddy_swap_block(&current, &code, &block).map_err(|e| e.to_string())?;
+            let plan = json!({ "command": command, "site": code, "edge_block": block });
+            Ok(Some((plan, next)))
+        },
+        |_, next: String| edge_apply_caddyfile(&next),
     )?;
+    let Some(backup) = done else {
+        eprintln!(
+            "{code} already {}",
+            if suspend { "suspended" } else { "live" }
+        );
+        return Ok(0);
+    };
     eprintln!(
         "{code} {} (Edge Caddyfile backup {backup})",
         if suspend {
@@ -1151,45 +1159,45 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
             "--switch moves {code}'s live traffic: add --yes-{code} to confirm"
         ));
     }
-    let spec = load_site(&code, &records)?;
-    // restoring a quarantined site would bring its backup up with egress (and, with
-    // --switch, back on the edge): refused until unquarantine
-    crate::quarantinecmd::refuse_if_quarantined_here(
-        &code,
-        spec.ct,
-        aib_cloud::quarantine::Reopens::Restore,
-    )?;
-    let taken = occupied_ip_lasts(&records)?;
-    let plan = restore_plan(
-        &spec,
-        backup.as_deref().ok_or("--backup required")?,
-        ct.ok_or("--ct required")?,
-        ip.ok_or("--ip required")?,
-        &taken,
-    )
-    .map_err(|e| format!("{e} (in use on vmbr1: {taken:?})"))?;
-    let new_ct = ct.unwrap_or(0).to_string();
-    let mut probe = Command::new("pct");
-    probe.args(["status", &new_ct]);
-    if run_capture(&mut probe, Duration::from_secs(10)).is_ok() {
-        return Err(format!("CT {new_ct} already exists; pick another id"));
-    }
-    // 33e28 B1: from the first step that changes the host, the restore is an operation
-    // (host lock + journal); a failure leaves it `failed` for a person to check
-    let plan_doc = json!({
-        "command": "site.restore",
-        "site": code,
-        "steps": plan.iter().map(|s| s.argv.clone()).collect::<Vec<_>>(),
-        "switch": switch,
-    });
-    crate::opstore::run_op(
+    let backup = backup.ok_or("--backup required")?;
+    let (ct_n, ip_n) = (ct.ok_or("--ct required")?, ip.ok_or("--ip required")?);
+    let new_ct = ct_n.to_string();
+    // 33e28 B1: the restore is an operation (host lock + journal); a failure from the first
+    // step that changes the host leaves it `failed` for a person to check. The record, the
+    // quarantine marks, the IPs and CT ids in use are read and checked under the lock
+    // (c477a #635 seg. 2 M1): two restores cannot both find the same IP or CT id free.
+    let done = crate::opstore::run_op_prepared(
         &crate::opstore::OpPlace::host()?,
         "site.restore",
         &format!("site:{code}"),
-        &plan_doc,
         crate::opstore::BY_LOCAL_ROOT,
         unix_now(),
-        |_| {
+        || {
+            let spec = load_site(&code, &records)?;
+            // restoring a quarantined site would bring its backup up with egress (and, with
+            // --switch, back on the edge): refused until unquarantine
+            crate::quarantinecmd::refuse_if_quarantined_here(
+                &code,
+                spec.ct,
+                aib_cloud::quarantine::Reopens::Restore,
+            )?;
+            let taken = occupied_ip_lasts(&records)?;
+            let plan = restore_plan(&spec, &backup, ct_n, ip_n, &taken)
+                .map_err(|e| format!("{e} (in use on vmbr1: {taken:?})"))?;
+            let mut probe = Command::new("pct");
+            probe.args(["status", &new_ct]);
+            if run_capture(&mut probe, Duration::from_secs(10)).is_ok() {
+                return Err(format!("CT {new_ct} already exists; pick another id"));
+            }
+            let plan_doc = json!({
+                "command": "site.restore",
+                "site": code,
+                "steps": plan.iter().map(|s| s.argv.clone()).collect::<Vec<_>>(),
+                "switch": switch,
+            });
+            Ok(Some((plan_doc, (spec, plan))))
+        },
+        |_, (spec, plan)| {
             for step in &plan {
                 if step.id == "verify" {
                     break;
@@ -1285,7 +1293,8 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         },
-    )
+    )?;
+    Ok(done.unwrap_or(0))
 }
 
 pub fn main(args: &[String]) -> Result<u8, String> {
