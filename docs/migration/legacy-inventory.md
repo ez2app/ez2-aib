@@ -270,7 +270,7 @@ acceptance list (port the cases, keep the knives). Owner = who writes the Rust v
 
 | ID | Need | Closed PR | Acceptance (from the PR's tests) | Target | Owner |
 |----|------|-----------|-----------------------------------|--------|-------|
-| R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | `aib/tests/test-cooldown-reap-authority-34d15-1103.py`: 30 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
+| R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | [`aib/tests/test-cooldown-reap-authority-34d15-1103.py`](https://github.com/ez2app/ez2-aib/blob/9a3812eb43addd0e09579933d2bf988aba675651/aib/tests/test-cooldown-reap-authority-34d15-1103.py) (#473 head 9a3812eb4): 29 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
 
 ### R1 — cooldown reap authority
 

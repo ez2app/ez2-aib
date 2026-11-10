@@ -1,0 +1,15 @@
+[package]
+name = "aib-flaky"
+description = "Read-only suspected-flaky register: classifies each red CI job attempt as suspected_flaky / unclassified / infra_unverified. Never skips, reruns or writes to GitHub."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aib-cireuse = { path = "../aib-cireuse" }
+serde_json = "1"
+
+[lints]
+workspace = true

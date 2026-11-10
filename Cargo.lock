@@ -26,6 +26,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-cloud-host"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cloud",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-core"
 version = "0.2.0-preview.4"
 dependencies = [
@@ -39,6 +47,14 @@ version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
  "signal-hook",
+]
+
+[[package]]
+name = "aib-flaky"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cireuse",
+ "serde_json",
 ]
 
 [[package]]
@@ -104,6 +120,10 @@ dependencies = [
  "thiserror",
  "windows-sys",
 ]
+
+[[package]]
+name = "aib-thermal"
+version = "0.2.0-preview.4"
 
 [[package]]
 name = "aib-xtask"

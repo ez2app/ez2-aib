@@ -128,18 +128,31 @@ function copyConcealed(text) {
   pb.setStringForType($(""), $("org.nspasteboard.ConcealedType"));
   pb.setStringForType($(""), $("org.nspasteboard.TransientType"));
 }
-var out, def = "", hint = "";
+// 1ced7 #588 L8 / L9:最後一次 gen() 的值留在這裡(不出 JXA);視窗關掉時剪貼簿 == 這個值才清,沒按過產生就不碰本人的剪貼簿。
+function settleClipboard(last) {
+  if (last === null) return false;
+  try {
+    var pb = $.NSPasteboard.generalPasteboard;
+    var cur = pb.stringForType($.NSPasteboardTypeString);
+    if (!cur.isNil() && ObjC.unwrap(cur) === last) { pb.clearContents(); return true; }
+  } catch (e) {}
+  return false;
+}
+var out, def = "", hint = "", last = null;
 try {
   app.activate();
   while (true) {
     var r = app.displayDialog(__PROMPT__ + hint, {withTitle: __TITLE__, defaultAnswer: def, hiddenAnswer: true,
       buttons: [__CANCEL__, __GEN__, __OK__], defaultButton: __OK__, cancelButton: __CANCEL__, givingUpAfter: __WAIT__});
     if (r.gaveUp) { out = {ok: false, why: "timeout"}; break; }
-    if (r.buttonReturned === __GEN__) { def = gen(); copyConcealed(def); hint = "\n\n" + __GEN_HINT__; continue; }
+    if (r.buttonReturned === __GEN__) { def = gen(); last = def; copyConcealed(def); hint = "\n\n" + __GEN_HINT__; continue; }
     out = {ok: true, nonce: __NONCE__, value: r.textReturned}; break;
   }
 } catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error",
                      code: (e && e.errorNumber !== undefined) ? String(e.errorNumber) : ""}; }
+out.generated = (last !== null);
+out.cleared = settleClipboard(last);
+last = null; def = null;
 JSON.stringify(out);
 """
 
@@ -187,9 +200,10 @@ def build_script(prompt, title, nonce, wait=WAIT_S, generate=False):
 
 
 def clear_clipboard(value=None, run=subprocess.run):
-    """--generate 把產生的密碼放進剪貼簿;同帳號任何程式(含 AI)都讀得到,所以視窗關掉(不論成敗、含中斷)就清掉。
-    1ced7 #588 L4:給了 value 就先比對 —— 剪貼簿裡不是那個值(本人後來複製了別的)就不動,回 False;
-    沒給 value(取消 / 沒拿到值)就直接清。本人在按「儲存」前已存進密碼管理器;清不掉只記 False,不影響結果。"""
+    """--generate 把產生的密碼放進剪貼簿;同帳號任何程式(含 AI)都讀得到,所以視窗關掉就要清掉。
+    1ced7 #588 L8 / L9 之後:視窗正常回來時由 JXA 自己比對「剪貼簿 == 最後一次產生的值」決定清不清(見 settleClipboard),
+    這個函式只剩視窗**沒**正常回來(中斷 / 逾時砍掉 / osascript 死)時的保守後路(L5):沒給 value 就直接清;
+    給了 value 就先 pbpaste 比對,不是那個值(本人後來複製了別的)就不動,回 False(L4)。清不掉只記 False,不影響結果。"""
     try:
         if value is not None:
             cur = run(["pbpaste"], capture_output=True, timeout=5)
@@ -222,15 +236,21 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S, raw=False, generate=F
         return {"ok": False, "why": "no_gui" if any("(%s)" % c in err for c in NO_GUI_CODES) else "unreadable"}
     if out.get("ok") is not True and out.get("why") == "error" and str(out.get("code") or "") in NO_GUI_CODES:
         return {"ok": False, "why": "no_gui"}
+    # --generate 視窗自己回報:有沒有按過「產生」、關窗時有沒有把產生值從剪貼簿清掉(1ced7 L8 / L9);
+    # 一般視窗沒有這兩個鍵,回傳就跟以前一模一樣
+    flags = {"generated": out.get("generated") is True, "cleared": out.get("cleared") is True} if "generated" in out else {}
     if out.get("ok") is True and out.get("nonce") == nonce and isinstance(out.get("value"), str):
-        return {"ok": True, "why": "ok", "value": out["value"] if raw else out["value"].strip()}
+        return dict({"ok": True, "why": "ok", "value": out["value"] if raw else out["value"].strip()}, **flags)
     if out.get("ok") is True:
-        return {"ok": False, "why": "nonce_mismatch"}
-    return {"ok": False, "why": str(out.get("why") or "failed")}
+        return dict({"ok": False, "why": "nonce_mismatch"}, **flags)
+    return dict({"ok": False, "why": str(out.get("why") or "failed")}, **flags)
 
 
-def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, generate=False):
-    """問到一個格式對的值。回 (value, why);value None = 沒拿到。"""
+def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, generate=False, state=None):
+    """問到一個格式對的值。回 (value, why);value None = 沒拿到。
+    state(dict,可選):視窗帶著旗標回來才填 returned=True;generated = 任一輪按過產生;cleared = 最後一輪有按產生的那次
+    關窗時有沒有把產生值清掉(1ced7 #588 L8 / L9;#610 M1 / L1)。沒旗標(逾時、osascript 死、讀不懂)⇒ returned 不設,
+    ask_cmd 走保守清。"""
     title = _t("aib.secret.dialog_title", {"name": name})
     base = _t("aib.secret.dialog_prompt", {"name": name, "dest": dest})
     prompt = base
@@ -239,6 +259,13 @@ def collect(name, dest, platform, ask=None, getpass_fn=None, isatty=None, genera
             if generate and ask is None:  # --generate:三顆鈕的視窗;不動下一行(33e28 刀測 K6c 以它當錨)
                 ask = lambda p, t: dialog(p, t, raw=keeps_exact(name), generate=True)  # noqa: E731
             res = (ask or (lambda p, t: dialog(p, t, raw=keeps_exact(name))))(prompt, title)
+            if state is not None:
+                # 1ced7 #610 M1 / M1b:returned 由「最後一輪」決定 —— 帶旗標 = 視窗真的回來;沒旗標(逾時 / osascript 死 /
+                # 讀不懂)= 不算,就算前面幾輪有旗標也一樣(第 2 輪才逾時仍要保守清)。L1:cleared 以最後一次有按產生的那輪為準。
+                state["returned"] = "generated" in res
+                if res.get("generated") is True:
+                    state["generated"] = True
+                    state["cleared"] = res.get("cleared") is True
             if not res.get("ok"):
                 return None, res.get("why") or "failed"
             raw = res["value"]
@@ -344,6 +371,24 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
     return None if r.returncode == 0 else "ssh_rc_%d" % r.returncode
 
 
+def settle_clipboard(res, state, clipboard=None):
+    """--generate 視窗關了之後剪貼簿怎麼收尾(1ced7 #588 L8 / L9):
+    視窗正常回來 ⇒ 清不清已由 JXA 比對「剪貼簿 == 最後一次產生的值」決定(值不出 JXA);沒按過產生就一律不碰本人的剪貼簿(L9)。
+    視窗沒帶旗標回來(中斷 / Python 逾時 / osascript 死 / 輸出讀不懂)⇒ 不知道有沒有產生過,保守清一次(L5;#610 M1)。
+    res["clipboard"] 是代碼(契約):cleared / kept(產生過、但剪貼簿已是別的東西,不動)/ not_generated / clear_failed;
+    res["clipboard_cleared"] 保留布林。"""
+    if state.get("returned"):
+        if not state.get("generated"):
+            res["clipboard"], res["clipboard_cleared"] = "not_generated", False
+        elif state.get("cleared"):
+            res["clipboard"], res["clipboard_cleared"] = "cleared", True
+        else:
+            res["clipboard"], res["clipboard_cleared"] = "kept", False
+        return
+    ok = bool((clipboard or clear_clipboard)(None))
+    res["clipboard"], res["clipboard_cleared"] = ("cleared" if ok else "clear_failed"), ok
+
+
 def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_available=None,
             opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr, seal=None,
             clipboard=None):
@@ -395,11 +440,12 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
     value = why = None
+    state = {}
     try:
-        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate, state=state)
     finally:
-        if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿:儲存 / 取消 / 逾時 / 中斷都清;有值先比對(1ced7 L4 / L5)
-            res["clipboard_cleared"] = (clipboard or clear_clipboard)(value)
+        if a.generate and platform == "darwin":  # 剪貼簿收尾:JXA 比對過才清、沒產生不碰、沒正常回來才保守清(1ced7 L5 / L8 / L9)
+            settle_clipboard(res, state, clipboard)
     if value is None:
         res["why"] = why
         if why == "no_gui":
@@ -450,11 +496,12 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
         return done(2)
     dest = _t("aib.secret.dest_se")
     value = why = None
+    state = {}
     try:
-        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate)
+        value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty, generate=a.generate, state=state)
     finally:
-        if a.generate and platform == "darwin":  # 視窗一關就清剪貼簿:儲存 / 取消 / 逾時 / 中斷都清;有值先比對(1ced7 L4 / L5)
-            res["clipboard_cleared"] = (clipboard or clear_clipboard)(value)
+        if a.generate and platform == "darwin":  # 剪貼簿收尾:JXA 比對過才清、沒產生不碰、沒正常回來才保守清(1ced7 L5 / L8 / L9)
+            settle_clipboard(res, state, clipboard)
     if value is None:
         res["why"] = why
         if why == "no_gui":
