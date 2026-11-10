@@ -10,6 +10,11 @@
 //! | M3 | `proc_listpids(PROC_PPID_ONLY, ppid)` | declared, no stability promise |
 //! | M4 | `proc_listallpids` | declared, no stability promise |
 //! | M5 | `waitid(P_PID, pid, WEXITED \| WNOWAIT [\| WNOHANG])` | **public POSIX** (`sys/wait.h`); own children only |
+//! | T1 | IOHID `PMU tdie*` temperature events ([`thermal`]) | **private SPI**, looked up with `dlsym`, may disappear |
+//! | T2 | `notify_get_state("com.apple.system.thermalpressurelevel")` ([`thermal`]) | **public** (`notify.h`) |
+//!
+//! T1 / T2 feed thermal protection (R1); their rules are in [`thermal`]. Unlike M1, a wrong
+//! T1 reading would cause an action, so it fails closed (error, never 0 or a guess).
 //!
 //! Rules that callers rely on:
 //!
@@ -60,9 +65,13 @@ pub mod selfcheck;
 #[cfg(windows)]
 pub mod session;
 pub mod settle;
+pub mod thermal;
+#[cfg(target_os = "macos")]
+mod thermal_macos;
 
 #[cfg(target_os = "macos")]
 pub use macos::{sigchld, sigchld_keep_zombies, Macos, Sigchld};
+pub use thermal::{DieTemps, NoThermal, ThermalInfo};
 
 /// M1: `p_uniqueid` / `p_puniqueid`. `parent_unique` is the creator's unique
 /// id and survives re-parenting (measured, not documented by Apple).
@@ -129,6 +138,15 @@ pub enum SysError {
     /// exist: the caller must report it, never treat it as cleaned up.
     #[error("spawn failed ({cause}); child {pid} not confirmed gone")]
     NotReaped { pid: u32, cause: Box<SysError> },
+    /// T1 / T2 read a value outside its plausible range. Never replaced by a guess.
+    #[error("implausible reading")]
+    Implausible,
+    /// A private SPI symbol (T1) is not in this macOS. The call is off, aibd still runs.
+    #[error("private SPI symbol not found")]
+    SpiMissing,
+    /// A `notify.h` call (T2) returned this `NOTIFY_STATUS_*` code (not an errno).
+    #[error("notify status {0}")]
+    Notify(u32),
 }
 
 impl SysError {
@@ -157,6 +175,9 @@ impl SysError {
             SysError::NotChild => "not_child",
             SysError::ChildrenAutoReaped => "children_auto_reaped",
             SysError::NotReaped { .. } => "not_reaped",
+            SysError::Implausible => "implausible",
+            SysError::SpiMissing => "spi_missing",
+            SysError::Notify(_) => "notify_status",
         }
     }
 }
