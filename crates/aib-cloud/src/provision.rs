@@ -40,6 +40,11 @@
 //! id); it is not a cryptographic hash and must not be the only thing an approval is
 //! bound to — the caller hashes [`Plan::to_json`] together with the target host.
 //!
+//! Two things are the reader's job, because a parsed JSON value no longer shows them: an
+//! object with the same key twice must be refused when the file is read (the second would
+//! silently win), and digests in a spec are written in hex — a base64 digest is long
+//! enough to be taken for key material by `P11`.
+//!
 //! What [`lint`] refuses (every finding carries a stable code):
 //! * `P01` wrong shape or version; `P10` a key this version does not know (typos, and the
 //!   `status` lines of a hand-kept ledger).
@@ -1071,6 +1076,7 @@ pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     steps: Vec<Step>,
+    assumed: Vec<Step>,
     id: String,
 }
 
@@ -1080,9 +1086,15 @@ impl Plan {
         &self.steps
     }
 
-    /// 16 hex digits over the rendered steps. An identifier, not a security hash. It
-    /// covers what each step is, in run order, and not the `requires` that produced the
-    /// order: two specs that differ only there and order the same have the same id.
+    /// Steps left out by `--from` that a step in the plan depends on, directly or
+    /// through another left-out step, in run order. A plan that starts later does not
+    /// trust them: whoever runs it runs their `verify` first and stops if one fails.
+    pub fn assumed(&self) -> &[Step] {
+        &self.assumed
+    }
+
+    /// 16 hex digits over the plan as [`Plan::to_json`] prints it (steps, their
+    /// `requires`, and the assumed steps). An identifier, not a security hash.
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1098,7 +1110,11 @@ impl Plan {
 
     /// The plan as JSON: `{"plan_id", "steps": [...]}`. Secrets appear as references.
     pub fn to_json(&self) -> Value {
-        json!({ "plan_id": self.id, "steps": steps_json(&self.steps) })
+        json!({
+            "plan_id": self.id,
+            "assumed": steps_json(&self.assumed),
+            "steps": steps_json(&self.steps),
+        })
     }
 }
 
@@ -1156,6 +1172,7 @@ fn steps_json(steps: &[Step]) -> Value {
                     "level": s.level.as_str(),
                     "kind": s.kind.as_str(),
                     "title": s.title,
+                    "requires": s.requires,
                     "apply": commands(&s.apply),
                     "instructions": s.instructions,
                     "verify": verify,
@@ -1226,7 +1243,8 @@ fn render_step(s: &Step, vars: &[(String, String)]) -> Step {
 
 /// Order the steps and fill in the variables. With `from`, the plan starts at that step
 /// (in run order); an unknown id is refused. Starting later does **not** mean the earlier
-/// steps are trusted: whoever runs the plan re-verifies what the first step requires.
+/// steps are trusted: the skipped steps the plan depends on are listed in
+/// [`Plan::assumed`], to be verified before the first step runs.
 pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
     let mut start = 0;
     if let Some(from) = from {
@@ -1236,12 +1254,29 @@ pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
             .position(|&i| spec.steps[i].id == from)
             .ok_or_else(|| top("P09", format!("--from names unknown step {from:?}")))?;
     }
-    let steps: Vec<Step> = spec.order[start..]
+    let (skipped, included) = spec.order.split_at(start);
+    // what the included steps need from the skipped ones, through any chain of requires:
+    // walk the skipped steps backwards so that a needed step marks its own needs
+    let mut needed: BTreeSet<&str> = included
+        .iter()
+        .flat_map(|&i| spec.steps[i].requires.iter().map(String::as_str))
+        .collect();
+    let mut assumed: Vec<Step> = Vec::new();
+    for &i in skipped.iter().rev() {
+        let step = &spec.steps[i];
+        if needed.contains(step.id.as_str()) {
+            needed.extend(step.requires.iter().map(String::as_str));
+            assumed.push(render_step(step, &spec.vars));
+        }
+    }
+    assumed.reverse();
+    let steps: Vec<Step> = included
         .iter()
         .map(|&i| render_step(&spec.steps[i], &spec.vars))
         .collect();
-    let id = crate::isolation::fnv1a64(steps_json(&steps).to_string().as_bytes());
-    Ok(Plan { steps, id })
+    let body = json!({ "assumed": steps_json(&assumed), "steps": steps_json(&steps) });
+    let id = crate::isolation::fnv1a64(body.to_string().as_bytes());
+    Ok(Plan { steps, assumed, id })
 }
 
 #[cfg(test)]
@@ -1373,6 +1408,39 @@ mod tests {
         let plan = plan(&lint(&v).unwrap(), None).unwrap();
         let ids: Vec<&str> = plan.steps().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["B0.precheck", "B2.repo", "A.reinstall"]);
+    }
+
+    /// `--from` does not trust what it skips (review of #619, ebb36 M1): every skipped
+    /// step that a planned step depends on, however indirectly, is listed to be verified.
+    #[test]
+    fn from_lists_the_skipped_steps_it_depends_on() {
+        // A.reinstall requires B2.repo requires B0.precheck; add D, which nothing needs
+        let mut v = good();
+        let mut extra = v["steps"][0].clone();
+        extra["id"] = json!("D.unrelated");
+        v["steps"].as_array_mut().unwrap().insert(1, extra);
+        let spec = lint(&v).unwrap();
+        let ids = |steps: &[Step]| steps.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+
+        let all = plan(&spec, None).unwrap();
+        assert!(all.assumed().is_empty());
+        let last = plan(&spec, Some("A.reinstall")).unwrap();
+        assert_eq!(ids(last.steps()), ["A.reinstall"]);
+        // B2.repo directly, B0.precheck through it; D.unrelated is not needed
+        assert_eq!(ids(last.assumed()), ["B0.precheck", "B2.repo"]);
+        let json = last.to_json();
+        assert_eq!(json["assumed"][1]["id"], "B2.repo");
+        assert_eq!(
+            json["assumed"][0]["verify"][0]["run"],
+            json!(["hostname", "-f"])
+        );
+        assert_eq!(json["steps"][0]["requires"], json!(["B2.repo"]));
+        // the id covers requires: same steps, same order, another dependency
+        let mut w = v.clone();
+        w["steps"][3]["requires"] = json!(["B2.repo", "D.unrelated"]);
+        let other = plan(&lint(&w).unwrap(), None).unwrap();
+        assert_eq!(ids(other.steps()), ids(all.steps()));
+        assert_ne!(other.id(), all.id());
     }
 
     #[test]
