@@ -254,7 +254,7 @@ mod tests {
                 "{host:?}"
             );
         }
-        assert!(valid_host("135.181.75.90"));
+        assert!(valid_host("203.0.113.90"));
         assert!(valid_host("a"));
         for user in ["", "-l", "0day", "Root", "a b", "a@b", "site2\n"] {
             assert_eq!(
