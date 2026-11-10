@@ -13,7 +13,7 @@ publish = false
 [target.'cfg(target_os = "macos")'.dependencies]
 aib-sys = { path = "../aib-sys" }
 libproc = "0.15.0"
-nix = { version = "0.31.3", features = ["event"] }
+nix = { version = "0.31.3", features = ["event", "time"] }
 
 [lints]
 workspace = true
