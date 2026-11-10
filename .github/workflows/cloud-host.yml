@@ -120,7 +120,22 @@ jobs:
             '            // knife: link left behind' \
             u9_swap_keeps_prev_and_never_leaves_dest_missing
       - name: build (static)
-        run: cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+        # No build machine path in the file (DEV 4.6 S): panic locations of dependencies carry the
+        # home, cargo registry and checkout paths unless remapped. Later prefixes win, so the
+        # home goes first. trim-paths is not stable in the pinned cargo.
+        run: |
+          RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$HOME=/home --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src" \
+            cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+          bin="target/$TARGET/release/aib-cloud-host"
+          c="${CARGO_HOME:-$HOME/.cargo}"
+          [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
+          # 0 = a path is in the file, 1 = none, anything else = could not tell: only 1 passes
+          r=0; grep -a -q -F -e "$HOME/" -e "$c" -e "$GITHUB_WORKSPACE" "$bin" || r=$?
+          case $r in
+            1) ;;
+            0) echo "::error::a build machine path is in $bin"; exit 1 ;;
+            *) echo "::error::grep could not read $bin (rc $r)"; exit 1 ;;
+          esac
       - name: smoke (static, --version exact)
         run: |
           bin="target/$TARGET/release/aib-cloud-host"
