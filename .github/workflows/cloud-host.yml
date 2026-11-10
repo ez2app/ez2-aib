@@ -129,9 +129,13 @@ jobs:
           bin="target/$TARGET/release/aib-cloud-host"
           c="${CARGO_HOME:-$HOME/.cargo}"
           [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
-          if grep -a -q -F -e "$HOME/" -e "$c" -e "$GITHUB_WORKSPACE" "$bin"; then
-            echo "::error::a build machine path is in $bin"; exit 1
-          fi
+          # 0 = a path is in the file, 1 = none, anything else = could not tell: only 1 passes
+          r=0; grep -a -q -F -e "$HOME/" -e "$c" -e "$GITHUB_WORKSPACE" "$bin" || r=$?
+          case $r in
+            1) ;;
+            0) echo "::error::a build machine path is in $bin"; exit 1 ;;
+            *) echo "::error::grep could not read $bin (rc $r)"; exit 1 ;;
+          esac
       - name: smoke (static, --version exact)
         run: |
           bin="target/$TARGET/release/aib-cloud-host"
