@@ -1195,12 +1195,14 @@ mod tests {
                 { "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
         let roster = parse(&roster.to_string(), &["site2", "site3"]).unwrap();
         let good = sudoers_file(&[roster]).unwrap();
-        let seen = |text: &str| EntrySudoers {
-            present: Some(true),
-            owner_mode: Some((0, 0, 0o440)),
-            text: Some(text),
-            visudo_ok: Some(true),
-        };
+        fn seen(text: &str) -> EntrySudoers<'_> {
+            EntrySudoers {
+                present: Some(true),
+                owner_mode: Some((0, 0, 0o440)),
+                text: Some(text),
+                visudo_ok: Some(true),
+            }
+        }
         let h14 = |e: EntrySudoers<'_>| h14_entry_sudoers(e).outcome;
         assert_eq!(h14(seen(&good)), Outcome::Green);
         assert_eq!(h14_entry_sudoers(seen(&good)).id, "H14");
