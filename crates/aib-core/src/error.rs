@@ -28,8 +28,12 @@ pub enum ErrorCode {
     PayloadTooLarge,
     /// No session with that id (or it fell out of the recent list).
     SessionNotFound,
-    /// The running-session limit is reached.
+    /// The running-session limit is reached. Since the session queue (ADR 0005 §5)
+    /// a full limit queues instead; kept for clients that know the code.
     TooManySessions,
+    /// The running limit is reached and the queue of waiting sessions is full too
+    /// (ADR 0005 §5: the queue is bounded).
+    SessionQueueFull,
     /// The program could not be started (not found, not executable, bad cwd).
     SpawnFailed,
     /// aibd is stopping and takes no new sessions.
@@ -45,10 +49,13 @@ pub enum ErrorCode {
     ProgramNotAllowed,
     /// The listed provider is an npm (node) install; only standalone signed builds run.
     ProviderInstallUnsupported,
+    /// The machine is too hot to start another session (ADR 0005 §1 thermal guard).
+    /// Not queued; answered with `Retry-After`.
+    ThermalNogo,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 18] = [
+    pub const ALL: [ErrorCode; 20] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -67,6 +74,8 @@ impl ErrorCode {
         ErrorCode::IdempotencyConflict,
         ErrorCode::ProgramNotAllowed,
         ErrorCode::ProviderInstallUnsupported,
+        ErrorCode::SessionQueueFull,
+        ErrorCode::ThermalNogo,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -89,6 +98,8 @@ impl ErrorCode {
             ErrorCode::IdempotencyConflict => "idempotency_conflict",
             ErrorCode::ProgramNotAllowed => "program_not_allowed",
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
+            ErrorCode::SessionQueueFull => "session_queue_full",
+            ErrorCode::ThermalNogo => "thermal_nogo",
         }
     }
 
@@ -103,9 +114,9 @@ impl ErrorCode {
             ErrorCode::InvalidRequest | ErrorCode::EnvNotAllowed => 400,
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::SessionNotFound => 404,
-            ErrorCode::TooManySessions => 429,
+            ErrorCode::TooManySessions | ErrorCode::SessionQueueFull => 429,
             ErrorCode::SpawnFailed => 422,
-            ErrorCode::ShuttingDown => 503,
+            ErrorCode::ShuttingDown | ErrorCode::ThermalNogo => 503,
             ErrorCode::MethodNotAllowed => 405,
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,

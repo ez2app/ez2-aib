@@ -26,6 +26,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-cloud-host"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cloud",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-core"
 version = "0.2.0-preview.4"
 dependencies = [
@@ -42,11 +50,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-flaky"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cireuse",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-forkcount"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-procwatch",
  "serde_json",
+]
+
+[[package]]
+name = "aib-lease"
+version = "0.2.0-preview.4"
+dependencies = [
+ "base64",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -85,6 +110,10 @@ dependencies = [
  "thiserror",
  "windows-sys",
 ]
+
+[[package]]
+name = "aib-thermal"
+version = "0.2.0-preview.4"
 
 [[package]]
 name = "aib-verify"

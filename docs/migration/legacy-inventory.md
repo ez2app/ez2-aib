@@ -202,6 +202,9 @@ or cosmetic, can stay macOS-only or be dropped.
 - **AIB 2.0 replacement:** Platform Adapter `secret_store` (macOS Keychain, Windows
   Credential Manager / DPAPI), plus the hardware-key path of 3.6 for Risk 3 secrets.
   Migration reads the old vault once, behind a human approval, and never writes back.
+- **待取代(1.x 例外,凍結中):** `aib secret ask --generate`(#588, 2026-11-09;a63ab 裁為「已在用的修補」
+  窄例外:視窗內產生 28 字密碼 + 剪貼簿,只給 `--remote-only` 的主機 root 密碼用)→ **aibd 秘密管理,Phase 4**。
+  在 aibd 的秘密管理取代之前這支不再加選項;取代時連同 `host-root.env` 這一格一起搬。
 
 ### 3.9 Paths — M
 
@@ -267,7 +270,7 @@ acceptance list (port the cases, keep the knives). Owner = who writes the Rust v
 
 | ID | Need | Closed PR | Acceptance (from the PR's tests) | Target | Owner |
 |----|------|-----------|-----------------------------------|--------|-------|
-| R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | `aib/tests/test-cooldown-reap-authority-34d15-1103.py`: 30 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
+| R1 | cooldown reaps running work only on thermal pressure or sustained heat (average 88°C), never on one spike; every reap logs its reason | [#473](https://github.com/ez2app/ez2-aib/pull/473) | [`aib/tests/test-cooldown-reap-authority-34d15-1103.py`](https://github.com/ez2app/ez2-aib/blob/9a3812eb43addd0e09579933d2bf988aba675651/aib/tests/test-cooldown-reap-authority-34d15-1103.py) (#473 head 9a3812eb4): 29 cases (A1–A21) + 12 knives | Rust thermal management (spec §16.4 self-monitoring + Platform Adapter, Phase 4) | c477a |
 
 ### R1 — cooldown reap authority
 
@@ -283,5 +286,10 @@ Why: 2026-11-03 on andymini a single sensor reading ≥ 90°C killed every runni
   two samples across a pause are not sustained (A16); panels at the same moment are one sample
   (A16b); bad shape, NaN or a corrupt file count as no history (A17, A17b).
 - Reaping still happens when logging fails or stderr is broken (A19, A19b).
+- **Intended change from 1.x (R1 PR 3 Q2, a63ab 11-10):** with pressure unreadable, the
+  fallback (A7 with no history, A15 with a gap) never reaps: one reading blocks new work at
+  most, and a reap needs the sustained rule's samples. 1.x reaped there; that is the 11-03
+  case above. Tests `a15_gap_without_pressure_falls_back` and
+  `l1_fallback_lone_spike_never_reaps` (was `l1_fallback_lone_spike_reaps_like_1x`).
 - Unfinished records are reported (A20), not double counted (A20b), not cleared by dry-run
   (A20c); summary (A21); pressure parsing (A12); i18n in four languages (A13).

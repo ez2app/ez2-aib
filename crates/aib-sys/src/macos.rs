@@ -192,6 +192,30 @@ impl Macos {
         let s: libc::proc_bsdshortinfo = pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO)?;
         Ok(s.pbsi_uid)
     }
+
+    /// G1 (043dd M1): the process's resource coalition id, through the
+    /// private `PROC_PIDCOALITIONINFO` flavor (20, `<sys/proc_info.h>` in
+    /// xnu). A process starts in its parent's coalition; launchd puts each
+    /// service it starts in its own, so a launchd-started system service is
+    /// told apart from a re-parented process of a session. Private: the
+    /// caller checks it on a pair it knows share one before trusting it.
+    pub fn coalition(&self, pid: u32) -> Result<u64, SysError> {
+        let c: ProcPidCoalitionInfo = pidinfo(pid, PROC_PIDCOALITIONINFO)?;
+        Ok(c.coalition_id[0])
+    }
+}
+
+/// `PROC_PIDCOALITIONINFO` (private, xnu `bsd/sys/proc_info.h`).
+const PROC_PIDCOALITIONINFO: c_int = 20;
+
+/// `struct proc_pidcoalitioninfo`: `coalition_id[COALITION_NUM_TYPES]`
+/// (resource, jetsam) and three reserved words, 40 bytes; the length check
+/// in [`pidinfo`] refuses any other size.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ProcPidCoalitionInfo {
+    coalition_id: [u64; 2],
+    reserved: [u64; 3],
 }
 
 /// What a list call returns: `proc_listpids` counts bytes,
@@ -542,6 +566,23 @@ mod tests {
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
         assert_eq!(Macos.euid(me), Ok(uid));
+    }
+
+    /// G1: a child starts in our coalition, and the id is not zero; a pid
+    /// that does not exist is `Gone`.
+    #[test]
+    fn a_child_shares_our_coalition() {
+        let mine = Macos.coalition(me()).unwrap();
+        assert_ne!(mine, 0);
+        let mut c = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let got = Macos.coalition(c.id());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(got, Ok(mine));
+        assert_eq!(Macos.coalition(i32::MAX as u32), Err(SysError::Gone));
     }
 
     /// 043dd K10: a failed size query is an error even if the fill works.

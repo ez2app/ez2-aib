@@ -20,13 +20,22 @@
 //!   events and logs name only `argv[0]`'s file name and the argument count.
 //!   `argv` is returned by GET (the caller gave it; the API is token-only).
 //!
+//! - **Queue (ADR 0005 §5).** A POST when every slot is taken (or others are
+//!   already waiting) is not refused: the session is `pending` (202, no
+//!   process, `pid` 0, `session.queued`) and starts in arrival order (FIFO)
+//!   as slots come back. At most [`MAX_QUEUE`] wait; the next POST is `429
+//!   session_queue_full`. DELETE of a pending session takes it out of the
+//!   queue (`cancelled`, never started). At shutdown the waiting ones end
+//!   `interrupted` (`ended_by: shutdown`); after a crash the next start marks
+//!   them `interrupted` from the store (nothing is started from an old queue).
+//!
 //! Blocking calls (spawn, stop, the event store) run on blocking threads.
 
 use crate::allowlist::{self, SessionPolicy};
 use crate::api::AppState;
 use crate::guard::{self, error_response};
 use crate::lineage::Lineage;
-use crate::platform::session::{Running, SpawnFn, Spec, Stop};
+use crate::platform::session::{CandidateDiag, Running, SpawnFn, Spec, Stop};
 use aib_core::ErrorCode;
 use aib_store::{NewEvent, SessionRow, Store};
 use axum::body::Body;
@@ -48,6 +57,9 @@ pub const MAX_ENV: usize = 32;
 pub const MAX_ENV_VALUE: usize = 4096;
 /// Ended sessions kept in memory for GET (not persisted).
 pub const KEEP_ENDED: usize = 100;
+/// Sessions that may wait for a slot (ADR 0005 §5, trial value; a63ab 19:13). The next
+/// one is `429 session_queue_full`.
+pub const MAX_QUEUE: usize = 64;
 pub const DEFAULT_GRACE: Duration = Duration::from_millis(5000);
 pub const MAX_GRACE_MS: u64 = 30_000;
 /// The one stop after the root exited by itself, and each stop at shutdown.
@@ -101,6 +113,10 @@ pub struct StopView {
     pub tree_size: usize,
     pub signals: Vec<SignalView>,
     pub blind_spots: Vec<&'static str>,
+    /// F (1ced7 11-09): the late-exec candidate check behind `reason`
+    /// (count, how many only the widened orphan check added, unreadable
+    /// pid + process name). macOS only; zero / empty elsewhere.
+    pub candidates: CandidateDiag,
 }
 
 impl StopView {
@@ -119,6 +135,7 @@ impl StopView {
                 })
                 .collect(),
             blind_spots: s.blind_spots.clone(),
+            candidates: s.candidates.clone(),
         }
     }
 }
@@ -132,19 +149,48 @@ pub struct Session {
     pub seat_id: Option<String>,
     pub argv: Vec<String>,
     pub cwd: String,
+    /// 0 while `pending` (and for a queued start that failed).
     pub pid: u32,
+    /// When it was accepted while `pending`; when its process started after.
     pub started_at: String,
-    /// `running` | `exited` | `killed` | `stop_unconfirmed` (H2).
+    /// `pending` (queued, no process yet) | `running` | `exited` | `killed` |
+    /// `stop_unconfirmed` (H2) | `cancelled` (DELETE while pending) | `interrupted`
+    /// (pending at shutdown) | `failed` (a queued start that could not start).
     pub state: &'static str,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
     pub ended_at: Option<String>,
-    /// `root_exit` | `api` | `shutdown`.
+    /// `root_exit` | `api` | `shutdown` | `spawn_failed`.
     pub ended_by: Option<&'static str>,
     /// Still counts against the running limit: running, or a stop that could
     /// not show the tree is gone (H2 whitelist). DELETE again to re-check.
     pub holds_slot: bool,
     pub stop: Option<StopView>,
+    /// While `pending` (043dd M2): its place in the queue now (1 = next), and
+    /// the sessions holding the slots it waits for. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<QueueView>,
+}
+
+/// Where a pending session stands (GET only; computed when read).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct QueueView {
+    pub position: usize,
+    pub slots: usize,
+    /// Every session holding a slot: id, state and, for a stop that kept
+    /// the slot, its reason (`candidates_unreadable` ...). A slot whose
+    /// process could not be confirmed after a failed start has no session
+    /// and shows in `held_unknown`.
+    pub held_by: Vec<SlotHolder>,
+    pub held_unknown: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SlotHolder {
+    pub id: String,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// A validated POST body.
@@ -166,7 +212,14 @@ impl ApiError {
     }
 
     pub(crate) fn into_response(self) -> Response {
-        error_response(self.0, &self.1, &guard::request_id())
+        let mut r = error_response(self.0, &self.1, &guard::request_id());
+        if self.0 == ErrorCode::ThermalNogo {
+            r.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static(THERMAL_RETRY_AFTER_SECS),
+            );
+        }
+        r
     }
 }
 
@@ -369,8 +422,26 @@ struct Entry {
     rescanning: bool,
 }
 
+/// A session waiting for a slot: what is needed to start it later. Its env stays in
+/// memory only (never stored, never returned).
+struct Queued {
+    rec: Session,
+    /// `argv[0]` as the request gave it, before the M1 gate resolved it:
+    /// the gate runs again at dequeue (043dd M2-1 / ADR 0003: every spawn
+    /// resolves the real path again). `None` = started without the gate
+    /// (tests calling [`Sessions::start`] directly).
+    asked: Option<String>,
+    cwd: PathBuf,
+    env: Vec<(String, String)>,
+    /// Next event sequence (`session.queued` was 1).
+    seq: i64,
+    order: u64,
+}
+
 #[derive(Default)]
 struct Inner {
+    /// Waiting for a slot, oldest first (ADR 0005 §5).
+    queue: VecDeque<Queued>,
     /// Running sessions, and stop_unconfirmed ones still holding a slot.
     live: HashMap<String, Entry>,
     ended: VecDeque<(u64, Session)>,
@@ -380,6 +451,8 @@ struct Inner {
     /// (`SpawnFail::left_running`): their slots stay taken (H2, 043dd #539).
     held_unknown: usize,
     shutting: bool,
+    /// A dequeue thread is running (043dd L1: one at a time).
+    dequeuing: bool,
     next_order: u64,
 }
 
@@ -396,6 +469,11 @@ pub struct Sessions {
     rescan_window: Mutex<(Duration, Duration)>,
     /// M1 gate rejections, folded per token + code per minute.
     rejections: allowlist::RejectLog,
+    /// The M1 gate, run again when a queued session leaves the queue.
+    /// Set by the server ([`Sessions::set_policy`]); `None` = no re-check.
+    policy: Mutex<Option<Arc<SessionPolicy>>>,
+    /// Set once by the server ([`Sessions::set_hooks`]); unset = defaults.
+    hooks: std::sync::OnceLock<Hooks>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -427,6 +505,47 @@ fn row_of(s: &Session) -> SessionRow {
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `Retry-After` on `thermal_nogo`: the guard re-reads no faster than this.
+const THERMAL_RETRY_AFTER_SECS: &str = "600";
+
+/// What the thermal guard (ADR 0005 §1, R1 PR 3) plugs into the sessions.
+///
+/// Both are called **with the sessions lock held**: they may only read or
+/// write their own state (atomics) and must never call back into
+/// [`Sessions`], which would deadlock. To make the queue move after a NOGO
+/// ends, call [`Sessions::kick_now`] from outside the hook.
+pub struct Hooks {
+    /// `false` ⇒ no session starts: a POST answers `thermal_nogo` (not
+    /// queued) and the queue holds what it has.
+    pub launch_allowed: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// `(old, new)` count of `live` entries (running and stop_unconfirmed),
+    /// called only when it changed.
+    pub on_running_changed: Arc<dyn Fn(usize, usize) + Send + Sync>,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Hooks {
+            launch_allowed: Arc::new(|| true),
+            on_running_changed: Arc::new(|_, _| {}),
+        }
+    }
+}
+
+/// 043dd f6500f85 L1: a dequeue thread that panics must not leave
+/// `dequeuing` set, or no kick would ever start another and the queue would
+/// stand still. A normal return clears it itself, under the lock that saw
+/// nothing to do; this only acts while unwinding.
+struct DequeueGuard<'a>(&'a Mutex<Inner>);
+
+impl Drop for DequeueGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            lock(self.0).dequeuing = false;
+        }
+    }
 }
 
 impl Sessions {
@@ -462,8 +581,51 @@ impl Sessions {
             default_cwd,
             rescan_window: Mutex::new((RESCAN_WINDOW, RESCAN_PASS_MIN)),
             rejections: allowlist::RejectLog::default(),
+            policy: Mutex::new(None),
+            hooks: std::sync::OnceLock::new(),
             me: me.clone(),
         })
+    }
+
+    /// The M1 policy the queue re-checks a waiting session against when it
+    /// leaves the queue (the same one the POST gate used).
+    pub fn set_policy(&self, p: Arc<SessionPolicy>) {
+        *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+    }
+
+    /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
+    /// refused (`false`) and the first stays. Set under the sessions lock and
+    /// told the current count at once (`(0, n)` when sessions already run), so
+    /// a guard set late still hears its 0→n (a9136 3a L1).
+    pub fn set_hooks(&self, h: Hooks) -> bool {
+        let g = lock(&self.inner);
+        if self.hooks.set(h).is_err() {
+            return false;
+        }
+        self.running_changed(0, &g);
+        true
+    }
+
+    /// Caller holds the lock.
+    fn launch_allowed(&self) -> bool {
+        self.hooks.get().is_none_or(|h| (h.launch_allowed)())
+    }
+
+    /// Caller holds the lock; `old` = `live.len()` before the change.
+    fn running_changed(&self, old: usize, g: &Inner) {
+        let new = g.live.len();
+        if old != new {
+            if let Some(h) = self.hooks.get() {
+                (h.on_running_changed)(old, new);
+            }
+        }
+    }
+
+    /// Start waiting sessions now if slots are free: the thermal guard calls
+    /// this when a NOGO ends, or the queue would wait for the next slot change.
+    pub fn kick_now(&self) {
+        let mut g = lock(&self.inner);
+        self.kick(&mut g);
     }
 
     /// Test hook: a shorter background re-check window (and, since test
@@ -480,6 +642,7 @@ impl Sessions {
             .live
             .values()
             .map(|e| (e.order, e.rec.clone()))
+            .chain(g.queue.iter().map(|q| (q.order, q.rec.clone())))
             .chain(g.ended.iter().cloned())
             .collect();
         v.sort_by_key(|(o, _)| std::cmp::Reverse(*o));
@@ -488,18 +651,58 @@ impl Sessions {
 
     pub fn get(&self, id: &str) -> Option<Session> {
         let g = lock(&self.inner);
-        g.live.get(id).map(|e| e.rec.clone()).or_else(|| {
-            g.ended
-                .iter()
-                .find(|(_, s)| s.id == id)
-                .map(|(_, s)| s.clone())
-        })
+        g.live
+            .get(id)
+            .map(|e| e.rec.clone())
+            .or_else(|| {
+                let i = g.queue.iter().position(|q| q.rec.id == id)?;
+                let mut rec = g.queue[i].rec.clone();
+                rec.queue = Some(self.queue_view(&g, i + 1));
+                Some(rec)
+            })
+            .or_else(|| {
+                g.ended
+                    .iter()
+                    .find(|(_, s)| s.id == id)
+                    .map(|(_, s)| s.clone())
+            })
+    }
+
+    /// 043dd M2: what a pending session waits for, so a queue that does not
+    /// move says why (a stop that kept its slot shows its reason).
+    fn queue_view(&self, g: &Inner, position: usize) -> QueueView {
+        let mut held_by: Vec<(u64, SlotHolder)> = g
+            .live
+            .iter()
+            .map(|(id, e)| {
+                (
+                    e.order,
+                    SlotHolder {
+                        id: id.clone(),
+                        state: e.rec.state,
+                        reason: e.rec.stop.as_ref().and_then(|s| s.reason.clone()),
+                    },
+                )
+            })
+            .collect();
+        held_by.sort_by_key(|(o, _)| *o);
+        QueueView {
+            position,
+            slots: self.max,
+            held_by: held_by.into_iter().map(|(_, h)| h).collect(),
+            held_unknown: g.held_unknown,
+        }
     }
 
     /// Running slots in use (live + reserved), for tests and metrics.
     pub fn slots_in_use(&self) -> usize {
         let g = lock(&self.inner);
         g.live.len() + g.reserved + g.held_unknown
+    }
+
+    /// Sessions waiting for a slot, for tests and metrics.
+    pub fn queued(&self) -> usize {
+        lock(&self.inner).queue.len()
     }
 
     /// POST. Blocking (spawn, event store).
@@ -509,10 +712,24 @@ impl Sessions {
 
     /// POST for a seat (`POST /api/v1/seats/{id}/sessions`); the caller has
     /// checked that the seat exists (the store refuses an unknown one too).
+    /// A free slot with nobody waiting ⇒ started now (`running`); otherwise
+    /// queued (`pending`, ADR 0005 §5), or `session_queue_full`.
     pub fn start_for_seat(
         self: &Arc<Self>,
         seat_id: Option<String>,
         req: Request,
+    ) -> Result<Session, ApiError> {
+        self.start_gated(seat_id, req, None)
+    }
+
+    /// POST after the M1 gate: `asked` is `argv[0]` as the request gave it
+    /// (before [`admit`] resolved it), kept so the gate runs again if the
+    /// session has to wait (043dd M2-1).
+    pub fn start_gated(
+        self: &Arc<Self>,
+        seat_id: Option<String>,
+        req: Request,
+        asked: Option<String>,
     ) -> Result<Session, ApiError> {
         let id = new_id("s_").map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
         {
@@ -523,21 +740,101 @@ impl Sessions {
                     "aibd is shutting down",
                 ));
             }
-            if g.live.len() + g.reserved + g.held_unknown >= self.max {
+            if !self.launch_allowed() {
+                // not queued: a hot machine is not a full one (R1 PR 3)
                 return Err(ApiError::new(
-                    ErrorCode::TooManySessions,
-                    format!("{} sessions already running", self.max),
+                    ErrorCode::ThermalNogo,
+                    "the machine is too hot to start a session; try again later",
                 ));
+            }
+            // FIFO: a new POST never overtakes one that is already waiting
+            if !g.queue.is_empty() || g.live.len() + g.reserved + g.held_unknown >= self.max {
+                if g.queue.len() >= MAX_QUEUE {
+                    return Err(ApiError::new(
+                        ErrorCode::SessionQueueFull,
+                        format!("{} sessions running and {MAX_QUEUE} waiting", self.max),
+                    ));
+                }
+                let rec = self.enqueue(&mut g, id, seat_id, req, asked);
+                // 043dd L2: a free slot with a queue (its dequeue thread could
+                // not start) must not wait for the next slot change
+                self.kick(&mut g);
+                return Ok(rec);
             }
             g.reserved += 1; // H3: the slot is ours before anything starts
         }
         let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
         let spec = Spec {
-            id: id.clone(),
+            id,
             argv: req.argv,
             cwd,
             env: req.env,
         };
+        self.launch(spec, seat_id, None)
+    }
+
+    /// Put a session in the queue (the caller holds the lock and checked the bound).
+    fn enqueue(
+        &self,
+        g: &mut Inner,
+        id: String,
+        seat_id: Option<String>,
+        req: Request,
+        asked: Option<String>,
+    ) -> Session {
+        let order = g.next_order;
+        g.next_order += 1;
+        let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
+        let rec = Session {
+            id: id.clone(),
+            seat_id,
+            argv: req.argv,
+            cwd: cwd.to_string_lossy().into_owned(),
+            pid: 0,
+            started_at: now_rfc3339(),
+            state: "pending",
+            exit_code: None,
+            signal: None,
+            ended_at: None,
+            ended_by: None,
+            holds_slot: false,
+            stop: None,
+            queue: None,
+        };
+        let position = g.queue.len() + 1;
+        self.write(
+            &rec,
+            1,
+            "session.queued",
+            serde_json::json!({
+                "id": id,
+                "position": position,
+                "argv0": Path::new(&rec.argv[0]).file_name().map(|n| n.to_string_lossy().into_owned()),
+                "argc": rec.argv.len(),
+            }),
+        );
+        tracing::info!(session = %id, position, "session queued");
+        g.queue.push_back(Queued {
+            rec: rec.clone(),
+            asked,
+            cwd,
+            env: req.env,
+            seq: 2,
+            order,
+        });
+        rec
+    }
+
+    /// Start a session whose slot is already reserved: a POST with a free
+    /// slot (`queued` = `None`), or the head of the queue (its order and next
+    /// event sequence).
+    fn launch(
+        self: &Arc<Self>,
+        spec: Spec,
+        seat_id: Option<String>,
+        queued: Option<(u64, i64)>,
+    ) -> Result<Session, ApiError> {
+        let id = spec.id.clone();
         let res = (self.spawn)(&spec, self.lineage.clone());
         let mut g = lock(&self.inner);
         g.reserved -= 1;
@@ -545,33 +842,64 @@ impl Sessions {
         let mut run = match res {
             Ok(r) => r,
             Err(f) => {
-                let Some(pid) = f.left_running else {
-                    return Err(ApiError::new(
-                        ErrorCode::SpawnFailed,
-                        format!("could not start: {}", f.tag),
-                    ));
-                };
-                // started but neither under control nor confirmed gone: the
-                // slot stays taken and the event says so (never "not started")
-                g.held_unknown += 1;
-                self.append(
-                    &id,
-                    1,
-                    "session.spawn_failed",
-                    serde_json::json!({"id": id, "tag": f.tag, "left_running": pid}),
-                );
-                tracing::warn!(session = %id, pid, tag = %f.tag, "start failed, a process may be left running");
+                if f.left_running.is_some() {
+                    // started but neither under control nor confirmed gone:
+                    // the slot stays taken (never "not started")
+                    g.held_unknown += 1;
+                } else {
+                    // the slot is free again: the next waiting one may start
+                    self.kick(&mut g);
+                }
+                let mut payload = serde_json::json!({"id": id, "tag": f.tag});
+                if let Some(pid) = f.left_running {
+                    payload["left_running"] = pid.into();
+                    tracing::warn!(session = %id, pid, tag = %f.tag, "start failed, a process may be left running");
+                }
+                if let Some((order, seq)) = queued {
+                    // nobody waits for this answer: the session itself ends
+                    // `failed`, on its row and in the recent list
+                    let rec = Session {
+                        id: id.clone(),
+                        seat_id,
+                        argv: spec.argv.clone(),
+                        cwd: spec.cwd.to_string_lossy().into_owned(),
+                        pid: 0,
+                        started_at: now_rfc3339(),
+                        state: "failed",
+                        exit_code: None,
+                        signal: None,
+                        ended_at: Some(now_rfc3339()),
+                        ended_by: Some("spawn_failed"),
+                        holds_slot: f.left_running.is_some(),
+                        stop: None,
+                        queue: None,
+                    };
+                    self.write(&rec, seq, "session.spawn_failed", payload);
+                    g.ended.push_front((order, rec));
+                    g.ended.truncate(KEEP_ENDED);
+                } else if f.left_running.is_some() {
+                    self.append(&id, 1, "session.spawn_failed", payload);
+                }
                 return Err(ApiError::new(
                     ErrorCode::SpawnFailed,
-                    format!(
-                        "could not start: {} (a process may be left running: pid {pid})",
-                        f.tag
-                    ),
+                    match f.left_running {
+                        Some(pid) => format!(
+                            "could not start: {} (a process may be left running: pid {pid})",
+                            f.tag
+                        ),
+                        None => format!("could not start: {}", f.tag),
+                    },
                 ));
             }
         };
-        let order = g.next_order;
-        g.next_order += 1;
+        let (order, seq) = match queued {
+            Some(q) => q,
+            None => {
+                let o = g.next_order;
+                g.next_order += 1;
+                (o, 1)
+            }
+        };
         let rec = Session {
             id: id.clone(),
             seat_id,
@@ -586,21 +914,24 @@ impl Sessions {
             ended_by: None,
             holds_slot: true,
             stop: None,
+            queue: None,
         };
         let exit_wait = run.exit_wait();
         let output = run.take_output();
         let shutting = g.shutting;
+        let old = g.live.len();
         g.live.insert(
             id.clone(),
             Entry {
                 rec: rec.clone(),
                 run: Arc::new(Mutex::new(run)),
                 stopping: shutting,
-                seq: 1,
+                seq,
                 order,
                 rescanning: false,
             },
         );
+        self.running_changed(old, &g);
         self.event(
             &mut g,
             &id,
@@ -653,6 +984,118 @@ impl Sessions {
             return Err(ApiError::new(ErrorCode::Internal, "internal error"));
         }
         Ok(rec)
+    }
+
+    /// A slot may have come back: start waiting sessions on their own thread
+    /// (the caller holds the lock). Nothing to do with an empty queue.
+    fn kick(&self, g: &mut Inner) {
+        // 043dd L1: one dequeue thread at a time; a running one re-reads the
+        // queue and the free slots after every start, so it sees this change
+        if g.queue.is_empty() || g.shutting || g.dequeuing {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("aibd-session-dequeue".into())
+            .spawn(move || me.dequeue());
+        match spawned {
+            Ok(_) => g.dequeuing = true,
+            // the next slot change or POST kicks again
+            Err(_) => tracing::warn!("could not start the dequeue thread"),
+        }
+    }
+
+    /// Start waiting sessions, oldest first, while slots are free. Each slot
+    /// is reserved under the lock before its spawn (H3, as a POST).
+    fn dequeue(self: &Arc<Self>) {
+        let _guard = DequeueGuard(&self.inner);
+        loop {
+            let q = {
+                let mut g = lock(&self.inner);
+                if g.shutting
+                    || g.live.len() + g.reserved + g.held_unknown >= self.max
+                    || !self.launch_allowed()
+                {
+                    g.dequeuing = false; // under the lock that checked: a kick after this starts a new one
+                    return;
+                }
+                let Some(q) = g.queue.pop_front() else {
+                    g.dequeuing = false;
+                    return;
+                };
+                g.reserved += 1;
+                q
+            };
+            let argv = match self.regate(&q) {
+                Ok(argv) => argv,
+                Err(code) => {
+                    self.refuse_queued(q, code);
+                    continue;
+                }
+            };
+            let spec = Spec {
+                id: q.rec.id.clone(),
+                argv,
+                cwd: q.cwd,
+                env: q.env,
+            };
+            // errors are recorded on the session itself (`failed`)
+            let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));
+        }
+    }
+
+    /// 043dd M2-1 (ADR 0003: every spawn resolves the real path again): the
+    /// M1 gate once more on what the request asked for, now that the session
+    /// leaves the queue. The argv to start (with `argv[0]` resolved again), or
+    /// the refusal's code (audited as at the POST).
+    fn regate(&self, q: &Queued) -> Result<Vec<String>, ErrorCode> {
+        let policy = self
+            .policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (Some(p), Some(asked)) = (policy, q.asked.as_ref()) else {
+            return Ok(q.rec.argv.clone());
+        };
+        let mut argv = q.rec.argv.clone();
+        argv[0] = asked.clone();
+        let req = Request {
+            argv,
+            cwd: None,
+            env: q.env.clone(),
+        };
+        match admit(req, &p) {
+            Ok(r) => Ok(r.argv),
+            Err(r) => {
+                self.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
+                Err(r.error.0)
+            }
+        }
+    }
+
+    /// A queued session the gate refused at dequeue: it ends `failed`
+    /// (`ended_by: policy_refused`), its reserved slot is given back, and the
+    /// next one may start.
+    fn refuse_queued(&self, q: Queued, code: ErrorCode) {
+        let mut g = lock(&self.inner);
+        g.reserved -= 1;
+        self.cv.notify_all();
+        let mut rec = q.rec;
+        rec.state = "failed";
+        rec.ended_at = Some(now_rfc3339());
+        rec.ended_by = Some("policy_refused");
+        let id = rec.id.clone();
+        tracing::warn!(session = %id, code = code.as_str(), "queued session refused by the M1 gate at start");
+        self.write(
+            &rec,
+            q.seq,
+            "session.spawn_failed",
+            serde_json::json!({"id": id, "tag": "policy_refused", "code": code.as_str()}),
+        );
+        g.ended.push_front((q.order, rec));
+        g.ended.truncate(KEEP_ENDED);
     }
 
     /// Mark a live session as being stopped; `None` if it is not live or a
@@ -727,24 +1170,31 @@ impl Sessions {
                 "session.killed",
                 serde_json::json!({"id": id, "ended_by": by, "stop_status": stop.status.as_str(),
                     "reason": stop.status.reason(), "survivors": stop.survivors,
-                    "tree_size": stop.tree_size}),
+                    "tree_size": stop.tree_size, "candidates": stop.candidates}),
             ),
             _ => (
                 "session.stop_unconfirmed",
                 serde_json::json!({"id": id, "ended_by": by, "exit_code": rec.exit_code,
                     "signal": rec.signal, "stop_status": stop.status.as_str(),
                     "reason": stop.status.reason(), "survivors": stop.survivors,
-                    "tree_size": stop.tree_size, "blind_spots": stop.blind_spots}),
+                    "tree_size": stop.tree_size, "blind_spots": stop.blind_spots,
+                    "candidates": stop.candidates}),
             ),
         };
         self.event(&mut g, id, kind, payload);
         tracing::info!(session = %id, state = rec.state, ended_by = by,
-            stop = stop.status.as_str(), survivors = stop.survivors.len(), "session stop");
+            stop = stop.status.as_str(), survivors = stop.survivors.len(),
+            candidates = stop.candidates.count, orphan_extra = stop.candidates.orphan_extra,
+            unreadable = ?stop.candidates.unreadable,
+            other_coalition = ?stop.candidates.other_coalition, "session stop");
         if stop.releases_slot() {
+            let old = g.live.len();
             if let Some(e) = g.live.remove(id) {
                 g.ended.push_front((e.order, e.rec));
                 g.ended.truncate(KEEP_ENDED);
             }
+            self.running_changed(old, &g);
+            self.kick(&mut g);
         } else if worth_rescanning(&stop) && !g.shutting {
             // nothing known alive, but the stop could not look everywhere
             // (candidates_unreadable): re-check in the background
@@ -964,19 +1414,33 @@ impl Sessions {
                     serde_json::json!({"id": id, "reason": stop.status.reason(), "tries": tries}),
                 );
                 tracing::info!(session = %id, tries, "slot released after re-check");
+                let old = g.live.len();
                 if let Some(e) = g.live.remove(id) {
                     g.ended.push_front((e.order, e.rec));
                     g.ended.truncate(KEEP_ENDED);
                 }
+                self.running_changed(old, g);
+                self.kick(g);
             }
             None => {
+                // F: the last pass's candidate check (the record keeps it)
+                let cand = g
+                    .live
+                    .get(id)
+                    .and_then(|e| e.rec.stop.as_ref())
+                    .map(|s| s.candidates.clone())
+                    .unwrap_or_default();
+                tracing::warn!(session = %id, tries, reason = ?last,
+                    candidates = cand.count, orphan_extra = cand.orphan_extra,
+                    unreadable = ?cand.unreadable,
+                    other_coalition = ?cand.other_coalition, "slot still held after re-check");
                 self.event(
                     g,
                     id,
                     "session.slot_held",
-                    serde_json::json!({"id": id, "reason": last, "tries": tries}),
+                    serde_json::json!({"id": id, "reason": last, "tries": tries,
+                        "candidates": cand}),
                 );
-                tracing::warn!(session = %id, tries, reason = ?last, "slot still held after re-check");
             }
         }
         self.cv.notify_all();
@@ -989,6 +1453,26 @@ impl Sessions {
         let run = {
             let mut g = lock(&self.inner);
             loop {
+                if let Some(i) = g.queue.iter().position(|q| q.rec.id == id) {
+                    // waiting: out of the queue, never started (no tree to stop)
+                    let Some(q) = g.queue.remove(i) else {
+                        return Err(not_found());
+                    };
+                    let mut rec = q.rec;
+                    rec.state = "cancelled";
+                    rec.ended_at = Some(now_rfc3339());
+                    rec.ended_by = Some("api");
+                    self.write(
+                        &rec,
+                        q.seq,
+                        "session.cancelled",
+                        serde_json::json!({"id": id, "previous_state": "pending"}),
+                    );
+                    tracing::info!(session = %id, "queued session cancelled");
+                    g.ended.push_front((q.order, rec.clone()));
+                    g.ended.truncate(KEEP_ENDED);
+                    return Ok(rec);
+                }
                 if let Some(e) = g.live.get_mut(id) {
                     if !e.stopping {
                         // running, or stop_unconfirmed with survivors: stop
@@ -1026,6 +1510,24 @@ impl Sessions {
         let deadline = Instant::now() + SHUTDOWN_CAP;
         let mut g = lock(&self.inner);
         g.shutting = true;
+        // nothing waiting starts any more: each ends `interrupted` (its row too,
+        // so the next start has nothing pending to mark)
+        let waiting: Vec<Queued> = g.queue.drain(..).collect();
+        for q in waiting {
+            let mut rec = q.rec;
+            rec.state = "interrupted";
+            rec.ended_at = Some(now_rfc3339());
+            rec.ended_by = Some("shutdown");
+            self.write(
+                &rec,
+                q.seq,
+                "session.interrupted",
+                serde_json::json!({"id": rec.id, "reason": "shutdown",
+                    "previous_state": "pending", "processes_may_remain": false}),
+            );
+            g.ended.push_front((q.order, rec));
+        }
+        g.ended.truncate(KEEP_ENDED);
         // A POST still spawning is not in `live` yet: it sees `shutting` when
         // its spawn returns and stops its own tree; the wait below counts its
         // reservation until that stop is recorded.
@@ -1099,7 +1601,14 @@ impl Sessions {
         };
         let seq = e.seq;
         e.seq += 1;
-        let row = row_of(&e.rec);
+        self.write(&e.rec, seq, kind, payload);
+    }
+
+    /// One event of a session with its current row, in one transaction (a live
+    /// session through [`Self::event`], a queued or ended one directly).
+    fn write(&self, rec: &Session, seq: i64, kind: &str, payload: serde_json::Value) {
+        let id = rec.id.as_str();
+        let row = row_of(rec);
         let ev = NewEvent {
             event_id: new_id("ev_").unwrap_or_else(|_| format!("ev_{id}_{seq}")),
             aggregate_type: "session".into(),
@@ -1300,11 +1809,12 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
 
 /// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
 /// is audited.
-async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
+async fn gate(st: &AppState, req: Request) -> Result<(Request, Option<String>), ApiError> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
+    let asked = req.argv.first().cloned();
     let run = move || {
-        admit(req, &policy).map_err(|r| {
+        admit(req, &policy).map(|r| (r, asked)).map_err(|r| {
             audit.record_rejection(Instant::now(), TOKEN_ID_STARTUP, r.error.0, &r.program);
             r.error
         })
@@ -1316,18 +1826,27 @@ async fn gate(st: &AppState, req: Request) -> Result<Request, ApiError> {
     }
 }
 
+/// 201 for a started session, 202 for one waiting in the queue (ADR 0005 §5).
+fn created_or_queued(rec: &Session) -> StatusCode {
+    if rec.state == "pending" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::CREATED
+    }
+}
+
 pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
     let req = match read_valid(&st, &headers, body).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let req = match gate(&st, req).await {
+    let (req, asked) = match gate(&st, req).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start(req)).await {
-        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+    match tokio::task::spawn_blocking(move || s.start_gated(None, req, asked)).await {
+        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
@@ -1357,13 +1876,13 @@ pub async fn create_for_seat(
     }
     // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
     // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
-    let req = match gate(&st, req).await {
+    let (req, asked) = match gate(&st, req).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_for_seat(Some(seat), req)).await {
-        Ok(Ok(rec)) => (StatusCode::CREATED, Json(rec)).into_response(),
+    match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
+        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
@@ -1504,6 +2023,28 @@ pub async fn method_not_allowed() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 043dd f6500f85 L1: a dequeue thread that panics clears `dequeuing`
+    /// (the next kick starts a new one); a normal drop leaves it to the
+    /// loop, which clears it under its own lock.
+    #[test]
+    fn a_dequeue_thread_that_panics_does_not_stop_the_queue() {
+        let m = Arc::new(Mutex::new(Inner {
+            dequeuing: true,
+            ..Inner::default()
+        }));
+        let m2 = m.clone();
+        let r = std::thread::spawn(move || {
+            let _g = DequeueGuard(&m2);
+            panic!("dequeue thread panics");
+        })
+        .join();
+        assert!(r.is_err());
+        assert!(!lock(&m).dequeuing, "a panic left the queue stopped");
+        lock(&m).dequeuing = true;
+        drop(DequeueGuard(&m));
+        assert!(lock(&m).dequeuing, "a normal end is the loop's to clear");
+    }
 
     // absolute on the platform the test runs on (validation only, nothing
     // is started): "/bin/true" is not absolute on Windows
@@ -1749,5 +2290,23 @@ mod tests {
             validate(&vec![b' '; MAX_BODY + 1]).unwrap_err().0,
             ErrorCode::PayloadTooLarge
         );
+    }
+
+    /// R1 PR 3a: a NOGO answer tells the client when to try again.
+    #[test]
+    fn a_thermal_nogo_answers_503_with_retry_after() {
+        let r = ApiError::new(ErrorCode::ThermalNogo, "hot").into_response();
+        assert_eq!(r.status().as_u16(), 503);
+        assert_eq!(
+            r.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some(THERMAL_RETRY_AFTER_SECS)
+        );
+        let other = ApiError::new(ErrorCode::ShuttingDown, "x").into_response();
+        assert!(other
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none());
     }
 }
