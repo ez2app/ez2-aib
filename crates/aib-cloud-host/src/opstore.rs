@@ -694,6 +694,12 @@ pub fn run_op_prepared<P, T>(
     prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
     change: impl FnOnce(&str, P) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
+    // only the two standing approvals exist until one-time approvals come with the remote
+    // CLI: anything else — empty, misspelt — is refused, so no string slips past the
+    // customer-key allowlist by not looking like the customer key (c477a #635 seg. 2 L3)
+    if approval != BY_LOCAL_ROOT && approval != BY_CUSTOMER_KEY {
+        return Err(format!("approval {approval:?} is not a known approval"));
+    }
     if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {
         return Err(format!("{command} cannot be approved by a customer key"));
     }
@@ -1619,6 +1625,32 @@ mod tests {
         .unwrap();
         // standing approvals never look like a nonce
         assert!(BY_LOCAL_ROOT.starts_with("standing-") && BY_CUSTOMER_KEY.starts_with("standing-"));
+        // and nothing else is an approval: a near miss is not a way round the allowlist
+        for other in [
+            "",
+            "standing-customer-ke",
+            "customer-key",
+            "local-root",
+            "Standing-Local-Root",
+        ] {
+            let err = run_op(
+                &pl,
+                "site.restore",
+                "site:site2",
+                &json!({}),
+                other,
+                1_794_300_060,
+                |_| {
+                    ran = true;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("not a known approval") && !ran,
+                "{other:?}: {err}"
+            );
+        }
     }
 
     #[test]
