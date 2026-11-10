@@ -283,7 +283,7 @@ fn a_set_inside_a_function_body_does_not_leak_out() {
          cp -a /etc/a /etc/a.prev\n\
          install -m 0755 /tmp/n /usr/local/sbin/n\n",
     );
-    let s2 = of(&t, "S2");
-    // only the `set +e` itself, inside the body
-    assert_eq!(s2, vec![5]);
+    // the body checks each step; the two lines after the definition run with set -e on
+    assert_eq!(of(&t, "S2"), Vec::<usize>::new());
+    assert_eq!(of(&t, "S3"), Vec::<usize>::new());
 }
