@@ -10,22 +10,38 @@ use serde_json::{json, Value};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-/// seat_now `_stamp`: `MM-DD HH:MM` in local time.
-pub fn stamp(epoch: u64) -> String {
-    let t = epoch as libc::time_t;
-    // SAFETY: localtime_r writes into the zeroed struct we own; both pointers are valid.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    format!(
-        "{:02}-{:02} {:02}:{:02}",
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min
-    )
+/// seat_now `_stamp`: `MM-DD HH:MM` in local time (the TZ this process runs in, like Python's
+/// `time.localtime`). Read from `date(1)` so the crate stays free of `unsafe` (workspace
+/// `unsafe_code = "forbid"`; localtime_r is the only libc way). BSD / macOS take `-r EPOCH`;
+/// GNU takes `-d @EPOCH` (its `-r` names a file, so the form is picked by the target).
+pub fn stamp(epoch: u64) -> Result<String, String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let args = ["-d".to_string(), format!("@{epoch}")];
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let args = ["-r".to_string(), epoch.to_string()];
+    let out = std::process::Command::new("date")
+        .args(args)
+        .arg("+%m-%d %H:%M")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("date: {e}"))?;
+    let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    let b = s.as_bytes();
+    let shape = b.len() == 11
+        && b.iter().enumerate().all(|(i, c)| match i {
+            2 => *c == b'-',
+            5 => *c == b' ',
+            8 => *c == b':',
+            _ => c.is_ascii_digit(),
+        });
+    if out.status.success() && shape {
+        Ok(s)
+    } else {
+        Err(format!("date gave {s:?} for {epoch}"))
+    }
 }
 
 fn replace(path: &Path, payload: &[u8]) -> std::io::Result<()> {
@@ -63,10 +79,12 @@ pub fn refresh(state: &Path, seat: &str, now: u64) -> Result<(), String> {
         .get("at")
         .and_then(Value::as_u64)
         .ok_or("the aib now record has no time")?;
+    // both times before anything is written: if `date` fails, neither file changes
+    let (old_s, new_s) = (stamp(old)?, stamp(now)?);
     // the folder lock atomic_json takes, so a concurrent `aib now` is not overwritten half-way
     let d = File::open(&dir).map_err(|e| e.to_string())?;
-    // SAFETY: flock on a descriptor we own; released when `d` is closed.
-    if unsafe { libc::flock(d.as_raw_fd(), libc::LOCK_EX) } != 0 {
+    // flock(LOCK_EX) on the folder, released when `d` is closed
+    if d.lock().is_err() {
         return Err("could not lock the seat-now folder".into());
     }
     // re-read inside the lock: `aib now` may have just written
@@ -82,13 +100,13 @@ pub fn refresh(state: &Path, seat: &str, now: u64) -> Result<(), String> {
     drop(d);
     let lpath = dir.join(format!("{seat}.line"));
     let line = std::fs::read_to_string(&lpath).map_err(|_| "no status line file".to_string())?;
-    let (body, old_s) = (line.trim_end_matches('\n'), stamp(old));
+    let body = line.trim_end_matches('\n');
     if !body.ends_with(&old_s) || body.matches(&old_s).count() != 1 {
         return Err(format!(
             "the status line does not end with its time {old_s}; left as it is"
         ));
     }
-    let new_line = format!("{}{}\n", &body[..body.len() - old_s.len()], stamp(now));
+    let new_line = format!("{}{}\n", &body[..body.len() - old_s.len()], new_s);
     replace(&lpath, new_line.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -122,7 +140,7 @@ mod tests {
                          "state": "reply", "steps_done": 1, "steps_total": 5});
         let line = format!(
             "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
-            stamp(old)
+            stamp(old).expect("stamp")
         );
         let (_t, p) = setup(rec.clone(), &line);
         let now = old + 3600;
@@ -135,7 +153,7 @@ mod tests {
             read(&p, "line"),
             format!(
                 "📌【等回應】B9 開工 | 1/5 STEP > 進度:20% | 更新：{}\n",
-                stamp(now)
+                stamp(now).expect("stamp")
             )
         );
     }

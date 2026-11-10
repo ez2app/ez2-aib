@@ -26,7 +26,6 @@ use serde_json::{json, Value};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -207,7 +206,7 @@ fn commit_exists(repo: &Path, sha: &str) -> bool {
     loop {
         match child.try_wait() {
             Ok(Some(st)) => return st.success(),
-            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if Instant::now() < until => pause(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -271,23 +270,27 @@ fn now_s() -> u64 {
         .unwrap_or(0)
 }
 
-/// An exclusive flock on `fd`, retried without blocking until `timeout` (atomic_json `_acquire`).
-fn flock_ex(fd: &impl AsRawFd, timeout: Duration) -> Result<(), &'static str> {
+/// ADR 0005 named exception: a short wait in a one-shot CLI (a lock retry, a child poll,
+/// the test-only `hold`); never a loop in aibd, never longer than the caller's timeout.
+fn pause(d: Duration) {
+    #[allow(clippy::disallowed_methods)]
+    std::thread::sleep(d);
+}
+
+/// An exclusive flock on `f`, retried without blocking until `timeout` (atomic_json `_acquire`).
+/// `File::try_lock` is flock(LOCK_EX | LOCK_NB) on Unix, the same lock Python's fcntl.flock takes.
+fn flock_ex(f: &File, timeout: Duration) -> Result<(), &'static str> {
     let until = Instant::now() + timeout;
     loop {
-        // SAFETY: flock on a descriptor this process owns; no memory is passed.
-        let rc = unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(());
-        }
-        let e = std::io::Error::last_os_error().raw_os_error();
-        if e != Some(libc::EWOULDBLOCK) && e != Some(libc::EAGAIN) && e != Some(libc::EACCES) {
-            return Err("lock failed");
+        match f.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(_)) => return Err("lock failed"),
         }
         if Instant::now() >= until {
             return Err("lock_timeout");
         }
-        std::thread::sleep(Duration::from_millis(10));
+        pause(Duration::from_millis(10));
     }
 }
 
@@ -296,10 +299,7 @@ struct Held(File);
 
 impl Drop for Held {
     fn drop(&mut self) {
-        // SAFETY: unlocking a descriptor this value owns.
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
+        let _ = self.0.unlock();
     }
 }
 
@@ -630,7 +630,7 @@ pub fn close_with(
             ))
         }
     }
-    std::thread::sleep(hold);
+    pause(hold);
     // Python `_upgrade_item` fills the v2 fields an item lacks before it writes the item back
     if let Some(o) = item.as_object_mut() {
         for (k, d) in V2_DEFAULTS {
