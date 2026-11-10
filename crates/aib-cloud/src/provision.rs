@@ -846,33 +846,50 @@ fn parse_step(v: &Value, index: usize, out: &mut Vec<Finding>) -> Option<Step> {
     })
 }
 
-/// Every piece of text in a step, with `true` for text that a shell will read.
-fn step_texts(step: &Step) -> Vec<(&str, bool)> {
-    fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, bool)>) {
+/// How a piece of a step's text is used.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// Read by a person (title, instructions, expectations, paths in words).
+    Prose,
+    /// One argument of a command.
+    Argv,
+    /// A shell line.
+    Shell,
+}
+
+/// A value that names the root directory however it is spelled: `/`, `//`, `/.`, `/./`.
+/// Inside a shell line `chown -R x {{dir}}/*` with such a value reaches everything.
+fn is_root(value: &str) -> bool {
+    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')
+}
+
+/// Every piece of text in a step, with how it is used.
+fn step_texts(step: &Step) -> Vec<(&str, Use)> {
+    fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, Use)>) {
         match c {
             Command::Argv(args) => {
                 for a in args {
                     if let Arg::Text(t) = a {
-                        texts.push((t, false));
+                        texts.push((t, Use::Argv));
                     }
                 }
             }
             Command::Shell { sh, why } => {
-                texts.push((sh, true));
-                texts.push((why, false));
+                texts.push((sh, Use::Shell));
+                texts.push((why, Use::Prose));
             }
         }
     }
-    let mut texts: Vec<(&str, bool)> = Vec::new();
-    texts.push((&step.title, false));
+    let mut texts: Vec<(&str, Use)> = Vec::new();
+    texts.push((&step.title, Use::Prose));
     for c in &step.apply {
         command(c, &mut texts);
     }
-    texts.extend(step.instructions.iter().map(|t| (t.as_str(), false)));
+    texts.extend(step.instructions.iter().map(|t| (t.as_str(), Use::Prose)));
     for v in &step.verify {
         command(&v.run, &mut texts);
         if let Expect::Eq(s) | Expect::Contains(s) = &v.expect {
-            texts.push((s, false));
+            texts.push((s, Use::Prose));
         }
     }
     match &step.recovery {
@@ -881,11 +898,11 @@ fn step_texts(step: &Step) -> Vec<(&str, bool)> {
                 command(c, &mut texts);
             }
         }
-        Recovery::Rescue(path) | Recovery::Unsupported(path) => texts.push((path, false)),
+        Recovery::Rescue(path) | Recovery::Unsupported(path) => texts.push((path, Use::Prose)),
         Recovery::None => {}
     }
     for t in [&step.destroys, &step.consent].into_iter().flatten() {
-        texts.push((t, false));
+        texts.push((t, Use::Prose));
     }
     texts
 }
@@ -973,7 +990,7 @@ fn check_texts(
         step: step.id.as_str(),
         out,
     };
-    for (text, in_shell) in step_texts(step) {
+    for (text, used) in step_texts(step) {
         match placeholders(text) {
             Ok(names) => {
                 for name in names {
@@ -981,11 +998,11 @@ fn check_texts(
                         None => sink.add("P07", format!("{{{{{name}}}}} is not defined in vars")),
                         // a value that starts with '-' is read as an option by whatever
                         // program receives it
-                        Some((_, value)) if value.starts_with('-') => sink.add(
+                        Some((_, value)) if used != Use::Prose && value.starts_with('-') => sink.add(
                             "P07",
                             format!("{{{{{name}}}}}: a value that starts with '-' would be read as an option"),
                         ),
-                        Some((_, value)) if in_shell && (!shell_plain(value) || value == "/") => sink.add(
+                        Some((_, value)) if used == Use::Shell && (!shell_plain(value) || is_root(value)) => sink.add(
                             "P07",
                             format!("{{{{{name}}}}} is used in a shell command but its value is not plain"),
                         ),
@@ -1386,6 +1403,30 @@ mod tests {
         assert_eq!(codes(&with_dir(&sh, "/")), ["P07"]);
         // as one whole argument the root directory is what the spec says, not an accident
         assert!(lint(&with_dir(&argv, "/")).is_ok());
+    }
+
+    /// Review of the #619 stack (ebb36): L1 the root directory has more than one
+    /// spelling; N1 a value starting with '-' matters where a program reads it, not in a
+    /// title or a consent sentence.
+    #[test]
+    fn root_spellings_and_dashes_in_prose() {
+        let sh = json!([{ "sh": "chown -R www-data {{dir}}/*", "why": "glob" }]);
+        for dir in ["/", "//", "/.", "/./", "/..", "///"] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert_eq!(codes(&v), ["P07"], "{dir:?}");
+        }
+        for dir in ["/srv", "/srv/.", "/.well-known", "./x"] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert!(lint(&v).is_ok(), "{dir:?}");
+        }
+        let mut v = with(1, "title", json!("tier {{tier}}"));
+        v["vars"]["tier"] = json!("-pro");
+        assert!(lint(&v).is_ok());
+        let mut v = with(1, "apply", json!([["echo", "{{tier}}"]]));
+        v["vars"]["tier"] = json!("-pro");
+        assert_eq!(codes(&v), ["P07"]);
     }
 
     /// A value is never read again after it is filled in (review of #619, L2).

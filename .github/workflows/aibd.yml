@@ -253,6 +253,10 @@ jobs:
           ck quarantine.rs "        .filter(|l| !l.is_empty() && !l.starts_with('#'))" \
              '        .filter(|l| !l.is_empty())' \
              review_segment_5
+          # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
+          ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
+             '    value == "/" // knife' \
+             root_spellings_and_dashes_in_prose
           # site verify (c477a's list): one judgement out per knife
           ck verify.rs '    let on_every_card = !cards.is_empty()' \
              '    let on_every_card = cards.first().is_some_and(|n| n.contains("firewall=1")) || !cards.is_empty()' \
