@@ -833,7 +833,13 @@ fn an_instant_program_is_recorded_before_it_can_exit() {
 #[cfg(target_os = "macos")]
 fn ps_env(pid: u32) -> String {
     Command::new("ps")
-        .args(["-wwE", "-o", "pid,ppid,stat,command", "-p", &pid.to_string()])
+        .args([
+            "-wwE",
+            "-o",
+            "pid,ppid,stat,command",
+            "-p",
+            &pid.to_string(),
+        ])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
