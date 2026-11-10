@@ -1,0 +1,20 @@
+[package]
+name = "aib-cloud-cli"
+description = "Ez2 Managed Cloud, customer side: sends one request for the customer's own site to the host over the system's ssh, with arguments built and checked by aib-cloud. This is the I/O half; the request grammar and the ssh arguments stay in aib-cloud."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aib-cloud"
+path = "src/main.rs"
+
+# Only aib-cloud: no JSON, no network crate. The transport is the `ssh` the system has
+# (PLAN-eu02-dev-order §1: "用系統 ssh + 一個加固函式").
+[dependencies]
+aib-cloud = { path = "../aib-cloud" }

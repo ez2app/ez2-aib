@@ -47,3 +47,13 @@ same values, judges the five-check verification report and strips secret-looking
 keys before anything prints. Still no I/O: the ssh pipeline and the Touch ID gate
 stay in the Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) until the
 Rust shell lands with the ADR.
+
+## `aib_cloud::client` + crate `aib-cloud-cli` (customer side, 11-10)
+
+`client::ssh_args()` builds the arguments for the system's `ssh` that carry one customer
+request (`customer::parse_request` grammar) to the host: no ssh configuration file is read,
+the host key must match the one file named, nothing is forwarded, every value is checked and
+the destination comes after `--`. The binary `aib-cloud` (crate `aib-cloud-cli`) reads flags /
+`EZ2_CLOUD_*`, runs `ssh` with those arguments and hands back the host's exit status
+(`--print` shows the arguments and sends nothing). Not here yet: version negotiation, a
+stored target per site, IPv6 literals, paths with blanks.

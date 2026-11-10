@@ -395,6 +395,14 @@ jobs:
           ck usage.rs '    u32::try_from(current.saturating_sub(inactive).div_ceil(1024 * 1024)).ok()' \
              '    u32::try_from((current + inactive * 0).div_ceil(1024 * 1024)).ok()' \
              the_working_set_leaves_the_cache_out
+          # customer side: a host that starts with a dash reaches ssh as an option
+          ck client.rs '        && edge(b.first())' \
+             '        && b.first().is_some() // knife' \
+             nothing_can_be_read_as_an_option
+          # customer side: a request the host would refuse is sent all the same
+          ck client.rs '    parse_request(line).map_err(NotSent::Request)?;' \
+             '    let _ = parse_request(line).map_err(NotSent::Request); // knife' \
+             a_request_the_host_would_refuse_is_not_sent
           # provision: only the literal "/" is the root inside a shell line (ebb36, #619 stack L1)
           ck provision.rs "    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')" \
              '    value == "/" // knife' \
