@@ -254,6 +254,32 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
+      # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
+      # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
+      - name: aib-public-leak knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pl() { python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --lib "$3"; }
+          # PL1 the denylist is matched case-sensitively
+          pl '        let low = text.to_lowercase();' '        let low = text.to_string(); // knife' \
+             denylist_skips_comments_and_ignores_case
+          # PL2 a documentation range (203.0.113/24) is reported as public
+          pl '        || (a == 203 && b == 0 && c == 113)' '        || false // knife' \
+             documentation_and_private_ranges_pass_public_ones_do_not
+          # PL3 a five-part version (1.2.3.4.5) is read as an address
+          pl '    if digit_after || part_after {' '    if digit_after { // knife' \
+             addresses_are_found_but_longer_dotted_runs_are_not
+          # PL4 a path that hits is printed in the line findings of that file
+          pl '        let path = path_rules.is_empty().then(|| f.path.clone());' \
+             '        let path = Some(f.path.clone()); // knife' \
+             a_path_that_hits_is_withheld_from_every_line_of_that_file
+          # PL5 removed lines are checked as if added
+          pl "        if let Some(text) = l.strip_prefix('+') {" \
+             "        if let Some(text) = l.strip_prefix('+').or_else(|| l.strip_prefix('-')) { // knife" \
+             a_removed_line_is_not_a_finding
       # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

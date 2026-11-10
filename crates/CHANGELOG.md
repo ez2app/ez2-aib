@@ -5,6 +5,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- `aib-public-leak` (new, RULES §16 / approvals-to-rust C10): checks what a PR adds to this public
+  repository — added diff lines and their paths, commit messages, PR title / body — against a
+  secret denylist (`AIB_PUBLIC_DENYLIST`, case-insensitive) and for public IPv4 addresses
+  (documentation, private, shared, loopback and non-unicast ranges pass). Prints place and rule
+  number only, never the text; no denylist ⇒ `denylist_absent` and only the IPv4 rule. Exit 0 / 1
+  findings / 2 usage or git error. CI: `public-leak` job in ci.yml (PRs). Becomes `aib-verify
+  public-leak` once aib-verify is on main.
 - Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
   `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
   and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`
