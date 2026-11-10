@@ -5,6 +5,12 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- `ErrorCode::ALL` can no longer drift from the enum unnoticed (a63ab 11-10; a merge once
+  turned two edits to `25` into a 26-entry array). New `ErrorCode::ordinal()` is an exhaustive
+  match, so a new code does not build until it is numbered; build-time checks fail when a
+  number points outside `ALL` or an `ALL` entry is not at its own number (missing or
+  repeated codes, wrong order). A test pins the wire order. `ALL` stays a public array.
+  Knives: `scripts/knives-errorcode.sh` (build-time knives use `scripts/knife-build.py`).
 - Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
   default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
   aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding
