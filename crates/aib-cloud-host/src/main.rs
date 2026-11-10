@@ -9,6 +9,7 @@
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
+//! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
@@ -25,6 +26,8 @@
 // at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
 #[cfg(unix)]
 mod backupcmd;
+#[cfg(unix)]
+mod edgecmd;
 #[cfg(unix)]
 mod probe;
 #[cfg(unix)]

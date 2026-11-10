@@ -388,6 +388,12 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # edge domain add / rm without --plan goes on
+          hk edgecmd.rs '            if !plan_only {' '            if !plan_only && sub.is_empty() { // knife' \
+             usage_and_gates
+          # edge domain: a resolver error reads as "no record"
+          hk edgecmd.rs "    if lines.iter().any(|l| l.starts_with(';')) {" "    if lines.is_empty() && lines.iter().any(|l| l.starts_with(';')) { // knife" \
+             dig_output
           # backup check: a remote that is a local path or an option is accepted
           hk backupcmd.rs '        && plain(name, b"_-")' '        && (plain(name, b"_-") || true)' \
              remotes
