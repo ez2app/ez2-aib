@@ -9,7 +9,7 @@ aib-cloud-host root-password apply <file>   # 忘了 root 密碼:Mac 上 aib sec
 aib-cloud-host probe run   <plan.json> --host <public ip> [--out report.json] [--external]
 aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 aib-cloud-host self-update <version>        # 從 GitHub release 換自己(cloud-host-v<version>,驗 SHA256SUMS + --version 才換)
-aib-cloud-host site verify [<code>] [--json]  # 被動檢查:宿主 H02–H05 / H08 / H09 + 每站 S00–S05;只讀;結束碼 0 綠 / 1 紅 / 3 不明 / 2 黃
+aib-cloud-host site verify [<code>] [--json]  # 被動檢查:宿主 H01–H10 / H12 / H13 + 每站 S00–S06;只讀;結束碼 0 綠 / 1 紅 / 3 不明 / 2 黃;紀錄夾讀不到、沒有紀錄、參數打錯也是 3(不是 2)
 aib-cloud-host --version                    # aib-cloud-host <version> <os>-<arch>
 ```
 
