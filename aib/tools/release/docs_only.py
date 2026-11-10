@@ -81,6 +81,7 @@ RUST_CI_PATHS = (
     # 守門測試:aibd.yml 與它呼叫的 scripts/* 提到的 scripts/ 路徑都要在這份,不在就紅
     "scripts/knife.py",
     "scripts/knives-pairing.sh",
+    "scripts/knives-static.sh",
     ".github/workflows/aibd.yml",
 )
 RUST_PREFIXES = ("crates/",)
