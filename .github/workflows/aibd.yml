@@ -549,7 +549,7 @@ jobs:
              a_damaged_journal_that_ran_is_archived_only_with_its_target_named
           # op archive: the note says who, not only the pid (#638 r2 L1)
           hk opstore.rs '        "who": who(),' \
-             '        "who": { let _ = who; Value::Null }, // knife' \
+             '        "who": ({ let _ = who; Value::Null }), // knife (parenthesised: json! reads a bare { } as an object)' \
              a_damaged_journal_that_ran_is_archived_only_with_its_target_named
           # host lock: a holder written aside and never renamed is cleared (#635 L1 N1)
           hk opstore.rs '        sweep_leftovers(&p.lock);' \
