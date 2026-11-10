@@ -466,7 +466,7 @@ jobs:
              the_plan_hash_covers_host_and_version
           # journal: a line counts before it is synced
           hk opstore.rs '    sink.sync().map_err(|e| format!("journal sync: {e}"))' \
-             '    Ok(()) // knife: no sync' \
+             '    let _ = S::sync; Ok(()) // knife: no sync (S::sync stays referenced, else dead_code under -D warnings)' \
              a_line_is_synced_before_it_counts
           # journal: a line that does not follow is appended anyway
           hk opstore.rs '    may_append(&entries, entry)?;' \
@@ -490,7 +490,7 @@ jobs:
              a_damaged_lock_file_keeps_the_lock
           # lock: anyone may release it
           hk opstore.rs '            Some(h) if h.op == op && h.pid == pid => {' \
-             '            Some(_) => { // knife' \
+             '            Some(_) => { let _ = pid; // knife' \
              only_the_holder_releases
           # unfinished: a journal that does not replay is skipped
           hk opstore.rs '        let last = op::replay(&entries).map_err(|e| format!("{}: {e}", path.display()))?;' \
