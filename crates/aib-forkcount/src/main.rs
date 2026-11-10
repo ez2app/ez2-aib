@@ -661,6 +661,7 @@ fn miss_cause(
     });
     match refused {
         Some(NotAdoptedWhy::StartUnreadable) => return "listed_start_unreadable",
+        Some(NotAdoptedWhy::StartDenied) => return "listed_start_denied",
         Some(NotAdoptedWhy::OlderThanParent) => return "listed_older_than_parent",
         None => {}
     }
@@ -746,6 +747,7 @@ fn timeline(pids: &[u32], child: u32, stamps: Option<Stamps>, trace: &Trace, max
                 "t_ns": e.t_ns, "pid": e.pid, "event": "not_adopted", "child": child,
                 "why": match why {
                     NotAdoptedWhy::StartUnreadable => "start_unreadable",
+                    NotAdoptedWhy::StartDenied => "start_denied",
                     NotAdoptedWhy::OlderThanParent => "older_than_parent",
                 },
             }),
@@ -899,6 +901,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             malformed,
             list_failures: stats.list_failures,
             register_failures: stats.register_failures,
+            start_denied: stats.children_start_denied,
             faults_injected: stats.injected,
         },
     );
@@ -948,6 +951,8 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "raw": {
                 "fork_events": stats.fork_events,
                 "children_adopted": stats.children_adopted,
+                "children_start_unknown": stats.children_start_unknown,
+                "children_start_denied": stats.children_start_denied,
                 "register_failures": stats.register_failures,
                 "list_failures": stats.list_failures,
                 "capture_rate_fork_events": rate(stats.fork_events),
@@ -983,6 +988,8 @@ struct Observed {
     malformed: u64,
     list_failures: u64,
     register_failures: u64,
+    /// listed children alive but unreadable (EPERM): unnamed forks
+    start_denied: u64,
     /// listings where `--inject-list` changed the result
     faults_injected: u64,
 }
@@ -1018,6 +1025,9 @@ fn verdict(att: &Attribution, o: Observed) -> Verdict {
     }
     if o.register_failures > 0 {
         reasons.push("register_failures");
+    }
+    if o.start_denied > 0 {
+        reasons.push("start_denied");
     }
     if o.faults_injected > 0 {
         reasons.push("fault_injected");
@@ -1081,8 +1091,17 @@ mod tests {
             malformed: 0,
             list_failures,
             register_failures,
+            start_denied: 0,
             faults_injected: 0,
         }
+    }
+
+    #[test]
+    fn a_child_whose_start_time_was_refused_never_lets_a_run_pass() {
+        let a = Attribution::default();
+        let mut o = obs(true, 0, 0);
+        o.start_denied = 1;
+        assert!(verdict(&a, o).reasons.contains(&"start_denied"));
     }
 
     #[test]
@@ -1278,6 +1297,10 @@ mod tests {
         assert_eq!(
             miss_cause(7, 8, None, None, &na(NotAdoptedWhy::StartUnreadable)),
             "listed_start_unreadable"
+        );
+        assert_eq!(
+            miss_cause(7, 8, None, None, &na(NotAdoptedWhy::StartDenied)),
+            "listed_start_denied"
         );
         assert_eq!(
             miss_cause(7, 8, None, None, &na(NotAdoptedWhy::OlderThanParent)),
