@@ -300,10 +300,19 @@ fn u1_a_command_that_is_built_at_run_time_is_unknown() {
          echo \"$C\" | xargs -I{} sh -c {}\n",
     );
     assert_eq!(of(&t, "U1"), vec![5, 6, 7, 8]);
-    // what such a variable runs can be read here: a fixed text, ssh, a positional parameter
+    // a command substitution or an array as the command line
+    let t = script(
+        "set -euo pipefail\nd=$(command -v rm)\n$d -rf /tmp/x\nC=(rm -rf /tmp/y)\n\"${C[@]}\"\n",
+    );
+    assert_eq!(of(&t, "U1"), vec![4, 6]);
+    // what such a variable runs can be read here: a program path (even built from other
+    // variables), ssh, a positional parameter, a name the caller passes in
     let t = script(
         "set -euo pipefail\n\
          A=/usr/local/sbin/tool\n\
+         N=$BAK/tool.new\n\
+         $N --version\n\
+         \"$SRC\" --version\n\
          SSH=\"ssh -o BatchMode=yes host-a\"\n\
          run() { \"$@\"; }\n\
          $A --version\n\

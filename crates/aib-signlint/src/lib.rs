@@ -14,7 +14,7 @@
 //! | S3 | only the output is looked at: `local`/`export x=$(…)`, `$(…)` inside `[ ]`, `for … in $(…)`, `x=$(…)` unchecked while `set -e` is off |
 //! | S4 | "could not ask" taken as "is not there": a call through ssh used as a condition with no separate 255, `<(ssh …)` (its exit code is never seen), or, on a restore path, a missing backup that is skipped |
 //! | S5 | a restore path that writes files and never reads them back (`cmp`, `sha256sum`, `diff`) |
-//! | U1 | this reader cannot follow the script: `eval`, `source`, `bash -c "$x"`, a variable as the command (unless it only ever holds a fixed text, ssh, or is `"$@"`), `bash <<<`, a pipe into a shell, `xargs … sh`, a quote or heredoc left open |
+//! | U1 | this reader cannot follow the script: `eval`, `source`, `bash -c "$x"`, a variable set here to a command line (a value with a blank, `$(`, a backquote, or an array) used as the command, `bash <<<`, a pipe into a shell, `xargs … sh`, a quote or heredoc left open |
 //! | R1 | no `# 可丟環境: <where> 收據: <receipt>` line in the first 30 lines (values with control, bidi or zero-width characters, or longer than 80 / 160 characters, do not count: they are shown in the consent dialog) |
 //!
 //! S1–S5 can be acknowledged by name (`--ack`); U1 and R1 cannot. This helps the author catch
@@ -849,9 +849,11 @@ struct Shape {
     remote_funcs: BTreeSet<String>,
     remote_vars: BTreeSet<String>,
     stop_funcs: BTreeSet<String>,
-    /// variables only ever set to a fixed text (no `$`, no backquote): `$A` as a command
-    /// runs something that can be read here
-    literal_vars: BTreeSet<String>,
+    /// variables set somewhere here to a command line: a value with a blank, `$(`, a
+    /// backquote, or an array. `$c` as a command then runs a text this reader cannot follow.
+    /// One word (a path, even built from other variables) or a variable never set here
+    /// (it comes from the caller, whose line is read where it is set) is a program name.
+    dynamic_vars: BTreeSet<String>,
 }
 
 /// The value text of an assignment that starts at `from` (just after `=`): a quoted
@@ -873,7 +875,7 @@ fn assigned_value(raw: &str, from: usize) -> &str {
 fn shape_of(lines: &[Logical]) -> Shape {
     let funcs = funcs_of(lines);
     let mut remote_vars = BTreeSet::new();
-    let (mut fixed, mut varied) = (BTreeSet::new(), BTreeSet::new());
+    let mut dynamic = BTreeSet::new();
     for l in lines {
         let mut from = 0;
         for w in l.raw.split_whitespace() {
@@ -883,10 +885,12 @@ fn shape_of(lines: &[Logical]) -> Shape {
                 if let Some((name, _)) = w.split_once('=') {
                     let v = assigned_value(&l.raw, at + name.len() + 1);
                     let name = name.strip_suffix('+').unwrap_or(name).to_owned();
-                    if v.contains('$') || v.contains('`') || v.starts_with('(') {
-                        varied.insert(name);
-                    } else {
-                        fixed.insert(name);
+                    if v.contains(char::is_whitespace)
+                        || v.contains("$(")
+                        || v.contains('`')
+                        || v.starts_with('(')
+                    {
+                        dynamic.insert(name);
                     }
                 }
             }
@@ -935,7 +939,7 @@ fn shape_of(lines: &[Logical]) -> Shape {
         remote_funcs,
         remote_vars,
         stop_funcs,
-        literal_vars: fixed.difference(&varied).cloned().collect(),
+        dynamic_vars: dynamic,
     }
 }
 
@@ -962,7 +966,7 @@ impl Shape {
         })
     }
 
-    /// `$A` / `${A}` / `"$A"` where A only ever holds a fixed text, or a positional
+    /// `$A` / `${A}` / `"$A"` where A is never set to a command line here, or a positional
     /// parameter (`"$@"`, `$1`: what it runs is written at each call).
     fn is_readable_var_cmd(&self, w: &str) -> bool {
         let w = w.trim_matches('"');
@@ -976,8 +980,8 @@ impl Shape {
         let v = v.split('[').next().unwrap_or(v);
         matches!(v, "@" | "*")
             || (v.len() == 1 && v.as_bytes()[0].is_ascii_digit())
-            || self.literal_vars.contains(v)
             || self.remote_vars.contains(v)
+            || !self.dynamic_vars.contains(v)
     }
 
     fn is_remote(&self, st: &Stage) -> bool {
