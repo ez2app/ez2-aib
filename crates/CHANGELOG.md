@@ -5,6 +5,16 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
+  default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`) into aibd. `index.html`
+  (and `/`) has a strong `ETag`, `Cache-Control: no-cache`, `304` on a matching
+  `If-None-Match`, and a CSP that loads only our own files; `assets/*` are
+  `public, max-age=31536000, immutable`; `.br` / `.gz` siblings follow `Accept-Encoding`
+  (`Vary: Accept-Encoding`). Non-API paths need no bearer (the files are the same for every
+  caller); Host and token-in-URL checks still apply. Without the feature every non-API path is
+  `404 web_not_built` (new). Every `/api/` answer now carries `Cache-Control: no-store`
+  unless it set its own. W1 ships one bundle: after an upgrade the previous version's hashed
+  files are gone and the page reloads on their 404.
 - Pairing (ADR 0006 §7, W1 manual entry), **off by default**; `AIBD_PAIRING=terminal-unverified`
   turns it on (off: pair/codes and pair/redeem are `404`, nothing is counted). `POST
   /api/v1/pair/codes` (start-up token) gives a 10-character code that a person types into the

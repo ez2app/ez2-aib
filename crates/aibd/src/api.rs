@@ -91,7 +91,7 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
             "/api/v1/pair/revoke",
             post(pair_api::revoke).fallback(sessions::method_not_allowed),
         )
-        .fallback(not_found)
+        .fallback(crate::static_files::fallback)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
             guard_cfg,
@@ -113,10 +113,6 @@ async fn metrics(
 ) -> Json<serde_json::Value> {
     let pairing = pairing.map(|p| p.0.metrics());
     Json(serde_json::json!({"lineage": st.lineage.status(), "pairing": pairing}))
-}
-
-async fn not_found() -> Response {
-    error_response(ErrorCode::NotFound, "no such route", &guard::request_id())
 }
 
 #[derive(Deserialize)]

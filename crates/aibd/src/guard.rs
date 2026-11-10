@@ -101,6 +101,11 @@ impl GuardConfig {
     }
 }
 
+/// Under `/api` (bearer rules, `no-store`); everything else is a static file.
+pub fn is_api(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
 pub fn request_id() -> String {
     let mut b = [0u8; 8];
     let _ = getrandom::fill(&mut b);
@@ -247,8 +252,9 @@ pub async fn guard(
     // never log the raw method, path or query: any of them may carry a secret
     let method = loggable_method(req.method());
     let path = loggable_path(req.uri().path());
+    let raw_path = req.uri().path().to_string();
     let verdict = check(&cfg, &req);
-    let resp = match verdict {
+    let mut resp = match verdict {
         Err((code, msg)) => error_response(code, msg, &rid),
         Ok(caller) => {
             req.extensions_mut().insert(caller);
@@ -256,6 +262,7 @@ pub async fn guard(
             next.run(req).await
         }
     };
+    crate::static_files::api_no_store(&raw_path, &mut resp);
     tracing::info!(request_id = %rid, %method, %path, status = resp.status().as_u16(), "request");
     resp
 }
@@ -337,7 +344,8 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         ));
     }
 
-    if PUBLIC_PATHS.contains(&path) {
+    // static files (ADR 0006 §6) are public and identical for every caller
+    if PUBLIC_PATHS.contains(&path) || !is_api(path) {
         return Ok(Caller::Anonymous);
     }
     let auth = single_header(h, header::AUTHORIZATION)

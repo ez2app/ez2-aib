@@ -527,6 +527,11 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-pairing.sh
+      # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
+      - name: static file knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-static.sh
       - name: aib-sys job (Windows) 5x
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

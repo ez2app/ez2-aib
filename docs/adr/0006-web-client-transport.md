@@ -102,6 +102,12 @@ a new ticket for every reconnect.
   `Vary: Accept-Encoding`; a client that accepts neither gets the uncompressed file.
 - On upgrade, hashed files of the previous version stay available, so an open page that
   still references them keeps working.
+  - W1 (a9136 Q4, 2026-11-10): the files are compiled into aibd (cargo feature `web`), so
+    the previous version's files live only in the previous binary. W1 ships one bundle with
+    no lazy chunks, and the page does a full reload when a hashed file returns `404`
+    (`index.html` is `no-cache`, so the reload gets the new version). That keeps an open page
+    from breaking. Once the bundle is split into chunks, the previous version's `dist` is
+    compiled in alongside the new one at release time.
 - API responses send `Cache-Control: no-store`; static cache rules never apply to `/api/`.
 - **No page contains the token.** `index.html` and every static file are identical for
   every caller. Other OS accounts on the same machine can reach `127.0.0.1`, so a token
