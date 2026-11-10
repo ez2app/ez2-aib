@@ -63,7 +63,7 @@ pub fn exit_code(entries: &[Entry]) -> u8 {
 /// Days from 1970-01-01 to the civil date (proleptic Gregorian).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = y - era * 400;
     let mp = (m + 9) % 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn the_rules_file_entry_reads_whole() {
-        let e = &scan(R158, at("2026-11-11 02:00"))[0];
+        let es = scan(R158, at("2026-11-11 02:00"));
+        let e = &es[0];
         assert_eq!(e.line, 1);
         assert_eq!(e.due_text.as_deref(), Some("2026-11-11 03:00"));
         assert_eq!(
