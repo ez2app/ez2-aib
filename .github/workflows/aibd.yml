@@ -299,6 +299,20 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+      # aib-cloud-host: gates of the host commands (reviews of #625).
+      - name: aib-cloud-host command knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cloud-host --locked "$4"; }
+          # site quarantine without --plan goes on (33e28, seg. 4 L1)
+          hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
+             nothing_but_a_plan
+          # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
+          hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
+             nothing_checked_is_exit_3_never_2
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

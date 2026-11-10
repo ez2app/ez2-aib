@@ -166,7 +166,21 @@ fn print_text(scope: &str, results: &[CheckResult]) {
     }
 }
 
+/// `site verify`. Anything that keeps the checks from being made — the records directory
+/// cannot be read, there are no records, an argument is wrong — exits **3** like any other
+/// "could not observe": this command's 2 means "warnings only", and "no site was looked
+/// at" must never read as that (c477a, #625 seg. 3 M1).
 pub fn cmd(args: &[String]) -> Result<u8, String> {
+    match run(args) {
+        Ok(code) => Ok(code),
+        Err(why) => {
+            eprintln!("aib-cloud-host site verify: {why}");
+            Ok(3)
+        }
+    }
+}
+
+fn run(args: &[String]) -> Result<u8, String> {
     let mut records = RECORDS.to_owned();
     let mut thin_pool = THIN_POOL.to_owned();
     let mut as_json = false;
@@ -261,6 +275,18 @@ mod tests {
         // a line that is not a percentage is "not read", not zero
         assert_eq!(parse_df_pcent("Use%\n-\n 12%\n"), [None, Some(12)]);
         assert!(parse_df_pcent("").is_empty());
+    }
+
+    #[test]
+    fn nothing_checked_is_exit_3_never_2() {
+        let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(cmd(&args(&["--records", "/nonexistent/aib-sv"])), Ok(3));
+        assert_eq!(cmd(&args(&["--no-such-flag"])), Ok(3));
+        assert_eq!(cmd(&args(&["Bad Code"])), Ok(3));
+        let empty = std::env::temp_dir().join(format!("aib-sv-empty-{}", std::process::id()));
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(cmd(&args(&["--records", &empty.to_string_lossy()])), Ok(3));
+        let _ = fs::remove_dir_all(&empty);
     }
 
     #[test]
