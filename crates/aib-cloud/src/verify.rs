@@ -146,7 +146,7 @@ pub fn h04_disk(u: DiskUse) -> CheckResult {
         (u.thin_meta, 80, "thin_meta_full"),
     ];
     if let Some((_, _, code)) = all.iter().find(|(v, red, _)| v.is_some_and(|v| v >= *red)) {
-        return result("H04", Outcome::Red(*code));
+        return result("H04", Outcome::Red(code));
     }
     if all.iter().any(|(v, _, _)| v.is_none()) {
         return result("H04", Outcome::Unknown("unread"));
