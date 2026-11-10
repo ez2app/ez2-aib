@@ -512,6 +512,10 @@ jobs:
           hk customercmd.rs '        Some([only]) if !is_owner_word(line) && !line.trim().is_empty() => {' \
              '        Some([only, ..]) if !is_owner_word(line) && !line.trim().is_empty() => { // knife' \
              a_site_list_narrows_a_tenant_key_and_never_widens_it
+          # roster: login lines are printed for a site of another tenant
+          hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
+             '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
+             lines_only_for_the_rosters_own_sites
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error
