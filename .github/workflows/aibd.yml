@@ -558,6 +558,13 @@ jobs:
           # ct mask: the wrapper leaves the last start's verdict in place (c477a, #642 seg. 1 M1)
           hk ../../aib-cloud/src/mask.rs '*) rm -f ' '*) : ' \
              a_start_whose_hook_cannot_run_leaves_no_old_verdict
+          # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
+          hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
+             '        None if under_sudo && !has_connection && false => None, // knife' \
+             an_entry_whose_environment_was_not_kept_is_not_an_empty_request
+          # customer entry: through sudo any records directory is taken (33e28, #642 L2)
+          hk customercmd.rs '    !under_sudo || records == RECORDS' '    !under_sudo || !records.is_empty() // knife' \
+             through_sudo_the_records_directory_is_ours_only
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error

@@ -39,7 +39,10 @@ use crate::site::valid_code;
 /// The forced command of an entry line, before its arguments. The entry account is an
 /// unprivileged one that holds nothing but these lines; the customer command needs root
 /// (it asks the container runtime), so the account is allowed exactly this command
-/// through `sudo -n`, and nothing else.
+/// through `sudo -n`, and nothing else. The sudoers rule that goes with it must keep
+/// `SSH_ORIGINAL_COMMAND` and `SSH_CONNECTION` (sudo resets the environment; without them
+/// the command answers "entry is not set up"), and the file these lines are in must be one
+/// the entry account cannot write: every right here rests on each line carrying `command=`.
 pub const ENTRY_COMMAND: &str = "sudo -n /usr/local/sbin/aib-cloud-host customer";
 
 /// Why a roster was refused. A fixed word: nothing from the file is echoed.
