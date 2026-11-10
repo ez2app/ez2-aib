@@ -518,7 +518,9 @@ mod tests {
             op: "20261110T014500Z-0a1b2c3d".to_owned(),
             reason: "operator".to_owned(),
             prev_firewall: String::new(),
-            prev_caddy_block: String::new(),
+            // a record must name the block it replaced (#625: empty is refused as unreadable)
+            prev_caddy_block: "site2.example.test {\n    reverse_proxy 10.77.0.12:80\n}\n"
+                .to_owned(),
         };
         fs::write(
             dir.join("q").join("site2.json"),
