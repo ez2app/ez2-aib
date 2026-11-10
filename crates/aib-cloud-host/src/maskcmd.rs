@@ -56,8 +56,18 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             }
             Ok(0)
         }
+        // what installing the mask writes, printed from the one constant each: the line for
+        // the CT's configuration and the wrapper it names. Prints; changes nothing.
+        Some("mask-line") => {
+            println!("{}", mask::HOOK_LINE);
+            Ok(0)
+        }
+        Some("mask-wrapper") => {
+            print!("{}", mask::HOOK_WRAPPER);
+            Ok(0)
+        }
         _ => Err(
-            "ct needs: mask (run by the container runtime, see aib_cloud::mask::HOOK_LINE)"
+            "ct needs: mask (run by the container runtime, see aib_cloud::mask::HOOK_LINE) | mask-line | mask-wrapper (print what installing the mask writes)"
                 .to_owned(),
         ),
     }
