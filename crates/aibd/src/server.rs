@@ -110,8 +110,11 @@ pub async fn run(
             crate::thermal::Guard::install(platform::thermal_info(), st, &ss)
         })
         .await
-        .ok()
-        .flatten()
+        .unwrap_or_else(|e| {
+            // 33e28 #640 N2: a panic in install must not read as "no sensor" (both null)
+            tracing::error!(error = %e, "thermal guard: install failed; running without it");
+            None
+        })
     };
     let app = api::router(
         AppState {

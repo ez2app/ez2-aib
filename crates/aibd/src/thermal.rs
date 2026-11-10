@@ -14,7 +14,10 @@
 //! `spi_missing` switch it off until restart; any other failure (`unknown`) is
 //! tried again in the first round after a 0 → n change, at most once every
 //! [`T1_RECHECK_S`]. With neither T1 nor T2 usable the guard is not set up at
-//! all (a63ab #616 L1) and the timer never exists.
+//! all (a63ab #616 L1) and the timer never exists. An n → 0 → n that falls
+//! inside one tick does not end the sampler, so that period has no first
+//! round and its T1 re-check waits for the next real 0 → n (33e28 #640 N1;
+//! it only matters while T1 is waiting to be tried again).
 //!
 //! History is kept in memory: after a restart the first rounds take the
 //! fallback, which never reaps without pressure (R1 PR 3 Q2).
