@@ -240,6 +240,30 @@ pub fn clip_line(line: &str) -> &str {
 /// Deliberately broad: a masked harmless value costs a second look, a leaked credential
 /// costs the site.
 pub fn mask_line(line: &str) -> String {
+    plain(&mask_secrets(line))
+}
+
+/// `line` with nothing in it that a terminal would act on (ebb36, #641 seg. 2 L1). Part of
+/// a log comes from whoever visits the site — a URL, a user agent — and is shown in the
+/// customer's own terminal: control characters (ESC and the rest of C0 but the tab, DEL,
+/// C1) and the characters that reorder or hide text are written out as `\x1b` /
+/// `\u{202e}` instead of being sent.
+pub fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        let reorders = matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+        if c == '\t' || !(c.is_control() || reorders) {
+            out.push(c);
+        } else if u32::from(c) < 0x100 {
+            out.push_str(&alloc::format!("\\x{:02x}", u32::from(c)));
+        } else {
+            out.push_str(&alloc::format!("\\u{{{:x}}}", u32::from(c)));
+        }
+    }
+    out
+}
+
+fn mask_secrets(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -503,5 +527,22 @@ mod tests {
         let cut = clip_line(&wide);
         assert_eq!(cut.len(), 4095);
         assert!(wide.starts_with(cut));
+    }
+    /// ebb36, #641 seg. 2 L1: what a visitor put into a log does not drive the customer's terminal.
+    #[test]
+    fn nothing_in_a_line_reaches_the_terminal_as_a_control() {
+        assert_eq!(plain("GET /a\tb 200"), "GET /a\tb 200");
+        assert_eq!(plain("ua=\u{1b}]52;c;aGk=\u{7}"), "ua=\\x1b]52;c;aGk=\\x07");
+        assert_eq!(plain("a\u{1b}[2Jb\rc\u{7f}"), "a\\x1b[2Jb\\x0dc\\x7f");
+        assert_eq!(plain("x\u{9b}31m"), "x\\x9b31m");
+        assert_eq!(plain("evil\u{202e}gpj.exe"), "evil\\u{202e}gpj.exe");
+        assert_eq!(plain("中文 記錄 ok"), "中文 記錄 ok");
+        // and it is what the customer's log lines go through, after the secrets
+        let line = mask_line("password=hunter2 \u{1b}[31mred");
+        assert!(
+            !line.contains('\u{1b}') && !line.contains("hunter2"),
+            "{line}"
+        );
+        assert!(line.contains("\\x1b[31mred"));
     }
 }

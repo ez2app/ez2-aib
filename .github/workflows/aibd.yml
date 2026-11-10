@@ -283,6 +283,9 @@ jobs:
           ck verify.rs '    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {' \
              '    } else if net0(&cfg, "ip6").is_some() && net0(&cfg, "gw6").is_some() { // knife' \
              s10_to_s13_and_h14_the_site_is_masked
+          # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
+          ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
+             nothing_in_a_line_reaches_the_terminal_as_a_control
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
