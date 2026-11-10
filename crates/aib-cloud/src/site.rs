@@ -190,11 +190,22 @@ impl SiteSpec {
 }
 const NET: &str = "10.77.0.";
 
+/// Words of the customer's request line (`site <code> …`, `site create`,
+/// `aib_cloud::customer`) and words kept for requests to come. None of them is a site's
+/// code or a customer's id, anywhere: in a request, in a record, in a roster, or out of
+/// the generator that names a new site. One table, read by all of them (f1fae, c477a,
+/// ebb36 11-11).
+pub const RESERVED_CODES: &[&str] = &[
+    "create", "delete", "domain", "help", "list", "logs", "restart", "rm", "site", "sites",
+    "status", "usage",
+];
+
 /// Site code: 2–41 chars of `[a-z0-9.-]`, starting with a letter or digit (it becomes a hostname,
 /// a record file name and a Caddy marker, so nothing else is allowed).
 pub fn valid_code(code: &str) -> bool {
     let b = code.as_bytes();
-    (2..=41).contains(&b.len())
+    !RESERVED_CODES.contains(&code)
+        && (2..=41).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'.' || *c == b'-')

@@ -442,7 +442,8 @@ mod tests {
         assert_eq!(site_line("site3 status"), "site site3 status");
         assert_eq!(site_line(" site3  logs php "), "site site3 logs php");
         // a site that is called like a request is still a site when a request follows
-        assert_eq!(site_line("status status"), "site status status");
+        // a request word is nobody's site code (`site::RESERVED_CODES`)
+        assert_eq!(site_line("status status"), "status status");
         assert_eq!(site_line("create"), "site create");
         assert_eq!(
             site_line("site3  domain check example.org"),

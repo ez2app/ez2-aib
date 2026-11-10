@@ -24,8 +24,9 @@ use serde_json::{json, Value};
 use crate::svc::{LogSource, LOG_LINES_MAX, LOG_MINUTES_MAX};
 use crate::verify::{exit_code, CheckResult, Outcome};
 
-/// Longest request line accepted, in bytes.
-pub const REQUEST_MAX: usize = 200;
+/// Longest request line accepted, in bytes: room for `site <code> domain check <name>`
+/// with the longest code (41) and the longest name (253).
+pub const REQUEST_MAX: usize = 320;
 
 /// One thing a customer asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,7 +260,8 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
         }
         "site" => {
             let site = words.next().ok_or(Refused::BadArguments)?;
-            // `create` is the request, never a site's code: nothing may follow it
+            // `create` is the request, never a site's code (`site::RESERVED_CODES`):
+            // nothing may follow it
             if site == "create" {
                 return match words.next() {
                     None => Ok(OwnerRequest::Create),
@@ -654,12 +656,36 @@ mod tests {
             ("site site2 domain add *.example.org", Refused::Malformed),
             ("site site2 domain add example.org/x", Refused::Malformed),
             ("site site2 domain add EXAMPLE.org", Refused::Malformed),
-            // a site whose code is `domain`: the rest is then a site request, and no
-            // site request carries a dot
-            ("site domain add example.org", Refused::Malformed),
+            // `domain` is a word of the line, not a site's code
+            ("site domain add example.org", Refused::BadArguments),
         ] {
             assert_eq!(parse_owner_request(line), Err(why), "{line:?}");
         }
+        // the words of the line are nobody's site code, here or in a record
+        for word in crate::site::RESERVED_CODES {
+            assert!(!crate::site::valid_code(word), "{word}");
+            if *word != "create" {
+                assert_eq!(
+                    parse_owner_request(&alloc::format!("site {word} status")),
+                    Err(Refused::BadArguments),
+                    "{word}"
+                );
+            }
+        }
+        // the longest name there is fits on the line with the longest code
+        let long = alloc::format!(
+            "site {} domain check {}.{}.{}.{}",
+            "s".repeat(41),
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert!(long.len() <= REQUEST_MAX, "{}", long.len());
+        assert!(matches!(
+            parse_owner_request(&long),
+            Ok(OwnerRequest::Domain { .. })
+        ));
         // what changes something, and what is offered yet
         assert!(OwnerRequest::Create.writes());
         let check = parse_owner_request("site site2 domain check example.org").unwrap();

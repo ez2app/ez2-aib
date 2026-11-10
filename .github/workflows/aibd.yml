@@ -411,6 +411,10 @@ jobs:
           ck customer.rs '                    Some(_) => Err(Refused::BadArguments),' \
              '                    Some(_) => Ok(OwnerRequest::Create), // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a word of the request line is taken as a site's code (one table for parser, records and roster)
+          ck site.rs '    !RESERVED_CODES.contains(&code)' \
+             '    !RESERVED_CODES.is_empty() // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
           # customer key: a domain that is not a name (an address, one label) gets as far as the host
           ck customer.rs '                if !crate::edge::valid_domain(name) {' \
              '                if name.is_empty() { // knife' \
