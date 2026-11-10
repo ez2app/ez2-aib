@@ -174,6 +174,39 @@ fn calibrate_mid_exit_never_passes_with_failures() {
     }
 }
 
+/// a63ab 11-10 (PLAN-goal2-fixture §1.2): the calibration trace is complete
+/// enough to explain a miss. Every fork event read has a listing of that
+/// parent after it, every mid-exit step left its gen-one stamps, and every
+/// miss carries one of the four causes. Knife: the listing is not recorded.
+#[test]
+fn calibrate_mid_exit_trace_explains_every_miss() {
+    let out = tool()
+        .args(["calibrate", "--pattern", "mid-exit", "--count", "20"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let t = &v["trace"];
+    assert_eq!(t["enabled"], true, "{v}");
+    assert_eq!(t["dropped"], 0, "{v}");
+    assert!(t["events"].as_u64().unwrap() > 0, "{v}");
+    assert_eq!(t["forks_without_listing"], 0, "{t}");
+    assert_eq!(t["gen_one_stamps"], 20, "{t}");
+    for m in v["missing_identities"].as_array().unwrap() {
+        let c = m["cause"].as_str().unwrap();
+        assert!(
+            [
+                "no_fork_event",
+                "listed_but_absent",
+                "parent_exited_before_list",
+                "unknown"
+            ]
+            .contains(&c),
+            "{m}"
+        );
+        assert!(m["timeline"].is_array(), "{m}");
+    }
+}
+
 /// 3f312 11-08 knife: one step never started and never recorded. The
 /// expected count is fixed by --count, so the run is short, not 100 %.
 #[test]

@@ -79,9 +79,47 @@ pub enum ListFault {
     HideOne,
 }
 
+/// Most trace events kept per watch; later ones are counted in
+/// [`Trace::dropped`] (a run with drops cannot explain its misses).
+pub const TRACE_CAP: usize = 200_000;
+
+/// One observation of the watcher, with the monotonic time it was made
+/// ([`uptime_ns`], the same clock in every process). Calibration only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceEvent {
+    pub t_ns: u64,
+    pub pid: u32,
+    pub kind: TraceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceKind {
+    /// `NOTE_FORK` of `pid` was read; `exited` = `NOTE_EXIT` came in the same
+    /// event, so `pid` had already exited when the event was read.
+    Fork { exited: bool },
+    /// `NOTE_EXIT` of `pid` was read (on its own).
+    Exit,
+    /// The children of `pid` were listed from `t_ns` to `end_ns`: the list,
+    /// or the aib-sys error tag.
+    List {
+        end_ns: u64,
+        result: Result<Vec<u32>, String>,
+    },
+}
+
+/// What [`ForkWatch::trace`] returns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trace {
+    pub events: Vec<TraceEvent>,
+    /// events not kept because [`TRACE_CAP`] was reached
+    pub dropped: u64,
+    /// false when the watch was started without a trace
+    pub enabled: bool,
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{ListFault, Stats};
+    use super::{ListFault, Stats, Trace, TraceEvent, TraceKind, TRACE_CAP};
     use aib_sys::{Macos, ProcessInfo, SysError};
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::{name, pidinfo};
@@ -103,6 +141,30 @@ mod imp {
         /// listings done so far (for `ListFault::Error` / `Incomplete`)
         listings: u64,
         hidden: Option<u32>,
+        trace: Trace,
+    }
+
+    impl Inner {
+        fn record(&mut self, t_ns: u64, pid: u32, kind: TraceKind) {
+            if !self.trace.enabled {
+                return;
+            }
+            if self.trace.events.len() >= TRACE_CAP {
+                self.trace.dropped += 1;
+            } else {
+                self.trace.events.push(TraceEvent { t_ns, pid, kind });
+            }
+        }
+    }
+
+    /// `CLOCK_UPTIME_RAW` in nanoseconds: monotonic, shared by every process
+    /// on the machine (so a child can stamp its own events on the same clock).
+    pub fn uptime_ns() -> Option<u64> {
+        let t = nix::time::clock_gettime(nix::time::ClockId::from_raw(nix::libc::CLOCK_UPTIME_RAW))
+            .ok()?;
+        let s = u64::try_from(t.tv_sec()).ok()?;
+        let n = u64::try_from(t.tv_nsec()).ok()?;
+        s.checked_mul(1_000_000_000)?.checked_add(n)
     }
 
     type Shared = Mutex<Inner>;
@@ -134,8 +196,24 @@ mod imp {
         kq.kevent(&[ev], &mut [], None).is_ok()
     }
 
-    /// One child listing through aib-sys M3, with the injected fault if any.
+    /// [`list_children_raw`], recorded in the trace when it is on.
     fn list_children(sh: &Shared, ppid: u32) -> Result<Vec<u32>, SysError> {
+        let t0 = uptime_ns().unwrap_or(0);
+        let r = list_children_raw(sh, ppid);
+        let mut g = lock(sh);
+        if g.trace.enabled {
+            let end_ns = uptime_ns().unwrap_or(0);
+            let result = match &r {
+                Ok(k) => Ok(k.clone()),
+                Err(e) => Err(e.tag().to_owned()),
+            };
+            g.record(t0, ppid, TraceKind::List { end_ns, result });
+        }
+        r
+    }
+
+    /// One child listing through aib-sys M3, with the injected fault if any.
+    fn list_children_raw(sh: &Shared, ppid: u32) -> Result<Vec<u32>, SysError> {
         let (n, fault) = {
             let mut g = lock(sh);
             g.listings += 1;
@@ -236,6 +314,20 @@ mod imp {
         /// [`start`](Self::start) with a fault injected into the child
         /// listing (see [`ListFault`]).
         pub fn start_with(roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_full(roots, fault, false)
+        }
+
+        /// [`start_with`](Self::start_with) that also keeps a [`Trace`]
+        /// (calibration: every miss gets a timeline).
+        pub fn start_traced(roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_full(roots, fault, true)
+        }
+
+        fn start_full(
+            roots: &[u32],
+            fault: Option<ListFault>,
+            traced: bool,
+        ) -> std::io::Result<Self> {
             let kq = Arc::new(Kqueue::new().map_err(std::io::Error::from)?);
             let stop = KEvent::new(
                 STOP_IDENT,
@@ -254,6 +346,10 @@ mod imp {
                 fault,
                 listings: 0,
                 hidden: None,
+                trace: Trace {
+                    enabled: traced,
+                    ..Trace::default()
+                },
             }));
             let w = {
                 let (kq, sh) = (kq.clone(), sh.clone());
@@ -307,6 +403,12 @@ mod imp {
         pub fn adopted_parents(&self) -> BTreeMap<u32, u32> {
             lock(&self.sh).parent_of.clone()
         }
+
+        /// The trace so far (empty and `enabled: false` unless started with
+        /// [`start_traced`](Self::start_traced)).
+        pub fn trace(&self) -> Trace {
+            lock(&self.sh).trace.clone()
+        }
     }
 
     fn run(kq: &Kqueue, sh: &Shared, t0: Instant) {
@@ -332,9 +434,12 @@ mod imp {
                         let Ok(pid) = u32::try_from(ev.ident()) else {
                             continue;
                         };
+                        let read_ns = uptime_ns().unwrap_or(0);
+                        let exited = ev.fflags().contains(FilterFlag::NOTE_EXIT);
                         let parent = program_name(pid).unwrap_or_else(|| "?".into());
                         {
                             let mut g = lock(sh);
+                            g.record(read_ns, pid, TraceKind::Fork { exited });
                             g.stats.fork_events += 1;
                             *g.stats.fork_events_by_pid.entry(pid).or_default() += 1;
                             *g.stats.by_parent.entry(parent).or_default() += 1;
@@ -345,6 +450,12 @@ mod imp {
                         }
                         if adopt(kq, sh, pid) == 0 {
                             lock(sh).stats.fork_without_child += 1;
+                        }
+                    }
+                    Ok(EventFilter::EVFILT_PROC) if ev.fflags().contains(FilterFlag::NOTE_EXIT) => {
+                        if let Ok(pid) = u32::try_from(ev.ident()) {
+                            let t = uptime_ns().unwrap_or(0);
+                            lock(sh).record(t, pid, TraceKind::Exit);
                         }
                     }
                     _ => {}
@@ -381,7 +492,11 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use super::{ListFault, Stats};
+    use super::{ListFault, Stats, Trace};
+
+    pub fn uptime_ns() -> Option<u64> {
+        None
+    }
 
     pub fn start_time(_pid: u32) -> Option<u64> {
         None
@@ -413,12 +528,18 @@ mod imp {
         pub fn stats(&self) -> Stats {
             Stats::default()
         }
+        pub fn start_traced(_roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_with(&[], fault)
+        }
         pub fn adopted_parents(&self) -> std::collections::BTreeMap<u32, u32> {
             std::collections::BTreeMap::new()
+        }
+        pub fn trace(&self) -> Trace {
+            Trace::default()
         }
         /// Stop watching (nothing to stop here).
         pub fn stop(self) {}
     }
 }
 
-pub use imp::{program_name, start_time, ForkWatch};
+pub use imp::{program_name, start_time, uptime_ns, ForkWatch};

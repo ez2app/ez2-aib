@@ -16,7 +16,9 @@
 //! ADR 0005 timer rule does not apply here.
 #![allow(clippy::disallowed_methods)]
 
-use aib_procwatch::{program_name, start_time, ForkWatch, ListFault, Stats};
+use aib_procwatch::{
+    program_name, start_time, uptime_ns, ForkWatch, ListFault, Stats, Trace, TraceKind,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -260,9 +262,21 @@ fn planned_creations(pattern: &str, n: u64) -> Option<u64> {
 /// One process creation, as the generator records it: (parent pid, child pid).
 type Creation = (u32, u32);
 
-/// Start `gen-one <mode>`, which prints the pid of the child it creates.
-/// Returns both creations (us -> gen-one, gen-one -> its child).
-fn spawn_gen_one(mode: &str) -> Vec<Creation> {
+/// gen-one's own clock stamps (`CLOCK_UPTIME_RAW` ns, the watcher's clock):
+/// just before it started its child, when the start returned, and just before
+/// it returned from main. It was alive at least until `exiting`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamps {
+    before: u64,
+    spawned: u64,
+    exiting: u64,
+}
+
+/// Start `gen-one <mode>`, which prints the pid of the child it creates and
+/// its stamps. Returns both creations (us -> gen-one, gen-one -> its child)
+/// and the stamps line `T <gen-one> <child> <before> <spawned> <exiting>`
+/// when gen-one gave them.
+fn spawn_gen_one(mode: &str) -> (Vec<Creation>, Option<String>) {
     let me_pid = std::process::id();
     let Ok(c) = Command::new(me())
         .args(["gen-one", mode])
@@ -271,16 +285,23 @@ fn spawn_gen_one(mode: &str) -> Vec<Creation> {
         .stderr(Stdio::null())
         .spawn()
     else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let one = c.id();
     let mut v = vec![(me_pid, one)];
+    let mut stamps = None;
     if let Ok(out) = c.wait_with_output() {
-        if let Ok(k) = String::from_utf8_lossy(&out.stdout).trim().parse::<u32>() {
+        let line = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut it = line.split_whitespace();
+        if let Some(k) = it.next().and_then(|t| t.parse::<u32>().ok()) {
             v.push((one, k));
+            let t: Vec<&str> = it.collect();
+            if t.len() == 3 && t.iter().all(|x| x.parse::<u64>().is_ok()) {
+                stamps = Some(format!("T {one} {k} {} {} {}", t[0], t[1], t[2]));
+            }
         }
     }
-    v
+    (v, stamps)
 }
 
 fn spawn_true() -> Option<Creation> {
@@ -308,6 +329,7 @@ fn cmd_gen(args: &[String]) -> ExitCode {
     };
     let gap = Duration::from_millis(50);
     let mut created: Vec<Creation> = Vec::new();
+    let mut stamps: Vec<String> = Vec::new();
     match pattern {
         // one direct child per step
         "single" => {
@@ -319,14 +341,18 @@ fn cmd_gen(args: &[String]) -> ExitCode {
         // child that starts one grandchild and waits for it
         "grandchild" => {
             for _ in 0..n_first {
-                created.extend(spawn_gen_one("wait"));
+                let (c, t) = spawn_gen_one("wait");
+                created.extend(c);
+                stamps.extend(t);
                 std::thread::sleep(gap);
             }
         }
         // child that starts /bin/sleep in its own group and exits at once
         "mid-exit" => {
             for _ in 0..n_first {
-                created.extend(spawn_gen_one("detach"));
+                let (c, t) = spawn_gen_one("detach");
+                created.extend(c);
+                stamps.extend(t);
                 std::thread::sleep(gap);
             }
         }
@@ -376,10 +402,14 @@ fn cmd_gen(args: &[String]) -> ExitCode {
     for (p, c) in created {
         println!("C {p} {c}");
     }
+    for t in stamps {
+        println!("{t}");
+    }
     ExitCode::SUCCESS
 }
 
 fn cmd_gen_one(args: &[String]) -> ExitCode {
+    let before = uptime_ns();
     let child = match args.first().map(String::as_str) {
         Some("wait") => spawn_quiet(&mut Command::new("/usr/bin/true")).map(|mut c| {
             let k = c.id();
@@ -398,8 +428,25 @@ fn cmd_gen_one(args: &[String]) -> ExitCode {
         }
         _ => return ExitCode::from(2),
     };
+    let spawned = uptime_ns();
+    // Stamps only for `detach`: its child (sleep 2) outlives gen-one, so a
+    // listing that ends before `exiting` had the child under gen-one. A
+    // `wait` child may already be gone, so no stamps there (miss_cause then
+    // never says listed_but_absent for it).
+    let detach = args.first().map(String::as_str) == Some("detach");
     if let Some(k) = child {
-        println!("{k}");
+        match (before, spawned) {
+            // `exiting` is taken last, after the line is built: nothing of
+            // gen-one's own runs after it but the print and the return
+            (Some(b), Some(s)) if detach => {
+                let head = format!("{k} {b} {s}");
+                match uptime_ns() {
+                    Some(e) => println!("{head} {e}"),
+                    None => println!("{k}"),
+                }
+            }
+            _ => println!("{k}"),
+        }
     }
     ExitCode::SUCCESS
 }
@@ -511,20 +558,153 @@ fn missing_identities(
     adopted: &BTreeMap<u32, u32>,
     forks_by_pid: &BTreeMap<u32, u64>,
     roots: &[u32],
+    stamps: &BTreeMap<Creation, Stamps>,
+    trace: &Trace,
 ) -> Vec<Value> {
     created
         .iter()
         .filter(|(p, c)| adopted.get(c) != Some(p))
         .map(|(p, c)| {
+            let st = stamps.get(&(*p, *c)).copied();
             json!({
                 "parent": p,
                 "child": c,
                 "adopted_under": adopted.get(c),
                 "parent_watched": roots.contains(p) || adopted.contains_key(p),
                 "parent_fork_events": forks_by_pid.get(p).copied().unwrap_or(0),
+                "cause": miss_cause(*p, *c, adopted.get(c).copied(), st, trace),
+                "timeline": timeline(&[*p, *c], st, trace, 40),
             })
         })
         .collect()
+}
+
+/// `T <parent> <child> <before> <spawned> <exiting>` lines, by creation.
+fn parse_stamps(stdout: &str) -> BTreeMap<Creation, Stamps> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            (it.next() == Some("T")).then_some(())?;
+            let p = it.next()?.parse().ok()?;
+            let c = it.next()?.parse().ok()?;
+            let before = it.next()?.parse().ok()?;
+            let spawned = it.next()?.parse().ok()?;
+            let exiting = it.next()?.parse().ok()?;
+            Some((
+                (p, c),
+                Stamps {
+                    before,
+                    spawned,
+                    exiting,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// One listing of a parent: start, end, result.
+type Listing<'a> = (u64, u64, &'a Result<Vec<u32>, String>);
+
+/// Why a recorded creation's identity was not confirmed, worked out from the
+/// order of observations only (a63ab 11-10; PLAN-goal2-fixture §1.2). Never
+/// counts a miss as captured: the capture rate does not use it.
+///
+/// - `no_fork_event`: the watcher read no `NOTE_FORK` of the parent;
+/// - `listed_but_absent`: the parent's children were listed after its fork
+///   event, the listing ended before the parent's own `exiting` stamp (so the
+///   parent was alive and the child was its child), and the child was not in
+///   the list. Not a known blind spot: a tool problem;
+/// - `parent_exited_before_list`: every listing of the parent after its fork
+///   event started after its exit was observed (`NOTE_EXIT`, possibly in the
+///   same event as the fork) or failed with `gone`. The registered blind
+///   spot: the child was re-parented before it could be listed;
+/// - `unknown`: anything else (no trace, a dropped trace event, a listing
+///   that cannot be placed before or after the exit, the child adopted under
+///   another parent). Stays unverified.
+fn miss_cause(
+    p: u32,
+    c: u32,
+    adopted_under: Option<u32>,
+    stamps: Option<Stamps>,
+    trace: &Trace,
+) -> &'static str {
+    if !trace.enabled || trace.dropped > 0 || adopted_under.is_some() {
+        return "unknown";
+    }
+    let of_p = || trace.events.iter().filter(move |e| e.pid == p);
+    let Some(first_fork) = of_p()
+        .filter(|e| matches!(e.kind, TraceKind::Fork { .. }))
+        .map(|e| e.t_ns)
+        .min()
+    else {
+        return "no_fork_event";
+    };
+    let exit_seen = of_p()
+        .filter(|e| matches!(e.kind, TraceKind::Exit | TraceKind::Fork { exited: true }))
+        .map(|e| e.t_ns)
+        .min();
+    let lists: Vec<Listing<'_>> = of_p()
+        .filter(|e| e.t_ns >= first_fork)
+        .filter_map(|e| match &e.kind {
+            TraceKind::List { end_ns, result } => Some((e.t_ns, *end_ns, result)),
+            _ => None,
+        })
+        .collect();
+    if let Some(s) = stamps {
+        if lists
+            .iter()
+            .any(|(_, end, r)| *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c)))
+        {
+            return "listed_but_absent";
+        }
+    }
+    let after_exit = |t: u64, r: &Result<Vec<u32>, String>| {
+        matches!(r, Err(tag) if tag == "gone") || exit_seen.is_some_and(|x| x <= t)
+    };
+    if !lists.is_empty() && lists.iter().all(|(t, _, r)| after_exit(*t, *r)) {
+        return "parent_exited_before_list";
+    }
+    "unknown"
+}
+
+/// Up to `max` trace events of `pids`, oldest first, for a human to read.
+fn timeline(pids: &[u32], stamps: Option<Stamps>, trace: &Trace, max: usize) -> Value {
+    let mut ev: Vec<Value> = trace
+        .events
+        .iter()
+        .filter(|e| pids.contains(&e.pid))
+        .take(max)
+        .map(|e| match &e.kind {
+            TraceKind::Fork { exited } => {
+                json!({"t_ns": e.t_ns, "pid": e.pid, "event": "fork", "exited": exited})
+            }
+            TraceKind::Exit => json!({"t_ns": e.t_ns, "pid": e.pid, "event": "exit"}),
+            TraceKind::List { end_ns, result } => match result {
+                Ok(k) => json!({"t_ns": e.t_ns, "end_ns": end_ns, "pid": e.pid, "event": "list", "children": k}),
+                Err(tag) => json!({"t_ns": e.t_ns, "end_ns": end_ns, "pid": e.pid, "event": "list", "error": tag}),
+            },
+        })
+        .collect();
+    if let Some(s) = stamps {
+        ev.push(json!({"gen_one": {"before_ns": s.before, "spawned_ns": s.spawned, "exiting_ns": s.exiting}}));
+    }
+    Value::Array(ev)
+}
+
+/// Trace completeness: fork events of a watched pid with no listing of that
+/// pid at or after them (the listing step was not recorded). Must be 0.
+fn forks_without_listing(trace: &Trace) -> u64 {
+    trace
+        .events
+        .iter()
+        .filter(|f| matches!(f.kind, TraceKind::Fork { .. }))
+        .filter(|f| {
+            !trace.events.iter().any(|l| {
+                l.pid == f.pid && l.t_ns >= f.t_ns && matches!(l.kind, TraceKind::List { .. })
+            })
+        })
+        .count() as u64
 }
 
 /// Lines that look like records (`C …`) but do not parse.
@@ -575,7 +755,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             }
         },
     };
-    let w = match ForkWatch::start_with(&[], fault) {
+    let w = match ForkWatch::start_traced(&[], fault) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("aib-forkcount: {e}");
@@ -614,6 +794,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let stats = w.stats();
     let tracked = w.snapshot().len();
     let adopted = w.adopted_parents();
+    let trace = w.trace();
     w.stop();
     let (gen_rc, stdout) = match out {
         Ok(o) => (
@@ -625,7 +806,21 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let created = parse_creations(&stdout);
     let malformed = malformed_records(&stdout);
     let att = attribute(planned, &created, &adopted, &stats.fork_events_by_pid);
-    let missing = missing_identities(&created, &adopted, &stats.fork_events_by_pid, &[gen_pid]);
+    let stamps = parse_stamps(&stdout);
+    let missing = missing_identities(
+        &created,
+        &adopted,
+        &stats.fork_events_by_pid,
+        &[gen_pid],
+        &stamps,
+        &trace,
+    );
+    let mut causes: BTreeMap<&str, u64> = BTreeMap::new();
+    for m in &missing {
+        if let Some(c) = m["cause"].as_str() {
+            *causes.entry(c).or_default() += 1;
+        }
+    }
     let v = verdict(
         &att,
         Observed {
@@ -667,6 +862,15 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "meets_threshold": v.meets_threshold,
             "identity_confirmed": att.identity_confirmed,
             "missing_identities": missing,
+            "missing_causes": causes,
+            "missing_causes_definition": "order of observations only (watcher trace + gen-one stamps, CLOCK_UPTIME_RAW); never counted as captured",
+            "trace": {
+                "enabled": trace.enabled,
+                "events": trace.events.len(),
+                "dropped": trace.dropped,
+                "forks_without_listing": forks_without_listing(&trace),
+                "gen_one_stamps": stamps.len(),
+            },
             "count_consistency": rate(att.fixture_fork_events),
             "count_consistency_definition": "fork events from fixture parents / expected (proxy: no identity, coalesced)",
             "limits": "passing does not rule out unknown losses",
@@ -827,7 +1031,14 @@ mod tests {
         // adopted under another parent; 21's parent 20 was never watched
         let created = [(10, 11), (10, 12), (10, 13), (20, 21)];
         let adopted: BTreeMap<u32, u32> = [(11, 10), (13, 77)].into_iter().collect();
-        let v = missing_identities(&created, &adopted, &m(&[(10, 3)]), &[10]);
+        let v = missing_identities(
+            &created,
+            &adopted,
+            &m(&[(10, 3)]),
+            &[10],
+            &BTreeMap::new(),
+            &Trace::default(),
+        );
         assert_eq!(v.len(), 3, "{v:?}");
         assert_eq!(v[0]["child"], 12);
         assert_eq!(v[0]["adopted_under"], Value::Null);
@@ -837,6 +1048,162 @@ mod tests {
         assert_eq!(v[1]["adopted_under"], 77);
         assert_eq!(v[2]["parent"], 20);
         assert_eq!(v[2]["parent_watched"], false);
+        // no trace: nothing is explained
+        assert!(v.iter().all(|x| x["cause"] == "unknown"), "{v:?}");
+    }
+
+    // ---- miss causes (a63ab 11-10, PLAN-goal2-fixture §1.2) ----
+
+    use aib_procwatch::TraceEvent;
+
+    fn ev(t_ns: u64, pid: u32, kind: TraceKind) -> TraceEvent {
+        TraceEvent { t_ns, pid, kind }
+    }
+
+    fn list(t_ns: u64, end_ns: u64, pid: u32, kids: &[u32]) -> TraceEvent {
+        ev(
+            t_ns,
+            pid,
+            TraceKind::List {
+                end_ns,
+                result: Ok(kids.to_vec()),
+            },
+        )
+    }
+
+    fn tr(events: Vec<TraceEvent>) -> Trace {
+        Trace {
+            events,
+            dropped: 0,
+            enabled: true,
+        }
+    }
+
+    fn st(exiting: u64) -> Option<Stamps> {
+        Some(Stamps {
+            before: 1,
+            spawned: 2,
+            exiting,
+        })
+    }
+
+    #[test]
+    fn exit_read_with_the_fork_is_the_registered_blind_spot() {
+        let t = tr(vec![
+            ev(100, 7, TraceKind::Fork { exited: true }),
+            list(101, 102, 7, &[]),
+        ]);
+        assert_eq!(
+            miss_cause(7, 8, None, st(90), &t),
+            "parent_exited_before_list"
+        );
+    }
+
+    #[test]
+    fn a_listing_while_the_parent_was_alive_is_a_tool_problem() {
+        // knife 2 of the plan: the parent's own stamp says it was alive until
+        // 120, the listing ended at 102 without the child; the exit comes
+        // later. This must never read as the blind spot.
+        let t = tr(vec![
+            ev(100, 7, TraceKind::Fork { exited: false }),
+            list(101, 102, 7, &[]),
+            ev(150, 7, TraceKind::Exit),
+            list(151, 152, 7, &[]),
+        ]);
+        assert_eq!(miss_cause(7, 8, None, st(120), &t), "listed_but_absent");
+    }
+
+    #[test]
+    fn a_listing_that_cannot_be_placed_is_unknown() {
+        // ended after the parent's last stamp, started before its exit was seen
+        let t = tr(vec![
+            ev(100, 7, TraceKind::Fork { exited: false }),
+            list(101, 130, 7, &[]),
+            ev(140, 7, TraceKind::Exit),
+        ]);
+        assert_eq!(miss_cause(7, 8, None, st(120), &t), "unknown");
+        // without stamps an early listing is never called a tool problem
+        assert_eq!(miss_cause(7, 8, None, None, &t), "unknown");
+    }
+
+    #[test]
+    fn a_gone_listing_counts_as_after_the_exit_other_errors_do_not() {
+        let gone = |tag: &str| {
+            tr(vec![
+                ev(100, 7, TraceKind::Fork { exited: false }),
+                ev(
+                    101,
+                    7,
+                    TraceKind::List {
+                        end_ns: 102,
+                        result: Err(tag.into()),
+                    },
+                ),
+            ])
+        };
+        assert_eq!(
+            miss_cause(7, 8, None, st(99), &gone("gone")),
+            "parent_exited_before_list"
+        );
+        assert_eq!(miss_cause(7, 8, None, st(99), &gone("os_error")), "unknown");
+    }
+
+    #[test]
+    fn no_fork_event_no_trace_or_a_dropped_trace() {
+        let t = tr(vec![list(101, 102, 7, &[])]);
+        assert_eq!(miss_cause(7, 8, None, st(120), &t), "no_fork_event");
+        let mut d = tr(vec![ev(100, 7, TraceKind::Fork { exited: true })]);
+        d.dropped = 1;
+        assert_eq!(miss_cause(7, 8, None, st(90), &d), "unknown");
+        assert_eq!(miss_cause(7, 8, None, st(90), &Trace::default()), "unknown");
+        // adopted under another parent: not explained here
+        let t = tr(vec![
+            ev(100, 7, TraceKind::Fork { exited: true }),
+            list(101, 102, 7, &[]),
+        ]);
+        assert_eq!(miss_cause(7, 8, Some(77), st(90), &t), "unknown");
+    }
+
+    #[test]
+    fn listings_before_the_fork_event_do_not_decide() {
+        // a listing at adoption time, before the child existed, is ignored
+        let t = tr(vec![
+            list(50, 51, 7, &[]),
+            ev(100, 7, TraceKind::Fork { exited: true }),
+            list(101, 102, 7, &[]),
+        ]);
+        assert_eq!(
+            miss_cause(7, 8, None, st(120), &t),
+            "parent_exited_before_list"
+        );
+    }
+
+    #[test]
+    fn a_fork_with_no_listing_after_it_is_counted() {
+        let t = tr(vec![
+            list(50, 51, 7, &[]),
+            ev(100, 7, TraceKind::Fork { exited: false }),
+            ev(110, 9, TraceKind::Fork { exited: false }),
+            list(111, 112, 9, &[]),
+        ]);
+        assert_eq!(forks_without_listing(&t), 1);
+    }
+
+    #[test]
+    fn stamp_lines_parse_and_bad_ones_are_skipped() {
+        let s = parse_stamps("C 1 2\nT 2 3 10 20 30\nT 2 x 1 2 3\nT 4 5 1 2\n");
+        assert_eq!(s.len(), 1);
+        assert_eq!(
+            s.get(&(2, 3)),
+            Some(&Stamps {
+                before: 10,
+                spawned: 20,
+                exiting: 30
+            })
+        );
+        // a T line is not a creation record
+        assert_eq!(parse_creations("T 2 3 10 20 30\n"), vec![]);
+        assert_eq!(malformed_records("T 2 3 10 20 30\n"), 0);
     }
 
     #[test]

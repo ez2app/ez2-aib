@@ -192,6 +192,17 @@ jobs:
             '        let a_p = (adopted.values().filter(|q| *q == p).count() as u64).min(c_p); // knife' \
             --expect-fail one_missed_and_one_foreign_is_caught_although_totals_match \
             -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KT1 procwatch trace (a63ab 11-10): the listing is not recorded, so a miss cannot be explained
+          fc crates/aib-procwatch/src/lib.rs \
+            '            g.record(t0, ppid, TraceKind::List { end_ns, result });' \
+            '            let _ = (t0, end_ns, result); // knife' \
+            calibrate_mid_exit_trace_explains_every_miss
+          # KT2 forkcount: the parent's own stamp is ignored, so a listing while it was alive is never a tool problem
+          python3 -I scripts/knife.py crates/aib-forkcount/src/main.rs \
+            '            .any(|(_, end, r)| *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c)))' \
+            '            .any(|(_, end, r)| s.exiting == 0 && *end <= s.exiting && matches!(r, Ok(k) if !k.contains(&c))) // knife' \
+            --expect-fail a_listing_while_the_parent_was_alive_is_a_tool_problem \
+            -- cargo test -p aib-forkcount --locked --bin aib-forkcount
           # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
           python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
             '    if need < 0 || (need == 0 && errno() != 0) {' \
