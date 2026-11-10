@@ -1188,11 +1188,17 @@ mod tests {
     #[test]
     fn h14_the_entry_sudoers_file_is_the_generated_one() {
         use crate::roster::{parse, sudoers_file};
+        let key = |c: u8| {
+            alloc::format!(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI{}",
+                core::iter::repeat_n(char::from(c), 43).collect::<String>()
+            )
+        };
         let roster = json!({ "tenant_id": "t-aaa", "members": [
             { "identity_id": "m-01", "roles": ["owner"], "scope": "tenant", "keys": [
-                { "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "use": "entry", "added": "2026-11-11T00:00:00Z" }] },
+                { "public_key": key(b'A'), "use": "entry", "added": "2026-11-11T00:00:00Z" }] },
             { "identity_id": "m-02", "roles": ["editor", "analyst"], "scope": ["site2", "site3"], "keys": [
-                { "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
+                { "public_key": key(b'B'), "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
         let roster = parse(&roster.to_string(), &["site2", "site3"]).unwrap();
         let good = sudoers_file(&[roster]).unwrap();
         fn seen(text: &str) -> EntrySudoers<'_> {
