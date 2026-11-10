@@ -381,6 +381,10 @@ const WEB_POLL: Duration = Duration::from_secs(1);
 ///
 /// The y/N answer comes from this terminal, which an AI running as the same account can
 /// also answer: that is why pairing is off unless `AIBD_PAIRING=terminal-unverified`.
+///
+/// The poll sleep is a short-lived interactive client wait (bounded by the code's lifetime),
+/// not a recurring daemon timer (ADR 0005), same as `watch_with_grace`.
+#[allow(clippy::disallowed_methods)]
 fn web(
     c: &Client,
     open: bool,
