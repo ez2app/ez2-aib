@@ -127,7 +127,7 @@ impl T {
 
     async fn redeem(&self, code: &str) -> R {
         self.redeem_raw(
-            Some("null"),
+            Some(OWN),
             "application/x-www-form-urlencoded",
             &format!("code={code}"),
         )
@@ -353,7 +353,8 @@ async fn cancel_in_the_terminal_and_revoke_on_the_page_both_end_the_credential()
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     let short = t.short_code(&id).await;
-    assert!(short.is_empty() || t.confirm(&id, &short).await.status != StatusCode::OK);
+    assert!(short.is_empty(), "no short code after cancel");
+    assert_ne!(t.confirm(&id, "000000").await.status, StatusCode::OK);
     assert_eq!(
         t.call("GET", "/api/v1/pair/status", Some(&cred), None)
             .await
@@ -405,7 +406,7 @@ async fn every_redeem_failure_says_the_same_thing() {
         "code=a&code=b".to_string(),
     ] {
         let r = t
-            .redeem_raw(Some("null"), "application/x-www-form-urlencoded", &body)
+            .redeem_raw(Some(OWN), "application/x-www-form-urlencoded", &body)
             .await;
         assert_ne!(r.status, StatusCode::OK, "{body}");
         seen.insert(r.json["message"].as_str().unwrap().to_string());
@@ -424,6 +425,8 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
         Some("http://127.0.0.1:1"),
         Some("http://evil.example"),
         Some("http://localhost:1"),
+        // `null` waits for P2: today it would let any page's sandboxed frame in (043dd L1)
+        Some("null"),
         None,
     ] {
         let r = t.redeem_raw(o, ctype, &form).await;
@@ -433,7 +436,7 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
     // JSON or another content type
     let r = t
         .redeem_raw(
-            Some("null"),
+            Some(OWN),
             "application/json",
             &format!("{{\"code\":\"{code}\"}}"),
         )
@@ -441,7 +444,7 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     // over 1 KiB
     let big = format!("code={code}&pad={}", "x".repeat(1100));
-    let r = t.redeem_raw(Some("null"), ctype, &big).await;
+    let r = t.redeem_raw(Some(OWN), ctype, &big).await;
     assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
     // a GET, with or without the code in the query
     let get = |uri: String| {
@@ -449,7 +452,7 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
             .method("GET")
             .uri(uri)
             .header("host", format!("127.0.0.1:{PORT}"))
-            .header("origin", "null")
+            .header("origin", OWN)
             .body(Body::empty())
             .unwrap()
     };
@@ -466,7 +469,7 @@ async fn redeem_takes_only_a_small_form_from_null_or_its_own_origin() {
 }
 
 #[tokio::test]
-async fn null_origin_is_refused_everywhere_but_redeem() {
+async fn null_origin_is_refused_everywhere() {
     // even when someone lists "null" as an allowed origin: it identifies nothing
     let t = app_with(&["null"]);
     for (m, p) in [
@@ -474,6 +477,7 @@ async fn null_origin_is_refused_everywhere_but_redeem() {
         ("GET", "/api/v1/events"),
         ("POST", "/api/v1/pair/codes"),
         ("GET", "/api/v1/pair/status"),
+        ("POST", "/api/v1/pair/redeem"),
     ] {
         let r = t
             .send(
@@ -501,7 +505,7 @@ async fn redeem_still_checks_host_against_dns_rebinding() {
                 .method("POST")
                 .uri("/api/v1/pair/redeem")
                 .header("host", "evil.example:47771")
-                .header("origin", "null")
+                .header("origin", OWN)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(format!("code={code}")))
                 .unwrap(),
@@ -581,8 +585,23 @@ async fn pairing_is_off_unless_turned_on() {
         .call("POST", "/api/v1/pair/codes", Some(TOKEN), None)
         .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // off means off: redeem matches nothing and counts nothing (043dd A4 L2)
+    let r = t
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/pair/redeem")
+                .header("host", format!("127.0.0.1:{PORT}"))
+                .header("origin", OWN)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("code=00000-00000"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
     let m = t.call("GET", "/api/v1/metrics", Some(TOKEN), None).await;
     assert_eq!(m.json["pairing"]["channel"], "off");
+    assert_eq!(m.json["pairing"]["failures_total"], 0);
 }
 
 #[tokio::test]
@@ -638,6 +657,48 @@ async fn a_confirmed_page_can_only_read_and_never_send_argv() {
     // and the page can still revoke itself
     let r = t.call("POST", "/api/v1/pair/revoke", Some(&cred), None).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_flood_of_wrong_codes_never_blocks_a_waiting_confirmation() {
+    // 043dd A4 M1: any page can fill the redeem failure limit; the person's terminal
+    // confirmation (start-up token) must still go through
+    let t = app();
+    let (id, _code, cred) = t.paired().await;
+    for _ in 0..MAX_FAILURES + 3 {
+        t.redeem("00000-00000").await;
+    }
+    let (_id2, code2) = t.new_code().await;
+    assert_eq!(t.redeem(&code2).await.status, StatusCode::TOO_MANY_REQUESTS);
+    let short = t.short_code(&id).await;
+    let r = t.confirm(&id, &short).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let ev = t.call("GET", "/api/v1/events", Some(&cred), None).await;
+    assert_eq!(ev.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_page_credential_in_the_url_is_refused() {
+    let t = app();
+    let (id, _code, cred) = t.paired().await;
+    let short = t.short_code(&id).await;
+    assert_eq!(t.confirm(&id, &short).await.status, StatusCode::OK);
+    for p in [
+        format!("/api/v1/events?cursor=0&x={cred}"),
+        format!("/api/v1/events?cursor={cred}"),
+        format!("/api/v1/sessions/{cred}"),
+        format!("/api/v1/sessions/{}", cred.replace('-', "%2D")),
+    ] {
+        let r = t.call("GET", &p, Some(&cred), None).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{p}");
+        assert_eq!(code_of(&r), "token_in_url", "{p}");
+    }
+    // a 43-character value that is no credential is fine
+    let fake = "A".repeat(43);
+    let r = t
+        .call("GET", &format!("/api/v1/events?x={fake}"), Some(&cred), None)
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
 }
 
 #[tokio::test]

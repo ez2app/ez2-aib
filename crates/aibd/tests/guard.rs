@@ -301,7 +301,8 @@ async fn metrics_needs_the_token_and_reports_lineage() {
         serde_json::json!({"lineage": {
             "enabled": false, "selfcheck": "test", "failures": 0, "orphan_candidates_extra": 0
         }, "pairing": {
-            "channel": "off", "failures_total": 0, "rate_limited_total": 0, "pairs": 0
+            "channel": "off", "failures_total": 0, "rate_limited_total": 0,
+            "confirm_failures_total": 0, "pairs": 0
         }})
     );
 }

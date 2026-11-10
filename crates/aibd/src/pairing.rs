@@ -136,12 +136,21 @@ pub enum PairError {
 }
 
 /// Returned to `aib web` once (the code is never stored in clear).
-#[derive(Debug)]
 pub struct NewCode {
     pub pair_id: String,
     /// `XXXXX-XXXXX`
     pub code: String,
     pub expires_in: u64,
+}
+
+impl std::fmt::Debug for NewCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewCode")
+            .field("pair_id", &self.pair_id)
+            .field("code", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 /// Returned to the page once (the credential is never stored in clear).
@@ -236,6 +245,8 @@ struct Inner {
     /// guesses shows up here).
     failures_total: u64,
     rate_limited_total: u64,
+    /// Wrong / late confirmations; a bucket of its own (043dd A4 M1).
+    confirm_failures_total: u64,
     /// Bumped on every revocation; the event stream (A1) closes a credential's streams
     /// when it sees the credential gone after a bump.
     revocations: u64,
@@ -342,6 +353,7 @@ impl Pairing {
             "channel": self.channel.as_str(),
             "failures_total": inner.failures_total,
             "rate_limited_total": inner.rate_limited_total,
+            "confirm_failures_total": inner.confirm_failures_total,
             "pairs": inner.pairs.len(),
         })
     }
@@ -415,8 +427,8 @@ impl Pairing {
         if self.channel == ConfirmChannel::Off {
             return Err(PairError::Off);
         }
-        let now = (self.clock)();
         let mut inner = self.lock();
+        let now = (self.clock)(); // after the lock: waiting for it never uses an old now
         Self::purge(&mut inner, now);
         if inner.pairs.len() >= MAX_PAIRS {
             return Err(PairError::Full);
@@ -445,8 +457,12 @@ impl Pairing {
     /// `POST /api/v1/pair/redeem`. Atomic: of any number of redemptions of one code, at
     /// most one succeeds; any second one revokes the credential the first one got.
     pub fn redeem(&self, presented: &str) -> Result<Redeemed, PairError> {
-        let now = (self.clock)();
+        if self.channel == ConfirmChannel::Off {
+            // off means off: no matching, no failure counted (043dd A4 L2)
+            return Err(PairError::Off);
+        }
         let mut inner = self.lock();
+        let now = (self.clock)(); // after the lock: waiting for it never uses an old now
         Self::purge(&mut inner, now);
         if Self::limited(&mut inner) {
             return Err(PairError::RateLimited);
@@ -467,6 +483,10 @@ impl Pairing {
         let Some(p) = inner.pairs.get(&id) else {
             return Err(Self::fail(&mut inner, now, PairError::Failed));
         };
+        if p.stored == Stored::Revoked && p.cred.is_none() {
+            // cancelled or expired before anyone redeemed it: a dead code, not a reuse
+            return Err(Self::fail(&mut inner, now, PairError::Failed));
+        }
         if p.stored != Stored::Issued {
             // second use, whatever the first one's state: revoke what it got
             Self::revoke(&mut inner, &id);
@@ -502,9 +522,9 @@ impl Pairing {
     /// The guard's lookup: `Some` only for a credential that is awaiting confirmation or
     /// confirmed and in time.
     pub fn access(&self, presented: &str) -> Option<PageAccess> {
-        let now = (self.clock)();
         let digest = sha(presented.as_bytes());
         let mut inner = self.lock();
+        let now = (self.clock)();
         Self::purge(&mut inner, now);
         // constant time over every stored digest: no early exit, no hash-table probe
         let mut found: Option<&String> = None;
@@ -529,8 +549,8 @@ impl Pairing {
 
     /// `GET /api/v1/pair/status` (the page's own credential).
     pub fn status(&self, digest: &Hash) -> Option<PairView> {
-        let now = (self.clock)();
         let mut inner = self.lock();
+        let now = (self.clock)(); // after the lock: waiting for it never uses an old now
         Self::purge(&mut inner, now);
         let id = inner.creds.get(digest)?;
         inner.pairs.get(id).map(|p| p.view(now))
@@ -546,8 +566,8 @@ impl Pairing {
 
     /// `GET /api/v1/pair/codes/{pair_id}` (start-up token only).
     pub fn view(&self, pair_id: &str) -> Option<PairView> {
-        let now = (self.clock)();
         let inner = self.lock();
+        let now = (self.clock)();
         inner.pairs.get(pair_id).map(|p| p.view(now))
     }
 
@@ -555,17 +575,17 @@ impl Pairing {
     /// `aib web` after the person answered that the page shows the same short code.
     /// A wrong short code revokes the credential (fail closed).
     pub fn confirm(&self, pair_id: &str, short_code: &str) -> Result<(), PairError> {
-        let now = (self.clock)();
         let mut inner = self.lock();
+        let now = (self.clock)(); // after the lock: waiting for it never uses an old now
         Self::purge(&mut inner, now);
-        if Self::limited(&mut inner) {
-            return Err(PairError::RateLimited);
-        }
+        // confirm has no shared rate limit: anyone can fill the redeem bucket (any web page),
+        // and confirm needs the start-up token; a wrong short code revokes (043dd A4 M1)
         let Some(p) = inner.pairs.get(pair_id) else {
             return Err(PairError::NotFound);
         };
         if p.state(now) != PairState::AwaitingConfirmation {
-            return Err(Self::fail(&mut inner, now, PairError::Failed));
+            inner.confirm_failures_total += 1;
+            return Err(PairError::Failed);
         }
         let ok: bool = p
             .short_code
@@ -574,7 +594,8 @@ impl Pairing {
             .into();
         if !ok {
             Self::revoke(&mut inner, pair_id);
-            return Err(Self::fail(&mut inner, now, PairError::Failed));
+            inner.confirm_failures_total += 1;
+            return Err(PairError::Failed);
         }
         if let Some(p) = inner.pairs.get_mut(pair_id) {
             p.stored = Stored::Confirmed;
@@ -666,6 +687,7 @@ mod tests {
         assert_eq!(c.code.len(), CODE_LEN + 1);
         assert_eq!(&c.code[5..6], "-");
         assert_eq!(c.expires_in, CODE_TTL.as_secs());
+        assert!(!format!("{c:?}").contains(&c.code[..5]));
         assert_eq!(normalize_code("abcde-fghjk").as_deref(), Some("ABCDEFGHJK"));
         assert_eq!(normalize_code("ilo00 11111").as_deref(), Some("1100011111"));
         for bad in ["", "ABCDEFGHJ", "ABCDEFGHJKM", "ABCDEFGHJU", "ÄBCDEFGHJK"] {
@@ -684,6 +706,21 @@ mod tests {
         assert!(p.lock().pairs[&c.pair_id].short_code.is_empty());
         p.redeem(&c.code).unwrap();
         assert_eq!(p.view(&c.pair_id).unwrap().short_code.unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_dead_code_is_a_failure_not_a_reuse() {
+        let p = on();
+        let c = p.create_code().unwrap();
+        assert!(p.cancel(&c.pair_id));
+        assert_eq!(p.redeem(&c.code).unwrap_err(), PairError::Failed);
+    }
+
+    #[test]
+    fn redeem_is_off_when_pairing_is_off() {
+        let p = Pairing::default();
+        assert_eq!(p.redeem("00000-00000").unwrap_err(), PairError::Off);
+        assert_eq!(p.metrics()["failures_total"], 0);
     }
 
     #[test]

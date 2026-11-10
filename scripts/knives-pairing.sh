@@ -38,10 +38,10 @@ k "$P" '        let hit = inner.failures.len() >= MAX_FAILURES;' \
 # P7 `Origin: null` passes elsewhere once someone lists it as allowed
 k "$G" '            Some("null") => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")),' \
        '            Some("null") if false => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")), // knife' \
-  null_origin_is_refused_everywhere_but_redeem
+  null_origin_is_refused_everywhere
 # P8 redeem takes any http origin (a hostile page on another local port)
-k "$G" '            o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
-       '            o == "null" || o.starts_with("http") || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)) // knife' \
+k "$G" 'cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))' \
+       '(o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))) /* knife */' \
   redeem_takes_only_a_small_form_from_null_or_its_own_origin
 # P9 a query string on a pairing path is accepted
 k "$G" '    if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {' \
@@ -91,4 +91,20 @@ k "$G" '    if !reads && path != PAIR_REVOKE {' \
 kl "$P" '            p.short_code = short_code;' \
         '            let _ = &short_code; // knife: keeps the create-time empty code' \
   the_short_code_exists_only_after_redemption
-echo "pairing knives: 20/20 bite"
+# P21 confirm shares the redeem failure limit again (any page can block the person; 043dd M1)
+k "$P" '        // confirm has no shared rate limit: anyone can fill the redeem bucket (any web page),' \
+       '        if Self::limited(&mut inner) { return Err(PairError::RateLimited); } // knife' \
+  a_flood_of_wrong_codes_never_blocks_a_waiting_confirmation
+# P22 redeem runs and counts failures while pairing is off (043dd L2)
+k "$P" $'            // off means off: no matching, no failure counted (043dd A4 L2)\n            return Err(PairError::Off);' \
+       '            // knife: redeem runs while off' \
+  pairing_is_off_unless_turned_on
+# P23 a page credential in the URL passes (043dd L5)
+k "$G" '    if page_credential_in_url(cfg, raw_path, req.uri().query()) {' \
+       '    if page_credential_in_url(cfg, raw_path, req.uri().query()) && false { // knife' \
+  a_page_credential_in_the_url_is_refused
+# P24 a cancelled, never redeemed code counts as a reuse (043dd N2)
+kl "$P" '        if p.stored == Stored::Revoked && p.cred.is_none() {' \
+        '        if p.stored == Stored::Revoked && p.cred.is_none() && false { // knife' \
+  a_dead_code_is_a_failure_not_a_reuse
+echo "pairing knives: 24/24 bite"

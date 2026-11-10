@@ -184,6 +184,26 @@ fn query_has_credential(query: &str, token: &Token) -> bool {
     names_hit || value_hit
 }
 
+/// A live page credential anywhere in the path or the query (each segment / value raw,
+/// decoded once and twice). Only 43-character candidates (base64url of 32 bytes) are
+/// hashed and looked up, so this costs nothing on ordinary URLs (043dd A4 L5).
+fn page_credential_in_url(cfg: &GuardConfig, path: &str, query: Option<&str>) -> bool {
+    let parts = path
+        .split('/')
+        .chain(query.into_iter().flat_map(|q| q.split('&')))
+        .flat_map(|p| p.split('='));
+    for part in parts {
+        let once = form_decode(part);
+        let twice = form_decode(&once);
+        for cand in [part, once.as_str(), twice.as_str()] {
+            if cand.len() == 43 && cfg.pairing.access(cand).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The path as it may be logged: a known route, or a fixed placeholder.
 pub fn loggable_path(path: &str) -> &'static str {
     LOGGED_ROUTES
@@ -261,10 +281,11 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     let origin = single_header(h, header::ORIGIN)
         .map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
     if path == PAIR_REDEEM {
-        // a browser form POST always sends Origin: `null` from a local file, or ours
-        let ok = origin.is_some_and(|o| {
-            o == "null" || cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o))
-        });
+        // W1: the person types the code into a page aibd serves, so the form comes from our
+        // own origin. `null` (the P2 local-file form) is not taken until P2 is built: today
+        // it would only let any web page's sandboxed frame fill the failure limit (043dd L1)
+        let ok =
+            origin.is_some_and(|o| cfg.own_origins.iter().any(|a| a.eq_ignore_ascii_case(o)));
         if !ok {
             return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"));
         }
@@ -300,6 +321,13 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
                 "credentials must not be sent in the URL",
             ));
         }
+    }
+
+    if page_credential_in_url(cfg, raw_path, req.uri().query()) {
+        return Err((
+            ErrorCode::TokenInUrl,
+            "credentials must not be sent in the URL",
+        ));
     }
 
     if path.starts_with("/api/v1/pair/") && req.uri().query().is_some() {
