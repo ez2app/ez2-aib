@@ -133,6 +133,8 @@ pub struct Report {
     /// Candidates whose environment could not be read (or was empty): they
     /// might be ours, so the cancel cannot be `observed_clean`. Never signalled.
     pub candidates_unreadable: Vec<u32>,
+    /// F: the process name of each `candidates_unreadable` pid, same order.
+    pub candidates_unreadable_comm: Vec<String>,
     /// The candidate list itself was read in full.
     pub candidates_complete: bool,
     /// G1: candidates only the widened orphan check added (a child of the
@@ -241,6 +243,7 @@ struct CandidateCheck {
     extra: usize,
     complete: bool,
     unreadable: Vec<u32>,
+    unreadable_comm: Vec<String>,
     marked_alive: Vec<u32>,
 }
 
@@ -1009,6 +1012,7 @@ impl TreeHandle {
             containment_proven: false,
             candidates: check.count,
             candidates_unreadable: check.unreadable,
+            candidates_unreadable_comm: check.unreadable_comm,
             candidates_complete: check.complete,
             orphan_candidates_extra: check.extra,
             known_gaps: self.gaps.iter().copied().collect(),
@@ -1050,7 +1054,11 @@ impl TreeHandle {
         for pid in c.pids {
             match sys.process(Pid::from_u32(pid)) {
                 None => {} // gone since the list was read
-                Some(p) if p.environ().is_empty() => out.unreadable.push(pid),
+                Some(p) if p.environ().is_empty() => {
+                    out.unreadable.push(pid);
+                    out.unreadable_comm
+                        .push(p.name().to_string_lossy().into_owned());
+                }
                 Some(p)
                     if p.environ()
                         .iter()
