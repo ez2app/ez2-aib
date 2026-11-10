@@ -35,6 +35,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   without using up the code and without counting as a failure. Back / bfcache / session
   restore of the exchange page are not tested in a real browser yet (needed before turning
   pairing on by default).
+- Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
+  `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
+  and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`
+  (new code, `Retry-After: 600`, not queued) and the queue holds. Nothing sets the hooks yet,
+  so behaviour is unchanged until the guard is wired in.
 - Session queue (ADR 0005 §5): when every slot is taken a POST is no longer refused with
   `429 too_many_sessions`; it answers `202` with the session `pending` (no process, `pid` 0,
   event `session.queued` with its `position`). Waiting sessions start in arrival order as
