@@ -1798,6 +1798,25 @@ jobs:
           hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
              '        if let Some(i) = at(CreateStep::Health) { // knife' \
              an_unreadable_entry_stops_at_the_entry_step
+          # E1 e1a 11-12: the limits step gives net0 a locally administered address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             the_limits_step_gives_net0_a_local_address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             a_platform_address_shown_after_the_limits_is_refused
+          hk sitecreatecmd.rs '    let first = (raw[0] & 0xFC) | 0x02;' \
+             '    let first = raw[0] | 0x02; // knife' \
+             a_local_hardware_address_is_made_of_any_six_bytes
+          hk sitecreatecmd.rs '            main = false;' \
+             '            main = !line.is_empty(); // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs '                            format!("{lead}hwaddr={mac}")' \
+             '                            format!("{}hwaddr={mac}", lead.trim()) // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs "    if !text.ends_with('\\n') {" \
+             '    if false { // knife' \
+             only_the_main_net0_hwaddr_is_replaced
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

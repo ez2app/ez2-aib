@@ -1099,9 +1099,22 @@ fn limits_step(
     let conf = paths.lxc_conf.join(format!("{}.conf", spec.ct));
     let text =
         fs::read_to_string(&conf).map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
-    write_via_tmp(&conf, &with_pids(&text, spec.limits.pids_max))
-        .map_err(|e| format!("limits_failed: {e}"))?;
-    // TODO(ct-mask2): the container settings of the host-information mask
+    let mut text = with_pids(&text, spec.limits.pids_max);
+    // The clone keeps the template's platform address on net0; ready_to_start refuses it
+    // (c477a B2 L2), so every opening stopped at the firewall (e1a 11-12). The address is
+    // made locally administered here, before the first start. An address that is local
+    // already is left as it is, so a carried-on opening writes nothing new.
+    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {
+        let raw: [u8; 6] = runner
+            .random(6)
+            .map_err(|e| format!("limits_failed: {e}"))?
+            .try_into()
+            .map_err(|_| "limits_failed: random: not six bytes".to_owned())?;
+        text = with_net0_hwaddr(&text, &local_hwaddr(raw))
+            .ok_or("limits_failed: net0 hwaddr could not be replaced")?;
+    }
+    write_via_tmp(&conf, &text).map_err(|e| format!("limits_failed: {e}"))?;
+    // TODO(ct-mask2): the rest of the host-information mask's container settings
     // (aib_cloud::mask, branch feat/aib-cloud-ct-mask2) are written here, in the limits
     // step, once that branch is in main
     let shown = runner
@@ -1109,10 +1122,13 @@ fn limits_step(
         .map_err(|e| format!("limits_unchecked: pct config: {e}"))?;
     let differ = aib_cloud::site::limits_differ(spec, &shown)
         .map_err(|e| format!("limits_unchecked: {e:?}"))?;
-    if differ.is_empty() {
+    let mut keys: Vec<&str> = differ.iter().map(|d| d.key.as_str()).collect();
+    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) {
+        keys.push("hwaddr");
+    }
+    if keys.is_empty() {
         Ok(())
     } else {
-        let keys: Vec<&str> = differ.iter().map(|d| d.key.as_str()).collect();
         Err(format!("limits_not_applied: {}", keys.join(",")))
     }
 }
@@ -1185,6 +1201,62 @@ pub fn net0_hwaddr(config: &str) -> Option<String> {
         .split(',')
         .find_map(|p| p.trim().strip_prefix("hwaddr="))
         .map(str::to_owned)
+}
+
+/// A hardware address for a site CT out of six random bytes: unicast and locally
+/// administered (the low two bits of the first byte are `10`), so no vendor prefix names
+/// the platform. Upper-case hex, as the platform writes them.
+///
+/// TODO(ct-mask2): the same function as `aib_cloud::mask::local_hwaddr` on branch
+/// feat/aib-cloud-ct-mask2 (#672), brought ahead for the limits step; one of the two goes
+/// when that branch is in main.
+pub fn local_hwaddr(raw: [u8; 6]) -> String {
+    let first = (raw[0] & 0xFC) | 0x02;
+    format!(
+        "{first:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        raw[1], raw[2], raw[3], raw[4], raw[5]
+    )
+}
+
+/// `text` (a container's configuration file) with the `hwaddr=` of the main section's
+/// `net0` set to `mac`; every other field of that line, and every other line, as it was.
+/// `None`: the main section has no `net0` or its `net0` no `hwaddr=`.
+pub fn with_net0_hwaddr(text: &str, mac: &str) -> Option<String> {
+    let mut done = false;
+    let mut main = true;
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with('[') {
+            main = false;
+        }
+        match line.strip_prefix("net0:") {
+            Some(value) if main && !done => {
+                let fields: Vec<String> = value
+                    .split(',')
+                    .map(|f| {
+                        if f.trim().starts_with("hwaddr=") {
+                            done = true;
+                            let lead = &f[..f.len() - f.trim_start().len()];
+                            format!("{lead}hwaddr={mac}")
+                        } else {
+                            f.to_owned()
+                        }
+                    })
+                    .collect();
+                if !done {
+                    return None;
+                }
+                out.push_str("net0:");
+                out.push_str(&fields.join(","));
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    done.then_some(out)
 }
 
 /// Before the first start: `net0` must carry a locally administered address (c477a B2
@@ -3062,6 +3134,194 @@ mod tests {
             Some("02:5A:00:12:34:56")
         );
         assert_eq!(net0_hwaddr("[s]\nnet0: hwaddr=02:5A:00:12:34:56\n"), None);
+    }
+
+    #[test]
+    fn a_local_hardware_address_is_made_of_any_six_bytes() {
+        assert_eq!(
+            local_hwaddr([0xBC, 0x24, 0x11, 0xAA, 0xBB, 0xCC]),
+            "BE:24:11:AA:BB:CC"
+        );
+        assert_eq!(local_hwaddr([0xFF; 6]), "FE:FF:FF:FF:FF:FF");
+        assert_eq!(local_hwaddr([0; 6]), "02:00:00:00:00:00");
+        for b in 0..=255u8 {
+            let mac = local_hwaddr([b, 1, 2, 3, 4, 5]);
+            assert!(mac_is_local(&mac), "{b}: {mac}");
+        }
+    }
+
+    #[test]
+    fn only_the_main_net0_hwaddr_is_replaced() {
+        let conf = "arch: amd64\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.41/24,type=veth\nmemory: 512\n\n[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n";
+        let out = with_net0_hwaddr(conf, "02:11:22:33:44:55").unwrap();
+        assert_eq!(
+            out,
+            conf.replacen("hwaddr=BC:24:11:AA:BB:CC", "hwaddr=02:11:22:33:44:55", 1),
+            "every other field and line as it was; the snapshot untouched"
+        );
+        // no trailing newline in, none out
+        assert_eq!(
+            with_net0_hwaddr(
+                "net0: name=eth0,hwaddr=BC:24:11:00:00:01",
+                "02:00:00:00:00:01"
+            )
+            .as_deref(),
+            Some("net0: name=eth0,hwaddr=02:00:00:00:00:01")
+        );
+        // the address first on the line keeps the space after "net0:"
+        assert_eq!(
+            with_net0_hwaddr(
+                "net0: hwaddr=BC:24:11:00:00:01,ip=dhcp\n",
+                "02:00:00:00:00:01"
+            )
+            .as_deref(),
+            Some("net0: hwaddr=02:00:00:00:00:01,ip=dhcp\n")
+        );
+        // nothing to replace
+        assert_eq!(
+            with_net0_hwaddr("net0: name=eth0,ip=dhcp\n", "02:00:00:00:00:01"),
+            None
+        );
+        assert_eq!(
+            with_net0_hwaddr(
+                "arch: amd64\n[s]\nnet0: hwaddr=BC:24:11:00:00:01\n",
+                "02:00:00:00:00:01"
+            ),
+            None
+        );
+    }
+
+    /// A runner like [`fake`] whose random bytes are fixed, and whose `pct config` shows
+    /// the configuration file as the limits step left it.
+    struct MacHost {
+        calls: Vec<String>,
+        conf: std::path::PathBuf,
+        config: String,
+        follow_file: bool,
+        started: bool,
+        destroyed: bool,
+    }
+
+    impl Runner for MacHost {
+        fn run(&mut self, argv: &[String]) -> Result<String, String> {
+            self.calls.push(argv.join(" "));
+            match argv[1].as_str() {
+                "config" if self.follow_file => {
+                    let file = fs::read_to_string(&self.conf).unwrap();
+                    let mac = net0_hwaddr(&file).unwrap();
+                    Ok(self.config.replace("02:5A:00:12:34:56", &mac))
+                }
+                "config" => Ok(self.config.clone()),
+                "start" => {
+                    self.started = true;
+                    Ok(String::new())
+                }
+                "destroy" => {
+                    self.destroyed = true;
+                    Ok(String::new())
+                }
+                "status" if self.destroyed => Err(GONE.to_owned()),
+                "status" if self.started => Ok("status: running\n".to_owned()),
+                "status" => Ok("status: stopped\n".to_owned()),
+                _ => Ok(String::new()),
+            }
+        }
+        fn random(&mut self, n: usize) -> Result<Vec<u8>, String> {
+            Ok(vec![0xBC; n])
+        }
+    }
+
+    fn mac_host(paths: &HostPaths, follow_file: bool) -> MacHost {
+        let conf = paths.lxc_conf.join("131.conf");
+        fs::write(
+            &conf,
+            "arch: amd64\nhostname: s-b2test\nmemory: 512\nnet0: name=eth0,bridge=vmbr1,firewall=1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.41/24,type=veth\n\n[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n",
+        )
+        .unwrap();
+        MacHost {
+            calls: Vec::new(),
+            conf,
+            config: shown_config(),
+            follow_file,
+            started: false,
+            destroyed: false,
+        }
+    }
+
+    /// The template's platform address is replaced in the limits step, so the opening
+    /// goes on through the firewall to the start (e1a 11-12 stopped at the firewall).
+    #[test]
+    fn the_limits_step_gives_net0_a_local_address() {
+        let (place, paths) = opened("b2localmac", "clone");
+        let mut runner = mac_host(&paths, true);
+        let rec = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rec["step"], "start");
+        assert!(rec.get("held").is_none(), "{rec}");
+        let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
+        assert!(
+            conf.contains("net0: name=eth0,bridge=vmbr1,firewall=1,hwaddr=BE:BC:BC:BC:BC:BC,ip=10.77.0.41/24,type=veth\n"),
+            "{conf}"
+        );
+        assert!(
+            conf.ends_with("[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n"),
+            "the snapshot keeps its own: {conf}"
+        );
+        assert!(runner.calls.contains(&"pct start 131".to_owned()));
+    }
+
+    /// An address that is local already is not changed (an opening carried on again).
+    #[test]
+    fn a_local_address_is_left_as_it_is() {
+        let (place, paths) = opened("b2keepmac", "clone");
+        let mut runner = mac_host(&paths, true);
+        let local = fs::read_to_string(&runner.conf).unwrap().replacen(
+            "hwaddr=BC:24:11:AA:BB:CC",
+            "hwaddr=06:12:34:56:78:9A",
+            1,
+        );
+        fs::write(&runner.conf, &local).unwrap();
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
+        assert!(conf.contains(",hwaddr=06:12:34:56:78:9A,"), "{conf}");
+    }
+
+    /// The platform still shows its own address after the step: the limits did not take,
+    /// and the opening is undone like any other limit that did not take.
+    #[test]
+    fn a_platform_address_shown_after_the_limits_is_refused() {
+        let (place, paths) = opened("b2stuckmac", "clone");
+        let mut runner = mac_host(&paths, false);
+        runner.config =
+            shown_config().replace("hwaddr=02:5A:00:12:34:56", "hwaddr=BC:24:11:AA:BB:CC");
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("limits_not_applied: hwaddr"), "{err}");
+        assert!(!runner.calls.contains(&"pct start 131".to_owned()));
     }
 
     /// The files under /etc/pve are written beside and renamed: no temporary file stays.
