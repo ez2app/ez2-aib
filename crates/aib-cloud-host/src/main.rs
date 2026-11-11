@@ -19,6 +19,7 @@
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host restore expect <file.wpress>   (what a customer's backup says the restored site must hold; reads one file)
 //! aib-cloud-host restore verify <code> <file.wpress> [--users-extra N]   (after the import: the site's own counts against the backup's; read-only)
+//! aib-cloud-host backup fresh <code> [--max-minutes N]   (a finished local dump of the site within N minutes, before an update; read-only)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)

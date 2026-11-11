@@ -470,6 +470,68 @@ jobs:
           ck backup.rs '        if plain {' \
              '        if plain && newest.is_empty() { // knife' \
              b04_nothing_unencrypted_leaves_the_host
+          # backup before an update (E10): a stale backup lets the update through
+          ck fresh.rs '    matches!(f, Fresh::Fresh { .. })' \
+             '    matches!(f, Fresh::Fresh { .. } | Fresh::Stale { .. }) // knife' \
+             an_old_backup_does_not
+          # backup before an update: another CT's dump counts for this site
+          ck fresh.rs '        if dump_ct(f.name) != Some(ct) {' \
+             '        if dump_ct(f.name).is_none_or(|c| c == 0 && c == ct) { // knife' \
+             another_sites_backup_does_not_count
+          # backup before an update: a folder or a link with a dump's name counts
+          ck fresh.rs '        if !f.is_file {' '        if !f.is_file && f.name.is_empty() { // knife' \
+             a_dump_still_being_written_or_empty_does_not_count
+          # backup before an update: an empty file counts as a backup
+          ck fresh.rs '        if size == 0 {' '        if size == 0 && mtime == 0 { // knife' \
+             a_dump_still_being_written_or_empty_does_not_count
+          # backup before an update: a dump from the future is trusted
+          ck fresh.rs '        if mtime > now.saturating_add(CLOCK_SKEW_SECS) {' \
+             '        if mtime > now.saturating_add(CLOCK_SKEW_SECS) && false { // knife' \
+             a_dump_from_the_future_is_unknown
+          # backup before an update: an unreadable dump is skipped instead of spoiling the answer
+          ck fresh.rs '            return Fresh::Unknown("dump_unreadable");' '            continue; // knife' \
+             what_cannot_be_read_is_unknown_never_allowed
+          # backup before an update: a folder that cannot be listed reads as "no backup"
+          ck fresh.rs '        return Fresh::Unknown("dump_folder_unreadable");' '        return Fresh::NoBackup; // knife' \
+             what_cannot_be_read_is_unknown_never_allowed
+          # backup before an update: the oldest dump is taken instead of the newest
+          ck fresh.rs '        newest = Some(newest.map_or(mtime, |n| n.max(mtime)));' \
+             '        newest = Some(newest.map_or(mtime, |n| n.min(mtime))); // knife' \
+             a_backup_within_the_window_lets_the_update_through
+          # backup before an update: the window is doubled
+          ck fresh.rs '    if age <= max_secs {' '    if age <= max_secs.saturating_mul(2) { // knife' \
+             an_old_backup_does_not
+          # backup before an update: a window of 0 minutes is accepted
+          ck fresh.rs '    (1..=MAX_MAX_MINUTES).contains(&minutes)' '    (0..=MAX_MAX_MINUTES).contains(&minutes) // knife' \
+             the_window_is_one_minute_to_one_week
+          # backup before an update: a window longer than a week is accepted
+          ck fresh.rs 'pub const MAX_MAX_MINUTES: u32 = 10_080;' 'pub const MAX_MAX_MINUTES: u32 = 10_081; // knife' \
+             the_window_is_one_minute_to_one_week
+          # backup before an update: the default is not a week (Andy 11-11 20:13)
+          ck fresh.rs 'pub const DEFAULT_MAX_MINUTES: u32 = 10_080;' 'pub const DEFAULT_MAX_MINUTES: u32 = 30; // knife' \
+             the_window_is_one_minute_to_one_week
+          # backup before an update: a CT number with a sign is read as a CT
+          ck fresh.rs '    if ct.is_empty() || !ct.bytes().all(|c| c.is_ascii_digit()) {' \
+             '    if ct.is_empty() { // knife' \
+             only_finished_dumps_of_the_ct_are_named
+          # backup before an update: a malformed time stamp is read as a dump
+          ck fresh.rs '    if !stamp_ok {' '    if !stamp_ok && stamp.is_empty() { // knife' \
+             only_finished_dumps_of_the_ct_are_named
+          # backup before an update: a dump left by an earlier site on the same CT number counts (ebb36 L1)
+          ck fresh.rs '        if mtime < created {' '        if mtime < created && created == 0 { // knife' \
+             a_dump_older_than_the_site_was_left_by_an_earlier_one
+          # backup before an update: a site whose creation time cannot be read reads as "no backup"
+          ck fresh.rs '        return Fresh::Unknown("site_created_unreadable");' '        return Fresh::NoBackup; // knife' \
+             a_dump_older_than_the_site_was_left_by_an_earlier_one
+          # backup before an update: an hour 24 or a minute 60 in the creation time is read
+          ck fresh.rs '    if h > 23 || m > 59 || sec > 59 {' '    if h > 24 || m > 60 || sec > 60 { // knife' \
+             the_creation_time_is_read_as_the_shell_writes_it
+          # backup before an update: a site moved by restore --switch counts from its creation (ebb36 incr. L1)
+          ck fresh.rs '    Ok(ct_since.map_or(created, |s| s.max(created)))' '    Ok(ct_since.map_or(created, |_| created)) // knife' \
+             a_site_moved_to_another_ct_counts_from_the_move
+          # backup before an update: an unreadable move time is taken as none
+          ck fresh.rs '                .ok_or("ct_since_unreadable")?,' '                .unwrap_or(0),' \
+             a_site_moved_to_another_ct_counts_from_the_move
           # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
           ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
              '        Some(_) if true => {} // knife' \
@@ -1700,6 +1762,34 @@ jobs:
           # backup check: rclone runs without the backup job's settings (ebb36, #631 seg. 4 M1)
           hk backupcmd.rs '    cmd.envs(env.iter().map(|(k, v)| (k, v)));' '    let _ = env; // knife' \
              rclone_runs_with_the_backup_jobs_settings
+          # backup fresh (E10): a stale backup or none exits 0 like a fresh one
+          hk backupcmd.rs '        Fresh::Stale { .. } | Fresh::NoBackup => 1,' \
+             '        Fresh::Stale { .. } | Fresh::NoBackup => 0, // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: a link with a dump's name is followed to a fresh file elsewhere
+          hk backupcmd.rs '        let meta = fs::symlink_metadata(entry.path()).ok();' \
+             '        let meta = fs::metadata(entry.path()).ok(); // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: without --max-minutes the window is not the week (Andy 11-11 20:13)
+          hk backupcmd.rs '    let mut max_minutes = fresh::DEFAULT_MAX_MINUTES;' '    let mut max_minutes = 1440; // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: any window is accepted
+          hk backupcmd.rs '                Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,' \
+             '                Some(n) => max_minutes = n, // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: a site code that is not one (a path) is read as a record name
+          hk backupcmd.rs '            other if code.is_none() && valid_code(other) => code = Some(other),' \
+             "            other if code.is_none() && (valid_code(other) || other.contains('/')) => code = Some(other), // knife" \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: an entry whose details cannot be read is skipped (ebb36 N1)
+          hk backupcmd.rs '        return (name, true, None, None);' '        return (name, false, None, None); // knife' \
+             an_entry_that_cannot_be_read_spoils_the_answer
+          # backup fresh: a record whose times cannot be read is judged from the epoch (ebb36 L1)
+          hk backupcmd.rs '        Err(why) => return unknown(why),' '        Err(_) => 0, // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # site restore --switch: the move to another CT number is not written (ebb36 incr. L1)
+          hk probe.rs '    rec["ct_since"] = json!(aib_cloud::fresh::utc_stamp(now));' '    let _ = now; // knife' \
+             a_switch_writes_when_the_site_took_the_ct_number
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2

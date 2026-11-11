@@ -43,6 +43,7 @@ pub mod backup;
 pub mod client;
 pub mod customer;
 pub mod edge;
+pub mod fresh;
 pub mod isolation;
 pub mod mask;
 pub mod op;
