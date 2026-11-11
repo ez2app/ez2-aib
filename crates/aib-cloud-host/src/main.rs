@@ -21,7 +21,7 @@
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
 //! aib-cloud-host op stop <op id> --plan | op stop <op id> --apply <plan.json>   (E11: a stuck operation's own processes, by pid and start time; --apply only from an approved sign sheet: SIGTERM, then SIGKILL, then `failed stopped_at_<step>`)
-//! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
+//! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
