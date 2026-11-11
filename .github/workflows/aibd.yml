@@ -499,6 +499,34 @@ jobs:
           ck mask.rs '            step.cover.push(path);' \
              '            step.descend.push(path); // knife' \
              under_sys_only_what_is_named_stays
+          # mask: a multicast address passes as a site's own (Andy 11-11)
+          ck mask.rs '        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)' \
+             '        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x02 == 0x02) // knife' \
+             a_site_hwaddr_is_local_and_unicast
+          # mask: a drawn address keeps the multicast bit it was drawn with
+          ck mask.rs '    let first = (raw[0] & 0xFC) | 0x02;' \
+             '    let first = raw[0] | 0x02; // knife' \
+             a_site_hwaddr_is_local_and_unicast
+          # mask plan: a second hook next to the wrapper is left in place
+          ck mask.rs '    let hook_ok = matches!(hooks.as_slice(), [one] if crate::site::mask_hook_ok(one));' \
+             '    let hook_ok = matches!(hooks.as_slice(), [one, ..] if crate::site::mask_hook_ok(one)); // knife' \
+             a_second_hook_or_a_foreign_one_is_not_the_mask
+          # mask plan: an IPv6 gateway alone stays on the CT
+          ck mask.rs '        if f.starts_with("ip6=") || f.starts_with("gw6=") {' \
+             '        if f.starts_with("ip6=") && f.starts_with("gw6=") { // knife' \
+             ipv6_alone_or_no_hwaddr_changes_net0
+          # mask plan: a CT without an address of its own keeps the one the platform draws
+          ck mask.rs '    if !had_hwaddr {' \
+             '    if !had_hwaddr && false { // knife' \
+             ipv6_alone_or_no_hwaddr_changes_net0
+          # mask plan: a search domain that names our network is kept
+          ck mask.rs '    if get("searchdomain") != Some(crate::verify::SEARCH_DOMAIN) {' \
+             '    if get("searchdomain").is_none() { // knife' \
+             what_an_unmasked_ct_needs_is_each_named
+          # site verify S12: any address of the right length passes
+          ck verify.rs '    let outcome = if crate::mask::hwaddr_is_local(mac) {' \
+             '    let outcome = if mac.len() == 17 { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
           # customer wording: a row or a code the table does not know is shown all the same
           ck wording.rs '        if let (Some(name), Some(sentence)) = (name, sentence) {' \
              '        if let (Some(name), Some(sentence)) = (name.or(Some("?")), sentence.or(Some("?"))) { // knife' \
@@ -848,6 +876,26 @@ jobs:
           hk maskcmd.rs '        (Some(ours), Some(hosts)) if ours != hosts => Ok(()),' \
              '        (Some(ours), Some(hosts)) if ours != hosts || true => Ok(()), // knife' \
              nothing_is_mounted_on_the_host_or_through_a_link
+          # site mask: the hook's verdict is not read
+          hk sitemaskcmd.rs '        Some(true) if mask::result_is_masked(seen.verdict.as_deref()) => "masked",' \
+             '        Some(true) if mask::result_is_masked(seen.verdict.as_deref()) || true => "masked", // knife' \
+             a_running_site_without_its_covers_is_not_done
+          # site mask: what could not be read passes
+          hk sitemaskcmd.rs '    let rc = if !unread.is_empty() {' \
+             '    let rc = if unread.len() > 99 { // knife' \
+             what_could_not_be_read_is_said_and_is_not_a_pass
+          # site mask: a missing or older wrapper on the host is not owed
+          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" {' \
+             '    } else if to_change || verdict == "not_masked" { // knife' \
+             a_wrapper_missing_or_older_is_owed_on_the_host
+          # site mask: a stopped CT is told to restart
+          hk sitemaskcmd.rs '        "restart_needed": to_change && seen.running == Some(true),' \
+             '        "restart_needed": to_change, // knife' \
+             fixes_on_a_running_site_need_a_restart_and_name_their_step
+          # site mask: without --plan it goes on
+          hk sitemaskcmd.rs '    if !plan_only {' \
+             '    if !plan_only && false { // knife' \
+             without_plan_nothing_is_done
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \

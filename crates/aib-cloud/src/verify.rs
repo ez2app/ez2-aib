@@ -754,12 +754,7 @@ pub fn s12_hwaddr(pct_config: Option<&str>) -> CheckResult {
         return result("S12", Outcome::Unknown("unparsed"));
     };
     // locally administered and not multicast: the second hex digit is 2, 6, A or E
-    let local = mac.len() == 17
-        && matches!(
-            mac.as_bytes()[1].to_ascii_uppercase(),
-            b'2' | b'6' | b'A' | b'E'
-        );
-    let outcome = if local {
+    let outcome = if crate::mask::hwaddr_is_local(mac) {
         Outcome::Green
     } else {
         Outcome::Red("vendor_hwaddr")

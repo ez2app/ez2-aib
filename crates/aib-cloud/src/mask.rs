@@ -266,6 +266,201 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+// ---------------------------------------------------------------------------------------
+// The per-site part: what a site CT's own configuration and files must carry for the
+// covers above to be the whole story (Andy 11-11: "用戶用 aib ssh 透過 ssh 使用 ai 查得出
+// 主機資訊、與主機商嗎?"). Measured in a site CT that day: the platform's vendor prefix in
+// the hardware address, the platform's name and our private network's name in
+// `resolv.conf` / `hosts`, and user namespaces open to the site's users — through which a
+// fresh `/proc` or `/sys` could be mounted past every cover (c477a, 11-10).
+
+/// The resolver a site CT is given when its configuration names none (without one, the CT
+/// inherits the host's). Neutral: it names nobody's network.
+pub const NEUTRAL_RESOLVER: &str = "1.1.1.1";
+
+/// When the configuration fixes go in while a site is opened: with its limits and its
+/// network, before the CT first starts — the hook only runs at a start, and a hardware
+/// address seen once is seen for good.
+pub const CONFIG_STEP: crate::sitecreate::CreateStep = crate::sitecreate::CreateStep::Limits;
+
+/// When the files inside the CT are written while a site is opened: with the site's other
+/// secrets and settings, before [`crate::sitecreate::CreateStep::Edge`] makes it reachable.
+pub const FILES_STEP: crate::sitecreate::CreateStep = crate::sitecreate::CreateStep::Identity;
+
+/// Inside the CT: no new user namespaces for anyone in it. A site user who can make one
+/// can mount a new `/proc` or `/sys` of their own, and the covers are not on those.
+/// Written inside the CT (its own root sets its own limit), so the CT's configuration
+/// carries no key `site drift` would call drift.
+pub const SYSCTL_FILE: &str = "/etc/sysctl.d/90-ez2-mask.conf";
+
+/// The text of [`SYSCTL_FILE`].
+pub const SYSCTL_TEXT: &str =
+    "# installed by aib-cloud-host; see aib_cloud::mask\nuser.max_user_namespaces = 0\n";
+
+/// Inside the CT: present (empty), the platform leaves `/etc/hosts` alone at each start
+/// instead of writing its own block — which carries the platform's name and the host's
+/// search domain.
+pub const HOSTS_KEEP_FILE: &str = "/etc/.pve-ignore.hosts";
+
+/// The `/etc/hosts` a site CT is given: loopback names and its own name, nothing else.
+/// `None` when the name is not one a hosts file can carry as it is.
+pub fn hosts_text(hostname: &str) -> Option<String> {
+    let ok = !hostname.is_empty()
+        && hostname.len() <= 63
+        && hostname
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        && !hostname.starts_with('-');
+    ok.then(|| {
+        alloc::format!(
+            "# written by aib-cloud-host; see aib_cloud::mask\n127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n::1\tlocalhost ip6-localhost ip6-loopback\n"
+        )
+    })
+}
+
+/// A hardware address for a site CT out of six random bytes: unicast and locally
+/// administered (the low two bits of the first byte are `10`), so no vendor prefix names
+/// the platform. Upper-case hex, as the platform writes them.
+pub fn local_hwaddr(raw: [u8; 6]) -> String {
+    let first = (raw[0] & 0xFC) | 0x02;
+    alloc::format!(
+        "{first:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        raw[1],
+        raw[2],
+        raw[3],
+        raw[4],
+        raw[5]
+    )
+}
+
+/// Whether `mac` is six pairs of hex digits, unicast and locally administered.
+pub fn hwaddr_is_local(mac: &str) -> bool {
+    let parts: Vec<&str> = mac.split(':').collect();
+    let shaped = parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.bytes().all(|c| c.is_ascii_hexdigit()));
+    shaped
+        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)
+}
+
+/// One change a site CT's configuration needs: `pct set <ct> --<key> <value>` (the hook
+/// line goes in the configuration file as it is, `pct` has no option for it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFix {
+    pub key: &'static str,
+    pub value: String,
+    pub why: &'static str,
+}
+
+/// Why no fixes could be worked out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanError {
+    /// The configuration has no `net0` line: there is no address to judge or to replace.
+    NoNet0,
+}
+
+/// What a site CT's configuration (`cfg`, as `site::parse_pct_config` reads it) still
+/// needs for the mask: the hook line once and nothing else on that key, a locally
+/// administered hardware address and no IPv6 (both in `net0`), a resolver and the
+/// neutral search domain. `new_hwaddr` is used only when the address must change; it
+/// must itself be local (see [`local_hwaddr`]). Empty: nothing to change.
+pub fn config_fixes(
+    cfg: &[(String, String)],
+    new_hwaddr: &str,
+) -> Result<Vec<ConfigFix>, PlanError> {
+    let get = |key: &str| cfg.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    let mut out = Vec::new();
+    let hooks: Vec<&str> = cfg
+        .iter()
+        .filter(|(k, _)| k == "lxc.hook.mount")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let hook_ok = matches!(hooks.as_slice(), [one] if crate::site::mask_hook_ok(one));
+    if !hook_ok {
+        out.push(ConfigFix {
+            key: "lxc.hook.mount",
+            value: HOOK_LINE
+                .strip_prefix("lxc.hook.mount: ")
+                .unwrap_or(HOOK_LINE)
+                .into(),
+            why: "the mask's wrapper, once, and no other hook on that key",
+        });
+    }
+    let net0 = get("net0").ok_or(PlanError::NoNet0)?;
+    let mut fields: Vec<String> = Vec::new();
+    let mut changed = false;
+    let mut had_hwaddr = false;
+    for f in net0.split(',') {
+        if f.starts_with("ip6=") || f.starts_with("gw6=") {
+            changed = true;
+            continue;
+        }
+        if let Some(mac) = f.strip_prefix("hwaddr=") {
+            had_hwaddr = true;
+            if !hwaddr_is_local(mac) {
+                changed = true;
+                fields.push(alloc::format!("hwaddr={new_hwaddr}"));
+                continue;
+            }
+        }
+        fields.push(f.into());
+    }
+    if !had_hwaddr {
+        changed = true;
+        fields.push(alloc::format!("hwaddr={new_hwaddr}"));
+    }
+    if changed {
+        out.push(ConfigFix {
+            key: "net0",
+            value: fields.join(","),
+            why: "a locally administered hardware address, and no IPv6 (it would leave from the host's own prefix)",
+        });
+    }
+    if get("nameserver").is_none() {
+        out.push(ConfigFix {
+            key: "nameserver",
+            value: NEUTRAL_RESOLVER.into(),
+            why: "without one the CT reads the host's resolver",
+        });
+    }
+    if get("searchdomain") != Some(crate::verify::SEARCH_DOMAIN) {
+        out.push(ConfigFix {
+            key: "searchdomain",
+            value: crate::verify::SEARCH_DOMAIN.into(),
+            why: "without it the CT carries the host's search domain (our private network's name)",
+        });
+    }
+    Ok(out)
+}
+
+/// What a person (or the red-team check) reads **as the site's own user** inside a masked
+/// CT, and what it should show. From a PHP request too, not only a shell: php-fpm runs in
+/// its own sandbox (33e28).
+pub const INSIDE_EXPECT: &[(&str, &str)] = &[
+    ("/proc/cpuinfo", "every model name is vCPU; no microcode, cache size, bugs or MHz lines"),
+    ("/sys/class/dmi/id/sys_vendor", "missing or empty"),
+    ("/sys/class/dmi/id/board_name", "missing or empty"),
+    ("/sys/devices/system/cpu", "only as many processors as the CT has cores"),
+    ("/proc/cmdline", "empty"),
+    ("/etc/resolv.conf", "search invalid; the resolver of the CT's configuration"),
+    ("/etc/hosts", "loopback and the CT's own name; no platform block, no private network name"),
+    ("/sys/class/net/eth0/address", "a locally administered address (second hex digit 2, 6, A or E)"),
+    ("/proc/sys/user/max_user_namespaces", "0"),
+    ("unshare -Ur true", "refused"),
+    ("dmesg", "refused"),
+    ("ip -6 addr show scope global", "nothing"),
+];
+
+/// What stays readable however the CT is masked, said so nobody claims otherwise.
+pub const CANNOT_HIDE: &[&str] = &[
+    "the kernel's release string (uname -r): it names the virtualisation platform",
+    "that the site runs in a container (systemd-detect-virt, /proc/1/environ, cgroup paths)",
+    "the processor's own answer to CPUID, and the feature flags (they tell its generation)",
+    "the device names in the mount table and df, which carry the CT's number",
+    "who owns the IP address the CT is reached at and leaves from (a public record; a matter for the relay and the egress, not this mask)",
+];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -446,5 +641,109 @@ mod tests {
         // a name that only starts like a kept one is not kept
         assert_eq!(sys_step("class", &["net2"]).cover, ["class/net2"]);
         assert_eq!(sys_step("", &["f"]).cover, ["f"]);
+    }
+
+    #[test]
+    fn a_site_hwaddr_is_local_and_unicast() {
+        for raw in [[0u8; 6], [0xFF; 6], [0xBC, 0x24, 0x11, 1, 2, 3], [0x01, 0, 0, 0, 0, 0]] {
+            let mac = local_hwaddr(raw);
+            assert!(hwaddr_is_local(&mac), "{mac}");
+            assert_eq!(mac.len(), 17);
+        }
+        assert_eq!(local_hwaddr([0xBC, 0x24, 0x11, 0xAB, 0xCD, 0xEF]), "BE:24:11:AB:CD:EF");
+        // the platform's own prefix, multicast, and what is not an address
+        for bad in ["BC:24:11:00:00:01", "03:00:00:00:00:01", "02:00:00:00:00", "02:00:00:00:00:0G", "02-00-00-00-00-01", ""] {
+            assert!(!hwaddr_is_local(bad), "{bad}");
+        }
+        assert!(hwaddr_is_local("02:00:00:00:00:01"));
+        assert!(hwaddr_is_local("ae:00:00:00:00:01"));
+    }
+
+    fn cfg(lines: &[(&str, &str)]) -> Vec<(String, String)> {
+        lines.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+    }
+
+    const HOOK: &str = "/usr/local/sbin/ez2-ct-mask-hook";
+    const NEW: &str = "02:11:22:33:44:55";
+
+    #[test]
+    fn a_masked_ct_needs_no_change() {
+        let c = cfg(&[
+            ("lxc.hook.mount", HOOK),
+            ("net0", "name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth"),
+            ("nameserver", "1.1.1.1"),
+            ("searchdomain", "invalid"),
+        ]);
+        assert_eq!(config_fixes(&c, NEW), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn what_an_unmasked_ct_needs_is_each_named() {
+        let c = cfg(&[
+            ("net0", "name=eth0,bridge=vmbr1,hwaddr=BC:24:11:00:00:09,ip=10.77.0.9/24,gw=10.77.0.1,ip6=dhcp,type=veth"),
+            ("searchdomain", "tailnet.example"),
+        ]);
+        let fixes = config_fixes(&c, NEW).unwrap();
+        let keys: Vec<&str> = fixes.iter().map(|f| f.key).collect();
+        assert_eq!(keys, ["lxc.hook.mount", "net0", "nameserver", "searchdomain"]);
+        assert_eq!(fixes[0].value, HOOK);
+        assert_eq!(
+            fixes[1].value,
+            "name=eth0,bridge=vmbr1,hwaddr=02:11:22:33:44:55,ip=10.77.0.9/24,gw=10.77.0.1,type=veth"
+        );
+        assert_eq!(fixes[2].value, NEUTRAL_RESOLVER);
+        assert_eq!(fixes[3].value, "invalid");
+    }
+
+    #[test]
+    fn a_second_hook_or_a_foreign_one_is_not_the_mask() {
+        for hooks in [vec![HOOK, HOOK], vec!["/tmp/other"], vec![HOOK, "/tmp/other"]] {
+            let mut lines: Vec<(&str, &str)> = hooks.iter().map(|h| ("lxc.hook.mount", *h)).collect();
+            lines.push(("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"));
+            lines.push(("nameserver", "1.1.1.1"));
+            lines.push(("searchdomain", "invalid"));
+            let fixes = config_fixes(&cfg(&lines), NEW).unwrap();
+            assert_eq!(fixes.len(), 1, "{hooks:?}");
+            assert_eq!(fixes[0].key, "lxc.hook.mount");
+        }
+    }
+
+    #[test]
+    fn ipv6_alone_or_no_hwaddr_changes_net0() {
+        let v6 = cfg(&[
+            ("lxc.hook.mount", HOOK),
+            ("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24,gw6=fe80::1"),
+            ("nameserver", "1.1.1.1"),
+            ("searchdomain", "invalid"),
+        ]);
+        let f = config_fixes(&v6, NEW).unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].value, "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24");
+        let bare = cfg(&[
+            ("lxc.hook.mount", HOOK),
+            ("net0", "name=eth0,ip=10.77.0.9/24"),
+            ("nameserver", "1.1.1.1"),
+            ("searchdomain", "invalid"),
+        ]);
+        assert_eq!(
+            config_fixes(&bare, NEW).unwrap()[0].value,
+            "name=eth0,ip=10.77.0.9/24,hwaddr=02:11:22:33:44:55"
+        );
+        assert_eq!(config_fixes(&cfg(&[]), NEW), Err(PlanError::NoNet0));
+    }
+
+    #[test]
+    fn the_ct_files_say_only_what_they_must() {
+        assert!(SYSCTL_TEXT.contains("user.max_user_namespaces = 0\n"));
+        let h = hosts_text("s-abc123").unwrap();
+        assert!(h.contains("127.0.1.1\ts-abc123\n"));
+        for word in ["PVE", "ts.net", "tail"] {
+            assert!(!h.contains(word), "{word}");
+        }
+        for bad in ["", "-x", "a b", "a\nb", "a.example"] {
+            assert!(hosts_text(bad).is_none(), "{bad:?}");
+        }
+        assert_eq!(CONFIG_STEP.as_str(), "limits");
+        assert_eq!(FILES_STEP.as_str(), "identity");
     }
 }

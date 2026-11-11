@@ -15,6 +15,7 @@
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
+//! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
 //! aib-cloud-host ct mask                         (lxc.hook.mount of a site CT: covers what it would read of the machine underneath)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
@@ -41,6 +42,8 @@ mod edgecmd;
 mod opstore;
 #[cfg(unix)]
 mod maskcmd;
+#[cfg(unix)]
+mod sitemaskcmd;
 #[cfg(unix)]
 mod probe;
 #[cfg(unix)]
