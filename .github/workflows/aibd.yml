@@ -299,6 +299,10 @@ jobs:
           ck fpkey.rs '    if !code_ok(code) || !key_ok(key) || !script_url_ok(script_url, key) {' \
              '    if (!code_ok(code) && false) || !key_ok(key) || !script_url_ok(script_url, key) { // knife' \
              the_loader_file_is_one_tag_for_this_sites_key
+          # statistics key: a loader address on a host that is neither ours nor the site's is written (ebb36 L1)
+          ck fpkey.rs '    !host.is_empty() && hosts.iter().any(|h| h.eq_ignore_ascii_case(host))' \
+             '    !host.is_empty() && (hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) || true) // knife' \
+             a_loader_address_on_a_host_not_ours_is_never_written
           # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \

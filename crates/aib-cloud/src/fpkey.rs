@@ -74,9 +74,21 @@ pub fn script_url_ok(url: &str, key: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b":/._-".contains(&b))
 }
 
+/// Whether the loader address is on one of `hosts` (exact name, any case). The host step
+/// passes the statistics server's own names and the site's own names (ebb36 L1): an
+/// address on any other host is never written into a customer's page.
+pub fn host_allowed(url: &str, hosts: &[&str]) -> bool {
+    let host = url
+        .strip_prefix("https://")
+        .and_then(|r| r.split('/').next())
+        .unwrap_or("");
+    !host.is_empty() && hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
+}
+
 /// The answer to `POST /cloud/site`: its HTTP status and its body read as JSON (`None` when
-/// there was no answer or the body was not JSON).
-pub fn key_reply(status: u16, body: Option<&Value>) -> KeyReply {
+/// there was no answer or the body was not JSON). `hosts`: the names a loader address may
+/// be on ([`host_allowed`]).
+pub fn key_reply(status: u16, body: Option<&Value>, hosts: &[&str]) -> KeyReply {
     match status {
         409 => KeyReply::Conflict,
         200 => {
@@ -94,11 +106,19 @@ pub fn key_reply(status: u16, body: Option<&Value>) -> KeyReply {
             if !script_url_ok(url, key) {
                 return KeyReply::Unknown("reply_bad_script_url");
             }
+            if !host_allowed(url, hosts) {
+                return KeyReply::Unknown("reply_host_not_allowed");
+            }
             KeyReply::Key {
                 site_key: key.into(),
                 script_url: url.into(),
             }
         }
+        // the server is set up wrong (no account for hosted sites): asking again will not help,
+        // the host step lists it for a person after a few tries (c477a N2)
+        503 => KeyReply::Unknown("reply_not_set_up"),
+        // too many new sites in a minute: asking again later is right
+        429 => KeyReply::Unknown("reply_busy"),
         _ => KeyReply::Unknown("reply_status"),
     }
 }
@@ -124,7 +144,8 @@ pub fn loader_file(code: &str, script_url: &str) -> Option<String> {
     ))
 }
 
-/// The loader step from the file read back: `None` could not be read; exactly what
+/// The loader step from the file read back (its raw bytes as text: not trimmed, line ends
+/// not changed, or it never compares equal; ebb36 N1): `None` could not be read; exactly what
 /// [`loader_file`] makes for this site is done; anything else (missing, the template's,
 /// another site's, edited) is not done, and running the step again puts it right.
 pub fn loader_probe(read_back: Option<Option<&str>>, want: &str) -> Probe {
@@ -142,12 +163,13 @@ mod tests {
 
     const KEY: &str = "k_abcDEF123";
     const URL: &str = "https://fp.example.test/e2/k_abcDEF123.js";
+    const HOSTS: [&str; 2] = ["fp.example.test", "shop.example.test"];
 
     #[test]
     fn a_good_reply_gives_the_key_and_the_loader_address() {
         let b = json!({ "ok": 1, "created": true, "site_key": KEY, "script_url": URL });
         assert_eq!(
-            key_reply(200, Some(&b)),
+            key_reply(200, Some(&b), &HOSTS),
             KeyReply::Key {
                 site_key: KEY.into(),
                 script_url: URL.into()
@@ -155,14 +177,17 @@ mod tests {
         );
         // asked again for the same domain: the same key, not created
         let b = json!({ "ok": 1, "created": false, "site_key": KEY, "script_url": URL });
-        assert!(matches!(key_reply(200, Some(&b)), KeyReply::Key { .. }));
+        assert!(matches!(
+            key_reply(200, Some(&b), &HOSTS),
+            KeyReply::Key { .. }
+        ));
     }
 
     #[test]
     fn a_domain_held_by_another_account_stops() {
-        assert_eq!(key_reply(409, None), KeyReply::Conflict);
+        assert_eq!(key_reply(409, None, &HOSTS), KeyReply::Conflict);
         assert_eq!(
-            key_reply(409, Some(&json!({ "ok": 0, "reason": "conflict" }))),
+            key_reply(409, Some(&json!({ "ok": 0, "reason": "conflict" })), &HOSTS),
             KeyReply::Conflict
         );
     }
@@ -170,18 +195,34 @@ mod tests {
     #[test]
     fn anything_that_does_not_read_right_is_unknown() {
         let good = json!({ "ok": 1, "site_key": KEY, "script_url": URL });
-        for s in [0u16, 400, 401, 403, 404, 429, 500, 502, 204] {
+        for s in [0u16, 400, 401, 403, 404, 500, 502, 204] {
             assert_eq!(
-                key_reply(s, Some(&good)),
+                key_reply(s, Some(&good), &HOSTS),
                 KeyReply::Unknown("reply_status"),
                 "{s}"
             );
         }
-        assert_eq!(key_reply(200, None), KeyReply::Unknown("reply_not_json"));
+        assert_eq!(
+            key_reply(
+                503,
+                Some(&json!({ "ok": 0, "reason": "no_hosting_tenant" })),
+                &HOSTS
+            ),
+            KeyReply::Unknown("reply_not_set_up")
+        );
+        assert_eq!(
+            key_reply(429, None, &HOSTS),
+            KeyReply::Unknown("reply_busy")
+        );
+        assert_eq!(
+            key_reply(200, None, &HOSTS),
+            KeyReply::Unknown("reply_not_json")
+        );
         assert_eq!(
             key_reply(
                 200,
-                Some(&json!({ "ok": 0, "site_key": KEY, "script_url": URL }))
+                Some(&json!({ "ok": 0, "site_key": KEY, "script_url": URL })),
+                &HOSTS
             ),
             KeyReply::Unknown("reply_not_ok")
         );
@@ -189,7 +230,7 @@ mod tests {
         for k in ["", "short", "has space here", "k\"quote12", long.as_str()] {
             let b = json!({ "ok": 1, "site_key": k, "script_url": URL });
             assert_eq!(
-                key_reply(200, Some(&b)),
+                key_reply(200, Some(&b), &HOSTS),
                 KeyReply::Unknown("reply_bad_key"),
                 "{k}"
             );
@@ -207,11 +248,45 @@ mod tests {
         ] {
             let b = json!({ "ok": 1, "site_key": KEY, "script_url": u });
             assert_eq!(
-                key_reply(200, Some(&b)),
+                key_reply(200, Some(&b), &HOSTS),
                 KeyReply::Unknown("reply_bad_script_url"),
                 "{u}"
             );
         }
+    }
+
+    #[test]
+    fn a_loader_address_on_a_host_not_ours_is_never_written() {
+        // the site's own name and the statistics server's are both fine, any case
+        for u in [
+            "https://shop.example.test/e2/k_abcDEF123.js",
+            "https://FP.example.test/e2/k_abcDEF123.js",
+        ] {
+            let b = json!({ "ok": 1, "site_key": KEY, "script_url": u });
+            assert!(
+                matches!(key_reply(200, Some(&b), &HOSTS), KeyReply::Key { .. }),
+                "{u}"
+            );
+        }
+        // any other host, a look-alike, or no hosts given at all
+        for u in [
+            "https://evil.example.test/e2/k_abcDEF123.js",
+            "https://fp.example.test.evil.test/e2/k_abcDEF123.js",
+            "https://xfp.example.test/e2/k_abcDEF123.js",
+        ] {
+            let b = json!({ "ok": 1, "site_key": KEY, "script_url": u });
+            assert_eq!(
+                key_reply(200, Some(&b), &HOSTS),
+                KeyReply::Unknown("reply_host_not_allowed"),
+                "{u}"
+            );
+        }
+        let b = json!({ "ok": 1, "site_key": KEY, "script_url": URL });
+        assert_eq!(
+            key_reply(200, Some(&b), &[]),
+            KeyReply::Unknown("reply_host_not_allowed")
+        );
+        assert!(!host_allowed("", &HOSTS));
     }
 
     #[test]
