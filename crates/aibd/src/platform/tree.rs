@@ -483,6 +483,28 @@ fn classify(
     }
 }
 
+/// A late-exec candidate's environment. On macOS it is read by aib-sys and
+/// cut at its real end: sysinfo reads the apple strings after it as
+/// variables, so a cleared environment (`env -i`) looked like one without
+/// our marker and the candidate was let go as not ours (#614 CI). A read
+/// that fails is an empty environment here, which keeps the candidate
+/// (unreadable or other coalition), never "not ours".
+fn candidate_env(pid: u32, p: &sysinfo::Process) -> Vec<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = p;
+        aib_sys::Macos.environ(pid).unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        p.environ()
+            .iter()
+            .map(|e| e.as_encoded_bytes().to_vec())
+            .collect()
+    }
+}
+
 fn ident_of(sys: &System, pid: u32, start: u64) -> Ident {
     match sys.process(Pid::from_u32(pid)) {
         None => Ident::Gone,
@@ -1265,9 +1287,9 @@ impl TreeHandle {
                 }
                 continue;
             };
-            let env = p.environ();
+            let env = candidate_env(pid, p);
             let marked =
-                (!env.is_empty()).then(|| env.iter().any(|e| e.to_str() == Some(want.as_str())));
+                (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()));
             let comm = p.name().to_string_lossy().into_owned();
             match classify(marked, self.coalition, || coalition_of(pid)) {
                 Candidate::Ours => {

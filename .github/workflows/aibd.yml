@@ -379,6 +379,19 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+          # KP1 aib-sys procargs (#614): the empty string after the variables is skipped, so the apple
+          # strings are read as variables (sysinfo's bug; a cleared environment then has no marker)
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '        if end == 0 {' \
+            '        if end == 0 && false { // knife' \
+            --expect-fail a_cleared_environment_followed_by_apple_strings_is_empty \
+            -- cargo test -p aib-sys --locked --lib procargs::
+          # KP2 aib-sys procargs (#614): a cut buffer read as a whole environment
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '    rest.is_empty().then_some(env)' \
+            '    let _ = rest; Some(env) // knife' \
+            --expect-fail a_cut_buffer_is_none \
+            -- cargo test -p aib-sys --locked --lib procargs::
           # KT4 aib-sys T1 (R1, a63ab / a9136): a private SPI symbol that is missing taken as found
           python3 -I scripts/knife.py crates/aib-sys/src/thermal_macos.rs \
             '    if p.is_null() {' \

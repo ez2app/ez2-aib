@@ -5,6 +5,12 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
+  `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
+  `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
+  as variables, so a process started with a cleared environment (`env -i`) looked like one
+  without the session marker and was let go as "not ours" instead of being reported
+  (#614 CI). A failed read keeps the candidate (unreadable or other coalition).
 - Session queue (ADR 0005 §5): when every slot is taken a POST is no longer refused with
   `429 too_many_sessions`; it answers `202` with the session `pending` (no process, `pid` 0,
   event `session.queued` with its `position`). Waiting sessions start in arrival order as
