@@ -139,8 +139,14 @@ pub fn cron_timer(code: &str) -> String {
 fn cron_files(code: &str) -> [(String, String); 2] {
     let unit = cron_unit(code);
     [
-        (format!("/etc/systemd/system/{unit}.service"), cron_service(code)),
-        (format!("/etc/systemd/system/{unit}.timer"), cron_timer(code)),
+        (
+            format!("/etc/systemd/system/{unit}.service"),
+            cron_service(code),
+        ),
+        (
+            format!("/etc/systemd/system/{unit}.timer"),
+            cron_timer(code),
+        ),
     ]
 }
 
@@ -819,7 +825,9 @@ mod tests {
         assert_eq!(site.fed.len(), written, "nothing written again");
         let again = &site.calls[calls..];
         assert!(
-            again.iter().all(|c| !c.contains(" set ") && !c.contains("--now")),
+            again
+                .iter()
+                .all(|c| !c.contains(" set ") && !c.contains("--now")),
             "{again:#?}"
         );
         // one file changed since: everything is written again and read back

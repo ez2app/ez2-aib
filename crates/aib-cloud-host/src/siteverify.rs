@@ -56,12 +56,7 @@ impl Runner for CtReader {
         let (program, args) = argv.split_first().ok_or("an empty command")?;
         let mut cmd = Command::new(program);
         cmd.args(args).env("LC_ALL", "C");
-        crate::probe::run_bounded_input(
-            &mut cmd,
-            Duration::from_secs(CT_SECONDS),
-            CT_OUT_MAX,
-            b"",
-        )
+        crate::probe::run_bounded_input(&mut cmd, Duration::from_secs(CT_SECONDS), CT_OUT_MAX, b"")
     }
 }
 
