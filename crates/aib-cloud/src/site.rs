@@ -843,6 +843,48 @@ pub fn drift(
     Ok(out)
 }
 
+/// The keys the limits step of `site create` sets (`pct set` and the pids line).
+pub const LIMITS_STEP_KEYS: [&str; 7] = [
+    "cores",
+    "cpulimit",
+    "lxc.cgroup2.pids.max",
+    "memory",
+    "net0",
+    "onboot",
+    "swap",
+];
+
+/// What the limits step must have left: every key of [`LIMITS_STEP_KEYS`] as [`desired`] has
+/// it (`net0` without the MAC and type, like [`drift`]). Only those keys: the rest of a
+/// fresh clone is the template's and is checked by [`drift`] once the site is open.
+pub fn limits_differ(spec: &SiteSpec, observed_pct_config: &str) -> Result<Vec<Drift>, Error> {
+    let obs = parse_pct_config(observed_pct_config)?;
+    let mut out = Vec::new();
+    for (k, want) in desired(spec) {
+        if !LIMITS_STEP_KEYS.contains(&k) {
+            continue;
+        }
+        let got = obs
+            .iter()
+            .find(|(ok, _)| ok == k)
+            .map_or("<missing>", |(_, v)| v.as_str());
+        let same = if k == "net0" {
+            net0_canonical(got) == net0_canonical(&want)
+        } else {
+            got == want
+        };
+        if !same {
+            out.push(Drift {
+                ct: spec.ct,
+                key: k.to_owned(),
+                want,
+                got: got.to_owned(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- Edge block, suspend / resume, blue-green restore (P2)
 // The Edge Caddyfile keeps one block per site, tagged `# site:<code>` on the line before the
 // host line and closed by a `}` at column 0. These functions render the three shapes a block
@@ -1069,6 +1111,32 @@ mod tests {
             Limits::TEST_TIER,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_limits_step_is_checked_on_its_own_keys() {
+        let spec = site2();
+        let mut wanted = String::new();
+        for (k, v) in desired(&spec) {
+            wanted.push_str(&alloc::format!("{k}: {v}\n"));
+        }
+        assert_eq!(limits_differ(&spec, &wanted).unwrap(), Vec::new());
+        // the template's own keys are not this step's
+        let other = wanted.replace("hostname: site2", "hostname: template");
+        assert_eq!(limits_differ(&spec, &other).unwrap(), Vec::new());
+        let low = wanted.replace("memory: ", "memory: 1");
+        let d = limits_differ(&spec, &low).unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].key, "memory");
+        let no_pids: String = wanted
+            .lines()
+            .filter(|l| !l.starts_with("lxc.cgroup2.pids.max"))
+            .map(|l| alloc::format!("{l}\n"))
+            .collect();
+        let d = limits_differ(&spec, &no_pids).unwrap();
+        assert_eq!(d[0].key, "lxc.cgroup2.pids.max");
+        assert_eq!(d[0].got, "<missing>");
+        assert!(limits_differ(&spec, "").is_err());
     }
 
     const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";

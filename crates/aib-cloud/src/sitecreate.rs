@@ -44,14 +44,21 @@ pub enum CreateStep {
     Identity,
     /// Each paid plugin of the template is activated at its vendor.
     Licenses,
-    /// The entry of the host is told about the site.
+    /// The site's names get their DNS records at Cloudflare, in the customer's own zone
+    /// (`crate::sitedns`): proxied, each carrying the site's mark. Only a zone of an
+    /// account the customer's roster names is used, and a name already answered by a
+    /// record that is not this site's is left alone and stops the step.
+    Dns,
+    /// The entry of the host is told about the site. Before it, the container's firewall
+    /// rules must be read back as compiled and in force (`pve-firewall compile` /
+    /// `status`), not only the file written in [`CreateStep::Firewall`] (c477a B2 L1).
     Edge,
     /// The site answers from outside with its own mark.
     Health,
 }
 
 /// Every step, first to last.
-pub const STEPS: [CreateStep; 9] = [
+pub const STEPS: [CreateStep; 10] = [
     CreateStep::Clone,
     CreateStep::Limits,
     CreateStep::Firewall,
@@ -59,6 +66,7 @@ pub const STEPS: [CreateStep; 9] = [
     CreateStep::Install,
     CreateStep::Identity,
     CreateStep::Licenses,
+    CreateStep::Dns,
     CreateStep::Edge,
     CreateStep::Health,
 ];
@@ -74,6 +82,7 @@ impl CreateStep {
             CreateStep::Install => "install",
             CreateStep::Identity => "identity",
             CreateStep::Licenses => "licenses",
+            CreateStep::Dns => "dns",
             CreateStep::Edge => "edge",
             CreateStep::Health => "health",
         }
@@ -230,6 +239,40 @@ pub fn next_numbers(
     Ok((ct, ip + 1))
 }
 
+// ------------------------------------------------------------ the platform's own domains
+
+/// The platform's own domains as the host's list holds them: one per line, `#` starts a
+/// comment, blank lines pass. `None` when a line is not a domain or no domain is listed:
+/// a list that is not read whole is no list, and no site is opened on its word. The real
+/// names live only in the host's file, never in this repository.
+pub fn platform_domains(text: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    let mut list = alloc::vec::Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !crate::edge::valid_domain(line) {
+            return None;
+        }
+        list.push(alloc::string::String::from(line));
+    }
+    (!list.is_empty()).then_some(list)
+}
+
+/// Whether `domain` or its `www` twin is one of the platform's own domains or a name
+/// under one of them. Such a domain is never a customer's site.
+pub fn is_platform(domain: &str, platform: &[alloc::string::String]) -> bool {
+    let bare = domain.strip_prefix("www.").unwrap_or(domain);
+    let under = |name: &str, ours: &str| {
+        let head = name.strip_suffix(ours);
+        name == ours || head.is_some_and(|h| h.ends_with('.'))
+    };
+    platform
+        .iter()
+        .any(|ours| under(bare, ours) || ours.strip_prefix("www.") == Some(bare))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +379,9 @@ mod tests {
                 | CreateStep::Start
                 | CreateStep::Install
                 | CreateStep::Identity => AfterFailure::Undo,
-                CreateStep::Licenses | CreateStep::Edge | CreateStep::Health => AfterFailure::Keep,
+                CreateStep::Licenses | CreateStep::Dns | CreateStep::Edge | CreateStep::Health => {
+                    AfterFailure::Keep
+                }
             };
             assert_eq!(after_failure(step), want, "{step:?}");
         }
@@ -346,6 +391,10 @@ mod tests {
     fn the_site_is_not_shown_to_the_outside_before_its_identity_is_its_own() {
         assert!(CreateStep::Identity < CreateStep::Edge);
         assert!(CreateStep::Identity < CreateStep::Health);
+        // the names point at the host only after the identity, and before the entry
+        // serves them
+        assert!(CreateStep::Identity < CreateStep::Dns);
+        assert!(CreateStep::Dns < CreateStep::Edge);
         // and a failure there still removes a site nobody could reach
         assert_eq!(after_failure(CreateStep::Identity), AfterFailure::Undo);
         assert_eq!(after_failure(CreateStep::Licenses), AfterFailure::Keep);
@@ -437,5 +486,37 @@ mod tests {
             next_numbers(&[], &[], &[SITE_IP_LAST - 1], &[]),
             Ok((110, SITE_IP_LAST))
         );
+    }
+
+    /// The platform's own domains: the list is read whole or not at all, and a domain is
+    /// ours when it, its www twin, or a name above it is listed (E1, 33e28 M2).
+    #[test]
+    fn the_platform_s_own_domains_are_never_a_customer_s() {
+        let list =
+            platform_domains("# ours\nours.example\n\nwww.home.example # the face\n").unwrap();
+        assert_eq!(list, ["ours.example", "www.home.example"]);
+        for name in [
+            "ours.example",
+            "www.ours.example",
+            "shop.ours.example",
+            "a.b.ours.example",
+            "home.example",
+            "www.home.example",
+        ] {
+            assert!(is_platform(name, &list), "{name}");
+        }
+        for name in [
+            "yours.example",
+            "ours.example.test",
+            "shop.home.example",
+            "new.example.test",
+        ] {
+            assert!(!is_platform(name, &list), "{name}");
+        }
+        // a list with a line that is not a domain, or with none, is no list
+        assert_eq!(platform_domains("ours.example\nOurs.Example\n"), None);
+        assert_eq!(platform_domains("ours.example\nhttps://x.example\n"), None);
+        assert_eq!(platform_domains("# nothing yet\n\n"), None);
+        assert_eq!(platform_domains(""), None);
     }
 }

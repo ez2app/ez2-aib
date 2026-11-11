@@ -475,6 +475,33 @@ fn read_boot_id(path: &Path) -> Result<String, String> {
     }
 }
 
+/// The holder process `pid` is for `op`, as a lock file names one: what the customer's
+/// opening writes down so its liveness is judged the lock's way ([`holder_liveness`]).
+pub fn holder_of(p: &LockPaths, op: &str, pid: u32) -> Result<Holder, String> {
+    let boot_id = read_boot_id(&p.boot_id)?;
+    let stat_path = p.proc_root.join(pid.to_string()).join("stat");
+    let start_time = fs::read_to_string(&stat_path)
+        .ok()
+        .and_then(|t| stat_start_time(&t))
+        .ok_or_else(|| format!("{}: no start time", stat_path.display()))?;
+    Ok(Holder {
+        op: op.to_owned(),
+        pid,
+        start_time,
+        boot_id,
+    })
+}
+
+/// Whether a holder is still the process it names, as [`acquire`] judges a lock: from
+/// another boot it is gone; a boot id that cannot be read tells nothing.
+pub fn holder_liveness(p: &LockPaths, holder: &Holder) -> Liveness {
+    match read_boot_id(&p.boot_id) {
+        Ok(now) if now != holder.boot_id => Liveness::Gone,
+        Ok(_) => liveness(&p.proc_root, holder),
+        Err(_unread) => Liveness::Unknown,
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Run `f` with the guard file's exclusive lock held.
 fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -689,7 +716,7 @@ impl OpPlace {
 pub const BY_LOCAL_ROOT: &str = "standing-local-root";
 pub const BY_CUSTOMER_KEY: &str = "standing-customer-key";
 /// The only commands a customer's key may approve (the customer entry's writing requests).
-pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"];
+pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];
 
 /// Run one change as an operation whose plan reads nothing of the host (tests, and plans
 /// built only from the command line). Anything that decides from host state — a
@@ -740,6 +767,23 @@ pub fn run_op_prepared<P, T>(
     prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
     change: impl FnOnce(&str, P) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
+    let op_id = op_id(now, random4()?);
+    run_op_prepared_as(place, &op_id, command, target, approval, prepare, change)
+}
+
+/// [`run_op_prepared`] under an operation id chosen before: the one a sealed plan carries,
+/// so the journal, the plan the approval was given for and the apply share one id. The id
+/// must be one ([`op::valid_op_id`]); an id whose journal already exists is refused at its
+/// first line (`planned` must open a journal), so one plan is applied at most once.
+pub fn run_op_prepared_as<P, T>(
+    place: &OpPlace,
+    op_id: &str,
+    command: &str,
+    target: &str,
+    approval: &str,
+    prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
+    change: impl FnOnce(&str, P) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     // only the two standing approvals exist until one-time approvals come with the remote
     // CLI: anything else — empty, misspelt — is refused, so no string slips past the
     // customer-key allowlist by not looking like the customer key (c477a #635 seg. 2 L3)
@@ -749,7 +793,10 @@ pub fn run_op_prepared<P, T>(
     if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {
         return Err(format!("{command} cannot be approved by a customer key"));
     }
-    let op_id = op_id(now, random4()?);
+    if !op::valid_op_id(op_id) {
+        return Err(format!("{op_id:?} is not an operation id"));
+    }
+    let op_id = op_id.to_owned();
     let pid = std::process::id();
     if let Got::TookOver(h) = acquire(&place.lock, &op_id, pid)? {
         eprintln!(
@@ -1094,6 +1141,10 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                     json!({ "error": e, "what_to_do": "a journal cannot be read: every target is held until it is fixed or moved aside by hand" })
                 }
             };
+            // sites being opened, with the step each reached: a clone journaled `verified`
+            // leaves a container that is not a site yet (c477a, B1 L1)
+            doc["opening"] =
+                crate::sitecreatecmd::opening_report(Path::new(crate::sitecreatecmd::CREATING));
             if let Some(op) = args.get(1) {
                 let (entries, cut) = read_journal(&journal_path(dir, op)?)?;
                 let last = op::replay(&entries).map_err(|e| e.to_string())?;

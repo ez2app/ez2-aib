@@ -224,7 +224,7 @@ pub fn probe_here(kind: &str, ip: IpAddr, port: u16) -> bool {
 /// (not inside aibd, which owns the timer registry); the only clock it needs is "give the
 /// child at most N seconds". Nothing else in this crate sleeps.
 #[allow(clippy::disallowed_methods)]
-fn wait_with_timeout(
+pub(crate) fn wait_with_timeout(
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> Result<std::process::ExitStatus, String> {
@@ -399,6 +399,83 @@ pub(crate) fn run_capture_bounded(
         return Err(format!("{:?} exited {status}", cmd.get_program()));
     }
     Ok((String::from_utf8_lossy(&buf).into_owned(), false))
+}
+
+/// [`run_capture_bounded`] that also hands the child `input` on its standard input (and
+/// closes it): for what must never be in an argument list, such as a password. More than
+/// `max_bytes` of output is a failure, not a cut answer: a program that says more than it
+/// should is not believed.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_bounded_input(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes: usize,
+    input: &[u8],
+) -> Result<String, String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let program = format!("{:?}", cmd.get_program());
+    let mut stdin = child.stdin.take();
+    let feed = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut w) = stdin.take() {
+            // a child that does not read is not an error here: its answer decides
+            let _ = w.write_all(&feed);
+        }
+    });
+    let pipe = child.stdout.take();
+    let cap = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut more = false;
+        if let Some(p) = pipe {
+            let mut limited = p.take(cap);
+            let _ = limited.read_to_end(&mut buf);
+            more = matches!(limited.into_inner().read(&mut [0u8; 1]), Ok(1));
+        }
+        (buf, more)
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let finished = reader.is_finished();
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    let (buf, more) = if finished {
+        reader.join().unwrap_or_default()
+    } else {
+        (Vec::new(), false)
+    };
+    if !finished || more {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(writer);
+        return Err(if finished {
+            format!("{program}: more than {max_bytes} bytes of output")
+        } else {
+            format!("{program}: timeout")
+        });
+    }
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status = wait_with_timeout(&mut child, left).map_err(|e| format!("{program}: {e}"))?;
+    kill_group(child.id());
+    let _ = writer.join();
+    if !status.success() {
+        return Err(format!("{program} exited {status}"));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 // ---------------------------------------------------------------- container namespaces
@@ -887,8 +964,8 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
 
 // ---------------------------------------------------------------- site suspend / resume / restore (P2)
 
-const EDGE_CT: &str = "101";
-const CADDYFILE: &str = "/etc/caddy/Caddyfile";
+pub(crate) const EDGE_CT: &str = "101";
+pub(crate) const CADDYFILE: &str = "/etc/caddy/Caddyfile";
 const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
 
 /// Read one site record. The CLI code is validated before it touches a path (c477a #585 L3:
@@ -970,7 +1047,7 @@ pub(crate) fn edge_caddyfile() -> Result<String, String> {
 
 /// Push a new Caddyfile to the Edge: backup → write → `caddy validate` → reload. On a failed
 /// validation the backup is restored and nothing is reloaded.
-fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
+pub(crate) fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
     let stamp = unix_now();
     let backup = format!("{CADDYFILE}.bak-{stamp}");
     let mut cp = Command::new("pct");
@@ -1316,8 +1393,10 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("drift") => cmd_site_drift(&args[2..]),
             Some("verify") => crate::siteverify::cmd(&args[2..]),
             Some("usage") => crate::usagecmd::cmd(&args[2..]),
+            Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
             Some("mask") => crate::sitemaskcmd::cmd(&args[2..]),
+            Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
             }
@@ -1330,11 +1409,12 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
         Some("roster") => crate::rostercmd::cmd(&args[1..]),
+        Some("leak-words") => crate::leakwordscmd::cmd(&args[1..]),
         Some("ct") => crate::maskcmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
@@ -1362,7 +1442,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::BUILD_INFO);
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | build-info | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | leak-words --out <file> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | build-info | --version".to_owned()),
     }
 }
 
