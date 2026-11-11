@@ -1863,6 +1863,13 @@ jobs:
           hk sitecreatecmd.rs '        fields.remove("kept");' \
              '        fields.remove("kept_"); // knife' \
              a_step_that_goes_through_clears_kept
+          # E1 audit 11-12 #8: a new opening goes into the current firewall group (v2)
+          hk sitecreatecmd.rs '    .and_then(|s| s.with_fw_group(group.unwrap_or(NEW_SITE_FW_GROUP)))' \
+             '    .and_then(|s| s.with_fw_group(group.unwrap_or(aib_cloud::site::FW_GROUP))) // knife' \
+             a_new_opening_uses_the_current_firewall_group
+          hk sitecreatecmd.rs '    let group = record.get("fw_group").and_then(Value::as_str);' \
+             '    let group = record.get("fw_group_").and_then(Value::as_str); // knife' \
+             a_new_opening_uses_the_current_firewall_group
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

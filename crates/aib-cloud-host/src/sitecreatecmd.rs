@@ -777,16 +777,7 @@ pub fn clone_step(
             ));
         }
     }
-    let spec = aib_cloud::site::SiteSpec::new(
-        &input.code,
-        ct,
-        input.ip,
-        &[domain],
-        !input.blank,
-        "zh_TW",
-        aib_cloud::site::Limits::START,
-    )
-    .map_err(|e| format!("{e:?}"))?;
+    let spec = opening_spec(&input.code, ct, input.ip, domain, !input.blank, None)?;
     let mut record = json!({
         "site": input.code,
         "ct": ct,
@@ -1044,17 +1035,37 @@ pub fn read_opening(creating: &Path, code: &str, domain: &str) -> Result<Opening
         .get("blank")
         .and_then(Value::as_bool)
         .ok_or("the opening record has no blank")?;
-    let spec = aib_cloud::site::SiteSpec::new(
+    let group = record.get("fw_group").and_then(Value::as_str);
+    let spec = opening_spec(code, ct, ip, domain, !blank, group)?;
+    Ok(Opening { record, spec })
+}
+
+/// The firewall group a new site's container is switched to: NET-1 (11-10) moved every
+/// site to v2, and the host's cluster firewall has it (f1fae 11-12; audit #8). The library
+/// default stays v1 for the old records that name no group.
+pub const NEW_SITE_FW_GROUP: &str = "ez2-site-v2";
+
+/// The spec of an opening: the group its record names once the firewall step wrote one,
+/// else [`NEW_SITE_FW_GROUP`].
+fn opening_spec(
+    code: &str,
+    ct: u32,
+    ip: u8,
+    domain: &str,
+    wp: bool,
+    group: Option<&str>,
+) -> Result<aib_cloud::site::SiteSpec, String> {
+    aib_cloud::site::SiteSpec::new(
         code,
         ct,
         ip,
         &[domain],
-        !blank,
+        wp,
         "zh_TW",
         aib_cloud::site::Limits::START,
     )
-    .map_err(|e| format!("{e:?}"))?;
-    Ok(Opening { record, spec })
+    .and_then(|s| s.with_fw_group(group.unwrap_or(NEW_SITE_FW_GROUP)))
+    .map_err(|e| format!("{e:?}"))
 }
 
 /// `text` (a container's configuration) with exactly one `lxc.cgroup2.pids.max` line, set
@@ -2748,7 +2759,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(rec["step"], "start");
-        assert_eq!(rec["fw_group"], aib_cloud::site::FW_GROUP);
+        assert_eq!(rec["fw_group"], NEW_SITE_FW_GROUP);
         assert_eq!(record_of(&paths), rec, "the record on disk moved on");
         assert!(rec["at"].as_u64().unwrap() > 1);
         let set = aib_cloud::site::plan(&spec131())
@@ -2777,7 +2788,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(paths.firewall.join("131.fw")).unwrap(),
-            aib_cloud::site::desired_firewall(aib_cloud::site::FW_GROUP, None)
+            aib_cloud::site::desired_firewall(NEW_SITE_FW_GROUP, None)
         );
         assert_eq!(last_state(&place), Some(State::Verified));
         assert!(!place.lock.lock.exists(), "the lock is given back");
@@ -2879,6 +2890,24 @@ mod tests {
     /// A site kept for a person and carried on: once a step goes through, the record no
     /// longer says it is kept, and the opened record of a healthy site carries no `kept`
     /// (audit 11-12 #6).
+    /// A new site's container goes into the firewall group every site is in (v2 since
+    /// NET-1); an opening whose record already names a group keeps it (audit 11-12 #8).
+    #[test]
+    fn a_new_opening_uses_the_current_firewall_group() {
+        let (_place, paths) = opened("b8group", "start");
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        assert_eq!(opening.spec.fw_group, "ez2-site-v2");
+        let file = paths.creating.join(format!("{CODE}.json"));
+        let mut rec: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        rec["fw_group"] = json!("ez2-site-v3");
+        fs::write(&file, rec.to_string()).unwrap();
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        assert_eq!(opening.spec.fw_group, "ez2-site-v3");
+        rec["fw_group"] = json!("ez2-site-v2; rm");
+        fs::write(&file, rec.to_string()).unwrap();
+        assert!(read_opening(&paths.creating, CODE, "new.example.test").is_err());
+    }
+
     #[test]
     fn a_step_that_goes_through_clears_kept() {
         let mut rec = json!({ "step": "licenses", "kept": { "step": "dns", "why": "x", "at": 1 } });
