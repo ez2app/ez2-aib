@@ -628,7 +628,7 @@ def _si_ledger_latest(repo, paths, rid_cached=None):
     except Exception as e:
         return None, rid_cached, f"shadow: {e}"
     rid = rid_cached or reuse_index.repo_identity(repo) or ""
-    latest = {p: {} for p in paths}
+    latest = {p: {} for p in paths}   # 帳本檔不存在 ⇒ 回空字典(QA 段跟舊版一樣整段不列)
     needles = {}
     for p in paths:
         needles[p] = p
@@ -652,7 +652,7 @@ def _si_ledger_latest(repo, paths, rid_cached=None):
                 if rp in latest and r.get("test"):
                     latest[rp][r["test"]] = r
     except OSError:
-        pass
+        return {}, rid, None
     return latest, rid, None
 
 
@@ -792,37 +792,36 @@ if QA and out["code"]:
     except Exception as e:
         qa["err"].append(f"qa dm: {e}")
     # (2) 沒驗的格子:影子帳本裡 measured != True 的列(每棵有我席碼的樹、每支取最後一次),以及有 fail_cells 的
-    try:
-        sys.path.insert(0, os.path.join(repo, "tools", "verify"))
-        import reuse_index, shadow_tracer
-        shadow = str(shadow_tracer.shadow_dir_default())
-        def _git(cwd, *args):
-            r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
-            return r.stdout.strip() if r.returncode == 0 else None
-        for blk in (_git(repo, "worktree", "list", "--porcelain") or "").split("\n\n"):
-            path = next((l[9:] for l in blk.splitlines() if l.startswith("worktree ")), None)
-            if not path or not os.path.isdir(path):
-                continue
-            br = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-            if out["code"] not in br and out["code"] not in path:
-                continue
-            if br == "HEAD" and not (_git(path, "status", "--short") or ""):
+    #     11-12 熱修:跟 dev 段同一套(只列本席樹、不逐棵叫 git、帳本只讀一遍、90 秒快取)
+    def _qa_build(common, rows, rem, memo):
+        res = {"unverified": [], "err": []}
+        if common is None:
+            res["err"].append("qa shadow: 找不到 .git")
+            return res
+        keep = []
+        for path, br, adm, head in rows:
+            if br == "HEAD" and not (_si_git(path, "status", "--short") or ""):
                 continue   # 對照用的乾淨 checkout,不是在驗的包
-            rid = reuse_index.repo_identity(path) or ""
-            latest = {}
-            try:
-                with open(os.path.join(shadow, f"verify-{rid}.rows.jsonl"), encoding="utf-8") as fh:
-                    for ln in fh:
-                        try: r = json.loads(ln)
-                        except Exception: continue
-                        if r.get("repo") == path and r.get("test"):
-                            latest[r["test"]] = r
-            except OSError:
-                continue
+            keep.append((path, br))
+        latest_all, rid, err = _si_ledger_latest(repo, [k[0] for k in keep], memo.get("_rid"))
+        memo["_rid"] = rid
+        if err:
+            res["err"].append(f"qa {err}")
+            return res
+        for path, br in keep:
+            if path not in latest_all:
+                continue   # 帳本檔不存在 ⇒ 不列(同舊版)
+            latest = latest_all[path]
             unm = [t for t, r in latest.items() if r.get("measured") is not True]
             fails = [t for t, r in latest.items() if r.get("fail_cells")]
-            qa["unverified"].append({"branch": br, "tests": len(latest), "unmeasured": len(unm), "fail_cells": len(fails),
-                                     "unmeasured_names": [t.split("/")[-1] for t in unm[:5]], "fail_names": [t.split("/")[-1] for t in fails[:5]]})
+            res["unverified"].append({"branch": br, "tests": len(latest), "unmeasured": len(unm), "fail_cells": len(fails),
+                                      "unmeasured_names": [t.split("/")[-1] for t in unm[:5]], "fail_names": [t.split("/")[-1] for t in fails[:5]]})
+        return res
+    try:
+        _qres, _qhit = _si_section("qa", out["code"], repo, _qa_build)
+        qa["unverified"] = _qres.get("unverified") or []
+        qa["err"] += _qres.get("err") or []
+        qa["cache"] = "hit" if _qhit else "miss"
     except Exception as e:
         qa["err"].append(f"qa shadow: {e}")
     # (3) 我寫過的審查/驗收檔:pending/ 裡檔名帶我席碼、名字像 XREVIEW / ACCEPT / REVIEW 的,最近 7 天
