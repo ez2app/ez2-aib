@@ -51,6 +51,7 @@ pub mod r2token;
 pub mod robot;
 pub mod roster;
 pub mod site;
+pub mod sitecreate;
 pub mod sitedefaults;
 pub mod svc;
 pub mod usage;
