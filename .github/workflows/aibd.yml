@@ -308,6 +308,16 @@ jobs:
           pl '                    files.pop(); // a removed path adds nothing' \
              '                    // knife: the removed path stays' \
              a_new_empty_file_or_a_mode_change_still_has_its_path_checked
+          pm() { python3 -I scripts/knife.py crates/aib-public-leak/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --test leak "$3"; }
+          # PL9 (043dd #636 L1) the PR's own .gitattributes decide what is read
+          pm '    let attr = format!("--attr-source={}", a.base);' \
+             '    let attr = "--no-pager".to_string(); // knife' \
+             a_pr_cannot_hide_its_lines_with_its_own_gitattributes
+          # PL10 (a63ab after #636) a required denylist that is absent passes
+          pm '    } else if deny.is_empty() && a.require_denylist {' \
+             '    } else if deny.is_empty() && a.require_denylist && false { // knife' \
+             a_required_denylist_that_is_absent_is_exit_3_not_a_pass
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

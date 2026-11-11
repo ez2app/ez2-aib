@@ -15,6 +15,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `public-leak-text.yml` (title / body edited after the last push; not a required check); both
   build the gate from the base commit and run it on the PR checkout, and only that binary gets
   the denylist. Becomes `aib-verify public-leak` once aib-verify is on main.
+- `aib-public-leak` reads `.gitattributes` from the base (`git --attr-source=BASE`, 043dd #636 L1):
+  a PR that marks its own files `binary` / `-diff` still has their added lines checked; files
+  the base calls binary are counted in the summary as not read. `--require-denylist`: an absent
+  denylist is exit 3, not a pass (CI passes it once the base-built gate knows the flag, so a
+  fork PR without the secret is red, not silently green).
 - `ErrorCode::ALL` can no longer drift from the enum unnoticed (a63ab 11-10; a merge once
   turned two edits to `25` into a 26-entry array). New `ErrorCode::ordinal()` is an exhaustive
   match, so a new code does not build until it is numbered; build-time checks fail when a

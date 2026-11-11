@@ -196,3 +196,60 @@ fn a_bad_revision_or_argument_is_exit_2() {
     assert_eq!(run(&d, &[], Some(WORD)).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// 043dd #636 L1: attributes come from the base. A PR that marks its own files binary (or
+/// `-diff`) still has their added lines read.
+#[test]
+fn a_pr_cannot_hide_its_lines_with_its_own_gitattributes() {
+    let d = repo("attr");
+    std::fs::write(d.join(".gitattributes"), "*.txt binary\n").expect("write");
+    git(&d, &["add", ".gitattributes"]);
+    git(&d, &["commit", "-q", "-m", "attributes"]);
+    let o = run(&d, &["--base", "base"], Some("unrelated"));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("public-leak: notes.txt:2 (file #2): public IPv4 address"),
+        "{out}"
+    );
+    assert!(out.contains(", 0 binary file(s) not read"), "{out}");
+    assert_no_leak(&out);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A file the base's own attributes call binary is not read, and the summary says how many.
+#[test]
+fn a_file_the_base_calls_binary_is_counted_as_not_read() {
+    let d = repo("bin");
+    std::fs::write(d.join(".gitattributes"), "*.bin binary\n").expect("write");
+    git(&d, &["add", ".gitattributes"]);
+    git(&d, &["commit", "-q", "-m", "attributes"]);
+    git(&d, &["tag", "base2"]);
+    std::fs::write(d.join("x.bin"), "plain\n").expect("write");
+    git(&d, &["add", "x.bin"]);
+    git(&d, &["commit", "-q", "-m", "a binary"]);
+    let o = run(&d, &["--base", "base2"], Some("unrelated"));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(out.contains(", 1 binary file(s) not read"), "{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// a63ab (after #636): with --require-denylist an absent denylist is exit 3, never a pass;
+/// findings still come first (exit 1).
+#[test]
+fn a_required_denylist_that_is_absent_is_exit_3_not_a_pass() {
+    let d = repo("require");
+    let clean = ["--base", "base", "--head", "base", "--require-denylist"];
+    let o = run(&d, &clean, None);
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(3), "{out}");
+    assert!(
+        out.contains("public-leak: denylist required (--require-denylist) but absent: not passed"),
+        "{out}"
+    );
+    assert_eq!(run(&d, &clean, Some(WORD)).status.code(), Some(0));
+    let o = run(&d, &["--base", "base", "--require-denylist"], None);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    let _ = std::fs::remove_dir_all(&d);
+}

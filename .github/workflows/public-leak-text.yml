@@ -48,4 +48,10 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BIN: ${{ steps.b.outputs.bin }}
-        run: '"$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH"'
+        # --require-denylist: no secret (a fork PR, or the secret gone) is red, not a silent pass.
+        # Passed only when the base-built gate knows it (the PR that adds it runs the old gate).
+        run: |
+          set -u
+          req=()
+          if grep -q -- '"--require-denylist"' gate/crates/aib-public-leak/src/main.rs; then req=(--require-denylist); fi
+          "$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH" "${req[@]}"
