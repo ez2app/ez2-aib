@@ -40,11 +40,13 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use aib_cloud::site::{caddy_block_upstream, caddy_marker, SiteSpec};
-use aib_cloud::sitedefaults::{license_after, license_before, license_by_status, License, LicenseStep};
+use aib_cloud::sitedefaults::{
+    license_after, license_before, license_by_status, License, LicenseStep,
+};
 use serde_json::{json, Value};
 
-use crate::siteidentity::wp;
 use crate::sitecreatecmd::{HostPaths, Runner};
+use crate::siteidentity::wp;
 
 /// The paid plugins' keys of the template, on the host.
 pub const KEYS: &str = "/etc/ez2-cloud/wp-package-keys.env";
@@ -125,10 +127,19 @@ fn same_key(site: &str, template: &str) -> bool {
     !site.is_empty() && site.as_bytes() == template.as_bytes()
 }
 
-fn seopress(runner: &mut impl Runner, paths: &HostPaths, spec: &SiteSpec) -> Result<Outcome, String> {
-    let keys = fs::read_to_string(&paths.keys).map_err(|e| format!("license_unknown: {}: {e}", paths.keys.display()))?;
-    let template = env_value(&keys, SEOPRESS_KEY)
-        .ok_or_else(|| format!("license_unknown: {} has no SEOPress key", paths.keys.display()))?;
+fn seopress(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    spec: &SiteSpec,
+) -> Result<Outcome, String> {
+    let keys = fs::read_to_string(&paths.keys)
+        .map_err(|e| format!("license_unknown: {}: {e}", paths.keys.display()))?;
+    let template = env_value(&keys, SEOPRESS_KEY).ok_or_else(|| {
+        format!(
+            "license_unknown: {} has no SEOPress key",
+            paths.keys.display()
+        )
+    })?;
     let site = runner
         .run(&wp(spec, &["option", "get", "seopress_pro_license_key"]))
         .map_err(|e| format!("license_unknown: the site's SEOPress key could not be read: {e}"))?;
@@ -138,7 +149,11 @@ fn seopress(runner: &mut impl Runner, paths: &HostPaths, spec: &SiteSpec) -> Res
     }
     // no answer is "unknown", never "not active"
     fn ask(runner: &mut impl Runner, spec: &SiteSpec) -> License {
-        seopress_answer(&runner.run(&wp(spec, &["eval", SP_PROBE])).unwrap_or_default())
+        seopress_answer(
+            &runner
+                .run(&wp(spec, &["eval", SP_PROBE]))
+                .unwrap_or_default(),
+        )
     }
     match license_before(ask(runner, spec)) {
         LicenseStep::Done => Ok(Outcome::Done),
@@ -185,9 +200,12 @@ pub fn licences_step(
 /// group? `rules` is `iptables -S veth<ct>i0-IN`.
 pub fn firewall_compiled(rules: &str, group: &str) -> bool {
     let jump = format!("-j GROUP-{group}-IN");
-    rules
-        .lines()
-        .any(|l| l.split_whitespace().collect::<Vec<_>>().join(" ").ends_with(&jump))
+    rules.lines().any(|l| {
+        l.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .ends_with(&jump)
+    })
 }
 
 /// The entry's configuration with the site's block added. `Ok(None)`: the block is already
@@ -201,7 +219,10 @@ pub fn edge_with_site(caddyfile: &str, spec: &SiteSpec) -> Result<Option<String>
     }
     let marker = caddy_marker(&spec.code);
     if caddyfile.lines().any(|l| l.trim_end() == marker) {
-        return Err(format!("the entry already has a block for {} that is not this one", spec.code));
+        return Err(format!(
+            "the entry already has a block for {} that is not this one",
+            spec.code
+        ));
     }
     for host in &spec.hosts {
         let named = caddyfile.lines().any(|l| {
@@ -267,7 +288,19 @@ pub fn others(runner: &mut impl Runner, records: &Path, code: &str) -> Vec<(Stri
 fn curl_status(host: &str) -> Vec<String> {
     let resolve = format!("{host}:443:127.0.0.1");
     let url = format!("https://{host}/");
-    edge(&["curl", "-s", "-o", "/dev/null", "-m", "10", "-w", "%{http_code}", "--resolve", &resolve, &url])
+    edge(&[
+        "curl",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-m",
+        "10",
+        "-w",
+        "%{http_code}",
+        "--resolve",
+        &resolve,
+        &url,
+    ])
 }
 
 /// Every other site answers as before. An answer that could not be had, then or now, is
@@ -309,10 +342,17 @@ fn edge_write(runner: &mut impl Runner, text: &str) -> Result<(), String> {
         .run_input(&edge(&["sh", "-c", &write_new]), text.as_bytes())
         .map_err(|e| format!("the new entry configuration could not be written: {e}"))?;
     if let Err(e) = runner.run(&edge(&[
-        "caddy", "validate", "--config", CADDYFILE_NEW, "--adapter", "caddyfile",
+        "caddy",
+        "validate",
+        "--config",
+        CADDYFILE_NEW,
+        "--adapter",
+        "caddyfile",
     ])) {
         let _ = runner.run(&edge(&["rm", "-f", CADDYFILE_NEW]));
-        return Err(format!("the new entry configuration is not valid; nothing was changed: {e}"));
+        return Err(format!(
+            "the new entry configuration is not valid; nothing was changed: {e}"
+        ));
     }
     let backup = format!("{CADDYFILE}.bak-{}", crate::probe::unix_now());
     runner
@@ -326,7 +366,11 @@ fn edge_write(runner: &mut impl Runner, text: &str) -> Result<(), String> {
         let again = runner.run(&edge(&["systemctl", "reload", "caddy"]));
         return Err(format!(
             "the entry did not reload; the old configuration from {backup} {}: {e}",
-            if back.is_ok() && again.is_ok() { "is back" } else { "could NOT be put back" }
+            if back.is_ok() && again.is_ok() {
+                "is back"
+            } else {
+                "could NOT be put back"
+            }
         ));
     }
     Ok(())
@@ -390,7 +434,9 @@ pub fn health_answer(headers: &str, host: &str) -> Result<(), String> {
     if marked {
         Ok(())
     } else {
-        Err(format!("health: {host} answered 200 without its own mark {mark}"))
+        Err(format!(
+            "health: {host} answered 200 without its own mark {mark}"
+        ))
     }
 }
 
@@ -425,7 +471,10 @@ pub fn list_with_site(list: &str, spec: &SiteSpec) -> Result<String, String> {
             return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line {
                 Ok(list.to_owned())
             } else {
-                Err(format!("the export list already has another line for {}: {l}", spec.code))
+                Err(format!(
+                    "the export list already has another line for {}: {l}",
+                    spec.code
+                ))
             };
         }
     }
@@ -478,7 +527,19 @@ pub fn health_step(
     let resolve = format!("{host}:443:127.0.0.1");
     let url = format!("https://{host}/");
     let headers = runner
-        .run(&edge(&["curl", "-s", "-o", "/dev/null", "-D", "-", "-m", "20", "--resolve", &resolve, &url]))
+        .run(&edge(&[
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-D",
+            "-",
+            "-m",
+            "20",
+            "--resolve",
+            &resolve,
+            &url,
+        ]))
         .map_err(|e| format!("health: {host} could not be asked: {e}"))?;
     health_answer(&headers, host)?;
     let path = paths.records.join(format!("{}.json", spec.code));
@@ -486,7 +547,12 @@ pub fn health_step(
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n";
     match fs::read_to_string(&path) {
         Ok(there) if there == text => {}
-        Ok(_) => return Err(format!("{}: a record that is not this opening's is there", path.display())),
+        Ok(_) => {
+            return Err(format!(
+                "{}: a record that is not this opening's is there",
+                path.display()
+            ))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => write_new(&path, &text, 0o644)?,
         Err(e) => return Err(format!("{}: {e}", path.display())),
     }
@@ -586,17 +652,41 @@ mod tests {
     #[test]
     fn a_key_file_value_is_read_without_its_quotes() {
         let t = "# keys\nOTHER=x\nSEOPRESS_PRO_LICENSE_KEY='abc'\n";
-        assert_eq!(env_value(t, "SEOPRESS_PRO_LICENSE_KEY").as_deref(), Some("abc"));
-        assert_eq!(env_value("SEOPRESS_PRO_LICENSE_KEY=\n", "SEOPRESS_PRO_LICENSE_KEY"), None);
-        assert_eq!(env_value("SEOPRESS_PRO_LICENSE_KEY_OLD=x\n", "SEOPRESS_PRO_LICENSE_KEY"), None);
+        assert_eq!(
+            env_value(t, "SEOPRESS_PRO_LICENSE_KEY").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            env_value("SEOPRESS_PRO_LICENSE_KEY=\n", "SEOPRESS_PRO_LICENSE_KEY"),
+            None
+        );
+        assert_eq!(
+            env_value(
+                "SEOPRESS_PRO_LICENSE_KEY_OLD=x\n",
+                "SEOPRESS_PRO_LICENSE_KEY"
+            ),
+            None
+        );
     }
 
     #[test]
     fn only_the_vendor_s_own_words_count_for_seopress() {
-        assert_eq!(seopress_answer("SP license=valid left=3\n"), License::Active);
-        assert_eq!(seopress_answer("noise\nSP license=site_inactive left=2\n"), License::Inactive);
-        assert_eq!(seopress_answer("SP license=site_inactive left=0\n"), License::Quota);
-        assert_eq!(seopress_answer("SP license=expired left=na\n"), License::NotValid);
+        assert_eq!(
+            seopress_answer("SP license=valid left=3\n"),
+            License::Active
+        );
+        assert_eq!(
+            seopress_answer("noise\nSP license=site_inactive left=2\n"),
+            License::Inactive
+        );
+        assert_eq!(
+            seopress_answer("SP license=site_inactive left=0\n"),
+            License::Quota
+        );
+        assert_eq!(
+            seopress_answer("SP license=expired left=na\n"),
+            License::NotValid
+        );
         assert_eq!(seopress_answer("SP none\n"), License::Unknown);
         assert_eq!(seopress_answer("SP unknown\n"), License::Unknown);
         assert_eq!(seopress_answer(""), License::Unknown);
@@ -604,7 +694,11 @@ mod tests {
 
     /// A site whose key is `key` and whose vendor says `before`, then `after` once the
     /// activation ran.
-    fn sp_site(key: &'static str, before: &'static str, after: &'static str) -> impl FnMut(&[String]) -> Result<String, String> {
+    fn sp_site(
+        key: &'static str,
+        before: &'static str,
+        after: &'static str,
+    ) -> impl FnMut(&[String]) -> Result<String, String> {
         let mut activated = false;
         move |argv: &[String]| {
             let a = argv.join(" ");
@@ -624,12 +718,22 @@ mod tests {
     #[test]
     fn seopress_is_activated_when_the_site_holds_the_template_s_key() {
         let paths = scratch("sp-ok");
-        let mut h = host(sp_site("tmplkey", "SP license=site_inactive left=5\n", "SP license=valid left=4\n"));
+        let mut h = host(sp_site(
+            "tmplkey",
+            "SP license=site_inactive left=5\n",
+            "SP license=valid left=4\n",
+        ));
         let mut rec = json!({});
         licences_step(&mut h, &paths, &spec(), &mut rec).unwrap();
         assert_eq!(rec["licences"]["seopress"], "done");
-        assert_eq!(rec["licences"]["flyingpress"], "flyingpress:activate_by_hand");
-        assert!(h.calls.iter().any(|c| c.ends_with("seopress-pro license activate")));
+        assert_eq!(
+            rec["licences"]["flyingpress"],
+            "flyingpress:activate_by_hand"
+        );
+        assert!(h
+            .calls
+            .iter()
+            .any(|c| c.ends_with("seopress-pro license activate")));
         // the template's key is never an argument
         assert!(h.calls.iter().all(|c| !c.contains("tmplkey")));
     }
@@ -637,10 +741,17 @@ mod tests {
     #[test]
     fn another_key_in_the_site_is_left_for_a_person_and_nothing_is_activated() {
         let paths = scratch("sp-other");
-        let mut h = host(sp_site("someone-elses", "SP license=site_inactive left=5\n", ""));
+        let mut h = host(sp_site(
+            "someone-elses",
+            "SP license=site_inactive left=5\n",
+            "",
+        ));
         let mut rec = json!({});
         licences_step(&mut h, &paths, &spec(), &mut rec).unwrap();
-        assert_eq!(rec["licences"]["seopress"], "seopress:key_not_the_template's");
+        assert_eq!(
+            rec["licences"]["seopress"],
+            "seopress:key_not_the_template's"
+        );
         assert!(h.calls.iter().all(|c| !c.contains("license activate")));
     }
 
@@ -659,7 +770,11 @@ mod tests {
     #[test]
     fn an_activation_the_vendor_does_not_confirm_is_a_failure() {
         let paths = scratch("sp-after");
-        let mut h = host(sp_site("tmplkey", "SP license=site_inactive left=5\n", "SP license=site_inactive left=5\n"));
+        let mut h = host(sp_site(
+            "tmplkey",
+            "SP license=site_inactive left=5\n",
+            "SP license=site_inactive left=5\n",
+        ));
         let e = licences_step(&mut h, &paths, &spec(), &mut json!({})).unwrap_err();
         assert!(e.starts_with("license_inactive"), "{e}");
     }
@@ -667,7 +782,16 @@ mod tests {
     #[test]
     fn a_blank_site_has_no_licences() {
         let paths = scratch("sp-blank");
-        let blank = SiteSpec::new("s-b4blnk", 131, 41, &["b4.example.test"], false, "zh_TW", aib_cloud::site::Limits::START).unwrap();
+        let blank = SiteSpec::new(
+            "s-b4blnk",
+            131,
+            41,
+            &["b4.example.test"],
+            false,
+            "zh_TW",
+            aib_cloud::site::Limits::START,
+        )
+        .unwrap();
         let mut h = host(|a: &[String]| Err(format!("unexpected: {}", a.join(" "))));
         let mut rec = json!({});
         licences_step(&mut h, &paths, &blank, &mut rec).unwrap();
@@ -736,7 +860,12 @@ mod tests {
                 return Ok(firewall.to_owned());
             }
             if a.contains("curl") && a.contains("%{http_code}") {
-                return Ok(if answers.len() > 1 { answers.remove(0) } else { answers[0] }.to_owned());
+                return Ok(if answers.len() > 1 {
+                    answers.remove(0)
+                } else {
+                    answers[0]
+                }
+                .to_owned());
             }
             if a.ends_with("cat /etc/caddy/Caddyfile") {
                 return Ok(file.clone());
@@ -758,7 +887,11 @@ mod tests {
             }
             if a.contains("systemctl reload caddy") {
                 reloads += 1;
-                return if reload_ok || reloads > 1 { Ok(String::new()) } else { Err("reload failed".to_owned()) };
+                return if reload_ok || reloads > 1 {
+                    Ok(String::new())
+                } else {
+                    Err("reload failed".to_owned())
+                };
             }
             if a.contains("cat > /etc/caddy/Caddyfile.ez2-new") {
                 new = Some(String::new());
@@ -793,7 +926,11 @@ mod tests {
     fn the_entry_step_adds_the_block_and_the_other_site_still_answers() {
         let paths = scratch("edge-ok");
         with_other_record(&paths);
-        let mut h = host(entry("-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n", true, vec!["200"]));
+        let mut h = host(entry(
+            "-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n",
+            true,
+            vec!["200"],
+        ));
         // the fake keeps the fed text as the new file
         edge_step_fed(&mut h, &paths).unwrap();
         assert_eq!(h.fed.len(), 1);
@@ -802,30 +939,60 @@ mod tests {
             .calls
             .iter()
             .filter_map(|c| {
-                ["caddy validate", "cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak", "mv -f", "systemctl reload"]
-                    .into_iter()
-                    .find(|w| c.contains(w))
+                [
+                    "caddy validate",
+                    "cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak",
+                    "mv -f",
+                    "systemctl reload",
+                ]
+                .into_iter()
+                .find(|w| c.contains(w))
             })
             .collect();
-        assert_eq!(order, ["caddy validate", "cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak", "mv -f", "systemctl reload"]);
+        assert_eq!(
+            order,
+            [
+                "caddy validate",
+                "cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak",
+                "mv -f",
+                "systemctl reload"
+            ]
+        );
     }
 
     #[test]
     fn a_failed_reload_puts_the_old_configuration_back() {
         let paths = scratch("edge-reload");
         with_other_record(&paths);
-        let mut h = host(entry("-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n", false, vec!["200"]));
+        let mut h = host(entry(
+            "-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n",
+            false,
+            vec!["200"],
+        ));
         let e = edge_step_fed(&mut h, &paths).unwrap_err();
         assert!(e.contains("did not reload") && e.contains("is back"), "{e}");
-        assert_eq!(h.calls.iter().filter(|c| c.contains("systemctl reload")).count(), 2);
-        assert!(h.calls.iter().any(|c| c.contains("cp -a /etc/caddy/Caddyfile.bak-")));
+        assert_eq!(
+            h.calls
+                .iter()
+                .filter(|c| c.contains("systemctl reload"))
+                .count(),
+            2
+        );
+        assert!(h
+            .calls
+            .iter()
+            .any(|c| c.contains("cp -a /etc/caddy/Caddyfile.bak-")));
     }
 
     #[test]
     fn another_site_that_answers_differently_after_is_a_failure() {
         let paths = scratch("edge-other");
         with_other_record(&paths);
-        let mut h = host(entry("-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n", true, vec!["200", "502"]));
+        let mut h = host(entry(
+            "-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n",
+            true,
+            vec!["200", "502"],
+        ));
         let e = edge_step_fed(&mut h, &paths).unwrap_err();
         assert!(e.contains("does not answer as before"), "{e}");
     }
@@ -846,7 +1013,11 @@ mod tests {
                 if a.contains("mv -f") {
                     self.inner.calls.push(a);
                     self.file = self.fed.take();
-                    return if self.file.is_some() { Ok(String::new()) } else { Err("no new file".to_owned()) };
+                    return if self.file.is_some() {
+                        Ok(String::new())
+                    } else {
+                        Err("no new file".to_owned())
+                    };
                 }
                 if a.ends_with("cat /etc/caddy/Caddyfile") {
                     if let Some(f) = &self.file {
@@ -854,7 +1025,10 @@ mod tests {
                         return Ok(f.clone());
                     }
                 }
-                if a.contains("Caddyfile.bak-") && a.ends_with("/etc/caddy/Caddyfile") && !a.contains("cp -a /etc/caddy/Caddyfile /") {
+                if a.contains("Caddyfile.bak-")
+                    && a.ends_with("/etc/caddy/Caddyfile")
+                    && !a.contains("cp -a /etc/caddy/Caddyfile /")
+                {
                     self.file = None;
                 }
                 self.inner.run(argv)
@@ -864,7 +1038,11 @@ mod tests {
                 self.inner.run_input(argv, input)
             }
         }
-        let mut b = Bridge { inner: h, fed: None, file: None };
+        let mut b = Bridge {
+            inner: h,
+            fed: None,
+            file: None,
+        };
         edge_step(&mut b, paths, &spec())
     }
 
@@ -892,7 +1070,10 @@ mod tests {
         let s = spec();
         let list = "# comment\nsite1 110 /var/www/site1\n";
         let out = list_with_site(list, &s).unwrap();
-        assert_eq!(out, "# comment\nsite1 110 /var/www/site1\ns-b4test 131 /var/www/s-b4test\n");
+        assert_eq!(
+            out,
+            "# comment\nsite1 110 /var/www/site1\ns-b4test 131 /var/www/s-b4test\n"
+        );
         assert_eq!(list_with_site(&out, &s).unwrap(), out);
         assert!(list_with_site("s-b4test 999 /var/www/x\n", &s).is_err());
     }
@@ -907,10 +1088,18 @@ mod tests {
             Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n".to_owned())
         });
         health_step(&mut h, &paths, &s, 1_794_379_200).unwrap();
-        let rec: Value = serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap()).unwrap();
-        assert!(aib_cloud::site::record_gaps(&rec).is_empty(), "{:?}", aib_cloud::site::record_gaps(&rec));
+        let rec: Value =
+            serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap())
+                .unwrap();
+        assert!(
+            aib_cloud::site::record_gaps(&rec).is_empty(),
+            "{:?}",
+            aib_cloud::site::record_gaps(&rec)
+        );
         assert_eq!(rec["created"], "2026-11-11T06:40:00Z");
-        assert!(fs::read_to_string(&paths.sites_list).unwrap().ends_with("s-b4test 131 /var/www/s-b4test\n"));
+        assert!(fs::read_to_string(&paths.sites_list)
+            .unwrap()
+            .ends_with("s-b4test 131 /var/www/s-b4test\n"));
         assert!(!paths.creating.join("s-b4test.json").exists());
         // again: the same record is there, nothing changes
         fs::write(paths.creating.join("s-b4test.json"), "{}").unwrap();
@@ -933,7 +1122,11 @@ mod tests {
     fn a_record_for_the_code_that_is_not_this_one_is_refused() {
         let paths = scratch("health-taken");
         let s = spec();
-        fs::write(paths.records.join("s-b4test.json"), "{\"site\":\"s-b4test\",\"ct\":1}\n").unwrap();
+        fs::write(
+            paths.records.join("s-b4test.json"),
+            "{\"site\":\"s-b4test\",\"ct\":1}\n",
+        )
+        .unwrap();
         let mut h = host(|_: &[String]| {
             Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n".to_owned())
         });

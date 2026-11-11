@@ -1408,7 +1408,8 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         .is_some_and(|r| r.get("held").is_some_and(Value::is_string));
     let doc = match done {
         Some(record) => {
-            let open = record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
+            let open =
+                record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
             json!({
                 "applied": record.get("step"),
                 "record": record,
