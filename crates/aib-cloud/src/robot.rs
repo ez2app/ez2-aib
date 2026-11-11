@@ -124,7 +124,7 @@ impl Fingerprint {
 }
 
 /// Reset types Robot accepts. Keep in sync with `GET /reset/{server}` (A1 of the runbook);
-/// EU02's AX41 offers `power / power_long / hw / man` and no `sw`.
+/// The first host's model offers `power / power_long / hw / man` and no `sw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetType {
     Sw,

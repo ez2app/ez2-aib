@@ -6,7 +6,7 @@
 畫面:開席動畫(login_splash.py)每家 logo 名字下面多兩行「本機 x」「最新 y」;
 動畫播完、接入指揮艙之前,若有新版:倒數 30 秒,時間到自動更新(s 跳過、Enter 馬上更新),更新完才接入。
 
-每一家怎麼查、怎麼更新(10-09 在 the maintainer 的 Mac mini 上逐家實查,不是猜):
+每一家怎麼查、怎麼更新(10-09 在 the maintainer 的 Mac C 上逐家實查,不是猜):
   claude   官方安裝程式(~/.local/share/claude/versions)  最新:npm view @anthropic-ai/claude-code  更新:claude update
   codex    npm 全域 @openai/codex                         最新:npm view @openai/codex            更新:npm i -g @openai/codex@latest
   grok     ~/.grok/downloads                              最新:grok update --check --json        更新:grok update

@@ -379,7 +379,7 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - So programs that end within milliseconds (`printenv`, `sleep 0`) now give their slot
   back. A session that runs seconds to minutes (`claude`) may still end
   `candidates_unreadable` on a desktop, and keep its slot. Quiet machines (CI runners,
-  Mac Pro 13) do not show this.
+  Mac B) do not show this.
 - The 10-starts `claude` check (1ced7) runs on a desktop Mac and reports the distribution
   of `stop.reason`, not only whether each start worked.
 - Telling launchd's own services apart from "re-parented, then exec'd" session processes
@@ -406,7 +406,7 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   - equal ⇒ the filter is on for that session;
   - the root read as another coalition ⇒ no filter, and none again for the rest of that
     aibd process (the read is not trusted);
-  - the root already gone (an instant program; Mac Pro 13 2026-11-09: `printenv` held its
+  - the root already gone (an instant program; Mac B 2026-11-09: `printenv` held its
     slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
     coalition is used;
   - any other error reading the root, or aibd's own not readable (or 0) ⇒ no filter for

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """收件端照寄件方的 aib-author 標出誰寫的(開發文件第 35 節第 2 點;10-19 實機測抓到:Pro 按 Touch ID
-代主人寄的信,Pro 13 / Mini 收到後跟 AI 寄的一模一樣)。只進外框說明行,不進抬頭括號。
+代主人寄的信,Mac B / Mac C 收到後跟 AI 寄的一模一樣)。只進外框說明行,不進抬頭括號。
 
 核心(一定跑,只用標準庫):
 A1 frame:human / ai_draft / ai_auto 四種語言各多一句「寄件方自報(收件端驗不了)」;沒帶 / 不認得的值 ⇒ 跟以前一字不差
@@ -98,7 +98,7 @@ class Pipeline(unittest.TestCase):
         td = tempfile.TemporaryDirectory(prefix="aib-al-")
         self.addCleanup(td.cleanup)
         self.td = Path(td.name)
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.114.152.121",
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.64.0.121",
                     "EZ2_AIB_LOCALE": "zh-TW"}
         self.root = self.td / "bridge"
         GF.ensure_dirs(self.root)

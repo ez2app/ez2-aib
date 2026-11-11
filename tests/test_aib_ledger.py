@@ -49,7 +49,7 @@ class AibLedger(unittest.TestCase):
             out.write_text(text if text is not None else "head %s\n足跡預設回歸:%d/%d 綠\n" % (sha[:9], passed, total or passed),
                            encoding="utf-8")
         rec = {"schema": "aib-receipt/1", "kind": kind, "sha": sha, "cmd": "node tools/footprint-default-tests.js",
-               "host": "andymini", "started_at": "2026-11-08T21:27:39+08:00", "ended_at": "2026-11-08T21:39:13+08:00",
+               "host": "mac-c", "started_at": "2026-11-08T21:27:39+08:00", "ended_at": "2026-11-08T21:39:13+08:00",
                "rc": rc, "passed": passed, "total": total, "output": str(out)}
         if make_output:
             rec["output_sha256"] = hashlib.sha256(out.read_bytes()).hexdigest()
