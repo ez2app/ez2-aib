@@ -44,6 +44,11 @@ pub enum CreateStep {
     Identity,
     /// Each paid plugin of the template is activated at its vendor.
     Licenses,
+    /// The site's names get their DNS records at Cloudflare, in the customer's own zone
+    /// (`crate::sitedns`): proxied, each carrying the site's mark. Only a zone of an
+    /// account the customer's roster names is used, and a name already answered by a
+    /// record that is not this site's is left alone and stops the step.
+    Dns,
     /// The entry of the host is told about the site. Before it, the container's firewall
     /// rules must be read back as compiled and in force (`pve-firewall compile` /
     /// `status`), not only the file written in [`CreateStep::Firewall`] (c477a B2 L1).
@@ -53,7 +58,7 @@ pub enum CreateStep {
 }
 
 /// Every step, first to last.
-pub const STEPS: [CreateStep; 9] = [
+pub const STEPS: [CreateStep; 10] = [
     CreateStep::Clone,
     CreateStep::Limits,
     CreateStep::Firewall,
@@ -61,6 +66,7 @@ pub const STEPS: [CreateStep; 9] = [
     CreateStep::Install,
     CreateStep::Identity,
     CreateStep::Licenses,
+    CreateStep::Dns,
     CreateStep::Edge,
     CreateStep::Health,
 ];
@@ -76,6 +82,7 @@ impl CreateStep {
             CreateStep::Install => "install",
             CreateStep::Identity => "identity",
             CreateStep::Licenses => "licenses",
+            CreateStep::Dns => "dns",
             CreateStep::Edge => "edge",
             CreateStep::Health => "health",
         }
@@ -372,7 +379,9 @@ mod tests {
                 | CreateStep::Start
                 | CreateStep::Install
                 | CreateStep::Identity => AfterFailure::Undo,
-                CreateStep::Licenses | CreateStep::Edge | CreateStep::Health => AfterFailure::Keep,
+                CreateStep::Licenses | CreateStep::Dns | CreateStep::Edge | CreateStep::Health => {
+                    AfterFailure::Keep
+                }
             };
             assert_eq!(after_failure(step), want, "{step:?}");
         }
@@ -382,6 +391,10 @@ mod tests {
     fn the_site_is_not_shown_to_the_outside_before_its_identity_is_its_own() {
         assert!(CreateStep::Identity < CreateStep::Edge);
         assert!(CreateStep::Identity < CreateStep::Health);
+        // the names point at the host only after the identity, and before the entry
+        // serves them
+        assert!(CreateStep::Identity < CreateStep::Dns);
+        assert!(CreateStep::Dns < CreateStep::Edge);
         // and a failure there still removes a site nobody could reach
         assert_eq!(after_failure(CreateStep::Identity), AfterFailure::Undo);
         assert_eq!(after_failure(CreateStep::Licenses), AfterFailure::Keep);

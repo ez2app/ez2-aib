@@ -681,6 +681,9 @@ mod tests {
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
             opened: d.join("opened"),
+            cloudflare: d.join("cloudflare.env"),
+            rosters: d.join("rosters"),
+            cf_ledger: d.join("cloudflare.jsonl"),
         }
     }
 

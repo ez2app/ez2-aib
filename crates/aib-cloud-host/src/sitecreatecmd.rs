@@ -2,7 +2,7 @@
 //! `aib-cloud-host site create <domain> [--blank] [--tenant <id>] --plan` — the read-only half of opening a
 //! site. It checks the domain, reads every number in use on this host and every removed
 //! site's numbers, looks for a site that already serves the domain, reads who the first
-//! administrators are, the host lock and the unfinished operations, probes the nine steps
+//! administrators are, the host lock and the unfinished operations, probes the ten steps
 //! of [`aib_cloud::sitecreate`] and prints what would be done next, sealed like every other
 //! plan. `--plan` changes nothing.
 //!
@@ -21,7 +21,9 @@
 //! B3 carries on with the install and the identity ([`crate::siteidentity`]): the
 //! reviewed installer, the site software's scheduler on a timer, keys and salts anew, the
 //! address and title, the first administrators with passwords kept on the host only.
-//! `--continue` runs up to the identity; the licences and after are the next slices.
+//! B4 adds the licences, the entry and the health; B5 the DNS step between the licences
+//! and the entry ([`crate::cfdns`]): the customer's zone at Cloudflare, proxied records
+//! carrying the site's mark, read back.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -301,13 +303,18 @@ pub fn lock_state(lock: &Path, proc_root: &Path) -> Value {
 /// cloned, so every step is "not done" once the host could be read; the clone is "could
 /// not tell" when the numbers could not be read (the new number cannot be shown free),
 /// the entry when its configuration could not be read.
-pub fn probes(seen: &Seen) -> [Probe; 9] {
-    let mut p = [Probe::NotDone; 9];
+pub fn probes(seen: &Seen) -> [Probe; STEPS.len()] {
+    let mut p = [Probe::NotDone; STEPS.len()];
+    let at = |step: CreateStep| STEPS.iter().position(|s| *s == step);
     if numbers(seen).is_err() {
-        p[0] = Probe::Unknown;
+        if let Some(i) = at(CreateStep::Clone) {
+            p[i] = Probe::Unknown;
+        }
     }
     if seen.entry_config.as_deref().is_none_or(str::is_empty) {
-        p[7] = Probe::Unknown;
+        if let Some(i) = at(CreateStep::Edge) {
+            p[i] = Probe::Unknown;
+        }
     }
     p
 }
@@ -417,7 +424,7 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "next_step": next_step.map(CreateStep::as_str),
         "stop": stop,
         "may_call_off": may_call_off,
-        "not_looked_at": ["DNS of the domain", "the licences left at the vendors"],
+        "not_looked_at": ["DNS of the domain (asked at Cloudflare in the dns step, not by the plan)", "the licences left at the vendors"],
     })
 }
 
@@ -730,7 +737,7 @@ fn argv(parts: &[&str]) -> Vec<String> {
 }
 
 /// Write `doc` to `dir/<code>.json` whole: a temporary file, synced, then renamed.
-fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
+pub(crate) fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("{code}.json"));
     let tmp = dir.join(format!(".{code}.json.tmp"));
@@ -741,7 +748,7 @@ fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The clone, the first of the nine steps (B1). In this order: the number must still be
+/// The clone, the first of the ten steps (B1). In this order: the number must still be
 /// free in both guest lists (a number taken by something else is not ours: nothing is made
 /// and nothing removed); the opening's record is written, so the number and the address
 /// stay taken whatever happens next; `pct clone`; the container must then answer
@@ -936,6 +943,12 @@ pub struct HostPaths {
     pub keys: PathBuf,
     /// The opening records of opened sites ([`OPENED`]).
     pub opened: PathBuf,
+    /// The Cloudflare key and the host's own address ([`crate::cfdns::CLOUDFLARE_ENV`]).
+    pub cloudflare: PathBuf,
+    /// The customers' rosters ([`crate::cfdns::ROSTERS`]).
+    pub rosters: PathBuf,
+    /// One line per Cloudflare call ([`crate::cfdns::CF_LEDGER`]).
+    pub cf_ledger: PathBuf,
 }
 
 impl HostPaths {
@@ -951,20 +964,24 @@ impl HostPaths {
             sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
             keys: PathBuf::from(crate::sitelive::KEYS),
             opened: PathBuf::from(OPENED),
+            cloudflare: PathBuf::from(crate::cfdns::CLOUDFLARE_ENV),
+            rosters: PathBuf::from(crate::cfdns::ROSTERS),
+            cf_ledger: PathBuf::from(crate::cfdns::CF_LEDGER),
         }
     }
 }
 
 /// Every step `--continue` runs, in order: B2's three, B3's install and identity — the
-/// last two that are still undone on failure — and B4's licences, entry and health, from
-/// which a failure keeps the site for a person.
-pub const CONTINUE_STEPS: [CreateStep; 8] = [
+/// last two that are still undone on failure — and B4's licences, B5's DNS, B4's entry
+/// and health, from which a failure keeps the site for a person.
+pub const CONTINUE_STEPS: [CreateStep; 9] = [
     CreateStep::Limits,
     CreateStep::Firewall,
     CreateStep::Start,
     CreateStep::Install,
     CreateStep::Identity,
     CreateStep::Licenses,
+    CreateStep::Dns,
     CreateStep::Edge,
     CreateStep::Health,
 ];
@@ -1236,6 +1253,7 @@ pub fn continue_steps(
             CreateStep::Licenses => {
                 crate::sitelive::licences_step(runner, paths, &spec, &mut record)
             }
+            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record),
             CreateStep::Edge => crate::sitelive::edge_step(runner, paths, &spec),
             CreateStep::Health => {
                 // the opening becomes a site: its record moves to the opened ones as it is
@@ -1727,7 +1745,7 @@ mod tests {
         assert_eq!(doc["taken_by"], Value::Null);
         assert_eq!(doc["platform_domain"], false);
         let steps = doc["steps"].as_array().unwrap();
-        assert_eq!(steps.len(), 9);
+        assert_eq!(steps.len(), 10);
         assert!(steps.iter().all(|s| s["now"] == "not_done"));
         // a failed identity is undone, a failed licence is kept
         assert_eq!(steps[5]["on_failure"], "undo");
@@ -1873,7 +1891,8 @@ mod tests {
         let mut seen = host();
         seen.entry_config = None;
         let doc = plan_doc("new.example.test", false, &seen);
-        assert_eq!(doc["steps"][7]["now"], "unknown");
+        assert_eq!(doc["steps"][8]["step"], "edge");
+        assert_eq!(doc["steps"][8]["now"], "unknown");
         assert_eq!(doc["stop"], "probe_unknown");
         assert_eq!(doc["next_step"], "edge");
         assert_eq!(doc["may_call_off"], false);
@@ -2528,6 +2547,9 @@ mod tests {
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
             opened: root.join("opened"),
+            cloudflare: root.join("cloudflare.env"),
+            rosters: root.join("rosters"),
+            cf_ledger: root.join("cloudflare.jsonl"),
         };
         for d in [
             &paths.creating,
@@ -2709,10 +2731,25 @@ mod tests {
         assert_eq!(steps_after("identity", CreateStep::Identity).unwrap(), []);
         // past the last step asked for: nothing; a word that is no step: refused
         assert_eq!(steps_after("licenses", CreateStep::Identity).unwrap(), []);
-        assert!(steps_after("dns", CreateStep::Health).is_err());
+        assert!(steps_after("dnz", CreateStep::Health).is_err());
         assert_eq!(
             steps_after("identity", CreateStep::Health).unwrap(),
-            [CreateStep::Licenses, CreateStep::Edge, CreateStep::Health]
+            [
+                CreateStep::Licenses,
+                CreateStep::Dns,
+                CreateStep::Edge,
+                CreateStep::Health
+            ]
+        );
+        // B5: the DNS step comes after the licences and before the entry, and an opening
+        // that stopped at it carries on from it
+        assert_eq!(
+            steps_after("licenses", CreateStep::Health).unwrap(),
+            [CreateStep::Dns, CreateStep::Edge, CreateStep::Health]
+        );
+        assert_eq!(
+            steps_after("dns", CreateStep::Health).unwrap(),
+            [CreateStep::Edge, CreateStep::Health]
         );
         assert_eq!(
             steps_after("firewall", CreateStep::Start).unwrap(),
@@ -2746,6 +2783,26 @@ mod tests {
         .unwrap();
         assert_eq!(rec["kept"]["step"], "licenses");
         assert_eq!(rec["step"], "identity");
+    }
+
+    #[test]
+    fn a_dns_step_that_cannot_ask_keeps_the_site_and_asks_nothing() {
+        let (_place, paths) = opened("b5keep", "licenses");
+        // no Cloudflare key on this host: the step stops before any call
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        let mut runner = fake(|_| Err("the host says no".to_owned()));
+        let e = continue_steps(&mut runner, &paths, opening, &[CreateStep::Dns]).unwrap_err();
+        assert!(
+            e.starts_with("kept_for_a_person: dns failed: cloudflare_key_unset"),
+            "{e}"
+        );
+        assert!(runner.calls.is_empty());
+        let rec: Value = serde_json::from_str(
+            &fs::read_to_string(paths.creating.join(format!("{CODE}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rec["kept"]["step"], "dns");
+        assert_eq!(rec["step"], "licenses");
     }
 
     #[test]
