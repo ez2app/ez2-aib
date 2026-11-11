@@ -523,6 +523,22 @@ jobs:
           ck mask.rs '    if get("searchdomain") != Some(crate::verify::SEARCH_DOMAIN) {' \
              '    if get("searchdomain").is_none() { // knife' \
              what_an_unmasked_ct_needs_is_each_named
+          # mask plan: the tailnet's own resolver passes as a public one (c477a, ct-mask2 N1)
+          ck mask.rs '        let shared = a == 100 && (64..128).contains(&b);' \
+             '        let shared = a == 100 && (64..128).contains(&b) && false; // knife' \
+             a_resolver_of_ours_or_the_hosts_is_not_neutral
+          # mask plan: a second network interface goes unnamed (c477a, ct-mask2 N2)
+          ck mask.rs '                .is_some_and(|n| !n.is_empty() && n != "0" && n.bytes().all(|c| c.is_ascii_digit()))' \
+             '                .is_some_and(|n| !n.is_empty() && n != "0" && n.bytes().all(|c| c.is_ascii_digit()) && false) // knife' \
+             another_nic_is_named_for_a_person
+          # mask: a limit above zero reads as closed (c477a, ct-mask2 L2)
+          ck mask.rs '    proc_value?.trim().parse::<u64>().ok().map(|n| n == 0)' \
+             '    proc_value?.trim().parse::<u64>().ok().map(|n| n < 100_000) // knife' \
+             the_user_namespace_limit_is_read_back
+          # site verify S11: any resolver passes, our network's too (c477a, ct-mask2 N1)
+          ck verify.rs '    let outcome = if !get(&cfg, "nameserver").is_some_and(crate::mask::resolver_is_neutral) {' \
+             '    let outcome = if get(&cfg, "nameserver").is_none() { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
           # site verify S12: any address of the right length passes
           ck verify.rs '    let outcome = if crate::mask::hwaddr_is_local(mac) {' \
              '    let outcome = if mac.len() == 17 { // knife' \
@@ -877,16 +893,16 @@ jobs:
              '        (Some(ours), Some(hosts)) if ours != hosts || true => Ok(()), // knife' \
              nothing_is_mounted_on_the_host_or_through_a_link
           # site mask: the hook's verdict is not read
-          hk sitemaskcmd.rs '        Some(true) if mask::result_is_masked(seen.verdict.as_deref()) => "masked",' \
-             '        Some(true) if mask::result_is_masked(seen.verdict.as_deref()) || true => "masked", // knife' \
+          hk sitemaskcmd.rs '        (Some(true), Some(v)) if mask::result_is_masked(v.as_deref()) => "masked",' \
+             '        (Some(true), Some(v)) if mask::result_is_masked(v.as_deref()) || true => "masked", // knife' \
              a_running_site_without_its_covers_is_not_done
           # site mask: what could not be read passes
           hk sitemaskcmd.rs '    let rc = if !unread.is_empty() {' \
              '    let rc = if unread.len() > 99 { // knife' \
              what_could_not_be_read_is_said_and_is_not_a_pass
           # site mask: a missing or older wrapper on the host is not owed
-          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" {' \
-             '    } else if to_change || verdict == "not_masked" { // knife' \
+          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || !others.is_empty() {' \
+             '    } else if to_change || verdict == "not_masked" || !others.is_empty() { // knife' \
              a_wrapper_missing_or_older_is_owed_on_the_host
           # site mask: a stopped CT is told to restart
           hk sitemaskcmd.rs '        "restart_needed": to_change && seen.running == Some(true),' \
@@ -896,6 +912,14 @@ jobs:
           hk sitemaskcmd.rs '    if !plan_only {' \
              '    if !plan_only && false { // knife' \
              without_plan_nothing_is_done
+          # site mask: a verdict file that cannot be read is not said (c477a, ct-mask2 L1)
+          hk sitemaskcmd.rs '    } else if verdict == "unread" {' \
+             '    } else if verdict == "unread" && false { // knife' \
+             a_verdict_that_cannot_be_read_is_not_a_finding_of_not_masked
+          # site mask: a second network interface passes (c477a, ct-mask2 N2)
+          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || !others.is_empty() {' \
+             '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || others.len() > 99 { // knife' \
+             another_nic_needs_a_person_and_the_sysctl_is_read_back
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \

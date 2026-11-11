@@ -722,12 +722,13 @@ pub fn s10_masked(
 pub const SEARCH_DOMAIN: &str = "invalid";
 
 /// S11: the CT has its own resolver and the neutral search domain ([`SEARCH_DOMAIN`]).
-/// Without `nameserver`, or without `searchdomain`, the CT inherits the host's.
+/// Without `nameserver`, or without `searchdomain`, the CT inherits the host's; a
+/// `nameserver` that is the host's or our network's own resolver shows it the same way.
 pub fn s11_resolver(pct_config: Option<&str>) -> CheckResult {
     let Some(cfg) = config(pct_config) else {
         return result("S11", Outcome::Unknown("unread"));
     };
-    let outcome = if get(&cfg, "nameserver").is_none() {
+    let outcome = if !get(&cfg, "nameserver").is_some_and(crate::mask::resolver_is_neutral) {
         Outcome::Red("host_resolver")
     } else if get(&cfg, "searchdomain") != Some(SEARCH_DOMAIN) {
         Outcome::Red("search_domain")
@@ -1568,6 +1569,15 @@ mod tests {
         assert_eq!(s11_resolver(Some(&neutral)).outcome, Outcome::Green);
         assert_eq!(
             s11_resolver(Some(&swap(&neutral, "nameserver: 1.1.1.1\n", ""))).outcome,
+            Outcome::Red("host_resolver")
+        );
+        assert_eq!(
+            s11_resolver(Some(&swap(
+                &neutral,
+                "nameserver: 1.1.1.1\n",
+                "nameserver: 100.100.100.100\n"
+            )))
+            .outcome,
             Outcome::Red("host_resolver")
         );
         assert_eq!(s11_resolver(None).outcome, Outcome::Unknown("unread"));

@@ -11,7 +11,9 @@
 //! * `config_fixes` — keys of the CT's configuration to set, each with the step of opening
 //!   a site it belongs to (`aib_cloud::mask::CONFIG_STEP`). A proposed hardware address
 //!   is drawn fresh each time the plan is made; it is a proposal, nothing is kept.
-//! * `ct_files` — files to write inside the CT (`aib_cloud::mask::FILES_STEP`). They are
+//! * `ct_files` — files to write inside the CT (`aib_cloud::mask::FILES_STEP`); the
+//!   user-namespace file is applied and read back right away (`then`, `read_back`), the CT
+//!   already runs at that step. They are
 //!   not read here: reading them means entering the customer's CT, which this plan does
 //!   not do; they are listed every time and `site verify` / the red-team check judges them.
 //! * `restart_needed` — the covers are put in place as the CT starts: a running CT that
@@ -22,8 +24,12 @@
 //! The same fixes are owed after `site restore` (a restored configuration need not carry
 //! the hook line or the local address — 33e28).
 //!
+//! * `other_nics` — network interfaces besides `net0`: not judged here, listed for a
+//!   person.
+//!
 //! Exit: 0 nothing to change and, for a running CT, the verdict says masked; 1 something
-//! to change or the running CT is not masked; 3 something could not be read (the plan
+//! to change, the running CT is not masked (its verdict file is not there), or another
+//! interface is listed; 3 something could not be read, the verdict file included (the plan
 //! says what); 2 a usage error.
 
 use std::fs;
@@ -45,8 +51,10 @@ const WRAPPER: &str = "/usr/local/sbin/ez2-ct-mask-hook";
 pub struct Seen {
     pub config: Option<String>,
     pub running: Option<bool>,
-    /// The hook's verdict file; only read for a running CT.
-    pub verdict: Option<String>,
+    /// The hook's verdict file, only read for a running CT: `Some(None)` when it is
+    /// known not to be there (the hook did not run at this start), `None` when it could
+    /// not be read (c477a, ct-mask2 L1).
+    pub verdict: Option<Option<String>>,
     /// The wrapper as installed; `Some(None)` when it is known not to be there.
     pub wrapper: Option<Option<String>>,
 }
@@ -77,12 +85,13 @@ pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u
         .and_then(|c| c.iter().find(|(k, _)| k == "hostname"))
         .map(|(_, v)| v.as_str());
     let hosts = hostname.and_then(mask::hosts_text);
-    let verdict = match seen.running {
-        None => "unread",
-        Some(false) => "not_running",
-        Some(true) if mask::result_is_masked(seen.verdict.as_deref()) => "masked",
-        Some(true) => "not_masked",
+    let verdict = match (seen.running, &seen.verdict) {
+        (None, _) | (Some(true), None) => "unread",
+        (Some(false), _) => "not_running",
+        (Some(true), Some(v)) if mask::result_is_masked(v.as_deref()) => "masked",
+        (Some(true), Some(_)) => "not_masked",
     };
+    let others: Vec<&str> = cfg.as_deref().map(mask::other_nics).unwrap_or_default();
     let mut unread: Vec<&str> = Vec::new();
     let fixes_json = match &fixes {
         None => {
@@ -97,6 +106,8 @@ pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u
     };
     if seen.running.is_none() {
         unread.push("whether the CT runs");
+    } else if verdict == "unread" {
+        unread.push("the hook's verdict file");
     }
     if hosts.is_none() {
         unread.push("the CT's own name, for its hosts file");
@@ -108,7 +119,7 @@ pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u
     let to_change = matches!(&fixes, Some(Ok(list)) if !list.is_empty());
     let rc = if !unread.is_empty() {
         3
-    } else if to_change || verdict == "not_masked" || wrapper != "in_place" {
+    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || !others.is_empty() {
         1
     } else {
         0
@@ -121,11 +132,17 @@ pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u
         "host_once": { "wrapper": WRAPPER, "now": wrapper, "text": mask::HOOK_WRAPPER },
         "config_fixes": fixes_json,
         "ct_files": [
-            { "path": mask::SYSCTL_FILE, "text": mask::SYSCTL_TEXT, "step": mask::FILES_STEP.as_str() },
+            {
+                "path": mask::SYSCTL_FILE, "text": mask::SYSCTL_TEXT, "step": mask::FILES_STEP.as_str(),
+                "then": mask::SYSCTL_APPLY,
+                "read_back": { "read": "/proc/sys/user/max_user_namespaces", "want": "0" },
+                "or": "restart the CT before the edge step"
+            },
             { "path": mask::HOSTS_KEEP_FILE, "text": "", "step": mask::FILES_STEP.as_str() },
             { "path": "/etc/hosts", "text": hosts, "step": mask::FILES_STEP.as_str() },
         ],
         "verdict": verdict,
+        "other_nics": others,
         "restart_needed": to_change && seen.running == Some(true),
         "check_inside": mask::INSIDE_EXPECT.iter().map(|(what, want)| json!({ "read": what, "want": want })).collect::<Vec<_>>(),
         "cannot_hide": mask::CANNOT_HIDE,
@@ -161,9 +178,13 @@ fn see(ct: u32) -> Seen {
         _ => None,
     };
     let verdict = if running == Some(true) {
-        fs::read_to_string(format!("/run/ez2-cloud/mask/{ct}/result")).ok()
+        match fs::read_to_string(format!("/run/ez2-cloud/mask/{ct}/result")) {
+            Ok(t) => Some(Some(t)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
     } else {
-        None
+        Some(None)
     };
     let wrapper = match fs::read_to_string(WRAPPER) {
         Ok(t) => Some(Some(t)),
@@ -225,7 +246,7 @@ mod tests {
         Seen {
             config,
             running,
-            verdict: verdict.map(str::to_owned),
+            verdict: Some(verdict.map(str::to_owned)),
             wrapper: Some(Some(mask::HOOK_WRAPPER.to_owned())),
         }
     }
@@ -344,5 +365,29 @@ mod tests {
     fn without_plan_nothing_is_done() {
         let e = cmd(&["s-abc123".to_owned()]).unwrap_err();
         assert!(e.contains("only --plan"), "{e}");
+    }
+
+    #[test]
+    fn a_verdict_that_cannot_be_read_is_not_a_finding_of_not_masked() {
+        let mut s = seen(Some(masked_config()), Some(true), None);
+        s.verdict = None;
+        let (doc, rc) = plan_doc("s-abc123", 119, &s, NEW);
+        assert_eq!(rc, 3);
+        assert_eq!(doc["verdict"], "unread");
+        assert!(doc["unread"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u == "the hook's verdict file"));
+    }
+
+    #[test]
+    fn another_nic_needs_a_person_and_the_sysctl_is_read_back() {
+        let two = masked_config() + "net1: name=eth1,bridge=vmbr0,hwaddr=BC:24:11:00:00:01\n";
+        let (doc, rc) = plan_doc("s-abc123", 119, &seen(Some(two), Some(false), None), NEW);
+        assert_eq!(rc, 1);
+        assert_eq!(doc["other_nics"], json!(["net1"]));
+        assert_eq!(doc["ct_files"][0]["then"], mask::SYSCTL_APPLY);
+        assert_eq!(doc["ct_files"][0]["read_back"]["want"], "0");
     }
 }

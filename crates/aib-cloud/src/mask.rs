@@ -26,7 +26,10 @@
 //!   at: that is a public record, and it names the provider. Hiding it is a matter of
 //!   where traffic enters and leaves (a relay, a proxy), not of this module;
 //! * a container's own root can take the covers off again; they hold against the site's
-//!   users, which is what a customer's key and seat are given.
+//!   users, which is what a customer's key and seat are given. The same holds for the
+//!   per-site part below (the user-namespace limit is set by the CT's root and can be
+//!   undone by it): **the whole mask stands on a customer never getting the CT's root** —
+//!   `aib_cloud::customer`'s roles give the site's user only (c477a, ct-mask2 N3).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -278,6 +281,45 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
 /// inherits the host's). Neutral: it names nobody's network.
 pub const NEUTRAL_RESOLVER: &str = "1.1.1.1";
 
+/// Whether a CT's `nameserver` value names only public resolvers: every address in it
+/// IPv4, and none private, loopback, link-local, shared (100.64.0.0/10, where a tailnet's
+/// own resolver lives) or unspecified. A private one is the host's resolver or our
+/// network's (it would show in the CT's `resolv.conf`); IPv6 is not given to a site CT.
+/// An empty value is not neutral (c477a, ct-mask2 N1).
+pub fn resolver_is_neutral(value: &str) -> bool {
+    let mut any = false;
+    for word in value.split_whitespace() {
+        any = true;
+        let Ok(ip) = word.parse::<core::net::Ipv4Addr>() else {
+            return false;
+        };
+        let [a, b, ..] = ip.octets();
+        let shared = a == 100 && (64..128).contains(&b);
+        if ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || shared
+        {
+            return false;
+        }
+    }
+    any
+}
+
+/// The `netN` keys of a CT's configuration other than `net0`. A site CT is given one
+/// network interface; another one is not judged here (its address and IPv6 are not
+/// checked) and is listed for a person (c477a, ct-mask2 N2).
+pub fn other_nics(cfg: &[(String, String)]) -> Vec<&str> {
+    cfg.iter()
+        .map(|(k, _)| k.as_str())
+        .filter(|k| {
+            k.strip_prefix("net")
+                .is_some_and(|n| !n.is_empty() && n != "0" && n.bytes().all(|c| c.is_ascii_digit()))
+        })
+        .collect()
+}
+
 /// When the configuration fixes go in while a site is opened: with its limits and its
 /// network, before the CT first starts — the hook only runs at a start, and a hardware
 /// address seen once is seen for good.
@@ -285,6 +327,14 @@ pub const CONFIG_STEP: crate::sitecreate::CreateStep = crate::sitecreate::Create
 
 /// When the files inside the CT are written while a site is opened: with the site's other
 /// secrets and settings, before [`crate::sitecreate::CreateStep::Edge`] makes it reachable.
+///
+/// The CT already runs by then (`Start` comes before `Identity`): a file under
+/// `/etc/sysctl.d` is only read at the next start. So the step that writes
+/// [`SYSCTL_FILE`] then runs [`SYSCTL_APPLY`] inside the CT and reads
+/// `/proc/sys/user/max_user_namespaces` back ([`userns_closed`] must say `Some(true)`) —
+/// or restarts the CT before `Edge`. A step that wrote the file and read nothing back has
+/// not closed anything (c477a, ct-mask2 L2). The same goes for a site that is already
+/// open when the mask is put on it.
 pub const FILES_STEP: crate::sitecreate::CreateStep = crate::sitecreate::CreateStep::Identity;
 
 /// Inside the CT: no new user namespaces for anyone in it. A site user who can make one
@@ -292,6 +342,16 @@ pub const FILES_STEP: crate::sitecreate::CreateStep = crate::sitecreate::CreateS
 /// Written inside the CT (its own root sets its own limit), so the CT's configuration
 /// carries no key `site drift` would call drift.
 pub const SYSCTL_FILE: &str = "/etc/sysctl.d/90-ez2-mask.conf";
+
+/// What makes [`SYSCTL_FILE`] count in a CT that already runs (run inside it, as its root).
+pub const SYSCTL_APPLY: &str = "sysctl -p /etc/sysctl.d/90-ez2-mask.conf";
+
+/// Whether `/proc/sys/user/max_user_namespaces`, read inside the CT, says no new user
+/// namespaces: `Some(true)` for 0, `Some(false)` for another number, `None` for anything
+/// that is not a number (or nothing read).
+pub fn userns_closed(proc_value: Option<&str>) -> Option<bool> {
+    proc_value?.trim().parse::<u64>().ok().map(|n| n == 0)
+}
 
 /// The text of [`SYSCTL_FILE`].
 pub const SYSCTL_TEXT: &str =
@@ -416,11 +476,11 @@ pub fn config_fixes(
             why: "a locally administered hardware address, and no IPv6 (it would leave from the host's own prefix)",
         });
     }
-    if get("nameserver").is_none() {
+    if !get("nameserver").is_some_and(resolver_is_neutral) {
         out.push(ConfigFix {
             key: "nameserver",
             value: NEUTRAL_RESOLVER.into(),
-            why: "without one the CT reads the host's resolver",
+            why: "without a public one the CT reads the host's resolver or our network's",
         });
     }
     if get("searchdomain") != Some(crate::verify::SEARCH_DOMAIN) {
@@ -791,5 +851,62 @@ mod tests {
         }
         assert_eq!(CONFIG_STEP.as_str(), "limits");
         assert_eq!(FILES_STEP.as_str(), "identity");
+    }
+
+    #[test]
+    fn a_resolver_of_ours_or_the_hosts_is_not_neutral() {
+        for good in ["1.1.1.1", "1.1.1.1 9.9.9.9", "8.8.8.8"] {
+            assert!(resolver_is_neutral(good), "{good}");
+        }
+        for bad in [
+            "",
+            "10.77.0.1",
+            "100.100.100.100",
+            "100.64.0.1",
+            "192.168.1.1",
+            "172.16.0.1",
+            "127.0.0.53",
+            "169.254.1.1",
+            "1.1.1.1 10.77.0.1",
+            "2606:4700:4700::1111",
+            "0.0.0.0",
+            "dns.example",
+        ] {
+            assert!(!resolver_is_neutral(bad), "{bad}");
+        }
+        let c = cfg(&[
+            ("lxc.hook.mount", HOOK),
+            ("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"),
+            ("nameserver", "100.100.100.100"),
+            ("searchdomain", "invalid"),
+        ]);
+        let f = config_fixes(&c, NEW).unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].key, f[0].value.as_str()),
+            ("nameserver", NEUTRAL_RESOLVER)
+        );
+    }
+
+    #[test]
+    fn another_nic_is_named_for_a_person() {
+        let c = cfg(&[
+            ("net0", "x"),
+            ("net1", "y"),
+            ("net12", "z"),
+            ("netfoo", "w"),
+            ("net", "v"),
+        ]);
+        assert_eq!(other_nics(&c), ["net1", "net12"]);
+        assert!(other_nics(&cfg(&[("net0", "x")])).is_empty());
+    }
+
+    #[test]
+    fn the_user_namespace_limit_is_read_back() {
+        assert_eq!(userns_closed(Some("0\n")), Some(true));
+        assert_eq!(userns_closed(Some("63289\n")), Some(false));
+        assert_eq!(userns_closed(Some("")), None);
+        assert_eq!(userns_closed(None), None);
+        assert!(SYSCTL_APPLY.ends_with(SYSCTL_FILE));
     }
 }
