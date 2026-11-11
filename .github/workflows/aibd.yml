@@ -1260,6 +1260,50 @@ jobs:
           ck restoregate.rs '    if !looks_like_wpress(head) {' \
              '    if !looks_like_wpress(head) && false { // knife' \
              the_download_must_be_what_the_share_said
+          # restore import: the site's disk only needs the backup once (B3 slice 4)
+          ck restoreimport.rs '        .checked_mul(2)' \
+             '        .checked_mul(1) // knife' \
+             the_site_needs_room_for_the_backup_twice_and_a_spare_gib
+          # restore import: no spare is left in the site's disk (B3 slice 4)
+          ck restoreimport.rs '        .and_then(|n| n.checked_add(SITE_SPARE_BYTES));' \
+             '        .and_then(|n| n.checked_add(SITE_SPARE_BYTES - 1)); // knife' \
+             the_site_needs_room_for_the_backup_twice_and_a_spare_gib
+          # restore import: a byte short of the site's room is room enough (B3 slice 4)
+          ck restoreimport.rs '        Some(need) if room.free >= need => Ok(()),' \
+             '        Some(need) if room.free + 1 >= need => Ok(()), // knife' \
+             the_site_needs_room_for_the_backup_twice_and_a_spare_gib
+          # restore import: a restore point kept in the site is counted at half (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    let point = if point_in_site { room.used } else { 0 };' \
+             '    let point = if point_in_site { room.used / 2 } else { 0 }; // knife' \
+             a_restore_point_kept_in_the_site_is_counted_too
+          # restore import: a site disk that cannot be read is taken as empty (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    let room = room.ok_or("site_disk_unknown")?;' \
+             '    let room = room.unwrap_or(SiteRoom { free: u64::MAX, used: 0 }); // knife' \
+             a_site_disk_that_cannot_be_read_stops_the_import
+          # restore import: one import plugin active is enough (B3 slice 4)
+          ck restoreimport.rs '    if IMPORT_PLUGINS.iter().all(|p| on(p)) {' \
+             '    if IMPORT_PLUGINS.iter().any(|p| on(p)) { // knife' \
+             the_import_plugins_must_be_active
+          # restore import: a plugin whose name only starts the line is taken as active (B3 slice 4)
+          ck restoreimport.rs '    let on = |p: &str| active.lines().any(|l| l.trim() == p);' \
+             '    let on = |p: &str| active.lines().any(|l| l.trim().starts_with(p)); // knife' \
+             the_import_plugins_must_be_active
+          # restore import: a partly written backup is taken as listed (B3 slice 4)
+          ck restoreimport.rs '        .any(|l| l.split_whitespace().any(|field| field == name));' \
+             '        .any(|l| l.split_whitespace().any(|field| field.starts_with(name))); // knife' \
+             the_plugin_must_list_the_backup
+          # restore import: any line that mentions a complete restore counts (B3 slice 4)
+          ck restoreimport.rs '    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {' \
+             '    if output.lines().any(|l| l.contains("Restore complete")) { // knife' \
+             only_the_plugins_own_complete_line_counts
+          # restore gate: a name that only starts with another site's is told as that site's (B3 slice 4, c477a slice 3 r2 N1)
+          ck restoregate.rs "    !d.is_empty() && slug == d.replace('.', \"-\")" \
+             "    !d.is_empty() && slug.starts_with(&d.replace('.', \"-\")) // knife" \
+             a_backup_named_for_another_of_the_customers_sites_is_told
+          # restore gate: a leading www- hides another site's name (B3 slice 4, c477a slice 3 r2 N1)
+          ck restoregate.rs '    let slug = slug.strip_prefix("www-").map_or(slug.as_str(), |rest| rest);' \
+             '    let slug = slug.as_str(); // knife' \
+             a_backup_named_for_another_of_the_customers_sites_is_told
           # ---- E7 site quota (4542e 11-11): the pure rule
           # an opening that names no customer is passed over instead of holding room
           ck quota.rs '        None => true,' \
@@ -2048,6 +2092,50 @@ jobs:
           hk restorestepscmd.rs '    if lines.next().is_some() {' \
              '    if lines.next().is_some() && false { // knife' \
              the_hosts_free_room_and_database_uptime_are_read
+          # restore: the plan does not ask the site's disk (B3 slice 4, c477a L1)
+          hk restorestepscmd.rs '        restoreimport::site_room(size, host.site_room(), RESTORE_POINT_IN_SITE)' \
+             '        restoreimport::site_room(size, host.site_room().map(|r| SiteRoom { free: u64::MAX, ..r }), RESTORE_POINT_IN_SITE) // knife' \
+             a_site_disk_too_small_for_the_import_stops_the_plan
+          # restore: the site's disk is not asked again before the restore point (B3 slice 4, c477a L1)
+          hk restorestepscmd.rs '    restoreimport::site_room(size, host.site_room(), RESTORE_POINT_IN_SITE).map_err(str::to_owned)' \
+             '    restoreimport::site_room(size, host.site_room().map(|r| SiteRoom { free: u64::MAX, ..r }), RESTORE_POINT_IN_SITE).map_err(str::to_owned) // knife' \
+             the_site_disk_is_asked_again_before_the_restore_point
+          # restore: the restore point runs whatever the site's disk says (B3 slice 4)
+          hk restorestepscmd.rs '                before_restore_point(host, &rec).and_then(|()| host.run_step(step, &rec))' \
+             '                before_restore_point(host, &rec).or(Ok(())).and_then(|()| host.run_step(step, &rec)) // knife' \
+             the_site_disk_is_asked_again_before_the_restore_point
+          # restore: the import is run like any other step (B3 slice 4)
+          hk restorestepscmd.rs '            RestoreStep::Import => import_backup(host, &rec),' \
+             '            RestoreStep::Import if false => import_backup(host, &rec), // knife' \
+             an_import_without_its_plugins_or_its_listing_is_taken_back_unrun
+          # restore: the import runs without its plugins (B3 slice 4)
+          hk restorestepscmd.rs '    restoreimport::plugins_ready(&active).map_err(str::to_owned)?;' \
+             '    let _ = restoreimport::plugins_ready(&active); // knife' \
+             an_import_without_its_plugins_or_its_listing_is_taken_back_unrun
+          # restore: the import runs on a backup the plugin does not list (B3 slice 4)
+          hk restorestepscmd.rs '    restoreimport::backup_listed(&listing, &name).map_err(str::to_owned)?;' \
+             '    let _ = restoreimport::backup_listed(&listing, &name); // knife' \
+             an_import_without_its_plugins_or_its_listing_is_taken_back_unrun
+          # restore: an import the plugin did not call complete is done (B3 slice 4)
+          hk restorestepscmd.rs '    restoreimport::import_finished(&said).map_err(str::to_owned)' \
+             '    restoreimport::import_finished(&said).map_err(str::to_owned).or(Ok(())) // knife' \
+             an_import_the_plugin_did_not_call_complete_is_taken_back
+          # restore: df's used column is read from the wrong place (B3 slice 4)
+          hk restorestepscmd.rs '    let mut columns = line.split_whitespace().skip(2);' \
+             '    let mut columns = line.split_whitespace().skip(1); // knife' \
+             the_sites_disk_is_read_from_df_in_its_container
+          # restore: a backup of the customer's other site goes to this one (B3 slice 4, c477a slice 3 r2 N1)
+          hk restorestepscmd.rs '    if restoregate::names_another_site(&src.name, &siblings) {' \
+             '    if restoregate::names_another_site(&src.name, &siblings) && false { // knife' \
+             a_backup_of_another_site_of_the_customer_is_refused
+          # restore: every customer's sites count as this customer's (B3 slice 4)
+          hk restorestepscmd.rs '            if aib_cloud::site::record_tenant(&rec) == Some(tenant) {' \
+             '            if aib_cloud::site::record_tenant(&rec) == Some(tenant) || true { // knife' \
+             the_customers_other_sites_are_read_from_the_site_records
+          # restore: the site counts as its own sibling (B3 slice 4)
+          hk restorestepscmd.rs '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") || name == format!("{site}.json") {' \
+             '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") { // knife' \
+             the_customers_other_sites_are_read_from_the_site_records
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \

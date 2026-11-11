@@ -142,6 +142,27 @@ pub fn name_fits_domain(name: &str, domain: &str) -> bool {
     label.len() >= 4 && slug.split('-').any(|word| word == label)
 }
 
+/// Whether a backup's name is, at the first level, exactly one of `others` (the
+/// customer's other sites): the second level of [`name_fits_domain`] would let such a
+/// backup through to this site.
+pub fn names_another_site(name: &str, others: &[&str]) -> bool {
+    others.iter().any(|d| name_is_domain(name, d))
+}
+
+fn name_is_domain(name: &str, domain: &str) -> bool {
+    let Some(slug) = backup_slug(name) else {
+        return false;
+    };
+    let slug = slug.to_ascii_lowercase().replace('.', "-");
+    let slug = slug.strip_prefix("www-").map_or(slug.as_str(), |rest| rest);
+    let d = domain
+        .strip_suffix('.')
+        .unwrap_or(domain)
+        .to_ascii_lowercase();
+    let d = d.strip_prefix("www.").unwrap_or(&d);
+    !d.is_empty() && slug == d.replace('.', "-")
+}
+
 fn field_is_digits(field: &[u8]) -> bool {
     let used = field.iter().position(|b| *b == 0).unwrap_or(field.len());
     used > 0
@@ -266,6 +287,44 @@ mod tests {
         let mut f = facts();
         f.name = "other-site-20261101-101010-ab12cd.wpress";
         assert_eq!(admit_download(&f), Err("backup_name_not_this_site"));
+    }
+
+    #[test]
+    fn a_backup_named_for_another_of_the_customers_sites_is_told() {
+        let others = ["www.example.shop.", "shop.example.net"];
+        assert!(names_another_site(
+            "example-shop-20261101-101010-ab12cd.wpress",
+            &others
+        ));
+        assert!(names_another_site(
+            "WWW-Example.Shop-20261101-101010-ab12cd.wpress",
+            &others
+        ));
+        assert!(names_another_site(
+            "shop-example-net-20261101-101010-ab12cd.wpress",
+            &others
+        ));
+        assert!(!names_another_site(
+            "example-sho-20261101-101010-ab12cd.wpress",
+            &["example.sh"]
+        ));
+        assert!(!names_another_site(
+            "example-shopping-20261101-101010-ab12cd.wpress",
+            &others
+        ));
+        assert!(!names_another_site(
+            "example-com-20261101-101010-ab12cd.wpress",
+            &others
+        ));
+        assert!(!names_another_site("example-shop.wpress", &others));
+        assert!(!names_another_site(
+            "example-shop-20261101-101010-ab12cd.wpress",
+            &[]
+        ));
+        assert!(!names_another_site(
+            "x-20261101-101010-ab12cd.wpress",
+            &[""]
+        ));
     }
 
     #[test]
