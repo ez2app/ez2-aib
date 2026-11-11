@@ -83,7 +83,7 @@ fn owned(parts: &[&str]) -> Vec<String> {
 }
 
 /// A command inside container `ct`.
-fn in_ct(ct: u32, rest: &[&str]) -> Vec<String> {
+pub(crate) fn in_ct(ct: u32, rest: &[&str]) -> Vec<String> {
     let n = ct.to_string();
     let mut v = owned(&["pct", "exec", &n, "--"]);
     v.extend(rest.iter().map(|s| (*s).to_owned()));
@@ -91,7 +91,7 @@ fn in_ct(ct: u32, rest: &[&str]) -> Vec<String> {
 }
 
 /// The site software's command line, as the site's own user, on its own folder.
-fn wp(spec: &SiteSpec, rest: &[&str]) -> Vec<String> {
+pub(crate) fn wp(spec: &SiteSpec, rest: &[&str]) -> Vec<String> {
     let path = format!("--path=/var/www/{}", spec.code);
     let mut v = owned(&["sudo", "-u", &spec.code, "-H", WP_CLI, &path]);
     v.extend(rest.iter().map(|s| (*s).to_owned()));
@@ -577,6 +577,9 @@ mod tests {
             secrets: d.join("secrets"),
             site_admins: d.join("site-admins"),
             setup: PathBuf::from("/usr/local/sbin/ez2-site-setup"),
+            records: d.join("records"),
+            sites_list: d.join("sites.list"),
+            keys: d.join("keys.env"),
         }
     }
 

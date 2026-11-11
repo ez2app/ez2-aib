@@ -762,6 +762,13 @@ pub struct HostPaths {
     pub site_admins: PathBuf,
     /// The reviewed site installer on the host, pushed into the container for the install.
     pub setup: PathBuf,
+    /// The site records (`/var/lib/ez2-cloud/sites`): B4 writes the new site's there, and
+    /// asks every other site in them through the entry.
+    pub records: PathBuf,
+    /// The export list ([`crate::sitelive::SITES_LIST`]).
+    pub sites_list: PathBuf,
+    /// The template's paid plugin keys ([`crate::sitelive::KEYS`]), read into memory only.
+    pub keys: PathBuf,
 }
 
 impl HostPaths {
@@ -773,18 +780,25 @@ impl HostPaths {
             secrets: PathBuf::from(crate::siteidentity::SECRETS),
             site_admins: PathBuf::from(SITE_ADMINS),
             setup: PathBuf::from(crate::siteidentity::SETUP_ON_HOST),
+            records: PathBuf::from(RECORDS),
+            sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
+            keys: PathBuf::from(crate::sitelive::KEYS),
         }
     }
 }
 
-/// Every step `--continue` runs, in order: B2's three, then B3's install and identity —
-/// the last two that are still undone on failure.
-pub const CONTINUE_STEPS: [CreateStep; 5] = [
+/// Every step `--continue` runs, in order: B2's three, B3's install and identity — the
+/// last two that are still undone on failure — and B4's licences, entry and health, from
+/// which a failure keeps the site for a person.
+pub const CONTINUE_STEPS: [CreateStep; 8] = [
     CreateStep::Limits,
     CreateStep::Firewall,
     CreateStep::Start,
     CreateStep::Install,
     CreateStep::Identity,
+    CreateStep::Licenses,
+    CreateStep::Edge,
+    CreateStep::Health,
 ];
 
 /// The steps still to do after the step an opening record reached, up to and with
@@ -1023,8 +1037,9 @@ fn start_step(runner: &mut impl Runner, ct: u32) -> Result<(), String> {
     }
 }
 
-/// B2: the steps after the record's, each checked, the record moved on after each. A
-/// failure is undone like the clone's: every step here is before the identity. One
+/// B2–B4: the steps after the record's, each checked, the record moved on after each. A
+/// failure up to the identity is undone like the clone's; from the licences on the site
+/// is kept for a person ([`keep`]), and a healthy site leaves its opening record. One
 /// thing holds instead of undoing: a container without a local hardware address is not
 /// started ([`ready_to_start`]); the answer then carries `held` with the reason and the
 /// record stays at the firewall.
@@ -1036,7 +1051,6 @@ pub fn continue_steps(
 ) -> Result<Value, String> {
     let Opening { mut record, spec } = opening;
     for &step in steps {
-        debug_assert_eq!(sitecreate::after_failure(step), AfterFailure::Undo);
         if step == CreateStep::Start {
             if let Err(why) = ready_to_start(runner, spec.ct) {
                 record["held"] = json!(why);
@@ -1051,8 +1065,35 @@ pub fn continue_steps(
             CreateStep::Identity => {
                 crate::siteidentity::identity_step(runner, paths, &spec, &mut record)
             }
-            other => Err(format!("{} is not a step of this slice", other.as_str())),
+            CreateStep::Licenses => {
+                crate::sitelive::licences_step(runner, paths, &spec, &mut record)
+            }
+            CreateStep::Edge => crate::sitelive::edge_step(runner, paths, &spec),
+            CreateStep::Health => {
+                let started = crate::sitelive::started_at(&record);
+                // the opening becomes a site: its record goes, so nothing is written back
+                if let Err(why) = crate::sitelive::health_step(runner, paths, &spec, started) {
+                    return Err(keep(paths, &spec, &mut record, step, &why));
+                }
+                record["step"] = json!(step.as_str());
+                record["at"] = json!(crate::probe::unix_now());
+                return Ok(record);
+            }
+            other => Err(format!("{} is not a step of --continue", other.as_str())),
         };
+        if sitecreate::after_failure(step) == AfterFailure::Keep {
+            // from the licences on nothing is undone: a failure, or a record that cannot
+            // be written after the step, keeps the site for a person
+            let saved = done.and_then(|()| {
+                record["step"] = json!(step.as_str());
+                record["at"] = json!(crate::probe::unix_now());
+                write_record(&paths.creating, &spec.code, &record)
+            });
+            if let Err(why) = saved {
+                return Err(keep(paths, &spec, &mut record, step, &why));
+            }
+            continue;
+        }
         let moved = done.and_then(|()| {
             record["step"] = json!(step.as_str());
             record["at"] = json!(crate::probe::unix_now());
@@ -1078,6 +1119,32 @@ pub fn continue_steps(
         }
     }
     Ok(record)
+}
+
+/// A failure from the licences on: the site is kept as it is, the opening record says at
+/// which step and why, and a person looks. Nothing is removed (an activation at a vendor
+/// is used up, and the site may be reachable).
+fn keep(
+    paths: &HostPaths,
+    spec: &aib_cloud::site::SiteSpec,
+    record: &mut Value,
+    step: CreateStep,
+    why: &str,
+) -> String {
+    record["kept"] = json!({
+        "step": step.as_str(),
+        "why": why,
+        "at": crate::probe::unix_now(),
+    });
+    let saved = match write_record(&paths.creating, &spec.code, record) {
+        Ok(()) => String::new(),
+        Err(e) => format!("; the opening record could not say so: {e}"),
+    };
+    format!(
+        "kept_for_a_person: {} failed: {why}; the site {} is kept as it is, nothing was removed{saved}",
+        step.as_str(),
+        spec.code
+    )
 }
 
 /// `--continue <code>`: under the host lock and as a new operation on the domain's
@@ -1334,17 +1401,22 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         code,
         &HostPaths::host(),
         &mut HostRunner,
-        CreateStep::Identity,
+        CreateStep::Health,
     )?;
     let held = done
         .as_ref()
         .is_some_and(|r| r.get("held").is_some_and(Value::is_string));
     let doc = match done {
-        Some(record) => json!({
-            "applied": record.get("step"),
-            "record": record,
-            "next_step": CreateStep::Licenses.as_str(),
-        }),
+        Some(record) => {
+            let open = record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
+            json!({
+                "applied": record.get("step"),
+                "record": record,
+                "open": open,
+                // TODO(fp_site_key, mask_files): the parts B3 left as interfaces
+                "pending": ["fp_site_key: F1 is not open", "mask_files: ct-mask2 is not in main"],
+            })
+        }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
     };
     println!(
@@ -2135,6 +2207,9 @@ mod tests {
             secrets: root.join("secrets"),
             site_admins: root.join("site-admins"),
             setup: root.join("ez2-site-setup"),
+            records: root.join("records"),
+            sites_list: root.join("sites.list"),
+            keys: root.join("keys.env"),
         };
         for d in [
             &paths.creating,
@@ -2314,7 +2389,13 @@ mod tests {
         assert!(runner.calls.is_empty());
         assert_eq!(last_state(&place), None);
         assert_eq!(steps_after("identity", CreateStep::Identity).unwrap(), []);
-        assert!(steps_after("licenses", CreateStep::Identity).is_err());
+        // past the last step asked for: nothing; a word that is no step: refused
+        assert_eq!(steps_after("licenses", CreateStep::Identity).unwrap(), []);
+        assert!(steps_after("dns", CreateStep::Health).is_err());
+        assert_eq!(
+            steps_after("identity", CreateStep::Health).unwrap(),
+            [CreateStep::Licenses, CreateStep::Edge, CreateStep::Health]
+        );
         assert_eq!(
             steps_after("firewall", CreateStep::Start).unwrap(),
             [CreateStep::Start]
@@ -2327,6 +2408,26 @@ mod tests {
             steps_after("clone", CreateStep::Start).unwrap(),
             [CreateStep::Limits, CreateStep::Firewall, CreateStep::Start]
         );
+    }
+
+    #[test]
+    fn a_failure_from_the_licences_on_keeps_the_site_and_removes_nothing() {
+        let (_place, paths) = opened("b4keep", "identity");
+        // no key file: the licence step cannot know, so it stops
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        let mut runner = fake(|_| Err("the host says no".to_owned()));
+        let e = continue_steps(&mut runner, &paths, opening, &[CreateStep::Licenses]).unwrap_err();
+        assert!(e.starts_with("kept_for_a_person: licenses failed"), "{e}");
+        assert!(runner
+            .calls
+            .iter()
+            .all(|c| !c.contains("destroy") && !c.contains("stop")));
+        let rec: Value = serde_json::from_str(
+            &fs::read_to_string(paths.creating.join(format!("{CODE}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rec["kept"]["step"], "licenses");
+        assert_eq!(rec["step"], "identity");
     }
 
     #[test]
