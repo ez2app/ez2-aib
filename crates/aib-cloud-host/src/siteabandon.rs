@@ -19,6 +19,9 @@
 //!   the domain until a person has looked (`op recovered <op>`); a new plan then carries
 //!   on from what the record says is done. An opening whose own `site create` failed is
 //!   held the same way, so its failure is looked at before it is abandoned.
+//! * A customer's own opening of the code (`sites-asked/<code>.json`) still going stops the
+//!   plan (`customer_run_going`); the last step marks that ask stopped, `why: abandoned`,
+//!   and keeps it, so its code stays given (c477a abandon L1).
 //! * Whatever cannot be read — the record, `pct config`, a directory, the journal — stops
 //!   the plan; nothing is guessed.
 //!
@@ -32,6 +35,7 @@ use aib_cloud::sitecreate::Probe;
 use serde_json::{json, Value};
 
 use crate::opstore;
+use crate::sitecreaterun::Places;
 use crate::sitecreatecmd::{target, write_record, HostPaths, Runner};
 
 /// The command name in the operation journal.
@@ -42,6 +46,9 @@ pub const NO_OPENING: &str = "no_opening";
 /// The journal could not be read: whether an operation on the domain is still running is
 /// not known.
 pub const JOURNAL_UNREADABLE: &str = "journal_unreadable";
+/// The customer's own opening of this code is still going (its run waited for or alive):
+/// it is not taken down under it (c477a abandon L1).
+pub const CUSTOMER_RUN_GOING: &str = "customer_run_going";
 /// An operation on the domain did not finish: a person looks at it first (`op recovered`).
 pub const UNFINISHED_OPERATION: &str = "unfinished_operation";
 
@@ -69,6 +76,9 @@ pub struct Seen {
     pub secrets_left: Option<bool>,
     /// The unfinished operations on the domain.
     pub unfinished: Option<Vec<Value>>,
+    /// The customer's ask under the code: `Some(None)` there is none, `Some(Some(state))`
+    /// its state now, `None` could not be read.
+    pub customer_ask: Option<Option<&'static str>>,
 }
 
 fn exists(path: &Path) -> Option<bool> {
@@ -148,6 +158,7 @@ fn secrets_left(dir: &Path, code: &str) -> Option<bool> {
 pub fn see(
     runner: &mut impl Runner,
     paths: &HostPaths,
+    asks: &Places,
     ops_dir: &Path,
     domain: &str,
     code: &str,
@@ -174,6 +185,7 @@ pub fn see(
         fw: ct.and_then(|ct| exists(&paths.firewall.join(format!("{ct}.fw")))),
         secrets_left: secrets_left(&paths.secrets, code),
         unfinished: crate::sitecreatecmd::unfinished_on(ops_dir, domain),
+        customer_ask: crate::sitecreaterun::ask_now(asks, code, crate::probe::unix_now()).ok(),
         opening,
     }
 }
@@ -248,6 +260,8 @@ pub fn plan_doc(domain: &str, code: &str, seen: &Seen) -> Value {
         (Ok(None), Some(false)) => Some(NO_OPENING),
         _ if seen.unfinished.is_none() => Some(JOURNAL_UNREADABLE),
         _ if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) => Some(UNFINISHED_OPERATION),
+        _ if seen.customer_ask.is_none() => Some(siteabandon::PROBE_UNKNOWN),
+        _ if seen.customer_ask == Some(Some("opening")) => Some(CUSTOMER_RUN_GOING),
         _ => None,
     };
     let next = match (&seen.opening, seen.abandoned, own_stop) {
@@ -272,6 +286,7 @@ pub fn plan_doc(domain: &str, code: &str, seen: &Seen) -> Value {
         "dns": opening.map(|r| r["dns"].clone()),
         "target": target(domain),
         "unfinished": seen.unfinished,
+        "customer_ask": seen.customer_ask,
         "steps": STEPS.iter().zip(probes).map(|(s, p)| json!({
             "step": s.as_str(),
             "now": probe_word(p),
@@ -394,7 +409,9 @@ fn firewall_step(paths: &HostPaths, ct: u32) -> Result<(), String> {
     }
 }
 
-fn record_step(paths: &HostPaths, code: &str, record: &Value) -> Result<(), String> {
+fn record_step(paths: &HostPaths, asks: &Places, code: &str, record: &Value) -> Result<(), String> {
+    // the customer reads why their opening stopped; the ask stays, so the code stays given
+    crate::sitecreaterun::stop_ask_abandoned(asks, code, crate::probe::unix_now())?;
     let to = abandoned_dir(&paths.creating);
     write_record(&to, code, record)?;
     let from = paths.creating.join(format!("{code}.json"));
@@ -409,6 +426,7 @@ fn record_step(paths: &HostPaths, code: &str, record: &Value) -> Result<(), Stri
 pub fn run_steps(
     runner: &mut impl Runner,
     paths: &HostPaths,
+    asks: &Places,
     domain: &str,
     code: &str,
     op: &str,
@@ -444,7 +462,7 @@ pub fn run_steps(
                 if let Some(list) = record["abandon"]["done"].as_array_mut() {
                     list.push(json!(step.as_str()));
                 }
-                record_step(paths, code, &record)
+                record_step(paths, asks, code, &record)
             }
         };
         if let Err(why) = result {
@@ -479,6 +497,7 @@ pub fn apply(
     domain: &str,
     code: &str,
     paths: &HostPaths,
+    asks: &Places,
     runner: &mut impl Runner,
 ) -> Result<Value, String> {
     let g = given(plan, domain, code)?;
@@ -494,13 +513,16 @@ pub fn apply(
             let seen = see(
                 &mut **runner.borrow_mut(),
                 paths,
+                asks,
                 &place.ops_dir,
                 domain,
                 code,
             );
             recheck(domain, code, plan, &seen, &place.fingerprint).map(Some)
         },
-        |op, input: Input| run_steps(&mut **runner.borrow_mut(), paths, domain, code, op, input),
+        |op, input: Input| {
+            run_steps(&mut **runner.borrow_mut(), paths, asks, domain, code, op, input)
+        },
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
 }
@@ -511,12 +533,14 @@ pub fn cmd(domain: &str, code: &str, apply_file: Option<&str>) -> Result<u8, Str
         return Err(format!("{code:?} is not a site code"));
     }
     let paths = HostPaths::host();
+    let asks = Places::host()?;
     let mut runner = crate::sitecreatecmd::HostRunner;
     let doc = match apply_file {
         None => {
             let seen = see(
                 &mut runner,
                 &paths,
+                &asks,
                 Path::new(opstore::OPS_DIR),
                 domain,
                 code,
@@ -530,7 +554,7 @@ pub fn cmd(domain: &str, code: &str, apply_file: Option<&str>) -> Result<u8, Str
             let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
             let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
             let place = opstore::OpPlace::host()?;
-            let record = apply(&place, &plan, domain, code, &paths, &mut runner)?;
+            let record = apply(&place, &plan, domain, code, &paths, &asks, &mut runner)?;
             json!({ "abandoned": code, "record": record })
         }
     };
@@ -679,9 +703,26 @@ mod tests {
         }
     }
 
+    /// The customer's asks beside the scratch host.
+    fn asks(root: &Path, paths: &HostPaths) -> Places {
+        Places {
+            asked: root.join("asked"),
+            creating: paths.creating.clone(),
+            opened: paths.opened.clone(),
+            records: paths.records.clone(),
+            removed: root.join("removed"),
+            platform: root.join("platform-domains"),
+            lock: opstore::LockPaths {
+                lock: root.join("host.lock"),
+                proc_root: root.join("proc"),
+                boot_id: root.join("boot_id"),
+            },
+        }
+    }
+
     fn look(pct: &mut Pct, paths: &HostPaths, root: &Path) -> Seen {
         fs::create_dir_all(root.join("ops")).unwrap();
-        see(pct, paths, &root.join("ops"), DOMAIN, CODE)
+        see(pct, paths, &asks(root, paths), &root.join("ops"), DOMAIN, CODE)
     }
 
     fn sealed(pct: &mut Pct, paths: &HostPaths, root: &Path) -> Value {
@@ -748,7 +789,7 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        let done = apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).unwrap();
+        let done = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap();
         assert!(pct.calls.iter().any(|c| c == "pct destroy 131 --purge 1"));
         assert!(!pct.there);
         assert!(!paths.firewall.join("131.fw").exists());
@@ -781,7 +822,7 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).unwrap_err();
+        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
         assert!(err.contains("abandon_stopped: dns"), "{err}");
         let rec = opening(&paths).unwrap();
         assert_eq!(rec["abandon"]["done"], json!(["container", "firewall"]));
@@ -807,6 +848,60 @@ mod tests {
         write_record(&paths.creating, CODE, &rec).unwrap();
         let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
         assert_eq!(doc["steps"][2]["now"], "done");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn write_ask(root: &Path, asked_at: u64) {
+        fs::create_dir_all(root.join("asked")).unwrap();
+        fs::write(
+            root.join("asked").join(format!("{CODE}.json")),
+            json!({"site": CODE, "domain": DOMAIN, "tenant_id": "t-aaa", "state": "waiting", "asked_at": asked_at})
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The customer's own run of the code still going: nothing is taken down under it. A
+    /// run no longer waited for is not.
+    #[test]
+    fn a_customer_opening_still_going_is_not_abandoned() {
+        let (root, paths) = host("asking", Value::Null);
+        write_ask(&root, crate::probe::unix_now());
+        let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
+        assert_eq!(doc["stop"], CUSTOMER_RUN_GOING);
+        write_ask(&root, 0);
+        let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["customer_ask"], "stopped");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_ask_that_cannot_be_read_stops() {
+        let (root, paths) = host("askbad", Value::Null);
+        fs::create_dir_all(root.join("asked")).unwrap();
+        fs::write(root.join("asked").join(format!("{CODE}.json")), "{").unwrap();
+        let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
+        assert_eq!(doc["stop"], siteabandon::PROBE_UNKNOWN);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The customer's ask of an abandoned opening reads stopped, why abandoned, and stays.
+    #[test]
+    fn the_customers_ask_is_stopped_as_abandoned_and_kept() {
+        let (root, paths) = host("askstop", Value::Null);
+        write_ask(&root, 0);
+        let place = place(&root);
+        let mut pct = Pct::new();
+        let plan = sealed(&mut pct, &paths, &root);
+        apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap();
+        let ask: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("asked").join(format!("{CODE}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ask["state"], "stopped");
+        assert_eq!(ask["why"], "abandoned");
+        assert_eq!(ask["domain"], DOMAIN);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -838,7 +933,7 @@ mod tests {
             env!("CARGO_PKG_VERSION"),
         )
         .unwrap();
-        assert!(apply(&place, &sealed_doc, DOMAIN, CODE, &paths, &mut pct).is_err());
+        assert!(apply(&place, &sealed_doc, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
 
@@ -854,7 +949,7 @@ mod tests {
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
         assert_eq!(plan["stop"], siteabandon::CT_OF_A_SITE);
-        assert!(apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).is_err());
+        assert!(apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
     }
@@ -923,7 +1018,7 @@ mod tests {
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
         fs::remove_file(paths.firewall.join("131.fw")).unwrap();
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).unwrap_err();
+        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
         assert!(err.contains("plan_changed"), "{err}");
         assert_eq!(pct.destroys(), 0);
         assert!(opening(&paths).is_some());
@@ -952,7 +1047,7 @@ mod tests {
         let mut pct = Pct::new();
         pct.destroy_works = false;
         let plan = sealed(&mut pct, &paths, &root);
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).unwrap_err();
+        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
         assert!(err.contains("abandon_stopped: container"), "{err}");
         // nothing after it ran: the firewall file and the record are where they were
         assert!(paths.firewall.join("131.fw").exists());
@@ -992,8 +1087,8 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        assert!(apply(&place, &plan, DOMAIN, "s-other1", &paths, &mut pct).is_err());
-        assert!(apply(&place, &plan, "else.example.com", CODE, &paths, &mut pct).is_err());
+        assert!(apply(&place, &plan, DOMAIN, "s-other1", &paths, &asks(&root, &paths), &mut pct).is_err());
+        assert!(apply(&place, &plan, "else.example.com", CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
     }

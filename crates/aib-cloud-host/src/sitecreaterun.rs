@@ -185,6 +185,45 @@ fn ask_state(places: &Places, ask: &Value, now: u64) -> &'static str {
     }
 }
 
+/// The customer's ask under `code` as an abandon sees it ([`crate::siteabandon`]): `None`
+/// when there is none, else its state now (`opening` while its run is waited for or still
+/// going). `Err` when it is there and cannot be read: an ask unread might be an opening.
+pub(crate) fn ask_now(places: &Places, code: &str, now: u64) -> Result<Option<&'static str>, ()> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let ask: Value = serde_json::from_str(&text).map_err(|_| ())?;
+    if ask.get("site").and_then(Value::as_str) != Some(code) {
+        return Err(());
+    }
+    Ok(Some(ask_state(places, &ask, now)))
+}
+
+/// The ask of an abandoned opening, stopped with `why: abandoned` (c477a abandon L1). It is
+/// kept, not removed: the code it holds stays given ([`codes_given`]). No ask is nothing to
+/// do; one that cannot be read is an error.
+pub(crate) fn stop_ask_abandoned(places: &Places, code: &str, now: u64) -> Result<(), String> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut ask: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let obj = ask
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: not an ask", path.display()))?;
+    obj.insert("state".to_owned(), json!("stopped"));
+    obj.insert("why".to_owned(), json!("abandoned"));
+    obj.insert("at".to_owned(), json!(now));
+    // kept, not removed: the code stays given
+    rewrite_ask(&places.asked, code, &ask)
+}
+
 fn first_host(rec: &Value) -> Option<&str> {
     rec.get("hosts")?.as_str()?.split(',').next().map(str::trim)
 }
@@ -706,6 +745,41 @@ mod tests {
         let taken = codes_given(&places).unwrap();
         assert!(taken.iter().any(|c| c == "s-gone01"));
         let _ = fs::remove_dir_all(places.asked.parent().unwrap());
+    }
+
+    /// An abandoned opening's ask reads stopped, why abandoned, and is kept: its code stays
+    /// given.
+    #[test]
+    fn an_abandoned_ask_is_stopped_kept_and_its_code_given() {
+        let p = scratch("askgone");
+        let ask = json!({"site": "s-gone02", "domain": "gone.example.test", "tenant_id": "t-aaa",
+            "state": "running", "holder": null, "asked_at": NOW});
+        write_new_ask(&p.asked, "s-gone02", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-gone02", NOW), Ok(Some("stopped")));
+        stop_ask_abandoned(&p, "s-gone02", NOW + 5).unwrap();
+        let kept = read_json(&p.asked.join("s-gone02.json")).unwrap();
+        assert_eq!(kept["state"], "stopped");
+        assert_eq!(kept["why"], "abandoned");
+        assert_eq!(kept["domain"], "gone.example.test");
+        assert!(codes_given(&p).unwrap().iter().any(|c| c == "s-gone02"));
+        assert_eq!(progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap()["state"], "stopped");
+        // no ask: nothing to stop, nothing to tell
+        stop_ask_abandoned(&p, "s-none01", NOW).unwrap();
+        assert_eq!(ask_now(&p, "s-none01", NOW), Ok(None));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
+    }
+
+    /// An ask waited for is an opening; one that cannot be read is not told.
+    #[test]
+    fn an_ask_is_seen_opening_or_not_told() {
+        let p = scratch("asknow");
+        let ask = json!({"site": "s-wait01", "domain": "wait.example.test", "state": "waiting", "asked_at": NOW});
+        write_new_ask(&p.asked, "s-wait01", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-wait01", NOW + 1), Ok(Some("opening")));
+        assert_eq!(ask_now(&p, "s-wait01", NOW + START_GRACE_S + 1), Ok(Some("stopped")));
+        fs::write(p.asked.join("s-bad001.json"), "{").unwrap();
+        assert_eq!(ask_now(&p, "s-bad001", NOW), Err(()));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
     }
 
     /// A process `pid` started at `start` in the scratch `/proc`.
