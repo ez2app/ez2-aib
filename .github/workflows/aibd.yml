@@ -2032,6 +2032,10 @@ jobs:
           sk snapshot.rs '    let rules = match whole(&v, "rules") {' \
              '    let rules = match arr(&v, "rules") { // knife' \
              a_full_page_of_rules_is_unknown
+          # S12 (1ced7 #685 r2 L1) an already reaped child is killed by a pid that may be reused
+          sk source.rs '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
+             '        if let Err(TryRecvError::Empty) | Ok(_) = exit_rx.try_recv() { // knife' \
+             a_child_already_reaped_is_not_killed_by_pid_at_the_deadline
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

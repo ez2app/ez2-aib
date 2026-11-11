@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::io::Read as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -58,23 +58,31 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
         let _ = err.read_to_end(&mut b);
         let _ = err_tx.send(b);
     });
-    // the waiter owns the child: until it has reaped it, `pid` cannot be
-    // given to another process, so killing by pid hits only this child
+    // the waiter reaps the child; once it has, `pid` may be given to another
+    // process. So a kill by pid first asks the waiter: only a child it is still
+    // waiting for is killed (1ced7 #685 r2 L1: a grandchild holding stdout
+    // used to get its exited parent's pid killed at the deadline). What is
+    // left is the waiter's step from the reap to the send, not the call.
     let (exit_tx, exit_rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = exit_tx.send(child.wait());
     });
     let timed_out = || -> Result<Vec<u8>, String> {
-        kill_pid(pid);
+        let ms = timeout.as_millis();
+        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {
+            kill_pid(pid);
+            return Err(format!("{program}: timed out after {ms} ms"));
+        }
         Err(format!(
-            "{program}: timed out after {} ms",
-            timeout.as_millis()
+            "{program}: timed out after {ms} ms (exited, output held open)"
         ))
     };
     let stdout = match out_rx.recv_timeout(left()) {
         Ok(Ok(b)) => b,
         Ok(Err(e)) => {
-            kill_pid(pid);
+            if matches!(exit_rx.try_recv(), Err(TryRecvError::Empty)) {
+                kill_pid(pid);
+            }
             return Err(format!("{program}: stdout unreadable: {}", e.kind()));
         }
         Err(_) => return timed_out(),
@@ -98,7 +106,7 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
     Ok(stdout)
 }
 
-/// Kill a child that is still owned (not reaped) by its waiter thread.
+/// Kill `pid`. Callers first make sure the waiter has not reaped it.
 fn kill_pid(pid: u32) {
     let pid = pid.to_string();
     #[cfg(windows)]

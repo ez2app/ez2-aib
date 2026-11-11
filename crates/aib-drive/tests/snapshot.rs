@@ -577,3 +577,19 @@ fn a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline() 
     assert_eq!(e, "/bin/sh: timed out after 500 ms");
     assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
 }
+
+// 1ced7 #685 r2 L1: the child exits at once and a grandchild keeps stdout open.
+// The waiter has reaped the child by the deadline, so its pid may already
+// belong to another process: it is not killed, and the error says why.
+#[cfg(unix)]
+#[test]
+fn a_child_already_reaped_is_not_killed_by_pid_at_the_deadline() {
+    let t = std::time::Instant::now();
+    let args = ["-c", "/bin/sleep 3 & exit 0"].map(str::to_owned);
+    let e = run_fixed("/bin/sh", &args, Duration::from_millis(500)).unwrap_err();
+    assert_eq!(
+        e,
+        "/bin/sh: timed out after 500 ms (exited, output held open)"
+    );
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+}
