@@ -795,6 +795,29 @@ jobs:
           # brand (E9): the operations mail given as the neutral one is taken
           ck brand.rs '            if pick == ops || has_brand_word(pick) {' '            if has_brand_word(pick) && pick != ops { // knife' \
              a_hidden_site_never_gets_the_operations_mail
+          # brand scan (E9 step 4): a place never handed in reads as clean
+          ck brandscan.rs '        .filter(|p| unreadable.contains(p) || !seen.iter().any(|s| s.place == *p))' \
+             '        .filter(|p| unreadable.contains(p)) // knife' \
+             a_place_not_read_is_incomplete_never_clean
+          # brand scan: a place that could not be read reads as clean
+          ck brandscan.rs '            None => unreadable.push(s.place),' \
+             '            None => unreadable.retain(|_: &Place| false), // knife' \
+             one_place_read_twice_counts_once_and_one_unreadable_read_spoils_it
+          # brand scan: a brand word in an internal name makes the site dirty
+          ck brandscan.rs '        !matches!(self, Place::InternalName)' '        true // knife' \
+             an_internal_name_is_listed_not_judged
+          # brand scan: aib counts at the end of a longer word
+          ck brandscan.rs '        let before = at == 0 || !word_char(b[at - 1]);' '        let before = true; // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: aib is looked for in every place, the customer's text included
+          ck brandscan.rs '        matches!(self, Place::MuPluginFile | Place::PluginHeader)' '        true // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: EZ2 in capitals is not found
+          ck brandscan.rs '    let low = text.to_ascii_lowercase();' '    let low = text; // knife' \
+             ez2_anywhere_in_a_judged_place_is_dirty
+          # brand scan: a site whose brand is shown is scanned anyway
+          ck brandscan.rs '    if brand == Brand::Shown {' '    if brand == Brand::Shown && false { // knife' \
+             a_shown_site_is_not_scanned
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
