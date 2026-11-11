@@ -778,6 +778,42 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # S10 site software's scheduled events (E10 class 6, 4542e 11-11): an event waiting past the limit is red
+          ck verify.rs '        (_, Ok(late)) if late > red_after => Outcome::Red("overdue"),' \
+             '        (_, Ok(late)) if late > red_after => Outcome::Green, // knife' \
+             s10_an_event_waiting_past_the_limit_is_red
+          # S10: an event not yet due is not late
+          ck verify.rs '            .filter(|t| **t <= now)' \
+             '            .filter(|t| **t <= now || true) // knife' \
+             s10_an_event_waiting_past_the_limit_is_red
+          # S10: no timer is red
+          ck verify.rs '        Some(Some(CronTimer::Missing)) => return result("S10", Outcome::Red("no_timer")),' \
+             '        Some(Some(CronTimer::Missing)) => return result("S10", Outcome::Green), // knife' \
+             s10_the_timer_must_be_there_enabled_and_active
+          # S10: a timer there but not enabled and active is off
+          ck verify.rs '        ("loaded" | "masked" | "bad-setting" | "error", _, _) => Some(CronTimer::Off),' \
+             '        ("loaded" | "masked" | "bad-setting" | "error", _, _) => Some(CronTimer::On), // knife' \
+             s10_the_timer_must_be_there_enabled_and_active
+          # S10: a timer state not understood is unknown
+          ck verify.rs '        Some(None) => Err("timer_unparsed"),' \
+             '        Some(None) => Ok(()), // knife' \
+             s10_the_timer_must_be_there_enabled_and_active
+          # S10: a timer that could not be read is unknown, never green
+          ck verify.rs '        None => Err("timer_unread"),' \
+             '        None => Ok(()), // knife' \
+             s10_what_cannot_be_read_is_unknown_never_green
+          # S10: events that could not be read are unknown, never green
+          ck verify.rs '        None => Err("events_unread"),' \
+             '        None => Ok(0), // knife' \
+             s10_what_cannot_be_read_is_unknown_never_green
+          # S10: an event list not understood is unknown, never green
+          ck verify.rs '        Some(None) => Err("events_unparsed"),' \
+             '        Some(None) => Ok(0), // knife' \
+             s10_what_cannot_be_read_is_unknown_never_green
+          # S10: a line of the list that is not a number is not read past
+          ck verify.rs '        if !line.bytes().all(|b| b.is_ascii_digit()) {' \
+             '        if !line.bytes().all(|b| b.is_ascii_digit()) && false { // knife' \
+             s10_what_cannot_be_read_is_unknown_never_green
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1407,6 +1443,38 @@ jobs:
           hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
              '        tenant: None, // knife' \
              apply_needs_the_tenant_the_plan_was_made_for
+          # site create install: a scheduler already in place is left alone (E10 class 6, 4542e 11-11)
+          hk siteidentity.rs '    if scheduler_in_place(runner, spec).is_ok() {' \
+             '    if scheduler_in_place(runner, spec).is_ok() && false { // knife' \
+             a_scheduler_already_in_place_is_left_alone
+          # the scheduler is read back after writing
+          hk siteidentity.rs '    scheduler_in_place(runner, spec)?;' \
+             '    let _ = scheduler_in_place(runner, spec); // knife' \
+             a_scheduler_is_read_back_as_written
+          # a unit file must hold what was written
+          hk siteidentity.rs '        if there != text {' \
+             '        if there != text && false { // knife' \
+             a_scheduler_is_read_back_as_written
+          # a unit file that cannot be read back stops
+          hk siteidentity.rs '            .map_err(|e| format!("cron_unchecked: {file}: {e}"))?;' \
+             '            .or_else(|_| Ok::<String, String>(text.clone()))?; // knife' \
+             a_scheduler_is_read_back_as_written
+          # site verify S10: the events are read and judged
+          hk siteverify.rs '    let events = runner.run(&wp(spec, &CRON_LIST)).ok();' \
+             '    let events = runner.run(&wp(spec, &CRON_LIST)).ok().and(None::<String>); // knife' \
+             s10_reads_the_timer_and_the_events_inside_the_container
+          # S10: the events are listed without the customer's plugins
+          hk siteverify.rs '    "--skip-plugins",' \
+             '    "--skip-themes", // knife' \
+             s10_reads_the_timer_and_the_events_inside_the_container
+          # S10: the timer is asked whether it is active
+          hk siteverify.rs '                "ActiveState",' \
+             '                "SubState", // knife' \
+             s10_reads_the_timer_and_the_events_inside_the_container
+          # S10: nothing is run inside a quarantined container
+          hk siteverify.rs '    state != SiteState::Quarantined' \
+             '    state != SiteState::Quarantined || true // knife' \
+             s10_is_not_run_in_a_quarantined_container
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
