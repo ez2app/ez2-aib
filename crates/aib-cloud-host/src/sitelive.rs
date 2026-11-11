@@ -61,7 +61,7 @@ use crate::probe::{CADDYFILE, EDGE_CT};
 /// Where the new configuration is written before it is validated and swapped in.
 const CADDYFILE_NEW: &str = "/etc/caddy/Caddyfile.ez2-new";
 /// The template's SEOPress key, by its name in [`KEYS`].
-const SEOPRESS_KEY: &str = "SEOPRESS_PRO_LICENSE_KEY";
+pub(crate) const SEOPRESS_KEY: &str = "SEOPRESS_PRO_LICENSE_KEY";
 
 fn owned(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
@@ -104,7 +104,7 @@ pub fn seopress_answer(out: &str) -> License {
 
 /// The question the site sends its vendor (the hand-run licence script's, unchanged): the
 /// plugin's own store address and item number, the site's own home address.
-const SP_PROBE: &str = r#"$k=trim((string)get_option("seopress_pro_license_key")); if($k===""){echo "SP none\n";return;} $r=wp_remote_post(STORE_URL_SEOPRESS,["timeout"=>15,"body"=>["edd_action"=>"check_license","license"=>$k,"item_id"=>ITEM_ID_SEOPRESS,"url"=>get_option("home")]]); if(is_wp_error($r)||200!==wp_remote_retrieve_response_code($r)){echo "SP unknown\n";return;} $d=json_decode(wp_remote_retrieve_body($r),true); if(!is_array($d)||!isset($d["license"])){echo "SP unknown\n";return;} echo "SP license=".preg_replace("/[^a-z_]/","",(string)$d["license"])." left=".preg_replace("/[^0-9a-z]/","",(string)($d["activations_left"]??"na"))."\n";"#;
+pub(crate) const SP_PROBE: &str = r#"$k=trim((string)get_option("seopress_pro_license_key")); if($k===""){echo "SP none\n";return;} $r=wp_remote_post(STORE_URL_SEOPRESS,["timeout"=>15,"body"=>["edd_action"=>"check_license","license"=>$k,"item_id"=>ITEM_ID_SEOPRESS,"url"=>get_option("home")]]); if(is_wp_error($r)||200!==wp_remote_retrieve_response_code($r)){echo "SP unknown\n";return;} $d=json_decode(wp_remote_retrieve_body($r),true); if(!is_array($d)||!isset($d["license"])){echo "SP unknown\n";return;} echo "SP license=".preg_replace("/[^a-z_]/","",(string)$d["license"])." left=".preg_replace("/[^0-9a-z]/","",(string)($d["activations_left"]??"na"))."\n";"#;
 
 /// One paid plugin after the licence step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +126,7 @@ impl Outcome {
 }
 
 /// Is the key in the site the template's? Both are compared in memory; neither is printed.
-fn same_key(site: &str, template: &str) -> bool {
+pub(crate) fn same_key(site: &str, template: &str) -> bool {
     !site.is_empty() && site.as_bytes() == template.as_bytes()
 }
 
