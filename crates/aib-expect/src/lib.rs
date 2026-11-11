@@ -492,9 +492,6 @@ pub struct Row {
 pub struct Report {
     pub rows: Vec<Row>,
     pub unreadable_evidence: usize,
-    /// Up to three goal ids, by rule: failing first, then unverified, then
-    /// inferred, each in goal order.
-    pub next: Vec<String>,
 }
 
 impl Report {
@@ -632,44 +629,42 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
             }
         })
         .collect();
-    let mut next = Vec::new();
-    for code in ["fail", "unverified", "inferred"] {
-        for r in rows.iter().filter(|r| r.status.code() == code) {
-            if next.len() < 3 {
-                next.push(r.goal.id.clone());
-            }
-        }
-    }
     Report {
         rows,
         unreadable_evidence: evidence.unreadable,
-        next,
     }
 }
 
-/// The order an AI proposes instead of the rule's. It must say why.
+/// One goal that is not passing, handed to aib-drive's decide as a weight.
+/// Gaps carry no order: what comes next is decided once, by decide, from the
+/// same snapshot (DECISION-expect-check, "併入 aib-drive"). `pr` is the PR
+/// the latest evidence names, so decide can tie the gap to its work.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiOrder {
-    pub ids: Vec<String>,
-    pub why: String,
+pub struct Gap {
+    pub goal: String,
+    /// `fail`, `unverified` or `inferred`.
+    pub status: &'static str,
+    /// The reason code of an unverified row.
+    pub why: Option<&'static str>,
+    pub pr: Option<u64>,
 }
 
-impl AiOrder {
-    pub fn new(ids: Vec<String>, why: &str, report: &Report) -> Result<Self, String> {
-        if why.trim().is_empty() {
-            return Err("expect_order_without_reason: an AI order needs a reason".to_owned());
-        }
-        if let Some(bad) = ids
-            .iter()
-            .find(|i| !report.rows.iter().any(|r| &r.goal.id == *i))
-        {
-            return Err(format!("expect_order_unknown_goal: {bad}"));
-        }
-        Ok(Self {
-            ids,
-            why: why.to_owned(),
+/// The rows that are not passing, in goal order (not ranked).
+pub fn gaps(report: &Report) -> Vec<Gap> {
+    report
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass)
+        .map(|r| Gap {
+            goal: r.goal.id.clone(),
+            status: r.status.code(),
+            why: match &r.status {
+                Status::Unverified(w) => Some(w.code()),
+                _ => None,
+            },
+            pr: r.evidence.as_ref().and_then(|e| e.pr),
         })
-    }
+        .collect()
 }
 
 /// Text that came from a seat, made safe to print: no control characters,
@@ -690,8 +685,13 @@ pub fn clean(s: &str, max: usize) -> String {
     }
 }
 
-/// The full table, for a terminal.
-pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
+/// What comes next, as aib-drive's decide put it (already in its order).
+/// aib-expect prints it as given and never makes its own.
+pub type Next<'a> = &'a [String];
+
+/// The full table, for a terminal. `next` is decide's list for the same
+/// event, or `None` when there is none (then no "next" line is printed).
+pub fn render(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "期望值對比:實查通過 {} / 實查 {}(未驗 {}、推測 {})\n",
@@ -721,20 +721,15 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
             report.unreadable_evidence
         ));
     }
-    out.push_str(&format!("接下來(規則順序):{}\n", order_text(&report.next)));
-    if let Some(a) = ai {
-        out.push_str(&format!(
-            "接下來(AI 建議):{};理由:{}\n",
-            order_text(&a.ids),
-            clean(&a.why, 120)
-        ));
+    if let Some(n) = next {
+        out.push_str(&format!("接下來(aib-drive):{}\n", next_text(n)));
     }
     out
 }
 
 /// 3–5 lines for the end of a reply: the rows that are not passing, then
 /// what comes next.
-pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
+pub fn render_short(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = Vec::new();
     for r in report
         .rows
@@ -757,22 +752,22 @@ pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
             clean(&why, 60)
         ));
     }
-    out.push(format!("接下來:{}", order_text(&report.next)));
-    if let Some(a) = ai {
-        out.push(format!(
-            "AI 改排:{}({})",
-            order_text(&a.ids),
-            clean(&a.why, 60)
-        ));
+    if let Some(n) = next {
+        out.push(format!("接下來:{}", next_text(n)));
     }
     out.join("\n") + "\n"
 }
 
-fn order_text(ids: &[String]) -> String {
-    if ids.is_empty() {
-        "(全部實查通過)".to_owned()
+fn next_text(items: &[String]) -> String {
+    if items.is_empty() {
+        "(aib-drive 這輪沒有建議)".to_owned()
     } else {
-        ids.join(" → ")
+        items
+            .iter()
+            .take(3)
+            .map(|i| clean(i, 60))
+            .collect::<Vec<_>>()
+            .join(" → ")
     }
 }
 
@@ -784,7 +779,12 @@ pub fn to_json(report: &Report) -> Value {
         "unverified": report.count("unverified"),
         "inferred": report.count("inferred"),
         "unreadable_evidence": report.unreadable_evidence,
-        "next": report.next,
+        "gaps": gaps(report).iter().map(|g| json!({
+            "id": g.goal,
+            "status": g.status,
+            "why": g.why,
+            "pr": g.pr,
+        })).collect::<Vec<_>>(),
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
             "goal_sha": goal_sha(&r.goal.text),

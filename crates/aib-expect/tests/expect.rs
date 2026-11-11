@@ -213,8 +213,6 @@ fn no_evidence_is_unverified_and_rc_decides_pass_or_fail() {
     assert_eq!(status(&rep, "A1"), Status::Pass);
     assert_eq!(status(&rep, "A2"), Status::Fail);
     assert_eq!(status(&rep, "A3"), Status::Unverified(Why::NoEvidence));
-    // fail first, then unverified
-    assert_eq!(rep.next, ["A2", "A3"]);
     let text = render(&rep, None);
     assert!(
         text.contains("實查通過 1 / 實查 2(未驗 1、推測 0)"),
@@ -701,7 +699,8 @@ fn the_evaluation_log_is_never_written_through_a_link() {
 }
 
 #[test]
-fn an_ai_order_needs_a_reason_and_known_goals() {
+fn the_report_has_no_order_of_its_own_and_hands_gaps_to_decide() {
+    // A3 fails, A1 is unverified, A2 passes: the gaps keep goal order, not a rank
     let g = vec![
         Goal {
             id: "A1".into(),
@@ -711,16 +710,53 @@ fn an_ai_order_needs_a_reason_and_known_goals() {
             id: "A2".into(),
             text: "b".into(),
         },
+        Goal {
+            id: "A3".into(),
+            text: "c".into(),
+        },
     ];
-    let rep = compare(&g, &EvidenceLog::default(), &Snapshot::default(), NOW);
-    let e = AiOrder::new(vec!["A2".into(), "A1".into()], " ", &rep).unwrap_err();
-    assert!(e.starts_with("expect_order_without_reason"), "{e}");
-    let e = AiOrder::new(vec!["A9".into()], "why", &rep).unwrap_err();
-    assert!(e.starts_with("expect_order_unknown_goal"), "{e}");
-    let a = AiOrder::new(vec!["A2".into(), "A1".into()], "A2 擋住 A1", &rep).unwrap();
-    let t = render(&rep, Some(&a));
-    assert!(t.contains("接下來(規則順序):A1 → A2"), "{t}");
-    assert!(t.contains("接下來(AI 建議):A2 → A1;理由:A2 擋住 A1"), "{t}");
+    let mut a3 = ev("A3", 10, 1);
+    a3["pr"] = json!(685);
+    a3["head"] = json!(H1);
+    let log = parse_evidence(&format!("{}\n{a3}\n", ev("A2", 10, 0)));
+    let rep = compare(&g, &log, &heads(&[(685, Some(H1))]), NOW);
+    let gp = gaps(&rep);
+    let got: Vec<(&str, &str, Option<&str>, Option<u64>)> = gp
+        .iter()
+        .map(|x| (x.goal.as_str(), x.status, x.why, x.pr))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("A1", "unverified", Some("no_evidence"), None),
+            ("A3", "fail", None, Some(685)),
+        ]
+    );
+    // no ordering field anywhere in the JSON, and no "next" line unless decide gave one
+    let j = to_json(&rep);
+    let keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k.contains("next") || k.contains("order")),
+        "{keys:?}"
+    );
+    assert_eq!(j["gaps"][1]["id"], "A3");
+    let t = render(&rep, None) + &render_short(&rep, None);
+    assert!(!t.contains("接下來"), "{t}");
+    // decide's list is printed as given (its order), at most three, cleaned
+    let next = vec![
+        "#685 能合".to_owned(),
+        "A3 修\u{1b}[2J".to_owned(),
+        "A1 派驗".to_owned(),
+        "第四件".to_owned(),
+    ];
+    let t = render(&rep, Some(next.as_slice()));
+    assert!(
+        t.contains("接下來(aib-drive):#685 能合 → A3 修 [2J → A1 派驗\n"),
+        "{t}"
+    );
+    assert!(render_short(&rep, Some(&[] as &[String])).contains("接下來:(aib-drive 這輪沒有建議)"));
 }
 
 #[test]

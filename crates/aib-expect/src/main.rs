@@ -1,7 +1,7 @@
 //! `aib-expect`: the human's expectations against the evidence.
 //!
 //! ```text
-//! aib-expect show  --project <uid> [--short | --json] [--ai-order A5,A4b --why "<reason>"]
+//! aib-expect show  --project <uid> [--short | --json]
 //! aib-expect event --project <uid> --kind <session-start|pr-merged|release|order-closed|now-done>
 //!                  --seat <seat> [--pr <n>]
 //! common:          [--state-root <dir>] [--repo <owner/name>] [--offline] [--now <epoch>]
@@ -11,6 +11,10 @@
 //! `expect-evals.jsonl` (every event, also when its display is merged).
 //! PR heads are read with GET only through aib-drive's reader; `--offline`
 //! reads none (every PR-bound row is then unverified).
+//!
+//! What comes next is not decided here: aib-drive's decide makes that list
+//! from the same snapshot and passes it to [`aib_expect::render`]; this
+//! program alone prints the comparison and the gaps (`--json`).
 //!
 //! Exit: 0 done; 2 bad arguments; 3 the goals cannot be used (the code is
 //! printed; `event` still records it).
@@ -30,8 +34,6 @@ const VALUED: &[&str] = &[
     "--state-root",
     "--repo",
     "--now",
-    "--ai-order",
-    "--why",
     "--kind",
     "--seat",
     "--pr",
@@ -131,21 +133,12 @@ fn run(a: &Args) -> Result<u8, String> {
     };
     let evidence = evidence.map_err(|e| e.to_string())?;
     let report = ex::compare(&goals, &evidence, &snap, now);
-    let ai = match get("--ai-order") {
-        Some(ids) => Some(ex::AiOrder::new(
-            ids.split(',').map(|s| s.trim().to_owned()).collect(),
-            get("--why").unwrap_or(""),
-            &report,
-        )?),
-        None if get("--why").is_some() => return Err("--why goes with --ai-order".to_owned()),
-        None => None,
-    };
     if on("--json") {
         println!("{}", ex::to_json(&report));
     } else if on("--short") {
-        print!("{}", ex::render_short(&report, ai.as_ref()));
+        print!("{}", ex::render_short(&report, None));
     } else {
-        print!("{}", ex::render(&report, ai.as_ref()));
+        print!("{}", ex::render(&report, None));
     }
     Ok(0)
 }
