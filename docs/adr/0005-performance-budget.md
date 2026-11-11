@@ -41,7 +41,7 @@ is registered, budgeted and stops by itself; a lost event is detected and repair
   see below.
 - **Exception: thermal protection sampling** (R1, 2026-11-10; DECISION-r1-thermal-c477a-1110,
   approved by 9320/a63ab). aibd must stop its own work before the machine overheats (1.x
-  `cooldown.py`, after the 11-03 andymini incident), and the reap rule needs an average
+  `cooldown.py`, after the 11-03 mac-c incident), and the reap rule needs an average
   held ≥ 60 s over ≥ 3 samples, which a "sample only when a viewer asks" rule (§4) cannot
   provide. So one named timer, `thermal_sample`, samples CPU die temperature and thermal
   pressure without a viewer, under these conditions:

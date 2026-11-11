@@ -138,10 +138,10 @@ class Sync(Base):
         self.assertIn("aib grokbot sync-bind --agent %s --to mini" % AGENT, out.getvalue())
 
     def test_s3_confirmed_sends_0600(self):
-        rc, out, asked = self.sync(["mini", "fishmac"], answers=[True])
+        rc, out, asked = self.sync(["mini", "mac-b"], answers=[True])
         self.assertEqual(rc, 0, out)
         self.assertEqual(len(asked), 1, "一次問一題,兩台一起")
-        for h in ("mini", "fishmac"):
+        for h in ("mini", "mac-b"):
             f = self.remote_file(h)
             self.assertEqual(f.read_text(), self.local.read_text())
             self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
@@ -190,11 +190,11 @@ class Sync(Base):
 
     def test_s6_offline_skipped(self):
         self.env["FAKE_SSH_OFFLINE"] = os.environ["FAKE_SSH_OFFLINE"] = "mini"
-        rc, out, _ = self.sync(["mini", "fishmac"], answers=[True])
+        rc, out, _ = self.sync(["mini", "mac-b"], answers=[True])
         self.assertEqual(rc, 4)
         self.assertIn("mini:連不上", out)
         self.assertIn("aib grokbot sync-bind --agent %s --to mini" % AGENT, out)
-        self.assertTrue(self.remote_file("fishmac").exists())
+        self.assertTrue(self.remote_file("mac-b").exists())
         self.assertFalse(self.remote_file("mini").exists())
 
     def test_not_bound(self):
@@ -213,9 +213,9 @@ class Targets(Base):
     def test_s7_hosts_file_minus_local(self):
         (self.state / "user").mkdir(parents=True)
         (self.state / "user" / "dm-hosts.json").write_text(json.dumps(
-            {"100.64.0.1": "self-alias", "100.64.0.2": "mini", "100.64.0.3": "fishmac", "100.64.0.4": "mini"}))
-        self.assertEqual(bs.targets(self.env), ["mini", "fishmac"])
-        self.assertEqual(bs.targets(self.env, ["fishmac"]), ["fishmac"])
+            {"100.64.0.1": "self-alias", "100.64.0.2": "mini", "100.64.0.3": "mac-b", "100.64.0.4": "mini"}))
+        self.assertEqual(bs.targets(self.env), ["mini", "mac-b"])
+        self.assertEqual(bs.targets(self.env, ["mac-b"]), ["mac-b"])
 
     def test_no_hosts(self):
         self.assertEqual(bs.targets(self.env), [])
