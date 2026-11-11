@@ -605,8 +605,7 @@ pub fn given(plan: &Value, domain: &str) -> Result<Given, String> {
 pub fn tenant_matches(g: &Given, tenant: Option<&str>) -> Result<(), String> {
     match (g.tenant.as_deref(), tenant) {
         (_, None) => Err(
-            "tenant_missing: --apply needs --tenant, the customer the plan was made for"
-                .to_owned(),
+            "tenant_missing: --apply needs --tenant, the customer the plan was made for".to_owned(),
         ),
         (Some(planned), Some(t)) if planned == t => Ok(()),
         _ => Err(
@@ -2049,9 +2048,12 @@ mod tests {
             creating: None,
             ..host()
         };
+        // unread openings leave the numbers unknown; with a customer named, the quota
+        // (which counts openings too, E7) is judged first and stops the plan already
+        assert_eq!(numbers(&unread), Err("numbers_unknown"));
         assert_eq!(
             plan_doc("other.example.test", false, &unread)["stop"],
-            "numbers_unknown"
+            "quota_unknown"
         );
     }
 
