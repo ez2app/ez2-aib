@@ -581,6 +581,18 @@ jobs:
           # share gate: "cannot tell" passes as if allowed
           ck share.rs '        matches!(self, Gate::Allowed)' '        !matches!(self, Gate::Refused(_)) // knife' \
              no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: an owner another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) && sharer.is_some_and(theirs) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # share gate: a sharer another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) || (sharer.is_some_and(theirs) && owners.is_empty()) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # entry sudoers: two tenants registering one address are both written (c477a M1)
+          ck roster.rs '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e)))' \
+             '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e) && e.is_empty()))' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
           # roster emails: an entry is kept as written, not as compared
           ck roster.rs '            .and_then(crate::share::normalize)' '            .map(String::from) // knife' \
              the_registered_addresses_are_read_normalized_and_optional
@@ -902,16 +914,31 @@ jobs:
              '        Gate::Unknown(why) => ("unknown", why, 2), // knife' \
              a_shared_backup_passes_only_from_the_tenants_own_address
           # roster share-check: only the first owner the drive names is judged
-          hk rostercmd.rs '    let (word, why, code) = match judge(&owners, sharer, &roster.emails) {' \
-             '    let (word, why, code) = match judge(&owners[..owners.len().min(1)], sharer, &roster.emails) { // knife' \
+          hk rostercmd.rs '        Some(others) => judge(&owners, sharer, &roster.emails, &others),' \
+             '        Some(others) => judge(&owners[..owners.len().min(1)], sharer, &roster.emails, &others), // knife' \
              a_shared_backup_passes_only_from_the_tenants_own_address
           # roster share-check: a second --sharer replaces the first
           hk rostercmd.rs '            ("--sharer", Some(a)) if sharer.is_none() => sharer = Some(*a),' \
              '            ("--sharer", Some(a)) => sharer = Some(*a), // knife' \
              a_shared_backup_passes_only_from_the_tenants_own_address
           # roster share-check: the command line refuses --owner as an unknown flag
-          hk rostercmd.rs '            "--owner" | "--sharer" => {' '            "--owner-knife" | "--sharer" => {' \
+          hk rostercmd.rs '            "--owner" | "--sharer" | "--rosters" => {' '            "--owner-knife" | "--sharer" | "--rosters" => {' \
              a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: "not this tenant's" exits as a refused roster (2), not its own 5 (c477a N3)
+          hk rostercmd.rs '        Gate::Refused(why) => ("refused", why, 5),' \
+             '        Gate::Refused(why) => ("refused", why, 2), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: without --rosters only this tenant's roster is read (c477a M1)
+          hk rostercmd.rs '    let Some(dir) = dir else {' \
+             '    let Some(dir) = dir.or(Some("/nonexistent-knife")) else {' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: the other tenants' addresses are not collected (c477a M1)
+          hk rostercmd.rs '            out.extend(r.emails);' '            out.extend(r.emails.into_iter().filter(|_| false)); // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
+          # roster share-check: a roster that cannot be read is skipped instead of leaving it unknown
+          hk rostercmd.rs '        let r = load(path.to_str()?, records).ok()?.ok()?;' \
+             '        let Some(Ok(r)) = load(path.to_str()?, records).ok() else { continue }; // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \

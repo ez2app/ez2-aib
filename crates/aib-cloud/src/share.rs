@@ -12,17 +12,31 @@
 //! - no owner named (a shared-drive file, or the drive did not say) ⇒ [`Gate::Unknown`];
 //! - the roster registers no address ⇒ [`Gate::Unknown`] (nothing to compare with);
 //! - more than one owner, an address that is not an address, or one that is not
-//!   registered ⇒ [`Gate::Refused`].
+//!   registered ⇒ [`Gate::Refused`];
+//! - an owner or sharer address that **another** tenant's roster also registers ⇒
+//!   [`Gate::Refused`] (c477a M1): with only this tenant's roster read, tenant B could
+//!   restore tenant A's backup by registering A's address too. So the caller reads every
+//!   roster on the host and passes the other tenants' addresses; when it cannot read them
+//!   all, the answer is [`Gate::Unknown`] ([`Why::OtherRostersUnreadable`]).
 //!
 //! Only [`Gate::Allowed`] lets the restore go on; `Unknown` is not a softer `Allowed`.
 //!
-//! Addresses are compared after [`normalize`]: outer spaces dropped and the whole address
-//! lower-cased, then equal as a whole. Nothing more: no dropping dots or `+tag` for one
-//! mail provider. Those rules are the provider's, not the address's; applying them here
-//! would make two addresses "the same" that the drive treats as two accounts, and the
-//! gate would let through an owner the roster never named.
+//! When the drive names the sharer, the caller **must** pass it (c477a N2): left out, only
+//! the owner is judged, and a file shared on by someone else would pass.
 //!
-//! No I/O: reading the owner from the drive and the roster from its file are the caller's.
+//! The gate is as strong as the roster's `emails`. **Pending Andy** (c477a M1): an address
+//! goes into a roster only after its holder confirmed it by mail; who writes it and how
+//! that confirmation is made are not decided yet.
+//!
+//! Addresses are compared after [`normalize`]: outer spaces dropped and the whole address
+//! lower-cased, then equal as a whole. Case is treated as the same on both sides of the
+//! `@` (c477a N1): the part before it may be case-sensitive by RFC 5321, but every large
+//! mail service treats it as not, and a customer writes their address either way. That is
+//! the one provider-style rule taken. No dropping dots or `+tag`: those differ between
+//! providers, the drive treats such addresses as other accounts, and taking them would let
+//! through an owner the roster never named.
+//!
+//! No I/O: reading the owner from the drive and the rosters from their files are the caller's.
 
 use alloc::string::String;
 
@@ -71,6 +85,10 @@ pub enum Why {
     OwnerNotRegistered,
     /// The sharer is not one of the tenant's addresses.
     SharerNotRegistered,
+    /// The owner or the sharer is also registered by another tenant.
+    AddressOfAnotherTenant,
+    /// Not every other tenant's roster could be read (set by the caller).
+    OtherRostersUnreadable,
 }
 
 impl Why {
@@ -83,6 +101,8 @@ impl Why {
             Why::NotAnAddress => "share_not_an_address",
             Why::OwnerNotRegistered => "share_owner_not_this_tenant",
             Why::SharerNotRegistered => "share_sharer_not_this_tenant",
+            Why::AddressOfAnotherTenant => "share_address_also_another_tenant",
+            Why::OtherRostersUnreadable => "share_other_rosters_unreadable",
         }
     }
 }
@@ -111,10 +131,11 @@ fn registered(address: &str, tenant: &[String]) -> Option<bool> {
 }
 
 /// Judge one shared file. `owners` are the owners the drive names for it (all of them, as
-/// given); `sharer` the person who shared it, when the drive says; `tenant` the tenant's
-/// registered addresses, already normalized (as [`crate::roster::Roster::emails`] holds
-/// them).
-pub fn judge(owners: &[&str], sharer: Option<&str>, tenant: &[String]) -> Gate {
+/// given); `sharer` the person who shared it, when the drive says (then it must be given);
+/// `tenant` the tenant's registered addresses and `others` every address the **other**
+/// tenants' rosters register, both already normalized (as
+/// [`crate::roster::Roster::emails`] holds them).
+pub fn judge(owners: &[&str], sharer: Option<&str>, tenant: &[String], others: &[String]) -> Gate {
     if tenant.is_empty() {
         return Gate::Unknown(Why::NoneRegistered);
     }
@@ -135,6 +156,10 @@ pub fn judge(owners: &[&str], sharer: Option<&str>, tenant: &[String]) -> Gate {
         if !ok {
             return Gate::Refused(Why::SharerNotRegistered);
         }
+    }
+    let theirs = |a: &str| normalize(a).is_some_and(|a| others.contains(&a));
+    if theirs(owner) || sharer.is_some_and(theirs) {
+        return Gate::Refused(Why::AddressOfAnotherTenant);
     }
     Gate::Allowed
 }
@@ -194,14 +219,15 @@ mod tests {
 
     #[test]
     fn the_tenants_own_owner_passes() {
-        let g = judge(&["Owner@Example.com"], None, &tenant());
+        let g = judge(&["Owner@Example.com"], None, &tenant(), &[]);
         assert_eq!(g, Gate::Allowed);
         assert!(g.passes());
         assert_eq!(
             judge(
                 &["owner@example.com"],
                 Some(" STAFF@example.com"),
-                &tenant()
+                &tenant(),
+                &[]
             ),
             Gate::Allowed
         );
@@ -209,16 +235,16 @@ mod tests {
 
     #[test]
     fn another_owner_is_refused() {
-        let g = judge(&["someone@example.org"], None, &tenant());
+        let g = judge(&["someone@example.org"], None, &tenant(), &[]);
         assert_eq!(g, Gate::Refused(Why::OwnerNotRegistered));
         assert!(!g.passes());
         // a lookalike with a +tag or extra dots is another account
         assert_eq!(
-            judge(&["owner+x@example.com"], None, &tenant()),
+            judge(&["owner+x@example.com"], None, &tenant(), &[]),
             Gate::Refused(Why::OwnerNotRegistered)
         );
         assert_eq!(
-            judge(&["o.wner@example.com"], None, &tenant()),
+            judge(&["o.wner@example.com"], None, &tenant(), &[]),
             Gate::Refused(Why::OwnerNotRegistered)
         );
     }
@@ -229,22 +255,28 @@ mod tests {
             judge(
                 &["owner@example.com"],
                 Some("someone@example.org"),
-                &tenant()
+                &tenant(),
+                &[]
             ),
             Gate::Refused(Why::SharerNotRegistered)
         );
         assert_eq!(
-            judge(&["owner@example.com"], Some("not an address"), &tenant()),
+            judge(
+                &["owner@example.com"],
+                Some("not an address"),
+                &tenant(),
+                &[]
+            ),
             Gate::Refused(Why::NotAnAddress)
         );
     }
 
     #[test]
     fn no_owner_or_nothing_registered_is_unknown_not_allowed() {
-        let g = judge(&[], None, &tenant());
+        let g = judge(&[], None, &tenant(), &[]);
         assert_eq!(g, Gate::Unknown(Why::NoOwner));
         assert!(!g.passes());
-        let g = judge(&["owner@example.com"], None, &[]);
+        let g = judge(&["owner@example.com"], None, &[], &[]);
         assert_eq!(g, Gate::Unknown(Why::NoneRegistered));
         assert!(!g.passes());
     }
@@ -252,12 +284,42 @@ mod tests {
     #[test]
     fn more_than_one_owner_or_a_bad_owner_is_refused() {
         assert_eq!(
-            judge(&["owner@example.com", "staff@example.com"], None, &tenant()),
+            judge(
+                &["owner@example.com", "staff@example.com"],
+                None,
+                &tenant(),
+                &[]
+            ),
             Gate::Refused(Why::ManyOwners)
         );
         assert_eq!(
-            judge(&["owner"], None, &tenant()),
+            judge(&["owner"], None, &tenant(), &[]),
             Gate::Refused(Why::NotAnAddress)
+        );
+    }
+
+    #[test]
+    fn an_address_another_tenant_also_registers_is_refused() {
+        let others = alloc::vec![String::from("staff@example.com")];
+        // the owner is this tenant's, and also another's
+        assert_eq!(
+            judge(&["Staff@example.com"], None, &tenant(), &others),
+            Gate::Refused(Why::AddressOfAnotherTenant)
+        );
+        // the sharer is also another's
+        assert_eq!(
+            judge(
+                &["owner@example.com"],
+                Some("staff@example.com"),
+                &tenant(),
+                &others
+            ),
+            Gate::Refused(Why::AddressOfAnotherTenant)
+        );
+        // other tenants registering other addresses change nothing
+        assert_eq!(
+            judge(&["owner@example.com"], None, &tenant(), &others),
+            Gate::Allowed
         );
     }
 
@@ -270,6 +332,8 @@ mod tests {
             Why::NotAnAddress,
             Why::OwnerNotRegistered,
             Why::SharerNotRegistered,
+            Why::AddressOfAnotherTenant,
+            Why::OtherRostersUnreadable,
         ];
         let words: Vec<&str> = all.iter().map(|w| w.as_str()).collect();
         for (i, w) in words.iter().enumerate() {

@@ -418,6 +418,9 @@ fn entry_args(tenant_id: &str, m: &Member) -> String {
 pub enum SudoersBad {
     /// Two rosters name the same tenant: which one the host means cannot be told.
     DuplicateTenant,
+    /// Two tenants register the same address (c477a, share gate M1): a backup shared from
+    /// it could be restored by either.
+    EmailOnTwoTenants,
 }
 
 impl SudoersBad {
@@ -425,6 +428,7 @@ impl SudoersBad {
     pub fn as_str(self) -> &'static str {
         match self {
             SudoersBad::DuplicateTenant => "duplicate_tenant",
+            SudoersBad::EmailOnTwoTenants => "email_on_two_tenants",
         }
     }
 }
@@ -454,6 +458,12 @@ pub fn sudoers_file(rosters: &[Roster]) -> Result<String, SudoersBad> {
     for (i, r) in rosters.iter().enumerate() {
         if rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) {
             return Err(SudoersBad::DuplicateTenant);
+        }
+        if rosters[..i]
+            .iter()
+            .any(|o| o.emails.iter().any(|e| r.emails.contains(e)))
+        {
+            return Err(SudoersBad::EmailOnTwoTenants);
         }
     }
     let mut rules: Vec<String> = Vec::new();
@@ -636,6 +646,24 @@ mod tests {
             sudoers_file(&[r.clone(), r]),
             Err(SudoersBad::DuplicateTenant)
         );
+        // two tenants registering one address: refused (c477a, share gate M1)
+        let mut a = sample();
+        a["emails"] = json!(["owner@example.com"]);
+        let mut b = sample();
+        b["tenant_id"] = json!("t-bbb");
+        b["emails"] = json!(["other@example.com", "OWNER@example.com"]);
+        assert_eq!(
+            sudoers_file(&[read(&a).unwrap(), read(&b).unwrap()]),
+            Err(SudoersBad::EmailOnTwoTenants)
+        );
+        assert_eq!(
+            SudoersBad::EmailOnTwoTenants.as_str(),
+            "email_on_two_tenants"
+        );
+        // different addresses: the file is written
+        let mut b2 = b;
+        b2["emails"] = json!(["other@example.com"]);
+        assert!(sudoers_file(&[read(&a).unwrap(), read(&b2).unwrap()]).is_ok());
         // no roster: the header and Defaults only, the account may run nothing
         assert_eq!(sudoers_file(&[]).unwrap().lines().count(), 2);
         assert_eq!(sudoers_escape("a\\b,c:d=e"), "a\\\\b\\,c\\:d\\=e");
