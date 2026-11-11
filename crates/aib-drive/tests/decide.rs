@@ -609,6 +609,12 @@ fn the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch() 
         inc_odd.closes = vec![closing(&odd, &["H1", "H2", "H", "M1", "L1", ""])];
         blocked(vec![odd, inc_odd], why);
     }
+    // one H and one M listed for H 2 / M 1: only the H count can tell
+    let mut few_h = review("bb7dc", Q5, false, [2, 1, 0, 0], None);
+    few_h.findings = Known::Known(vec![s("H1"), s("M1")]);
+    let mut inc_few_h = inc.clone();
+    inc_few_h.closes = vec![closing(&few_h, &["H1", "M1"])];
+    blocked(vec![few_h, inc_few_h], "fewer H ids than H");
     // a different reviewer closes them
     let mut other = inc.clone();
     other.by = Known::Known(s("1ced7"));

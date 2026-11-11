@@ -1957,7 +1957,7 @@ jobs:
              another_event_or_an_unknown_side_is_unknown
           # compare: the state (version) is not compared (L1)
           gk '    if dv.is_empty() || dv != av {' \
-             '    if false { // knife' \
+             '    if dv.is_empty() && dv != av { // knife' \
              decisions_made_on_different_states_are_unknown
           # streak: a record about another event counts
           gk '        if d.event_source != event.source || d.event_id != event.id {' \
