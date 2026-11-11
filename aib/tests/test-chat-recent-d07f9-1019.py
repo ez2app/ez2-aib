@@ -43,7 +43,7 @@ class Recent(unittest.TestCase):
         self.root = Path(td.name) / "bridge"
         self.env = {"HOME": str(home), "AIB_CHAT_BRIDGE_DIR": str(self.root), "EZ2_AIB_LOCALE": "zh-TW"}
         GF.ensure_dirs(self.root)
-        GF.note_peer(self.root, OWNER, "Pro 13", "TW", seat={"cabin": "5a97", "seat": "4345c", "npub": SEATN})
+        GF.note_peer(self.root, OWNER, "Mac B", "TW", seat={"cabin": "5a97", "seat": "4345c", "npub": SEATN})
         self.now = time.time()
         rows = [(-30, "in", "m1", SEATN, "inbox"),
                 (-20, "out", "m2", OWNER + "/5a97/4345c", "relayed"),

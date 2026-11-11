@@ -8,8 +8,8 @@ token 只在記憶體裡,經 ssh 的 stdin 直接寫到伺服器(權限 600),不
 
 ```
 aib secret ask CF_TOKEN_MINTER                      # once: seal the minter key into this Mac's Secure Enclave
-aib cf grant ez2.app dns-write --push eu01:/etc/ez2-cloud/grant.env --dry-run
-aib cf grant ez2.app dns-write --push eu01:/etc/ez2-cloud/grant.env --ttl 10m --var CF_API_TOKEN
+aib cf grant ez2.app dns-write --push myhost:/etc/ez2-cloud/grant.env --dry-run
+aib cf grant ez2.app dns-write --push myhost:/etc/ez2-cloud/grant.env --ttl 10m --var CF_API_TOKEN
 aib cf list
 aib cf revoke <token_id>
 ```

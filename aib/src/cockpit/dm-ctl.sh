@@ -1110,7 +1110,7 @@ _xhost_send() {
   fi
   # AIB_DM_XHOST_REMOTE_AIB:收件機上 aib 的叫法(預設 aib;可寫成「bash /路徑/aib」,照空白拆成多個字)
   read -r -a rargs <<<"${AIB_DM_XHOST_REMOTE_AIB:-aib}"
-  # 10-25 Mac Pro 13:安裝程式把 ~/.local/bin 寫進 ~/.zprofile,SSH 非互動指令不讀它 ⇒ 收件機 aib 找不到(rc 127)。
+  # 10-25 Mac B:安裝程式把 ~/.local/bin 寫進 ~/.zprofile,SSH 非互動指令不讀它 ⇒ 收件機 aib 找不到(rc 127)。
   #   沒指定叫法時,遠端 PATH 最後補上 ~/.local/bin(安裝程式放 aib 的位置;排最後 = 原本找得到的照舊優先)
   local rpre=""
   [ -z "${AIB_DM_XHOST_REMOTE_AIB:-}" ] && rpre='PATH="$PATH:$HOME/.local/bin" '

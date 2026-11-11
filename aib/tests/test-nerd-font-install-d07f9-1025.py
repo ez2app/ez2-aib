@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""安裝 / 更新 aib 時一併補好 AI 符號字型(10-25 @ae6a1 fishmac 實跑建議;Andy「預設在安裝或更新 aib 時一併優化」)。
+"""安裝 / 更新 aib 時一併補好 AI 符號字型(10-25 @ae6a1 mac-b 實跑建議;Andy「預設在安裝或更新 aib 時一併優化」)。
 
 N1 沒有字型 ⇒ 下載(假的)、驗 sha256、NF / NFM 各四個字重放進 ~/Library/Fonts、記狀態;再跑 ⇒ already、不再下載
 N2 sha 不符 / 下載失敗 / 壓縮檔少一個字重 ⇒ 一個檔都不放(不留半套);下載總時限、搬檔中途失敗也不留(#361 r1 M2 / L4)

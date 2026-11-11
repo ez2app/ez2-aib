@@ -110,16 +110,16 @@ LAYOUT = (
      (("GITHUB_TOKEN", "GitHub 個人 token", "dev", "dev", False),
       ("SSH_HOST_EU01_KEY", "~/.ssh 檔名(EU01)", "dev", "dev", False),
       ("SSH_HOST_SIN01_KEY", "~/.ssh 檔名(SIN01)", "dev", "dev", False))),
-    # 11-08 @4542e(EU02 代管節點,Andy「我不想我去操作」):Hetzner Robot webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
+    # 11-08 @4542e(代管節點,Andy「我不想我去操作」):供應商後台 webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
     #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
-    #   不送伺服器(被救的那台不能是唯一副本);讀端只給 Robot API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
+    #   不送伺服器(被救的那台不能是唯一副本);讀端只給後台 API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
     #   #528 審(ebb36 / f1fae 定):同機每個席都讀得到這檔 ⇒ 會改機器的 rescue / reset --apply 在讀值前走 approve_gate
     #   「cloud_robot.apply」彈窗 + Touch ID(tools/cloud-host/robot.py);status / keys 唯讀不用。缺值不補填(NO_FILL_FILES)、
     #   只登記 HETZNER_ROBOT_ 前綴(NO_SEGMENT_PREFIX_FILES),HETZNER_CLOUD_… 要另開一格。
     ("hetzner-robot.env", "hetzner-robot", "type",
-     "Hetzner Robot webservice 使用者(Settings → Web service and app settings)。給 aib 啟用 Rescue / 重置用;不是 Cloud API token、不是主機 root。",
-     (("HETZNER_ROBOT_USER", "Robot webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
-      ("HETZNER_ROBOT_PASS", "Robot webservice 密碼", "cloud-host", "host-rescue", False))),
+     "主機供應商後台的 webservice 使用者(在後台的 web service 設定頁建立)。給 aib 啟用救援 / 重置用;不是雲端 API token、不是主機 root。",
+     (("HETZNER_ROBOT_USER", "後台 webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
+      ("HETZNER_ROBOT_PASS", "後台 webservice 密碼", "cloud-host", "host-rescue", False))),
     # 11-09 @33e28(f1fae 派 b118,代管節點):Proxmox VE 的 API token,讓 aib 自己開 / 管 VM,token 不經對話。
     #   值是 PVE 的整串「使用者@realm!token 名=密鑰(UUID)」,也就是 Authorization: PVEAPIToken= 後面那段;建議用 aib@pve 的
     #   privsep token(只給要用的權限,root@ 的 token 當場拒)。多台:PVE_API_TOKEN_<主機代號>。
@@ -130,7 +130,7 @@ LAYOUT = (
     #   這類要另開一格 ⇒ 就是這檔。只准 --remote-only 推到那台主機(chpasswd 讀完 shred),本機不存;名字 HOST_ROOT_PASSWORD_<主機代號>,
     #   只有 HOST_ROOT_ 開頭落這檔(NO_SEGMENT_PREFIX_FILES);缺值不補填。配 `aib secret ask … --generate` 在視窗內產 28 字合規密碼。
     ("host-root.env", "host-root", "type",
-     "主機 root 密碼(只准 --remote-only 推到那台主機;本機不存)。HOST_ROOT_PASSWORD_<主機代號>,例 HOST_ROOT_PASSWORD_EU02。",
+     "主機 root 密碼(只准 --remote-only 推到那台主機;本機不存)。HOST_ROOT_PASSWORD_<主機代號>,例 HOST_ROOT_PASSWORD_HOSTA。",
      (("HOST_ROOT_PASSWORD", "主機 root@pam 密碼(實際名字加 _<主機代號>)", "cloud-host", "host-root", False),)),
     ("pve.env", "pve-api", "type",
      "Proxmox VE API token(建議 aib@pve 的 privsep token)。一行 PVE_API_TOKEN=使用者@realm!token名=UUID;多台加 _<主機代號>。不是 root 密碼,也不收 root@ 的 token。",

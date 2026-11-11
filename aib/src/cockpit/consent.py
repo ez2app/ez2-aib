@@ -29,7 +29,19 @@ launchd 看到就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入�
     席碼是自稱的 ⇒ 對話框照實標明;Touch ID 視窗字只放實際指令。
   - 白名單(第一版，逐支):aib now / dm-queue / lang / plugins / theme(拒 --allow-unsigned);
     claude plugin list / update / enable / disable / uninstall / install <名@marketplace>(子指令後不收任何旗標);
-    bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong;同意時鎖 sha256,跑 0700 暫存夾裡的複本並再驗)。其他 not_allowed。
+    bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong;同意時鎖 sha256,跑 0700 暫存夾裡的複本並再驗);
+    審過的共用程式 + 參數檔(只准 strong,要 aib-consent-run;見下)。其他 not_allowed。
+  - 共用程式(PLAN-consent-run-params-ebb36-1111 (b)):
+      aib consent ask --strong --summary … --program <~/.agents/skills/<技能>/tools/generic/<名>> --pin <sha256>
+                      --params <參數檔> --review <審查檔>
+    aib-consent-run stage 驗:程式不是連結、在 tools/generic 底下、雜湊 = --pin、宣告了參數鍵;參數檔只用宣告過的鍵、
+    不碰保留名;審查檔第一行「結論: 通過」且寫著這個 pin。ask 時先驗一次(不合就不進 inbox),decide 在鎖內對 0700
+    暫存夾的複本再驗一次;對話框列程式路徑 / sha256 / 審查第一行 / 參數全文(可捲動),同意後跑的就是那兩份複本
+    (supervise 跑前再驗雜湊)。參數進程式的環境變數，不進 argv、不經 shell。
+  - SIGN 腳本先過 aib-signlint(DEV 4.6 r2 §9 P2,c477a):ask 時探 launchd 常駐在不在(不在 ⇒ agent_missing,不進 inbox,
+    免得「視窗沒跳」被當成「人沒按」)、跑 lint(有發現 ⇒ sign_lint,印出來);decide 再對「要跑的那份複本」跑一次(席位直接
+    寫 inbox 也逃不掉)。作者用 `ask --lint-ack S2,S4` 放行的規則與行號原樣列進加強對話框與 done 紀錄。U1(讀不懂)與
+    R1(沒寫可丟環境與收據)不能放行。找不到 aib-signlint ⇒ 當「不知道」⇒ 不跑。
     argv 是陣列、不經 shell;一律在 HOME 跑(工作目錄不由申請決定)。
   - 一次一件:拿到 touchid-approve 鎖(跟 newproj --approve / aib approve 共用)後先把申請改名搬到 running/,
     搬不動 = 別支已接手 ⇒ 跳過;同意 / 拒絕一決定就放鎖，再跑指令(跑的時候別的 Touch ID 視窗照開)。
@@ -49,6 +61,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -69,17 +82,28 @@ MAX_REQ_BYTES = 16 * 1024
 MAX_ARGV = 40
 MAX_CMD_LEN = 1500
 MAX_SIGN_BYTES = 256 * 1024
+SIGNLINT_TIMEOUT_S = 30
+LINT_SHOW_MAX = 20
+REHEARSAL_ENV_MAX = 80        # 預演行兩欄進加強版框:濾掉看不見 / 改方向的字再截(ebb36 #653 M1)
+REHEARSAL_RECEIPT_MAX = 160
 SIGN_HEAD_LINES = 12
 SUMMARY_MAX = 200
 REASON_CMD_MAX = 120
-RESULTS = ("ok", "rc_nonzero", "denied", "not_allowed", "unavailable", "failed", "timeout", "expired", "invalid")
+RESULTS = ("ok", "rc_nonzero", "stopped", "denied", "not_allowed", "unavailable", "failed", "timeout", "expired",
+           "invalid")
+SUPERVISE_SLACK_S = 120        # aib-consent-run 自己守 20 分硬上限;Python 多等這麼久才算它當掉(Codex 11-11 #8)
+STOP_ASK_LOCK_S = 60           # 問「要不要停」前等 touchid 鎖最多這麼久;等不到 = 這次先不問(繼續等)
+TAIL_MAX = 200
 AIB_SUBCOMMANDS = frozenset({"now", "dm-queue", "lang", "plugins", "theme"})   # update:開發樹的 aib 一律拒 ⇒ 不列
 CLAUDE_PLUGIN_SUB = frozenset({"list", "update", "enable", "disable", "uninstall", "install"})
 SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SIGN_RE = re.compile(r"^SIGN-[A-Za-z0-9._-]+\.sh$")
 _SEAT_RE = re.compile(r"^[a-z0-9]{3,12}$")
+_LINT_ACK_RE = re.compile(r"^S[1-5]$")
 _PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
+_PIN_RE = re.compile(r"^[0-9a-f]{64}$")
+STAGE_TIMEOUT_S = 30
 # 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號 / 填充字 / 變體選擇 / 標籤字:視窗裡看不出原樣 ⇒ 不收
 # 視窗裡看不出原樣的字一律不收：控制 / 格式 / 行段分隔 / 私用 / 未指派(依 Unicode 類別，不逐字列),
 # 再加上類別是 Mn / Lo 卻看不見的:變體選擇(兩段)、組字用連接字、韓文填充字、點字空白
@@ -260,6 +284,20 @@ def classify(argv, strong, env=None):
         if not strong:
             return None, "sign_needs_strong"
         return "sign_script", ""
+    if head == "generic":
+        # ["generic", <程式>, "--params", <參數檔>]:位置與雜湊由 aib-consent-run stage 驗，這裡只擋形狀
+        if len(argv) != 4 or argv[2] != "--params":
+            return None, "generic_shape"
+        for a in (argv[1], argv[3]):
+            try:
+                pth = Path(a).expanduser()
+            except RuntimeError:
+                return None, "generic_missing"
+            if not pth.is_absolute() or not pth.is_file():
+                return None, "generic_missing"
+        if not strong:
+            return None, "generic_needs_strong"
+        return "shared_program", ""
     return None, "not_allowed"
 
 
@@ -279,16 +317,74 @@ def _seat(v):
 
 # ---- 申請 ----
 
-def new_request(argv, summary, strong=False, seat=None, env=None, now=None):
+def _acks(v):
+    """--lint-ack 的碼:S1–S5,其他(含 U1 / R1)⇒ None。"""
+    if v in (None, "", []):
+        return []
+    items = v.split(",") if isinstance(v, str) else v
+    if not isinstance(items, list):
+        return None
+    out = sorted({str(x).strip() for x in items if str(x).strip()})
+    return out if all(_LINT_ACK_RE.match(x) for x in out) else None
+
+
+def new_request(argv, summary, strong=False, seat=None, env=None, now=None, lint_ack=None, detail=None, pin=None,
+                review=None, run=None):
+    """detail(dict)有給 ⇒ 拒收時把 lint 的發現 / stage 的拒收碼放進去(給 ask 印)。
+    共用程式(argv = ["generic", 程式, "--params", 參數檔])要 pin + review。"""
     kind, why = classify(argv, strong, env)
     if not kind:
         return None, why
     summary = _clean_summary(summary)
     if not summary:
         return None, "summary_missing"
+    acks = _acks(lint_ack)
+    if acks is None:
+        return None, "lint_ack_code"
+    if kind == "sign_script":
+        if not agent_loaded(env):
+            return None, "agent_missing"
+        lint = run_signlint(Path(argv[1]).expanduser().resolve(), acks, env)
+        if not lint.get("ok"):
+            if detail is not None:
+                detail["lint"] = lint
+            return None, lint.get("why") or "sign_lint"
+    elif acks:
+        return None, "lint_ack_not_sign"
+    extra = {}
+    if kind == "shared_program":
+        if not isinstance(pin, str) or not _PIN_RE.match(pin):
+            return None, "generic_pin"
+        try:
+            rv = Path(review).expanduser() if isinstance(review, str) and review else None
+        except RuntimeError:
+            rv = None
+        if rv is None or not rv.is_absolute() or not rv.is_file() or _has_bad_char(str(rv)):
+            return None, "generic_review"
+        if not agent_loaded(env=env):     # 同 SIGN:常駐不在 ⇒ 視窗不會跳，不進 inbox
+            return None, "agent_missing"
+        exe = consent_run_exe(env)
+        if not exe:
+            return None, "consent_run_missing"
+        td = tempfile.mkdtemp(prefix="aib-consent-stage-")
+        try:
+            os.chmod(td, 0o700)
+            st = stage_program(exe, argv, pin, str(rv), td, env, run=run)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+        if not st.get("ok"):
+            if detail is not None:
+                detail["stage"] = {"why": st.get("why"), "line": st.get("line")}
+            return None, st.get("why") or "stage_refused"
+        extra = {"pin": pin, "review": str(rv)}
+    elif pin or review:
+        return None, "generic_args_not_generic"
     t = int(now if now is not None else time.time())
     rid = "%d-%s" % (t, secrets.token_hex(4))
     req = {"v": 1, "id": rid, "argv": list(argv), "summary": summary, "strong": bool(strong), "seat": _seat(seat), "t": t}
+    if acks:
+        req["lint_ack"] = acks
+    req.update(extra)
     _write_atomic(inbox_dir(env) / (rid + ".json"), req)
     return req, ""
 
@@ -299,10 +395,47 @@ def status(rid, env=None):
     d = _read_json(done_dir(env) / (rid + ".json"), 64 * 1024)
     if d:
         return d
-    for where in (inbox_dir(env), running_dir(env)):
-        if (where / (rid + ".json")).is_file():
-            return {"id": rid, "result": "pending"}
+    if (inbox_dir(env) / (rid + ".json")).is_file():
+        return {"id": rid, "result": "pending"}
+    if (running_dir(env) / (rid + ".json")).is_file():
+        out = {"id": rid, "result": "pending", "phase": "deciding"}
+        st = _read_json(_state_path(rid, env), 64 * 1024)
+        if st:   # aib-consent-run 每 2 秒寫一次:跑了多久、多久沒輸出、最後幾行、log 在哪
+            out["phase"] = st.get("phase") if st.get("phase") in ("running", "asking", "done") else "running"
+            for k in ("elapsed_s", "quiet_s", "asks", "bytes"):
+                if type(st.get(k)) is int:
+                    out[k] = st[k]
+            out["tail"] = [_plain(x, 300) for x in (st.get("tail") or []) if isinstance(x, str)][:3]
+            out["log"] = str(done_dir(env) / (rid + ".log"))
+            out["stop_requested"] = _stop_path(rid, env).exists()
+        return out
     return None
+
+
+def request_stop(rid, env=None):
+    """席位請停:只是在 running/ 放一個 <id>.stop;aib-consent-run 看到後照樣問人(對話框 + Touch ID),同意才停。
+    回 "requested" / "not_running"。"""
+    if not isinstance(rid, str) or not _ID_RE.match(rid) or not (running_dir(env) / (rid + ".json")).is_file():
+        return "not_running"
+    if not _state_path(rid, env).is_file():
+        return "not_running"          # 還在決定 / 沒走 aib-consent-run:沒有人看這個檔
+    try:
+        fd = os.open(str(_stop_path(rid, env)), os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        os.close(fd)
+    except OSError:
+        return "not_running"
+    return "requested"
+
+
+def log_tail(rid, n=50, env=None):
+    """done/<id>.log 的最後 n 行(清掉看不見 / 改方向的字);沒有 ⇒ None。"""
+    if not isinstance(rid, str) or not _ID_RE.match(rid):
+        return None
+    raw = _read_regular(done_dir(env) / (rid + ".log"), 64 * 1024 * 1024)
+    if raw is None:
+        return None
+    lines = raw.decode("utf-8", "replace").splitlines()[-max(1, min(n, TAIL_MAX)):]
+    return [_plain(ln, 400) for ln in lines]
 
 
 # ---- 彈窗 ----
@@ -337,8 +470,24 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     if req.get("sign"):
         body += "\n\n" + _t("aib.consent.sign_extra", {"sha": req["sign"]["sha256"], "head": req["sign"]["head"]},
                             "Script sha256 %s; first lines:\n%s" % (req["sign"]["sha256"], req["sign"]["head"]), env)
-    return ask_checkbox(_t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
-                        _t("aib.consent.strong_check", {}, "I have read this", env), env=env, run=run, wait=wait)
+    if req.get("lint"):
+        lint = req["lint"]
+        reh = lint.get("rehearsal") or {}
+        acked = "\n".join(_lint_line(f) for f in lint.get("acked") or []) or "-"
+        if lint.get("acked_more"):
+            acked += "\n… +%d" % lint["acked_more"]
+        r_env = _plain(reh.get("env") or "-", REHEARSAL_ENV_MAX)
+        r_rec = _plain(reh.get("receipt") or "-", REHEARSAL_RECEIPT_MAX)
+        body += "\n\n" + _t("aib.consent.sign_lint", {"env": r_env, "receipt": r_rec, "acked": acked},
+                            "Rehearsed on: %s  receipt: %s\nRules the author let through (--lint-ack):\n%s"
+                            % (r_env, r_rec, acked), env)
+    title = _t("aib.consent.strong_title", {}, "AIB consent (strong)", env)
+    check = _t("aib.consent.strong_check", {}, "I have read this", env)
+    if req.get("program"):
+        # 參數全文可能很長 ⇒ 全文版:上方是申請，下方可捲動的文字框是程式與參數
+        return ask_checkbox(title, _program_block(req["program"], env), check, env=env, run=run, wait=wait,
+                            intro=body)
+    return ask_checkbox(title, body, check, env=env, run=run, wait=wait)
 
 
 def ask_checkbox(title, body, check, env=None, run=subprocess.run, wait=TA.WAIT_S * 3, intro=None):
@@ -380,7 +529,8 @@ def _reason_full(req, env=None):
 def touchid_reason(req, env=None, kind=None):
     """統一入口:SIGN 腳本 = 發版簽章(高風險),其他 = 一般指令核准;類別由 classify 的結果定,申請檔給不了。"""
     import approve_gate as AG
-    return AG.reason("consent.sign_script" if kind == "sign_script" else "consent.command",
+    # 共用程式會改主機(刪站 / 撤 DNS…)⇒ 跟 SIGN 腳本同一類高風險，一次一按
+    return AG.reason("consent.sign_script" if kind in ("sign_script", "shared_program") else "consent.command",
                      {"who": _who(req), "cmd": display_cmd(req["argv"])}, env=env)
 
 
@@ -390,6 +540,146 @@ def _sign_info(path):
         return None
     head = "\n".join(TA.clean(ln, 160) for ln in raw.decode("utf-8", "replace").splitlines()[:SIGN_HEAD_LINES])
     return {"sha256": hashlib.sha256(raw).hexdigest(), "head": head, "raw": raw}
+
+
+def _plain(v, limit):
+    """進對話框的外來字:先拿掉控制 / 看不見 / 改方向的字,再照 TA.clean 截長。"""
+    return TA.clean("".join(ch for ch in str(v) if not _has_bad_char(ch)), limit)
+
+
+def _lint_line(f):
+    return TA.clean("%s %s: %s" % (f.get("rule", "?"), f.get("line", "?"), f.get("msg", "")), 200)
+
+
+def signlint_exe(env=None):
+    """aib-signlint 執行檔:AIB_SIGNLINT(要是可執行檔)> PATH 安全清單 + ~/.cargo/bin + ~/.ez2-aib/bin。找不到 ⇒ None。"""
+    e = _env(env).get("AIB_SIGNLINT")
+    if e:
+        return e if os.path.isfile(e) and os.access(e, os.X_OK) else None
+    home = _home(env)
+    return shutil.which("aib-signlint", path=os.pathsep.join([SAFE_PATH, str(home / ".cargo" / "bin"),
+                                                             str(home / ".ez2-aib" / "bin")]))
+
+
+def consent_run_exe(env=None):
+    """aib-consent-run 執行檔(Rust 那一半;計畫 PLAN-consent-run-params-ebb36-1111):AIB_CONSENT_RUN(要是可執行檔)
+    > ~/.ez2-aib/bin > ~/.cargo/bin(固定兩個資料夾，不走 PATH;c477a 11-11)。找不到 ⇒ None。"""
+    e = _env(env).get("AIB_CONSENT_RUN")
+    if e:
+        return e if os.path.isfile(e) and os.access(e, os.X_OK) else None
+    home = _home(env)
+    for d in (home / ".ez2-aib" / "bin", home / ".cargo" / "bin"):
+        p = d / "aib-consent-run"
+        if p.is_file() and os.access(str(p), os.X_OK):
+            return str(p)
+    return None
+
+
+# stage 回的碼裡,這些是「這台機器做不到」(failed);其他(名字、位置、雜湊、參數、審查)是「不准」(not_allowed)。
+# 明列,不靠 stage_ 前綴:stage_name 是名字不合規(c477a #662 N2)。
+_STAGE_FAILED = frozenset(("stage_dir", "stage_write", "stage_hash_changed", "stage_output", "stage_refused"))
+
+
+def _stage_failed(why):
+    return why in _STAGE_FAILED or why.startswith(("stage_error:", "stage_rc:"))
+
+
+def stage_program(exe, argv, pin, review, dest, env=None, run=None):
+    """aib-consent-run stage:驗共用程式 + 參數檔 + 審查檔,複本放進 dest(0700)。回它印的 JSON(ok / why / line /
+    program / params / review);叫不起來 / 逾時 / 輸出不對 ⇒ {"ok": False, "why": "stage_…"}(不知道 = 不跑)。"""
+    run = run or subprocess.run
+    cmd = [exe, "stage", "--home", str(_home(env)), "--program", str(Path(argv[1]).expanduser()), "--pin", pin,
+           "--params", str(Path(argv[3]).expanduser()), "--review", review, "--dir", str(dest)]
+    try:
+        p = run(cmd, capture_output=True, text=True, timeout=STAGE_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "why": "stage_error:%s" % exc.__class__.__name__}
+    lines = [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
+    try:
+        out = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        out = None
+    if not isinstance(out, dict) or p.returncode not in (0, 1, 2) or (out.get("ok") is True) != (p.returncode == 0):
+        return {"ok": False, "why": "stage_rc:%s" % p.returncode}
+    if not out.get("ok"):
+        return {"ok": False, "why": _plain(out.get("why") or "stage_refused", 60), "line": out.get("line")}
+    prog, par = out.get("program"), out.get("params")
+    if not (isinstance(prog, dict) and isinstance(par, dict) and isinstance(prog.get("argv"), list)
+            and all(isinstance(a, str) for a in prog["argv"]) and prog["argv"]
+            and prog["argv"][0] in ("/bin/bash", "/usr/bin/python3") and prog["argv"][-1] == prog.get("copy")
+            and isinstance(prog.get("sha256"), str) and prog["sha256"] == pin
+            and isinstance(par.get("sha256"), str) and _PIN_RE.match(par["sha256"])
+            and isinstance(par.get("copy"), str) and isinstance(prog.get("copy"), str)
+            and Path(prog["copy"]).parent == Path(dest) and Path(par["copy"]).parent == Path(dest)):
+        return {"ok": False, "why": "stage_output"}
+    return out
+
+
+def _program_block(st, env=None):
+    """對話框裡共用程式那一段(全文、可捲動):路徑、sha256、審查第一行、參數全文、宣告了卻沒給的鍵。"""
+    prog, par = st["program"], st["params"]
+    text = "\n".join(_plain(ln, 300) or " " for ln in str(par.get("text") or "").splitlines()) or "-"
+    missing = ", ".join(_plain(k, 40) for k in (par.get("missing") or []) if isinstance(k, str)) or "-"
+    facts = {"path": _plain(prog.get("real") or "", 300), "sha": prog["sha256"],
+             "review": _plain(st.get("review") or "", 300), "params": text,
+             "psha": par["sha256"], "missing": missing}
+    return _t("aib.consent.program_extra", facts,
+              "Shared program (reviewed once, pinned):\n%(path)s\nsha256 %(sha)s\nReview, first line (a local file, "
+              "not verified: an AI can write it; compare with the review on the PR): %(review)s\n\n"
+              "Parameters (sha256 %(psha)s; these, and nothing else, go to the program):\n%(params)s\n\n"
+              "Declared but not given: %(missing)s" % facts, env)
+
+
+def run_signlint(path, acks, env=None, run=None):
+    """回 {"ok", "why", "findings", "acked", "acks", "rehearsal"}。沒裝 / 逾時 / 輸出不對 ⇒ ok False(不知道 = 不跑)。"""
+    run = run or subprocess.run
+    exe = signlint_exe(env)
+    if not exe:
+        return {"ok": False, "why": "signlint_missing"}
+    cmd = [exe, "check", str(path), "--json"] + (["--ack", ",".join(acks)] if acks else [])
+    try:
+        p = run(cmd, capture_output=True, text=True, timeout=SIGNLINT_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "why": "signlint_error:%s" % exc.__class__.__name__}
+    try:
+        out = json.loads(p.stdout or "")
+    except ValueError:
+        return {"ok": False, "why": "signlint_output"}
+    if p.returncode not in (0, 1) or not isinstance(out, dict) or (out.get("ok") is True) != (p.returncode == 0):
+        return {"ok": False, "why": "signlint_rc:%s" % p.returncode}
+    every = lambda k: [f for f in (out.get(k) or []) if isinstance(f, dict)]  # noqa: E731
+    found, acked = every("findings"), every("acked")
+    reh = out.get("rehearsal")
+    if isinstance(reh, dict):   # 存進 done 紀錄的也是清過的版本(ebb36 #653 M1)
+        reh = {"env": _plain(reh.get("env") or "", REHEARSAL_ENV_MAX),
+               "receipt": _plain(reh.get("receipt") or "", REHEARSAL_RECEIPT_MAX)}
+    else:
+        reh = None
+    return {"ok": p.returncode == 0, "why": "" if p.returncode == 0 else "sign_lint",
+            "findings": found[:LINT_SHOW_MAX], "acked": acked[:LINT_SHOW_MAX], "acks": list(acks),
+            "findings_more": max(0, len(found) - LINT_SHOW_MAX), "acked_more": max(0, len(acked) - LINT_SHOW_MAX),
+            "rehearsal": reh}
+
+
+def agent_loaded(env=None, home=None, run=None):
+    """launchd 常駐在不在:plist 在、它要叫的程式在、launchctl 看得到這個標籤。任一項不成立 ⇒ False。"""
+    import plistlib
+    run = run or subprocess.run
+    path = agent_plist_path(home or _home(env))
+    try:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    args = data.get("ProgramArguments") if isinstance(data, dict) else None
+    if not isinstance(args, list) or len(args) < 2 or not os.path.isfile(str(args[1])):
+        return False
+    try:
+        p = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), AGENT_LABEL)],
+                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return p.returncode == 0
 
 
 # ---- 處理 ----
@@ -435,43 +725,120 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     view = dict(req, summary=summary, strong=strong, seat=_seat(req.get("seat")))
     if len(display_cmd(argv)) > REASON_CMD_MAX or len(_reason_full(view, env)) > REASON_MAX:
         view["strong"] = strong = True   # Touch ID 視窗放不下整句(含語系前綴)⇒ 先出對話框列全文
-    sign = None
+    sign = td = copy = None
+    lint_rec = {}
     if kind == "sign_script":
+        acks = _acks(req.get("lint_ack"))
+        if acks is None:
+            return "invalid", {"why": "lint_ack_code"}, None, None
         sign = _sign_info(Path(argv[1]).expanduser().resolve())
         if not sign:
             return "failed", {"why": "sign_unreadable"}, None, None
         view["sign"] = {"sha256": sign["sha256"], "head": sign["head"]}
+        # SIGN:先把這一份複製到 0700 暫存夾、驗雜湊;lint、對話框、跑的都是這一份(同意後原檔被改也跑不到改過的)
+        td = tempfile.mkdtemp(prefix="aib-consent-sign-")
+        try:
+            os.chmod(td, 0o700)
+            copy = Path(td) / Path(argv[1]).name
+            copy.write_bytes(sign["raw"])
+            os.chmod(copy, 0o600)
+            same = hashlib.sha256(copy.read_bytes()).hexdigest() == sign["sha256"]
+        except OSError:
+            same = False
+        if not same:
+            shutil.rmtree(td, ignore_errors=True)
+            return "failed", {"why": "sign_hash_changed"}, None, None
+        lint = run_signlint(copy, acks, env)
+        lint_rec = {"lint": {k: lint.get(k) for k in ("acks", "acked", "acked_more", "rehearsal")
+                             if lint.get(k) is not None}}
+        if not lint.get("ok"):
+            shutil.rmtree(td, ignore_errors=True)
+            why = lint.get("why") or "sign_lint"
+            return ("not_allowed" if why == "sign_lint" else "failed"), \
+                {"why": why, "sha256": sign["sha256"], "lint": {"findings": lint.get("findings") or [],
+                                                               "findings_more": lint.get("findings_more") or 0,
+                                                               "acks": acks}}, None, None
+        view["lint"] = lint_rec["lint"]
+    staged = None
+    if kind == "shared_program":
+        pin, review = req.get("pin"), req.get("review")
+        if not isinstance(pin, str) or not _PIN_RE.match(pin) or not isinstance(review, str) or not review \
+                or _has_bad_char(review) or not Path(review).is_absolute():
+            return "invalid", {"why": "generic_pin_or_review"}, None, None
+        exe = consent_run_exe(env)
+        if not exe:
+            return "failed", {"why": "consent_run_missing"}, None, None
+        td = tempfile.mkdtemp(prefix="aib-consent-stage-")
+        try:
+            os.chmod(td, 0o700)
+            st = stage_program(exe, argv, pin, review, td, env)
+        except OSError:
+            st = {"ok": False, "why": "stage_dir"}
+        if not st.get("ok"):
+            shutil.rmtree(td, ignore_errors=True)
+            why = st.get("why") or "stage_refused"
+            return ("failed" if _stage_failed(why) else "not_allowed"), \
+                {"why": why, "line": st.get("line")}, None, None
+        view["program"] = st
+        staged = {"program_copy": st["program"]["copy"], "program_sha": st["program"]["sha256"],
+                  "params_copy": st["params"]["copy"], "params_sha": st["params"]["sha256"]}
+        lint_rec = {"program": {"real": _plain(st["program"].get("real") or "", 300), "sha256": pin,
+                                "params_sha256": st["params"]["sha256"], "review": _plain(st.get("review") or "", 300),
+                                "keys": [_plain(k, 40) for k, _ in (st["params"].get("pairs") or [])
+                                         if isinstance(k, str)]}}
+
+    def stop(result, d):
+        if td:
+            shutil.rmtree(td, ignore_errors=True)
+        return result, dict(d, **lint_rec), None, None
     if not avail:
-        return "unavailable", {"why": "touchid_unavailable"}, None, None
+        return stop("unavailable", {"why": "touchid_unavailable"})
     if strong:
         s = ask_strong_fn(view, env=env)
         if not s.get("ok"):
-            return "denied", {"why": s.get("why")}, None, None
+            return stop("denied", {"why": s.get("why")})
     reason = touchid_reason(view, env, kind)
     if __import__("approve_gate").se_reason(reason) is None:
-        return "denied", {"why": "reason_refused"}, None, None
+        return stop("denied", {"why": "reason_refused"})
     a = ask(reason)
     if not a.get("ok"):
-        return "denied", {"why": a.get("why")}, None, None
+        return stop("denied", {"why": a.get("why")})
     if kind == "aib":
         return None, {}, [str(HERE / "aib")] + argv[1:], None
     if kind == "claude_plugin":
         exe = shutil.which("claude", path=os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]))
         return (None, {}, [exe] + argv[1:], None) if exe else ("failed", {"why": "exe_missing"}, None, None)
-    # SIGN:同意的那一份複製到 0700 暫存夾，再驗一次雜湊才跑(同意後原檔被改也跑不到改過的)
-    td = tempfile.mkdtemp(prefix="aib-consent-sign-")
-    try:
-        os.chmod(td, 0o700)
-        copy = Path(td) / Path(argv[1]).name
-        copy.write_bytes(sign["raw"])
-        os.chmod(copy, 0o600)
-        same = hashlib.sha256(copy.read_bytes()).hexdigest() == sign["sha256"]
-    except OSError:
-        same = False
-    if not same:
-        shutil.rmtree(td, ignore_errors=True)
-        return "failed", {"why": "sign_hash_changed"}, None, None
-    return None, {"sha256": sign["sha256"]}, ["/bin/bash", str(copy)], td
+    if kind == "shared_program":
+        return None, dict(lint_rec, staged=staged), list(view["program"]["program"]["argv"]), td
+    # 跑的不是這個路徑：跑前再驗一次雜湊，驗過的位元組經管線交給 bash(f1fae 11-11 補充 M2)
+    staged = {"program_copy": str(copy), "program_sha": sign["sha256"]}
+    return None, dict({"sha256": sign["sha256"], "staged": staged}, **lint_rec), ["/bin/bash", str(copy)], td
+
+
+def _state_path(rid, env=None):
+    return running_dir(env) / (rid + ".state.json")
+
+
+def _stop_path(rid, env=None):
+    return running_dir(env) / (rid + ".stop")
+
+
+def supervise_argv(exe, rid, real, child_env, log, env=None, staged=None):
+    """交給 aib-consent-run supervise 的 argv:跑的時候邊寫 log 與狀態檔;安靜太久 / 跑太久 / 席位請停 ⇒ 它叫
+    `consent.py ask-stop` 問人(對話框 + Touch ID),同意才停整個行程群組。"""
+    ask = [sys.executable, "-I", str(HERE / "consent.py"), "ask-stop"]
+    out = [exe, "supervise", "--id", rid, "--log", str(log), "--state", str(_state_path(rid, env)),
+           "--stop-request", str(_stop_path(rid, env)), "--cwd", str(_home(env)), "--ask-json", json.dumps(ask)]
+    for k, v in child_env.items():
+        out += ["--env", "%s=%s" % (k, v)]
+    if staged:   # 被釘的程式:它跑前再驗雜湊，驗過的位元組經管線交給直譯器(不再用路徑開檔)
+        out += ["--program-copy", staged["program_copy"], "--program-sha", staged["program_sha"]]
+        if staged.get("params_copy"):
+            out += ["--params-copy", staged["params_copy"], "--params-sha", staged["params_sha"]]
+    return out + ["--"] + list(real)
+
+
+_SUPERVISED = {"exited": None, "stopped": "stopped", "hard_timeout": "timeout", "failed": "failed"}
 
 
 def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
@@ -484,18 +851,100 @@ def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
         if _env(env).get(k):
             child_env[k] = _env(env)[k]
     extra = dict(extra or {})
+    staged = extra.pop("staged", None)
+    exe = consent_run_exe(env)
+    if exe:
+        # 它不在 git 裡、同帳號換得掉 ⇒ 至少記下這次是哪一支(路徑 + sha256),事後查得到(2240e #661 N1)
+        extra["supervisor"] = {"path": exe, "sha256": _file_sha256(exe)}
+        try:
+            p = run(supervise_argv(exe, rid, real, child_env, log, env, staged=staged), cwd=str(_home(env)), stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=RUN_TIMEOUT_S + SUPERVISE_SLACK_S)
+        except subprocess.TimeoutExpired:
+            # 它被收掉了，但它看管的行程群組可能還在跑(2240e #661 N3)
+            _cleanup_running(rid, env)
+            return _record(rid, "failed", env, req, why="supervisor_hung", job_may_be_running=True, started=started,
+                           log=str(log), **extra)
+        except OSError as exc:
+            return _record(rid, "failed", env, req, why="run_oserror:%s" % exc.__class__.__name__, log=str(log), **extra)
+        lines = [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
+        try:
+            rec = json.loads(lines[-1]) if lines else None
+        except ValueError:
+            rec = None
+        if not isinstance(rec, dict) or rec.get("result") not in _SUPERVISED:
+            _cleanup_running(rid, env)
+            return _record(rid, "failed", env, req, why="supervisor_died:rc%s" % p.returncode, job_may_be_running=True,
+                           started=started, log=str(log), **extra)
+        rc = rec.get("rc") if type(rec.get("rc")) is int else None
+        result = _SUPERVISED[rec["result"]] or ("ok" if rc == 0 else "rc_nonzero")
+        sup = {k: rec.get(k) for k in ("stopped_by", "kill_needed", "stop_errors", "asks", "signal", "remote",
+                                       "log_failed") if rec.get(k) not in (None, [], False, 0)}
+        if result == "failed":
+            sup["why"] = "supervise:%s" % _plain(rec.get("why") or "?", 80)
+        _notify(req, rc if rc is not None else rec["result"], env)
+        _cleanup_running(rid, env)
+        return _record(rid, result, env, req, rc=rc, started=started, ended=int(time.time()), log=str(log),
+                       supervised=sup or True, tail=[_plain(x, 300) for x in (rec.get("tail") or [])][:3], **extra)
+    # 沒裝 aib-consent-run:照舊跑(沒有中途詢問 / 停止),紀錄寫明
+    fd = None
+    if staged:
+        if staged.get("params_copy"):   # 參數只有 aib-consent-run 會交給程式
+            return _record(rid, "failed", env, req, why="consent_run_missing", supervised=False, **extra)
+        raw = _read_regular(Path(staged["program_copy"]), MAX_SIGN_BYTES)
+        if raw is None or hashlib.sha256(raw).hexdigest() != staged["program_sha"] or not real \
+                or real[-1] != staged["program_copy"]:
+            return _record(rid, "failed", env, req, why="staged_hash_changed", supervised=False, **extra)
+        fd, real = _feed_script(raw, real)
     try:
         with open(log, "w", encoding="utf-8") as fh:
             p = run(real, cwd=str(_home(env)), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                    timeout=RUN_TIMEOUT_S, env=child_env)
+                    timeout=RUN_TIMEOUT_S, env=child_env, pass_fds=(fd,) if fd is not None else ())
     except subprocess.TimeoutExpired:
-        return _record(rid, "timeout", env, req, started=started, log=str(log), **extra)
+        return _record(rid, "timeout", env, req, started=started, log=str(log), supervised=False, **extra)
     except OSError as exc:
         return _record(rid, "failed", env, req, why="run_oserror:%s" % exc.__class__.__name__, log=str(log), **extra)
+    finally:
+        if fd is not None:
+            os.close(fd)
     rc = p.returncode
     _notify(req, rc, env)
     return _record(rid, "ok" if rc == 0 else "rc_nonzero", env, req, rc=rc, started=started,
-                   ended=int(time.time()), log=str(log), **extra)
+                   ended=int(time.time()), log=str(log), supervised=False, **extra)
+
+
+def _feed_script(raw, real):
+    """驗過的位元組寫進管線，最後一個字換成 /dev/fd/<讀端>:直譯器讀的是這份位元組，副本之後被改也跑不到
+    (bash 是邊跑邊讀腳本的)。回 (讀端, 新 argv);讀端由呼叫端用 pass_fds 交給子行程、跑完自己關。"""
+    r, w = os.pipe()
+
+    def write():
+        try:
+            with os.fdopen(w, "wb") as fh:
+                fh.write(raw)
+        except OSError:    # 子行程沒讀完就結束 ⇒ 寫端拿到 EPIPE,不管它
+            pass
+    threading.Thread(target=write, daemon=True).start()
+    return r, list(real[:-1]) + ["/dev/fd/%d" % r]
+
+
+def _file_sha256(path):
+    """檔案的 sha256(讀不到 ⇒ None)。"""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def _cleanup_running(rid, env=None):
+    for p in (_state_path(rid, env), _stop_path(rid, env)):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 def _notify(req, rc, env=None):
@@ -637,6 +1086,52 @@ def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_
         n += 1
 
 
+def ask_stop(rid, why, elapsed, quiet, env=None, ask=None, ask_box=None, lock=None, available=None):
+    """aib-consent-run 叫的:問人要不要停 <rid>。回 0 = 停(勾了「停止它」+ Touch ID 過);其他 = 繼續等。
+    在 touchid-approve 鎖內問(跟其他指紋視窗不疊);鎖等不到、沒 Touch ID、沒人按 ⇒ 繼續等(不因為沒人按就停)。"""
+    ask = ask or TA.ask
+    ask_box = ask_box or ask_checkbox
+    lock = lock or _lock
+    avail = TA.available() if available is None else available
+    if not isinstance(rid, str) or not _ID_RE.match(rid):
+        return 2
+    req = _read_json(running_dir(env) / (rid + ".json"))
+    if not req or not isinstance(req.get("argv"), list):
+        return 1
+    if not avail:
+        return 1
+    st = _read_json(_state_path(rid, env), 64 * 1024) or {}
+    tail = "\n".join(_plain(x, 200) for x in (st.get("tail") or []) if isinstance(x, str)) or "-"
+    why_txt = {"quiet": _t("aib.consent.stop_why_quiet", {"s": quiet}, "no output for %s s" % quiet, env),
+               "long": _t("aib.consent.stop_why_long", {"s": elapsed}, "running for %s s" % elapsed, env),
+               "request": _t("aib.consent.stop_why_request", {}, "a seat asked to stop it", env)}.get(why, "?")
+    body = _t("aib.consent.stop_body",
+              {"why": why_txt, "cmd": display_cmd(req["argv"]), "summary": _clean_summary(req.get("summary")),
+               "who": _who(req), "elapsed": elapsed, "tail": tail},
+              "Why you are asked: %s\n\nRunning (%s s): %s\nSummary by %s (may be wrong): %s\n\nLast output:\n%s\n\n"
+              "Stopping does not undo the steps already done. After a stop, run this job's dry run first to see "
+              "where it stopped." % (why_txt, elapsed, display_cmd(req["argv"]), _who(req),
+                                     _clean_summary(req.get("summary")), tail), env)
+    waited = 0
+    while True:
+        with lock(env) as gate:
+            if gate.held:
+                if not _state_path(rid, env).is_file():
+                    return 1                     # 等鎖的時候已經跑完了
+                box = ask_box(_t("aib.consent.stop_title", {}, "AIB · stop this job?", env), body,
+                              _t("aib.consent.stop_check", {}, "Stop it", env), env=env)
+                if not box.get("ok"):
+                    return 1
+                reason = TA.clean(_t("aib.consent.stop_reason", {"cmd": display_cmd(req["argv"])},
+                                     "AIB consent · stop: %s" % display_cmd(req["argv"]), env), REASON_MAX)
+                touched = ask(reason)
+                return 0 if touched.get("ok") else 1
+        if waited >= STOP_ASK_LOCK_S:
+            return 1
+        time.sleep(LOCK_RETRY_STEP)
+        waited += LOCK_RETRY_STEP
+
+
 # ---- launchd ----
 
 def agent_plist_path(home=None):
@@ -698,20 +1193,49 @@ def main(argv=None, env=None):
     a.add_argument("--seat")
     a.add_argument("--wait", type=int, default=0)
     a.add_argument("--json", action="store_true")
+    a.add_argument("--lint-ack", default="", help="S1–S5,逗號分隔:作者看過、放行的 aib-signlint 規則(會列進對話框與紀錄)")
+    a.add_argument("--program", help="審過的共用程式(~/.agents/skills/<技能>/tools/generic/<名>);要 --params --pin --review")
+    a.add_argument("--params")
+    a.add_argument("--pin")
+    a.add_argument("--review")
     a.add_argument("rest", nargs=argparse.REMAINDER)
     s = sub.add_parser("status")
     s.add_argument("id")
     s.add_argument("--json", action="store_true")
+    sp = sub.add_parser("stop")
+    sp.add_argument("id")
+    tl = sub.add_parser("tail")
+    tl.add_argument("id")
+    tl.add_argument("-n", type=int, default=50)
+    ak = sub.add_parser("ask-stop")
+    ak.add_argument("--id", required=True)
+    ak.add_argument("--why", required=True)
+    ak.add_argument("--elapsed", type=int, default=0)
+    ak.add_argument("--quiet", type=int, default=0)
     sub.add_parser("run-once")
     sub.add_parser("install")
     sub.add_parser("uninstall")
     args = ap.parse_args(argv)
     if args.cmd == "ask":
         rest = args.rest[1:] if args.rest[:1] == ["--"] else args.rest
+        if args.program or args.params:
+            if rest or not (args.program and args.params):
+                print(json.dumps({"result": "not_allowed", "why": "generic_args"}))
+                return 2
+            rest = ["generic", args.program, "--params", args.params]
+        detail = {}
         req, why = new_request(rest, args.summary, strong=args.strong,
-                               seat=args.seat or _env(env).get("EZ2_AIB_SEAT"), env=env)
+                               seat=args.seat or _env(env).get("EZ2_AIB_SEAT"), env=env,
+                               lint_ack=args.lint_ack, detail=detail, pin=args.pin, review=args.review)
         if not req:
-            print(json.dumps({"result": "not_allowed", "why": why}))
+            out = {"result": "not_allowed", "why": why}
+            if detail.get("stage"):
+                out["stage"] = detail["stage"]
+            if detail.get("lint", {}).get("findings"):
+                out["findings"] = detail["lint"]["findings"]
+                if detail["lint"].get("findings_more"):
+                    out["findings_more"] = detail["lint"]["findings_more"]   # 只列前 LINT_SHOW_MAX 條(ebb36 #653 N2)
+            print(json.dumps(out, ensure_ascii=False))
             return 2
         out = {"id": req["id"], "result": "pending"}
         deadline = time.time() + max(0, min(args.wait, 3600))
@@ -730,6 +1254,19 @@ def main(argv=None, env=None):
             return 2
         print(json.dumps(st, ensure_ascii=False) if args.json else "%s %s rc=%s" % (st["id"], st["result"], st.get("rc", "-")))
         return 0
+    if args.cmd == "stop":
+        r = request_stop(args.id, env)
+        print("%s %s" % (args.id, r))
+        return 0 if r == "requested" else 2
+    if args.cmd == "tail":
+        lines = log_tail(args.id, args.n, env)
+        if lines is None:
+            print(json.dumps({"id": args.id, "result": "unknown"}))
+            return 2
+        print("\n".join(lines))
+        return 0
+    if args.cmd == "ask-stop":
+        return ask_stop(args.id, args.why, args.elapsed, args.quiet, env)
     if args.cmd == "run-once":
         print(run_once(env))
         return 0
@@ -740,7 +1277,7 @@ def main(argv=None, env=None):
     if args.cmd == "uninstall":
         print(uninstall())
         return 0
-    print(_t("aib.consent.help.usage", {}, "usage: aib consent ask|status|run-once|install|uninstall", env))
+    print(_t("aib.consent.help.usage", {}, "usage: aib consent ask|status|stop|tail|run-once|install|uninstall", env))
     return 2
 
 

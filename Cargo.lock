@@ -26,11 +26,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-cloud-cli"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-cloud",
+]
+
+[[package]]
 name = "aib-cloud-host"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-cloud",
  "serde_json",
+]
+
+[[package]]
+name = "aib-consent"
+version = "0.2.0-preview.4"
+dependencies = [
+ "nix",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -85,6 +101,14 @@ dependencies = [
 
 [[package]]
 name = "aib-release"
+version = "0.2.0-preview.4"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "aib-signlint"
 version = "0.2.0-preview.4"
 dependencies = [
  "serde_json",
@@ -151,6 +175,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "sysinfo",
  "tempfile",

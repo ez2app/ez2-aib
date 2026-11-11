@@ -61,11 +61,11 @@ class Base(unittest.TestCase):
         self.env = {"HOME": str(self.td), "EZ2_AIB_STATE_ROOT": str(self.td / "state"), "AIB_CHAT_BRIDGE_DIR": str(self.root),
                     "AIB_CHAT_HOME": str(self.td / "chat"), "EZ2_AIB_LOCALE": "zh-TW", "PATH": "/usr/bin:/bin"}
         GF.ensure_dirs(self.root)
-        CR.add_friend(FRIEND, "Pro 13", self.env)
+        CR.add_friend(FRIEND, "Mac B", self.env)
         CR.add_friend(LONELY, "Lonely", self.env)
         CR.add_friend(MINE, "Mini", self.env, kind="mine")
         CR.add_friend(BLOCKED, "Bad", self.env, kind="blocks")
-        GF.note_peer(self.root, FRIEND, "Pro 13", "TW", seat={"cabin": "5a97", "seat": "4345c", "npub": SEATN, "name": "工程席", "role": "dev"},
+        GF.note_peer(self.root, FRIEND, "Mac B", "TW", seat={"cabin": "5a97", "seat": "4345c", "npub": SEATN, "name": "工程席", "role": "dev"},
                      roster_at=1000)
         GF.note_peer(self.root, FRIEND, seat={"cabin": "754c", "seat": "fdcf5", "npub": SEATN, "name": "艦長", "role": "root"}, roster_at=1000)
         GF.note_peer(self.root, MINE, "Mini", "TW", seat={"cabin": "2282", "seat": "c4366", "npub": SEATN}, roster_at=1000)
@@ -97,7 +97,7 @@ class Core(Base):
         self.assertEqual(CH.resolve_to(FRIEND, self.env), (FRIEND + "/5a97/4345c", "first"))
         self.room(FRIEND, "fdcf5", [{"seat": "fdcf5", "cabin": "754c"}])
         self.assertEqual(CH.resolve_to(FRIEND, self.env), (FRIEND + "/754c/fdcf5", "captain"))
-        for name in ("Pro 13", "pro 13", "  PRO 13 "):
+        for name in ("Mac B", "mac b", "  MAC B "):
             self.assertEqual(CH.resolve_to(name, self.env), (FRIEND + "/754c/fdcf5", "captain"), name)
         self.assertEqual(CH.resolve_to("mini", self.env), (MINE + "/2282/c4366", "first"))
         for bad in (STRANGER, BLOCKED, "Lonely", LONELY):
@@ -122,10 +122,10 @@ class Core(Base):
             buf = io.StringIO()
             rc = CB.main(list(argv), env=self.env, out=buf)
             return rc, buf.getvalue()
-        rc, out = run("address", "Pro 13", "--json")
+        rc, out = run("address", "Mac B", "--json")
         self.assertEqual(rc, 0, out)
         d = json.loads(out.strip().splitlines()[-1])
-        self.assertEqual((d["owner"], d["addr"], d["why"], d["name"]), (FRIEND, FRIEND + "/5a97/4345c", "first", "Pro 13"))
+        self.assertEqual((d["owner"], d["addr"], d["why"], d["name"]), (FRIEND, FRIEND + "/5a97/4345c", "first", "Mac B"))
         self.assertEqual([s["addr"] for s in d["seats"]], [FRIEND + "/5a97/4345c", FRIEND + "/754c/fdcf5"])
         rc, out = run("address", "nobody", "--json")
         self.assertEqual((rc, out.strip()), (2, "null"))
@@ -139,7 +139,7 @@ class Core(Base):
 
     def test_a5_send_resolves_name(self):
         env = dict(self.env, AIB_TOUCHID="0")
-        res = CH.send("Pro 13", "你好", "", "6ddf", env, platform="linux")
+        res = CH.send("Mac B", "你好", "", "6ddf", env, platform="linux")
         self.assertEqual((res["why"], res["to"], res["to_why"]), ("no_public_seat", FRIEND + "/5a97/4345c", "first"), "收件人過了,卡在沒席可簽")
         res = CH.send("nobody", "你好", "", "6ddf", env, platform="linux")
         self.assertEqual((res["why"], res["to"]), ("bad_address", None), "舊契約不變")

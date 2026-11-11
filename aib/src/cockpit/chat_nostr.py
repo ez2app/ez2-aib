@@ -1483,7 +1483,7 @@ class Receiver(object):
         self.echo_ids = collections.deque(maxlen=2000)     # 我回過的回音 msgid:回這些的不再回(#306 審 B-M1)
         self.client = None
         self.orphans = []      # 查不到寄出帳的回條:[(到期, ref, stage, tags, from_npub)](第 27.8 節)
-        # 10-20 @abb89(會員清單 E 段):收信連續失敗 ⇒ 警報。Pro 13 從 10-19 11:20 起每 5 秒重來、20 小時沒人發現。
+        # 10-20 @abb89(會員清單 E 段):收信連續失敗 ⇒ 警報。Mac B 從 10-19 11:20 起每 5 秒重來、20 小時沒人發現。
         #   n = 連續幾次「一下就斷」;一段 session 撐過 RECV_OK_S 才算正常、歸零。寫進 worker-status.json,aib chat status 印 ⚠。
         self.fail = {"n": 0, "since": None, "why": None}
 
