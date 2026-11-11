@@ -270,7 +270,7 @@ jobs:
           pl '        || (a == 203 && b == 0 && c == 113)' '        || false // knife' \
              documentation_and_private_ranges_pass_public_ones_do_not
           # PL3 a five-part version (1.2.3.4.5) is read as an address
-          pl '    if digit_after || part_after {' '    if digit_after { // knife' \
+          pl '    if digit_after || part_after {' '    if digit_after || (part_after && false) { // knife' \
              addresses_are_found_but_longer_dotted_runs_are_not
           # PL4 a path that hits is printed in the line findings of that file
           pl '        let path = path_rules.is_empty().then(|| f.path.clone());' \
