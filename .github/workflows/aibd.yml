@@ -857,8 +857,9 @@ jobs:
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
-          hk probe.rs '            let mut limited = p.take(cap);' \
-             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+          # (anchor runs to the comment after it: run_bounded_input has the same first line, 4542e B3)
+          hk probe.rs $'            let mut limited = p.take(cap);\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
+             $'            let mut limited = p.take(cap.saturating_mul(1000)); // knife\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
              output_that_does_not_end_is_cut_on_the_host
           # site usage: the host offers its reserve too
           hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
