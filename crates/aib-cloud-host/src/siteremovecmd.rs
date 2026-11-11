@@ -128,7 +128,7 @@ pub fn plan_doc(spec: &SiteSpec, probes: &[Probe; 9], licences_left_at_vendor: b
         "next": next_word,
         "next_step": next_step.map(RemoveStep::as_str),
         "stop": stop,
-        "may_call_off": next_step.is_some_and(siteremove::may_call_off),
+        "may_call_off": siteremove::may_call_off_now(next),
         "archives": ARCHIVES,
         "on_failure": "stop where it failed; every step is safe to do again; after the licence step the only way is forward",
         "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses", "the id ranges given to the container"],
@@ -360,6 +360,26 @@ mod tests {
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], true);
         assert_eq!(doc["address"], "www.example.com");
+    }
+
+    #[test]
+    fn a_plan_that_stops_never_says_it_can_be_called_off() {
+        // the entry could not be read while the container is already gone
+        let mut seen = gone();
+        seen.entry_config = None;
+        let p = probes(&spec(), &seen, Some(Probe::Done));
+        let doc = plan_doc(&spec(), &p, false);
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["next_step"], "unserve");
+        assert_eq!(doc["may_call_off"], false);
+        // steps out of order: nothing is archived and the way in is already closed
+        let mut seen = untouched();
+        seen.live_rules = gone().live_rules;
+        let p = probes(&spec(), &seen, Some(Probe::NotDone));
+        let doc = plan_doc(&spec(), &p, false);
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["stop"], "steps_out_of_order");
+        assert_eq!(doc["may_call_off"], false);
     }
 
     #[test]

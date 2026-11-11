@@ -674,6 +674,14 @@ jobs:
           ck siteremove.rs '        None | Some("") => Probe::Unknown,' \
              '        None | Some("") => Probe::Done, // knife' \
              the_entry_is_read_by_the_sites_own_marker_line
+          # removing a site: a stop is read as "nothing was lost yet" (33e28, #659 M1)
+          ck siteremove.rs '    matches!(next, Next::Run(step) if may_call_off(step))' \
+             '    matches!(next, Next::Run(step) | Next::Stop(_, step) if may_call_off(step)) // knife' \
+             a_removal_that_stopped_cannot_be_called_off
+          # removing a site: a block that still opens with the address, without its marker, reads as taken off (c477a, #659 N8)
+          ck siteremove.rs '            if opens_with_address {' \
+             '            if opens_with_address && false { // knife' \
+             the_entry_is_read_by_the_sites_own_marker_line
           # removing a site: white space after the marker reads as taken off the entry (c477a, #659 L1)
           ck siteremove.rs '            if text.lines().any(|l| l.trim_end() == marker) {' \
              '            if text.lines().any(|l| l == marker) { // knife' \
@@ -905,6 +913,10 @@ jobs:
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
           # ---- site remove --plan (4542e 11-11)
+          # the plan says a stopped removal can be called off (33e28, #659 M1)
+          hk siteremovecmd.rs '        "may_call_off": siteremove::may_call_off_now(next),' \
+             '        "may_call_off": next_step.is_some_and(siteremove::may_call_off), // knife' \
+             a_plan_that_stops_never_says_it_can_be_called_off
           # the record could not be looked for and counts as moved aside (c477a, #659 L4)
           hk siteremovecmd.rs '        known(seen.record_in_place, false),' \
              '        known(seen.record_in_place.or(Some(false)), false), // knife' \

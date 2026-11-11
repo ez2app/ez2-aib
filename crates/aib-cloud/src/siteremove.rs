@@ -139,6 +139,16 @@ pub fn may_call_off(next_step: RemoveStep) -> bool {
     next_step < RemoveStep::Licenses
 }
 
+/// Whether a removal whose next move is `next` can still be called off. Only a plain
+/// "do this step" can say yes: then every later step was probed and is known not to be
+/// done. A stop — a probe that could not tell, or steps out of order — says nothing
+/// about the steps behind it (the container may already be gone while the entry merely
+/// could not be asked), so it is never "can be put back as it was". Both the plan and
+/// the part that carries a removal out ask this, not [`may_call_off`] on a bare step.
+pub fn may_call_off_now(next: Next) -> bool {
+    matches!(next, Next::Run(step) if may_call_off(step))
+}
+
 /// Whether doing `step` may lose something for good, so that the archive must be known
 /// to be good before it.
 pub fn needs_archive(step: RemoveStep) -> bool {
@@ -355,17 +365,45 @@ mod tests {
             .iter()
             .position(|s| *s == RemoveStep::Licenses)
             .unwrap();
-        for probe in [Probe::Unknown, Probe::NotDone] {
-            let mut p = probes(at);
-            p[at] = probe;
-            let stopped = next(&p, false);
-            assert!(
-                matches!(stopped, Next::Stop("probe_unknown", RemoveStep::Licenses))
-                    || stopped == Next::Run(RemoveStep::Licenses),
-                "{stopped:?}"
-            );
-            assert_eq!(next(&p, true), Next::Run(STEPS[at + 1]));
-        }
+        // the vendors could not be asked: stop there
+        let mut p = probes(at);
+        p[at] = Probe::Unknown;
+        assert_eq!(
+            next(&p, false),
+            Next::Stop("probe_unknown", RemoveStep::Licenses)
+        );
+        assert_eq!(next(&p, true), Next::Run(STEPS[at + 1]));
+        // the activations are known to be still there: give them back
+        let mut p = probes(at);
+        p[at] = Probe::NotDone;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Licenses));
+        assert_eq!(next(&p, true), Next::Run(STEPS[at + 1]));
+    }
+
+    #[test]
+    fn a_removal_that_stopped_cannot_be_called_off() {
+        // untouched: the next move is the first step, and it can still be called off
+        assert!(may_call_off_now(next(&probes(0), false)));
+        assert!(may_call_off_now(next(&probes(1), false)));
+        // from the licence step on, and when finished: no
+        assert!(!may_call_off_now(next(&probes(2), false)));
+        assert!(!may_call_off_now(next(&probes(STEPS.len()), false)));
+        // the entry could not be asked while everything behind it is already done
+        // (the container is gone): a stop at the first step is not "nothing was lost"
+        let mut p = probes(STEPS.len());
+        p[0] = Probe::Unknown;
+        let stopped = next(&p, false);
+        assert_eq!(stopped, Next::Stop("probe_unknown", RemoveStep::Unserve));
+        assert!(!may_call_off_now(stopped));
+        // steps out of order: the archive is not done and the licences were given back
+        let mut p = probes(0);
+        p[1] = Probe::Done;
+        p[2] = Probe::Done;
+        let stopped = next(&p, false);
+        assert!(matches!(stopped, Next::Stop("steps_out_of_order", _)));
+        assert!(!may_call_off_now(stopped));
+        // the wrong number of probes
+        assert!(!may_call_off_now(next(&[], false)));
     }
 
     #[test]

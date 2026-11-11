@@ -136,7 +136,10 @@ pub fn next(probes: &[Probe], blank: bool) -> Next {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterFailure {
     /// Nothing outside the host was used up and the site was never reachable: remove
-    /// what was made, each removal checked, and the customer may ask again.
+    /// what was made, each removal checked, and the customer may ask again. Only what
+    /// **this** opening made is removed: a container number is undone only when it was
+    /// seen not to exist before the clone. A clone that failed because the number was
+    /// taken by something else removes nothing.
     Undo,
     /// Keep the site as it is and tell a person. Nothing is removed.
     Keep,
@@ -187,9 +190,11 @@ pub const SITE_IP_LAST: u8 = 249;
 /// Numbers only go up and are never given out twice: a site that was removed may have
 /// left a rule, a backup target, a monitor or a line on the entry behind, and a new
 /// customer on the same number would walk straight into it. So the numbers of removed
-/// sites count exactly like those in use. `live_*` are the numbers in use on the host
-/// (every container, not only sites; numbers outside the sites' own ranges are passed
-/// over), `removed_*` those in the records of removed sites.
+/// sites count exactly like those in use. `live_*` are the numbers in use on the host:
+/// **every guest, containers and virtual machines alike** (they share one set of
+/// numbers; a list of containers only would hand out a number a virtual machine has),
+/// not only sites; numbers outside the sites' own ranges are passed over. `removed_*`
+/// are those in the records of removed sites.
 /// The caller reads all four completely or does not call: a list that could not be read
 /// is not an empty list.
 pub fn next_numbers(
