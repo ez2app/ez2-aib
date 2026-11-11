@@ -28,7 +28,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 const DM_EVERY: Duration = Duration::from_secs(30);
-/// 數一次佇列超過這麼久就當它卡住、允許重起
+/// 數一次佇列超過這麼久就當它卡住:顯示「?」,不重起
 const DM_STUCK: Duration = Duration::from_secs(90);
 
 struct Args {
@@ -676,12 +676,16 @@ fn main() {
     let (tx, rx) = mpsc::channel::<DmMap>();
     let mut dm_started: Option<Instant> = None;
     let mut dm_in_flight = false;
+    let mut dm_stuck = false;
 
     // 出錯也要把終端機還原(raw mode / 替代畫面),不然使用者的窗格會壞掉
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), cursor::Show, terminal::LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        // 只有主執行緒 panic 才會結束畫面;計數執行緒 panic 不動終端機
+        if std::thread::current().name() == Some("main") {
+            let _ = execute!(io::stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+            let _ = terminal::disable_raw_mode();
+        }
         prev(info);
     }));
     let mut o = io::stdout();
@@ -711,9 +715,16 @@ fn main() {
             }
         }
         if let Some(root) = args.aib_root.as_deref() {
-            // 數佇列卡住(python 掛住)超過 DM_STUCK 就不等它，下一輪重起;畫面照舊可用
-            let stuck = dm_in_flight && dm_started.is_some_and(|t| t.elapsed() >= DM_STUCK);
-            if (!dm_in_flight || stuck) && dm_started.is_none_or(|t| t.elapsed() >= DM_EVERY) {
+            // 數佇列卡住(python 掛住)超過 DM_STUCK:不重起(免得每 90 秒多一支 python),
+            // 改顯示「?」;那支回來了才再數。畫面照舊可用。
+            if dm_in_flight && !dm_stuck && dm_started.is_some_and(|t| t.elapsed() >= DM_STUCK) {
+                dm_stuck = true;
+                for v in app.dm.values_mut() {
+                    *v = (None, None);
+                }
+                dirty = true;
+            }
+            if !dm_in_flight && dm_started.is_none_or(|t| t.elapsed() >= DM_EVERY) {
                 let (root, seats, tx) = (root.to_path_buf(), app.cabin_seats(), tx.clone());
                 std::thread::spawn(move || {
                     let _ = tx.send(count_dm(&root, &seats));
@@ -726,6 +737,7 @@ fn main() {
             app.dm = m;
             app.dm_at = Some(Instant::now());
             dm_in_flight = false;
+            dm_stuck = false;
             dirty = true;
         }
         if last_check.elapsed() >= Duration::from_secs(2) {
