@@ -671,7 +671,10 @@ mod tests {
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert_eq!(fresh_cmd(&args(&[])), Ok(2));
         assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "0"])), Ok(2));
-        assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "10081"])), Ok(2));
+        assert_eq!(
+            fresh_cmd(&args(&["site2", "--max-minutes", "10081"])),
+            Ok(2)
+        );
         assert_eq!(fresh_cmd(&args(&["site2", "site3"])), Ok(2));
         assert_eq!(fresh_cmd(&args(&["../etc"])), Ok(2));
         assert_eq!(
@@ -685,18 +688,38 @@ mod tests {
             r#"{"site":"site8","ct":118,"ip":"10.77.0.18","hosts":"s8.example.test","created":"2026-01-01T00:00:00Z"}"#,
         )
         .unwrap();
-        put("vzdump-lxc-118-2026_11_09-03_00_05.tar.zst", 2 * 86_400, b"x");
+        put(
+            "vzdump-lxc-118-2026_11_09-03_00_05.tar.zst",
+            2 * 86_400,
+            b"x",
+        );
         let (r8, d8) = (r.to_string(), d.to_string());
         assert_eq!(
             fresh_cmd(&args(&["site8", "--records", &r8, "--dumps", &d8])),
             Ok(0)
         );
         assert_eq!(
-            fresh_cmd(&args(&["site8", "--max-minutes", "10080", "--records", &r8, "--dumps", &d8])),
+            fresh_cmd(&args(&[
+                "site8",
+                "--max-minutes",
+                "10080",
+                "--records",
+                &r8,
+                "--dumps",
+                &d8
+            ])),
             Ok(0)
         );
         assert_eq!(
-            fresh_cmd(&args(&["site8", "--max-minutes", "1440", "--records", &r8, "--dumps", &d8])),
+            fresh_cmd(&args(&[
+                "site8",
+                "--max-minutes",
+                "1440",
+                "--records",
+                &r8,
+                "--dumps",
+                &d8
+            ])),
             Ok(1)
         );
         let _ = fs::remove_dir_all(&root);
