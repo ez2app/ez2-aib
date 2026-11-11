@@ -10,7 +10,7 @@
 //! * `--apply` makes the plan again under the lock; it must be the same, word for word, or
 //!   nothing is done. Then each step runs, is looked at again, and is written into the
 //!   opening record (`abandon`), so a stop half way is carried on by a new plan.
-//! * The record ends under [`ABANDONED`] (`sites-creating/abandoned/`): its numbers and
+//! * The record ends under `sites-creating/abandoned/` ([`abandoned_dir`]): its numbers and
 //!   its code stay counted as used ([`crate::sitecreatecmd::see`] reads them with the
 //!   removed sites').
 //! * The DNS records are only those carrying the site's mark, in the customer's zone
@@ -34,8 +34,6 @@ use serde_json::{json, Value};
 use crate::opstore;
 use crate::sitecreatecmd::{target, write_record, HostPaths, Runner};
 
-/// Where abandoned openings' records go, under the openings' own directory.
-pub const ABANDONED: &str = "/var/lib/ez2-cloud/sites-creating/abandoned";
 /// The command name in the operation journal.
 pub const COMMAND: &str = "site.abandon";
 
@@ -47,7 +45,8 @@ pub const JOURNAL_UNREADABLE: &str = "journal_unreadable";
 /// An operation on the domain did not finish: a person looks at it first (`op recovered`).
 pub const UNFINISHED_OPERATION: &str = "unfinished_operation";
 
-/// The abandoned openings' directory for an openings' directory.
+/// Where abandoned openings' records go: `abandoned/` under the openings' own directory,
+/// which the openings' listing does not read.
 pub fn abandoned_dir(creating: &Path) -> std::path::PathBuf {
     creating.join("abandoned")
 }
@@ -154,7 +153,11 @@ pub fn see(
     code: &str,
 ) -> Seen {
     let opening = read_opening(&paths.creating, code);
-    let ct = opening.as_ref().ok().and_then(Option::as_ref).and_then(record_ct);
+    let ct = opening
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .and_then(record_ct);
     let site_record = match (
         exists(&paths.records.join(format!("{code}.json"))),
         exists(&paths.opened.join(format!("{code}.json"))),
@@ -244,9 +247,7 @@ pub fn plan_doc(domain: &str, code: &str, seen: &Seen) -> Value {
         (Ok(None), Some(true)) => None,
         (Ok(None), Some(false)) => Some(NO_OPENING),
         _ if seen.unfinished.is_none() => Some(JOURNAL_UNREADABLE),
-        _ if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) => {
-            Some(UNFINISHED_OPERATION)
-        }
+        _ if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) => Some(UNFINISHED_OPERATION),
         _ => None,
     };
     let next = match (&seen.opening, seen.abandoned, own_stop) {
@@ -490,7 +491,13 @@ pub fn apply(
         &target(domain),
         opstore::BY_LOCAL_ROOT,
         || {
-            let seen = see(&mut **runner.borrow_mut(), paths, &place.ops_dir, domain, code);
+            let seen = see(
+                &mut **runner.borrow_mut(),
+                paths,
+                &place.ops_dir,
+                domain,
+                code,
+            );
             recheck(domain, code, plan, &seen, &place.fingerprint).map(Some)
         },
         |op, input: Input| run_steps(&mut **runner.borrow_mut(), paths, domain, code, op, input),
@@ -600,7 +607,12 @@ mod tests {
             rosters: root.join("rosters"),
             cf_ledger: root.join("cloudflare.jsonl"),
         };
-        for d in [&paths.firewall, &paths.secrets, &paths.records, &paths.opened] {
+        for d in [
+            &paths.firewall,
+            &paths.secrets,
+            &paths.records,
+            &paths.opened,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
         let mut rec = json!({
@@ -674,8 +686,13 @@ mod tests {
 
     fn sealed(pct: &mut Pct, paths: &HostPaths, root: &Path) -> Value {
         let mut doc = plan_doc(DOMAIN, CODE, &look(pct, paths, root));
-        crate::quarantinecmd::seal_with_op(&mut doc, OP, &"f".repeat(64), env!("CARGO_PKG_VERSION"))
-            .unwrap();
+        crate::quarantinecmd::seal_with_op(
+            &mut doc,
+            OP,
+            &"f".repeat(64),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
         doc
     }
 
@@ -685,7 +702,10 @@ mod tests {
 
     #[test]
     fn the_hostname_is_the_main_sections() {
-        assert_eq!(hostname("arch: amd64\nhostname: s-x\n[snap]\nhostname: y\n"), "s-x");
+        assert_eq!(
+            hostname("arch: amd64\nhostname: s-x\n[snap]\nhostname: y\n"),
+            "s-x"
+        );
         assert_eq!(hostname("[snap]\nhostname: y\n"), "");
         assert_eq!(hostname("arch: amd64\n"), "");
     }
@@ -822,17 +842,31 @@ mod tests {
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
 
+        // a live site's container, though named for the code: nothing is destroyed
         let (root, paths) = host("ofasite", Value::Null);
-        write_record(&paths.records, "s-live01", &json!({"site": "s-live01", "ct": 131})).unwrap();
-        let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
-        assert_eq!(doc["stop"], siteabandon::CT_OF_A_SITE);
+        let place = self::place(&root);
+        write_record(
+            &paths.records,
+            "s-live01",
+            &json!({"site": "s-live01", "ct": 131}),
+        )
+        .unwrap();
+        let mut pct = Pct::new();
+        let plan = sealed(&mut pct, &paths, &root);
+        assert_eq!(plan["stop"], siteabandon::CT_OF_A_SITE);
+        assert!(apply(&place, &plan, DOMAIN, CODE, &paths, &mut pct).is_err());
+        assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_opening_must_be_of_this_domain() {
         let (root, paths) = host("otherdomain", Value::Null);
-        let doc = plan_doc("else.example.com", CODE, &look(&mut Pct::new(), &paths, &root));
+        let doc = plan_doc(
+            "else.example.com",
+            CODE,
+            &look(&mut Pct::new(), &paths, &root),
+        );
         assert_eq!(doc["stop"], siteabandon::NOT_THIS_OPENING);
         let _ = fs::remove_dir_all(&root);
     }
@@ -871,7 +905,12 @@ mod tests {
         fs::remove_file(paths.creating.join(format!("{CODE}.json"))).unwrap();
         let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
         assert_eq!(doc["stop"], NO_OPENING);
-        write_record(&abandoned_dir(&paths.creating), CODE, &json!({"site": CODE})).unwrap();
+        write_record(
+            &abandoned_dir(&paths.creating),
+            CODE,
+            &json!({"site": CODE}),
+        )
+        .unwrap();
         let doc = plan_doc(DOMAIN, CODE, &look(&mut Pct::new(), &paths, &root));
         assert_eq!(doc["next"], "finished");
         let _ = fs::remove_dir_all(&root);
@@ -889,6 +928,21 @@ mod tests {
         assert_eq!(pct.destroys(), 0);
         assert!(opening(&paths).is_some());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The step looks at the container's name again right before: the plan's look may be
+    /// minutes old.
+    #[test]
+    fn the_container_is_looked_at_again_right_before_it_goes() {
+        let mut pct = Pct::new();
+        pct.hostname = "s-other1".to_owned();
+        let err = container_step(&mut pct, 131, CODE).unwrap_err();
+        assert!(err.starts_with(siteabandon::CT_NOT_THIS_OPENING), "{err}");
+        assert_eq!(pct.destroys(), 0);
+        let mut gone = Pct::new();
+        gone.there = false;
+        container_step(&mut gone, 131, CODE).unwrap();
+        assert_eq!(gone.destroys(), 0);
     }
 
     #[test]
@@ -910,8 +964,12 @@ mod tests {
     fn an_abandoned_openings_numbers_are_never_given_again() {
         let (root, paths) = host("numbers", Value::Null);
         let removed = root.join("removed");
-        write_record(&removed, "s-rm0001", &json!({"site": "s-rm0001", "ct": 120, "ip": "10.77.0.20"}))
-            .unwrap();
+        write_record(
+            &removed,
+            "s-rm0001",
+            &json!({"site": "s-rm0001", "ct": 120, "ip": "10.77.0.20"}),
+        )
+        .unwrap();
         write_record(
             &abandoned_dir(&paths.creating),
             "s-gone01",
@@ -922,7 +980,8 @@ mod tests {
         let codes: Vec<&str> = gone.iter().map(|r| r["site"].as_str().unwrap()).collect();
         assert!(codes.contains(&"s-rm0001") && codes.contains(&"s-gone01"));
         // the abandoned directory is not read as openings
-        let opening_codes: Vec<Value> = crate::sitecreatecmd::read_records(&paths.creating).unwrap();
+        let opening_codes: Vec<Value> =
+            crate::sitecreatecmd::read_records(&paths.creating).unwrap();
         assert_eq!(opening_codes.len(), 1);
         let _ = fs::remove_dir_all(&root);
     }

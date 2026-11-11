@@ -839,10 +839,28 @@ mod tests {
         assert!(allowed(call.method(), &call.path(), None));
         for (r, code) in [
             (rec("A", "example.com", ORIGIN, true, ""), "s-abc123"),
-            (rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"), "s-abc123"),
-            (rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123 "), "s-abc123"),
-            (rec("MX", "example.com", "mail.example.com", false, "ez2:site:s-abc123"), "s-abc123"),
-            (rec("TXT", "example.com", "x", false, "ez2:site:s-abc123"), "s-abc123"),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
+                "s-abc123",
+            ),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123 "),
+                "s-abc123",
+            ),
+            (
+                rec(
+                    "MX",
+                    "example.com",
+                    "mail.example.com",
+                    false,
+                    "ez2:site:s-abc123",
+                ),
+                "s-abc123",
+            ),
+            (
+                rec("TXT", "example.com", "x", false, "ez2:site:s-abc123"),
+                "s-abc123",
+            ),
         ] {
             assert_eq!(delete_of(ZID, &r, code), None, "{r:?}");
         }
@@ -856,10 +874,22 @@ mod tests {
     fn only_marked_address_records_under_the_names_are_removed() {
         let records = [
             rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123"),
-            rec("AAAA", "www.example.com", "2001:db8::1", true, "ez2:site:s-abc123"),
+            rec(
+                "AAAA",
+                "www.example.com",
+                "2001:db8::1",
+                true,
+                "ez2:site:s-abc123",
+            ),
             rec("A", "other.example.com", ORIGIN, true, "ez2:site:s-abc123"),
             rec("A", "example.com", "198.51.100.7", false, ""),
-            rec("MX", "example.com", "mail.example.com", false, "ez2:site:s-abc123"),
+            rec(
+                "MX",
+                "example.com",
+                "mail.example.com",
+                false,
+                "ez2:site:s-abc123",
+            ),
             rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
         ];
         let got = marked_to_remove(&["example.com", "WWW.example.com."], &records, "s-abc123");

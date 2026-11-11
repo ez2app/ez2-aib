@@ -663,7 +663,11 @@ mod tests {
         let w = www();
         remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN, &w], &opening()).unwrap();
         assert_eq!(cf.deletes(), 2);
-        let ids: Vec<&str> = cf.records.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = cf
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(
             ids,
             [

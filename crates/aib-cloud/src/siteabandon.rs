@@ -134,7 +134,11 @@ pub fn next(code: &str, guard: &Guard<'_>, probes: &[Probe]) -> Next {
     if probes.contains(&Probe::Unknown) {
         return Next::Stop(PROBE_UNKNOWN);
     }
-    match STEPS.iter().zip(probes).find(|(_, p)| **p == Probe::NotDone) {
+    match STEPS
+        .iter()
+        .zip(probes)
+        .find(|(_, p)| **p == Probe::NotDone)
+    {
         Some((step, _)) => Next::Run(*step),
         None => Next::Finished,
     }
@@ -174,9 +178,15 @@ mod tests {
     fn a_site_is_never_abandoned() {
         let mut g = ok();
         g.site_record = Some(true);
-        assert_eq!(next(CODE, &g, &all(Probe::NotDone)), Next::Stop(ALREADY_A_SITE));
+        assert_eq!(
+            next(CODE, &g, &all(Probe::NotDone)),
+            Next::Stop(ALREADY_A_SITE)
+        );
         g.site_record = None;
-        assert_eq!(next(CODE, &g, &all(Probe::NotDone)), Next::Stop(PROBE_UNKNOWN));
+        assert_eq!(
+            next(CODE, &g, &all(Probe::NotDone)),
+            Next::Stop(PROBE_UNKNOWN)
+        );
     }
 
     #[test]
@@ -203,7 +213,10 @@ mod tests {
             Next::Stop(CT_NOT_THIS_OPENING)
         );
         g.ct_hostname = None;
-        assert_eq!(next(CODE, &g, &all(Probe::NotDone)), Next::Stop(PROBE_UNKNOWN));
+        assert_eq!(
+            next(CODE, &g, &all(Probe::NotDone)),
+            Next::Stop(PROBE_UNKNOWN)
+        );
         // no container left: the rest may still go
         g.ct_hostname = Some(None);
         assert_eq!(
@@ -212,13 +225,29 @@ mod tests {
         );
         let mut g = ok();
         g.ct_of_a_site = Some(true);
-        assert_eq!(next(CODE, &g, &all(Probe::NotDone)), Next::Stop(CT_OF_A_SITE));
+        assert_eq!(
+            next(CODE, &g, &all(Probe::NotDone)),
+            Next::Stop(CT_OF_A_SITE)
+        );
         g.ct_of_a_site = None;
-        assert_eq!(next(CODE, &g, &all(Probe::NotDone)), Next::Stop(PROBE_UNKNOWN));
+        assert_eq!(
+            next(CODE, &g, &all(Probe::NotDone)),
+            Next::Stop(PROBE_UNKNOWN)
+        );
     }
 
     #[test]
     fn anything_in_doubt_stops_everything() {
+        // the guard itself: a site record, a site's container or the container not told
+        let mut g = ok();
+        g.site_record = None;
+        assert_eq!(refusal(CODE, &g), Some(PROBE_UNKNOWN));
+        let mut g = ok();
+        g.ct_of_a_site = None;
+        assert_eq!(refusal(CODE, &g), Some(PROBE_UNKNOWN));
+        let mut g = ok();
+        g.ct_hostname = None;
+        assert_eq!(refusal(CODE, &g), Some(PROBE_UNKNOWN));
         for i in 0..STEPS.len() {
             let mut p = all(Probe::NotDone);
             p[i] = Probe::Unknown;

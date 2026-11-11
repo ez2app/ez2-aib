@@ -1558,7 +1558,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         return match (plan_only, apply_file) {
             (true, None) => crate::siteabandon::cmd(&domain, &code, None),
             (false, Some(file)) => crate::siteabandon::cmd(&domain, &code, Some(&file)),
-            _ => Err("--abandon <code> needs --plan or --apply <plan.json>, one of them".to_owned()),
+            _ => {
+                Err("--abandon <code> needs --plan or --apply <plan.json>, one of them".to_owned())
+            }
         };
     }
     if let Some(code) = run_code {
