@@ -283,6 +283,25 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # statistics loader: a 400 for another reason is taken as the probe's proof (33e28 F2)
+          ck fploader.rs '        (400, true) => None,' '        (400, _) => None, // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the loader twice in the page passes (33e28 F2)
+          ck fploader.rs '        _ => Some(not_done("loader_twice")),' '        _ => None, // knife' \
+             the_loader_is_in_the_page_exactly_once
+          # statistics loader: a page that could not be read counts as "not done" (33e28 F2)
+          ck fploader.rs '        return Some(unknown("page_unreadable"));' \
+             '        return Some(not_done("page_unreadable")); // knife' \
+             a_question_not_answered_is_unknown
+          # statistics loader: a 200 without this site's key passes as the loader (33e28 F2)
+          ck fploader.rs '        (200, false) => Some(unknown("script_not_loader")),' '        (200, false) => None, // knife' \
+             the_served_loader_carries_the_key
+          # statistics loader: the intake question is not asked (33e28 F2)
+          ck fploader.rs '        .or_else(|| intake(i))' '        .or_else(|| intake(i).filter(|_| false)) // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the host switch is ignored and every site reads "off" (33e28 F2)
+          ck fploader.rs '    if !enabled {' '    if !enabled || true { // knife' \
+             all_three_answers_make_it_done
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control

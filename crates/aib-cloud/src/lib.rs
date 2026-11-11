@@ -43,6 +43,7 @@ pub mod backup;
 pub mod client;
 pub mod customer;
 pub mod edge;
+pub mod fploader;
 pub mod isolation;
 pub mod op;
 pub mod provision;
