@@ -270,16 +270,25 @@ fn list_dumps(dir: &str) -> Option<Vec<DumpEntry>> {
         let entry = entry.ok()?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let meta = fs::symlink_metadata(entry.path()).ok();
-        let is_file = meta.as_ref().is_some_and(fs::Metadata::is_file);
-        let mtime = meta
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
-        let size = meta.as_ref().map(fs::Metadata::len);
-        out.push((name, is_file, mtime, size));
+        out.push(dump_entry(name, meta.as_ref()));
     }
     Some(out)
+}
+
+/// One folder entry from its name and what could be read about it. An entry whose
+/// details could not be read is handed on as a file without time or size, so a dump of
+/// the site among them makes the answer "could not tell" instead of being skipped
+/// (ebb36 N1).
+fn dump_entry(name: String, meta: Option<&fs::Metadata>) -> DumpEntry {
+    let Some(m) = meta else {
+        return (name, true, None, None);
+    };
+    let mtime = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    (name, m.is_file(), mtime, Some(m.len()))
 }
 
 /// The answer to `backup fresh`: (exit status, JSON). Every input is a parameter, so the
@@ -300,6 +309,10 @@ fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u
     let Ok(spec) = spec_from_record(&rec) else {
         return unknown("record_unreadable");
     };
+    let created = rec
+        .get("created")
+        .and_then(Value::as_str)
+        .and_then(fresh::created_secs);
     let listed = list_dumps(dumps);
     let files: Option<Vec<DumpFile<'_>>> = listed.as_ref().map(|l| {
         l.iter()
@@ -311,7 +324,13 @@ fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u
             })
             .collect()
     });
-    let got = fresh::judge(spec.ct, files.as_deref(), now, u64::from(max_minutes) * 60);
+    let got = fresh::judge(
+        spec.ct,
+        created,
+        files.as_deref(),
+        now,
+        u64::from(max_minutes) * 60,
+    );
     let age = match got {
         Fresh::Fresh { age } | Fresh::Stale { age } => Some(age),
         Fresh::NoBackup | Fresh::Unknown(_) => None,
@@ -530,7 +549,7 @@ mod tests {
         fs::create_dir_all(&dumps).unwrap();
         fs::write(
             records.join("site2.json"),
-            r#"{"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"s2.example.test"}"#,
+            r#"{"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"s2.example.test","created":"2026-01-01T00:00:00Z"}"#,
         )
         .unwrap();
         let (r, d) = (records.to_string_lossy(), dumps.to_string_lossy());
@@ -574,7 +593,7 @@ mod tests {
         }
 
         // one still being written and another site's fresh one do not count
-        put("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat", 60, b"x");
+        put("vzdump-lxc-112-2026_11_11-18_30_05.tar.dat", 60, b"x");
         put("vzdump-lxc-113-2026_11_11-18_30_05.tar.zst", 60, b"x");
         let (exit, _) = fresh_answer("site2", 30, &r, &d, now);
         assert_eq!(exit, 1);
@@ -604,6 +623,29 @@ mod tests {
         fs::write(records.join("site3.json"), "{not json").unwrap();
         assert_eq!(fresh_answer("site3", 30, &r, &d, now).0, 3);
 
+        // the CT number was given to a new site after the fresh dump was made: not its backup
+        fs::write(
+            records.join("site4.json"),
+            format!(
+                r#"{{"site":"site4","ct":112,"ip":"10.77.0.12","hosts":"s4.example.test","created":"{}"}}"#,
+                stamp(now - 60)
+            ),
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site4", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("no_backup")));
+        // a record without a readable creation time: could not tell
+        fs::write(
+            records.join("site5.json"),
+            r#"{"site":"site5","ct":112,"ip":"10.77.0.12","hosts":"s5.example.test","created":"yesterday"}"#,
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site5", 30, &r, &d, now);
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("site_created_unreadable"))
+        );
+
         // usage
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert_eq!(fresh_cmd(&args(&[])), Ok(2));
@@ -616,5 +658,46 @@ mod tests {
             Ok(0)
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `YYYY-MM-DDTHH:MM:SSZ` for seconds since the epoch, as the create shell writes it.
+    fn stamp(secs: u64) -> String {
+        let days = i64::try_from(secs / 86_400).unwrap();
+        let rem = secs % 86_400;
+        // civil_from_days (Howard Hinnant)
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60
+        )
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_read_spoils_the_answer() {
+        let name = "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst".to_owned();
+        let e = dump_entry(name.clone(), None);
+        assert_eq!(e, (name, true, None, None));
+        let files = [DumpFile {
+            name: &e.0,
+            is_file: e.1,
+            mtime: e.2,
+            size: e.3,
+        }];
+        assert_eq!(
+            fresh::judge(112, Some(0), Some(&files), 1_000, 1_800),
+            Fresh::Unknown("dump_unreadable")
+        );
+        assert_eq!(stamp(1_794_195_191), "2026-11-09T03:33:11Z");
+        assert_eq!(fresh::created_secs(&stamp(1_794_195_191)), Some(1_794_195_191));
     }
 }

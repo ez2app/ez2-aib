@@ -12,6 +12,14 @@
 //! The age is taken from the file's modification time, not from the time in its name:
 //! the name is written in the host's local time zone, the modification time is not.
 //!
+//! CT numbers are reused: removing a site leaves its dumps in the folder, and the next CT
+//! takes the lowest free number. So a dump only counts when it is newer than the site's
+//! own record (`created`); a site whose creation time cannot be read is "could not tell"
+//! (ebb36 L1).
+//!
+//! Before this is wired in, check on the host which folder the daily vzdump writes to;
+//! the host command assumes the `local` storage, `/var/lib/vz/dump` (ebb36 N3).
+//!
 //! The answer is only ever "allowed" for [`Fresh::Fresh`]. Everything that cannot be
 //! read, and a file from the future (the clock is wrong somewhere), is
 //! [`Fresh::Unknown`]: an update is not let through on a guess.
@@ -67,6 +75,28 @@ impl Fresh {
     }
 }
 
+/// Seconds since the epoch for a record's `created`, written by the create shell as
+/// `YYYY-MM-DDTHH:MM:SSZ` (UTC); `None` for anything else.
+pub fn created_secs(text: &str) -> Option<u64> {
+    let b = text.as_bytes();
+    if b.len() != 20 || b[10] != b'T' || b[13] != b':' || b[16] != b':' || b[19] != b'Z' {
+        return None;
+    }
+    let day = crate::backup::day_number(text.get(0..10)?)?;
+    let num = |r: core::ops::Range<usize>| -> Option<i64> {
+        let t = text.get(r)?;
+        if !t.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    };
+    let (h, m, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if h > 23 || m > 59 || sec > 59 {
+        return None;
+    }
+    u64::try_from(day * 86_400 + h * 3600 + m * 60 + sec).ok()
+}
+
 /// Whether an update may go ahead: only on a fresh, finished backup.
 pub fn update_allowed(f: Fresh) -> bool {
     matches!(f, Fresh::Fresh { .. })
@@ -101,9 +131,19 @@ pub fn dump_ct(name: &str) -> Option<u32> {
     ct.parse().ok()
 }
 
-/// Judge CT `ct`'s newest backup. `files` is the local dump folder (`None`: it could not
-/// be listed); `now` is seconds since the epoch; `max_secs` is the window.
-pub fn judge(ct: u32, files: Option<&[DumpFile<'_>]>, now: u64, max_secs: u64) -> Fresh {
+/// Judge CT `ct`'s newest backup. `created` is when the site's record was made (`None`:
+/// could not be read); `files` is the local dump folder (`None`: it could not be listed);
+/// `now` is seconds since the epoch; `max_secs` is the window.
+pub fn judge(
+    ct: u32,
+    created: Option<u64>,
+    files: Option<&[DumpFile<'_>]>,
+    now: u64,
+    max_secs: u64,
+) -> Fresh {
+    let Some(created) = created else {
+        return Fresh::Unknown("site_created_unreadable");
+    };
     let Some(files) = files else {
         return Fresh::Unknown("dump_folder_unreadable");
     };
@@ -124,6 +164,9 @@ pub fn judge(ct: u32, files: Option<&[DumpFile<'_>]>, now: u64, max_secs: u64) -
         if mtime > now.saturating_add(CLOCK_SKEW_SECS) {
             return Fresh::Unknown("dump_from_the_future");
         }
+        if mtime < created {
+            continue; // left by an earlier site on the same CT number
+        }
         newest = Some(newest.map_or(mtime, |n| n.max(mtime)));
     }
     let Some(newest) = newest else {
@@ -143,6 +186,7 @@ mod tests {
 
     const NOW: u64 = 1_794_390_000;
     const MAX: u64 = 30 * 60;
+    const CREATED: u64 = NOW - 30 * 86_400;
 
     fn f(name: &str, mtime: u64, size: u64) -> DumpFile<'_> {
         DumpFile {
@@ -165,7 +209,7 @@ mod tests {
         );
         assert_eq!(dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar"), Some(112));
         for not in [
-            "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat",
+            "vzdump-lxc-112-2026_11_11-18_30_05.tar.dat",
             "vzdump-lxc-112-2026_11_11-18_30_05.log",
             "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.notes",
             "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.age",
@@ -190,7 +234,7 @@ mod tests {
             ),
             f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst", NOW - 600, 900),
         ];
-        let got = judge(112, Some(&files), NOW, MAX);
+        let got = judge(112, Some(CREATED), Some(&files), NOW, MAX);
         assert_eq!(got, Fresh::Fresh { age: 600 });
         assert!(update_allowed(got));
         assert_eq!(got.as_str(), "fresh");
@@ -203,7 +247,7 @@ mod tests {
             NOW - 3600,
             900,
         )];
-        let got = judge(112, Some(&files), NOW, MAX);
+        let got = judge(112, Some(CREATED), Some(&files), NOW, MAX);
         assert_eq!(got, Fresh::Stale { age: 3600 });
         assert!(!update_allowed(got));
         // the edge of the window still counts
@@ -212,7 +256,7 @@ mod tests {
             NOW - MAX,
             900,
         )];
-        assert_eq!(judge(112, Some(&edge), NOW, MAX), Fresh::Fresh { age: MAX });
+        assert_eq!(judge(112, Some(CREATED), Some(&edge), NOW, MAX), Fresh::Fresh { age: MAX });
     }
 
     #[test]
@@ -221,7 +265,7 @@ mod tests {
             f("vzdump-lxc-113-2026_11_11-18_30_05.tar.zst", NOW - 60, 900),
             f("vzdump-lxc-1120-2026_11_11-18_30_05.tar.zst", NOW - 60, 900),
         ];
-        assert_eq!(judge(112, Some(&files), NOW, MAX), Fresh::NoBackup);
+        assert_eq!(judge(112, Some(CREATED), Some(&files), NOW, MAX), Fresh::NoBackup);
         assert!(!update_allowed(Fresh::NoBackup));
     }
 
@@ -231,20 +275,20 @@ mod tests {
         dir.is_file = false;
         let files = [
             f(
-                "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat",
+                "vzdump-lxc-112-2026_11_11-18_30_05.tar.dat",
                 NOW - 60,
                 900,
             ),
             f("vzdump-lxc-112-2026_11_11-18_31_05.tar.zst", NOW - 30, 0),
             dir,
         ];
-        assert_eq!(judge(112, Some(&files), NOW, MAX), Fresh::NoBackup);
+        assert_eq!(judge(112, Some(CREATED), Some(&files), NOW, MAX), Fresh::NoBackup);
     }
 
     #[test]
     fn what_cannot_be_read_is_unknown_never_allowed() {
         assert_eq!(
-            judge(112, None, NOW, MAX),
+            judge(112, Some(CREATED), None, NOW, MAX),
             Fresh::Unknown("dump_folder_unreadable")
         );
         let mut no_time = f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst", 0, 900);
@@ -252,13 +296,13 @@ mod tests {
         let fresh = f("vzdump-lxc-112-2026_11_11-18_35_05.tar.zst", NOW - 60, 900);
         // one unreadable dump of this CT spoils the answer, even next to a fresh one
         assert_eq!(
-            judge(112, Some(&[fresh, no_time]), NOW, MAX),
+            judge(112, Some(CREATED), Some(&[fresh, no_time]), NOW, MAX),
             Fresh::Unknown("dump_unreadable")
         );
         let mut no_size = fresh;
         no_size.size = None;
         assert_eq!(
-            judge(112, Some(&[no_size]), NOW, MAX),
+            judge(112, Some(CREATED), Some(&[no_size]), NOW, MAX),
             Fresh::Unknown("dump_unreadable")
         );
         for u in [
@@ -277,16 +321,51 @@ mod tests {
             NOW + CLOCK_SKEW_SECS,
             900,
         )];
-        assert_eq!(judge(112, Some(&skew), NOW, MAX), Fresh::Fresh { age: 0 });
+        assert_eq!(judge(112, Some(CREATED), Some(&skew), NOW, MAX), Fresh::Fresh { age: 0 });
         let ahead = [f(
             "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst",
             NOW + CLOCK_SKEW_SECS + 1,
             900,
         )];
         assert_eq!(
-            judge(112, Some(&ahead), NOW, MAX),
+            judge(112, Some(CREATED), Some(&ahead), NOW, MAX),
             Fresh::Unknown("dump_from_the_future")
         );
+    }
+
+    #[test]
+    fn a_dump_older_than_the_site_was_left_by_an_earlier_one() {
+        // CT 112 was removed and handed to a new site ten minutes ago; the old site's
+        // dump from twenty minutes ago is still in the folder
+        let files = [f("vzdump-lxc-112-2026_11_11-18_10_05.tar.zst", NOW - 1200, 900)];
+        assert_eq!(judge(112, Some(NOW - 600), Some(&files), NOW, MAX), Fresh::NoBackup);
+        assert_eq!(
+            judge(112, Some(NOW - 1200), Some(&files), NOW, MAX),
+            Fresh::Fresh { age: 1200 }
+        );
+        // a site whose creation time cannot be read: never allowed
+        assert_eq!(
+            judge(112, None, Some(&files), NOW, MAX),
+            Fresh::Unknown("site_created_unreadable")
+        );
+    }
+
+    #[test]
+    fn the_creation_time_is_read_as_the_shell_writes_it() {
+        assert_eq!(created_secs("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(created_secs("2026-11-09T03:33:11Z"), Some(1_794_195_191));
+        for not in [
+            "2026-11-09T03:33:11",
+            "2026-11-09 03:33:11Z",
+            "2026-11-09T03:33:11+00:00",
+            "2026-11-09T24:00:00Z",
+            "2026-11-09T03:60:00Z",
+            "2026-11-09T03:33:+1Z",
+            "2026-13-09T03:33:11Z",
+            "",
+        ] {
+            assert_eq!(created_secs(not), None, "{not}");
+        }
     }
 
     #[test]
