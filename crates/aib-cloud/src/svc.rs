@@ -722,7 +722,12 @@ mod tests {
     fn the_hosts_names_are_its_short_and_full_names_and_their_domain() {
         assert_eq!(
             host_names("node7\n", Some("node7.dc.example.net\n")),
-            ["node7", "node7.dc.example.net", "dc.example.net", "example.net"]
+            [
+                "node7",
+                "node7.dc.example.net",
+                "dc.example.net",
+                "example.net"
+            ]
         );
         // every tail of two labels or more: the provider is usually the last two
         let h = HostHide::new(&host_names("node7", Some("node7.dc.example.net")), "", 112);
