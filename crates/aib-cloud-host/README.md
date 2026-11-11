@@ -10,6 +10,7 @@ aib-cloud-host probe run   <plan.json> --host <public ip> [--out report.json] [-
 aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 aib-cloud-host self-update <version>        # 從 GitHub release 換自己(cloud-host-v<version>,驗 SHA256SUMS + --version 才換)
 aib-cloud-host site verify [<code>] [--json]  # 被動檢查:宿主 H01–H10 / H12 / H13 + 每站 S00–S06;只讀;結束碼 0 綠 / 1 紅 / 3 不明 / 2 黃;紀錄夾讀不到、沒有紀錄、參數打錯也是 3(不是 2)
+aib-cloud-host site scan <domain>           # 只讀掃描一站:核心 / 外掛官方校驗值、uploads 下可執行檔與點開頭檔、7 天內改過的 PHP、管理員對開站紀錄;不清除、不隔離;結束碼 0 ok / 1 finding / 3 unknown(付費外掛沒官方校驗值 = unknown)
 aib-cloud-host edge domain preflight <網域> --ip <Edge 公網 IPv4>   # 上線前查 DNS:A 全指向我們、沒有 AAAA、CAA 不擋;結束碼 0 可上 / 1 還不行
 aib-cloud-host edge domain add|rm <站> <網域> --plan              # 只出計畫(只改該站那一行網域);不帶 --plan 拒絕
 aib-cloud-host site usage [--json]          # 每站真正用量(從宿主讀 cgroup,不進 CT)+ ARC 建議;只讀、不套用;以紀錄的 owner 合計客戶額度

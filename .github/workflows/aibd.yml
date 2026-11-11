@@ -778,6 +778,77 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # site scan (4542e 11-11, E10 cat. 9): read-only scan of one site; each rule out turns its test red
+          ck scan.rs '        if other > self {' '        if other > self && false { // knife' \
+             the_scan_is_its_worst_check
+          ck scan.rs '    if checks.is_empty() {' '    if checks.is_empty() && false { // knife' \
+             the_scan_is_its_worst_check
+          ck scan.rs '    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {' \
+             '    if rest.is_empty() || (!rest.bytes().all(|b| b.is_ascii_digit()) && false) { // knife' \
+             the_exit_code_is_read_from_the_last_marker
+          ck scan.rs '        Some((b, rc)) if !s.cut => (b, Some(rc)),' '        Some((b, rc)) => (b, Some(rc)), // knife' \
+             a_core_success_needs_exit_zero_and_its_line
+          ck scan.rs "        None if path.starts_with('/') => return OUTSIDE.to_owned()," \
+             "        None if path.starts_with('/') && false => return OUTSIDE.to_owned(), // knife" \
+             a_path_outside_the_site_is_not_shown
+          ck scan.rs $'    if rel.is_empty() || rel.split(\'/\').any(|c| c == "..") {' \
+             $'    if rel.is_empty() || (rel.split(\'/\').any(|c| c == "..") && false) { // knife' \
+             a_path_outside_the_site_is_not_shown
+          ck scan.rs "    if base.starts_with('.') {" "    if base.starts_with('.') && false { // knife" \
+             a_dot_file_under_uploads_is_listed
+          ck scan.rs '    if inner_extensions(name).any(|e| EXEC_EXT.contains(&e.as_str())) {' \
+             '    if inner_extensions(name).last().is_some_and(|e| EXEC_EXT.contains(&e.as_str())) { // knife' \
+             an_inner_extension_counts
+          ck scan.rs '    a.extend(["-o".to_owned(), "-ctime".to_owned(), days]);' \
+             '    a.extend(["-o".to_owned(), "-mtime".to_owned(), days]); // knife' \
+             a_change_time_set_back_still_counts
+          ck scan.rs '            c.push(site_relative(root, p), "checksum_mismatch");' \
+             '            let _ = (site_relative(root, p), "checksum_mismatch"); // knife' \
+             a_core_file_that_differs_is_a_finding
+          ck scan.rs '            other = true;' '            other = says_trouble(""); // knife' \
+             a_core_warning_nobody_knows_is_unknown
+          ck scan.rs $'    if c.total > 0 {\n        return c.with(Outcome::Finding, "files_differ");\n    }\n    if rc.is_none() {' \
+             $'    if c.total > 0 {\n        return c.with(Outcome::Finding, "files_differ");\n    }\n    if rc.is_none() && false { // knife' \
+             a_core_success_needs_exit_zero_and_its_line
+          ck scan.rs $'    if other || !success {\n        return c.with(Outcome::Unknown, "unrecognized");\n    }\n    if rc != Some(0) {' \
+             $'    if other || !success {\n        return c.with(Outcome::Unknown, "unrecognized");\n    }\n    if rc != Some(0) && false { // knife' \
+             a_core_success_needs_exit_zero_and_its_line
+          ck scan.rs '    if differ > 0 {' '    if differ > 0 && false { // knife' \
+             a_plugin_file_that_differs_is_a_finding
+          ck scan.rs $'    if differ > 0 {\n        return c.with(Outcome::Finding, "files_differ");\n    }\n    if rc.is_none() {' \
+             $'    if differ > 0 {\n        return c.with(Outcome::Finding, "files_differ");\n    }\n    if rc.is_none() && false { // knife' \
+             a_plugin_run_without_a_success_line_is_unknown
+          ck scan.rs '    if bad {' '    if bad && false { // knife' \
+             a_plugin_run_without_a_success_line_is_unknown
+          ck scan.rs '    let Some((true, Some(skipped))) = closing else {' \
+             '    let Some((_, Some(skipped))) = closing.or(Some((true, Some(0)))) else { // knife' \
+             a_plugin_run_without_a_success_line_is_unknown
+          ck scan.rs $'        return c.with(Outcome::Unknown, "not_verified");\n    };\n    if rc != Some(0) {' \
+             $'        return c.with(Outcome::Unknown, "not_verified");\n    };\n    if rc != Some(0) && false { // knife' \
+             a_plugin_run_without_a_success_line_is_unknown
+          ck scan.rs '    if skipped != without {' '    if skipped != without && false { // knife' \
+             a_skip_count_that_does_not_match_the_warnings_is_unknown
+          ck scan.rs '    if without > 0 {' '    if without > 0 && false { // knife' \
+             a_paid_plugin_without_checksums_is_unknown_never_ok
+          ck scan.rs '        names.pop();' '        let _ = names.last(); // knife' \
+             uploads_findings_and_their_limits
+          ck scan.rs '            _ => strange = true,' '            _ => strange = rel.is_empty(), // knife' \
+             uploads_findings_and_their_limits
+          ck scan.rs $'        return c.with(Outcome::Finding, "files_found");\n    }\n    if rc.is_none() {' \
+             $'        return c.with(Outcome::Finding, "files_found");\n    }\n    if rc.is_none() && false { // knife' \
+             uploads_findings_and_their_limits
+          ck scan.rs $'    if strange {\n        return c.with(Outcome::Unknown, "unrecognized");\n    }\n    if rc != Some(0) {' \
+             $'    if strange {\n        return c.with(Outcome::Unknown, "unrecognized");\n    }\n    if rc != Some(0) && false { // knife' \
+             uploads_findings_and_their_limits
+          ck scan.rs '    if rc != 0 {' '    if rc != 0 && false { // knife' \
+             without_an_opening_record_administrators_are_unknown
+          ck scan.rs '    if logins.is_empty() {' '    if logins.is_empty() && false { // knife' \
+             without_an_opening_record_administrators_are_unknown
+          ck scan.rs '        return c.with(Outcome::Unknown, "no_opening_record");' \
+             '        return c.with(Outcome::Ok, "no_opening_record"); // knife' \
+             without_an_opening_record_administrators_are_unknown
+          ck scan.rs '    if !extra.is_empty() {' '    if !extra.is_empty() && false { // knife' \
+             an_administrator_nobody_opened_needs_a_person
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1407,6 +1478,32 @@ jobs:
           hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
              '        tenant: None, // knife' \
              apply_needs_the_tenant_the_plan_was_made_for
+          # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
+          hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '            rest.last() == Some(&"-print0") && !rest.iter().any(|x| FIND_FORBIDDEN.contains(x))' \
+             '            rest.last() == Some(&"-print0") && !rest.iter().any(|x| FIND_FORBIDDEN.contains(x) && false) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '            **path == format!("--path={}", site_root(user))' \
+             '            (**path == format!("--path={}", site_root(user)) || true) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '                && rest.contains(&"--skip-plugins")' \
+             '                && (rest.contains(&"--skip-plugins") || true) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '                && rest.contains(&"--skip-themes")' \
+             '                && (rest.contains(&"--skip-themes") || true) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '                && WP_ALLOWED.iter().any(|w| *w == words.as_slice())' \
+             '                && (WP_ALLOWED.iter().any(|w| *w == words.as_slice()) || true) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          hk sitescancmd.rs '    match hits.len() {' '    match hits.len().min(1) { // knife' \
+             two_records_naming_one_domain_are_refused
+          hk sitescancmd.rs '        let spec = spec_from_record(rec).map_err(|e| format!("the record naming {domain}: {e}"))?;' \
+             '        let Ok(spec) = spec_from_record(rec).map_err(|e| format!("the record naming {domain}: {e}")) else { continue }; // knife' \
+             two_records_naming_one_domain_are_refused
+          hk sitescancmd.rs '        .map(|l| l.as_str().map(str::to_owned))' \
+             '        .map(|l| Some(l.as_str().unwrap_or("").to_owned())) // knife' \
+             the_expected_administrators_come_from_the_opening_record
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

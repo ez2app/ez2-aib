@@ -51,6 +51,7 @@ pub mod quota;
 pub mod r2token;
 pub mod robot;
 pub mod roster;
+pub mod scan;
 pub mod site;
 pub mod sitecreate;
 pub mod sitedefaults;
