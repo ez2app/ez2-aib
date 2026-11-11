@@ -235,7 +235,7 @@ if [ "${1:-}" = "support" ]; then
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/cockpit/support_bundle.py" "$@"
 fi
-# aib fonts status/install/terminal/restore(10-25 @ae6a1 fishmac 實跑建議):AI 符號字型(JetBrainsMono Nerd Font)。委派 nerd_font.py。
+# aib fonts status/install/terminal/restore(10-25 @ae6a1 mac-b 實跑建議):AI 符號字型(JetBrainsMono Nerd Font)。委派 nerd_font.py。
 if [ "${1:-}" = "fonts" ]; then
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/nerd_font.py" "$@"

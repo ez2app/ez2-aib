@@ -87,7 +87,7 @@ fn world() -> World {
 fn run(w: &World, extra_env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_aib-lease"));
     c.arg("run")
-        .args(["--host", "pro13", "--owner", "043dd", "--ttl", "600"])
+        .args(["--host", "mac-b", "--owner", "043dd", "--ttl", "600"])
         .arg("--repo")
         .arg(&w.repo)
         .arg("--ssh")
@@ -166,7 +166,7 @@ fn a_granted_lease_runs_every_step_reports_each_rc_and_releases() {
         "ran in the sent tree"
     );
     let l = log(&w);
-    assert!(l.contains("host=pro13"), "{l}");
+    assert!(l.contains("host=mac-b"), "{l}");
     let acq = l.find("aib lease acquire --owner 043dd").unwrap();
     let rel = l.find("aib lease release --run-id 043dd-run-").unwrap();
     assert!(acq < rel, "{l}");
@@ -202,7 +202,7 @@ fn every_run_leaves_one_history_line_with_each_steps_numbers() {
     assert_eq!(v["schema"], "aib-lease-history/v1");
     assert_eq!(
         (v["seat"].as_str(), v["ssh_host"].as_str()),
-        (Some("043dd"), Some("pro13"))
+        (Some("043dd"), Some("mac-b"))
     );
     assert_eq!(v["outcome"], "step_failed");
     assert!(v["host"].as_str().is_some_and(|s| !s.is_empty()), "{v}");

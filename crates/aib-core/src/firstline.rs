@@ -607,13 +607,13 @@ mod tests {
     #[test]
     fn a_verify_line_by_the_rule_parses() {
         let line = std::format!(
-            "驗收: 通過 頭: {B} 機: Andy-MacPro13-M1,Ez2-AL-Mac-Pro 樣本: queue Pro13 1 + 桌機 4 沒驗: 卡名額時 GET 的 reason、真 claude 卡名額"
+            "驗收: 通過 頭: {B} 機: mac-b,mac-a 樣本: queue mac-b 1 + 桌機 4 沒驗: 卡名額時 GET 的 reason、真 claude 卡名額"
         );
         let v = parse_verify(&line).unwrap();
         assert_eq!(v.verdict, Verdict::Pass);
         assert_eq!(v.head, B);
-        assert_eq!(v.host, "Andy-MacPro13-M1,Ez2-AL-Mac-Pro");
-        assert_eq!(v.samples, "queue Pro13 1 + 桌機 4");
+        assert_eq!(v.host, "mac-b,mac-a");
+        assert_eq!(v.samples, "queue mac-b 1 + 桌機 4");
         assert_eq!(
             v.not_checked,
             Some("卡名額時 GET 的 reason、真 claude 卡名額")
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn nothing_skipped_is_written_as_none() {
-        let line = std::format!("驗收: 不通過 頭: {B} 機: MacBookPro.home 樣本: queue 5 沒驗: 無");
+        let line = std::format!("驗收: 不通過 頭: {B} 機: mac-a.home 樣本: queue 5 沒驗: 無");
         let v = parse_verify(&line).unwrap();
         assert_eq!(v.verdict, Verdict::Fail);
         assert_eq!(v.not_checked, None);

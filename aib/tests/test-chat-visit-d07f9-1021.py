@@ -61,7 +61,7 @@ class Base(unittest.TestCase):
         self.env = {"HOME": str(self.td), "EZ2_AIB_STATE_ROOT": str(self.td / "state"), "AIB_CHAT_BRIDGE_DIR": str(self.root),
                     "AIB_CHAT_HOME": str(self.td / "chat"), "EZ2_AIB_LOCALE": "zh-TW", "PATH": "/usr/bin:/bin"}
         GF.ensure_dirs(self.root)
-        CR.add_friend(FRIEND, "Pro 13", self.env)
+        CR.add_friend(FRIEND, "Mac B", self.env)
         CR.add_friend(MINE, "Mini", self.env, kind="mine")
         CR.add_friend(BLOCKED, None, self.env, kind="blocks")
 
@@ -139,7 +139,7 @@ class Core(Base):
         CV.open_to(self.env, self.root, MINE, now=400)
         pl = CV.payload(self.env, now=500)
         self.assertEqual((pl["v"], pl["at"], pl["pending"]), (1, 500, 1))
-        self.assertEqual([(r["owner"], r["name"], r["status"]) for r in pl["incoming"]], [(FRIEND, "Pro 13", "pending")])
+        self.assertEqual([(r["owner"], r["name"], r["status"]) for r in pl["incoming"]], [(FRIEND, "Mac B", "pending")])
         self.assertEqual([(r["owner"], r["name"], r["status"]) for r in pl["outgoing"]], [(MINE, "Mini", "opened")])
         self.assertEqual(pl["open_to"][FRIEND], {"share": "online", "space": "island", "room": False})
         self.assertEqual(pl["open_to"][MINE], {"share": "status", "space": "room", "room": True})

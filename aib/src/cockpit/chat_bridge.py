@@ -996,7 +996,7 @@ def cmd_friend(a, env, out):
         if a.action == "add":
             owner, new = CR.add_friend(a.who, a.name, env, kind)
             out.write(T(pre + ("added" if new else "renamed"), owner=owner) + "\n")
-            if kind == "friends" and new:   # 10-25 fishmac:只加本機,對方不會知道 ⇒ 提示一次互加的指令
+            if kind == "friends" and new:   # 10-25 mac-b:只加本機,對方不會知道 ⇒ 提示一次互加的指令
                 out.write(T("friend_added_connect_hint", owner=owner) + "\n")
         else:
             owner, gone = CR.remove_friend(a.who, env, kind)
@@ -2527,7 +2527,7 @@ def cmd_backup(a, env, out):
     return 0
 
 
-RECV_FAIL_WARN = 3   # 10-20 @abb89(會員清單 E 段):收信連續失敗幾次就警報(Pro 13 每 5 秒重來、20 小時沒人發現)
+RECV_FAIL_WARN = 3   # 10-20 @abb89(會員清單 E 段):收信連續失敗幾次就警報(Mac B 每 5 秒重來、20 小時沒人發現)
 
 
 def recv_fail_line(w, now=None):

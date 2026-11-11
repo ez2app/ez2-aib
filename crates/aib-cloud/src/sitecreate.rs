@@ -136,7 +136,10 @@ pub fn next(probes: &[Probe], blank: bool) -> Next {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterFailure {
     /// Nothing outside the host was used up and the site was never reachable: remove
-    /// what was made, each removal checked, and the customer may ask again.
+    /// what was made, each removal checked, and the customer may ask again. Only what
+    /// **this** opening made is removed: a container number is undone only when it was
+    /// seen not to exist before the clone. A clone that failed because the number was
+    /// taken by something else removes nothing.
     Undo,
     /// Keep the site as it is and tell a person. Nothing is removed.
     Keep,
@@ -172,6 +175,59 @@ pub fn progress_after_failure(step: CreateStep, code: &'static str) -> Progress 
         AfterFailure::Undo => Progress::NotOpened(code),
         AfterFailure::Keep => Progress::NeedsAttention(code),
     }
+}
+
+/// The lowest container number a site gets.
+pub const FIRST_SITE_CT: u32 = 110;
+/// Container numbers from here on are not for sites (the template lives there).
+pub const SITE_CT_END: u32 = 900;
+/// The last octets a site's internal address may have.
+pub const SITE_IP_FIRST: u8 = 10;
+pub const SITE_IP_LAST: u8 = 249;
+
+/// The container number and the last octet of the internal address for a new site.
+///
+/// Numbers only go up and are never given out twice: a site that was removed may have
+/// left a rule, a backup target, a monitor or a line on the entry behind, and a new
+/// customer on the same number would walk straight into it. So the numbers of removed
+/// sites count exactly like those in use. `live_*` are the numbers in use on the host:
+/// **every guest, containers and virtual machines alike** (they share one set of
+/// numbers; a list of containers only would hand out a number a virtual machine has),
+/// not only sites; numbers outside the sites' own ranges are passed over. `removed_*`
+/// are those in the records of removed sites.
+/// The caller reads all four completely or does not call: a list that could not be read
+/// is not an empty list.
+pub fn next_numbers(
+    live_cts: &[u32],
+    removed_cts: &[u32],
+    live_ips: &[u8],
+    removed_ips: &[u8],
+) -> Result<(u32, u8), &'static str> {
+    let top_ct = live_cts
+        .iter()
+        .chain(removed_cts)
+        .copied()
+        .filter(|ct| *ct < SITE_CT_END)
+        .max()
+        .unwrap_or(0);
+    let ct = top_ct.max(FIRST_SITE_CT - 1) + 1;
+    if ct >= SITE_CT_END {
+        return Err("numbers_exhausted");
+    }
+    // only addresses in the sites' own range count: the entry and the template have
+    // addresses outside it, and one of those must neither end the range nor make it jump
+    let top_ip = live_ips
+        .iter()
+        .chain(removed_ips)
+        .copied()
+        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))
+        .max()
+        .unwrap_or(0);
+    let ip = top_ip.max(SITE_IP_FIRST - 1);
+    if ip >= SITE_IP_LAST {
+        return Err("numbers_exhausted");
+    }
+    Ok((ct, ip + 1))
 }
 
 #[cfg(test)]
@@ -304,6 +360,82 @@ mod tests {
         assert_eq!(
             progress_after_failure(CreateStep::Licenses, "license_quota"),
             Progress::NeedsAttention("license_quota")
+        );
+    }
+    #[test]
+    fn a_new_site_gets_the_next_numbers_up() {
+        // nothing yet: the first site numbers
+        assert_eq!(
+            next_numbers(&[], &[], &[], &[]),
+            Ok((FIRST_SITE_CT, SITE_IP_FIRST))
+        );
+        // the entry (101) and the template (900) are containers, not a reason to start elsewhere
+        assert_eq!(next_numbers(&[101, 900], &[], &[2], &[]), Ok((110, 10)));
+        // nor are their addresses: one below the sites' range, one above it
+        assert_eq!(
+            next_numbers(&[101, 110, 114, 900], &[], &[2, 10, 14, 250], &[]),
+            Ok((115, 15))
+        );
+        assert_eq!(
+            next_numbers(&[101, 900], &[], &[2, 250, 254], &[9]),
+            Ok((110, 10))
+        );
+        assert_eq!(
+            next_numbers(&[101, 110, 114, 900], &[], &[2, 10, 14], &[]),
+            Ok((115, 15))
+        );
+    }
+
+    #[test]
+    fn the_numbers_of_removed_sites_are_never_given_out_again() {
+        // 112 and 113 were removed: the gap is not filled
+        assert_eq!(
+            next_numbers(&[101, 110, 114, 900], &[112, 113], &[2, 10, 14], &[12, 13]),
+            Ok((115, 15))
+        );
+        // the highest number ever used was a removed site's: the next one is above it
+        assert_eq!(
+            next_numbers(&[101, 110, 900], &[112, 117], &[2, 10], &[12, 17]),
+            Ok((118, 18))
+        );
+        // only removed sites are left
+        assert_eq!(
+            next_numbers(&[101, 900], &[110, 111], &[2], &[10, 11]),
+            Ok((112, 12))
+        );
+        // and the two kinds of number are counted apart: an address used with another
+        // container number is still used
+        assert_eq!(
+            next_numbers(&[101, 110, 900], &[], &[2, 10], &[40]),
+            Ok((111, 41))
+        );
+    }
+
+    #[test]
+    fn when_the_numbers_run_out_nothing_is_guessed() {
+        assert_eq!(
+            next_numbers(&[899], &[], &[], &[]),
+            Err("numbers_exhausted")
+        );
+        assert_eq!(
+            next_numbers(&[], &[899], &[], &[]),
+            Err("numbers_exhausted")
+        );
+        assert_eq!(
+            next_numbers(&[898], &[], &[], &[]),
+            Ok((899, SITE_IP_FIRST))
+        );
+        assert_eq!(
+            next_numbers(&[], &[], &[SITE_IP_LAST], &[]),
+            Err("numbers_exhausted")
+        );
+        assert_eq!(
+            next_numbers(&[], &[], &[], &[SITE_IP_LAST]),
+            Err("numbers_exhausted")
+        );
+        assert_eq!(
+            next_numbers(&[], &[], &[SITE_IP_LAST - 1], &[]),
+            Ok((110, SITE_IP_LAST))
         );
     }
 }
