@@ -2055,7 +2055,7 @@ jobs:
              '    if now.saturating_sub(at) > u64::MAX - 1 { // knife' \
              an_opened_site_tells_its_domain_and_administrators_for_a_while
           hk sitecreaterun.rs '    let theirs = aib_cloud::site::record_tenant(&ask) == Some(tenant);' \
-             '    let theirs = true; // knife' \
+             '    let theirs = !tenant.is_empty(); // knife (tenant stays read: -D warnings)' \
              an_opened_site_tells_its_domain_and_administrators_for_a_while
           # LL21 a just-opened site's status is its checks, or any request is answered with the opened view
           hk customercmd.rs '            if let Some(view) = opener.opened(tenant, site) {' \
