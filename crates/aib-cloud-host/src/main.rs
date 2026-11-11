@@ -14,6 +14,7 @@
 //! aib-cloud-host site create <domain> --continue <code>   (B2: limits and network, firewall file, start; B3: install with the scheduler on a timer, identity — undone on failure; B4: licences, entry, health, then the full record; B5: the DNS records at Cloudflare between licences and entry — kept for a person on failure; from the opening record; each checked)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
+//! aib-cloud-host site restore-wpress <code> --plan --from <backup id> | --plan --close resolved|abandoned | --apply | --continue | --resolved | --abandon <plan.json>   (a customer's WordPress backup into one of their sites, step by step; a person closes one that cannot go on; the steps are not wired yet: B3 slices 3–4)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host backup fresh <code> [--max-minutes N]   (a finished local dump of the site within N minutes, before an update; read-only)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
@@ -53,6 +54,8 @@ mod opstore;
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
+#[cfg(unix)]
+mod restorestepscmd;
 #[cfg(unix)]
 mod rostercmd;
 #[cfg(unix)]
