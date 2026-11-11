@@ -844,8 +844,12 @@ jobs:
           ck roster.rs '            if k.usage == KeyUse::Entry && !k.revoked {' \
              '            if k.usage == KeyUse::Entry && (!k.revoked || true) { // knife' \
              a_revoked_key_or_member_writes_no_line
-          # roster: a member who may not edit gets a login to the site
-          ck roster.rs '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Edit)) {' \
+          # roster: a member who may not administer the site (an editor) gets a login to it (Andy 11-12)
+          ck roster.rs '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Administer)) {' \
+             '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Edit)) { // knife' \
+             only_an_owner_or_admin_gets_a_login_into_the_site
+          # roster: a member who may only read gets a login to the site
+          ck roster.rs '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Administer)) {' \
              '        if !reaches || !m.roles.iter().any(|r| r.may(Operation::ReadPrivate)) { // knife' \
              one_roster_writes_both_kinds_of_lines
           # roster: a field nobody named is skipped
