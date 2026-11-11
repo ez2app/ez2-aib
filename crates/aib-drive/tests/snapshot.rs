@@ -160,7 +160,7 @@ fn a_full_page_of_open_pulls_is_no_snapshot() {
         json!(many),
     );
     let e = snap(m, &empty()).unwrap_err();
-    assert!(e.contains("next page"), "{e}");
+    assert_eq!(e, "open pulls: 100 items, may have a next page");
 }
 
 #[test]
@@ -173,7 +173,10 @@ fn a_full_page_of_commits_is_unknown_and_no_review_is_matched() {
     );
     let d = pending_with("commits", &[("REVIEW-678-x-2240e-7bcb6ee0.md", REV678)]);
     let s = snap(m, &d).unwrap();
-    assert!(matches!(s.prs[0].commits, Known::Unknown(_)));
+    assert_eq!(
+        s.prs[0].commits,
+        Known::Unknown("commits: 100 items, may have a next page".into())
+    );
     assert!(s.prs[0].reviews.is_empty());
 }
 
@@ -216,14 +219,16 @@ fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
         },
         FileLine {
             name: "REVIEW-bad-2240e.md".into(),
-            line: "結論: 通過 頭: 7bcb6ee0".into(),
+            // broken and names no commit of the PR: left out (one that
+            // names one is a_broken_note_about_a_commit_of_the_pr_is_no_snapshot)
+            line: "結論: 通過 頭: 未填".into(),
         },
         FileLine {
             name: "VERIFY-desktop-678-2240e.md".into(),
             line: format!("驗收: 通過 頭: {H678} 機: MacB 樣本: 5 沒驗: 無"),
         },
     ];
-    let (reviews, verifies) = lines_for(&files, &[H678.to_owned()]);
+    let (reviews, verifies) = lines_for(&files, &[H678.to_owned()]).unwrap();
     assert_eq!(reviews.len(), 1);
     assert_eq!(reviews[0].head, H678);
     assert_eq!(reviews[0].from.as_deref(), Some(B678));
@@ -363,7 +368,7 @@ fn a_real_round_never_proposes_a_merge() {
 #[test]
 fn an_unreadable_notes_folder_is_no_snapshot() {
     let e = snap(gh678(), Path::new("/nonexistent/aib-drive-notes")).unwrap_err();
-    assert!(e.starts_with("notes /nonexistent/aib-drive-notes"), "{e}");
+    assert_eq!(e, "notes /nonexistent/aib-drive-notes: entity not found");
 }
 
 #[test]
@@ -389,7 +394,7 @@ fn unread_urgent_mail_makes_a_seat_busy() {
         "2240e".into(),
         Ok(json!([
             {"priority": "urgent", "read_at": 1794405236},
-            {"priority": "normal"}
+            {"priority": "normal", "read_at": null}
         ])),
     );
     let s = snap_q(gh678(), &empty(), &q).unwrap();
@@ -548,12 +553,9 @@ fn a_full_page_of_rules_is_unknown() {
         json!(many),
     );
     let s = snap(m, &empty()).unwrap();
-    assert!(
-        matches!(&s.required_cells, Known::Unknown(e) if e.contains("next page")),
-        "{:?}",
-        s.required_cells
-    );
-    assert!(matches!(s.rules_version, Known::Unknown(_)));
+    let full = Known::Unknown("rules: 100 items, may have a next page".into());
+    assert_eq!(s.required_cells, full);
+    assert_eq!(s.rules_version, full);
 }
 
 #[test]
@@ -592,4 +594,61 @@ fn a_child_already_reaped_is_not_killed_by_pid_at_the_deadline() {
         "/bin/sh: timed out after 500 ms (exited, output held open)"
     );
     assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+}
+
+// ---- Codex #685 M2 / M3 (second review of 040077a8) ----
+
+/// M2: a dm item that does not read is not "not urgent".
+#[test]
+fn a_dm_item_that_does_not_read_is_no_snapshot() {
+    let cases = [
+        (json!([null]), "dm c477a: item 0: priority not a string"),
+        (
+            json!([{"priority": 1, "read_at": null}]),
+            "dm c477a: item 0: priority not a string",
+        ),
+        (
+            json!([{"priority": "normal", "read_at": null}, {"priority": "urgent", "read_at": true}]),
+            "dm c477a: item 1: read_at missing or not a time",
+        ),
+        (
+            json!([{"priority": "urgent"}]),
+            "dm c477a: item 0: read_at missing or not a time",
+        ),
+    ];
+    for (items, want) in cases {
+        let mut q = quiet();
+        q.0.insert("c477a".into(), Ok(items));
+        let e = snap_q(gh678(), &empty(), &q).unwrap_err();
+        assert_eq!(e, want);
+    }
+}
+
+/// M3: a note that names a commit of the PR but does not parse is an
+/// error with its name and why; one that names no commit of it is left out.
+#[test]
+fn a_broken_note_about_a_commit_of_the_pr_is_no_snapshot() {
+    let bad = "審查: 通過 頭: 7bcb6ee0 H/M/L/N: 0/0/0/0 範圍: 全文";
+    let d = pending_with("broken", &[("REVIEW-678-x-2240e-7bcb6ee0.md", bad)]);
+    let e = snap(gh678(), &d).unwrap_err();
+    assert_eq!(
+        e,
+        "REVIEW-678-x-2240e-7bcb6ee0.md: first line label missing"
+    );
+    let d = pending_with(
+        "broken-v",
+        &[("VERIFY-gem-678-c477a.md", "驗收 7bcb6ee014c4 看起來可以")],
+    );
+    let e = snap(gh678(), &d).unwrap_err();
+    assert_eq!(e, "VERIFY-gem-678-c477a.md: first line label missing");
+    let other = "# old review of 0123456789abcdef";
+    let d = pending_with(
+        "broken-other",
+        &[
+            ("REVIEW-1-old-2240e.md", other),
+            ("REVIEW-678-x-2240e-7bcb6ee0.md", REV678),
+        ],
+    );
+    let s = snap(gh678(), &d).unwrap();
+    assert_eq!(s.prs[0].reviews.len(), 1);
 }

@@ -2036,6 +2036,18 @@ jobs:
           sk source.rs '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
              '        if let Err(TryRecvError::Empty) | Ok(_) = exit_rx.try_recv() { // knife' \
              a_child_already_reaped_is_not_killed_by_pid_at_the_deadline
+          # S13 (Codex #685 M2) a dm item without a string priority reads as not urgent
+          sk source.rs '                .ok_or_else(|| bad("priority not a string"))?;' \
+             '                .unwrap_or_default(); // knife' \
+             a_dm_item_that_does_not_read_is_no_snapshot
+          # S14 (Codex #685 M2) a dm item whose read_at does not read counts as read
+          sk source.rs '                _ => return Err(bad("read_at missing or not a time")),' \
+             '                _ => false, // knife' \
+             a_dm_item_that_does_not_read_is_no_snapshot
+          # S15 (Codex #685 M3) a broken note about a commit of the PR is skipped as "not reviewed"
+          sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
+             '                let _ = e; // knife' \
+             a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

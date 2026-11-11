@@ -207,32 +207,69 @@ fn verify_kind(name: &str) -> Option<&str> {
         .filter(|k| !k.is_empty())
 }
 
+/// One parsed note.
+enum Note<'a> {
+    Review(aib_core::firstline::Review<'a>),
+    Verify(&'a str, aib_core::firstline::Verify<'a>),
+}
+
+/// Whether `line` names one of `commits`: a run of 7 to 40 hex digits that
+/// one of them starts with.
+fn names_a_commit(line: &str, commits: &[Sha]) -> bool {
+    line.split(|c: char| !c.is_ascii_hexdigit())
+        .filter(|t| (7..=40).contains(&t.len()))
+        .any(|t| {
+            let t = t.to_ascii_lowercase();
+            commits.iter().any(|c| c.starts_with(&t))
+        })
+}
+
 /// The review / acceptance lines whose head is one of `commits`. Who wrote
 /// them is what the file name claims, so `by` is always `Unknown`.
-pub fn lines_for(files: &[FileLine], commits: &[Sha]) -> (Vec<ReviewLine>, Vec<VerifyLine>) {
+///
+/// A note whose first line names a commit of this PR but does not parse is
+/// an error with the file name and why (Codex #685 M3): skipped, it would
+/// read as "not reviewed". A broken note that names none of them could not
+/// count for this PR anyway, so the old notes in `pending` do not stop it.
+pub fn lines_for(
+    files: &[FileLine],
+    commits: &[Sha],
+) -> Result<(Vec<ReviewLine>, Vec<VerifyLine>), String> {
     let on = |h: &str| commits.iter().any(|c| c == h);
     let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());
     let mut reviews = Vec::new();
     let mut verifies = Vec::new();
     for f in files {
-        if f.name.starts_with("REVIEW-") {
-            if let Ok(r) = aib_core::firstline::parse_review(&f.line) {
-                if on(r.head) {
-                    if let Some(l) = ReviewLine::from_parsed(unverified(), &f.name, &r) {
-                        reviews.push(l);
-                    }
+        let parsed = if f.name.starts_with("REVIEW-") {
+            aib_core::firstline::parse_review(&f.line)
+                .map(Note::Review)
+                .map_err(|e| e.to_string())
+        } else {
+            verify_kind(&f.name)
+                .ok_or_else(|| "no kind in the file name".to_owned())
+                .and_then(|k| {
+                    aib_core::firstline::parse_verify(&f.line)
+                        .map(|v| Note::Verify(k, v))
+                        .map_err(|e| e.to_string())
+                })
+        };
+        match parsed {
+            Ok(Note::Review(r)) if on(r.head) => {
+                if let Some(l) = ReviewLine::from_parsed(unverified(), &f.name, &r) {
+                    reviews.push(l);
                 }
             }
-        } else if let (Some(kind), Ok(v)) = (
-            verify_kind(&f.name),
-            aib_core::firstline::parse_verify(&f.line),
-        ) {
-            if on(v.head) {
+            Ok(Note::Verify(kind, v)) if on(v.head) => {
                 verifies.push(VerifyLine::from_parsed(unverified(), &f.name, kind, &v));
             }
+            Ok(_) => {}
+            Err(e) if names_a_commit(&f.line, commits) => {
+                return Err(format!("{}: {e}", f.name));
+            }
+            Err(_) => {}
         }
     }
-    (reviews, verifies)
+    Ok((reviews, verifies))
 }
 
 fn pr(
@@ -267,7 +304,7 @@ fn pr(
         c => c,
     };
     let (reviews, verifies) = match &commits {
-        Known::Known(c) => lines_for(files, c),
+        Known::Known(c) => lines_for(files, c)?,
         Known::Unknown(_) => (Vec::new(), Vec::new()),
     };
     Ok(Pr {

@@ -183,10 +183,22 @@ pub fn busy_seats(q: &dyn Queue, seats: &[String]) -> Result<BTreeSet<String>, S
         let items = v
             .as_array()
             .ok_or_else(|| format!("dm {seat}: not a list"))?;
-        let urgent_unread = items.iter().any(|i| {
-            i.get("priority").and_then(Value::as_str) == Some("urgent")
-                && i.get("read_at").is_none_or(Value::is_null)
-        });
+        // every item is checked: one that does not read is not "not urgent"
+        // (Codex #685 M2: `[null]` or a wrong type used to read as not busy)
+        let mut urgent_unread = false;
+        for (n, i) in items.iter().enumerate() {
+            let bad = |what: &str| format!("dm {seat}: item {n}: {what}");
+            let priority = i
+                .get("priority")
+                .and_then(Value::as_str)
+                .ok_or_else(|| bad("priority not a string"))?;
+            let unread = match i.get("read_at") {
+                Some(Value::Null) => true,
+                Some(Value::Number(_) | Value::String(_)) => false,
+                _ => return Err(bad("read_at missing or not a time")),
+            };
+            urgent_unread |= priority == "urgent" && unread;
+        }
         if urgent_unread {
             out.insert(seat.clone());
         }
