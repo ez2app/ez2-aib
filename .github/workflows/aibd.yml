@@ -585,6 +585,86 @@ jobs:
           ck roster.rs '                .any(|k| k.usage == KeyUse::Entry && !k.revoked)' \
              '                .any(|k| k.usage == KeyUse::Entry) // knife' \
              the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # share gate (plan 14.7 #11): outer spaces stay, so a padded owner is not the registered one
+          ck share.rs '    let s = raw.trim();' '    let s = raw; // knife' \
+             an_address_is_trimmed_and_lower_cased_and_nothing_else
+          # share gate: case is kept, so Owner@ and owner@ are two people
+          ck share.rs '    Some(s.to_ascii_lowercase())' '    Some(String::from(s)) // knife' \
+             an_address_is_trimmed_and_lower_cased_and_nothing_else
+          # share gate: an address that is not ASCII is taken
+          ck share.rs '    if s.is_empty() || s.len() > ADDRESS_MAX || !s.is_ascii() {' \
+             '    if s.is_empty() || s.len() > ADDRESS_MAX || (!s.is_ascii() && s.is_empty()) { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: an address longer than the limit is taken
+          ck share.rs '    if s.is_empty() || s.len() > ADDRESS_MAX || !s.is_ascii() {' \
+             '    if s.is_empty() || (s.len() > ADDRESS_MAX && s.is_empty()) || !s.is_ascii() { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a space inside an address is taken
+          ck share.rs '    b.is_ascii_whitespace() || b.is_ascii_control()' \
+             '    b.is_ascii_control() // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a control character inside an address is taken
+          ck share.rs '    b.is_ascii_whitespace() || b.is_ascii_control()' \
+             '    b.is_ascii_whitespace() // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a second @ is taken
+          ck share.rs '    if parts.next().is_some() || local.is_empty() {' \
+             '    if local.is_empty() && parts.next().is_none() { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: an empty name before the @ is taken
+          ck share.rs '    if parts.next().is_some() || local.is_empty() {' \
+             '    if parts.next().is_some() || (local.is_empty() && local.len() > 1) { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a domain without a dot is taken
+          ck share.rs "    if !domain.contains('.') || domain.split('.').any(str::is_empty) {" \
+             "    if domain.split('.').any(str::is_empty) { // knife" \
+             what_is_not_one_address_is_none
+          # share gate: a domain with an empty label is taken
+          ck share.rs "    if !domain.contains('.') || domain.split('.').any(str::is_empty) {" \
+             "    if !domain.contains('.') { // knife" \
+             what_is_not_one_address_is_none
+          # share gate: a roster with no address registered judges the owner anyway
+          ck share.rs '    if tenant.is_empty() {' '    if tenant.is_empty() && owners.is_empty() { // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: a file whose owner the drive did not name passes
+          ck share.rs '        [] => return Gate::Unknown(Why::NoOwner),' '        [] => return Gate::Allowed, // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: of two owners the first is judged
+          ck share.rs '        _ => return Gate::Refused(Why::ManyOwners),' '        _ => owners[0], // knife' \
+             more_than_one_owner_or_a_bad_owner_is_refused
+          # share gate: an owner who is not the tenant's passes
+          ck share.rs '        Some(false) => return Gate::Refused(Why::OwnerNotRegistered),' '        Some(false) => {} // knife' \
+             another_owner_is_refused
+          # share gate: an owner that is not an address passes
+          ck share.rs '        None => return Gate::Refused(Why::NotAnAddress),' '        None => {} // knife' \
+             more_than_one_owner_or_a_bad_owner_is_refused
+          # share gate: a sharer that is not an address passes
+          ck share.rs '            return Gate::Refused(Why::NotAnAddress);' '            return Gate::Allowed; // knife' \
+             a_sharer_who_is_not_the_tenants_is_refused
+          # share gate: a sharer who is not the tenant's passes
+          ck share.rs '        if !ok {' '        if !ok && s.is_empty() { // knife' \
+             a_sharer_who_is_not_the_tenants_is_refused
+          # share gate: "cannot tell" passes as if allowed
+          ck share.rs '        matches!(self, Gate::Allowed)' '        !matches!(self, Gate::Refused(_)) // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: an owner another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) && sharer.is_some_and(theirs) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # share gate: a sharer another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) || (sharer.is_some_and(theirs) && owners.is_empty()) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # entry sudoers: two tenants registering one address are both written (c477a M1)
+          ck roster.rs '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e)))' \
+             '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e) && e.is_empty()))' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # roster emails: an entry is kept as written, not as compared
+          ck roster.rs '            .and_then(crate::share::normalize)' '            .map(String::from) // knife' \
+             the_registered_addresses_are_read_normalized_and_optional
+          # roster emails: the same address twice is read
+          ck roster.rs '        if out.contains(&a) {' '        if out.contains(&a) && a.is_empty() { // knife' \
+             the_registered_addresses_are_read_normalized_and_optional
           # H14: a wildcard rule is not told apart (the hand-written customer *)
           ck verify.rs "                if text.contains('*') {" \
              '                if false { // knife' \
@@ -1120,6 +1200,36 @@ jobs:
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
              the_sudoers_file_comes_from_every_roster_or_none
+          # roster share-check: "cannot tell" exits as "not this tenant's" (2), not its own 4
+          hk rostercmd.rs '        Gate::Unknown(why) => ("unknown", why, 4),' \
+             '        Gate::Unknown(why) => ("unknown", why, 2), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: only the first owner the drive names is judged
+          hk rostercmd.rs '        Some(others) => judge(&owners, sharer, &roster.emails, &others),' \
+             '        Some(others) => judge(&owners[..owners.len().min(1)], sharer, &roster.emails, &others), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: a second --sharer replaces the first
+          hk rostercmd.rs '            ("--sharer", Some(a)) if sharer.is_none() => sharer = Some(*a),' \
+             '            ("--sharer", Some(a)) => sharer = Some(*a), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: the command line refuses --owner as an unknown flag
+          hk rostercmd.rs '            "--owner" | "--sharer" | "--rosters" => {' '            "--owner-knife" | "--sharer" | "--rosters" => {' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: "not this tenant's" exits as a refused roster (2), not its own 5 (c477a N3)
+          hk rostercmd.rs '        Gate::Refused(why) => ("refused", why, 5),' \
+             '        Gate::Refused(why) => ("refused", why, 2), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: without --rosters only this tenant's roster is read (c477a M1)
+          hk rostercmd.rs '    let Some(dir) = dir else {' \
+             '    let Some(dir) = dir.or(Some("/nonexistent-knife")) else {' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: the other tenants' addresses are not collected (c477a M1)
+          hk rostercmd.rs '            out.extend(r.emails);' '            out.extend(r.emails.into_iter().filter(|_| false)); // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
+          # roster share-check: a roster that cannot be read is skipped instead of leaving it unknown
+          hk rostercmd.rs '        let r = load(path.to_str()?, records).ok()?.ok()?;' \
+             '        let Some(Ok(r)) = load(path.to_str()?, records).ok() else { continue }; // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \
