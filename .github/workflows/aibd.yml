@@ -1136,7 +1136,7 @@ jobs:
              a_leftover_still_there_after_its_removal_stops_with_its_path
           # the plan of a removed site lists its leftovers for another address too (33e28 L1)
           hk siteremovecmd.rs '        Ok(s) if !siteremove::confirmed(&s.code, s.primary(), code, address) => (' \
-             '        Ok(s) if s.code.is_empty() => ( // knife' \
+             '        Ok(s) if s.code.is_empty() && !address.is_empty() => ( // knife' \
              the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
           # the plan of a removed site does not list what is still there (33e28 L1)
           hk siteremovecmd.rs '            Ok(found) => (Value::from(found), Value::Null),' \

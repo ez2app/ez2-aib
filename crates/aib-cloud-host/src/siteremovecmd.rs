@@ -2053,7 +2053,10 @@ mod tests {
         let mut h = fake();
         h.refused = Some("/etc/ez2-cloud/sites/site9.admin.anna");
         let e = clean_leftovers(&mut h, &spec()).unwrap_err();
-        assert!(e.contains("1 path(s)") && e.contains("site9.admin.anna: refused"), "{e}");
+        assert!(
+            e.contains("1 path(s)") && e.contains("site9.admin.anna: refused"),
+            "{e}"
+        );
         // every other path of the site was still removed
         let left: Vec<&str> = h
             .files
@@ -2090,7 +2093,10 @@ mod tests {
         // another address: nothing is looked at
         let doc = removed_doc("site9", "www.example.org", Ok(spec()), never);
         assert_eq!(doc["left_on_host"], Value::Null);
-        assert!(doc["left_on_host_note"].as_str().unwrap().contains("not those"));
+        assert!(doc["left_on_host_note"]
+            .as_str()
+            .unwrap()
+            .contains("not those"));
         // no moved record that can be read: said, not guessed
         let doc = removed_doc("site9", "www.example.com", Err("gone".to_owned()), never);
         assert_eq!(doc["left_on_host"], Value::Null);
