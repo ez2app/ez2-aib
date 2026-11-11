@@ -224,7 +224,7 @@ pub fn probe_here(kind: &str, ip: IpAddr, port: u16) -> bool {
 /// (not inside aibd, which owns the timer registry); the only clock it needs is "give the
 /// child at most N seconds". Nothing else in this crate sleeps.
 #[allow(clippy::disallowed_methods)]
-fn wait_with_timeout(
+pub(crate) fn wait_with_timeout(
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> Result<std::process::ExitStatus, String> {
@@ -1392,6 +1392,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("usage") => crate::usagecmd::cmd(&args[2..]),
             Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
+            Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
             }
@@ -1405,7 +1406,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
             Some("brand-check") => crate::brandcheckcmd::cmd(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | brand-check <code> [--json]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | brand-check <code> [--json]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
