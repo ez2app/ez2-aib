@@ -11,7 +11,9 @@
 //!   review; no local file says which pin is right, since a same-user AI could write it);
 //! - the parameter file is `KEY=VALUE` lines, ASCII only, nothing a shell or Python could
 //!   read as code: keys from a fixed shape, never a name that changes how bash or python
-//!   starts, values from a small character set.
+//!   starts, values from a small character set; the program's declaration line gives each
+//!   key a kind (a plain word by default: no `,` or `=`, so a value cannot add a key to a
+//!   `k=v,k=v` option string; c477a #662 L2).
 //!
 //! No I/O beyond reading the two files and writing the program's copy.
 
@@ -64,7 +66,8 @@ const RESERVED_PREFIX: &[&str] = &[
 ];
 
 /// The line in a shared program that says which parameters it takes (inside the pinned
-/// bytes, so the review covers it): `# aib-consent-params: SITE CT IP`.
+/// bytes, so the review covers it): `# aib-consent-params: SITE CT:int IP:ipv4 IDS:list`.
+/// A key without `:kind` is a [`Kind::Word`].
 pub const DECLARE: &str = "# aib-consent-params:";
 /// The declaration must sit in the program's first lines.
 pub const DECLARE_WITHIN_LINES: usize = 10;
@@ -95,7 +98,64 @@ pub fn key_ok(k: &str) -> bool {
     !RESERVED.contains(&k) && !RESERVED_PREFIX.iter().any(|p| k.starts_with(p))
 }
 
-/// Is this a value a parameter file may carry? No blank, quote, `$`, backquote, `;`, `&`,
+/// What a declared parameter's value may look like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// [`value_ok`] without `,` and `=` (the default).
+    Word,
+    /// Words joined by `,`, none empty: `a,b,c`.
+    List,
+    /// 1 to 10 digits.
+    Int,
+    /// A dotted IPv4 address written the usual way (`10.77.0.4`, no leading zeros).
+    Ipv4,
+    /// A host name: lower-case labels of letters, digits and `-`, joined by `.`.
+    Host,
+}
+
+impl Kind {
+    fn from_name(n: &str) -> Option<Kind> {
+        match n {
+            "list" => Some(Kind::List),
+            "int" => Some(Kind::Int),
+            "ipv4" => Some(Kind::Ipv4),
+            "host" => Some(Kind::Host),
+            _ => None,
+        }
+    }
+
+    /// Does `v` (already [`value_ok`]) fit this kind?
+    pub fn fits(self, v: &str) -> bool {
+        let word = |w: &str| !w.is_empty() && !w.contains([',', '=']);
+        match self {
+            Kind::Word => word(v),
+            Kind::List => !v.contains('=') && v.split(',').all(word),
+            Kind::Int => (1..=10).contains(&v.len()) && v.bytes().all(|c| c.is_ascii_digit()),
+            Kind::Ipv4 => v
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|a| a.to_string() == v),
+            Kind::Host => {
+                v.len() <= 253
+                    && v.split('.').all(|l| {
+                        (1..=63).contains(&l.len())
+                            && !l.starts_with('-')
+                            && !l.ends_with('-')
+                            && l.bytes()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                    })
+            }
+        }
+    }
+}
+
+/// One key a program declares, with the kind of value it takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declared {
+    pub key: String,
+    pub kind: Kind,
+}
+
+/// Is this a value a parameter file may carry at all (before its kind is checked)? No blank, quote, `$`, backquote, `;`, `&`,
 /// `|`, `<`, `>`, `*`, `?`, `~`, brackets, backslash, control or non-ASCII character; not
 /// starting with `-` (a program passing it on would read an option) and no `..` (a path
 /// out of where the program meant it; 2240e #661 N2). Programs still quote values and put
@@ -110,11 +170,11 @@ pub fn value_ok(v: &str) -> bool {
 }
 
 /// The keys a program declares it takes, from its first [`DECLARE_WITHIN_LINES`] lines.
-/// None: no declaration, more than one, or a declared key that is not a key a parameter
-/// file may set.
-pub fn declared_keys(program: &[u8]) -> Option<Vec<String>> {
+/// None: no declaration, more than one, a declared key that is not a key a parameter
+/// file may set, a key twice, or a kind this crate does not know.
+pub fn declared_keys(program: &[u8]) -> Option<Vec<Declared>> {
     let text = std::str::from_utf8(program).ok()?;
-    let mut found: Option<Vec<String>> = None;
+    let mut found: Option<Vec<Declared>> = None;
     for line in text.lines().take(DECLARE_WITHIN_LINES) {
         let Some(rest) = line.strip_prefix(DECLARE) else {
             continue;
@@ -122,8 +182,21 @@ pub fn declared_keys(program: &[u8]) -> Option<Vec<String>> {
         if found.is_some() {
             return None;
         }
-        let keys: Vec<String> = rest.split_ascii_whitespace().map(str::to_owned).collect();
-        if keys.is_empty() || keys.len() > PARAMS_MAX_KEYS || !keys.iter().all(|k| key_ok(k)) {
+        let mut keys: Vec<Declared> = Vec::new();
+        for word in rest.split_ascii_whitespace() {
+            let (key, kind) = match word.split_once(':') {
+                None => (word, Kind::Word),
+                Some((k, n)) => (k, Kind::from_name(n)?),
+            };
+            if !key_ok(key) || keys.iter().any(|d| d.key == key) {
+                return None;
+            }
+            keys.push(Declared {
+                key: key.to_owned(),
+                kind,
+            });
+        }
+        if keys.is_empty() || keys.len() > PARAMS_MAX_KEYS {
             return None;
         }
         found = Some(keys);
@@ -131,16 +204,21 @@ pub fn declared_keys(program: &[u8]) -> Option<Vec<String>> {
     found
 }
 
-/// Every key in `params` is one the program declares.
-pub fn params_declared(params: &[(String, String)], declared: &[String]) -> Result<(), Refused> {
-    match params.iter().position(|(k, _)| !declared.contains(k)) {
-        Some(i) => Err(refused("params_key_undeclared", i + 1)),
-        None => Ok(()),
+/// Every key in `params` is one the program declares, and its value fits the declared kind.
+/// `line` counts the parameters (comments and blank lines left out).
+pub fn params_declared(params: &[(String, String)], declared: &[Declared]) -> Result<(), Refused> {
+    for (i, (k, v)) in params.iter().enumerate() {
+        match declared.iter().find(|d| d.key == *k) {
+            None => return Err(refused("params_key_undeclared", i + 1)),
+            Some(d) if !d.kind.fits(v) => return Err(refused("params_value_kind", i + 1)),
+            Some(_) => {}
+        }
     }
+    Ok(())
 }
 
-/// The review of a shared program: its first line says it passed (RULES §1 shape) and the
-/// file names the pin. Returns that first line, which the dialog shows. A review proves
+/// The review of a shared program: its first line says it passed (RULES §1 shape) and
+/// names the pin (`頭: <sha256>`; c477a #662 N1). Returns that first line, which the dialog shows. A review proves
 /// nothing by itself (a same-user AI can write one); it puts the reviewer's verdict next
 /// to the pin in front of the person.
 pub fn review_first_line(review: &str, pin: &str) -> Result<String, Refused> {
@@ -149,7 +227,7 @@ pub fn review_first_line(review: &str, pin: &str) -> Result<String, Refused> {
     {
         return Err(refused("review_not_passed", 1));
     }
-    if !review.contains(pin) {
+    if !first.contains(pin) {
         return Err(refused("review_without_pin", 0));
     }
     Ok(first.to_owned())
@@ -567,7 +645,8 @@ mod tests {
     fn only_the_keys_the_program_declares() {
         let prog = b"#!/bin/bash\n# aib-consent-params: SITE CT\nset -eu\n";
         let decl = declared_keys(prog).expect("declared");
-        assert_eq!(decl, vec!["SITE", "CT"]);
+        let keys: Vec<&str> = decl.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(keys, vec!["SITE", "CT"]);
         let ok = parse_params("SITE=s-1\nCT=104\n").expect("parses");
         assert_eq!(params_declared(&ok, &decl), Ok(()));
         let extra = parse_params("SITE=s-1\nGITHUB_TOKEN_FILE=x\n").expect("parses");
@@ -586,13 +665,75 @@ mod tests {
         assert_eq!(declared_keys(b"# aib-consent-params:\n"), None);
         let late: String = "x\n".repeat(10) + "# aib-consent-params: SITE\n";
         assert_eq!(declared_keys(late.as_bytes()), None);
+        assert_eq!(declared_keys(b"# aib-consent-params: SITE:path\n"), None);
+        assert_eq!(declared_keys(b"# aib-consent-params: SITE: CT\n"), None);
+        assert_eq!(
+            declared_keys(b"# aib-consent-params: SITE SITE:int\n"),
+            None
+        );
+    }
+
+    fn kinds(line: &str) -> Vec<Declared> {
+        declared_keys(format!("# aib-consent-params: {line}\n").as_bytes()).expect("declared")
+    }
+
+    // knife: a plain value cannot add a key to a k=v,k=v option string (c477a #662 L2)
+    #[test]
+    fn a_value_fits_the_kind_its_key_declares() {
+        let decl = kinds("IP IDS:list CT:int ADDR:ipv4 HOST:host");
+        assert_eq!(decl[0].kind, Kind::Word);
+        let check = |k: &str, v: &str| {
+            let p = parse_params(&format!("{k}={v}\n")).expect("parses");
+            params_declared(&p, &decl)
+        };
+        for (k, v) in [
+            ("IP", "10.77.0.9/24,gw=1.2.3.4"),
+            ("IP", "x,hwaddr"),
+            ("IP", "a=b"),
+            ("IDS", "a,,b"),
+            ("IDS", "a,"),
+            ("IDS", "a,b=c"),
+            ("CT", "10a"),
+            ("CT", "12345678901"),
+            ("ADDR", "10.77.0.9/24"),
+            ("ADDR", "010.77.0.9"),
+            ("ADDR", "10.77.0"),
+            ("HOST", "Shop.example.test"),
+            ("HOST", "a_b.test"),
+            ("HOST", "a.test,b.test"),
+        ] {
+            assert_eq!(check(k, v), Err(refused("params_value_kind", 1)), "{k}={v}");
+        }
+        // these never reach the kind check: the base character set refuses them
+        for v in ["-a.test", "a..test"] {
+            assert_eq!(
+                parse_params(&format!("HOST={v}\n")),
+                Err(refused("params_value", 1))
+            );
+        }
+        for (k, v) in [
+            ("IP", "10.77.0.9/24"),
+            ("IDS", "0a1b2c3d,4e5f6a7b"),
+            ("IDS", "one"),
+            ("CT", "104"),
+            ("ADDR", "10.77.0.9"),
+            ("HOST", "shop.example.test"),
+            ("HOST", "localhost"),
+        ] {
+            assert_eq!(check(k, v), Ok(()), "{k}={v}");
+        }
     }
 
     #[test]
     fn a_review_has_passed_and_names_the_pin() {
         let pin = "a".repeat(64);
-        let good = format!("結論: 通過 頭: x H/M/L/N: 0/0/0/0 範圍: 全文\nsha256 {pin}\n");
+        let good = format!("結論: 通過 頭: {pin} H/M/L/N: 0/0/0/0 範圍: 全文\n");
         assert!(review_first_line(&good, &pin).is_ok());
+        let below = format!("結論: 通過 頭: x H/M/L/N: 0/0/0/0 範圍: 全文\nsha256 {pin}\n");
+        assert_eq!(
+            review_first_line(&below, &pin),
+            Err(refused("review_without_pin", 0))
+        );
         let failed = format!("結論: 不通過 頭: x\n{pin}\n");
         assert_eq!(
             review_first_line(&failed, &pin),
