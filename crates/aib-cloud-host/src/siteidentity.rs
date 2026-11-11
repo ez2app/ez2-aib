@@ -463,6 +463,30 @@ pub fn identity_step(
         }
     }
     let admins = read_admins(paths)?;
+    // The installer gave its administrator the site's notice address, which is the first
+    // site administrator's when the customer gave none; the site software refuses a second
+    // user with that address, so the installer's administrator lets go of it first (e1a
+    // 11-12: user create failed). It is removed after the loop.
+    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some()
+    {
+        let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);
+        let flag = format!("--user_email={parked}");
+        runner
+            .run(&wp(spec, &["user", "update", SETUP_ADMIN, &flag]))
+            .map_err(|e| format!("identity_failed: {SETUP_ADMIN} address: {e}"))?;
+        let back = runner
+            .run(&wp(
+                spec,
+                &["user", "get", SETUP_ADMIN, "--field=user_email"],
+            ))
+            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;
+        if back.trim() != parked {
+            return Err(format!(
+                "identity_not_set: {SETUP_ADMIN} address reads {:?}",
+                back.trim()
+            ));
+        }
+    }
     let mut first_id: Option<String> = None;
     let mut logins = Vec::new();
     for (email, login) in &admins {
@@ -594,6 +618,9 @@ mod tests {
         fed: Vec<(String, Vec<u8>)>,
         options: std::collections::BTreeMap<String, String>,
         users: Vec<String>,
+        /// each user's address; the installer's administrator has the install's notice
+        /// address, as ez2-site-setup gives it
+        emails: std::collections::BTreeMap<String, String>,
         cron: Option<String>,
         enabled: bool,
         /// a command (joined argv contains it) that fails
@@ -607,6 +634,7 @@ mod tests {
                 fed: Vec::new(),
                 options: Default::default(),
                 users: vec![SETUP_ADMIN.to_owned()],
+                emails: [(SETUP_ADMIN.to_owned(), "ops@example.test".to_owned())].into(),
                 cron: None,
                 enabled: false,
                 broken: None,
@@ -664,12 +692,28 @@ mod tests {
                     .position(|u| u == login)
                     .map(|i| format!("{}\n", i + 1))
                     .ok_or("no user".to_owned()),
-                ["user", "create", login, ..] => {
+                ["user", "create", login, email, ..] => {
+                    // the site software takes no second user with an address in use
+                    if self.emails.values().any(|e| e == email) {
+                        return Err("Error: Sorry, that email address is already used!".to_owned());
+                    }
                     self.users.push((*login).to_owned());
+                    self.emails.insert((*login).to_owned(), (*email).to_owned());
                     Ok(format!("{}\n", self.users.len()))
                 }
+                ["user", "update", login, flag] => {
+                    let email = flag.strip_prefix("--user_email=").ok_or("flag")?;
+                    self.emails.insert((*login).to_owned(), email.to_owned());
+                    Ok(String::new())
+                }
+                ["user", "get", login, "--field=user_email"] => self
+                    .emails
+                    .get(*login)
+                    .map(|e| format!("{e}\n"))
+                    .ok_or("no user".to_owned()),
                 ["user", "delete", login, ..] => {
                     self.users.retain(|u| u != login);
+                    self.emails.remove(*login);
                     Ok(String::new())
                 }
                 _ => Ok(String::new()),
@@ -771,6 +815,36 @@ mod tests {
             site.calls.last().map(String::as_str),
             Some(format!("pct exec 131 -- rm -f {SETUP_IN_CT}").as_str())
         );
+    }
+
+    /// The installer's administrator has the first administrator's address (the notice
+    /// address when the customer gave none): it lets go of it before that administrator is
+    /// created, or the site software refuses the user (e1a 11-12).
+    #[test]
+    fn the_installer_s_address_is_let_go_before_the_first_administrator() {
+        let paths = scratch("setupmail");
+        let mut site = Site::new();
+        assert_eq!(site.emails[SETUP_ADMIN], "ops@example.test");
+        let mut record = json!({});
+        identity_step(&mut site, &paths, &spec(true), &mut record).unwrap();
+        let at = |part: &str| site.calls.iter().position(|c| c.contains(part)).unwrap();
+        let parked = at("user update ez2admin --user_email=ez2admin@s-b3test.invalid");
+        assert!(
+            parked < at("user create ops ops@example.test"),
+            "{:#?}",
+            site.calls
+        );
+        assert_eq!(site.users, ["ops", "ops2"]);
+        assert_eq!(site.emails["ops"], "ops@example.test");
+        // an address that does not read back stops the step before any user is created
+        let mut site = Site::new();
+        site.broken = Some("--field=user_email");
+        let err = identity_step(&mut site, &paths, &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_unchecked: ez2admin address"),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains("user create")));
     }
 
     #[test]

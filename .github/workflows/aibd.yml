@@ -1817,6 +1817,16 @@ jobs:
           hk sitecreatecmd.rs "    if !text.ends_with('\\n') {" \
              '    if false { // knife' \
              only_the_main_net0_hwaddr_is_replaced
+          # E1 e1a 11-12: the installer's administrator lets go of the first administrator's address
+          hk siteidentity.rs '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some()' \
+             '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() && false // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);' \
+             '        let parked = format!("{SETUP_ADMIN}@{}.example", spec.code); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;' \
+             '            .unwrap_or_default(); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
