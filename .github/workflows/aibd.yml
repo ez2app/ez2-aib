@@ -479,6 +479,24 @@ jobs:
           ck wording.rs '            if said("provider_check") {' \
              '            if said("provider_check") && exit == 0 { // knife' \
              every_answer_has_its_sentence
+          # E1 N1 opened screen (HUMAN-PASTE-4542e-1112, Andy 11-12 04:03): the second
+          # administrator's half sentence is dropped, or kept when there is none
+          ck wording.rs '        Some(s) => format!("(另一位:{})", crate::svc::plain(s)),' \
+             '        Some(_) => String::new(), // knife' \
+             the_opened_screen_is_the_final_wording_word_for_word
+          ck wording.rs '        None => String::new(),' \
+             '        None => "(另一位:)".to_owned(), // knife' \
+             the_opened_screen_is_the_final_wording_word_for_word
+          # E1 N1 opened screen: a domain or a login reaches the terminal as it came
+          ck wording.rs '    let domain = crate::svc::plain(domain);' \
+             '    let domain = String::from(domain); // knife' \
+             the_opened_screen_shows_nothing_that_acts_on_the_terminal
+          ck wording.rs '    let login = crate::svc::plain(login);' \
+             '    let login = String::from(login); // knife' \
+             the_opened_screen_shows_nothing_that_acts_on_the_terminal
+          ck wording.rs '        Some(s) => format!("(另一位:{})", crate::svc::plain(s)),' \
+             '        Some(s) => format!("(另一位:{})", String::from(s)), // knife' \
+             the_opened_screen_shows_nothing_that_acts_on_the_terminal
           # customer side: a request not offered yet is sent (Andy 11-10: hidden)
           ck client.rs '    if !asked.offered() {' \
              '    if !asked.offered() && false { // knife' \

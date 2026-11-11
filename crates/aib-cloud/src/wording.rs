@@ -73,6 +73,30 @@ pub const NOT_REACHED: &str =
 /// There is no `ssh` program on this machine.
 pub const NO_SSH: &str = "這台電腦找不到 ssh 程式,請先安裝 OpenSSH 後再試。";
 
+/// The last screen of a site the customer opened (E1 N1), word for word from
+/// `HUMAN-PASTE-4542e-1112.md` (final: Andy 11-12 04:03 「照草稿用，第二位管理員保留」). The
+/// customer takes the one-time login link with the command named here themselves (Andy
+/// 11-12 03:58: no mail, no platform seat running it for them). The link is never in this
+/// text: it may be kept with a receipt (ebb36 L1).
+///
+/// `second` is the second administrator's login. Without one, the half sentence
+/// 「(另一位:…)」 is left out whole and the line ends after the first login; nothing else
+/// changes. The domain and the logins are made plain ([`crate::svc::plain`]) first.
+///
+/// The command is the draft's `aib cloud site login-link <domain>`: the customer side has
+/// no `login-link` yet, and only its name may change to the one main takes (待確認 1).
+pub fn opened(domain: &str, login: &str, second: Option<&str>) -> String {
+    let domain = crate::svc::plain(domain);
+    let login = crate::svc::plain(login);
+    let also = match second {
+        Some(s) => format!("(另一位:{})", crate::svc::plain(s)),
+        None => String::new(),
+    };
+    format!(
+        "✅ 網站已開好:https://{domain}\n   管理員帳號:{login}{also}\n\n下一步:拿登入連結\n   請輸入:aib cloud site login-link {domain}\n   畫面會出現一條連結,點開就直接進後台。\n   ・連結 10 分鐘內有效,只能用一次。\n   ・過期或用掉了,再輸入同一行指令拿新的。\n   ・連結等於鑰匙,請不要轉傳或貼到公開的地方。\n\n進後台後,建議先到「使用者 → 個人資料」設定自己的密碼。"
+    )
+}
+
 /// Why a request was not sent.
 pub fn not_sent(why: NotSent) -> &'static str {
     match why {
@@ -242,5 +266,54 @@ mod tests {
                 assert!(!sentence.contains(word), "{sentence}");
             }
         }
+    }
+
+    /// E1 N1: the opened site's last screen, word for word as HUMAN-PASTE-4542e-1112.md
+    /// has it (Andy 11-12 04:03); only the domain and the logins are filled in.
+    #[test]
+    fn the_opened_screen_is_the_final_wording_word_for_word() {
+        assert_eq!(
+            opened("shop.example.test", "ops", Some("ops2")),
+            "✅ 網站已開好:https://shop.example.test
+   管理員帳號:ops(另一位:ops2)
+
+下一步:拿登入連結
+   請輸入:aib cloud site login-link shop.example.test
+   畫面會出現一條連結,點開就直接進後台。
+   ・連結 10 分鐘內有效,只能用一次。
+   ・過期或用掉了,再輸入同一行指令拿新的。
+   ・連結等於鑰匙,請不要轉傳或貼到公開的地方。
+
+進後台後,建議先到「使用者 → 個人資料」設定自己的密碼。"
+        );
+        // one administrator: the half sentence goes whole, nothing else changes
+        assert_eq!(
+            opened("shop.example.test", "ops", None),
+            "✅ 網站已開好:https://shop.example.test
+   管理員帳號:ops
+
+下一步:拿登入連結
+   請輸入:aib cloud site login-link shop.example.test
+   畫面會出現一條連結,點開就直接進後台。
+   ・連結 10 分鐘內有效,只能用一次。
+   ・過期或用掉了,再輸入同一行指令拿新的。
+   ・連結等於鑰匙,請不要轉傳或貼到公開的地方。
+
+進後台後,建議先到「使用者 → 個人資料」設定自己的密碼。"
+        );
+    }
+
+    /// What fills the screen in is made plain: nothing in it acts on the terminal.
+    #[test]
+    fn the_opened_screen_shows_nothing_that_acts_on_the_terminal() {
+        let text = opened("a\u{1b}[2Jb.example.test", "o\u{7}ps", Some("x\u{202e}y"));
+        assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
+        assert!(!text.contains('\u{202e}'), "{text}");
+        assert!(text.contains("https://a\\x1b[2Jb.example.test\n"), "{text}");
+        assert!(
+            text.contains("login-link a\\x1b[2Jb.example.test\n"),
+            "{text}"
+        );
+        assert!(text.contains(":o\\x07ps("), "{text}");
     }
 }
