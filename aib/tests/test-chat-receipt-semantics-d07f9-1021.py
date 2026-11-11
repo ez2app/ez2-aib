@@ -73,7 +73,7 @@ class Base(unittest.TestCase):
         rec = {"v": 1, "msgid": GF.new_msgid(), "received_at": int(time.time()), "to_cabin": "6ddf", "to_seat": SEAT,
                "from_npub": NK.npub(NK.pubkey_hex("%064x" % 31)),
                "from_addr": NK.npub(NK.pubkey_hex("%064x" % 32)) + "/5a97/4345c",
-               "verified": verified, "class": cls, "content": "Pro 13 收到", "display_name": "Mac Pro 13"}
+               "verified": verified, "class": cls, "content": "Mac B 收到", "display_name": "Mac B"}
         rec.update(extra)
         GF.write_inbox(self.root, rec)
         out = GI.import_once(self.root, self.env)

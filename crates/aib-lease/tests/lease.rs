@@ -24,7 +24,7 @@ struct Fake {
 impl Fake {
     fn new() -> Fake {
         Fake {
-            host: "andymini".into(),
+            host: "mac-c".into(),
             procs: RefCell::new(HashMap::new()),
             git: None,
         }
@@ -87,7 +87,7 @@ fn holder(run_id: &str) -> Holder {
 fn remote(run_id: &str, hb: i64) -> Holder {
     Holder {
         pid: Some(MAC_PID),
-        host: Some("Ez2-AL-Mac-Pro.local".into()),
+        host: Some("mac-a.local".into()),
         heartbeat_s: Some(hb),
         ..holder(run_id)
     }
@@ -160,8 +160,8 @@ fn a_remote_holder_is_not_judged_by_a_local_pid() {
     let o = acq(&ps, &p, T0, remote("k10p", 60));
     assert_eq!((o.rc, result(&o)), (RC_OK, "acquired"));
     let lease = read_lease(&ps).unwrap().unwrap();
-    assert_eq!(lease["host"], "Ez2-AL-Mac-Pro.local");
-    assert_eq!(lease["lease_host"], "andymini");
+    assert_eq!(lease["host"], "mac-a.local");
+    assert_eq!(lease["lease_host"], "mac-c");
     assert_eq!(lease["pid"], MAC_PID);
     assert!(lease["pid_start"].is_null());
     assert_eq!(lease["expiry_epoch"], T0 as i64 + 180);
@@ -215,7 +215,7 @@ fn a_beating_remote_queue_entry_survives_other_seats_cleanup() {
     assert_eq!(gone.len(), 1);
     assert_eq!(gone[0]["why"], "gone");
     assert_eq!(gone[0]["gone_why"], "heartbeat_stale");
-    assert_eq!(gone[0]["holder_host"], "Ez2-AL-Mac-Pro.local");
+    assert_eq!(gone[0]["holder_host"], "mac-a.local");
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn another_host_needs_a_heartbeat_and_the_interval_is_bounded() {
     p.run(700, "S");
     let here = Holder {
         pid: Some(700),
-        host: Some("andymini".into()),
+        host: Some("mac-c".into()),
         ..holder("here")
     };
     assert_eq!(qadd(&ps, &p, T0, here).rc, RC_OK);
@@ -397,7 +397,7 @@ fn a_dead_local_holder_with_a_live_ship_under_its_tree_is_not_taken_over() {
     std::fs::create_dir_all(git.join(SHIP_REGISTRY)).unwrap();
     std::fs::write(
         git.join(SHIP_REGISTRY).join("900"),
-        r#"{"pid": 900, "pid_start": "S9", "host": "andymini"}"#,
+        r#"{"pid": 900, "pid_start": "S9", "host": "mac-c"}"#,
     )
     .unwrap();
     p.git = Some(git.clone());

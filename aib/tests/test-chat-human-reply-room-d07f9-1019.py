@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """回「主人本人從艦長室寄的」那封的線上來信 ⇒ 只進艦長室,不進 AI 框(Andy 10-19 01:4x 選 1)。
 
-10-19 實機:Andy 從艦長室按 Touch ID 寄給 Pro 13,Pro 13 的回信送進了艦長席 cc203 的 AI 框。
+10-19 實機:Andy 從艦長室按 Touch ID 寄給 Mac B,Mac B 的回信送進了艦長席 cc203 的 AI 框。
 做法:寄出帳記 author;回信帶 aib-reply-to 指到 author=human 那封 ⇒ 建立時就待審(hold_human,
 原因 human_reply)、global.human_reply=True;待審提示、分組都不算它(系統不叫 AI 去讀)。
 **這只防「自動塞給 AI」**:同帳號 AI 讀得到佇列檔、刪得掉寄出帳;回信沒帶 reply-to(對方用 aib dm 直接寄)⇒ 照一般信。
@@ -67,7 +67,7 @@ class Base(unittest.TestCase):
         rec = {"v": 1, "msgid": GF.new_msgid(), "received_at": int(time.time()), "to_cabin": "6ddf", "to_seat": SEAT,
                "from_npub": NK.npub(NK.pubkey_hex("%064x" % 31)),
                "from_addr": NK.npub(NK.pubkey_hex("%064x" % 32)) + "/5a97/4345c",
-               "verified": verified, "class": cls, "content": "Pro 13 收到", "display_name": "Mac Pro 13"}
+               "verified": verified, "class": cls, "content": "Mac B 收到", "display_name": "Mac B"}
         rec.update(extra)
         GF.write_inbox(self.root, rec)
         out = GI.import_once(self.root, self.env)
