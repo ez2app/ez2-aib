@@ -30,8 +30,8 @@ use aib_cloud::site::SiteSpec;
 use serde_json::{json, Value};
 
 use crate::opstore;
-use crate::siteidentity::{in_ct, wp};
 use crate::sitecreatecmd::{HostPaths, Runner};
+use crate::siteidentity::{in_ct, wp};
 
 /// The must-load plugin, byte for byte what the site gets.
 pub const MU_PLUGIN: &str = include_str!("ez2-onetime-login.php");
@@ -280,18 +280,23 @@ pub fn first_admin(site_admins: &Path) -> Result<String, String> {
         .ok()
         .and_then(|a| a.into_iter().next())
         .map(|(_, login)| login)
-        .ok_or_else(|| format!("login_unknown: no first administrator in {}", site_admins.display()))
+        .ok_or_else(|| {
+            format!(
+                "login_unknown: no first administrator in {}",
+                site_admins.display()
+            )
+        })
 }
 
 /// One link as an operation on the domain's target (an unfinished opening holds it back):
 /// the checks under the lock change nothing, so a refusal leaves no journal; the plan has
 /// the domain, the site and the login, never the link.
-pub fn issue_op(
+pub fn issue_op<R: Runner>(
     place: &opstore::OpPlace,
     domain: &str,
     login: &str,
     paths: &HostPaths,
-    runner: &mut impl Runner,
+    runner: &mut R,
 ) -> Result<String, String> {
     let on = crate::sitecreatecmd::target(domain);
     opstore::run_op_prepared(
@@ -300,7 +305,8 @@ pub fn issue_op(
         &on,
         opstore::BY_LOCAL_ROOT,
         crate::probe::unix_now(),
-        || {
+        // the runner goes through the prepared input: one closure holds it at a time
+        move || {
             let spec = site_of(&paths.records, domain)?;
             check(runner, &spec, domain, login)?;
             let plan = json!({
@@ -310,9 +316,9 @@ pub fn issue_op(
                 "login": login,
                 "seconds": LINK_SECONDS,
             });
-            Ok(Some((plan, spec)))
+            Ok(Some((plan, (spec, runner))))
         },
-        |_, spec: SiteSpec| issue(runner, &spec, domain, login),
+        |_, (spec, runner): (SiteSpec, &mut R)| issue(runner, &spec, domain, login),
     )?
     .ok_or_else(|| "login_link_failed: nothing was issued".to_owned())
 }
@@ -422,7 +428,10 @@ mod tests {
             if argv.iter().any(|a| a == LOOK) {
                 return Ok(self.sha_line(&last).unwrap_or_else(|| "none\n".to_owned()));
             }
-            if argv.get(argv.len().saturating_sub(2)).is_some_and(|a| a == "sha256sum") {
+            if argv
+                .get(argv.len().saturating_sub(2))
+                .is_some_and(|a| a == "sha256sum")
+            {
                 return self.sha_line(&last).ok_or("no file".to_owned());
             }
             if line.ends_with("option get home") {
@@ -463,7 +472,9 @@ mod tests {
         }
 
         fn random(&mut self, n: usize) -> Result<Vec<u8>, String> {
-            Ok((0..n).map(|i| u8::try_from((i * 37 + 11) % 251).unwrap()).collect())
+            Ok((0..n)
+                .map(|i| u8::try_from((i * 37 + 11) % 251).unwrap())
+                .collect())
         }
     }
 
@@ -494,8 +505,15 @@ mod tests {
         let admin = at("if (!$u || !user_can($u, 'manage_options')) { return; }");
         let cookie = at("wp_set_auth_cookie($u->ID, false, is_ssl());");
         let to = at("wp_safe_redirect(admin_url());");
-        assert!(shape < hashed && hashed < deleted && deleted < admin && admin < cookie && cookie < to);
-        for not in ["retrievepassword", "rp_key", "get_password_reset_key", "wp-login.php"] {
+        assert!(
+            shape < hashed && hashed < deleted && deleted < admin && admin < cookie && cookie < to
+        );
+        for not in [
+            "retrievepassword",
+            "rp_key",
+            "get_password_reset_key",
+            "wp-login.php",
+        ] {
             assert!(!MU_PLUGIN.contains(not), "{not}");
         }
     }
@@ -519,8 +537,14 @@ mod tests {
         let token = token_of(&url);
         assert_eq!(token.len(), TOKEN_LEN);
         assert!(token.bytes().all(|b| b.is_ascii_alphanumeric()));
-        assert!(!site.calls.iter().any(|c| c.contains(token)), "the token in an argument");
-        assert!(!site.fed.iter().any(|(_, i)| String::from_utf8_lossy(i).contains(token)));
+        assert!(
+            !site.calls.iter().any(|c| c.contains(token)),
+            "the token in an argument"
+        );
+        assert!(!site
+            .fed
+            .iter()
+            .any(|(_, i)| String::from_utf8_lossy(i).contains(token)));
         let key = format!("ez2_otl_{}", opstore::sha256_hex(token.as_bytes()).unwrap());
         assert_eq!(site.transients.get(&key).map(String::as_str), Some("ops"));
         assert_eq!(site.transients.len(), 1);
@@ -541,7 +565,9 @@ mod tests {
         let back = p.find("(int) get_transient($k) !== (int) $u->ID").unwrap();
         let said = p.find("echo 'issued '").unwrap();
         assert!(kept < back && back < said);
-        assert!(admin_program("ops").unwrap().contains("user_can($u, 'manage_options')"));
+        assert!(admin_program("ops")
+            .unwrap()
+            .contains("user_can($u, 'manage_options')"));
         for bad in ["", "O'x", "a b", "a');", "Ops"] {
             assert!(mint_program(bad).is_none(), "{bad}");
             assert!(admin_program(bad).is_none(), "{bad}");
@@ -584,7 +610,10 @@ mod tests {
         assert!(err.starts_with("mu_plugin_differs: "), "{err}");
         let err = issue(&mut site, &spec(), DOMAIN, "ops").unwrap_err();
         assert!(err.starts_with("mu_plugin_differs: "), "{err}");
-        assert_eq!(site.mu.as_deref(), Some(&b"<?php // the customer's own\n"[..]));
+        assert_eq!(
+            site.mu.as_deref(),
+            Some(&b"<?php // the customer's own\n"[..])
+        );
         assert!(site.fed.is_empty() && site.transients.is_empty());
         // the same plugin is left as it is
         let mut site = Wp::new();
@@ -603,7 +632,10 @@ mod tests {
         let mut site = Wp::new();
         assert_eq!(ensure_mu_plugin(&mut site, &spec()).unwrap(), "written");
         let (cmd, input) = &site.fed[0];
-        assert!(cmd.starts_with("pct exec 131 -- sudo -u s-lltest sh -c "), "{cmd}");
+        assert!(
+            cmd.starts_with("pct exec 131 -- sudo -u s-lltest sh -c "),
+            "{cmd}"
+        );
         assert!(cmd.ends_with(" sh /var/www/s-lltest/wp-content/mu-plugins /var/www/s-lltest/wp-content/mu-plugins/ez2-onetime-login.php"));
         assert_eq!(input, MU_PLUGIN.as_bytes());
     }
@@ -633,7 +665,10 @@ mod tests {
         let filler = (3..22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
         fs::write(
             me.join("stat"),
-            format!("{} (aib-cloud-host) {filler} 4242 0 0\n", std::process::id()),
+            format!(
+                "{} (aib-cloud-host) {filler} 4242 0 0\n",
+                std::process::id()
+            ),
         )
         .unwrap();
         fs::create_dir_all(d.join("ops")).unwrap();
@@ -687,7 +722,10 @@ mod tests {
         for e in fs::read_dir(&place.ops_dir).unwrap() {
             journals.push_str(&fs::read_to_string(e.unwrap().path()).unwrap());
         }
-        assert!(journals.contains(COMMAND) && journals.contains("\"verified\""), "{journals}");
+        assert!(
+            journals.contains(COMMAND) && journals.contains("\"verified\""),
+            "{journals}"
+        );
         assert!(!journals.contains(&token) && !journals.contains("ez2_otl"));
     }
 }
