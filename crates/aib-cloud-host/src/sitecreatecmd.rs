@@ -14,7 +14,11 @@
 //! `--continue <code>` (B2) carries an opening on from its record: limits and network,
 //! the firewall file, the start — each checked after it is done, the record's `step` and
 //! `at` moved on after each. These three are still undone on failure (stop, unlock,
-//! destroy, drop the record). The install and the steps after it are the next slices.
+//! destroy, drop the record).
+//! B3 carries on with the install and the identity ([`crate::siteidentity`]): the
+//! reviewed installer, the site software's scheduler on a timer, keys and salts anew, the
+//! address and title, the first administrators with passwords kept on the host only.
+//! `--continue` runs up to the identity; the licences and after are the next slices.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -386,23 +390,62 @@ const CODE_TRIES: usize = 8;
 pub trait Runner {
     /// The program's standard output, or why it did not succeed.
     fn run(&mut self, argv: &[String]) -> Result<String, String>;
+    /// The same with `input` on the program's standard input: what must never be in an
+    /// argument list (a password) or is a whole file (a unit file). A runner that cannot
+    /// feed a program says so, and the step stops.
+    fn run_input(&mut self, argv: &[String], input: &[u8]) -> Result<String, String> {
+        let _ = (argv, input);
+        Err("this runner cannot feed a program".to_owned())
+    }
+    /// `n` random bytes, from the system's source.
+    fn random(&mut self, n: usize) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; n];
+        let mut f = fs::File::open("/dev/urandom").map_err(|e| format!("/dev/urandom: {e}"))?;
+        std::io::Read::read_exact(&mut f, &mut buf).map_err(|e| format!("/dev/urandom: {e}"))?;
+        Ok(buf)
+    }
 }
+
+/// What a program inside a container may say before it is not believed: the container is
+/// the customer's, and so is whatever answers there (ebb36, wpress r2 M1).
+pub const CT_OUT_MAX: usize = 64 * 1024;
 
 /// The real host: the program with a time limit, its whole process group killed on timeout.
 pub struct HostRunner;
+
+impl HostRunner {
+    /// A full clone copies the template's disk and the installer sets up a whole site;
+    /// everything else is short.
+    fn seconds(argv: &[String]) -> u64 {
+        let long = argv.get(1).is_some_and(|a| a == "clone")
+            || argv.iter().any(|a| a == crate::siteidentity::SETUP_IN_CT);
+        if long {
+            900
+        } else {
+            60
+        }
+    }
+}
 
 impl Runner for HostRunner {
     fn run(&mut self, argv: &[String]) -> Result<String, String> {
         let (program, args) = argv.split_first().ok_or("an empty command")?;
         let mut cmd = Command::new(program);
         cmd.args(args);
-        // a full clone copies the template's disk
-        let seconds = if args.first().is_some_and(|a| a == "clone") {
-            900
-        } else {
-            60
-        };
-        run_capture(&mut cmd, Duration::from_secs(seconds))
+        let timeout = Duration::from_secs(Self::seconds(argv));
+        if args.first().is_some_and(|a| a == "exec") {
+            // inside the container: read with a cap, no input
+            return crate::probe::run_bounded_input(&mut cmd, timeout, CT_OUT_MAX, b"");
+        }
+        run_capture(&mut cmd, timeout)
+    }
+
+    fn run_input(&mut self, argv: &[String], input: &[u8]) -> Result<String, String> {
+        let (program, args) = argv.split_first().ok_or("an empty command")?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        let timeout = Duration::from_secs(Self::seconds(argv));
+        crate::probe::run_bounded_input(&mut cmd, timeout, CT_OUT_MAX, input)
     }
 }
 
@@ -712,6 +755,13 @@ pub struct HostPaths {
     pub lxc_conf: PathBuf,
     /// The containers' firewall files (`/etc/pve/firewall`).
     pub firewall: PathBuf,
+    /// Where each site's own secrets live on the host (`/etc/ez2-cloud/sites`): B3 writes
+    /// the first administrators' passwords there, root only.
+    pub secrets: PathBuf,
+    /// The first administrators' addresses ([`SITE_ADMINS`]).
+    pub site_admins: PathBuf,
+    /// The reviewed site installer on the host, pushed into the container for the install.
+    pub setup: PathBuf,
 }
 
 impl HostPaths {
@@ -720,21 +770,37 @@ impl HostPaths {
             creating: PathBuf::from(CREATING),
             lxc_conf: PathBuf::from(LXC_CONFIGS),
             firewall: PathBuf::from("/etc/pve/firewall"),
+            secrets: PathBuf::from(crate::siteidentity::SECRETS),
+            site_admins: PathBuf::from(SITE_ADMINS),
+            setup: PathBuf::from(crate::siteidentity::SETUP_ON_HOST),
         }
     }
 }
 
-/// The steps B2 runs, in order.
-pub const B2_STEPS: [CreateStep; 3] = [CreateStep::Limits, CreateStep::Firewall, CreateStep::Start];
+/// Every step `--continue` runs, in order: B2's three, then B3's install and identity —
+/// the last two that are still undone on failure.
+pub const CONTINUE_STEPS: [CreateStep; 5] = [
+    CreateStep::Limits,
+    CreateStep::Firewall,
+    CreateStep::Start,
+    CreateStep::Install,
+    CreateStep::Identity,
+];
 
-/// The B2 steps still to do after the step an opening record reached. A record at the
-/// clone has all three ahead; at the start, none. Any other word is not this slice's.
-pub fn steps_after(reached: &str) -> Result<Vec<CreateStep>, String> {
+/// The steps still to do after the step an opening record reached, up to and with
+/// `last`. A record at the clone has every one ahead; at `last` or past it, none. Any
+/// other word is not a step this command carries on from.
+pub fn steps_after(reached: &str, last: CreateStep) -> Result<Vec<CreateStep>, String> {
+    let upto: Vec<CreateStep> = CONTINUE_STEPS
+        .iter()
+        .copied()
+        .filter(|s| *s <= last)
+        .collect();
     if reached == CreateStep::Clone.as_str() {
-        return Ok(B2_STEPS.to_vec());
+        return Ok(upto);
     }
-    match B2_STEPS.iter().position(|s| s.as_str() == reached) {
-        Some(i) => Ok(B2_STEPS[i + 1..].to_vec()),
+    match CONTINUE_STEPS.iter().position(|s| s.as_str() == reached) {
+        Some(i) => Ok(upto.into_iter().skip(i + 1).collect()),
         None => Err(format!(
             "the opening record is at {reached:?}: not a step this command carries on from"
         )),
@@ -981,6 +1047,10 @@ pub fn continue_steps(
             CreateStep::Limits => limits_step(runner, paths, &spec),
             CreateStep::Firewall => firewall_step(paths, &spec),
             CreateStep::Start => start_step(runner, spec.ct),
+            CreateStep::Install => crate::siteidentity::install_step(runner, paths, &spec, &record),
+            CreateStep::Identity => {
+                crate::siteidentity::identity_step(runner, paths, &spec, &mut record)
+            }
             other => Err(format!("{} is not a step of this slice", other.as_str())),
         };
         let moved = done.and_then(|()| {
@@ -992,6 +1062,12 @@ pub fn continue_steps(
             write_record(&paths.creating, &spec.code, &record)
         });
         if let Err(failure) = moved {
+            // passwords written for a site that is undone go with it
+            let failure = match crate::siteidentity::drop_admin_secrets(&paths.secrets, &spec.code)
+            {
+                Ok(()) => failure,
+                Err(e) => format!("{failure}; {e}"),
+            };
             return Err(undo_opening(
                 runner,
                 &paths.creating,
@@ -1013,6 +1089,7 @@ pub fn continue_apply(
     code: &str,
     paths: &HostPaths,
     runner: &mut impl Runner,
+    last: CreateStep,
 ) -> Result<Option<Value>, String> {
     // the same target as the clone's, so an unfinished clone holds this back
     let on = target(domain);
@@ -1029,7 +1106,7 @@ pub fn continue_apply(
                 .get("step")
                 .and_then(Value::as_str)
                 .ok_or("the opening record has no step")?;
-            let steps = steps_after(reached)?;
+            let steps = steps_after(reached, last)?;
             if steps.is_empty() {
                 return Ok(None);
             }
@@ -1251,7 +1328,14 @@ fn apply_cmd(domain: &str, file: &str, records: &str) -> Result<u8, String> {
 /// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
-    let done = continue_apply(&place, domain, code, &HostPaths::host(), &mut HostRunner)?;
+    let done = continue_apply(
+        &place,
+        domain,
+        code,
+        &HostPaths::host(),
+        &mut HostRunner,
+        CreateStep::Identity,
+    )?;
     let held = done
         .as_ref()
         .is_some_and(|r| r.get("held").is_some_and(Value::is_string));
@@ -1259,7 +1343,7 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         Some(record) => json!({
             "applied": record.get("step"),
             "record": record,
-            "next_step": CreateStep::Install.as_str(),
+            "next_step": CreateStep::Licenses.as_str(),
         }),
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
     };
@@ -2048,8 +2132,16 @@ mod tests {
             creating: root.join("creating"),
             lxc_conf: root.join("lxc"),
             firewall: root.join("firewall"),
+            secrets: root.join("secrets"),
+            site_admins: root.join("site-admins"),
+            setup: root.join("ez2-site-setup"),
         };
-        for d in [&paths.creating, &paths.lxc_conf, &paths.firewall] {
+        for d in [
+            &paths.creating,
+            &paths.lxc_conf,
+            &paths.firewall,
+            &paths.secrets,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
         let record = json!({
@@ -2139,9 +2231,16 @@ mod tests {
     fn an_opening_is_carried_on_through_limits_firewall_and_start() {
         let (place, paths) = opened("b2run", "clone");
         let mut runner = fake(b2_host(shown_config()));
-        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
-            .unwrap()
-            .unwrap();
+        let rec = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(rec["step"], "start");
         assert_eq!(rec["fw_group"], aib_cloud::site::FW_GROUP);
         assert_eq!(record_of(&paths), rec, "the record on disk moved on");
@@ -2182,24 +2281,52 @@ mod tests {
     fn an_opening_carries_on_from_the_step_it_reached() {
         let (place, paths) = opened("b2from", "limits");
         let mut runner = fake(b2_host(shown_config()));
-        continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
-            .unwrap()
-            .unwrap();
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             runner.calls,
             ["pct config 131", "pct start 131", "pct status 131"]
         );
         // done with this slice: nothing runs and nothing is journaled
         let (place, paths) = opened("b2done", "start");
+        // B2 alone (the tests above stop at the start): nothing past it
         let mut runner = fake(b2_host(shown_config()));
         assert_eq!(
-            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap(),
+            continue_apply(
+                &place,
+                "new.example.test",
+                CODE,
+                &paths,
+                &mut runner,
+                CreateStep::Start
+            )
+            .unwrap(),
             None
         );
         assert!(runner.calls.is_empty());
         assert_eq!(last_state(&place), None);
-        assert!(steps_after("install").is_err());
-        assert_eq!(steps_after("firewall").unwrap(), [CreateStep::Start]);
+        assert_eq!(steps_after("identity", CreateStep::Identity).unwrap(), []);
+        assert!(steps_after("licenses", CreateStep::Identity).is_err());
+        assert_eq!(
+            steps_after("firewall", CreateStep::Start).unwrap(),
+            [CreateStep::Start]
+        );
+        assert_eq!(
+            steps_after("start", CreateStep::Identity).unwrap(),
+            [CreateStep::Install, CreateStep::Identity]
+        );
+        assert_eq!(
+            steps_after("clone", CreateStep::Start).unwrap(),
+            [CreateStep::Limits, CreateStep::Firewall, CreateStep::Start]
+        );
     }
 
     #[test]
@@ -2207,8 +2334,15 @@ mod tests {
         let (place, paths) = opened("b2limits", "clone");
         let wrong = shown_config().replace("memory: ", "memory: 9");
         let mut runner = fake(b2_host(wrong));
-        let err =
-            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
         assert!(err.starts_with("limits_not_applied: memory"), "{err}");
         assert!(err.contains("undone: CT 131 destroyed"), "{err}");
         for c in [
@@ -2231,6 +2365,29 @@ mod tests {
         assert_eq!(last_state(&place), Some(State::Failed));
     }
 
+    /// An opening that is undone keeps no administrator password on the host (B3 writes
+    /// them before a later step can fail).
+    #[test]
+    fn an_undone_opening_drops_its_passwords() {
+        let (place, paths) = opened("b3drop", "clone");
+        fs::write(paths.secrets.join(format!("{CODE}.admin.ops")), "x").unwrap();
+        fs::write(paths.secrets.join("s-other.admin.ops"), "y").unwrap();
+        let wrong = shown_config().replace("memory: ", "memory: 9");
+        let mut runner = fake(b2_host(wrong));
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
+        assert!(err.contains("undone: CT 131 destroyed"), "{err}");
+        assert!(!paths.secrets.join(format!("{CODE}.admin.ops")).exists());
+        assert!(paths.secrets.join("s-other.admin.ops").exists());
+    }
+
     #[test]
     fn a_container_that_does_not_run_is_undone() {
         let (place, paths) = opened("b2start", "firewall");
@@ -2247,8 +2404,15 @@ mod tests {
             "status" => Ok("status: stopped\n".to_owned()),
             _ => Ok(String::new()),
         });
-        let err =
-            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
         assert!(err.starts_with("start_failed"), "{err}");
         assert!(err.contains("undone: CT 131 destroyed"), "{err}");
         assert!(fs::read_dir(&paths.creating).unwrap().next().is_none());
@@ -2263,8 +2427,15 @@ mod tests {
             "start" => Ok(String::new()),
             _ => Err("pct: timed out".to_owned()),
         });
-        let err =
-            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
         assert!(err.starts_with("start_unchecked"), "{err}");
         assert!(err.contains("left for a person"), "{err}");
         assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
@@ -2275,14 +2446,35 @@ mod tests {
     fn an_opening_of_another_domain_is_not_carried_on() {
         let (place, paths) = opened("b2other", "clone");
         let mut runner = fake(b2_host(shown_config()));
-        let err =
-            continue_apply(&place, "else.example.test", CODE, &paths, &mut runner).unwrap_err();
+        let err = continue_apply(
+            &place,
+            "else.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
         assert!(err.contains("not of else.example.test"), "{err}");
         assert!(runner.calls.is_empty());
-        assert!(
-            continue_apply(&place, "new.example.test", "s-nothere", &paths, &mut runner).is_err()
-        );
-        assert!(continue_apply(&place, "new.example.test", "../x", &paths, &mut runner).is_err());
+        assert!(continue_apply(
+            &place,
+            "new.example.test",
+            "s-nothere",
+            &paths,
+            &mut runner,
+            CreateStep::Start
+        )
+        .is_err());
+        assert!(continue_apply(
+            &place,
+            "new.example.test",
+            "../x",
+            &paths,
+            &mut runner,
+            CreateStep::Start
+        )
+        .is_err());
         assert!(runner.calls.is_empty());
         assert_eq!(last_state(&place), None);
     }
@@ -2319,16 +2511,24 @@ mod tests {
     }
 
     /// A container still on the platform's hardware address is not started: nothing is
-    /// undone, the opening stays at the firewall and says why (c477a B2 L2).
+    /// undone, the opening stays at the firewall and says why (c477a B2 L2), and the
+    /// install and identity after it do not run.
     #[test]
     fn a_platform_hardware_address_holds_the_start() {
         let (place, paths) = opened("b2mac", "firewall");
         let platform =
             shown_config().replace("hwaddr=02:5A:00:12:34:56", "hwaddr=BC:24:11:AA:BB:CC");
         let mut runner = fake(b2_host(platform));
-        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
-            .unwrap()
-            .unwrap();
+        let rec = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Identity,
+        )
+        .unwrap()
+        .unwrap();
         let held = rec["held"].as_str().unwrap();
         assert!(held.starts_with("hwaddr_not_local"), "{held}");
         assert!(held.contains("stays at firewall"), "{held}");
@@ -2342,9 +2542,16 @@ mod tests {
         let (place, paths) = opened("b2nomac", "firewall");
         let none: String = shown_config().replace(",hwaddr=02:5A:00:12:34:56", "");
         let mut runner = fake(b2_host(none));
-        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
-            .unwrap()
-            .unwrap();
+        let rec = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
         assert!(rec["held"]
             .as_str()
             .unwrap()
@@ -2386,9 +2593,16 @@ mod tests {
     fn the_container_files_leave_no_temporary_file() {
         let (place, paths) = opened("b2tmp", "clone");
         let mut runner = fake(b2_host(shown_config()));
-        continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
-            .unwrap()
-            .unwrap();
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
         for dir in [&paths.lxc_conf, &paths.firewall] {
             let names: Vec<String> = fs::read_dir(dir)
                 .unwrap()

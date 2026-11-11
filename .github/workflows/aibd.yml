@@ -1231,8 +1231,8 @@ jobs:
              "    if hosts.split(',').next().map(str::trim) != Some(domain) && false { // knife" \
              an_opening_of_another_domain_is_not_carried_on
           # site create --continue: the step the record reached is done again
-          hk sitecreatecmd.rs '        Some(i) => Ok(B2_STEPS[i + 1..].to_vec()),' \
-             '        Some(i) => Ok(B2_STEPS[i..].to_vec()), // knife' \
+          hk sitecreatecmd.rs '        Some(i) => Ok(upto.into_iter().skip(i + 1).collect()),' \
+             '        Some(i) => Ok(upto.into_iter().skip(i).collect()), // knife' \
              an_opening_carries_on_from_the_step_it_reached
           # site create --continue: the template's pids line stays beside ours
           hk sitecreatecmd.rs '        } else if !line.starts_with("lxc.cgroup2.pids.max:") {' \
@@ -1242,6 +1242,46 @@ jobs:
           hk sitecreatecmd.rs '        Some(mac) if mac_is_local(&mac) => Ok(()),' \
              '        Some(mac) if mac_is_local(&mac) || true => Ok(()), // knife' \
              a_platform_hardware_address_holds_the_start
+          # site create --continue (B3): an undone opening keeps its administrators' passwords on the host (4542e 11-11)
+          hk sitecreatecmd.rs '            let failure = match crate::siteidentity::drop_admin_secrets(&paths.secrets, &spec.code)' \
+             '            let failure = match Ok::<(), String>(()) // knife' \
+             an_undone_opening_drops_its_passwords
+          # B3 install: the scheduler's timer is written but never started
+          hk siteidentity.rs '        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))' \
+             '        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload", &timer])) // knife' \
+             the_install_runs_the_installer_and_puts_the_scheduler_on_a_timer
+          # B3 install: the installer stays in the container after it failed
+          hk siteidentity.rs '    let removed = runner.run(&in_ct(spec.ct, &["rm", "-f", SETUP_IN_CT]));' \
+             '    let removed: Result<String, String> = Ok(String::new()); // knife' \
+             an_installer_that_fails_is_still_taken_out_of_the_container
+          # B3 install: a blank site keeps the template package
+          hk siteidentity.rs '    if !spec.wp {' \
+             '    if !spec.wp && false { // knife' \
+             a_blank_install_drops_the_template_package_first
+          # B3 identity: a password goes into an argument list
+          hk siteidentity.rs '            .run_input(&wp(spec, &["eval", &program]), password.as_bytes())' \
+             '            .run_input(&wp(spec, &["eval", &program, &password]), password.as_bytes()) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the password file is readable by others
+          hk siteidentity.rs '    f.set_permissions(fs::Permissions::from_mode(0o600))' \
+             '    f.set_permissions(fs::Permissions::from_mode(0o644)) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the installer's administrator stays beside the site's own
+          hk siteidentity.rs '    if !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() {' \
+             '    if false && !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the template's notice address stays
+          hk siteidentity.rs '    for key in ["admin_email", "new_admin_email"] {' \
+             '    for key in ["new_admin_email"] { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: an undone site's password files are left behind
+          hk siteidentity.rs '        if name.starts_with(&mine) || name.starts_with(&tmp) {' \
+             '        if false && (name.starts_with(&mine) || name.starts_with(&tmp)) { // knife' \
+             an_undone_site_keeps_no_password
+          # B3 identity: bytes past the even cut are folded onto the first letters
+          hk siteidentity.rs '        .filter(|b| usize::from(**b) < even)' \
+             '        .filter(|b| usize::from(**b) < even || true) // knife' \
+             passwords_are_even_and_long_enough
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

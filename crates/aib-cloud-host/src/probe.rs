@@ -398,6 +398,83 @@ pub(crate) fn run_capture_bounded(
     Ok((String::from_utf8_lossy(&buf).into_owned(), false))
 }
 
+/// [`run_capture_bounded`] that also hands the child `input` on its standard input (and
+/// closes it): for what must never be in an argument list, such as a password. More than
+/// `max_bytes` of output is a failure, not a cut answer: a program that says more than it
+/// should is not believed.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_bounded_input(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes: usize,
+    input: &[u8],
+) -> Result<String, String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let program = format!("{:?}", cmd.get_program());
+    let mut stdin = child.stdin.take();
+    let feed = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut w) = stdin.take() {
+            // a child that does not read is not an error here: its answer decides
+            let _ = w.write_all(&feed);
+        }
+    });
+    let pipe = child.stdout.take();
+    let cap = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut more = false;
+        if let Some(p) = pipe {
+            let mut limited = p.take(cap);
+            let _ = limited.read_to_end(&mut buf);
+            more = matches!(limited.into_inner().read(&mut [0u8; 1]), Ok(1));
+        }
+        (buf, more)
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let finished = reader.is_finished();
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    let (buf, more) = if finished {
+        reader.join().unwrap_or_default()
+    } else {
+        (Vec::new(), false)
+    };
+    if !finished || more {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(writer);
+        return Err(if finished {
+            format!("{program}: more than {max_bytes} bytes of output")
+        } else {
+            format!("{program}: timeout")
+        });
+    }
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status = wait_with_timeout(&mut child, left).map_err(|e| format!("{program}: {e}"))?;
+    kill_group(child.id());
+    let _ = writer.join();
+    if !status.success() {
+        return Err(format!("{program} exited {status}"));
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 // ---------------------------------------------------------------- container namespaces
 
 fn netns_of(pid: &str) -> Result<String, String> {
