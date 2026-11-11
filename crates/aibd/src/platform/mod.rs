@@ -242,10 +242,12 @@ mod tests {
         drop(a);
         // Another test in this process may be starting a child at this moment: between its
         // fork and exec the child holds a copy of every descriptor, `a`'s included, so the
-        // lock outlives `drop(a)` for a few milliseconds (seen once in 20 lib runs on the
-        // Pro 13, #640 receipt 11-11). The lock must come free, not instantly: when it is
+        // lock outlives `drop(a)` for a few milliseconds (seen twice in 40 lib runs on the
+        // Pro 13, #640 receipts 11-11). The lock must come free, not instantly: when it is
         // still held, a blocking lock on another handle waits until the child lets go (no
-        // polling), then the instance lock is taken again.
+        // polling), then the instance lock is taken again. Each round is one child letting
+        // go; 10 rounds is far more children than overlap this moment, and the bound keeps
+        // a broken lock from looping.
         let (tx, rx) = std::sync::mpsc::channel();
         let q = p.clone();
         std::thread::spawn(move || {
