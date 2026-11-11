@@ -168,8 +168,15 @@ cat "$f"
     let text = String::from_utf8(out.stdout).unwrap();
     let r: Record = serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
     assert!(r.unknown.is_none(), "{r:?}");
-    let heads: Vec<u64> = r.heads.keys().copied().collect();
-    assert_eq!(heads, vec![661, 667, 678]);
+    let heads: Vec<(u64, &str)> = r.heads.iter().map(|(n, h)| (*n, h.as_str())).collect();
+    assert_eq!(
+        heads,
+        vec![
+            (661, "d4bafde28b279252c5b5916da30f63395aaa4143"),
+            (667, "cca3249e502694a89becbd48f7db31b072b9098f"),
+            (678, "7bcb6ee014c446d41455fa32664e646860421fe4"),
+        ]
+    );
     assert!(
         !r.would.iter().any(|i| matches!(i, Intent::Merge { .. })),
         "{:?}",
