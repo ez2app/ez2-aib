@@ -553,9 +553,9 @@ fn a_full_page_of_rules_is_unknown() {
         json!(many),
     );
     let s = snap(m, &empty()).unwrap();
-    let full = Known::Unknown("rules: 100 items, may have a next page".into());
-    assert_eq!(s.required_cells, full);
-    assert_eq!(s.rules_version, full);
+    let full = "rules: 100 items, may have a next page";
+    assert_eq!(s.required_cells, Known::Unknown(full.into()));
+    assert_eq!(s.rules_version, Known::Unknown(full.into()));
 }
 
 #[test]
