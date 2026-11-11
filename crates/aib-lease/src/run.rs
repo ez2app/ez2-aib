@@ -542,11 +542,12 @@ pub fn append_history(path: &Path, line: &Value) -> std::io::Result<()> {
     f.write_all(format!("{line}\n").as_bytes())
 }
 
-const USAGE: &str = "usage: aib-lease run (--host HOST [--jump HOST] | --any-host) [--repo DIR] [--rev REV] \
+const USAGE: &str = "usage: aib-lease run (--host HOST [--jump HOST] | --any-host [--kind K]) [--repo DIR] [--rev REV] \
 [--ttl SECS [--long REASON]] [--shared] [--owner SEAT] [--what TEXT] [--step CMD]... [-- CMD ARGS...]\n\
 no --ttl: p90 x 1.5 of the same steps on the same host from history (none: 900 s), at most 1800; \
 --ttl 3600 or more needs --long REASON\n\
---any-host: the first free machine in ~/.ez2-aib/hosts.json (aib-lease hosts)\n\
+--any-host: the first free machine in ~/.ez2-aib/hosts.json that takes the run (not windows; \
+its kinds take K, or the class classify gives these steps there)\n\
 exit: 0 all steps passed, 1 a step failed, 2 usage, 3 ssh, 4 git archive, 73 remote unpack, \
 75 lease not granted or (--any-host) no machine free (nothing ran)";
 

@@ -8,8 +8,12 @@
 //! the same files) and prints one JSON object.
 //!
 //! - Hosts file: `~/.ez2-aib/hosts.json` (`AIB_HOSTS_FILE`), `{"hosts": [{"name", "ssh",
-//!   "jump"?, "os"?, "order"?}]}`. Order: `order`, then file order. No file ⇒ rc 2: there is
-//!   nothing to guess.
+//!   "jump"?, "os"?, "order"?, "kinds"?}]}`. Order: `order`, then file order. No file ⇒ rc 2:
+//!   there is nothing to guess. `os` defaults to `mac`; `kinds` lists what a machine takes
+//!   (`short` / `medium` / `long`, or a tag such as `chrome` / `windows`), none ⇒ everything
+//!   (Andy 04:2x「只跑哪類」, a63ab A2 M1).
+//! - `--kind K` / `--os O` / `--owner ME` narrow `--pick` to the machines that take it. A queue
+//!   whose head is `ME` is ours to take, so that machine counts as free (a63ab L1).
 //! - Per machine: `free`, `queued` (free, but someone is waiting: acquire would put us behind
 //!   them, so it is not picked), `busy`, `unreadable` (its lease files cannot be read: fail
 //!   closed, never free) or `offline` (ssh failed or the answer was not the tool's).
@@ -20,9 +24,15 @@
 //!   so a race is still settled by `acquire` (rc 4 ⇒ ask again).
 //! - When none is free, `soonest` names the busy machine that should come free first: by the
 //!   holder's own estimate (`acquire --expect S`) when it gave one, else by its lease expiry.
-//! - `aib-lease run --any-host` (see [`resolve_any_host`]) runs on the first free machine;
-//!   none free ⇒ rc 75, nothing ran. Without a hosts file nothing changes for `--host`; only
-//!   `--any-host` needs the file.
+//! - `aib-lease run --any-host [--kind K]` (see [`resolve_any_host`]) runs on the first free
+//!   machine that takes the run: never a `windows` one (the remote script is bash), and only
+//!   one whose `kinds` take K — or, without `--kind`, the class `classify` gives these steps
+//!   on that machine (unknown counts as long). None free ⇒ rc 75, nothing ran. Without a
+//!   hosts file nothing changes for `--host`; only `--any-host` needs the file.
+//! - Known, left to the slice that wires `aib test` (a63ab A2 M2): waiting in **one** queue.
+//!   Nothing here queues; when none is free the report names `soonest` and gives
+//!   `queue_hint`, the one `queue add` to copy for that machine only. A wait needs a holder
+//!   that stays alive on that machine (or heartbeats), which `run` does not have yet.
 
 use crate::run::DEFAULT_REMOTE_PATH;
 use serde_json::{json, Value};
@@ -36,6 +46,8 @@ pub struct HostCfg {
     pub jump: Option<String>,
     pub os: String,
     pub order: i64,
+    /// What this machine takes; `None` ⇒ everything.
+    pub kinds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +114,18 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
                 return Err(format!("hosts[{i}] {name}: ssh / jump {s:?} must not be empty, start with '-' or hold spaces"));
             }
         }
+        let kinds = match h.get("kinds") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(a)) => Some(
+                a.iter()
+                    .map(|k| k.as_str().filter(|k| !k.is_empty()).map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        format!("hosts[{i}] {name}: kinds holds only non-empty strings")
+                    })?,
+            ),
+            Some(_) => return Err(format!("hosts[{i}] {name}: kinds is a list")),
+        };
         if out.iter().any(|c: &HostCfg| c.name == name) {
             return Err(format!("hosts[{i}]: name {name:?} twice"));
         }
@@ -111,6 +135,7 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
             jump,
             os: get("os").unwrap_or_else(|| "mac".into()),
             order: h.get("order").and_then(Value::as_i64).unwrap_or(i64::MAX),
+            kinds,
         });
     }
     if out.is_empty() {
@@ -145,9 +170,13 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         queue_first: None,
         why: None,
     };
-    let doc: Option<Value> = stdout
-        .find('{')
-        .and_then(|i| serde_json::from_str(&stdout[i..]).ok());
+    // the tool's JSON starts a line; a login banner may hold '{' inside a line (a63ab N1)
+    let start = if stdout.starts_with('{') {
+        Some(0)
+    } else {
+        stdout.find("\n{").map(|i| i + 1)
+    };
+    let doc: Option<Value> = start.and_then(|i| serde_json::from_str(&stdout[i..]).ok());
     let st = doc
         .as_ref()
         .and_then(|d| d.get("state"))
@@ -187,11 +216,51 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
     v
 }
 
-/// When none is free: the busy machine that should come free first, by the holder's estimate
-/// when it gave one, else by its expiry. Only to tell a person where to wait; nothing queues.
-pub fn soonest(views: &[HostView]) -> Option<&HostView> {
+/// `@c477a` and `c477a` are the same seat (a63ab N2).
+pub fn same_owner(a: &str, b: &str) -> bool {
+    let a = a.trim().trim_start_matches('@');
+    !a.is_empty() && a == b.trim().trim_start_matches('@')
+}
+
+/// The view as `me` sees it: a free machine whose queue head is `me` is ours to take (L1).
+pub fn as_seen_by(mut v: HostView, me: Option<&str>) -> HostView {
+    if v.state == State::Queued
+        && me.is_some_and(|m| v.queue_first.as_deref().is_some_and(|q| same_owner(q, m)))
+    {
+        v.state = State::Free;
+    }
+    v
+}
+
+/// Does this machine take runs of `kind`? No `kinds` ⇒ everything. A class nobody could
+/// tell (`unknown`) is taken as `long`.
+pub fn takes(h: &HostCfg, kind: &str) -> bool {
+    let kind = if kind == "unknown" { "long" } else { kind };
+    h.kinds
+        .as_ref()
+        .is_none_or(|ks| ks.iter().any(|k| k == kind))
+}
+
+/// The machines not `ok` taken out (views and cfg are in the same order).
+pub fn eligible<'a>(
+    views: &'a [HostView],
+    cfg: &[HostCfg],
+    ok: &dyn Fn(&HostCfg) -> bool,
+) -> Vec<&'a HostView> {
     views
         .iter()
+        .zip(cfg)
+        .filter(|(_, h)| ok(h))
+        .map(|(v, _)| v)
+        .collect()
+}
+
+/// When none is free: the busy machine that should come free first, by the holder's estimate
+/// when it gave one, else by its expiry. Only to tell a person where to wait; nothing queues.
+pub fn soonest<'a>(views: &[&'a HostView]) -> Option<&'a HostView> {
+    views
+        .iter()
+        .copied()
         .filter(|v| v.state == State::Busy)
         .filter_map(|v| v.expect_end_epoch.or(v.expiry_epoch).map(|t| (t, v)))
         .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -199,7 +268,7 @@ pub fn soonest(views: &[HostView]) -> Option<&HostView> {
 }
 
 /// The first free machine in order (views are already in config order), or why none.
-pub fn pick(views: &[HostView]) -> (Option<&str>, u8) {
+pub fn pick<'a>(views: &[&'a HostView]) -> (Option<&'a str>, u8) {
     if let Some(v) = views.iter().find(|v| v.state == State::Free) {
         return (Some(v.name.as_str()), RC_PICKED);
     }
@@ -286,9 +355,12 @@ pub fn load_config() -> Result<(PathBuf, Vec<HostCfg>), String> {
 }
 
 /// Every machine asked at once; views in config order.
-pub fn probe_all(cfg: &[HostCfg]) -> Vec<HostView> {
+pub fn probe_all(cfg: &[HostCfg], me: Option<&str>) -> Vec<HostView> {
     std::thread::scope(|s| {
-        let hs: Vec<_> = cfg.iter().map(|h| s.spawn(move || ask(h))).collect();
+        let hs: Vec<_> = cfg
+            .iter()
+            .map(|h| s.spawn(move || as_seen_by(ask(h), me)))
+            .collect();
         hs.into_iter()
             .zip(cfg)
             .map(|(j, h)| {
@@ -302,26 +374,79 @@ pub fn probe_all(cfg: &[HostCfg]) -> Vec<HostView> {
     })
 }
 
-/// The one JSON object `hosts` prints (and `run --any-host` prints when it picks nothing).
-pub fn report(path: &std::path::Path, views: &[HostView]) -> Value {
-    let (picked, _) = pick(views);
-    json!({"result": "hosts", "file": path.display().to_string(),
-           "hosts": views.iter().map(view_json).collect::<Vec<_>>(),
-           "pick": picked, "soonest": soonest(views).map(|v| v.name.clone())})
+/// The one `queue add` to copy when none is free: for the soonest machine only (M2).
+pub fn queue_hint(h: &HostCfg, me: Option<&str>) -> String {
+    let jump = h
+        .jump
+        .as_deref()
+        .map(|j| format!("-J {j} "))
+        .unwrap_or_default();
+    format!(
+        "ssh {jump}{} 'aib lease queue add --owner {} --what \"<what runs>\" --run-id <run id> --pid <pid of a waiting shell on that machine>' (one machine only; before moving: aib lease queue remove --run-id <run id>)",
+        h.ssh,
+        me.unwrap_or("<seat>")
+    )
+}
+
+/// The one JSON object `hosts` prints (and `run --any-host` prints to stderr).
+pub fn report(
+    path: &std::path::Path,
+    views: &[HostView],
+    cfg: &[HostCfg],
+    ok: &dyn Fn(&HostCfg) -> bool,
+    me: Option<&str>,
+) -> (Value, u8) {
+    let el = eligible(views, cfg, ok);
+    let (picked, rc) = pick(&el);
+    let soon = picked.is_none().then(|| soonest(&el)).flatten();
+    let hint = soon
+        .and_then(|v| cfg.iter().find(|h| h.name == v.name))
+        .map(|h| queue_hint(h, me));
+    let hosts: Vec<Value> = views
+        .iter()
+        .zip(cfg)
+        .map(|(v, h)| {
+            let mut j = view_json(v);
+            j["eligible"] = json!(ok(h));
+            j
+        })
+        .collect();
+    (
+        json!({"result": "hosts", "file": path.display().to_string(), "hosts": hosts,
+               "eligible": el.len(), "pick": picked, "soonest": soon.map(|v| v.name.clone()),
+               "queue_hint": hint}),
+        rc,
+    )
 }
 
 pub fn cli(argv: &[String]) -> u8 {
+    let usage = |e: String| {
+        println!(
+            "{}",
+            json!({"result": "usage", "error": format!("{e}; aib-lease hosts [--pick] [--kind K] [--os O] [--owner ME]")})
+        );
+        RC_USAGE
+    };
     let mut want_pick = false;
-    for a in argv {
+    let (mut kind, mut os, mut me) = (None, None, std::env::var("AIB_LEASE_OWNER").ok());
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().filter(|v| !v.is_empty());
         match a.as_str() {
             "--pick" => want_pick = true,
-            _ => {
-                println!(
-                    "{}",
-                    json!({"result": "usage", "error": format!("unknown argument {a}; aib-lease hosts [--pick]")})
-                );
-                return RC_USAGE;
-            }
+            "--kind" => match val() {
+                Some(v) => kind = Some(v),
+                None => return usage("--kind needs a value".into()),
+            },
+            "--os" => match val() {
+                Some(v) => os = Some(v),
+                None => return usage("--os needs a value".into()),
+            },
+            "--owner" => match val() {
+                Some(v) => me = Some(v),
+                None => return usage("--owner needs a value".into()),
+            },
+            _ => return usage(format!("unknown argument {a}")),
         }
     }
     let (path, cfg) = match load_config() {
@@ -331,10 +456,15 @@ pub fn cli(argv: &[String]) -> u8 {
             return RC_USAGE;
         }
     };
-    let views = probe_all(&cfg);
-    println!("{}", report(&path, &views));
+    let me = me.filter(|m| !m.is_empty());
+    let views = probe_all(&cfg, me.as_deref());
+    let ok = |h: &HostCfg| {
+        kind.as_deref().is_none_or(|k| takes(h, k)) && os.as_deref().is_none_or(|o| h.os == o)
+    };
+    let (doc, rc) = report(&path, &views, &cfg, &ok, me.as_deref());
+    println!("{doc}");
     if want_pick {
-        pick(&views).1
+        rc
     } else {
         RC_PICKED
     }
@@ -359,11 +489,44 @@ pub fn wants_any_host(argv: &[String]) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `argv` with `--any-host` (before `--`) replaced by the chosen machine's `--host` / `--jump`.
+/// The value after `flag` among our own arguments (before `--`).
+pub fn own_value(argv: &[String], flag: &str) -> Option<String> {
+    let own = own_args(argv);
+    own.iter()
+        .position(|a| a == flag)
+        .and_then(|i| own.get(i + 1))
+        .cloned()
+}
+
+/// The steps `run` will send, as `run` builds them: each `--step`, then `-- CMD ARGS` as one.
+pub fn steps_of(argv: &[String]) -> Vec<String> {
+    let own = own_args(argv);
+    let mut steps: Vec<String> = own
+        .windows(2)
+        .filter(|w| w[0] == "--step")
+        .map(|w| w[1].clone())
+        .collect();
+    if own.len() < argv.len() && argv.len() > own.len() + 1 {
+        steps.push(crate::run::join_command(&argv[own.len() + 1..]));
+    }
+    steps
+}
+
+/// `argv` with `--any-host` (before `--`) replaced by the chosen machine's `--host` / `--jump`,
+/// and `--kind K` (ours, not `run`'s) taken out.
 pub fn with_host(argv: &[String], h: &HostCfg) -> Vec<String> {
     let cut = own_args(argv).len();
     let mut out = Vec::with_capacity(argv.len() + 3);
+    let mut skip = false;
     for (i, a) in argv.iter().enumerate() {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if i < cut && a == "--kind" {
+            skip = true;
+            continue;
+        }
         if i < cut && a == "--any-host" {
             out.push("--host".to_string());
             out.push(h.ssh.clone());
@@ -391,22 +554,55 @@ pub fn resolve_any_host(argv: &[String]) -> Result<Vec<String>, u8> {
             return Err(RC_USAGE);
         }
     }
+    if own_args(argv).iter().any(|a| a == "--kind")
+        && own_value(argv, "--kind").is_none_or(|k| k.is_empty() || k.starts_with("--"))
+    {
+        eprintln!("aib-lease run: --kind needs a value");
+        return Err(RC_USAGE);
+    }
     let (path, cfg) = load_config().map_err(|e| {
         eprintln!("aib-lease run --any-host: {e}");
         RC_USAGE
     })?;
-    let views = probe_all(&cfg);
-    eprintln!("aib-lease: {}", report(&path, &views));
-    match pick(&views)
-        .0
-        .and_then(|n| cfg.iter().find(|h| h.name == n))
-    {
+    let kind = own_value(argv, "--kind");
+    let me = own_value(argv, "--owner")
+        .or_else(|| std::env::var("AIB_LEASE_OWNER").ok())
+        .filter(|m| !m.is_empty());
+    let steps = steps_of(argv);
+    let history = std::fs::read_to_string(crate::run::history_path()).unwrap_or_default();
+    let long = crate::classify::read_long_config(
+        &std::fs::read_to_string(crate::classify::long_config_path()).unwrap_or_default(),
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // the remote script is bash: never a windows machine; then what the machine takes
+    let ok = |h: &HostCfg| {
+        h.os != "windows"
+            && match kind.as_deref() {
+                Some(k) => takes(h, k),
+                None => takes(
+                    h,
+                    crate::classify::classify(&h.ssh, &steps, &history, &long, now)
+                        .class
+                        .as_str(),
+                ),
+            }
+    };
+    let views = probe_all(&cfg, me.as_deref());
+    let (doc, _) = report(&path, &views, &cfg, &ok, me.as_deref());
+    eprintln!("aib-lease: {doc}");
+    let picked = doc["pick"]
+        .as_str()
+        .and_then(|n| cfg.iter().find(|h| h.name == n));
+    match picked {
         Some(h) => {
             eprintln!("aib-lease: --any-host: {} is free", h.name);
             Ok(with_host(argv, h))
         }
         None => {
-            eprintln!("aib-lease: --any-host: no machine is free, nothing ran");
+            eprintln!("aib-lease: --any-host: no machine that takes this run is free, nothing ran");
             Err(75)
         }
     }
@@ -507,10 +703,12 @@ mod tests {
             f("c", State::Free),
             f("d", State::Free),
         ];
-        assert_eq!(pick(&vs), (Some("c"), RC_PICKED));
-        assert_eq!(pick(&vs[..2]), (None, RC_NONE_FREE));
+        let r: Vec<&HostView> = vs.iter().collect();
+        assert_eq!(pick(&r), (Some("c"), RC_PICKED));
+        assert_eq!(pick(&r[..2]), (None, RC_NONE_FREE));
         let dead = [f("a", State::Offline), f("b", State::Unreadable)];
-        assert_eq!(pick(&dead), (None, RC_NONE_REACHABLE));
+        let r: Vec<&HostView> = dead.iter().collect();
+        assert_eq!(pick(&r), (None, RC_NONE_REACHABLE));
     }
 
     #[test]
@@ -526,7 +724,8 @@ mod tests {
             busy("a", Some(2000.0), None),
             busy("b", Some(9000.0), Some(1500.0)),
         ];
-        assert_eq!(soonest(&vs).map(|v| v.name.as_str()), Some("b"));
+        let r: Vec<&HostView> = vs.iter().collect();
+        assert_eq!(soonest(&r).map(|v| v.name.as_str()), Some("b"));
         let held = r#"{"state": "held", "lease": {"owner": "o", "expiry_epoch": 9000,
                        "expect_end_epoch": 1500}, "queue": []}"#;
         assert_eq!(view("x", Some(4), held).expect_end_epoch, Some(1500.0));
@@ -534,7 +733,146 @@ mod tests {
             state: State::Offline,
             ..busy("c", Some(1.0), None)
         }];
-        assert!(soonest(&none).is_none());
+        assert!(soonest(&[&none[0]]).is_none());
+    }
+
+    fn host(name: &str, os: &str, kinds: Option<&[&str]>) -> HostCfg {
+        HostCfg {
+            name: name.into(),
+            ssh: name.into(),
+            jump: None,
+            os: os.into(),
+            order: 1,
+            kinds: kinds.map(|k| k.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    // a63ab M1: a machine takes only the kinds it lists; unknown counts as long
+    #[test]
+    fn a_machine_takes_only_its_kinds() {
+        let all = host("a", "mac", None);
+        let short = host("b", "mac", Some(&["short", "medium"]));
+        assert!(takes(&all, "long") && takes(&all, "chrome"));
+        assert!(takes(&short, "short") && !takes(&short, "long"));
+        assert!(!takes(&short, "unknown"), "unknown is long");
+        assert!(takes(&host("c", "mac", Some(&["long"])), "unknown"));
+        let c =
+            parse_config(r#"{"hosts": [{"name": "w", "os": "windows", "kinds": ["windows"]}]}"#)
+                .unwrap();
+        assert_eq!(c[0].kinds, Some(vec!["windows".to_string()]));
+        assert!(parse_config(r#"{"hosts": [{"name": "w", "kinds": "short"}]}"#).is_err());
+        assert!(parse_config(r#"{"hosts": [{"name": "w", "kinds": ["short", ""]}]}"#).is_err());
+        assert!(parse_config(r#"{"hosts": [{"name": "w", "kinds": [1]}]}"#).is_err());
+    }
+
+    // a63ab M1 + M2: the free machine that does not take the run is passed over; none left
+    // ⇒ the soonest one that does take it, with the one queue add to copy for it
+    #[test]
+    fn the_report_picks_among_the_machines_that_take_the_run_and_hints_one_queue() {
+        let cfg = [
+            host("win", "windows", None),
+            host("short", "mac", Some(&["short"])),
+            host("big", "mac", None),
+        ];
+        let free = view("x", Some(0), FREE);
+        let busy = |end: f64| HostView {
+            state: State::Busy,
+            expiry_epoch: Some(end),
+            ..free.clone()
+        };
+        let named = |n: &str, v: HostView| HostView {
+            name: n.into(),
+            ..v
+        };
+        let views = [
+            named("win", free.clone()),
+            named("short", free.clone()),
+            named("big", busy(9000.0)),
+        ];
+        let ok = |h: &HostCfg| h.os != "windows" && takes(h, "long");
+        let (doc, rc) = report(
+            std::path::Path::new("/h.json"),
+            &views,
+            &cfg,
+            &ok,
+            Some("@c477a"),
+        );
+        assert_eq!(
+            (doc["pick"].clone(), rc),
+            (Value::Null, RC_NONE_FREE),
+            "{doc}"
+        );
+        assert_eq!(doc["eligible"], 1);
+        assert_eq!(doc["soonest"], "big");
+        let hint = doc["queue_hint"].as_str().unwrap();
+        assert!(
+            hint.starts_with("ssh big 'aib lease queue add --owner @c477a "),
+            "{hint}"
+        );
+        assert_eq!(doc["hosts"][0]["eligible"], false);
+        // a short run may take the short machine
+        let ok = |h: &HostCfg| h.os != "windows" && takes(h, "short");
+        let (doc, rc) = report(std::path::Path::new("/h.json"), &views, &cfg, &ok, None);
+        assert_eq!((doc["pick"].as_str(), rc), (Some("short"), RC_PICKED));
+        assert_eq!(doc["queue_hint"], Value::Null);
+    }
+
+    // a63ab L1 / N2: a queue whose head is me is mine to take
+    #[test]
+    fn a_queue_headed_by_me_is_free_for_me_only() {
+        let q = view(
+            "a",
+            Some(0),
+            r#"{"state": "free", "queue": [{"owner": "@c477a"}]}"#,
+        );
+        assert_eq!(q.state, State::Queued);
+        assert_eq!(as_seen_by(q.clone(), Some("c477a")).state, State::Free);
+        assert_eq!(as_seen_by(q.clone(), Some("@c477a")).state, State::Free);
+        assert_eq!(as_seen_by(q.clone(), Some("4542e")).state, State::Queued);
+        assert_eq!(as_seen_by(q.clone(), None).state, State::Queued);
+        assert_eq!(as_seen_by(q, Some("@")).state, State::Queued);
+        let busy = view(
+            "a",
+            Some(4),
+            r#"{"state": "held", "lease": {"owner": "@c477a"}, "queue": []}"#,
+        );
+        assert_eq!(as_seen_by(busy, Some("c477a")).state, State::Busy);
+    }
+
+    // a63ab N1: a banner with '{' inside a line does not hide the answer
+    #[test]
+    fn a_banner_with_a_brace_inside_a_line_is_skipped() {
+        let out = format!("Last login {{tty}} from x\n{FREE}");
+        assert_eq!(view("a", Some(0), &out).state, State::Free);
+    }
+
+    #[test]
+    fn steps_are_read_as_run_builds_them_and_kind_is_taken_out() {
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let a = v(&[
+            "--any-host",
+            "--kind",
+            "short",
+            "--step",
+            "cargo fmt",
+            "--",
+            "cargo",
+            "test",
+        ]);
+        assert_eq!(steps_of(&a), v(&["cargo fmt", "'cargo' 'test'"]));
+        assert_eq!(own_value(&a, "--kind").as_deref(), Some("short"));
+        let h = host("m", "mac", None);
+        assert_eq!(
+            with_host(&a, &h),
+            v(&["--host", "m", "--step", "cargo fmt", "--", "cargo", "test"])
+        );
+        // after `--` it is the command's
+        let b = v(&["--any-host", "--", "x", "--kind", "y"]);
+        assert_eq!(
+            with_host(&b, &h),
+            v(&["--host", "m", "--", "x", "--kind", "y"])
+        );
+        assert_eq!(own_value(&b, "--kind"), None);
     }
 
     #[test]
@@ -546,6 +884,7 @@ mod tests {
             jump: Some("j".into()),
             os: "mac".into(),
             order: 1,
+            kinds: None,
         };
         let a = v(&["--any-host", "--step", "x", "--", "echo", "--any-host"]);
         assert_eq!(wants_any_host(&a), Ok(true));
@@ -582,6 +921,7 @@ mod tests {
             jump: Some("j".into()),
             os: "mac".into(),
             order: 1,
+            kinds: None,
         };
         let a = ssh_args(&h);
         let j = a.join(" ");
