@@ -16,19 +16,24 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Default deadline of one `gh` / `aib` call.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Named exception (clippy.toml, ADR 0005): the deadline of one child process is a
-// channel wait on the thread draining its stdout. aib-drive is not aibd and has no
-// timer registry; nothing here ticks or sleeps.
+// channel wait on the threads that drain its output and wait for it. aib-drive is not
+// aibd and has no timer registry; nothing here ticks or sleeps.
 #[allow(clippy::disallowed_methods)]
-/// Runs `program args…` (no shell) and returns stdout on exit 0. Output is
-/// drained on threads, so a full pipe cannot stall the child; the deadline is
-/// a channel wait, not a sleep loop. Past the deadline the child is killed.
+/// Runs `program args…` (no shell) and returns stdout on exit 0. stdout,
+/// stderr and the wait for the exit each run on a thread; one deadline
+/// covers all three (1ced7 #685 L3: a child that closes its output and
+/// keeps running, or a grandchild holding stderr, must not hang the call).
+/// Past the deadline the child is killed and the call is an error; a
+/// non-zero exit is an error even with output.
 pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
+    let deadline = Instant::now() + timeout;
+    let left = || deadline.saturating_duration_since(Instant::now());
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -41,37 +46,48 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
         let _ = child.wait();
         return Err(format!("{program}: no pipes"));
     };
-    let (tx, rx) = mpsc::channel();
+    let pid = child.id();
+    let (out_tx, out_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = tx.send(out.read_to_end(&mut b).map(|_| b));
+        let _ = out_tx.send(out.read_to_end(&mut b).map(|_| b));
     });
-    let err_reader = thread::spawn(move || {
+    let (err_tx, err_rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut b = Vec::new();
         let _ = err.read_to_end(&mut b);
-        b
+        let _ = err_tx.send(b);
     });
-    let stdout = match rx.recv_timeout(timeout) {
+    // the waiter owns the child: until it has reaped it, `pid` cannot be
+    // given to another process, so killing by pid hits only this child
+    let (exit_tx, exit_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = exit_tx.send(child.wait());
+    });
+    let timed_out = || -> Result<Vec<u8>, String> {
+        kill_pid(pid);
+        Err(format!(
+            "{program}: timed out after {} ms",
+            timeout.as_millis()
+        ))
+    };
+    let stdout = match out_rx.recv_timeout(left()) {
         Ok(Ok(b)) => b,
         Ok(Err(e)) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_pid(pid);
             return Err(format!("{program}: stdout unreadable: {}", e.kind()));
         }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "{program}: timed out after {} ms",
-                timeout.as_millis()
-            ));
-        }
+        Err(_) => return timed_out(),
     };
-    let status = child
-        .wait()
-        .map_err(|e| format!("{program}: wait failed: {}", e.kind()))?;
-    let stderr = err_reader.join().unwrap_or_default();
+    let status = match exit_rx.recv_timeout(left()) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(format!("{program}: wait failed: {}", e.kind())),
+        Err(_) => return timed_out(),
+    };
     if !status.success() {
+        // stderr only names the failure: one held open by a grandchild is
+        // not waited for past the deadline
+        let stderr = err_rx.recv_timeout(left()).unwrap_or_default();
         let text = String::from_utf8_lossy(&stderr);
         let last = text.trim().lines().last().unwrap_or_default();
         let code = status
@@ -80,6 +96,21 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
         return Err(format!("{program}: exit {code}: {last}"));
     }
     Ok(stdout)
+}
+
+/// Kill a child that is still owned (not reaped) by its waiter thread.
+fn kill_pid(pid: u32) {
+    let pid = pid.to_string();
+    #[cfg(windows)]
+    let (program, args) = ("taskkill", vec!["/F", "/T", "/PID", pid.as_str()]);
+    #[cfg(not(windows))]
+    let (program, args) = ("kill", vec!["-KILL", pid.as_str()]);
+    let _ = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// The dm queue, read only.

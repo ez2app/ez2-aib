@@ -1997,8 +1997,8 @@ jobs:
              '        let Ok(v) = q.waiting(seat) else { continue }; // knife' \
              an_unreadable_dm_queue_is_no_snapshot
           # S3 no deadline: a call that hangs is waited for
-          sk source.rs '    let stdout = match rx.recv_timeout(timeout) {' \
-             '    let stdout = match Ok::<_, ()>(rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
+          sk source.rs '    let stdout = match out_rx.recv_timeout(left()) {' \
+             '    let stdout = match Ok::<_, ()>(out_rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
              a_call_past_its_deadline_is_killed_and_an_error
           # S4 a non-zero exit with output is read as an answer
           sk source.rs '    if !status.success() {' \
@@ -2020,6 +2020,18 @@ jobs:
           sk snapshot.rs '        rerun_done: true,' \
              '        rerun_done: false, // knife' \
              a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal
+          # S9 (1ced7 #685 L3) the wait for the exit has no deadline
+          sk source.rs '    let status = match exit_rx.recv_timeout(left()) {' \
+             '    let status = match Ok::<_, ()>(exit_rx.recv().unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into()))) { // knife' \
+             a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline
+          # S10 (1ced7 #685 L2) a file moved out of a guarded path is not seen
+          sk snapshot.rs '            if let Some(old) = st(f, "previous_filename") {' \
+             '            if let Some(old) = st(f, "previous_filename").filter(|_| false) { // knife' \
+             a_file_moved_out_of_a_guarded_path_touches_it
+          # S11 (1ced7 #685 L1) a full page of rules is read as the whole list
+          sk snapshot.rs '    let rules = match whole(&v, "rules") {' \
+             '    let rules = match arr(&v, "rules") { // knife' \
+             a_full_page_of_rules_is_unknown
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

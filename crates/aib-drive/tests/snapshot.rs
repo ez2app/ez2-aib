@@ -55,7 +55,7 @@ fn gh678() -> HashMap<String, Value> {
         json!([pull(678, H678, false)]),
     );
     m.insert(
-        format!("repos/{R}/rules/branches/main"),
+        format!("repos/{R}/rules/branches/main?per_page=100"),
         json!([
             {"type": "deletion", "ruleset_id": 7},
             {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
@@ -190,7 +190,7 @@ fn required_cells_come_from_the_rules_and_unreadable_rules_are_unknown() {
     assert!(matches!(s.rules_version, Known::Known(_)));
     let mut m = gh678();
     m.insert(
-        format!("repos/{R}/rules/branches/main"),
+        format!("repos/{R}/rules/branches/main?per_page=100"),
         json!([{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
             "required_status_checks": [{"integration_id": 15368}]}}]),
     );
@@ -198,7 +198,7 @@ fn required_cells_come_from_the_rules_and_unreadable_rules_are_unknown() {
     assert!(matches!(s.required_cells, Known::Unknown(_)));
     assert!(matches!(s.rules_version, Known::Unknown(_)));
     let mut m = gh678();
-    m.remove(&format!("repos/{R}/rules/branches/main"));
+    m.remove(&format!("repos/{R}/rules/branches/main?per_page=100"));
     let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.required_cells, Known::Unknown(_)));
 }
@@ -321,7 +321,16 @@ fn the_gh_reader_passes_only_api_and_a_path() {
         GhRead::args("repos/o/r/pulls").unwrap(),
         vec!["api".to_owned(), "repos/o/r/pulls".to_owned()]
     );
-    for bad in ["", "-X", "--method", "repos/o/r -X POST", "-f"] {
+    for bad in [
+        "",
+        "-X",
+        "--method",
+        "repos/o/r -X POST",
+        "-f",
+        "graphql",
+        "user",
+        "/repos/o/r",
+    ] {
         assert!(GhRead::args(bad).is_err(), "{bad:?}");
     }
 }
@@ -452,7 +461,7 @@ fn a_renamed_required_check_is_a_new_rules_version() {
     let a = snap(gh678(), &empty()).unwrap().rules_version;
     let mut m = gh678();
     m.insert(
-        format!("repos/{R}/rules/branches/main"),
+        format!("repos/{R}/rules/branches/main?per_page=100"),
         json!([{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
             "required_status_checks": [{"context": "rust (macos-14)"}, {"context": "rust (ubuntu-latest)"}]}}]),
     );
@@ -524,4 +533,47 @@ fn a_non_zero_exit_is_an_error_even_with_output() {
     )
     .unwrap();
     assert_eq!(ok, b"[]\n");
+}
+
+// ---- 1ced7 #685 L1 / L2 / L3 ----
+
+#[test]
+fn a_full_page_of_rules_is_unknown() {
+    let mut m = gh678();
+    let many: Vec<Value> = (0..100)
+        .map(|i| json!({"type": "deletion", "ruleset_id": i}))
+        .collect();
+    m.insert(
+        format!("repos/{R}/rules/branches/main?per_page=100"),
+        json!(many),
+    );
+    let s = snap(m, &empty()).unwrap();
+    assert!(
+        matches!(&s.required_cells, Known::Unknown(e) if e.contains("next page")),
+        "{:?}",
+        s.required_cells
+    );
+    assert!(matches!(s.rules_version, Known::Unknown(_)));
+}
+
+#[test]
+fn a_file_moved_out_of_a_guarded_path_touches_it() {
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/pulls/678/files?per_page=100"),
+        json!([{"filename": "tools/knife-old.py", "previous_filename": "scripts/knife.py",
+                "status": "renamed"}]),
+    );
+    let s = snap(m, &empty()).unwrap();
+    assert_eq!(s.prs[0].touches_guarded, Known::Known(true));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline() {
+    let t = std::time::Instant::now();
+    let args = ["-c", "exec >&- 2>&-; exec /bin/sleep 30"].map(str::to_owned);
+    let e = run_fixed("/bin/sh", &args, Duration::from_millis(500)).unwrap_err();
+    assert_eq!(e, "/bin/sh: timed out after 500 ms");
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
 }

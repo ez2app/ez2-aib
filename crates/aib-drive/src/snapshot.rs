@@ -68,7 +68,8 @@ impl GhRead {
     /// The whole argument list: `api` and the path, nothing that could
     /// change the method or send a body.
     pub fn args(path: &str) -> Result<Vec<String>, String> {
-        if path.is_empty() || path.starts_with('-') || path.contains(char::is_whitespace) {
+        // only REST paths under repos/ (1ced7 #685 N1: `graphql` is a POST in gh)
+        if !path.starts_with("repos/") || path.contains(char::is_whitespace) {
             return Err(format!("path refused: {path:?}"));
         }
         Ok(vec!["api".to_owned(), path.to_owned()])
@@ -152,13 +153,17 @@ pub fn build(gh: &dyn Read, inp: &Inputs<'_>) -> Result<Snapshot, String> {
 
 /// Required check names from the rules on main, and a version for them.
 fn rules(gh: &dyn Read, repo: &str) -> (Known<Vec<String>>, Known<String>) {
-    let v = match gh.get(&format!("repos/{repo}/rules/branches/main")) {
+    // a cut list may miss a required_status_checks rule: the list would be
+    // shorter, not empty, and decide only refuses an empty one (1ced7 #685 L1)
+    let v = match gh.get(&format!(
+        "repos/{repo}/rules/branches/main?per_page={PER_PAGE}"
+    )) {
         Ok(v) => v,
         Err(e) => return (Known::Unknown(e.clone()), Known::Unknown(e)),
     };
-    let Some(rules) = v.as_array() else {
-        let e = "rules: not a list".to_owned();
-        return (Known::Unknown(e.clone()), Known::Unknown(e));
+    let rules = match whole(&v, "rules") {
+        Ok(r) => r,
+        Err(e) => return (Known::Unknown(e.clone()), Known::Unknown(e)),
     };
     let mut names = Vec::new();
     let mut ids = BTreeSet::new();
@@ -318,10 +323,15 @@ fn commits(gh: &dyn Read, repo: &str, n: u64) -> Known<Vec<Sha>> {
 fn guarded(gh: &dyn Read, repo: &str, n: u64) -> Known<bool> {
     let path = format!("repos/{repo}/pulls/{n}/files?per_page={PER_PAGE}");
     let read = gh.get(&path).and_then(|v| {
-        whole(&v, "files")?
-            .iter()
-            .map(|f| st(f, "filename").ok_or_else(|| "file without a name".to_owned()))
-            .collect::<Result<Vec<String>, String>>()
+        let mut names = Vec::new();
+        for f in whole(&v, "files")? {
+            names.push(st(f, "filename").ok_or_else(|| "file without a name".to_owned())?);
+            // a file moved out of a guarded path touches it too (1ced7 #685 L2)
+            if let Some(old) = st(f, "previous_filename") {
+                names.push(old);
+            }
+        }
+        Ok::<_, String>(names)
     });
     match read {
         Ok(names) => Known::Known(
