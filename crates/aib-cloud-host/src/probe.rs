@@ -1294,7 +1294,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 if step.id == "verify" {
                     break;
                 }
-                crate::opstop::step(&step.id);
+                crate::opstop::step(step.id);
                 let mut cmd = Command::new(&step.argv[0]);
                 cmd.args(&step.argv[1..]);
                 eprintln!("→ {}", step.argv.join(" "));
