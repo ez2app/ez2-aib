@@ -156,6 +156,10 @@ const TOOLBAR_KEYS: [(&str, char); 11] = [
 fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     let h = app.hits.borrow().clone();
     if h.toolbar_y == Some(y) {
+        // 043dd incr3 L2:搜尋輸入中，點工具列不能把字打進搜尋框
+        if app.typing.is_some() {
+            return true;
+        }
         for (tok, key) in TOOLBAR_KEYS {
             if let Some(pos) = h.toolbar.find(tok) {
                 let start = str_width(&h.toolbar[..pos]);
@@ -268,6 +272,8 @@ fn status_color(s: Option<&str>) -> Option<Color> {
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
+    // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
+    *app.hits.borrow_mut() = Hits::default();
     let mut out: Vec<Vec<Seg>> = Vec::new();
     if let Some(e) = &app.err {
         out.push(vec![Seg(
@@ -979,5 +985,15 @@ mod tests {
         assert!(!on_click(&mut app, qx, ty), "toolbar q quits");
         assert!(on_click(&mut app, 79, 29));
         assert!(on_click(&mut app, 0, 0));
+        // 043dd incr3 L2:搜尋輸入中點工具列不打字、不離開
+        app.typing = Some(String::new());
+        assert!(on_click(&mut app, qx, ty), "q while typing does not quit");
+        assert_eq!(app.typing.as_deref(), Some(""), "nothing typed into search");
+        app.typing = None;
+        // 043dd incr3 L1:錯誤畫面不沿用舊的點擊對照
+        app.err = Some("x".into());
+        let _ = frame(&app, 80, 30);
+        assert!(app.hits.borrow().toolbar_y.is_none());
+        assert!(on_click(&mut app, qx, ty), "old q spot does not quit on the error screen");
     }
 }
