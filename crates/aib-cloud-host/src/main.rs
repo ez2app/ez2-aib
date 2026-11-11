@@ -39,17 +39,17 @@ mod customercmd;
 #[cfg(unix)]
 mod edgecmd;
 #[cfg(unix)]
-mod opstore;
-#[cfg(unix)]
 mod maskcmd;
 #[cfg(unix)]
-mod sitemaskcmd;
+mod opstore;
 #[cfg(unix)]
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
 #[cfg(unix)]
 mod rostercmd;
+#[cfg(unix)]
+mod sitemaskcmd;
 #[cfg(unix)]
 mod siteremovecmd;
 #[cfg(unix)]

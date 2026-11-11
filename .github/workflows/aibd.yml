@@ -500,8 +500,8 @@ jobs:
              '            step.descend.push(path); // knife' \
              under_sys_only_what_is_named_stays
           # mask: a multicast address passes as a site's own (Andy 11-11)
-          ck mask.rs '        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)' \
-             '        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x02 == 0x02) // knife' \
+          ck mask.rs '    shaped && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)' \
+             '    shaped && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x02 == 0x02) // knife' \
              a_site_hwaddr_is_local_and_unicast
           # mask: a drawn address keeps the multicast bit it was drawn with
           ck mask.rs '    let first = (raw[0] & 0xFC) | 0x02;' \

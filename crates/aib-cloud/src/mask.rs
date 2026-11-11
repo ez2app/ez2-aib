@@ -340,8 +340,7 @@ pub fn hwaddr_is_local(mac: &str) -> bool {
         && parts
             .iter()
             .all(|p| p.len() == 2 && p.bytes().all(|c| c.is_ascii_hexdigit()));
-    shaped
-        && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)
+    shaped && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)
 }
 
 /// One change a site CT's configuration needs: `pct set <ct> --<key> <value>` (the hook
@@ -438,14 +437,29 @@ pub fn config_fixes(
 /// CT, and what it should show. From a PHP request too, not only a shell: php-fpm runs in
 /// its own sandbox (33e28).
 pub const INSIDE_EXPECT: &[(&str, &str)] = &[
-    ("/proc/cpuinfo", "every model name is vCPU; no microcode, cache size, bugs or MHz lines"),
+    (
+        "/proc/cpuinfo",
+        "every model name is vCPU; no microcode, cache size, bugs or MHz lines",
+    ),
     ("/sys/class/dmi/id/sys_vendor", "missing or empty"),
     ("/sys/class/dmi/id/board_name", "missing or empty"),
-    ("/sys/devices/system/cpu", "only as many processors as the CT has cores"),
+    (
+        "/sys/devices/system/cpu",
+        "only as many processors as the CT has cores",
+    ),
     ("/proc/cmdline", "empty"),
-    ("/etc/resolv.conf", "search invalid; the resolver of the CT's configuration"),
-    ("/etc/hosts", "loopback and the CT's own name; no platform block, no private network name"),
-    ("/sys/class/net/eth0/address", "a locally administered address (second hex digit 2, 6, A or E)"),
+    (
+        "/etc/resolv.conf",
+        "search invalid; the resolver of the CT's configuration",
+    ),
+    (
+        "/etc/hosts",
+        "loopback and the CT's own name; no platform block, no private network name",
+    ),
+    (
+        "/sys/class/net/eth0/address",
+        "a locally administered address (second hex digit 2, 6, A or E)",
+    ),
     ("/proc/sys/user/max_user_namespaces", "0"),
     ("unshare -Ur true", "refused"),
     ("dmesg", "refused"),
@@ -645,14 +659,29 @@ mod tests {
 
     #[test]
     fn a_site_hwaddr_is_local_and_unicast() {
-        for raw in [[0u8; 6], [0xFF; 6], [0xBC, 0x24, 0x11, 1, 2, 3], [0x01, 0, 0, 0, 0, 0]] {
+        for raw in [
+            [0u8; 6],
+            [0xFF; 6],
+            [0xBC, 0x24, 0x11, 1, 2, 3],
+            [0x01, 0, 0, 0, 0, 0],
+        ] {
             let mac = local_hwaddr(raw);
             assert!(hwaddr_is_local(&mac), "{mac}");
             assert_eq!(mac.len(), 17);
         }
-        assert_eq!(local_hwaddr([0xBC, 0x24, 0x11, 0xAB, 0xCD, 0xEF]), "BE:24:11:AB:CD:EF");
+        assert_eq!(
+            local_hwaddr([0xBC, 0x24, 0x11, 0xAB, 0xCD, 0xEF]),
+            "BE:24:11:AB:CD:EF"
+        );
         // the platform's own prefix, multicast, and what is not an address
-        for bad in ["BC:24:11:00:00:01", "03:00:00:00:00:01", "02:00:00:00:00", "02:00:00:00:00:0G", "02-00-00-00-00-01", ""] {
+        for bad in [
+            "BC:24:11:00:00:01",
+            "03:00:00:00:00:01",
+            "02:00:00:00:00",
+            "02:00:00:00:00:0G",
+            "02-00-00-00-00-01",
+            "",
+        ] {
             assert!(!hwaddr_is_local(bad), "{bad}");
         }
         assert!(hwaddr_is_local("02:00:00:00:00:01"));
@@ -660,7 +689,10 @@ mod tests {
     }
 
     fn cfg(lines: &[(&str, &str)]) -> Vec<(String, String)> {
-        lines.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+        lines
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
     }
 
     const HOOK: &str = "/usr/local/sbin/ez2-ct-mask-hook";
@@ -685,7 +717,10 @@ mod tests {
         ]);
         let fixes = config_fixes(&c, NEW).unwrap();
         let keys: Vec<&str> = fixes.iter().map(|f| f.key).collect();
-        assert_eq!(keys, ["lxc.hook.mount", "net0", "nameserver", "searchdomain"]);
+        assert_eq!(
+            keys,
+            ["lxc.hook.mount", "net0", "nameserver", "searchdomain"]
+        );
         assert_eq!(fixes[0].value, HOOK);
         assert_eq!(
             fixes[1].value,
@@ -697,8 +732,13 @@ mod tests {
 
     #[test]
     fn a_second_hook_or_a_foreign_one_is_not_the_mask() {
-        for hooks in [vec![HOOK, HOOK], vec!["/tmp/other"], vec![HOOK, "/tmp/other"]] {
-            let mut lines: Vec<(&str, &str)> = hooks.iter().map(|h| ("lxc.hook.mount", *h)).collect();
+        for hooks in [
+            vec![HOOK, HOOK],
+            vec!["/tmp/other"],
+            vec![HOOK, "/tmp/other"],
+        ] {
+            let mut lines: Vec<(&str, &str)> =
+                hooks.iter().map(|h| ("lxc.hook.mount", *h)).collect();
             lines.push(("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"));
             lines.push(("nameserver", "1.1.1.1"));
             lines.push(("searchdomain", "invalid"));
@@ -712,13 +752,19 @@ mod tests {
     fn ipv6_alone_or_no_hwaddr_changes_net0() {
         let v6 = cfg(&[
             ("lxc.hook.mount", HOOK),
-            ("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24,gw6=fe80::1"),
+            (
+                "net0",
+                "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24,gw6=fe80::1",
+            ),
             ("nameserver", "1.1.1.1"),
             ("searchdomain", "invalid"),
         ]);
         let f = config_fixes(&v6, NEW).unwrap();
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].value, "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24");
+        assert_eq!(
+            f[0].value,
+            "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"
+        );
         let bare = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,ip=10.77.0.9/24"),

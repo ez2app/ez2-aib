@@ -67,7 +67,10 @@ fn fix_json(f: &ConfigFix) -> Value {
 /// The plan document and its exit code. Separate from [`cmd`] so it can be tested without
 /// a host. `new_hwaddr` must be local (`mask::local_hwaddr`).
 pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u8) {
-    let cfg = seen.config.as_deref().and_then(|t| parse_pct_config(t).ok());
+    let cfg = seen
+        .config
+        .as_deref()
+        .and_then(|t| parse_pct_config(t).ok());
     let fixes = cfg.as_deref().map(|c| mask::config_fixes(c, new_hwaddr));
     let hostname = cfg
         .as_deref()
@@ -149,7 +152,10 @@ fn random6() -> Result<[u8; 6], String> {
 
 fn see(ct: u32) -> Seen {
     let id = ct.to_string();
-    let running = match capture("pct", &["status", &id], 20).as_deref().map(str::trim) {
+    let running = match capture("pct", &["status", &id], 20)
+        .as_deref()
+        .map(str::trim)
+    {
         Some("status: running") => Some(true),
         Some("status: stopped") => Some(false),
         _ => None,
@@ -226,34 +232,72 @@ mod tests {
 
     #[test]
     fn a_masked_running_site_has_nothing_to_do() {
-        let (doc, rc) = plan_doc("s-abc123", 119, &seen(Some(masked_config()), Some(true), Some("ok 40\n")), NEW);
+        let (doc, rc) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(masked_config()), Some(true), Some("ok 40\n")),
+            NEW,
+        );
         assert_eq!(rc, 0, "{doc}");
         assert_eq!(doc["config_fixes"], json!([]));
         assert_eq!(doc["verdict"], "masked");
         assert_eq!(doc["restart_needed"], false);
-        assert!(doc["ct_files"][2]["text"].as_str().unwrap().contains("s-abc123"));
+        assert!(doc["ct_files"][2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("s-abc123"));
     }
 
     #[test]
     fn a_running_site_without_its_covers_is_not_done() {
-        let (doc, rc) = plan_doc("s-abc123", 119, &seen(Some(masked_config()), Some(true), Some("NOT MASKED cpuinfo\n")), NEW);
+        let (doc, rc) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(
+                Some(masked_config()),
+                Some(true),
+                Some("NOT MASKED cpuinfo\n"),
+            ),
+            NEW,
+        );
         assert_eq!(rc, 1);
         assert_eq!(doc["verdict"], "not_masked");
-        let (_, rc) = plan_doc("s-abc123", 119, &seen(Some(masked_config()), Some(true), None), NEW);
+        let (_, rc) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(masked_config()), Some(true), None),
+            NEW,
+        );
         assert_eq!(rc, 1, "no verdict file is not masked");
     }
 
     #[test]
     fn fixes_on_a_running_site_need_a_restart_and_name_their_step() {
         let platform = masked_config().replace("06:AA:BB:CC:DD:EE", "BC:24:11:00:00:09");
-        let (doc, rc) = plan_doc("s-abc123", 119, &seen(Some(platform.clone()), Some(true), Some("ok 40\n")), NEW);
+        let (doc, rc) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(platform.clone()), Some(true), Some("ok 40\n")),
+            NEW,
+        );
         assert_eq!(rc, 1);
         assert_eq!(doc["config_fixes"][0]["key"], "net0");
         assert_eq!(doc["config_fixes"][0]["step"], "limits");
-        assert!(doc["config_fixes"][0]["value"].as_str().unwrap().contains("hwaddr=02:11:22:33:44:55"));
+        assert!(doc["config_fixes"][0]["value"]
+            .as_str()
+            .unwrap()
+            .contains("hwaddr=02:11:22:33:44:55"));
         assert_eq!(doc["restart_needed"], true);
-        let (doc, _) = plan_doc("s-abc123", 119, &seen(Some(platform), Some(false), None), NEW);
-        assert_eq!(doc["restart_needed"], false, "a stopped CT takes them at its next start");
+        let (doc, _) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(platform), Some(false), None),
+            NEW,
+        );
+        assert_eq!(
+            doc["restart_needed"], false,
+            "a stopped CT takes them at its next start"
+        );
         assert_eq!(doc["verdict"], "not_running");
     }
 
@@ -262,11 +306,20 @@ mod tests {
         let (doc, rc) = plan_doc("s-abc123", 119, &seen(None, Some(false), None), NEW);
         assert_eq!(rc, 3);
         assert!(doc["config_fixes"].is_null());
-        assert!(doc["unread"].as_array().unwrap().iter().any(|u| u == "the CT's configuration"));
+        assert!(doc["unread"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u == "the CT's configuration"));
         let no_net = "hostname: s-abc123\n".to_owned();
         let (_, rc) = plan_doc("s-abc123", 119, &seen(Some(no_net), Some(false), None), NEW);
         assert_eq!(rc, 3);
-        let (_, rc) = plan_doc("s-abc123", 119, &seen(Some(masked_config()), None, None), NEW);
+        let (_, rc) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(masked_config()), None, None),
+            NEW,
+        );
         assert_eq!(rc, 3);
         let mut s = seen(Some(masked_config()), Some(false), None);
         s.wrapper = None;
@@ -275,7 +328,10 @@ mod tests {
 
     #[test]
     fn a_wrapper_missing_or_older_is_owed_on_the_host() {
-        for (w, word) in [(Some(None), "missing"), (Some(Some("#!/bin/sh\nexit 0\n".to_owned())), "differs")] {
+        for (w, word) in [
+            (Some(None), "missing"),
+            (Some(Some("#!/bin/sh\nexit 0\n".to_owned())), "differs"),
+        ] {
             let mut s = seen(Some(masked_config()), Some(false), None);
             s.wrapper = w;
             let (doc, rc) = plan_doc("s-abc123", 119, &s, NEW);
