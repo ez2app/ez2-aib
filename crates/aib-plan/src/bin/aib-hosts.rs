@@ -5,8 +5,9 @@
 //! - 每台每 20 秒讀一次 `aib lease status --json` 與 `sysctl -n hw.ncpu vm.loadavg`:別台用 ssh,
 //!   本機(目標寫 `local`)直接跑。一次性執行緒(ADR 0005 不用 `thread::sleep`);卡住 60 秒顯示
 //!   「?」、不重起。
-//! - 電池 = 這台還能給別人用的量:空機滿格綠色;有人租著 = 租約剩餘時間比例，隨時間往下掉(黃，
-//!   低於 20% 紅),有一格亮點來回跑;連不上 = 空殼紅色「離線」。負載用最近 30 筆畫小折線。
+//! - 電池 = 這台還能給別人用的量:空機滿格綠色;有人租著 = 租約剩餘時間比例，隨時間往下掉(五段:
+//!   黃綠 / 黃 / 橘 / 深橘 / 紅),有一格亮點來回跑;連不上 = 空殼紅色「離線」。負載用最近 30 筆畫小折線。
+//! - 收起時每台固定 3 行(名字電池 / 負載 / 在做什麼),離線與讀取中也一樣高。
 //! - 滑鼠點一台(或按 1–9)展開 / 收起：正在跑的是誰、做什麼、跑多久;排隊的每一位是誰、做什麼、
 //!   等多久、有沒有優先。
 //! - 主機參數 `名字=目標`(例 `"Pro 13=andyimkt@100.116.110.31"`),只寫目標就用目標當名字。
@@ -236,8 +237,20 @@ fn charge(s: Option<&Sample>, t: i64) -> (u32, Color) {
             let span = (s.expiry - s.acquired).max(1);
             let left = (s.expiry - t).clamp(0, span);
             let p = u32::try_from(left * 100 / span).unwrap_or(0);
-            (p, if p < 20 { Color::Red } else { Color::Yellow })
+            (p, held_color(p))
         }
+    }
+}
+
+/// 有人租著時，剩多少分五段顏色(Andy 11-12 07:2x「百分比顏色分別要更多一點」):
+/// 80 以上黃綠、60–79 黃、40–59 橘、20–39 深橘、20 以下紅。空機滿格用正綠，跟黃綠分得開。
+fn held_color(p: u32) -> Color {
+    match p {
+        80.. => Color::AnsiValue(154),
+        60..=79 => Color::AnsiValue(226),
+        40..=59 => Color::AnsiValue(214),
+        20..=39 => Color::AnsiValue(202),
+        _ => Color::Red,
     }
 }
 
@@ -312,14 +325,22 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
         Color::Blue
     };
     let mut out = vec![l1];
+    let room = width.saturating_sub(NAME_W + 2);
+    // 每台收起時固定 3 行(Andy 11-12 07:2x「離線的主機跟其他主機的高度間距要一致」):
+    // 第 2 行負載(離線 / 讀取中寫「負載 —」),第 3 行在做什麼 / 空機 / 離線原因。
     if online {
         out.push(vec![pad(), (load, Color::DarkGrey), (spark, lcol)]);
+    } else {
+        out.push(vec![pad(), ("負載 —".into(), Color::DarkGrey)]);
     }
-    let room = width.saturating_sub(NAME_W + 2);
     if !h.open {
-        if let Some(s) = s.filter(|s| s.held) {
-            out.push(vec![pad(), (fit(&s.what, room), Color::DarkGrey)]);
-        }
+        let third = match s {
+            Some(s) if s.held => fit(&s.what, room),
+            Some(s) if s.online => "沒有人在跑".to_string(),
+            Some(_) => "連不上:ssh 逾時或主機關機,20 秒後再試".to_string(),
+            None => "第一次讀取中".to_string(),
+        };
+        out.push(vec![pad(), (fit(&third, room), Color::DarkGrey)]);
         return out;
     }
     // 展開：誰在跑、排隊明細
@@ -374,7 +395,7 @@ fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Opt
         vec![
             (format!("測試機 {clock}(台北)"), Color::White),
             (
-                "  綠 空機 · 黃 租約剩餘 · 紅 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
+                "  綠 空機 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
                     .into(),
                 Color::DarkGrey,
             ),
@@ -583,6 +604,43 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!(charge(Some(&s), 1500).0, 50);
         assert_eq!(charge(Some(&s), 1900), (10, Color::Red));
         assert_eq!(charge(Some(&s), 9999).0, 0);
+    }
+
+    #[test]
+    fn held_colors_have_five_steps_and_none_is_the_free_green() {
+        let s = parse_sample(HELD, true, "");
+        let cols: Vec<Color> = [1100, 1300, 1500, 1700, 1900]
+            .iter()
+            .map(|t| charge(Some(&s), *t).1)
+            .collect();
+        for (i, a) in cols.iter().enumerate() {
+            assert_ne!(*a, Color::Green, "held never looks free");
+            for b in &cols[i + 1..] {
+                assert_ne!(a, b, "{cols:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_host_is_three_lines_when_closed() {
+        let free = parse_sample(
+            "{\"state\":\"free\",\"queue\":[]}\nAIB_HOSTS_SYS 8 { 1 1 1 }",
+            true,
+            "",
+        );
+        let off = parse_sample("", false, "ssh: connect to host x port 22: timed out\n");
+        for (i, s) in [
+            Some(parse_sample(HELD, true, "")),
+            Some(free),
+            Some(off),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let l = host_lines(&host("x", s, false), i, 120, 0, 1500);
+            assert_eq!(l.len(), 3, "{:?}", l.iter().map(text).collect::<Vec<_>>());
+        }
     }
 
     #[test]
