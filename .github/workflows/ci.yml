@@ -79,7 +79,7 @@ jobs:
           light=false; if [ "$docs" = true ] || [ "$rust" = true ]; then light=true; fi
           printf 'docs_only=%s\nrust_only=%s\nlight=%s\n' "$docs" "$rust" "$light" | tee -a "$GITHUB_OUTPUT"
       # 11-11 f1fae(33e28 做):公開倉不放真主機位址。白名單式:倉裡每個 IPv4 字面值都要落在允許段
-      #   (私網 / 回環 / 100.64/10 / 文件段 / 0.0.0.0 / 255.x),否則紅;檢查本身不寫任何要擋的網段。
+      #   (私網 / 回環 / 100.64.0.0/24 樣本段(100.64/10 其餘是 tailnet,不放) / 文件段 / 0.0.0.0 / 255.x),否則紅;檢查本身不寫任何要擋的網段。
       #   每張 PR、每次 main 推送都跑(這個 job 紅 ⇒ 6 格跟著紅)。刀:塞一筆公網位址、拿掉一行的註記 ⇒ 都要紅。
       - name: IPv4 literals stay in the allowed ranges (public repo)
         shell: bash
