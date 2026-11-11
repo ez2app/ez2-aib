@@ -11,15 +11,16 @@
 //!
 //! Three questions, asked from outside the host (4542e B1 design, 33e28 11-11):
 //! 1. the site's home page, redirects followed, read with an ordinary browser's agent:
-//!    it ends on a name of this site and holds the loader of this site's key exactly once;
+//!    it ends on a name of this site and holds the loader of this site's key exactly once,
+//!    and no loader of another key (the template's, carried over by the clone);
 //! 2. the statistics server serves that loader, and it carries this site's key;
 //! 3. the statistics server takes a probe event from this site's origin: it answers 400
 //!    with reason `event` (the name is refused, so nothing is stored, but the origin was
 //!    accepted and the route is there).
 //!
 //! Every answer is [`Probe::Done`] (all three hold), [`Probe::NotDone`] (something the
-//! loader step itself puts right when it runs again: the loader is missing or written
-//! twice, the server does not know the key, the server does not take the origin yet) or
+//! loader step itself puts right when it runs again: the loader is missing, written
+//! twice or another key's, the server does not know the key, the server does not take the origin yet) or
 //! [`Probe::Unknown`] (could not ask, or an answer only a person can act on). A failed
 //! question is never read as "not done".
 
@@ -42,6 +43,9 @@ pub struct Page {
     pub on_own_name: bool,
     /// How many times the loader of this site's key appears in the page.
     pub copies: usize,
+    /// How many loaders of **another** key appear in the page (ebb36 L1: the template's
+    /// loader carried over by the clone sends this site's visitors to the template).
+    pub other_keys: usize,
 }
 
 /// The loader as the statistics server serves it.
@@ -97,6 +101,10 @@ fn page(p: Asked<Page>) -> Option<LoaderProbe> {
     }
     if p.status != 200 {
         return Some(unknown("page_status"));
+    }
+    if p.other_keys > 0 {
+        // the loader step writes this site's own loader in its place
+        return Some(not_done("loader_foreign"));
     }
     match p.copies {
         1 => None,
@@ -160,6 +168,7 @@ mod tests {
         status: 200,
         on_own_name: true,
         copies: 1,
+        other_keys: 0,
     };
     const SCRIPT: Script = Script {
         status: 200,
@@ -273,6 +282,23 @@ mod tests {
         assert_eq!(i(429, false), unknown("rate_limited"));
         // a 2xx that stored the probe would be data written by a check: not accepted
         assert_eq!(i(200, false), unknown("intake_odd"));
+    }
+
+    // knife (g): another key's loader in the page is not this site's statistics
+    #[test]
+    fn a_loader_of_another_key_is_not_done() {
+        for copies in [0, 1, 2] {
+            let r = ok_but(
+                Asked::Got(Page {
+                    copies,
+                    other_keys: 1,
+                    ..PAGE
+                }),
+                Asked::Got(SCRIPT),
+                Asked::Got(INTAKE),
+            );
+            assert_eq!(r, not_done("loader_foreign"), "{copies}");
+        }
     }
 
     #[test]
