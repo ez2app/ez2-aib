@@ -536,6 +536,7 @@ const RECORD_KEYS: &[&str] = &[
     "wp",
     "locale",
     "created",
+    "ct_since",
     "template",
     "fw_group",
     "ssh_port",

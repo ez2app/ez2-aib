@@ -309,10 +309,10 @@ fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u
     let Ok(spec) = spec_from_record(&rec) else {
         return unknown("record_unreadable");
     };
-    let created = rec
-        .get("created")
-        .and_then(Value::as_str)
-        .and_then(fresh::created_secs);
+    let floor = match fresh::record_floor(&rec) {
+        Ok(t) => t,
+        Err(why) => return unknown(why),
+    };
     let listed = list_dumps(dumps);
     let files: Option<Vec<DumpFile<'_>>> = listed.as_ref().map(|l| {
         l.iter()
@@ -326,7 +326,7 @@ fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u
     });
     let got = fresh::judge(
         spec.ct,
-        created,
+        Some(floor),
         files.as_deref(),
         now,
         u64::from(max_minutes) * 60,
@@ -628,7 +628,7 @@ mod tests {
             records.join("site4.json"),
             format!(
                 r#"{{"site":"site4","ct":112,"ip":"10.77.0.12","hosts":"s4.example.test","created":"{}"}}"#,
-                stamp(now - 60)
+                fresh::utc_stamp(now - 60)
             ),
         )
         .unwrap();
@@ -645,6 +645,24 @@ mod tests {
             (exit, doc["verdict"].as_str()),
             (3, Some("site_created_unreadable"))
         );
+        // moved by restore --switch onto CT 112 a minute ago: the fresh dump is the earlier site's
+        fs::write(
+            records.join("site6.json"),
+            format!(
+                r#"{{"site":"site6","ct":112,"ip":"10.77.0.12","hosts":"s6.example.test","created":"2026-01-01T00:00:00Z","ct_since":"{}"}}"#,
+                fresh::utc_stamp(now - 60)
+            ),
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site6", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("no_backup")));
+        fs::write(
+            records.join("site7.json"),
+            r#"{"site":"site7","ct":112,"ip":"10.77.0.12","hosts":"s7.example.test","created":"2026-01-01T00:00:00Z","ct_since":"later"}"#,
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site7", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (3, Some("ct_since_unreadable")));
 
         // usage
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
@@ -658,28 +676,6 @@ mod tests {
             Ok(0)
         );
         let _ = fs::remove_dir_all(&root);
-    }
-
-    /// `YYYY-MM-DDTHH:MM:SSZ` for seconds since the epoch, as the create shell writes it.
-    fn stamp(secs: u64) -> String {
-        let days = i64::try_from(secs / 86_400).unwrap();
-        let rem = secs % 86_400;
-        // civil_from_days (Howard Hinnant)
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z.rem_euclid(146_097);
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = yoe + era * 400 + i64::from(m <= 2);
-        format!(
-            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-            rem / 3600,
-            rem % 3600 / 60,
-            rem % 60
-        )
     }
 
     #[test]
@@ -696,11 +692,6 @@ mod tests {
         assert_eq!(
             fresh::judge(112, Some(0), Some(&files), 1_000, 1_800),
             Fresh::Unknown("dump_unreadable")
-        );
-        assert_eq!(stamp(1_794_195_191), "2026-11-09T03:33:11Z");
-        assert_eq!(
-            fresh::created_secs(&stamp(1_794_195_191)),
-            Some(1_794_195_191)
         );
     }
 }

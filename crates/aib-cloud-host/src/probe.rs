@@ -1118,6 +1118,28 @@ fn switch_confirmed(code: &str, yes: Option<&str>) -> bool {
     yes == Some(code)
 }
 
+/// The site record after `site restore --switch` moved the site to CT `new_ct` at
+/// `new_ip` (`now`: seconds since the epoch); whether the site has customer ssh, whose port
+/// follows the CT. `ct_since` is set to `now`: dumps of that CT number from before the move
+/// belong to whatever had the number before, so they are not this site's backup (ebb36,
+/// pre-update backup incr. L1).
+fn switched_record(rec: &mut Value, new_ct: u32, new_ip: &str, now: u64) -> Result<bool, String> {
+    rec["ct"] = json!(new_ct);
+    rec["ip"] = json!(new_ip);
+    rec["ct_since"] = json!(aib_cloud::fresh::utc_stamp(now));
+    let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
+    if had_ssh {
+        let port = 2000u64 + u64::from(new_ct);
+        if port > 65535 {
+            return Err(format!(
+                "new ct {new_ct}: customer ssh port 2000+ct would be {port}; not switching"
+            ));
+        }
+        rec["ssh_port"] = json!(port);
+    }
+    Ok(had_ssh)
+}
+
 /// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch --yes-<code>]`:
 /// blue-green — restore the backup as a new CT beside the live one, apply the site's limits,
 /// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
@@ -1264,18 +1286,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 let mut rec: Value =
                     serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
                 let new_ct_n = ct.unwrap_or(0);
-                rec["ct"] = json!(new_ct_n);
-                rec["ip"] = json!(new_ip);
-                let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
-                if had_ssh {
-                    let port = 2000u64 + u64::from(new_ct_n);
-                    if port > 65535 {
-                        return Err(format!(
-                    "new ct {new_ct_n}: customer ssh port 2000+ct would be {port}; not switching"
-                ));
-                    }
-                    rec["ssh_port"] = json!(port);
-                }
+                let had_ssh = switched_record(&mut rec, new_ct_n, &new_ip, unix_now())?;
                 aib_cloud::site::spec_from_record(&rec)
                     .map_err(|e| format!("new record invalid, not switching: {e}"))?;
                 let new_text = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
@@ -1367,6 +1378,24 @@ pub fn main(args: &[String]) -> Result<u8, String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_writes_when_the_site_took_the_ct_number() {
+        let now = 1_794_195_191;
+        let mut rec = json!({ "site": "site2", "ct": 112, "ip": "10.77.0.12",
+            "created": "2026-01-01T00:00:00Z", "ssh_port": 2112 });
+        assert_eq!(switched_record(&mut rec, 119, "10.77.0.19", now), Ok(true));
+        assert_eq!(rec["ct"], 119);
+        assert_eq!(rec["ip"], "10.77.0.19");
+        assert_eq!(rec["ssh_port"], 2119);
+        assert_eq!(rec["ct_since"], "2026-11-09T03:33:11Z");
+        // the backup check now counts only dumps of CT 119 from the switch on
+        assert_eq!(aib_cloud::fresh::record_floor(&rec), Ok(now));
+        let mut no_ssh = json!({ "site": "site3", "ct": 113, "created": "2026-01-01T00:00:00Z" });
+        assert_eq!(switched_record(&mut no_ssh, 120, "10.77.0.20", now), Ok(false));
+        assert_eq!(no_ssh["ct_since"], "2026-11-09T03:33:11Z");
+        assert!(switched_record(&mut rec, 70_000, "10.77.0.21", now).is_err());
+    }
     use std::net::TcpListener;
 
     /// 4542e 11-10 condition c: --switch has no inverse, so the site code is typed.

@@ -14,8 +14,9 @@
 //!
 //! CT numbers are reused: removing a site leaves its dumps in the folder, and the next CT
 //! takes the lowest free number. So a dump only counts when it is newer than the site's
-//! own record (`created`); a site whose creation time cannot be read is "could not tell"
-//! (ebb36 L1).
+//! own record (`created`) and, when the site was moved to another CT number by
+//! `site restore --switch`, newer than that move (`ct_since`, ebb36 incr. L1). A site
+//! whose times cannot be read is "could not tell" (ebb36 L1).
 //!
 //! Before this is wired in, check on the host which folder the daily vzdump writes to;
 //! the host command assumes the `local` storage, `/var/lib/vz/dump` (ebb36 N3).
@@ -95,6 +96,45 @@ pub fn created_secs(text: &str) -> Option<u64> {
         return None;
     }
     u64::try_from(day * 86_400 + h * 3600 + m * 60 + sec).ok()
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` (UTC) for seconds since the epoch: the form of `created` and
+/// `ct_since` in a site record.
+pub fn utc_stamp(secs: u64) -> alloc::string::String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
+    let rem = secs % 86_400;
+    // civil_from_days (Howard Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    alloc::format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// The earliest time a dump may be from to belong to the site of record `rec`: its
+/// `created`, or its `ct_since` when that is later. `Err` with the fixed word when either
+/// cannot be read (`ct_since` may be absent, never unreadable).
+pub fn record_floor(rec: &serde_json::Value) -> Result<u64, &'static str> {
+    let created = rec
+        .get("created")
+        .and_then(serde_json::Value::as_str)
+        .and_then(created_secs)
+        .ok_or("site_created_unreadable")?;
+    let ct_since = match rec.get("ct_since") {
+        None => None,
+        Some(v) => Some(v.as_str().and_then(created_secs).ok_or("ct_since_unreadable")?),
+    };
+    Ok(ct_since.map_or(created, |s| s.max(created)))
 }
 
 /// Whether an update may go ahead: only on a fresh, finished backup.
@@ -381,6 +421,30 @@ mod tests {
         ] {
             assert_eq!(created_secs(not), None, "{not}");
         }
+    }
+
+    #[test]
+    fn a_site_moved_to_another_ct_counts_from_the_move() {
+        let created = "2026-01-01T00:00:00Z";
+        let rec = serde_json::json!({ "created": created });
+        assert_eq!(record_floor(&rec), created_secs(created).ok_or("x"));
+        // restore --switch moved it to a CT number an earlier site had: from the move on
+        let moved = serde_json::json!({ "created": created, "ct_since": "2026-11-09T03:33:11Z" });
+        assert_eq!(record_floor(&moved), Ok(1_794_195_191));
+        // a move written before the creation (clock trouble) does not lower the floor
+        let odd = serde_json::json!({ "created": "2026-11-09T03:33:11Z", "ct_since": created });
+        assert_eq!(record_floor(&odd), Ok(1_794_195_191));
+        for bad in [serde_json::json!("soon"), serde_json::json!(null), serde_json::json!(5)] {
+            let r = serde_json::json!({ "created": created, "ct_since": bad });
+            assert_eq!(record_floor(&r), Err("ct_since_unreadable"));
+        }
+        assert_eq!(
+            record_floor(&serde_json::json!({ "ct_since": created })),
+            Err("site_created_unreadable")
+        );
+        assert_eq!(utc_stamp(1_794_195_191), "2026-11-09T03:33:11Z");
+        assert_eq!(utc_stamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(created_secs(&utc_stamp(951_782_400)), Some(951_782_400)); // 2000-02-29
     }
 
     #[test]
