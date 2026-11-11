@@ -264,6 +264,9 @@ pub fn fit(s: &str, w: usize) -> String {
     if str_width(s) <= w {
         return s.to_string();
     }
+    if w == 0 {
+        return String::new();
+    }
     let mut out = String::new();
     let mut used = 0;
     for c in s.chars() {
@@ -402,5 +405,12 @@ mod tests {
     #[test]
     fn bad_json_is_an_error_not_a_panic() {
         assert!(parse("{").is_err());
+    }
+
+    #[test]
+    fn fit_zero_width_draws_nothing() {
+        assert_eq!(fit("進度樹", 0), "");
+        assert_eq!(str_width(&fit("進度樹", 1)), 1);
+        assert!(str_width(&fit("進度樹abc", 4)) <= 4);
     }
 }

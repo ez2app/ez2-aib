@@ -28,6 +28,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 const DM_EVERY: Duration = Duration::from_secs(30);
+/// 數一次佇列超過這麼久就當它卡住、允許重起
+const DM_STUCK: Duration = Duration::from_secs(90);
 
 struct Args {
     data: PathBuf,
@@ -86,7 +88,8 @@ fn count_dm(root: &Path, seats: &[String]) -> DmMap {
     let script = root.join("src").join("cockpit").join("dm_queue.py");
     for s in seats {
         let get = |tab: &str| -> Option<u32> {
-            let o = std::process::Command::new("python3")
+            let py = std::env::var("EZ2_PY3").unwrap_or_else(|_| "python3".into());
+            let o = std::process::Command::new(py)
                 .arg(&script)
                 .args(["list", "--seat", s, "--tab", tab])
                 .stdin(std::process::Stdio::null())
@@ -357,7 +360,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 if n.kind == "ext" { "延伸 " } else { "" },
                 n.title
             );
-            let lw = tree_w.saturating_sub(str_width(&right)).max(8);
+            let lw = tree_w.saturating_sub(str_width(&right)).max(8).min(tree_w);
             let col = if leaf {
                 status_color(n.status.as_deref())
             } else {
@@ -367,7 +370,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             tree_lines.push(vec![
                 Seg(pad(&left, lw), col, r.idx == app.sel, n.kind == "group"),
                 Seg(
-                    fit(&right, tree_w - lw),
+                    fit(&right, tree_w.saturating_sub(lw)),
                     if orphan {
                         Some(Color::Red)
                     } else {
@@ -389,7 +392,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
 
     // 右：為什麼 + 細節
     let mut side: Vec<Vec<Seg>> = Vec::new();
-    if app.show_side {
+    if app.show_side && !p.nodes.is_empty() {
         let n = &p.nodes[app.sel.min(p.nodes.len() - 1)];
         side.push(vec![Seg("為什麼在做這件".into(), None, false, true)]);
         let ch = chain(p, &ix, app.sel.min(p.nodes.len() - 1));
@@ -558,9 +561,11 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
         (KeyCode::Left, _) => {
             if app.open.contains(&id) {
                 app.open.remove(&id);
-            } else if let Some(&pi) = app.plan.nodes[app.sel]
-                .parent
-                .as_ref()
+            } else if let Some(&pi) = app
+                .plan
+                .nodes
+                .get(app.sel)
+                .and_then(|n| n.parent.as_ref())
                 .and_then(|x| ix.by.get(x))
             {
                 app.sel = pi;
@@ -672,6 +677,13 @@ fn main() {
     let mut dm_started: Option<Instant> = None;
     let mut dm_in_flight = false;
 
+    // 出錯也要把終端機還原(raw mode / 替代畫面),不然使用者的窗格會壞掉
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+        prev(info);
+    }));
     let mut o = io::stdout();
     if terminal::enable_raw_mode().is_err() {
         eprintln!("no_tty: 用 --once 印一次");
@@ -679,6 +691,7 @@ fn main() {
     }
     let _ = execute!(o, terminal::EnterAlternateScreen, cursor::Hide);
     let mut last_check = Instant::now();
+    let mut last_age_draw = Instant::now();
     let mut dirty = true;
     loop {
         if dirty {
@@ -698,7 +711,9 @@ fn main() {
             }
         }
         if let Some(root) = args.aib_root.as_deref() {
-            if !dm_in_flight && dm_started.is_none_or(|t| t.elapsed() >= DM_EVERY) {
+            // 數佇列卡住(python 掛住)超過 DM_STUCK 就不等它，下一輪重起;畫面照舊可用
+            let stuck = dm_in_flight && dm_started.is_some_and(|t| t.elapsed() >= DM_STUCK);
+            if (!dm_in_flight || stuck) && dm_started.is_none_or(|t| t.elapsed() >= DM_EVERY) {
                 let (root, seats, tx) = (root.to_path_buf(), app.cabin_seats(), tx.clone());
                 std::thread::spawn(move || {
                     let _ = tx.send(count_dm(&root, &seats));
@@ -720,9 +735,84 @@ fn main() {
                 dirty = true;
             }
             last_check = Instant::now();
-            dirty = dirty || app.dm_at.is_some();
+        }
+        // 「幾秒前數的」只要每 30 秒重畫一次，不用每 2 秒整頁重畫(省熱)
+        if app.dm_at.is_some() && last_age_draw.elapsed() >= DM_EVERY {
+            dirty = true;
+        }
+        if dirty {
+            last_age_draw = Instant::now();
         }
     }
     let _ = execute!(o, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_app() -> App {
+        App {
+            plan: Plan::default(),
+            err: Some("read_failed: test".into()),
+            mtime: None,
+            open: HashSet::new(),
+            sel: 0,
+            filter: Filter::default(),
+            show_tree: true,
+            show_side: true,
+            typing: None,
+            dm: DmMap::new(),
+            dm_at: None,
+        }
+    }
+
+    /// 043dd M1:讀不到資料檔(nodes 空)時，每個鍵、每種寬度都不能 panic
+    #[test]
+    fn empty_plan_survives_every_key_and_width() {
+        let keys = [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('e'),
+            KeyCode::Char('c'),
+            KeyCode::Char('o'),
+            KeyCode::Char('x'),
+            KeyCode::Char('n'),
+            KeyCode::Char('s'),
+            KeyCode::Char('r'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+        ];
+        let mut app = empty_app();
+        for k in keys {
+            assert!(on_key(&mut app, KeyEvent::new(k, KeyModifiers::NONE)));
+            for w in [0, 1, 5, 7, 8, 24, 80, 160] {
+                let _ = frame(&app, w, 30);
+            }
+        }
+    }
+
+    /// 043dd L2:極窄寬度(--once --width 5)不下溢
+    #[test]
+    fn narrow_width_does_not_underflow() {
+        let p = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱很長很長很長"},
+            {"id":"T1","parent":"V","kind":"task","title":"任務","status":"未驗","owner":"a63ab"}]}"#,
+        )
+        .expect("sample parses");
+        let mut app = empty_app();
+        app.plan = p;
+        app.err = None;
+        app.open.insert("V".into());
+        for w in 0..12 {
+            let _ = frame(&app, w, 20);
+        }
+    }
 }
