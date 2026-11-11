@@ -834,8 +834,8 @@ fn limits_step(
     let conf = paths.lxc_conf.join(format!("{}.conf", spec.ct));
     let text =
         fs::read_to_string(&conf).map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
-    fs::write(&conf, with_pids(&text, spec.limits.pids_max))
-        .map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
+    write_via_tmp(&conf, &with_pids(&text, spec.limits.pids_max))
+        .map_err(|e| format!("limits_failed: {e}"))?;
     // TODO(ct-mask2): the container settings of the host-information mask
     // (aib_cloud::mask, branch feat/aib-cloud-ct-mask2) are written here, in the limits
     // step, once that branch is in main
@@ -852,11 +852,32 @@ fn limits_step(
     }
 }
 
+/// Write `text` to `path` whole: a temporary file beside it, then renamed over it, so
+/// nobody reads half a file (pmxcfs under /etc/pve takes a rename; c477a B2 N2). PVE's own
+/// configuration lock is not taken: the host lock holds our commands back, not the GUI.
+fn write_via_tmp(path: &Path, text: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{}: no file name", path.display()))?;
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    fs::write(&tmp, text)
+        .and_then(|()| fs::rename(&tmp, path))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The firewall file, always written (a clone carries the template's) and read back.
+///
+/// Written is not in force: pve-firewall compiles the file into rules on its own round
+/// (about every ten seconds), so the first seconds after the start may still run the
+/// template's rules. The container is only on the inner bridge until the Edge step, and
+/// the Edge step must not begin before the container's compiled rules are read back
+/// (`pve-firewall compile` / `status`; [`CreateStep::Edge`], c477a B2 L1). How long it
+/// takes on this host is a host test.
 fn firewall_step(paths: &HostPaths, spec: &aib_cloud::site::SiteSpec) -> Result<(), String> {
     let want = aib_cloud::site::desired_firewall(&spec.fw_group, spec.ssh_port);
     let fw = paths.firewall.join(format!("{}.fw", spec.ct));
-    fs::write(&fw, &want).map_err(|e| format!("firewall_failed: {}: {e}", fw.display()))?;
+    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;
     match fs::read_to_string(&fw) {
         Ok(back) if back == want => Ok(()),
         Ok(_) => Err(format!(
@@ -864,6 +885,59 @@ fn firewall_step(paths: &HostPaths, spec: &aib_cloud::site::SiteSpec) -> Result<
             fw.display()
         )),
         Err(e) => Err(format!("firewall_unchecked: {}: {e}", fw.display())),
+    }
+}
+
+/// Whether `mac` (`aa:bb:cc:dd:ee:ff`) is a locally administered unicast address: in the
+/// first byte the 0x02 bit is set and the 0x01 bit is clear. A platform's prefix (the
+/// hosting software's own range) is neither, and a hardware address seen once is seen
+/// for good, so the first start must already carry a local one.
+/// TODO(ct-mask2): the shared check of the host-information mask replaces this once that
+/// branch is in main.
+pub fn mac_is_local(mac: &str) -> bool {
+    let bytes: Vec<Option<u8>> = mac
+        .split(':')
+        .map(|b| {
+            if b.len() == 2 && b.bytes().all(|c| c.is_ascii_hexdigit()) {
+                u8::from_str_radix(b, 16).ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    let Some(Some(first)) = bytes.first().copied() else {
+        return false;
+    };
+    bytes.len() == 6 && bytes.iter().all(Option::is_some) && first & 0x02 != 0 && first & 0x01 == 0
+}
+
+/// The `hwaddr=` of `net0` in `pct config` output (main section only).
+pub fn net0_hwaddr(config: &str) -> Option<String> {
+    config
+        .lines()
+        .take_while(|l| !l.starts_with('['))
+        .find_map(|l| l.strip_prefix("net0:"))?
+        .split(',')
+        .find_map(|p| p.trim().strip_prefix("hwaddr="))
+        .map(str::to_owned)
+}
+
+/// Before the first start: `net0` must carry a locally administered address (c477a B2
+/// L2). Until the host-information mask writes one in the limits step, the template's
+/// platform address is refused here: nothing is undone and the opening stays at the
+/// firewall, to be carried on once the address is set.
+fn ready_to_start(runner: &mut impl Runner, ct: u32) -> Result<(), String> {
+    let shown = runner
+        .run(&argv(&["pct", "config", &ct.to_string()]))
+        .map_err(|e| format!("hwaddr_unchecked: pct config {ct}: {e}"))?;
+    match net0_hwaddr(&shown) {
+        Some(mac) if mac_is_local(&mac) => Ok(()),
+        Some(mac) => Err(format!(
+            "hwaddr_not_local: CT {ct} net0 hwaddr {mac} is not a locally administered address; a first start would show it outside the container (the host-information mask is not in yet), so CT {ct} is not started and the opening stays at firewall"
+        )),
+        None => Err(format!(
+            "hwaddr_unchecked: CT {ct} has no net0 hwaddr in pct config; not started, the opening stays at firewall"
+        )),
     }
 }
 
@@ -884,7 +958,10 @@ fn start_step(runner: &mut impl Runner, ct: u32) -> Result<(), String> {
 }
 
 /// B2: the steps after the record's, each checked, the record moved on after each. A
-/// failure is undone like the clone's: every step here is before the identity.
+/// failure is undone like the clone's: every step here is before the identity. One
+/// thing holds instead of undoing: a container without a local hardware address is not
+/// started ([`ready_to_start`]); the answer then carries `held` with the reason and the
+/// record stays at the firewall.
 pub fn continue_steps(
     runner: &mut impl Runner,
     paths: &HostPaths,
@@ -894,6 +971,12 @@ pub fn continue_steps(
     let Opening { mut record, spec } = opening;
     for &step in steps {
         debug_assert_eq!(sitecreate::after_failure(step), AfterFailure::Undo);
+        if step == CreateStep::Start {
+            if let Err(why) = ready_to_start(runner, spec.ct) {
+                record["held"] = json!(why);
+                return Ok(record);
+            }
+        }
         let done = match step {
             CreateStep::Limits => limits_step(runner, paths, &spec),
             CreateStep::Firewall => firewall_step(paths, &spec),
@@ -1155,9 +1238,23 @@ fn apply_cmd(domain: &str, file: &str, records: &str) -> Result<u8, String> {
 
 /// `--continue <code>` on this host. Writing, like `--apply`: run only as a reviewed,
 /// approved operation (see [`opstore::BY_LOCAL_ROOT`]).
+///
+/// There is no plan file and no hash: the approval is for "carry on s-xxxx", and every
+/// value comes from the root-owned opening record B1 wrote under an approved plan. The
+/// approval sheet must therefore show the `opening` row of `op status` for that code (ct,
+/// hosts, step), so the person sees what is carried on (c477a B2 N1).
+///
+/// A container whose `.fw` stays after `pct destroy --purge` is overwritten whole when the
+/// number is used again, but `site verify` may report a `.fw` without a container as a
+/// leftover (c477a B2 N3; whether destroy removes it is a host test).
+///
+/// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
     let done = continue_apply(&place, domain, code, &HostPaths::host(), &mut HostRunner)?;
+    let held = done
+        .as_ref()
+        .is_some_and(|r| r.get("held").is_some_and(Value::is_string));
     let doc = match done {
         Some(record) => json!({
             "applied": record.get("step"),
@@ -1170,7 +1267,7 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
-    Ok(0)
+    Ok(u8::from(held))
 }
 
 #[cfg(test)]
@@ -1987,11 +2084,18 @@ mod tests {
         .unwrap()
     }
 
-    /// `pct config` as the limits step should leave it.
+    /// `pct config` as the limits step should leave it, with a locally administered
+    /// hardware address on net0 (what the host-information mask will write).
     fn shown_config() -> String {
         aib_cloud::site::desired(&spec131())
             .iter()
-            .map(|(k, v)| format!("{k}: {v}\n"))
+            .map(|(k, v)| {
+                if *k == "net0" {
+                    format!("{k}: {v},hwaddr=02:5A:00:12:34:56,type=veth\n")
+                } else {
+                    format!("{k}: {v}\n")
+                }
+            })
             .collect()
     }
 
@@ -2053,10 +2157,12 @@ mod tests {
             [
                 set,
                 "pct config 131".to_owned(),
+                "pct config 131".to_owned(),
                 "pct start 131".to_owned(),
                 "pct status 131".to_owned(),
             ]
         );
+        assert!(rec.get("held").is_none());
         // one pids line, in the main section, the snapshot left as it was
         let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
         assert_eq!(conf.matches("lxc.cgroup2.pids.max").count(), 1);
@@ -2079,7 +2185,10 @@ mod tests {
         continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
             .unwrap()
             .unwrap();
-        assert_eq!(runner.calls, ["pct start 131", "pct status 131"]);
+        assert_eq!(
+            runner.calls,
+            ["pct config 131", "pct start 131", "pct status 131"]
+        );
         // done with this slice: nothing runs and nothing is journaled
         let (place, paths) = opened("b2done", "start");
         let mut runner = fake(b2_host(shown_config()));
@@ -2126,7 +2235,9 @@ mod tests {
     fn a_container_that_does_not_run_is_undone() {
         let (place, paths) = opened("b2start", "firewall");
         let mut destroyed = false;
+        let config = shown_config();
         let mut runner = fake(move |argv: &[String]| match argv[1].as_str() {
+            "config" => Ok(config.clone()),
             "start" => Err("startup for container '131' failed".to_owned()),
             "destroy" => {
                 destroyed = true;
@@ -2146,7 +2257,9 @@ mod tests {
     #[test]
     fn a_container_whose_state_cannot_be_told_is_left_for_a_person() {
         let (place, paths) = opened("b2unknown", "firewall");
-        let mut runner = fake(|argv: &[String]| match argv[1].as_str() {
+        let config = shown_config();
+        let mut runner = fake(move |argv: &[String]| match argv[1].as_str() {
+            "config" => Ok(config.clone()),
             "start" => Ok(String::new()),
             _ => Err("pct: timed out".to_owned()),
         });
@@ -2203,5 +2316,85 @@ mod tests {
         );
         fs::write(paths.creating.join("cut.json"), "{").unwrap();
         assert!(opening_report(&paths.creating)["error"].is_string());
+    }
+
+    /// A container still on the platform's hardware address is not started: nothing is
+    /// undone, the opening stays at the firewall and says why (c477a B2 L2).
+    #[test]
+    fn a_platform_hardware_address_holds_the_start() {
+        let (place, paths) = opened("b2mac", "firewall");
+        let platform =
+            shown_config().replace("hwaddr=02:5A:00:12:34:56", "hwaddr=BC:24:11:AA:BB:CC");
+        let mut runner = fake(b2_host(platform));
+        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
+            .unwrap()
+            .unwrap();
+        let held = rec["held"].as_str().unwrap();
+        assert!(held.starts_with("hwaddr_not_local"), "{held}");
+        assert!(held.contains("stays at firewall"), "{held}");
+        assert_eq!(runner.calls, ["pct config 131"]);
+        assert_eq!(record_of(&paths)["step"], "firewall", "the record stays");
+        assert!(
+            record_of(&paths).get("held").is_none(),
+            "held is the answer's, not the record's"
+        );
+        // no hardware address shown at all: held the same way
+        let (place, paths) = opened("b2nomac", "firewall");
+        let none: String = shown_config().replace(",hwaddr=02:5A:00:12:34:56", "");
+        let mut runner = fake(b2_host(none));
+        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
+            .unwrap()
+            .unwrap();
+        assert!(rec["held"]
+            .as_str()
+            .unwrap()
+            .starts_with("hwaddr_unchecked"));
+        assert!(!runner
+            .calls
+            .iter()
+            .any(|c| c.contains("start") || c.contains("destroy")));
+    }
+
+    #[test]
+    fn a_local_hardware_address_is_told_from_a_platform_one() {
+        assert!(mac_is_local("02:5a:00:12:34:56"));
+        assert!(mac_is_local("0E:00:00:00:00:01"));
+        // a platform's own range: not local
+        assert!(!mac_is_local("BC:24:11:AA:BB:CC"));
+        // local but multicast
+        assert!(!mac_is_local("03:00:00:00:00:01"));
+        for bad in [
+            "",
+            "+2:5a:00:12:34:56",
+            "02:5a",
+            "02:5a:00:12:34:56:78",
+            "2:5a:00:12:34:56",
+            "zz:5a:00:12:34:56",
+            "02:5a:00:12:34:5g",
+        ] {
+            assert!(!mac_is_local(bad), "{bad}");
+        }
+        assert_eq!(
+            net0_hwaddr("net0: name=eth0,hwaddr=02:5A:00:12:34:56,ip=10.77.0.41/24\n[s]\nnet0: hwaddr=BC:24:11:00:00:01\n").as_deref(),
+            Some("02:5A:00:12:34:56")
+        );
+        assert_eq!(net0_hwaddr("[s]\nnet0: hwaddr=02:5A:00:12:34:56\n"), None);
+    }
+
+    /// The files under /etc/pve are written beside and renamed: no temporary file stays.
+    #[test]
+    fn the_container_files_leave_no_temporary_file() {
+        let (place, paths) = opened("b2tmp", "clone");
+        let mut runner = fake(b2_host(shown_config()));
+        continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
+            .unwrap()
+            .unwrap();
+        for dir in [&paths.lxc_conf, &paths.firewall] {
+            let names: Vec<String> = fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        }
     }
 }

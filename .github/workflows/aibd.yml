@@ -1211,7 +1211,7 @@ jobs:
              '    if differ.is_empty() || !differ.is_empty() { // knife' \
              limits_that_did_not_take_are_undone
           # site create --continue: the firewall file is never written (the clone's stays)
-          hk sitecreatecmd.rs '    fs::write(&fw, &want).map_err(|e| format!("firewall_failed: {}: {e}", fw.display()))?;' \
+          hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
              '    let _ = &want; // knife' \
              an_opening_is_carried_on_through_limits_firewall_and_start
           # site create --continue: a container that does not run counts as started
@@ -1238,6 +1238,10 @@ jobs:
           hk sitecreatecmd.rs '        } else if !line.starts_with("lxc.cgroup2.pids.max:") {' \
              '        } else if !line.starts_with("lxc.cgroup2.pids.max:") || true { // knife' \
              the_pids_line_is_one_and_in_the_main_section
+          # site create --continue: a container on the platform's hardware address is started (c477a B2 L2)
+          hk sitecreatecmd.rs '        Some(mac) if mac_is_local(&mac) => Ok(()),' \
+             '        Some(mac) if mac_is_local(&mac) || true => Ok(()), // knife' \
+             a_platform_hardware_address_holds_the_start
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
