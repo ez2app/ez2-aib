@@ -309,9 +309,6 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
     // a stop of this command comes before the order's own answer
     let own_stop: Option<&'static str> = if taken.is_some() {
         Some("domain_taken")
-    } else if target(domain).len() > TARGET_MAX {
-        // the opening could not be written in the journal (33e28 11-11 N2)
-        Some("domain_too_long_for_journal")
     } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {
         Some("unfinished_operation")
     } else if seen.unfinished.is_none() {
@@ -1049,16 +1046,24 @@ mod tests {
         assert_eq!(doc["may_call_off"], false);
     }
 
-    /// A domain whose journal target would not fit a journal line stops the plan.
+    /// A domain whose plain target would not fit a journal line is planned under its
+    /// hashed target, not stopped (33e28 11-11 N2, one target rule with the apply).
     #[test]
-    fn a_domain_too_long_for_the_journal_stops_the_plan() {
+    fn a_long_domain_is_planned_under_its_hashed_target() {
         let long = format!("{}.example.test", "a".repeat(63));
-        assert!(target(&long).len() > TARGET_MAX);
+        assert!(format!("domain:{long}").len() > TARGET_MAX);
         let doc = plan_doc(&long, false, &host());
-        assert_eq!(doc["stop"], "domain_too_long_for_journal");
-        assert_eq!(doc["may_call_off"], false);
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["stop"], Value::Null);
+        let t = doc["target"].as_str().unwrap();
+        assert!(
+            t.starts_with("domain:fnv64-") && t.len() <= TARGET_MAX,
+            "{t}"
+        );
         let fits = format!("{}.example.test", "a".repeat(40));
-        assert_eq!(plan_doc(&fits, false, &host())["next"], "run");
+        let doc = plan_doc(&fits, false, &host());
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["target"], format!("domain:{fits}"));
     }
 
     #[test]
