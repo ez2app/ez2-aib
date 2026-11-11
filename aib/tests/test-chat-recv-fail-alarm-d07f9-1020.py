@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """收信連續失敗警報(10-20 @abb89 派、會員優化清單 E 段)。
-起因:Pro 13 的 recv-state.json 超過 64 KB ⇒ 每次存檔炸、收信 session 每 5 秒重來,從 10-19 11:20 到隔天沒人發現。
+起因:Mac B 的 recv-state.json 超過 64 KB ⇒ 每次存檔炸、收信 session 每 5 秒重來,從 10-19 11:20 到隔天沒人發現。
 
 R1(要 AIB_TEST_NOSTR_VENV)Receiver.run:session 一下就斷 4 次 ⇒ fail.n 4、why 例外類名、since 有;
    之後一段 session 撐過 RECV_OK_S 才結束 ⇒ 歸零;write_worker_status 把 recv_fail 寫進 worker-status.json

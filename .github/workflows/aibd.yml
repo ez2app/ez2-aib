@@ -254,7 +254,23 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
-      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+          # #644 --head: an earlier head must be one of the PR's own commits
+          fk '                let head = pr_commit(src, repo, n, sha)?;' \
+             '                let head = if sha.is_empty() { pr_commit(src, repo, n, sha)? } else { sha.to_string() }; // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a commit list at GitHub's cap may be cut off
+          fk '    if shas.len() >= PR_COMMITS_CAP {' \
+             '    if shas.len() >= PR_COMMITS_CAP && false { // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a compare at the file cap may be cut off
+          fk '    if arr.len() >= COMPARE_FILES_CAP {' \
+             '    if arr.len() >= COMPARE_FILES_CAP && false { // knife' \
+             a_compare_at_the_file_cap_is_unknown
+          # 2240e #654 M1: a merged PR's runs (pull_requests empty) are dropped again
+          fk '                if str_at(&p, "/state")? == "open" {' \
+             '                if str_at(&p, "/state")? == "open" || true { // knife' \
+             a_merged_prs_runs_are_still_its_own
+      # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -407,6 +423,30 @@ jobs:
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
              everything_else_is_refused_whole
+          # customer key: `site create` takes more than its one name (a code or a size the customer chose) (Andy 11-11)
+          ck customer.rs '                    (Some("blank"), None) => true,' \
+             '                    (Some(_), _) => true, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a new site's address is not checked to be a name (ebb36, #652 N1)
+          ck customer.rs '                let name = name.filter(|n| crate::edge::valid_domain(n));' \
+             '                let name = name.filter(|n| !n.is_empty()); // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a word of the request line is taken as a site's code (one table for parser, records and roster)
+          ck site.rs '    !RESERVED_CODES.contains(&code)' \
+             '    !RESERVED_CODES.is_empty() // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a domain that is not a name (an address, one label) gets as far as the host
+          ck customer.rs '                if !crate::edge::valid_domain(name) {' \
+             '                if name.is_empty() { // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # roles: a publisher may open a site (it uses up the plan: the owner's alone)
+          ck customer.rs '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin),' \
+             '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin | Publisher), // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer side: opening a site is sent before the host can do it
+          ck customer.rs '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,' \
+             '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => true, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
           # ARC: a raise goes past what the plan allows (4.4.1 23)
           ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
              '            let next = limits.cpulimit_x100 + 100; // knife' \
@@ -467,6 +507,58 @@ jobs:
           ck roster.rs '    if map.keys().any(|k| !named.contains(&k.as_str())) {' \
              '    if map.keys().any(|k| !named.contains(&k.as_str()) && k.is_empty()) { // knife' \
              strict_reading
+          # entry sudoers: a comma in the arguments goes out bare and starts a second command (c477a, #648 N2)
+          ck roster.rs "        if matches!(c, '\\\\' | ',' | ':' | '=') {" \
+             '        if false { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: two rosters of one tenant are both written
+          ck roster.rs '        if rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) {' \
+             '        if false && rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: a member whose entry keys are all revoked keeps a rule
+          ck roster.rs '                .any(|k| k.usage == KeyUse::Entry && !k.revoked)' \
+             '                .any(|k| k.usage == KeyUse::Entry) // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # H14: a wildcard rule is not told apart (the hand-written customer *)
+          ck verify.rs "                if text.contains('*') {" \
+             '                if false { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any rule that starts like ours passes, whatever its arguments
+          ck verify.rs '                        .is_some_and(entry_rule_args)' \
+             '                        .is_some_and(|r| entry_rule_args(r) || true) // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any line starting with # is taken for a comment (#include, #<uid>: 33e28, #655 H1)
+          ck verify.rs '                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER)' \
+             "                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER && !l.starts_with('#')) // knife" \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a rule for the entry account in another sudoers file is not looked at (33e28, #655 M1)
+          ck verify.rs '                } else if elsewhere == Ok(true) {' \
+             '                } else if false && elsewhere == Ok(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: only the first name of a spaced user list (root, #uid) is read
+          ck verify.rs "        if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {" \
+             '        if true { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a User_Alias that comes down to the entry account is not expanded (33e28, #655 r2 M1)
+          ck verify.rs '                        Who::Alias(a) if ours.contains(a) => granted = true,' \
+             '                        Who::Alias(a) if ours.contains(a) => granted |= false, // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a Defaults line bound to the entry account in another file is skipped (33e28, #655 r2 L2)
+          ck verify.rs "                Some(':') => user_list(&rest[1..])," \
+             "                Some(':') => continue, // knife" \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a line not read word for word (+netgroup, %:group, …) counts as clean (33e28 #655 r3 M1; f1fae 06:5x)
+          ck verify.rs '    } else if shape_ok {' \
+             '    } else if true || shape_ok { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: rules from sss / ldap (nsswitch sudoers:) are not looked for (33e28, #655 r3 L1)
+          ck verify.rs '                } else if seen.nss_files_only != Some(true) {' \
+             '                } else if false && seen.nss_files_only != Some(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: owner and mode are not looked at
+          ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
+             '            (Some(om), _) if false && om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"), // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
           # site record: a record that names no tenant belongs to the tenant called like the site
           ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
              '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
@@ -509,6 +601,14 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer key: opening a site goes past "not available yet" before the host can do it (Andy 11-11)
+          hk customercmd.rs '    if coming_later {' \
+             '    if coming_later && false { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: a key for some of the customer's sites opens a new one (33e28, #652 M1)
+          hk customercmd.rs '    if scoped_create {' \
+             '    if scoped_create && false { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
           # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
           hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
@@ -529,6 +629,10 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # roster sudoers: the action is not reached (c477a, #648 N2)
+          hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
+             '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
+             the_sudoers_file_comes_from_every_roster_or_none
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \
@@ -1296,6 +1400,19 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-static.sh
+      # ErrorCode::ALL (a63ab 11-10): E1 / E2 are build-time knives (knife-build.py: the
+      # build must stop on that const assert's own panic), E0 is their negative arm,
+      # E3 / E4 turn the contract-order test red.
+      - name: ErrorCode knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-errorcode.sh
+      # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
+      # must turn its own test red.
+      - name: aib-signlint knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-signlint.sh
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

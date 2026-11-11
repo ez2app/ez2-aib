@@ -207,6 +207,11 @@ fn run(args: &[String]) -> Result<u8, String> {
                 println!("{}", wording::reply(request, code, &out, &err));
             }
             (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{}", shown(&out)),
+            // not sent yet (`offered`); when they are, the host's document until the
+            // sentences are final
+            (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
+                print!("{}", shown(&out));
+            }
         },
         Err(_) => {}
     }

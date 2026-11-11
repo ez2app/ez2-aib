@@ -5709,6 +5709,7 @@
   "aib.consent.no": "취소",
   "aib.consent.touchid_reason": "AIB 동의 · {who}(이)라고 밝힌 좌석의 실행 요청: {cmd}",
   "aib.consent.sign_extra": "스크립트 sha256 {sha}(승인 후 파일이 바뀌면 실행하지 않음); 첫 몇 줄:\n{head}",
+  "aib.consent.sign_lint": "일회용 환경: {env}  영수증: {receipt}\n작성자가 통과시킨 aib-signlint 규칙(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 알림 · {cmd} 실행 완료(rc {rc})",
   "aib.consent.help.usage": "사용법: aib consent ask [--strong] --summary <한 줄> [--seat 좌석] [--wait 초] [--json] -- <명령…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "냉각 구성 요소(aib {aib})",
@@ -5987,6 +5988,6 @@
   "aib.gameworld.open_failed": "로비 창을 열 수 없습니다. 직접 여세요: {url}",
   "aib.gameworld.start_failed": "로비를 시작할 수 없습니다(함장실 플러그인이 올바른 결과를 주지 않음). 좌석에는 영향이 없습니다.",
   "aib.gameworld.not_switched": "로비가 {target}(으)로 전환되지 않았습니다. 현재 {actual}입니다. 좌석에는 영향이 없습니다.",
-  "aib.cloud_robot.touchid_apply": "aib: Hetzner 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
-  "aib.approve_gate.cat.host_rescue": "호스트 구조(Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib: 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
+  "aib.approve_gate.cat.host_rescue": "호스트 구조(공급자 콘솔 rescue / reset)"
 }

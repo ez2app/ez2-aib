@@ -8,7 +8,7 @@
 收件機驗(root sshd 底下、對方不是本機、寄件方過白名單)才換抬頭,位址用 sshd 量到的對方 IP。
 
 U1–U6 單元;X1–X6 走 dm-ctl.sh(假 ssh 記下參數與 stdin、假 tmux 不可達,不碰真艙也不連網)。
-X4c 收件機 aib 只在 ~/.zprofile 的 PATH ⇒ 遠端指令 PATH 最後補 ~/.local/bin,照樣叫得到;原本找得到的優先(10-25 Mac Pro 13)
+X4c 收件機 aib 只在 ~/.zprofile 的 PATH ⇒ 遠端指令 PATH 最後補 ~/.local/bin,照樣叫得到;原本找得到的優先(10-25 Mac B)
 刀 K1 不補 ⇒ X4c 紅。
 收件端「驗過、真的換抬頭」那條要真的 root sshd,單元用假行程表(U4),整條在兩台真機上實測(交件附抬頭原文)。
 """
@@ -313,7 +313,7 @@ class DmCtl(unittest.TestCase):
 
     def test_X4c_remote_path_falls_back_to_local_bin(self):
         """收件機 aib 只在登入 shell 的 PATH(~/.zprofile)⇒ 遠端指令照樣叫得到:真的用 sh 跑一次組出來的那行,
-        假家目錄只在 ~/.local/bin 放 aib、PATH 裡沒有它;原本 PATH 找得到的 aib 照舊優先(10-25 Mac Pro 13)。"""
+        假家目錄只在 ~/.local/bin 放 aib、PATH 裡沒有它;原本 PATH 找得到的 aib 照舊優先(10-25 Mac B)。"""
         p = self.run_dm("100.1.2.3/ab12/1857a", "hi")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         cmd = self.read(self.ssh_cmd)

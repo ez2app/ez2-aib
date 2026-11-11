@@ -99,6 +99,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-signlint"
+version = "0.2.0-preview.4"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-store"
 version = "0.2.0-preview.4"
 dependencies = [

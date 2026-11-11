@@ -145,8 +145,8 @@ class SecretAsk(unittest.TestCase):
         old = SA.dialog
         try:
             SA.dialog = fake_dialog
-            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_EU02", "eu02", "darwin", generate=True)[0], "Ab3!" * 7)
-            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_EU02", "eu02", "darwin")[0], "Ab3!" * 7)
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_HOSTA", "hosta", "darwin", generate=True)[0], "Ab3!" * 7)
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_HOSTA", "hosta", "darwin")[0], "Ab3!" * 7)
         finally:
             SA.dialog = old
         self.assertEqual(seen, [True, False])

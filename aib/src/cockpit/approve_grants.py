@@ -588,7 +588,7 @@ COVER_S = 1800
 # 名單跟著簽章發版走(改它 = 改核心程式碼,已定案邊界);不在名單 ⇒ os_unverified(窗不生效,一次一按)。
 # 驗一個 build:本人鎖屏 / 解鎖一次,唯讀 log show 確認 LOCK_PREDICATE 兩類事件都查得到,再把 build 加進來。
 VERIFIED_BUILDS = frozenset({
-    "24G830",                    # 10-30 Mac Pro 實機:鎖屏 _createShieldWindowIfNeeded、解鎖 LWScreenLock 都查得到
+    "24G830",                    # 10-30 實機:鎖屏 _createShieldWindowIfNeeded、解鎖 LWScreenLock 都查得到
 })
 SW_VERS = "/usr/bin/sw_vers"
 _BUILD = re.compile(r"^[0-9A-Za-z]{3,16}$")

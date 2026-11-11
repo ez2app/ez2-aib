@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""判斷「對方那台電腦是不是在睡」(10-18 Andy:Mac Pro 13 閒置 1 分鐘就睡,寄過去的信只能等它醒;「要能判斷該電腦休眠」)。
+"""判斷「對方那台電腦是不是在睡」(10-18 Andy:Mac B 閒置 1 分鐘就睡,寄過去的信只能等它醒;「要能判斷該電腦休眠」)。
 只用標準庫。
 
 睡的那一台(自己):
@@ -75,7 +75,7 @@ def parse_ac(text):
 
 def parse_charging(text):
     """`pmset -g batt` 第二行 `…; charging;` ⇒ True;`not charging` / `discharging` ⇒ False;讀不到 ⇒ None。
-    (10-20 Pro 13:接了 15 W 手機充電頭 ⇒ 'AC Power' 但 not charging,電池照樣往下掉。)"""
+    (10-20 Mac B:接了 15 W 手機充電頭 ⇒ 'AC Power' 但 not charging,電池照樣往下掉。)"""
     m = re.search(r";\s*(not charging|discharging|charging|charged|finishing charge|AC attached; not charging)\b", text or "")
     if not m:
         return None

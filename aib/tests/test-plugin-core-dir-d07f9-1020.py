@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""aib 跑外掛子指令時把自己的核心資料夾帶成 AIB_CORE_DIR(10-20 Pro 13:git 原始碼裝的 aib 不是 import 得到的套件,
+"""aib 跑外掛子指令時把自己的核心資料夾帶成 AIB_CORE_DIR(10-20 Mac B:git 原始碼裝的 aib 不是 import 得到的套件,
 captain-room 的 room.py 找不到核心 ⇒ `aib room` 報「cannot find the aib this plugin belongs to」)。
 
 沙盒 HOME 裝一支假外掛 probe(commands: aibprobe),它照 room.py 的找法:AIB_CORE_DIR 底下要有 src/cockpit/cabin_restart.py。
 C1 原始碼裝(這個倉的 cli.py):外掛拿到的 AIB_CORE_DIR = 倉的 aib 資料夾,找得到核心
 C2 裝在別處(仿 pip:套件資料夾複製到 site/aib):AIB_CORE_DIR = 那份套件資料夾,不是倉
 C3 環境裡留著別處的 AIB_CORE_DIR / EZ2_AIB_ROOT ⇒ 蓋掉，用正在跑的這個 aib
-    (EZ2_AIB_ROOT:外掛再叫的 seat-info.py 靠它找駕駛艙模組;10-20 Pro 13 從 ssh 起的艦長室少了它 ⇒ 一席都列不出來)
+    (EZ2_AIB_ROOT:外掛再叫的 seat-info.py 靠它找駕駛艙模組;10-20 Mac B 從 ssh 起的艦長室少了它 ⇒ 一席都列不出來)
 刀(複本):K1 拿掉那一行 ⇒ C1 紅
 """
 import json

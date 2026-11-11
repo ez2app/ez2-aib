@@ -7,7 +7,7 @@ under `~/.ez2-aib/state/`; `aibd` must not depend on it.
 ## Why (b127)
 
 1.x records the holder's pid with `host = <this machine>` and checks it here with `kill -0` / `ps`.
-A script on the Mac that takes the andymini lease over ssh gives a Mac pid. On andymini that pid
+A script on the Mac that takes the mac-c lease over ssh gives a Mac pid. On mac-c that pid
 is either missing (judged dead: the lease can be taken over at once, the queue entry is dropped) or
 belongs to some unrelated process. A queue entry also drops at `until_epoch` while its runner is
 still waiting (11-09 21:47, K10: registered with `--ttl 1500`, dropped 1505 s later, logged only as
@@ -48,10 +48,10 @@ not drop a beating entry. `tests/python_compat.rs` runs both tools on the same i
 | **D1** holder on another machine, no `--host` | taken over at once (`holder_dead`) | `--host`: kept |
 | **D2** dropped entry in the log | `why: gone` | `why: gone` + `gone_why` |
 
-## Remote holder (Mac → andymini)
+## Remote holder (Mac → mac-c)
 
 ```sh
-J="-J eu02-ts andymini"; RID=k10k-2240e; H=$(uname -n); S=60
+J="-J host-a-ts mac-c"; RID=k10k-2240e; H=$(uname -n); S=60
 cleanup() { kill $HB $T 2>/dev/null; ssh $J aib lease release --run-id $RID; ssh $J aib lease queue remove --run-id $RID; }
 trap cleanup EXIT                 # release on every way out: green, red, lost place, Ctrl-C
 trap 'exit 4' TERM                # the beat loop sends TERM when the place is lost
@@ -73,7 +73,7 @@ wait $T
 * Killing the local `ssh` does not always stop the remote command (no tty ⇒ no hangup). Use `-tt` as above, or
   kill the remote pid yourself before `release`.
 
-Tests: `cargo test -p aib-lease` (not on the Mac Pro 16: heat order; andymini or CI).
+Tests: `cargo test -p aib-lease` (not on the Mac A: heat order; mac-c or CI).
 
 ## `aib-lease run` — steps on another Mac under its lease (D3 + D5 + D6)
 
