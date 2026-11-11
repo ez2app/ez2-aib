@@ -537,6 +537,16 @@ jobs:
           ck create.rs '    now_state == CreateState::Creating && judged.0 == now_record.0 && judged.1 == now_record.1' \
              '    now_state == CreateState::Creating && judged.1 == now_record.1 // knife: holder not compared' \
              mark_only_the_same_attempt
+          # create: a late worker takes a record already marked unfinished / held by another (c477a L1)
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    (now_state == CreateState::Creating || true) && now_record.0.is_none() && now_record.1 == my_created_at // knife: state not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.0.is_none() && (now_record.1 == my_created_at || true) // knife: attempt not compared' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.1 == my_created_at // knife: holder not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives

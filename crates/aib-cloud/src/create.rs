@@ -7,7 +7,9 @@
 //! could never open a site again and nobody would be told (33e28 review M1).
 //!
 //! The worker writes its [`Holder`] (pid + start time + boot id, the same triple the host
-//! lock uses since #647) into the creating record before it does anything else. Whoever
+//! lock uses since #647) into the creating record before it does anything else — under the
+//! host lock, after re-reading the record, and only if [`may_take_holder`] says the attempt
+//! is still its own and unheld; otherwise it ends without creating anything. Whoever
 //! reads the record — `status`, the next `create`, the first operation after a boot —
 //! asks [`verdict`]; on [`Verdict::Interrupted`] it takes the host lock, re-reads the
 //! record and marks it unfinished only if [`still_same_attempt`] says nothing changed in
@@ -91,6 +93,21 @@ pub fn still_same_attempt(
     now_record: (Option<&Holder>, u64),
 ) -> bool {
     now_state == CreateState::Creating && judged.0 == now_record.0 && judged.1 == now_record.1
+}
+
+/// The worker's side, under the host lock, after re-reading the record and before it does
+/// anything else: may it write its holder and go on? Only if the record is still
+/// "creating", nobody holds it yet, and it is the attempt this worker was started for
+/// (the same `created_at`). Otherwise — a reader already marked it unfinished after the
+/// start grace, another worker holds it, or a newer attempt replaced it — the worker
+/// must end without creating anything; going on would leave a record that says
+/// "unfinished" next to a site that opens (c477a liveness review L1).
+pub fn may_take_holder(
+    my_created_at: u64,
+    now_state: CreateState,
+    now_record: (Option<&Holder>, u64),
+) -> bool {
+    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at
 }
 
 #[cfg(test)]
@@ -306,5 +323,20 @@ mod tests {
             CreateState::Creating,
             (None, T0)
         ));
+    }
+
+    // knives (d) (e): a late worker writes its holder only into its own, still unheld attempt
+    #[test]
+    fn a_late_worker_takes_only_its_own_unheld_attempt() {
+        let h = holder(BOOT);
+        // on time: still creating, nobody holds it, same attempt
+        assert!(may_take_holder(T0, CreateState::Creating, (None, T0)));
+        // too late: a reader already marked it unfinished after the start grace
+        assert!(!may_take_holder(T0, CreateState::Unfinished, (None, T0)));
+        assert!(!may_take_holder(T0, CreateState::Ready, (None, T0)));
+        // another worker holds it
+        assert!(!may_take_holder(T0, CreateState::Creating, (Some(&h), T0)));
+        // a newer attempt replaced the record this worker was started for
+        assert!(!may_take_holder(T0, CreateState::Creating, (None, T0 + 1)));
     }
 }
