@@ -5709,6 +5709,7 @@
   "aib.consent.no": "キャンセル",
   "aib.consent.touchid_reason": "AIB 同意 · {who} を名乗る席が実行:{cmd}",
   "aib.consent.sign_extra": "スクリプト sha256 {sha}(承認後にファイルが変わると実行しません);先頭数行:\n{head}",
+  "aib.consent.sign_lint": "使い捨て環境:{env}  レシート:{receipt}\n作成者が通した aib-signlint ルール(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 通知 · {cmd} を実行しました(rc {rc})",
   "aib.consent.help.usage": "使い方:aib consent ask [--strong] --summary <一文> [--seat 席] [--wait 秒] [--json] -- <コマンド…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "冷却コンポーネント(aib {aib})",

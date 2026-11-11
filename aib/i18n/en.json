@@ -5709,6 +5709,7 @@
   "aib.consent.no": "Cancel",
   "aib.consent.touchid_reason": "AIB consent · self-described {who} wants to run: {cmd}",
   "aib.consent.sign_extra": "Script sha256 {sha} (if the file changes after you approve, it will not run); first lines:\n{head}",
+  "aib.consent.sign_lint": "Rehearsed on: {env}  receipt: {receipt}\naib-signlint rules the author let through (--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB notice · ran {cmd} (rc {rc})",
   "aib.consent.help.usage": "usage: aib consent ask [--strong] --summary <one line> [--seat SEAT] [--wait SEC] [--json] -- <command…>\n       aib consent status <id> [--json]\n       aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "Cooling components (aib {aib})",

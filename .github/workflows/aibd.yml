@@ -254,6 +254,22 @@ jobs:
           fk '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || !run_counts(r, ctx) {' \
              '        if r.get("head_sha").and_then(Value::as_str) != Some(head) || (false && !run_counts(r, ctx)) {' \
              m2_another_prs_green_run_of_the_same_head_is_not_a_rerun
+          # #644 --head: an earlier head must be one of the PR's own commits
+          fk '                let head = pr_commit(src, repo, n, sha)?;' \
+             '                let head = if sha.is_empty() { pr_commit(src, repo, n, sha)? } else { sha.to_string() }; // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a commit list at GitHub's cap may be cut off
+          fk '    if shas.len() >= PR_COMMITS_CAP {' \
+             '    if shas.len() >= PR_COMMITS_CAP && false { // knife' \
+             a_head_that_is_not_the_prs_is_unknown
+          # #644 --head: a compare at the file cap may be cut off
+          fk '    if arr.len() >= COMPARE_FILES_CAP {' \
+             '    if arr.len() >= COMPARE_FILES_CAP && false { // knife' \
+             a_compare_at_the_file_cap_is_unknown
+          # 2240e #654 M1: a merged PR's runs (pull_requests empty) are dropped again
+          fk '                if str_at(&p, "/state")? == "open" {' \
+             '                if str_at(&p, "/state")? == "open" || true { // knife' \
+             a_merged_prs_runs_are_still_its_own
       # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
@@ -407,6 +423,30 @@ jobs:
           ck customer.rs '        if rest.is_empty() {' \
              '        if rest.len() < 9 { // knife' \
              everything_else_is_refused_whole
+          # customer key: `site create` takes more than its one name (a code or a size the customer chose) (Andy 11-11)
+          ck customer.rs '                    (Some("blank"), None) => true,' \
+             '                    (Some(_), _) => true, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a new site's address is not checked to be a name (ebb36, #652 N1)
+          ck customer.rs '                let name = name.filter(|n| crate::edge::valid_domain(n));' \
+             '                let name = name.filter(|n| !n.is_empty()); // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a word of the request line is taken as a site's code (one table for parser, records and roster)
+          ck site.rs '    !RESERVED_CODES.contains(&code)' \
+             '    !RESERVED_CODES.is_empty() // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer key: a domain that is not a name (an address, one label) gets as far as the host
+          ck customer.rs '                if !crate::edge::valid_domain(name) {' \
+             '                if name.is_empty() { // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # roles: a publisher may open a site (it uses up the plan: the owner's alone)
+          ck customer.rs '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin),' \
+             '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin | Publisher), // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # customer side: opening a site is sent before the host can do it
+          ck customer.rs '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,' \
+             '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => true, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
           # ARC: a raise goes past what the plan allows (4.4.1 23)
           ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
              '            let next = limits.cpulimit_x100 + 100; // knife' \
@@ -509,6 +549,14 @@ jobs:
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
+          # customer key: opening a site goes past "not available yet" before the host can do it (Andy 11-11)
+          hk customercmd.rs '    if coming_later {' \
+             '    if coming_later && false { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
+          # customer key: a key for some of the customer's sites opens a new one (33e28, #652 M1)
+          hk customercmd.rs '    if scoped_create {' \
+             '    if scoped_create && false { // knife' \
+             a_tenant_key_reaches_its_own_sites_only
           # customer key: a site of another tenant is served (Andy 11-10: a key bound to a customer)
           hk customercmd.rs '        if !sites.iter().any(|(code, _)| code == site) {' \
              '        if !sites.iter().any(|(code, _)| code == site || true) { // knife' \
@@ -1291,6 +1339,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-static.sh
+      # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
+      # must turn its own test red.
+      - name: aib-signlint knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-signlint.sh
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
