@@ -82,16 +82,101 @@ pub const ARGV_LABEL_MAX: usize = 256;
 /// Longest single word inside an [`argv_label`], in characters.
 pub const ARGV_WORD_MAX: usize = 80;
 
+/// Words that make a flag or a header name look like it carries a secret
+/// (matched without case, anywhere in the name).
+const SECRET_NAMES: &[&str] = &[
+    "token",
+    "key",
+    "secret",
+    "pass",
+    "auth",
+    "bearer",
+    "cookie",
+    "credential",
+    "session",
+];
+/// Starts of well-known tokens; a word starting with one is hidden whole.
+const TOKEN_PREFIXES: &[&str] = &[
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "sk-",
+    "AKIA",
+];
+/// Words after which the rest of a word is a credential (`Bearer x`).
+const SECRET_SCHEMES: &[&str] = &["bearer ", "basic ", "token "];
+
+fn names_secret(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    SECRET_NAMES.iter().any(|n| l.contains(n))
+}
+
+/// Whether the word after `flag` is its value and may be a secret:
+/// `-p` (mysql, sshpass) or a `-`/`--` flag whose name looks secret.
+fn flag_takes_secret(flag: &str) -> bool {
+    flag == "-p"
+        || (flag.starts_with('-')
+            && !flag.contains('=')
+            && names_secret(flag.trim_start_matches('-')))
+}
+
+/// One word with its secrets cut out (before the per-character pass, which
+/// still hides everything after `=`). Byte offsets come from ASCII-only
+/// searches, so every cut is on a character boundary.
+fn hide_secrets(word: &str) -> String {
+    if TOKEN_PREFIXES.iter().any(|t| word.starts_with(t)) {
+        return "…".to_owned();
+    }
+    // https://user:tok@host/… ⇒ https://…@host/…
+    if let Some(i) = word.find("://") {
+        let rest = &word[i + 3..];
+        if let Some(at) = rest.find('@') {
+            if !rest[..at].contains('/') {
+                return format!("{}…{}", &word[..i + 3], &rest[at..]);
+            }
+        }
+    }
+    // a header like `X-Api-Key: abc` or `Authorization: Basic abc`
+    if let Some(c) = word.find(':') {
+        if !word[c..].starts_with("://") && names_secret(&word[..c]) {
+            return format!("{}: …", &word[..c]);
+        }
+    }
+    let lower = word.to_ascii_lowercase();
+    for s in SECRET_SCHEMES {
+        if let Some(i) = lower.find(s) {
+            return format!("{}…", &word[..i + s.len()]);
+        }
+    }
+    word.to_owned()
+}
+
 /// A command line as one short, printable line for a measurement report:
-/// words joined by spaces; control and format characters become `?`; the
-/// value after `=` is replaced by `…` (an environment-style or `--k=v`
-/// argument may carry a secret); each word is cut at [`ARGV_WORD_MAX`] and
-/// the whole at [`ARGV_LABEL_MAX`] characters, a cut marked with `…`.
+/// words joined by spaces; control, format and line / paragraph separator
+/// characters become `?`; secrets are replaced by `…` — the value after
+/// `=`, the word after a secret-looking flag (`--token x`, `-p x`), a URL's
+/// user and password, a header value whose name looks secret, what follows
+/// `Bearer ` / `Basic ` / `token `, and a word that starts like a known token;
+/// each word is cut at [`ARGV_WORD_MAX`] and the whole at
+/// [`ARGV_LABEL_MAX`] characters, a cut marked with `…`.
 /// An empty or unreadable command line is `?`.
 pub fn argv_label(argv: &[String]) -> String {
     let mut out = String::new();
     let mut n = 0usize;
-    for word in argv {
+    let mut hide_next = false;
+    for raw in argv {
+        let word = if hide_next {
+            "…".to_owned()
+        } else {
+            hide_secrets(raw)
+        };
+        hide_next = flag_takes_secret(raw);
         let mut w = String::new();
         let mut cut = false;
         for (wn, c) in word.chars().enumerate() {
@@ -135,10 +220,11 @@ pub fn argv_label(argv: &[String]) -> String {
 }
 
 /// Unicode format characters (bidi overrides, zero-width, tag characters)
-/// that would make a label print differently from what it holds.
+/// and the line / paragraph separators U+2028 / U+2029 that would make a
+/// label print differently from what it holds (or on two lines).
 fn is_format(c: char) -> bool {
     matches!(c as u32,
-        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
         | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
         | 0xE0000..=0xE007F)
 }
@@ -334,13 +420,21 @@ mod imp {
     /// The command line of `pid` (`KERN_PROCARGS2` through sysinfo: no fork,
     /// no `unsafe` here). `None` when the process is gone or refused.
     pub fn program_argv(pid: u32) -> Option<Vec<String>> {
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-        let p = Pid::from_u32(pid);
         // sysinfo 0.40: `System::new` can fail; no reading = no argv ("?")
-        let mut sys = System::new().ok()?;
+        program_argv_with(&mut sysinfo::System::new().ok()?, pid)
+    }
+
+    /// [`program_argv`] with a `System` the caller keeps: the watch thread
+    /// builds one and reuses it, so a busy fork storm does not pay a new
+    /// `System` per forking pid on the thread that reads NOTE_FORK (a9136
+    /// #705 L2). A pid that is gone is dropped from `sys` (`remove_dead`), so
+    /// a reused pid never gets the old command line.
+    pub fn program_argv_with(sys: &mut sysinfo::System, pid: u32) -> Option<Vec<String>> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+        let p = Pid::from_u32(pid);
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[p]),
-            false,
+            true,
             ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
         );
         let cmd = sys.process(p)?.cmd();
@@ -657,6 +751,8 @@ mod imp {
             0,
         );
         let mut buf = [blank; 64];
+        // one System for the whole watch (a9136 #705 L2); none ⇒ argv "?"
+        let mut sys = sysinfo::System::new().ok();
         loop {
             let n = match kq.kevent(&[], &mut buf, None) {
                 Ok(n) => n,
@@ -676,8 +772,13 @@ mod imp {
                         // read outside the lock (the guard of a one-line
                         // `lock(sh)...then(..)` would live through the read)
                         let want = lock(sh).stats.wants_parent_argv(pid);
-                        let argv =
-                            want.then(|| super::argv_label(&program_argv(pid).unwrap_or_default()));
+                        let argv = want.then(|| {
+                            super::argv_label(
+                                &sys.as_mut()
+                                    .and_then(|s| program_argv_with(s, pid))
+                                    .unwrap_or_default(),
+                            )
+                        });
                         {
                             let mut g = lock(sh);
                             g.stats.note_parent_argv(pid, argv);
@@ -859,14 +960,60 @@ mod argv_tests {
     }
 
     #[test]
+    fn label_hides_secrets_that_have_no_equals_sign() {
+        // a9136 #705 M1: header values, URL user / password, a flag's next word
+        for (argv, secret) in [
+            (
+                vec!["curl", "-H", "Authorization: Bearer ghx_s3cret"],
+                "s3cret",
+            ),
+            (vec!["curl", "-H", "X-Api-Key: s3cret"], "s3cret"),
+            (vec!["curl", "-u", "x", "-H", "Bearer s3cret"], "s3cret"),
+            (
+                vec!["git", "clone", "https://user:s3cret@github.com/o/r"],
+                "s3cret",
+            ),
+            (vec!["mysql", "-p", "s3cret", "db"], "s3cret"),
+            (vec!["aib", "--token", "s3cret"], "s3cret"),
+            (vec!["x", "--password", "s3cret"], "s3cret"),
+            (vec!["x", "--client-secret", "s3cret"], "s3cret"),
+            (vec!["gh", "ghp_s3cret"], "s3cret"),
+            (vec!["x", "Basic czNjcmV0"], "czNjcmV0"),
+        ] {
+            let l = argv_label(&v(&argv));
+            assert!(!l.contains(secret), "reason: argv_value_leaked {l}");
+        }
+        // the parts goal 2 needs stay readable
+        assert_eq!(
+            argv_label(&v(&["git", "clone", "https://user:s3cret@github.com/o/r"])),
+            "git clone https://…@github.com/o/r",
+            "reason: argv_url_host_lost"
+        );
+        assert_eq!(
+            argv_label(&v(&["bash", "title-beat.sh", "--once"])),
+            "bash title-beat.sh --once",
+            "reason: argv_plain_words_hidden"
+        );
+        assert_eq!(
+            argv_label(&v(&["aib", "--token", "s3cret", "run"])),
+            "aib --token … run",
+            "reason: argv_value_leaked"
+        );
+    }
+
+    #[test]
     fn label_replaces_control_and_format_characters() {
         let l = argv_label(&v(&[
             "a\u{1b}[2Jb",
             "c\u{202e}d",
             "e\u{200b}f",
             "g\u{e0041}h",
+            "i\u{2028}j\u{2029}k",
         ]));
-        assert_eq!(l, "a?[2Jb c?d e?f g?h", "reason: argv_unprintable_kept");
+        assert_eq!(
+            l, "a?[2Jb c?d e?f g?h i?j?k",
+            "reason: argv_unprintable_kept"
+        );
     }
 
     #[test]

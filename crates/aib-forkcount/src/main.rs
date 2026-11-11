@@ -132,9 +132,6 @@ fn cpu_ms() -> Value {
 /// Most forking pids listed in `forkers`.
 const FORKERS_TOP: usize = 50;
 
-/// The busiest forking pids, most fork events first (pid breaks ties), each
-/// with its command line from `parent_argv` (`?` when none was kept): goal 2
-/// prerequisite 1, telling which `bash` / `sh` / `tmux` did the forking.
 /// Every fork event, summed by the forking pid's command line (`?` when
 /// none was kept), most first (label breaks ties). Unlike `forkers` this
 /// covers all events: a `$( … )` subshell is a new pid with its parent's
@@ -152,6 +149,9 @@ fn by_argv(stats: &Stats) -> Vec<Value> {
         .collect()
 }
 
+/// The busiest forking pids, most fork events first (pid breaks ties), each
+/// with its command line from `parent_argv` (`?` when none was kept): goal 2
+/// prerequisite 1, telling which `bash` / `sh` / `tmux` did the forking.
 fn forkers(stats: &Stats) -> Vec<Value> {
     let mut v: Vec<(u32, u64)> = stats
         .fork_events_by_pid
