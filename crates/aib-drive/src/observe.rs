@@ -1,0 +1,411 @@
+//! `aib-drive observe` (PR-C, M-drive-0): dry-run rounds.
+//!
+//! Each round takes a snapshot, runs [`decide`], and appends one record to
+//! the dry-run journal. Nothing a round decides is done: there is no executor
+//! in aib-drive. The only files written are under `<state root>/drive/`:
+//! the journal (append only) and the lock.
+//!
+//! - State root: `EZ2_AIB_STATE_ROOT`, or `~/.ez2-aib/state`.
+//! - Pause: while `drive/pause` exists no round runs. `--once` refuses;
+//!   `--watch` writes one `paused` line, and a `resumed` line when the file is
+//!   gone. Removing the file is enough to resume in this dry-run version;
+//!   the version with real actions will need a Touch ID receipt for it.
+//! - One watcher: `drive/lock` is held with an OS file lock for the whole
+//!   run. A second `observe` is refused and told the holder's pid. A killed
+//!   holder's lock is released by the OS, so the next one can start; a live,
+//!   slow one is never taken over.
+//! - Pace: a round every 60 s; touching `drive/event` starts one early. When
+//!   the snapshot fails the wait doubles each time, up to 600 s, and goes
+//!   back to 60 s after a good round. No conditional requests yet.
+
+use crate::decide::{decide, Intent, Sha, Snapshot};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub const BASE: Duration = Duration::from_secs(60);
+pub const CAP: Duration = Duration::from_secs(600);
+/// Longest text from outside (a source's error) kept in a record.
+pub const MAX_REASON: usize = 300;
+
+/// `EZ2_AIB_STATE_ROOT` when set and not empty, otherwise `~/.ez2-aib/state`.
+pub fn state_root(env_root: Option<&str>, home: Option<&Path>) -> Result<PathBuf, String> {
+    match env_root.filter(|r| !r.is_empty()) {
+        Some(r) => Ok(PathBuf::from(r)),
+        None => home
+            .map(|h| h.join(".ez2-aib").join("state"))
+            .ok_or_else(|| "no EZ2_AIB_STATE_ROOT and no home folder".to_owned()),
+    }
+}
+
+/// The files of one state root.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub dir: PathBuf,
+    pub journal: PathBuf,
+    pub pause: PathBuf,
+    pub lock: PathBuf,
+    pub event: PathBuf,
+}
+
+impl Paths {
+    pub fn under(root: &Path) -> Self {
+        let dir = root.join("drive");
+        Self {
+            journal: dir.join("dryrun.jsonl"),
+            pause: dir.join("pause"),
+            lock: dir.join("lock"),
+            event: dir.join("event"),
+            dir,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Round,
+    Paused,
+    Resumed,
+}
+
+/// One journal line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    pub at: u64,
+    pub kind: Kind,
+    /// Always true: nothing in `would` was done.
+    pub dry_run: bool,
+    pub repo: String,
+    /// Why there was no snapshot (cleaned, at most [`MAX_REASON`] chars).
+    pub unknown: Option<String>,
+    /// PR ⇒ head this round saw (the next round's `prev_head`).
+    pub heads: BTreeMap<u64, Sha>,
+    /// What decide would do.
+    pub would: Vec<Intent>,
+}
+
+/// Text from outside, made safe for one line: control characters become
+/// `?`, and it is cut to `max` characters.
+pub fn clean(s: &str, max: usize) -> String {
+    let mut out: String = s
+        .chars()
+        .take(max)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if s.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// The record of one round.
+pub fn record_of(
+    at: u64,
+    repo: &str,
+    prev: &BTreeMap<u64, Sha>,
+    built: Result<Snapshot, String>,
+) -> Record {
+    let (unknown, heads, would) = match built {
+        Ok(s) => (
+            None,
+            s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+            decide(&s),
+        ),
+        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),
+    };
+    Record {
+        at,
+        kind: Kind::Round,
+        dry_run: true,
+        repo: repo.to_owned(),
+        unknown,
+        heads,
+        would,
+    }
+}
+
+fn mark(at: u64, repo: &str, kind: Kind, prev: &BTreeMap<u64, Sha>) -> Record {
+    Record {
+        at,
+        kind,
+        dry_run: true,
+        repo: repo.to_owned(),
+        unknown: None,
+        heads: prev.clone(),
+        would: Vec::new(),
+    }
+}
+
+/// The one-line summary printed for a record (no outside text but the
+/// cleaned reason).
+pub fn summary(r: &Record) -> String {
+    match r.kind {
+        Kind::Paused => "aib-drive 暫停中(dry-run)".to_owned(),
+        Kind::Resumed => "aib-drive 恢復(dry-run)".to_owned(),
+        Kind::Round => match &r.unknown {
+            Some(why) => format!("aib-drive 快照不明,這輪不判:{why}"),
+            None => {
+                let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+                for i in &r.would {
+                    *n.entry(kind_of(i)).or_default() += 1;
+                }
+                let list: Vec<String> = n.iter().map(|(k, c)| format!("{k} {c}")).collect();
+                format!(
+                    "aib-drive dry-run:{} 張 PR,會做 {} 件({}),一件都沒做",
+                    r.heads.len(),
+                    r.would.len(),
+                    if list.is_empty() {
+                        "無".to_owned()
+                    } else {
+                        list.join("、")
+                    }
+                )
+            }
+        },
+    }
+}
+
+fn kind_of(i: &Intent) -> &'static str {
+    match i {
+        Intent::Merge { .. } => "合併",
+        Intent::Rerun { .. } => "重跑",
+        Intent::Cancel { .. } => "取消",
+        Intent::AskReview { .. } => "派審",
+        Intent::AskVerify { .. } => "派驗",
+        Intent::Nudge { .. } => "催",
+        Intent::Stale { .. } => "頭換了",
+        Intent::Ask { .. } => "問",
+        Intent::Note { .. } => "記",
+    }
+}
+
+/// Appends one record as one line (one write, so a line is whole or absent).
+pub fn append(journal: &Path, r: &Record) -> Result<(), String> {
+    if let Some(dir) = journal.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut line = serde_json::to_string(r).map_err(|e| format!("record: {e}"))?;
+    line.push('\n');
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(journal)
+        .map_err(|e| format!("{}: {e}", journal.display()))?;
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("{}: {e}", journal.display()))
+}
+
+/// The heads of the last readable journal line; none if there is none.
+pub fn prev_heads(journal: &Path) -> BTreeMap<u64, Sha> {
+    let Ok(text) = std::fs::read_to_string(journal) else {
+        return BTreeMap::new();
+    };
+    text.lines()
+        .rev()
+        .find_map(|l| serde_json::from_str::<Record>(l).ok())
+        .map(|r| r.heads)
+        .unwrap_or_default()
+}
+
+/// The wait after `failures` failed rounds in a row: 60, 120, 240, 480, 600…
+pub fn backoff(base: Duration, cap: Duration, failures: u32) -> Duration {
+    let mut d = base;
+    for _ in 0..failures {
+        d = d.saturating_mul(2);
+        if d >= cap {
+            return cap;
+        }
+    }
+    d.min(cap)
+}
+
+/// The held lock; dropping it (or the process dying) releases it.
+#[derive(Debug)]
+pub struct Lock(#[allow(dead_code)] File);
+
+/// Takes `path` with an OS lock and writes this pid into it. If another
+/// process holds it, says which pid (when it can be read).
+pub fn lock(path: &Path) -> Result<Lock, String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            let mut who = String::new();
+            let _ = f.read_to_string(&mut who);
+            let who = clean(who.trim(), 40);
+            return Err(format!(
+                "另一個 aib-drive observe 在跑(pid {}):{}",
+                if who.is_empty() { "?" } else { who.as_str() },
+                path.display()
+            ));
+        }
+        Err(TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+    }
+    f.set_len(0)
+        .and_then(|()| f.seek(SeekFrom::Start(0)).map(|_| ()))
+        .and_then(|()| write!(f, "{}", std::process::id()))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Lock(f))
+}
+
+/// Why a wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    Timeout,
+    Event,
+    Stop,
+}
+
+/// Time for `--watch`, injectable for tests.
+pub trait Clock {
+    fn now(&mut self) -> u64;
+    /// Waits up to `d`, or until `event` is touched.
+    fn wait(&mut self, d: Duration, event: &Path) -> Wake;
+}
+
+/// The wall clock. Waits in steps of one second on a channel nobody sends to
+/// and looks at the event file between steps.
+pub struct RealClock {
+    rx: std::sync::mpsc::Receiver<()>,
+    _tx: std::sync::mpsc::Sender<()>,
+    seen: Option<std::time::SystemTime>,
+}
+
+impl RealClock {
+    pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self {
+            rx,
+            _tx: tx,
+            seen: None,
+        }
+    }
+}
+
+impl Default for RealClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+impl Clock for RealClock {
+    fn now(&mut self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    // Named exception (clippy.toml, ADR 0005): aib-drive is not aibd and has no
+    // timer registry. The wait between dry-run rounds is a channel wait that
+    // nothing sends on, one second at a time; nothing else ticks.
+    #[allow(clippy::disallowed_methods)]
+    fn wait(&mut self, d: Duration, event: &Path) -> Wake {
+        if self.seen.is_none() {
+            self.seen = mtime(event);
+        }
+        let step = Duration::from_secs(1);
+        let mut left = d;
+        while !left.is_zero() {
+            let t = left.min(step);
+            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = self.rx.recv_timeout(t) {
+                return Wake::Stop;
+            }
+            left = left.saturating_sub(t);
+            let now = mtime(event);
+            if now.is_some() && now != self.seen {
+                self.seen = now;
+                return Wake::Event;
+            }
+        }
+        Wake::Timeout
+    }
+}
+
+/// One round for `--once`. Refused while paused or while another observe
+/// holds the lock.
+pub fn once(
+    paths: &Paths,
+    repo: &str,
+    now: u64,
+    round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
+) -> Result<Record, String> {
+    if paths.pause.exists() {
+        return Err(format!("暫停中:{}", paths.pause.display()));
+    }
+    let _lock = lock(&paths.lock)?;
+    let prev = prev_heads(&paths.journal);
+    let r = record_of(now, repo, &prev, round(&prev));
+    append(&paths.journal, &r)?;
+    Ok(r)
+}
+
+/// `--watch`: rounds until the clock says stop, or `max_rounds` rounds ran
+/// (tests). `print` gets each record.
+pub fn watch(
+    paths: &Paths,
+    repo: &str,
+    base: Duration,
+    clock: &mut dyn Clock,
+    round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
+    print: &mut dyn FnMut(&Record),
+    max_rounds: Option<u32>,
+) -> Result<(), String> {
+    let _lock = lock(&paths.lock)?;
+    let mut failures: u32 = 0;
+    let mut paused = false;
+    let mut rounds: u32 = 0;
+    loop {
+        let prev = prev_heads(&paths.journal);
+        if paths.pause.exists() {
+            if !paused {
+                let r = mark(clock.now(), repo, Kind::Paused, &prev);
+                append(&paths.journal, &r)?;
+                print(&r);
+                paused = true;
+            }
+            if clock.wait(base, &paths.event) == Wake::Stop {
+                return Ok(());
+            }
+            continue;
+        }
+        if paused {
+            let r = mark(clock.now(), repo, Kind::Resumed, &prev);
+            append(&paths.journal, &r)?;
+            print(&r);
+            paused = false;
+        }
+        let r = record_of(clock.now(), repo, &prev, round(&prev));
+        append(&paths.journal, &r)?;
+        print(&r);
+        failures = if r.unknown.is_some() {
+            failures.saturating_add(1)
+        } else {
+            0
+        };
+        rounds = rounds.saturating_add(1);
+        if max_rounds.is_some_and(|m| rounds >= m) {
+            return Ok(());
+        }
+        if clock.wait(backoff(base, CAP, failures), &paths.event) == Wake::Stop {
+            return Ok(());
+        }
+    }
+}
