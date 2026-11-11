@@ -76,7 +76,11 @@ pub struct Filter {
 
 impl Filter {
     pub fn active(&self) -> bool {
-        !self.q.is_empty() || !self.seat.is_empty() || self.only_open || self.only_ext || self.orphan
+        !self.q.is_empty()
+            || !self.seat.is_empty()
+            || self.only_open
+            || self.only_ext
+            || self.orphan
     }
 }
 
@@ -158,7 +162,10 @@ fn matches(n: &Node, f: &Filter) -> bool {
             return false;
         }
     }
-    if !f.seat.is_empty() && n.owner.as_deref() != Some(f.seat.as_str()) && !n.with.iter().any(|w| w == &f.seat) {
+    if !f.seat.is_empty()
+        && n.owner.as_deref() != Some(f.seat.as_str())
+        && !n.with.iter().any(|w| w == &f.seat)
+    {
         return false;
     }
     if f.only_open && n.status.as_deref() == Some(PASS) {
@@ -187,7 +194,11 @@ pub fn flatten(p: &Plan, ix: &Index, open: &HashSet<String>, f: &Filter) -> Vec<
                         break;
                     }
                     guard += 1;
-                    cur = p.nodes[c].parent.as_ref().and_then(|x| ix.by.get(x)).copied();
+                    cur = p.nodes[c]
+                        .parent
+                        .as_ref()
+                        .and_then(|x| ix.by.get(x))
+                        .copied();
                 }
             }
         }
@@ -279,9 +290,19 @@ pub fn bar(p: u32, w: usize) -> String {
     format!("{}{}", "█".repeat(full.min(w)), "░".repeat(w - full.min(w)))
 }
 
-pub fn mark(p: &Plan, ix: &Index, i: usize, open: &HashSet<String>, filtering: bool) -> &'static str {
+pub fn mark(
+    p: &Plan,
+    ix: &Index,
+    i: usize,
+    open: &HashSet<String>,
+    filtering: bool,
+) -> &'static str {
     if !ix.kids[i].is_empty() {
-        return if filtering || open.contains(&p.nodes[i].id) { "▾" } else { "▸" };
+        return if filtering || open.contains(&p.nodes[i].id) {
+            "▾"
+        } else {
+            "▸"
+        };
     }
     match p.nodes[i].status.as_deref() {
         Some(PASS) => "✓",
@@ -333,7 +354,10 @@ mod tests {
     fn filter_keeps_ancestors_and_drops_passed() {
         let p = plan();
         let ix = index(&p);
-        let f = Filter { only_open: true, ..Filter::default() };
+        let f = Filter {
+            only_open: true,
+            ..Filter::default()
+        };
         let rows = flatten(&p, &ix, &HashSet::new(), &f);
         let ids: Vec<&str> = rows.iter().map(|r| p.nodes[r.idx].id.as_str()).collect();
         assert_eq!(ids, vec!["V", "G1", "I1", "T2", "X1"]);
@@ -343,7 +367,10 @@ mod tests {
     fn orphan_filter_finds_task_without_owner() {
         let p = plan();
         let ix = index(&p);
-        let f = Filter { orphan: true, ..Filter::default() };
+        let f = Filter {
+            orphan: true,
+            ..Filter::default()
+        };
         let rows = flatten(&p, &ix, &HashSet::new(), &f);
         assert!(rows.iter().any(|r| p.nodes[r.idx].id == "T2"));
         assert!(!rows.iter().any(|r| p.nodes[r.idx].id == "T1"));
@@ -353,7 +380,10 @@ mod tests {
     fn chain_runs_root_to_node_and_survives_cycle() {
         let p = plan();
         let ix = index(&p);
-        let c: Vec<&str> = chain(&p, &ix, ix.by["X1"]).iter().map(|&i| p.nodes[i].id.as_str()).collect();
+        let c: Vec<&str> = chain(&p, &ix, ix.by["X1"])
+            .iter()
+            .map(|&i| p.nodes[i].id.as_str())
+            .collect();
         assert_eq!(c, vec!["V", "G1", "I1", "T2", "X1"]);
         let mut q = plan();
         q.nodes[0].parent = Some("X1".into());
