@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-cloud-host roster check | entry-lines | ssh-lines` — read one customer's roster
+//! `aib-cloud-host roster check | entry-lines | ssh-lines | sudoers` — read one customer's roster
 //! (`aib_cloud::roster`) against this host's site records and print the `authorized_keys`
 //! lines it stands for. **Nothing is changed**: putting the lines where sshd reads them is
 //! a separate, approved step.
@@ -8,6 +8,7 @@
 //! aib-cloud-host roster check <file> [--records dir]
 //! aib-cloud-host roster entry-lines <file> [--records dir]
 //! aib-cloud-host roster ssh-lines <file> <site> [--records dir]
+//! aib-cloud-host roster sudoers <file>… [--records dir]
 //! ```
 //!
 //! * `check` reads the roster strictly and says how many members and keys it holds.
@@ -17,6 +18,12 @@
 //! * `ssh-lines` prints the site user's lines for one site — and only for a site whose
 //!   record names this roster's tenant outright. Any other site, or one that does not
 //!   exist, is refused with the same word.
+//! * `sudoers` prints the entry account's sudoers file from **every** roster on the host
+//!   (`aib_cloud::roster::sudoers_file`): one rule per forced command, arguments written
+//!   out, no `*`. It goes to `aib_cloud::roster::SUDOERS_PATH` through `visudo -cf` and
+//!   `install -m 0440`, an approved step like the lines; `site verify` H14 reads it back.
+//!   One roster refused refuses the whole file: a file missing a tenant's rules would lock
+//!   that tenant out without saying so.
 //!
 //! Exit status: 0 printed; 2 the roster or the site was refused; 3 a file could not be read.
 
@@ -78,8 +85,9 @@ pub fn answer(words: &[&str], records: &str) -> Result<Vec<String>, u8> {
         ["check", file] => ("check", *file, None),
         ["entry-lines", file] => ("entry-lines", *file, None),
         ["ssh-lines", file, site] => ("ssh-lines", *file, Some(*site)),
+        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),
         _ => {
-            eprintln!("roster needs check <file> | entry-lines <file> | ssh-lines <file> <site>  [--records dir]");
+            eprintln!("roster needs check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…  [--records dir]");
             return Err(2);
         }
     };
@@ -110,6 +118,31 @@ pub fn answer(words: &[&str], records: &str) -> Result<Vec<String>, u8> {
                 roster.tenant_id,
                 roster.members.len()
             )])
+        }
+    }
+}
+
+/// `roster sudoers <file>…`: the sudoers file of every roster named, or the status that says why not.
+fn sudoers(files: &[&str], records: &str) -> Result<Vec<String>, u8> {
+    let mut rosters = Vec::new();
+    for file in files {
+        match load(file, records) {
+            Err(why) => {
+                eprintln!("could not read: {why}");
+                return Err(3);
+            }
+            Ok(Err(bad)) => {
+                eprintln!("refused: {}", bad.as_str());
+                return Err(2);
+            }
+            Ok(Ok(r)) => rosters.push(r),
+        }
+    }
+    match roster::sudoers_file(&rosters) {
+        Ok(text) => Ok(text.lines().map(str::to_owned).collect()),
+        Err(bad) => {
+            eprintln!("refused: {}", bad.as_str());
+            Err(2)
         }
     }
 }
@@ -206,6 +239,44 @@ mod tests {
         assert_eq!(answer(&["ssh-lines", &file], r), Err(2));
         assert_eq!(answer(&["check", "/nonexistent/roster.json"], r), Err(3));
         assert_eq!(answer(&["check", &file], "/nonexistent/sites"), Err(3));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sudoers_file_comes_from_every_roster_or_none() {
+        let (dir, file) = world("sudo", "t-aaa");
+        let r = dir.join("sites");
+        let r = r.to_str().unwrap();
+        let other = dir.join("other.json");
+        let text = fs::read_to_string(&file).unwrap().replace("t-aaa", "t-bbb");
+        fs::write(&other, text).unwrap();
+        let other = other.to_str().unwrap();
+        let lines = answer(&["sudoers", &file, other], r).unwrap();
+        assert_eq!(lines[1], roster::SUDOERS_DEFAULTS);
+        assert_eq!(
+            &lines[2..],
+            [
+                "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner",
+                "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-bbb --roles owner",
+            ]
+        );
+        // one roster unreadable, refused, or the same tenant twice: no file at all
+        assert_eq!(
+            answer(&["sudoers", &file, "/nonexistent/roster.json"], r),
+            Err(3)
+        );
+        assert_eq!(answer(&["sudoers", &file, &file], r), Err(2));
+        let clash = dir.join("clash.json");
+        fs::write(
+            &clash,
+            fs::read_to_string(&file).unwrap().replace("t-aaa", "site5"),
+        )
+        .unwrap();
+        assert_eq!(
+            answer(&["sudoers", &file, clash.to_str().unwrap()], r),
+            Err(2)
+        );
+        assert_eq!(answer(&["sudoers"], r), Err(2));
         let _ = fs::remove_dir_all(&dir);
     }
 
