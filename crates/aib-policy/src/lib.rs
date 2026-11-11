@@ -148,7 +148,10 @@ pub const PATH_RULES: &[(Match, Area)] = &[
     // a change there is a frozen-script exception, which only the captain grants
     (Match::UnderWithSuffix("aib/", ".py"), Area::FrozenScript),
     (Match::UnderWithSuffix("aib/", ".sh"), Area::FrozenScript),
-    (Match::UnderWithSuffix("extensions/", ".py"), Area::FrozenScript),
+    (
+        Match::UnderWithSuffix("extensions/", ".py"),
+        Area::FrozenScript,
+    ),
     // goal2 measurement protocol: the fixture's segment / cool-down parameters
     (
         Match::Exact("crates/aib-forkcount/src/bin/aib-goal2-fixture.rs"),
@@ -273,7 +276,10 @@ mod tests {
     #[test]
     fn owner_check_for_shared_core_or_two_crates() {
         let one = vec!["crates/aib-drive/src/lib.rs".to_string()];
-        assert!(!needs_owner_check(&one), "reason: owner_check_for_one_crate");
+        assert!(
+            !needs_owner_check(&one),
+            "reason: owner_check_for_one_crate"
+        );
         let two = vec![
             "crates/aib-drive/src/lib.rs".to_string(),
             "crates/aib-plan/src/main.rs".to_string(),

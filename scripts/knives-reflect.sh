@@ -24,8 +24,7 @@ k '    if s.dispatched {' '    if false { // knife' x23_x24_one_work_item_per_re
 k '    let has_evidence = s.evidence.iter().any(Evidence::checkable);' \
   '    let has_evidence = !s.evidence.is_empty(); // knife' x03_x04_no_checkable_evidence_caps_the_total
 # 6 the 60 cap
-k '    let total = if has_evidence { s.total } else { s.total.min(NO_EVIDENCE_CAP) };' \
-  '    let total = s.total; // knife' x03_x04_no_checkable_evidence_caps_the_total
+k '        s.total.min(NO_EVIDENCE_CAP)' '        s.total // knife' x03_x04_no_checkable_evidence_caps_the_total
 # 7 necessary conditions
 k '    if !s.node_active {' '    if false { // knife' necessary_conditions_each_hold
 k '    if s.baseline.as_deref().is_none_or(|b| b.trim().is_empty()) {' \

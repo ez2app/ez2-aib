@@ -252,8 +252,7 @@ impl Config {
     /// A JSON object; missing keys keep the default, unknown keys and wrong
     /// types are errors. On an error the caller treats the cabin as paused.
     pub fn parse(text: &str) -> Result<Config, String> {
-        let v: Value =
-            serde_json::from_str(text).map_err(|e| format!("config_bad_json: {e}"))?;
+        let v: Value = serde_json::from_str(text).map_err(|e| format!("config_bad_json: {e}"))?;
         let obj = v
             .as_object()
             .ok_or_else(|| "config_wrong_type: top".to_string())?;
@@ -332,7 +331,11 @@ fn reasons(s: &GateInput, w: &World, c: &Config, now: i64) -> Vec<(Kind, String)
     if !has_evidence {
         r.push(hold("evidence_missing"));
     }
-    let total = if has_evidence { s.total } else { s.total.min(NO_EVIDENCE_CAP) };
+    let total = if has_evidence {
+        s.total
+    } else {
+        s.total.min(NO_EVIDENCE_CAP)
+    };
     // 7
     if !s.node_active {
         r.push(hold("node_not_active"));
@@ -571,10 +574,22 @@ mod tests {
     #[test]
     fn x05_to_x09_forbidden_and_self_modify_ask_andy_in_every_mode() {
         let cases: [(Vec<Area>, &str, &str); 5] = [
-            (vec![Area::HostWrite], "crates/aib-drive/src/lib.rs", "forbidden:host_write"),
-            (vec![], "crates/aib-reflect/src/gate.rs", "self_modify:reflect"),
+            (
+                vec![Area::HostWrite],
+                "crates/aib-drive/src/lib.rs",
+                "forbidden:host_write",
+            ),
+            (
+                vec![],
+                "crates/aib-reflect/src/gate.rs",
+                "self_modify:reflect",
+            ),
             (vec![], ".github/workflows/aibd.yml", "self_modify:ci"),
-            (vec![], "aib/src/cockpit/cooldown.py", "forbidden:frozen_script"),
+            (
+                vec![],
+                "aib/src/cockpit/cooldown.py",
+                "forbidden:frozen_script",
+            ),
             (
                 vec![],
                 "crates/aib-forkcount/src/bin/aib-goal2-fixture.rs",
@@ -677,7 +692,8 @@ mod tests {
 
     #[test]
     fn necessary_conditions_each_hold() {
-        let cases: [(fn(&mut GateInput), &str); 4] = [
+        type Break = fn(&mut GateInput);
+        let cases: [(Break, &str); 4] = [
             (|s| s.node_active = false, "node_not_active"),
             (|s| s.baseline = Some("  ".into()), "no_baseline"),
             (|s| s.acceptance = None, "no_acceptance"),
@@ -696,12 +712,20 @@ mod tests {
             cooldown: Cooldown::Warn,
             ..calm()
         };
-        want(&gate(&ok_input(), &w, &on(), NOW), Kind::Hold, "machine_hot");
+        want(
+            &gate(&ok_input(), &w, &on(), NOW),
+            Kind::Hold,
+            "machine_hot",
+        );
         let w = World {
             mainline_red: true,
             ..calm()
         };
-        want(&gate(&ok_input(), &w, &on(), NOW), Kind::Hold, "mainline_red");
+        want(
+            &gate(&ok_input(), &w, &on(), NOW),
+            Kind::Hold,
+            "mainline_red",
+        );
         let w = World {
             seat_has_waiting_pr: true,
             ..calm()
@@ -715,7 +739,11 @@ mod tests {
             seat_inflight: 1,
             ..calm()
         };
-        want(&gate(&ok_input(), &w, &on(), NOW), Kind::Hold, "seat_inflight_cap");
+        want(
+            &gate(&ok_input(), &w, &on(), NOW),
+            Kind::Hold,
+            "seat_inflight_cap",
+        );
         let w = World {
             dispatched_at: vec![NOW - 600, NOW - 300],
             ..calm()
@@ -725,7 +753,11 @@ mod tests {
             daily_cap: 0,
             ..on()
         };
-        want(&gate(&ok_input(), &calm(), &c, NOW), Kind::Hold, "daily_cap");
+        want(
+            &gate(&ok_input(), &calm(), &c, NOW),
+            Kind::Hold,
+            "daily_cap",
+        );
     }
 
     #[test]
@@ -734,13 +766,21 @@ mod tests {
             mode: Mode::Shadow,
             ..on()
         };
-        want(&gate(&ok_input(), &calm(), &c, NOW), Kind::ShadowAuto, "mode_shadow");
+        want(
+            &gate(&ok_input(), &calm(), &c, NOW),
+            Kind::ShadowAuto,
+            "mode_shadow",
+        );
         let c = Config {
             mode: Mode::Off,
             ..on()
         };
         want(&gate(&ok_input(), &calm(), &c, NOW), Kind::Hold, "auto_off");
-        assert_eq!(Config::default().mode, Mode::Shadow, "reason: default_not_shadow");
+        assert_eq!(
+            Config::default().mode,
+            Mode::Shadow,
+            "reason: default_not_shadow"
+        );
     }
 
     #[test]
