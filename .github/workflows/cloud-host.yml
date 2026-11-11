@@ -129,6 +129,7 @@ jobs:
           python3 -I scripts/knife.py crates/aib-cloud-host/src/restorecmd.rs '|| echo X; }' '; }' \
             --expect-fail the_uploads_script_counts_files_and_bytes_only \
             -- cargo test -p aib-cloud-host --locked --bin aib-cloud-host the_uploads_script_counts_files_and_bytes_only
+      - name: build (static)
         # No build machine path in the file (DEV 4.6 S): panic locations of dependencies carry the
         # home, cargo registry and checkout paths unless remapped. Later prefixes win, so the
         # home goes first. trim-paths is not stable in the pinned cargo.
