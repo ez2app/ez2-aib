@@ -3,16 +3,23 @@
 //!
 //! Before a dm or a review's first line goes out, every 8–40 character
 //! lowercase hex run in it is looked up on GitHub, GET-only, through
-//! aib-drive's [`Read`] (the reader the drive snapshot uses). A run that is a
-//! commit of an open PR but not that PR's current head is `stale_head`: the
-//! text is held back and the current head is printed. On 11-11 a head typed
-//! wrong went to two seats; nothing that only checked the format could see it.
+//! aib-drive's [`Read`] (the reader the drive snapshot uses). A run written
+//! where a head goes (after `頭` / `頭:` / `現頭` / `頭碼` / `head` / `推了` /
+//! `推到` / `pushed`, or right of `..`) that is a commit of an open PR but not
+//! its current head is `stale_head`: the text is held back and the current
+//! head of every open PR the commit belongs to is printed. On 11-11 a head
+//! typed wrong went to two seats; nothing that only checked the format could
+//! see it.
 //!
-//! What is *not* stale:
+//! What is *not* held back:
 //! - a prefix of an open PR's current head;
-//! - the base of a range (`<old>..<new>`): an increment names its base on purpose;
+//! - an old commit named anywhere else ("修在 7dea3809", `舊頭 X`, the base of
+//!   `<old>..<new>`): a reminder (a9136 0084435f L1: blocking every mention
+//!   teaches everyone to send with the override);
 //! - an old commit of a PR whose current head the same text also names
-//!   (a list of commits, "was X, now Y");
+//!   ("was X, now Y"). Stacked PRs share commits (GitHub ties a lower PR's
+//!   commits to the upper one too), so naming the current head of *any* open
+//!   PR the commit belongs to is enough (a9136 0084435f M1);
 //! - a commit GitHub does not know (not pushed yet, or mistyped): a reminder,
 //!   never a block — a local head that is about to be pushed is normal;
 //! - a commit in no open PR (on main, on a branch with no PR, or dropped by a
@@ -22,6 +29,9 @@
 //! `unverified` with a reason, printed, and does not block. With fewer than
 //! [`QUOTA_FLOOR`] GitHub calls left (or the quota unreadable) the gate makes
 //! no lookups at all and only reminds.
+//!
+//! Not checked: 7-character short heads (`git rev-parse --short`, GitHub's
+//! web view) and upper case. This repo's `git log --oneline` prints 8.
 
 use aib_drive::snapshot::Read;
 use serde_json::{json, Value};
@@ -41,8 +51,30 @@ const PER_PAGE: usize = 100;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub hex: String,
-    /// The left side of `<a>..<b>`: an increment's base, named on purpose.
-    pub range_base: bool,
+    /// Written at least once where a head goes (see the crate doc).
+    pub as_head: bool,
+}
+
+/// Words after which a hex run is claimed to be a head. `舊頭` / `原頭` /
+/// `前頭` name an old one on purpose.
+const HEAD_WORDS: &[&str] = &["頭", "頭碼", "head", "推了", "推到", "pushed"];
+const OLD_WORDS: &[&str] = &["舊頭", "原頭", "前頭", "舊頭碼", "原頭碼", "old head"];
+
+/// Is the run starting at `start` written where a head goes?
+fn head_position(cs: &[char], start: usize) -> bool {
+    // right of `..`
+    if start >= 2 && cs[start - 1] == '.' && cs[start - 2] == '.' {
+        return true;
+    }
+    let mut k = start;
+    while k > 0 && matches!(cs[k - 1], ' ' | ':' | ':' | '=' | '\u{3000}') {
+        k -= 1;
+    }
+    let before: String = cs[k.saturating_sub(8)..k]
+        .iter()
+        .collect::<String>()
+        .to_lowercase();
+    HEAD_WORDS.iter().any(|w| before.ends_with(w)) && !OLD_WORDS.iter().any(|w| before.ends_with(w))
 }
 
 fn is_word(c: char) -> bool {
@@ -74,17 +106,11 @@ pub fn tokens(text: &str) -> Vec<Token> {
         if !(hex && has_letter && (8..=40).contains(&word.len())) {
             continue;
         }
-        // `<a>..<b>`: a is the base when another hex word follows the two dots
-        let range_base = cs.get(i) == Some(&'.')
-            && cs.get(i + 1) == Some(&'.')
-            && cs.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit());
+        let as_head = head_position(&cs, start);
         match out.iter_mut().find(|t| t.hex == word) {
-            // used once as a head is enough to check it
-            Some(t) => t.range_base &= range_base,
-            None => out.push(Token {
-                hex: word,
-                range_base,
-            }),
+            // written once as a head is enough to hold it to that
+            Some(t) => t.as_head |= as_head,
+            None => out.push(Token { hex: word, as_head }),
         }
     }
     out
@@ -95,11 +121,14 @@ pub fn tokens(text: &str) -> Vec<Token> {
 pub enum Verdict {
     /// A prefix of this open PR's current head.
     Current { pr: u64 },
-    /// A commit of this open PR, not its head. `head` is the current one.
-    StaleHead { pr: u64, head: String },
-    /// Stale, but the same text names that PR's current head too, or it is
-    /// a range base: shown, not held back.
-    StaleNamed { pr: u64, head: String },
+    /// Written as a head, but a commit of these open PRs that is not their
+    /// head; each with its current head. Held back.
+    StaleHead { heads: Vec<(u64, String)> },
+    /// An old commit, and the text names the current head of one of its
+    /// PRs too: shown, not held back.
+    StaleNamed { heads: Vec<(u64, String)> },
+    /// An old commit not written as a head: shown, not held back.
+    StaleMention { heads: Vec<(u64, String)> },
     /// GitHub has no such commit (not pushed, or mistyped).
     NotOnGithub,
     /// A known commit in no open PR.
@@ -114,6 +143,7 @@ impl Verdict {
             Self::Current { .. } => "current",
             Self::StaleHead { .. } => "stale_head",
             Self::StaleNamed { .. } => "stale_named",
+            Self::StaleMention { .. } => "stale_mention",
             Self::NotOnGithub => "not_on_github",
             Self::NoOpenPr => "no_open_pr",
             Self::Unverified { .. } => "unverified",
@@ -149,9 +179,13 @@ impl Report {
                 let mut o = json!({"token": t.hex, "verdict": v.code()});
                 match v {
                     Verdict::Current { pr } => o["pr"] = json!(pr),
-                    Verdict::StaleHead { pr, head } | Verdict::StaleNamed { pr, head } => {
-                        o["pr"] = json!(pr);
-                        o["head"] = json!(head);
+                    Verdict::StaleHead { heads }
+                    | Verdict::StaleNamed { heads }
+                    | Verdict::StaleMention { heads } => {
+                        o["heads"] = heads
+                            .iter()
+                            .map(|(pr, head)| json!({"pr": pr, "head": head}))
+                            .collect();
                     }
                     Verdict::Unverified { reason } => o["reason"] = json!(reason),
                     Verdict::NotOnGithub | Verdict::NoOpenPr => {}
@@ -183,11 +217,17 @@ impl Report {
         for (t, v) in &self.findings {
             let h = &t.hex;
             match v {
-                Verdict::StaleHead { pr, head } => out.push(format!(
-                    "stale_head: {h} 是 #{pr} 的舊 commit,現頭 {head};改成現頭再送(確定要寫舊的:AIB_DM_ACK_STALE=1)"
+                Verdict::StaleHead { heads } => out.push(format!(
+                    "stale_head: {h} 寫在頭的位置,但它是 {} 的舊 commit;改成現頭再送(確定要寫舊的:AIB_DM_ACK_STALE=1)",
+                    list(heads)
                 )),
-                Verdict::StaleNamed { pr, head } => out.push(format!(
-                    "stale-head 提醒: {h} 是 #{pr} 的舊 commit(現頭 {head},同一段文字已寫到 / 是增量底,不擋)"
+                Verdict::StaleNamed { heads } => out.push(format!(
+                    "stale-head 提醒: {h} 是 {} 的舊 commit(同一段文字已寫到現頭,不擋)",
+                    list(heads)
+                )),
+                Verdict::StaleMention { heads } => out.push(format!(
+                    "stale-head 提醒: {h} 是 {} 的舊 commit(不在頭的位置,不擋)",
+                    list(heads)
                 )),
                 Verdict::NotOnGithub => out.push(format!(
                     "stale-head 提醒: {h} 在 GitHub 上找不到(還沒推,或打錯)"
@@ -200,6 +240,15 @@ impl Report {
         }
         out
     }
+}
+
+/// `#684(現頭 728c663a)、#685(現頭 e8e61c1c)`.
+fn list(heads: &[(u64, String)]) -> String {
+    heads
+        .iter()
+        .map(|(pr, h)| format!("#{pr}(現頭 {})", &h[..h.len().min(8)]))
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 /// GitHub calls left this hour (`gh api rate_limit`); `None` = unreadable.
@@ -359,17 +408,22 @@ pub fn check(gh: &dyn Read, quota: &dyn Quota, repo: &str, text: &str) -> Report
                 reason: format!("commit_pulls: {e}"),
             },
             Ok(None) => Verdict::NotOnGithub,
-            Ok(Some(prs)) => match prs.iter().find_map(|n| heads.get(n).map(|h| (*n, h))) {
-                None => Verdict::NoOpenPr,
-                Some((pr, head)) if t.range_base || named.contains(&pr) => Verdict::StaleNamed {
-                    pr,
-                    head: head.clone(),
-                },
-                Some((pr, head)) => Verdict::StaleHead {
-                    pr,
-                    head: head.clone(),
-                },
-            },
+            Ok(Some(prs)) => {
+                // every open PR the commit belongs to (stacked PRs share commits)
+                let open: Vec<(u64, String)> = prs
+                    .iter()
+                    .filter_map(|n| heads.get(n).map(|h| (*n, h.clone())))
+                    .collect();
+                if open.is_empty() {
+                    Verdict::NoOpenPr
+                } else if open.iter().any(|(n, _)| named.contains(n)) {
+                    Verdict::StaleNamed { heads: open }
+                } else if !t.as_head {
+                    Verdict::StaleMention { heads: open }
+                } else {
+                    Verdict::StaleHead { heads: open }
+                }
+            }
         };
         findings.push((t, v));
     }

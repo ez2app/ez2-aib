@@ -1347,9 +1347,9 @@ esac
 # ★ 只在**寄件那一刻**跑一次:多目標子行程、排空器重投、重送輪、--retry-until 子輪、跨主機收件端
 #   拿到的是已查過的同一則(與下面留痕同一條規矩);--resolve-only / 探框不送字,不查。
 # ★ 查不到(配額 < 1500、GitHub 讀不到)由 Rust 端回「只提醒」rc 0,不擋 —— 那是 v2 定的降級。
-#   rc 不是 0 或 3 ⇒ 這道閘沒能回答:stderr 具名吵一行、照送(閘還沒裝到每台機器前,不能讓全艦送不出信;
-#   裝齊後改成落擋另議)。執行檔不在 ⇒ 不出聲照送:15 支 dm-ctl 測試逐字比 stderr,而 CI 機沒裝它
-#   (未受控路徑照 A18 列;AIB_STALEHEAD=off 明示關掉)。
+#   執行檔不在 / rc 不是 0 或 3 ⇒ 這道閘沒能回答:stderr 具名吵一行、照送(閘還沒裝到每台機器前,不能讓
+#   全艦送不出信;裝齊後改成落擋另議)。a9136 0084435f M2:不准不出聲 —— 沒裝看起來像上線了、實際沒擋。
+#   安裝:cargo install --locked --path crates/aib-stalehead。AIB_STALEHEAD=off 明示關掉(測試沙盒用)。
 _stalehead_bin() {
   local _b="${AIB_STALEHEAD:-}"
   [ "$_b" = "off" ] && return 0
@@ -1365,6 +1365,9 @@ if [ "${RESOLVE_ONLY:-0}" != "1" ] && [ "$PROBE_BOX" != "1" ] && [ -z "${EZ2_DM_
      && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] && [ -z "${AIB_DM_RELAYED:-}" ] \
      && [ "${_XH_IN:-0}" != "1" ] && [ -n "$MSG" ]; then
   _SH_BIN="$(_stalehead_bin)"
+  if [ -z "$_SH_BIN" ] && [ "${AIB_STALEHEAD:-}" != "off" ]; then
+    echo "aib-dm-ctl: stale-head 閘未裝,頭碼未核,照送(裝:cargo install --locked --path crates/aib-stalehead)" >&2
+  fi
   _SH_TMP=""
   [ -n "$_SH_BIN" ] && _SH_TMP="$(mktemp "${TMPDIR:-/tmp}/aib-stalehead.XXXXXX" 2>/dev/null)"
   if [ -n "$_SH_BIN" ] && [ -z "$_SH_TMP" ]; then

@@ -9,6 +9,7 @@ H2 閘回 0 ⇒ 照常投遞;它印的提醒照樣到 stderr。
 H3 AIB_STALEHEAD=off ⇒ 不叫閘、照常投遞。
 H4 閘壞了(rc 不是 0 / 3)⇒ 具名吵一行、照送(v2:查不到只提醒)。
 H5 多目標 --to:閘只在父行程跑一次,不是每席一次。
+H6 沒裝(找不到執行檔)又沒設 off ⇒ 照送,但 stderr 一定有「閘未裝」(a9136 0084435f M2:不准不出聲)。
 """
 import importlib.util
 import os
@@ -92,6 +93,13 @@ class Gate(unittest.TestCase):
         g = self.fake(b, 0, "")
         b.run(["--to", "@abcde,@fedcb", "頭 c908ce78"], AIB_STALEHEAD=g)
         self.assertEqual(len(self.seen(b)), 1, self.seen(b))
+
+    def test_h6_not_installed_is_said_out_loud(self):
+        b = R.Box(self)
+        p = b.run(["@abcde", "頭 c908ce78"], AIB_STALEHEAD=str(b.dir / "no-such-gate"))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(len(b.exec_calls()), 1)
+        self.assertIn("stale-head 閘未裝", p.stderr)
 
 
 if __name__ == "__main__":

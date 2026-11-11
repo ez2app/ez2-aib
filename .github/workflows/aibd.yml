@@ -2058,10 +2058,18 @@ jobs:
           set -eu
           hk() { python3 -I scripts/knife.py crates/aib-stalehead/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-stalehead --locked --test stalehead "$3"; }
-          # SL3 a dm naming a PR's old head is let through
-          hk '                Some((pr, head)) if t.range_base || named.contains(&pr) => Verdict::StaleNamed {' \
-             '                Some((pr, head)) if true => Verdict::StaleNamed { // knife' \
+          # SL3 a dm writing a PR's old commit as its head is let through
+          hk '                } else if !t.as_head {' \
+             '                } else if true { // knife' \
              a_dm_naming_an_old_head_is_held_back
+          # SL3d (a9136 0084435f M1) stacked PRs: only the first PR of a shared commit is compared
+          hk '                } else if open.iter().any(|(n, _)| named.contains(n)) {' \
+             '                } else if open.first().is_some_and(|(n, _)| named.contains(n)) { // knife' \
+             stacked_prs_an_old_lower_commit_beside_the_upper_head_is_not_held
+          # SL3e (a9136 0084435f L1) every mention of an old commit counts as a head
+          hk '    HEAD_WORDS.iter().any(|w| before.ends_with(w)) && !OLD_WORDS.iter().any(|w| before.ends_with(w))' \
+             '    HEAD_WORDS.iter().chain(OLD_WORDS).any(|w| before.ends_with(w)) || !before.is_empty() // knife' \
+             an_old_commit_not_written_as_a_head_is_a_reminder
           # SL3b a short (8+) prefix of the current head is held back as old
           hk '            .find(|(_, h)| h.starts_with(hex))' \
              '            .find(|(_, h)| h.as_str() == hex) // knife' \

@@ -11,6 +11,9 @@ const REPO: &str = "o/r";
 const NEW: &str = "e8e61c1cbff858bf6d9b10fafc47c08acded6739";
 const OLD: &str = "c908ce78f864fda6fdc40f4df173d2acafd2f61c";
 const OTHER: &str = "81074c922058a6ec7263ced4ef772f8280fa202e";
+/// #684 (under #685): its head, and an older commit of it.
+const LOW: &str = "728c663a0000000000000000000000000000beef";
+const LOW_OLD: &str = "cf850816000000000000000000000000000dead1";
 
 struct Gh {
     answers: BTreeMap<String, Result<Value, String>>,
@@ -45,6 +48,7 @@ fn gh() -> Gh {
         Ok(json!([
             {"number": 685, "head": {"sha": NEW}},
             {"number": 690, "head": {"sha": OTHER}},
+            {"number": 684, "head": {"sha": LOW}},
         ])),
     );
     a.insert(
@@ -63,6 +67,12 @@ fn gh() -> Gh {
             Ok(json!([{"number": 685, "state": "open"}])),
         );
     }
+    // stacked: a commit of the lower PR belongs to the upper one too (a9136
+    // checked 728c663a ⇒ #684, #685 on GitHub)
+    a.insert(
+        format!("repos/{REPO}/commits/{}/pulls", &LOW_OLD[..8]),
+        Ok(json!([{"number": 684, "state": "open"}, {"number": 685, "state": "open"}])),
+    );
     // on main: GitHub names only the merged PR that brought it
     a.insert(
         format!("repos/{REPO}/commits/5806dac2/pulls"),
@@ -93,8 +103,7 @@ fn a_dm_naming_an_old_head_is_held_back() {
     assert_eq!(
         r.findings[0].1,
         Verdict::StaleHead {
-            pr: 685,
-            head: NEW.to_owned()
+            heads: vec![(685, NEW.to_owned())]
         }
     );
     assert_eq!(r.to_json()["reason"], "stale_head");
@@ -145,6 +154,68 @@ fn a_range_base_used_as_a_head_elsewhere_is_held_back() {
     assert!(r.blocked(), "{r:?}");
 }
 
+/// Stacked PRs: an old commit of the lower PR, beside the upper PR's current
+/// head, is not held back — and every PR it belongs to is listed (a9136 M1).
+#[test]
+fn stacked_prs_an_old_lower_commit_beside_the_upper_head_is_not_held() {
+    let r = check(
+        &gh(),
+        &OK,
+        REPO,
+        &format!(
+            "#685 現頭 {},底下 #684 頭 {} 已換掉",
+            &NEW[..8],
+            &LOW_OLD[..8]
+        ),
+    );
+    assert!(!r.blocked(), "{r:?}");
+    assert_eq!(
+        r.findings[1].1,
+        Verdict::StaleNamed {
+            heads: vec![(684, LOW.to_owned()), (685, NEW.to_owned())]
+        }
+    );
+    // alone, written as a head, it is held back, and both PRs are named
+    let r = check(&gh(), &OK, REPO, &format!("#684 頭 {}", &LOW_OLD[..8]));
+    assert!(r.blocked(), "{r:?}");
+    let l = &r.lines()[0];
+    assert!(l.contains("#684") && l.contains("#685"), "{l}");
+}
+
+/// An old commit named as a fix, not as a head, is a reminder (a9136 L1).
+#[test]
+fn an_old_commit_not_written_as_a_head_is_a_reminder() {
+    for text in [
+        format!("#685 根因修在 {}", &OLD[..8]),
+        format!("#685 舊頭 {} 已換掉", &OLD[..8]),
+        format!("增量 {}..{NEW}", &OLD[..8]),
+    ] {
+        let r = check(&gh(), &OK, REPO, &text);
+        assert!(!r.blocked(), "{text}: {r:?}");
+        assert!(!r.lines().is_empty(), "{text}: still shown");
+    }
+    let r = check(&gh(), &OK, REPO, &format!("#685 根因修在 {}", &OLD[..8]));
+    assert_eq!(r.findings[0].1.code(), "stale_mention");
+}
+
+/// Where a head goes: after 頭 / 頭: / head / HEAD= / 推了, or right of `..`.
+#[test]
+fn every_head_position_is_held_to_the_current_head() {
+    let o = &OLD[..8];
+    for text in [
+        format!("頭:{o}"),
+        format!("頭: {o}"),
+        format!("頭碼 {o}"),
+        format!("HEAD={o}"),
+        format!("head {o}"),
+        format!("推了 {o}"),
+        format!("增量 {OTHER}..{o}"),
+    ] {
+        let r = check(&gh(), &OK, REPO, &text);
+        assert!(r.blocked(), "{text}: {r:?}");
+    }
+}
+
 /// "was OLD, now NEW": the text knows the current head.
 #[test]
 fn an_old_commit_beside_its_current_head_is_shown_not_held() {
@@ -169,7 +240,7 @@ fn another_prs_head_does_not_excuse_an_old_head() {
         &gh(),
         &OK,
         REPO,
-        &format!("#690 {} / #685 {}", &OTHER[..8], &OLD[..8]),
+        &format!("#690 頭 {} / #685 頭 {}", &OTHER[..8], &OLD[..8]),
     );
     assert!(r.blocked(), "{r:?}");
 }
