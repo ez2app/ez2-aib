@@ -166,6 +166,23 @@ fn run_names_the_forking_command_line() {
     );
     assert!(me["fork_events"].as_u64().unwrap() >= 3, "{v}");
     assert_eq!(v["result"]["parent_argv_dropped"], 0, "{v}");
+    // by_argv sums every event: the root's line holds at least its own forks,
+    // and all lines add up to fork_events
+    let by = v["result"]["by_argv"].as_array().unwrap();
+    let mine = by
+        .iter()
+        .find(|b| b["argv"].as_str().unwrap().contains("pargv-marker-043dd"))
+        .unwrap_or_else(|| panic!("reason: by_argv_missing {v}"));
+    assert!(
+        mine["fork_events"].as_u64().unwrap() >= me["fork_events"].as_u64().unwrap(),
+        "reason: by_argv_short {v}"
+    );
+    let sum: u64 = by.iter().map(|b| b["fork_events"].as_u64().unwrap()).sum();
+    assert_eq!(
+        sum,
+        v["result"]["fork_events"].as_u64().unwrap(),
+        "reason: by_argv_not_all_events {v}"
+    );
 }
 
 #[test]
