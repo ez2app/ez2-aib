@@ -1098,10 +1098,50 @@ jobs:
           hk siteremovecmd.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {' \
              '            Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => { // knife' \
              a_schedule_file_that_is_not_there_is_an_answer_one_that_cannot_be_read_is_not
-          # the answer no longer says what stays on the host (33e28 L3)
-          hk siteremovecmd.rs '            "left_on_host": left_on_host(spec),' \
-             '            "left_on_host": left_on_host(spec).get(..0), // knife' \
+          # step 10: the answer's left_on_host is not what is found on the host after (33e28 L3)
+          hk siteremovecmd.rs '        let left_on_host = leftovers_found(host, &leftover_places(spec)?)?;' \
+             '        let left_on_host: Vec<String> = leftover_places(spec)?.iter().map(|_| String::new()).collect(); // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: the removal never cleans what the site left on the host
+          hk siteremovecmd.rs '        let removed = clean_leftovers(host, spec)' \
+             '        let removed = Ok::<Vec<String>, String>(Vec::new()) // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: a name in a place is taken without its site's prefix (site99, ct 1190 go too)
+          hk siteremovecmd.rs '                    if !name.starts_with(prefix.as_str()) {' \
+             '                    if !name.starts_with(prefix.as_str()) && false { // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: the entry's or the template's container number gives places to remove
+          hk siteremovecmd.rs '    if !(100..=999_999_999).contains(&ct) || ct == EDGE_CT || ct == TEMPLATE_CT {' \
+             '    if !(100..=999_999_999).contains(&ct) || ct == EDGE_CT && ct == TEMPLATE_CT { // knife' \
+             step_ten_has_no_place_for_a_bad_code_or_a_container_that_is_not_a_sites
+          # step 10: a code that is not a site code gives places to remove
+          hk siteremovecmd.rs '    if !valid_code(&spec.code) {' \
+             '    if !valid_code(&spec.code) && false { // knife' \
+             step_ten_has_no_place_for_a_bad_code_or_a_container_that_is_not_a_sites
+          # step 10: a name with a slash or .. is joined to its place
+          hk siteremovecmd.rs '    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains('"'"'/'"'"');' \
+             '    let plain = !name.is_empty(); // knife' \
+             step_ten_only_joins_one_plain_name_to_its_place
+          # step 10: something still there after its removal is let go
+          hk siteremovecmd.rs '    if !still.is_empty() || !failed.is_empty() {' \
+             '    if (!still.is_empty() || !failed.is_empty()) && false { // knife' \
+             a_leftover_still_there_after_its_removal_stops_with_its_path
+          # step 10: one path that cannot be removed keeps the others (33e28 L1)
+          hk siteremovecmd.rs '            failed.push(e);' \
+             '            failed.push(e.clone()); return Err(e); // knife' \
+             a_path_that_cannot_be_removed_does_not_keep_the_others_and_is_listed
+          # step 10 stopped: the stop does not say to remove the paths by hand (33e28 L1)
+          hk siteremovecmd.rs '         remove these paths by hand as root, then run \' \
+             '         remove them, then run \' \
+             a_leftover_still_there_after_its_removal_stops_with_its_path
+          # the plan of a removed site lists its leftovers for another address too (33e28 L1)
+          hk siteremovecmd.rs '        Ok(s) if !siteremove::confirmed(&s.code, s.primary(), code, address) => (' \
+             '        Ok(s) if s.code.is_empty() && !address.is_empty() => ( // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
+          # the plan of a removed site does not list what is still there (33e28 L1)
+          hk siteremovecmd.rs '            Ok(found) => (Value::from(found), Value::Null),' \
+             '            Ok(_) => (Value::from(Vec::<String>::new()), Value::Null), // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
           # the removed record says nothing was left at the vendors
           hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
              '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
