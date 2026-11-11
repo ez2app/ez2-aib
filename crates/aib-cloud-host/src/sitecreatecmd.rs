@@ -12,6 +12,11 @@
 //! ([`aib_cloud::sitedefaults`]). This file only reads. Whatever could not be read is
 //! "could not tell" and stops the plan: a list that could not be read is not an empty list.
 //!
+//! The customer's quota (E7, [`aib_cloud::quota`]) is judged for the tenant named by
+//! `--tenant`: the customer's live records and the opening records ([`CREATING`]) against the
+//! plan. A plan that cannot be told stops at `quota_unknown`, a plan with no room for one
+//! more site on the starting tier at `quota_exceeded`.
+//!
 //! The administrators' mail addresses are host configuration ([`SITE_ADMINS`], one address
 //! per line, `#` for comments); they are never written into this repository. The plan
 //! prints the login names only.
@@ -22,6 +27,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use aib_cloud::edge::valid_domain;
+use aib_cloud::quota::{self, Verdict};
 use aib_cloud::sitecreate::{self, AfterFailure, CreateStep, Next, Probe, STEPS};
 use aib_cloud::sitedefaults::{admin_login, site_title};
 use serde_json::{json, Value};
@@ -31,6 +37,9 @@ use crate::probe::run_capture;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
+/// The records of sites whose opening has begun and not ended (written by the opening
+/// itself, B4). They count against the customer's quota; a missing directory is none.
+pub const CREATING: &str = "/var/lib/ez2-cloud/sites-creating";
 /// The configuration of every container and every virtual machine of this host.
 const LXC_CONFIGS: &str = "/etc/pve/lxc";
 const VM_CONFIGS: &str = "/etc/pve/qemu-server";
@@ -53,6 +62,10 @@ pub struct Seen {
     pub guest_ips: Option<Vec<u8>>,
     pub records: Option<Vec<Value>>,
     pub removed: Option<Vec<Value>>,
+    /// The opening records ([`CREATING`]).
+    pub creating: Option<Vec<Value>>,
+    /// The customer the site is opened for (`--tenant`).
+    pub tenant: Option<String>,
     pub entry_config: Option<String>,
     /// The text of [`SITE_ADMINS`].
     pub admins: Option<String>,
@@ -265,6 +278,11 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         seen.entry_config.as_deref(),
     );
     let next = sitecreate::next(&probes, blank);
+    let quota = quota::judge(
+        seen.tenant.as_deref(),
+        seen.records.as_deref(),
+        seen.creating.as_deref(),
+    );
     // a stop of this command comes before the order's own answer
     let own_stop: Option<&'static str> = if taken.is_some() {
         Some("domain_taken")
@@ -277,6 +295,8 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         Some("journal_unreadable")
     } else if let Err(w) = &logins {
         Some(*w)
+    } else if let Some(w) = quota.stop() {
+        Some(w)
     } else {
         numbers.err()
     };
@@ -306,7 +326,7 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "target": target(domain),
         "unfinished": seen.unfinished,
         "lock": seen.lock,
-        "quota": "not checked yet",
+        "quota": quota_doc(seen.tenant.as_deref(), &quota),
         "steps": STEPS.iter().zip(probes).map(|(s, p)| json!({
             "step": s.as_str(),
             "applies": s.applies(blank),
@@ -317,7 +337,49 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "next_step": next_step.map(CreateStep::as_str),
         "stop": stop,
         "may_call_off": may_call_off,
-        "not_looked_at": ["the customer's quota of sites (no rule for it yet)", "DNS of the domain", "the licences left at the vendors"],
+        "not_looked_at": ["DNS of the domain", "the licences left at the vendors"],
+    })
+}
+
+/// The quota as the plan prints it.
+fn quota_doc(tenant: Option<&str>, verdict: &Verdict) -> Value {
+    let plan = quota::plan_of(tenant).ok().map(|p| {
+        json!({ "cores": p.cores, "memory_mb": p.memory_mb, "disk_gb": p.disk_gb })
+    });
+    let counted = |c: &quota::Count, allowed: u32| {
+        json!({
+            "live": c.live,
+            "opening": c.opening,
+            "allowed": allowed,
+            "held": { "cpu_x100": c.held.cpu_x100, "memory_mb": c.held.memory_mb, "disk_gb": c.held.disk_gb },
+        })
+    };
+    let (word, sites, short, why) = match verdict {
+        Verdict::Fits { count, allowed } => ("fits", counted(count, *allowed), None, None),
+        Verdict::Exceeded {
+            count,
+            allowed,
+            short,
+        } => (
+            "quota_exceeded",
+            counted(count, *allowed),
+            Some(match short {
+                aib_cloud::arc::Resource::Cpu => "cpu",
+                aib_cloud::arc::Resource::Memory => "memory",
+                aib_cloud::arc::Resource::Disk => "disk",
+            }),
+            None,
+        ),
+        Verdict::Unknown(u) => ("quota_unknown", Value::Null, None, Some(u.as_str())),
+    };
+    json!({
+        "tenant_id": tenant,
+        "verdict": word,
+        "plan": plan,
+        "sites": sites,
+        "short_of": short,
+        "unknown": why,
+        "new_site": "Limits::START",
     })
 }
 
@@ -385,7 +447,7 @@ pub fn unfinished_on(ops: &Path, domain: &str) -> Option<Vec<Value>> {
     Some(out)
 }
 
-fn see(domain: &str, records: &str) -> Seen {
+fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
     let proc_root = Path::new("/proc");
     Seen {
         container_list: capture("pct", &["list"], 20),
@@ -393,6 +455,8 @@ fn see(domain: &str, records: &str) -> Seen {
         guest_ips: read_guest_ips(&[Path::new(LXC_CONFIGS), Path::new(VM_CONFIGS)]),
         records: read_records(Path::new(records)),
         removed: read_records(Path::new(REMOVED_RECORDS)),
+        creating: read_records(Path::new(CREATING)),
+        tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
         admins: fs::read_to_string(SITE_ADMINS).ok(),
         lock: lock_state(Path::new(opstore::LOCK_FILE), proc_root),
@@ -409,11 +473,13 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut records = RECORDS.to_owned();
     let mut plan_only = false;
     let mut blank = false;
+    let mut tenant = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--plan" => plan_only = true,
             "--blank" => blank = true,
+            "--tenant" => tenant = Some(it.next().ok_or("--tenant needs a customer id")?.clone()),
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -424,7 +490,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 .to_owned(),
         );
     }
-    let seen = see(&domain, &records);
+    let seen = see(&domain, &records, tenant);
     let mut doc = plan_doc(&domain, blank, &seen);
     let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
     seal_plan(&mut doc, &op, Path::new(opstore::MACHINE_ID))?;
@@ -457,6 +523,8 @@ mod tests {
             guest_ips: Some(vec![2, 12, 40]),
             records: Some(vec![rec("site2", 112, 12, "shop.example.test")]),
             removed: Some(vec![rec("site3", 125, 25, "old.example.test")]),
+            creating: Some(Vec::new()),
+            tenant: Some("acme".to_owned()),
             entry_config: Some("# site:site2\nshop.example.test {\n}\n".to_owned()),
             admins: Some(ADMINS.to_owned()),
             lock: json!({ "state": "free" }),
@@ -488,7 +556,10 @@ mod tests {
         assert_eq!(doc["title"], "new");
         assert_eq!(doc["admins"], json!(["ops", "ops2"]));
         assert_eq!(doc["target"], "domain:www.new.example.test");
-        assert_eq!(doc["quota"], "not checked yet");
+        assert_eq!(doc["quota"]["verdict"], "fits");
+        assert_eq!(doc["quota"]["tenant_id"], "acme");
+        assert_eq!(doc["quota"]["sites"]["allowed"], 4);
+        assert_eq!(doc["quota"]["plan"]["memory_mb"], 16_384);
         assert_eq!(doc["site_code"], CODE_RULE);
         assert_eq!(doc["taken_by"], Value::Null);
         let steps = doc["steps"].as_array().unwrap();
@@ -776,5 +847,61 @@ mod tests {
         assert!(cmd(&args(&["New.example.test", "--plan"])).is_err());
         assert!(cmd(&args(&["--plan"])).is_err());
         assert!(cmd(&args(&["new.example.test", "--plan", "--force"])).is_err());
+    }
+
+    /// E7: no customer named, or records that could not be read, is "could not tell";
+    /// the plan stops before the clone and says why.
+    #[test]
+    fn a_quota_that_cannot_be_told_stops_at_quota_unknown() {
+        let mut seen = host();
+        seen.tenant = None;
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_unknown");
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["may_call_off"], false);
+        assert_eq!(doc["quota"]["unknown"], "no_tenant");
+        let mut seen = host();
+        seen.creating = None;
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_unknown");
+        assert_eq!(doc["quota"]["unknown"], "records_unreadable");
+    }
+
+    /// E7: a customer whose sites (live and opening) leave no room for one more on the
+    /// starting tier stops at quota_exceeded; removed sites are not counted.
+    #[test]
+    fn a_full_plan_stops_at_quota_exceeded_and_removed_sites_do_not_count() {
+        let mine = |code: &str, ct: u32, ip: u8| {
+            let mut r = rec(code, ct, ip, &format!("{code}.example.test"));
+            r["tenant_id"] = json!("acme");
+            r["limits"] = json!({
+                "cores": 2, "cpulimit_x100": 200, "memory_mb": 1024, "swap_mb": 512, "pids_max": 2048
+            });
+            r
+        };
+        let mut seen = host();
+        seen.records = Some(vec![mine("sa", 113, 13), mine("sb", 114, 14), mine("sc", 115, 15)]);
+        // a removed site of the customer holds nothing
+        seen.removed = Some(vec![mine("sr", 116, 16)]);
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], Value::Null, "{doc}");
+        assert_eq!(doc["quota"]["sites"]["live"], 3);
+        // an opening under way holds the last room
+        let opening = json!({
+            "site": "sd", "ct": 117, "ip": "10.77.0.17", "hosts": "sd.example.test", "step": "clone"
+        });
+        seen.creating = Some(vec![opening]);
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_exceeded");
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["quota"]["verdict"], "quota_exceeded");
+        assert_eq!(doc["quota"]["short_of"], "cpu");
+        assert_eq!(doc["quota"]["sites"]["opening"], 1);
+        assert_eq!(doc["quota"]["sites"]["allowed"], 4);
+    }
+
+    #[test]
+    fn tenant_is_an_argument_with_a_value() {
+        assert!(cmd(&args(&["shop.example.test", "--plan", "--tenant"])).is_err());
     }
 }
