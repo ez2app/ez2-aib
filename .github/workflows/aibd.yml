@@ -824,9 +824,25 @@ jobs:
           ck sitedns.rs '    let accounts = accounts.filter(|a| !a.is_empty()).ok_or(OWNER_UNKNOWN)?;' \
              '    let accounts = accounts.unwrap_or(&[]); // knife' \
              a_roster_without_accounts_cannot_tell
-          # B5 DNS: a call off the list of five is let through
+          # B5 DNS: a call off the list of four is let through
           ck sitedns.rs '        _ => false,' '        _ => true, // knife' \
-             only_the_five_calls_are_allowed
+             only_the_four_calls_are_allowed
+          # B5 DNS (ebb36 L1): a delete of any record by its id goes back on the list
+          ck sitedns.rs '        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),' \
+             $'        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),\n        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r), // knife' \
+             only_the_four_calls_are_allowed
+          # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
+          ck sitedns.rs '        && m["type"] == "A"' \
+             '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS (ebb36 L1): an add to anything but a public address is let through
+          ck sitedns.rs '        && m["content"].as_str().is_some_and(valid_origin)' \
+             '        && m["content"].is_string() // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS (ebb36 L2): a name outside the zone is added under it
+          ck sitedns.rs '    if !names.iter().all(|n| in_zone(n, zone)) {' \
+             '    if !names.iter().all(|n| in_zone(n, zone)) && false { // knife' \
+             a_name_outside_the_zone_adds_nothing
           # B5 DNS: an add without a site's mark is let through
           ck sitedns.rs '            .is_some_and(crate::site::valid_code)' \
              '            .is_some_and(|_| true) // knife' \
@@ -849,7 +865,7 @@ jobs:
              a_wildcard_that_answers_today_stops
           # B5 DNS: mail and text records count as address records
           ck sitedns.rs '    let address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());' \
-             '    let address = |r: &&Record| !r.kind.is_empty(); // knife' \
+             '    let address = |r: &&Record| !r.kind.is_empty() || DNS_ADDRESS_TYPES.is_empty(); // knife' \
              mail_and_text_records_are_not_looked_at
           # B5 DNS: a listing short of its count reads as whole
           ck sitedns.rs '    (all.len() == usize::try_from(first.total_count).ok()?).then_some(all)' \
@@ -1604,8 +1620,8 @@ jobs:
              '        let _ = &paths.creating; // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # B5 DNS: an add that does not read back counts as done
-          hk cfdns.rs '        if sitedns::plan(&names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done {' \
-             '        if sitedns::plan(&names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false { // knife' \
+          hk cfdns.rs '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done' \
+             '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # B5 DNS: a roster file that is another customer's is used
           hk cfdns.rs '    if roster.tenant_id != tenant {' '    if roster.tenant_id != tenant && false { // knife' \

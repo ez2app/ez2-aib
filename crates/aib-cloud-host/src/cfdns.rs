@@ -9,7 +9,7 @@
 //!   host's own address the records point at. The key is handed to `curl` on its standard
 //!   input (`curl -K -`): it is never in an argument list, never printed, never in the
 //!   ledger, the record or an error.
-//! * **Only five calls.** Every call is written out and checked by
+//! * **Only four calls.** Every call is written out and checked by
 //!   [`aib_cloud::sitedns::allowed`] before it is made; one that is not on the list is
 //!   refused here and nothing leaves the host.
 //! * **One ledger line per call** ([`CF_LEDGER`]): when, which site, the method and path,
@@ -159,7 +159,7 @@ impl<'a, R: Runner> Cf<'a, R> {
         if !sitedns::allowed(call.method(), &call.path(), body) {
             self.ledger_line(&mut file, call, json!("refused"))?;
             return Err(format!(
-                "{}: {} {} is not one of the five calls",
+                "{}: {} {} is not one of the four calls",
                 sitedns::CALL_NOT_ALLOWED,
                 call.method(),
                 call.path()
@@ -329,7 +329,7 @@ pub fn dns_step(
     sitedns::ssl_mode(&ssl).map_err(|w| format!("{w}: the SSL mode of {}", zone.name))?;
     let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
     let before = listing(&mut cf, &zone.id)?;
-    let add = match sitedns::plan(&names, before.as_deref(), &spec.code, &origin) {
+    let add = match sitedns::plan(&zone.name, &names, before.as_deref(), &spec.code, &origin) {
         DnsPlan::Done => Vec::new(),
         DnsPlan::Stop(w) => return Err(format!("{w}: {} in zone {}", names.join(","), zone.name)),
         DnsPlan::Add(list) => list,
@@ -356,7 +356,8 @@ pub fn dns_step(
             }
         }
         let after = listing(&mut cf, &zone.id)?;
-        if sitedns::plan(&names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done {
+        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done
+        {
             return Err(format!(
                 "{}: {} did not read back as written in zone {}",
                 sitedns::NOT_CONFIRMED,
