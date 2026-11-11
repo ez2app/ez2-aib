@@ -774,7 +774,7 @@ fn gh_map(changed_files: u64) -> Map {
     };
     put(
         "repos/o/r/pulls/7",
-        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "changed_files": changed_files}),
+        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "state": "open", "changed_files": changed_files}),
     );
     put(
         "repos/o/r/pulls/7/files?per_page=100&page=1",
@@ -1022,4 +1022,126 @@ fn base64_decoder() {
     );
     assert_eq!(b64("aGk="), Some(b"hi".to_vec()));
     assert_eq!(b64("a*b"), None);
+}
+
+// ---------- an earlier head of the PR (#644) ----------
+
+const OLD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// The PR's current head is h1; OLD is an earlier commit of it, with its own runs.
+fn old_head_map(commits: &[&str], compare_files: usize) -> Map {
+    let mut m = gh_map(1);
+    let list: Vec<_> = commits.iter().map(|s| json!({"sha": s})).collect();
+    m.0.insert(
+        "repos/o/r/pulls/7/commits?per_page=100&page=1".into(),
+        json!(list).to_string(),
+    );
+    let files: Vec<_> = (0..compare_files)
+        .map(|i| json!({"filename": format!("f{i}.md"), "status": "modified"}))
+        .collect();
+    m.0.insert(
+        format!("repos/o/r/compare/b...{OLD}"),
+        json!({"files": files}).to_string(),
+    );
+    m.0.insert(
+        format!("repos/o/r/actions/runs?head_sha={OLD}&per_page=100&page=1"),
+        json!({"total_count": 1, "workflow_runs": [
+            {"id": 3, "head_sha": OLD, "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 7}]}
+        ]})
+        .to_string(),
+    );
+    m.0.insert(
+        "repos/o/r/actions/runs/3/attempts/1/jobs?per_page=100&page=1".into(),
+        json!({"total_count": 1, "jobs": [
+            {"id": 30, "name": "test (ubuntu-latest, 3.12)", "conclusion": "failure",
+             "steps": [{"name": "Python suite", "conclusion": "failure", "number": 5}]}
+        ]})
+        .to_string(),
+    );
+    m.0.insert("repos/o/r/actions/jobs/30/logs".into(), PY_RED.into());
+    m
+}
+
+#[test]
+fn an_earlier_head_of_the_pr_is_judged_on_its_own_runs() {
+    let m = old_head_map(&["aaaaaaa1", OLD, HEAD], 2);
+    // full SHA, and a 7-character prefix
+    for want in [OLD, &OLD[..7]] {
+        let f = gather(&m, R, Some(7), want).expect("gather");
+        assert_eq!(f.head, OLD);
+        assert_eq!(f.changed.len(), 2, "files from compare, not the PR's list");
+        assert!(f.attempts.iter().all(|a| a.run_id == 3), "{:?}", f.attempts);
+    }
+}
+
+#[test]
+fn a_head_that_is_not_the_prs_is_unknown() {
+    let m = old_head_map(&["aaaaaaa1", HEAD], 2);
+    let e = gather(&m, R, Some(7), OLD).expect_err("not a commit of the PR");
+    assert!(e.starts_with("head_not_in_pr:"), "{e}");
+    // too short, not hex, or naming two commits
+    assert!(gather(&m, R, Some(7), "012345").is_err());
+    assert!(gather(&m, R, Some(7), "zzzzzzzz").is_err());
+    let m = old_head_map(&["0123456aa", OLD], 2);
+    let e = gather(&m, R, Some(7), "0123456").expect_err("ambiguous");
+    assert!(e.starts_with("head_ambiguous:"), "{e}");
+    // a commit list at the cap may be cut off
+    let mut m = old_head_map(&[], 2);
+    for page in 1..=3 {
+        let n = if page == 3 { 50 } else { 100 };
+        let list: Vec<_> = (0..n)
+            .map(|i| json!({"sha": format!("{page}{i:039}")}))
+            .collect();
+        m.0.insert(
+            format!("repos/o/r/pulls/7/commits?per_page=100&page={page}"),
+            json!(list).to_string(),
+        );
+    }
+    let e = gather(&m, R, Some(7), OLD).expect_err("250 commits");
+    assert!(e.starts_with("head_unknown:"), "{e}");
+}
+
+#[test]
+fn a_compare_at_the_file_cap_is_unknown() {
+    let e = gather(&old_head_map(&[OLD], 300), R, Some(7), OLD).expect_err("cut off");
+    assert!(e.starts_with("compare_truncated:"), "{e}");
+    assert!(gather(&old_head_map(&[OLD], 299), R, Some(7), OLD).is_ok());
+}
+
+/// 2240e #654 M1: once the PR is merged, GitHub leaves `pull_requests` empty on its runs;
+/// they must still be read (not an empty, silent answer), and only for a PR that is closed.
+#[test]
+fn a_merged_prs_runs_are_still_its_own() {
+    let mut m = old_head_map(&["aaaaaaa1", OLD, HEAD], 2);
+    m.0.insert(
+        format!("repos/o/r/actions/runs?head_sha={OLD}&per_page=100&page=1"),
+        json!({"total_count": 1, "workflow_runs": [
+            {"id": 3, "head_sha": OLD, "path": ".github/workflows/ci.yml", "run_attempt": 1,
+             "event": "pull_request", "head_branch": "feat/x", "pull_requests": []}
+        ]})
+        .to_string(),
+    );
+    // open: an empty list is not this PR's (another context may have built the SHA)
+    let f = gather(&m, R, Some(7), OLD).expect("gather");
+    assert!(f.attempts.is_empty(), "{:?}", f.attempts);
+    // merged: the same run is this PR's
+    m.0.insert(
+        "repos/o/r/pulls/7".into(),
+        json!({"head": {"sha": HEAD, "ref": "feat/x"}, "base": {"sha": "b"}, "state": "closed",
+               "changed_files": 1})
+        .to_string(),
+    );
+    let f = gather(&m, R, Some(7), OLD).expect("gather");
+    assert_eq!(f.attempts.len(), 1, "{:?}", f.attempts);
+    // …but a run from another branch is still not
+    let other = Context::PrClosed {
+        number: 7,
+        head_ref: "feat/x".into(),
+    };
+    let r = json!({"event": "pull_request", "head_branch": "feat/y", "pull_requests": []});
+    assert!(!run_counts(&r, &other));
+    let r =
+        json!({"event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 8}]});
+    assert!(!run_counts(&r, &other));
 }

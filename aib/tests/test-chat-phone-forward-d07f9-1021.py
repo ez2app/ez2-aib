@@ -46,7 +46,7 @@ class Base(unittest.TestCase):
         self.addCleanup(td.cleanup)
         self.td = Path(td.name)
         self.env = {"EZ2_AIB_STATE_ROOT": str(self.td / "state"), "HOME": str(self.td), "EZ2_AIB_LOCALE": "zh-TW",
-                    "AIB_CHAT_HOME": str(self.td / "chat"), "AIB_DM_ADDR": "100.114.152.121", "PATH": "/usr/bin:/bin"}
+                    "AIB_CHAT_HOME": str(self.td / "chat"), "AIB_DM_ADDR": "100.64.0.121", "PATH": "/usr/bin:/bin"}
         self.sent = []
 
     def mail(self, at=T0, uid="70001"):

@@ -52,10 +52,25 @@ pub enum ErrorCode {
     /// The machine is too hot to start another session (ADR 0005 §1 thermal guard).
     /// Not queued; answered with `Retry-After`.
     ThermalNogo,
+    /// A page credential that is not confirmed yet (ADR 0006 §7): only pair/status,
+    /// pair/revoke and health answer until the short code is confirmed in the terminal.
+    PairingUnconfirmed,
+    /// A pairing code was redeemed a second time; the first redemption's credential is
+    /// revoked too (ADR 0006 §7).
+    PairingCodeReused,
+    /// Too many failed pairing attempts in the window.
+    PairingRateLimited,
+    /// Pairing failed (unknown, expired or wrong code); deliberately says no more.
+    PairingFailed,
+    /// A page credential sent a write (anything but GET / HEAD, and pair/revoke). Until the
+    /// launch-profile routes exist a page credential may only read (ADR 0006 §7; Q2).
+    PageWriteNotAllowed,
+    /// A non-API path on an aibd built without the web workbench (cargo feature `web`).
+    WebNotBuilt,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 20] = [
+    pub const ALL: [ErrorCode; 26] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -76,6 +91,12 @@ impl ErrorCode {
         ErrorCode::ProviderInstallUnsupported,
         ErrorCode::SessionQueueFull,
         ErrorCode::ThermalNogo,
+        ErrorCode::PairingUnconfirmed,
+        ErrorCode::PairingCodeReused,
+        ErrorCode::PairingRateLimited,
+        ErrorCode::PairingFailed,
+        ErrorCode::PageWriteNotAllowed,
+        ErrorCode::WebNotBuilt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -100,6 +121,12 @@ impl ErrorCode {
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
             ErrorCode::SessionQueueFull => "session_queue_full",
             ErrorCode::ThermalNogo => "thermal_nogo",
+            ErrorCode::PairingUnconfirmed => "pairing_unconfirmed",
+            ErrorCode::PairingCodeReused => "pairing_code_reused",
+            ErrorCode::PairingRateLimited => "pairing_rate_limited",
+            ErrorCode::PairingFailed => "pairing_failed",
+            ErrorCode::PageWriteNotAllowed => "page_write_not_allowed",
+            ErrorCode::WebNotBuilt => "web_not_built",
         }
     }
 
@@ -121,6 +148,12 @@ impl ErrorCode {
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,
             ErrorCode::ProgramNotAllowed | ErrorCode::ProviderInstallUnsupported => 403,
+            ErrorCode::PairingUnconfirmed => 403,
+            ErrorCode::PairingCodeReused => 409,
+            ErrorCode::PairingRateLimited => 429,
+            ErrorCode::PairingFailed => 401,
+            ErrorCode::PageWriteNotAllowed => 403,
+            ErrorCode::WebNotBuilt => 404,
         }
     }
 }

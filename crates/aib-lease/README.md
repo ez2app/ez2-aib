@@ -78,7 +78,7 @@ Tests: `cargo test -p aib-lease` (not on the Mac Pro 16: heat order; andymini or
 ## `aib-lease run` — steps on another Mac under its lease (D3 + D5 + D6)
 
 ```sh
-aib-lease run --host 100.116.110.31 --owner 043dd \
+aib-lease run --host 100.64.0.31 --owner 043dd \
   --step 'cargo clippy -p aibd --all-targets --locked -- -D warnings' \
   --step 'cargo test -p aibd --locked --test sessions'
 # or: aib-lease run --host H --owner S --rev <commit|tree> -- cargo test -p aibd
@@ -117,7 +117,7 @@ aib-lease run --host 100.116.110.31 --owner 043dd \
 ## `aib-lease classify` — short or long, light or not (D7)
 
 ```sh
-aib-lease classify --host 100.116.110.31 --step 'cargo test -p aibd --locked --test gate_replay'
+aib-lease classify --host 100.64.0.31 --step 'cargo test -p aibd --locked --test gate_replay'
 # {"class":"short","light":true,"may_go_ahead":true,"est_secs":70,"samples":3,...}
 ```
 
