@@ -1192,7 +1192,7 @@ jobs:
              an_undo_that_cannot_tell_leaves_everything_for_a_person
           # site create --apply: the numbers are not held by a record before the clone
           hk sitecreatecmd.rs '    write_record(creating, &input.code, &record)?;' \
-             '    let _ = (creating, &record); // knife' \
+             '    if false { write_record(creating, &input.code, &record)?; } // knife' \
              an_approved_plan_clones_once
           # site create --apply: the journal target is not the domain's
           hk sitecreatecmd.rs '        &target(domain),' \
