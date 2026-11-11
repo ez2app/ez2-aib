@@ -749,6 +749,35 @@ jobs:
           ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
              '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
              a_new_site_gets_the_next_numbers_up
+          # ---- E7 site quota (4542e 11-11): the pure rule
+          # an opening that names no customer is passed over instead of holding room
+          ck quota.rs '        None => true,' \
+             '        None => false, // knife' \
+             an_opening_of_nobody_named_holds_room_and_one_of_another_does_not
+          # an opening whose live record is already counted is counted twice
+          ck quota.rs '        if codes.contains(code) {' \
+             '        if codes.contains(code) && false { // knife' \
+             an_opening_that_already_has_its_live_record_counts_once
+          # a record of the customer that cannot be read is passed over instead of "could not tell"
+          ck quota.rs '        let spec = site::spec_from_record(rec).map_err(|_| Unknown::RecordUnreadable)?;' \
+             '        let Ok(spec) = site::spec_from_record(rec) else { continue }; // knife' \
+             what_cannot_be_told_is_quota_unknown
+          # the last room taken still fits
+          ck quota.rs '    if more >= 1 {' \
+             '    if more + 1 >= 1 { // knife' \
+             the_last_room_taken_is_quota_exceeded
+          # memory is not judged
+          ck quota.rs '    let by_mem = mem_left / start.memory_mb.max(1);' \
+             '    let by_mem = mem_left / start.memory_mb.max(1) + 100; // knife' \
+             the_last_room_taken_is_quota_exceeded
+          # a customer name that is not a code still gets a plan
+          ck quota.rs '        Some(t) if site::valid_code(t) => Ok(arc::PLAN),' \
+             '        Some(_) => Ok(arc::PLAN), // knife' \
+             what_cannot_be_told_is_quota_unknown
+          # a live record whose tenant_id cannot be read is nobody's instead of "could not tell" (c477a L1)
+          ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
+             '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
+             a_live_tenant_id_that_cannot_be_read_is_quota_unknown
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1359,6 +1388,25 @@ jobs:
           hk sitelive.rs '                .filter(|(_, w)| *w != "done")' \
              '                .filter(|(_, w)| *w != "done" && false) // knife' \
              what_a_person_still_has_to_do_comes_from_the_record
+          # site create --plan: a quota that cannot be told does not stop the plan (E7, 4542e 11-11)
+          hk sitecreatecmd.rs '    } else if let Some(w) = quota.stop() {' \
+             '    } else if let Some(w) = quota.stop().filter(|_| false) { // knife' \
+             a_quota_that_cannot_be_told_stops_at_quota_unknown
+          # site create --plan: openings under way are not counted against the quota
+          hk sitecreatecmd.rs '        seen.creating.as_deref(),' \
+             '        Some(&[]), // knife' \
+             a_full_plan_stops_at_quota_exceeded_and_removed_sites_do_not_count
+          # site create --plan: a customer never seen before is not marked (c477a N1)
+          hk sitecreatecmd.rs '        "new_tenant": seen.tenant.as_deref().map(|t| !quota::seen_before(' \
+             '        "new_tenant": seen.tenant.as_deref().map(|t| quota::seen_before( // knife' \
+             a_fresh_domain_plans_the_clone_with_the_next_numbers
+          # --apply names the customer the plan was made for (c477a, E7 N2)
+          hk sitecreatecmd.rs '        (Some(planned), Some(t)) if planned == t => Ok(()),' \
+             '        (Some(planned), Some(_t)) if !planned.is_empty() => Ok(()), // knife' \
+             apply_needs_the_tenant_the_plan_was_made_for
+          hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
+             '        tenant: None, // knife' \
+             apply_needs_the_tenant_the_plan_was_made_for
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
