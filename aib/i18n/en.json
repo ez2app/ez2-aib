@@ -5709,6 +5709,7 @@
   "aib.consent.no": "Cancel",
   "aib.consent.touchid_reason": "AIB consent · self-described {who} wants to run: {cmd}",
   "aib.consent.sign_extra": "Script sha256 {sha} (if the file changes after you approve, it will not run); first lines:\n{head}",
+  "aib.consent.sign_lint": "Rehearsed on: {env}  receipt: {receipt}\naib-signlint rules the author let through (--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB notice · ran {cmd} (rc {rc})",
   "aib.consent.help.usage": "usage: aib consent ask [--strong] --summary <one line> [--seat SEAT] [--wait SEC] [--json] -- <command…>\n       aib consent status <id> [--json]\n       aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "Cooling components (aib {aib})",
@@ -5987,6 +5988,6 @@
   "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
-  "aib.cloud_robot.touchid_apply": "aib: {action} on Hetzner server {server} (can wipe the host); rescue key {fp}",
-  "aib.approve_gate.cat.host_rescue": "Host rescue (Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib: {action} on server {server} (can wipe the host); rescue key {fp}",
+  "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)"
 }

@@ -30,6 +30,10 @@ launchd 看到就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入�
   - 白名單(第一版，逐支):aib now / dm-queue / lang / plugins / theme(拒 --allow-unsigned);
     claude plugin list / update / enable / disable / uninstall / install <名@marketplace>(子指令後不收任何旗標);
     bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong;同意時鎖 sha256,跑 0700 暫存夾裡的複本並再驗)。其他 not_allowed。
+  - SIGN 腳本先過 aib-signlint(DEV 4.6 r2 §9 P2,c477a):ask 時探 launchd 常駐在不在(不在 ⇒ agent_missing,不進 inbox,
+    免得「視窗沒跳」被當成「人沒按」)、跑 lint(有發現 ⇒ sign_lint,印出來);decide 再對「要跑的那份複本」跑一次(席位直接
+    寫 inbox 也逃不掉)。作者用 `ask --lint-ack S2,S4` 放行的規則與行號原樣列進加強對話框與 done 紀錄。U1(讀不懂)與
+    R1(沒寫可丟環境與收據)不能放行。找不到 aib-signlint ⇒ 當「不知道」⇒ 不跑。
     argv 是陣列、不經 shell;一律在 HOME 跑(工作目錄不由申請決定)。
   - 一次一件:拿到 touchid-approve 鎖(跟 newproj --approve / aib approve 共用)後先把申請改名搬到 running/,
     搬不動 = 別支已接手 ⇒ 跳過;同意 / 拒絕一決定就放鎖，再跑指令(跑的時候別的 Touch ID 視窗照開)。
@@ -69,6 +73,10 @@ MAX_REQ_BYTES = 16 * 1024
 MAX_ARGV = 40
 MAX_CMD_LEN = 1500
 MAX_SIGN_BYTES = 256 * 1024
+SIGNLINT_TIMEOUT_S = 30
+LINT_SHOW_MAX = 20
+REHEARSAL_ENV_MAX = 80        # 預演行兩欄進加強版框:濾掉看不見 / 改方向的字再截(ebb36 #653 M1)
+REHEARSAL_RECEIPT_MAX = 160
 SIGN_HEAD_LINES = 12
 SUMMARY_MAX = 200
 REASON_CMD_MAX = 120
@@ -79,6 +87,7 @@ SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SIGN_RE = re.compile(r"^SIGN-[A-Za-z0-9._-]+\.sh$")
 _SEAT_RE = re.compile(r"^[a-z0-9]{3,12}$")
+_LINT_ACK_RE = re.compile(r"^S[1-5]$")
 _PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 # 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號 / 填充字 / 變體選擇 / 標籤字:視窗裡看不出原樣 ⇒ 不收
 # 視窗裡看不出原樣的字一律不收：控制 / 格式 / 行段分隔 / 私用 / 未指派(依 Unicode 類別，不逐字列),
@@ -279,16 +288,43 @@ def _seat(v):
 
 # ---- 申請 ----
 
-def new_request(argv, summary, strong=False, seat=None, env=None, now=None):
+def _acks(v):
+    """--lint-ack 的碼:S1–S5,其他(含 U1 / R1)⇒ None。"""
+    if v in (None, "", []):
+        return []
+    items = v.split(",") if isinstance(v, str) else v
+    if not isinstance(items, list):
+        return None
+    out = sorted({str(x).strip() for x in items if str(x).strip()})
+    return out if all(_LINT_ACK_RE.match(x) for x in out) else None
+
+
+def new_request(argv, summary, strong=False, seat=None, env=None, now=None, lint_ack=None, detail=None):
+    """detail(dict)有給 ⇒ 拒收時把 lint 的發現放進去(給 ask 印)。"""
     kind, why = classify(argv, strong, env)
     if not kind:
         return None, why
     summary = _clean_summary(summary)
     if not summary:
         return None, "summary_missing"
+    acks = _acks(lint_ack)
+    if acks is None:
+        return None, "lint_ack_code"
+    if kind == "sign_script":
+        if not agent_loaded(env):
+            return None, "agent_missing"
+        lint = run_signlint(Path(argv[1]).expanduser().resolve(), acks, env)
+        if not lint.get("ok"):
+            if detail is not None:
+                detail["lint"] = lint
+            return None, lint.get("why") or "sign_lint"
+    elif acks:
+        return None, "lint_ack_not_sign"
     t = int(now if now is not None else time.time())
     rid = "%d-%s" % (t, secrets.token_hex(4))
     req = {"v": 1, "id": rid, "argv": list(argv), "summary": summary, "strong": bool(strong), "seat": _seat(seat), "t": t}
+    if acks:
+        req["lint_ack"] = acks
     _write_atomic(inbox_dir(env) / (rid + ".json"), req)
     return req, ""
 
@@ -337,6 +373,17 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     if req.get("sign"):
         body += "\n\n" + _t("aib.consent.sign_extra", {"sha": req["sign"]["sha256"], "head": req["sign"]["head"]},
                             "Script sha256 %s; first lines:\n%s" % (req["sign"]["sha256"], req["sign"]["head"]), env)
+    if req.get("lint"):
+        lint = req["lint"]
+        reh = lint.get("rehearsal") or {}
+        acked = "\n".join(_lint_line(f) for f in lint.get("acked") or []) or "-"
+        if lint.get("acked_more"):
+            acked += "\n… +%d" % lint["acked_more"]
+        r_env = _plain(reh.get("env") or "-", REHEARSAL_ENV_MAX)
+        r_rec = _plain(reh.get("receipt") or "-", REHEARSAL_RECEIPT_MAX)
+        body += "\n\n" + _t("aib.consent.sign_lint", {"env": r_env, "receipt": r_rec, "acked": acked},
+                            "Rehearsed on: %s  receipt: %s\nRules the author let through (--lint-ack):\n%s"
+                            % (r_env, r_rec, acked), env)
     return ask_checkbox(_t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
                         _t("aib.consent.strong_check", {}, "I have read this", env), env=env, run=run, wait=wait)
 
@@ -392,6 +439,77 @@ def _sign_info(path):
     return {"sha256": hashlib.sha256(raw).hexdigest(), "head": head, "raw": raw}
 
 
+def _plain(v, limit):
+    """進對話框的外來字:先拿掉控制 / 看不見 / 改方向的字,再照 TA.clean 截長。"""
+    return TA.clean("".join(ch for ch in str(v) if not _has_bad_char(ch)), limit)
+
+
+def _lint_line(f):
+    return TA.clean("%s %s: %s" % (f.get("rule", "?"), f.get("line", "?"), f.get("msg", "")), 200)
+
+
+def signlint_exe(env=None):
+    """aib-signlint 執行檔:AIB_SIGNLINT(要是可執行檔)> PATH 安全清單 + ~/.cargo/bin + ~/.ez2-aib/bin。找不到 ⇒ None。"""
+    e = _env(env).get("AIB_SIGNLINT")
+    if e:
+        return e if os.path.isfile(e) and os.access(e, os.X_OK) else None
+    home = _home(env)
+    return shutil.which("aib-signlint", path=os.pathsep.join([SAFE_PATH, str(home / ".cargo" / "bin"),
+                                                             str(home / ".ez2-aib" / "bin")]))
+
+
+def run_signlint(path, acks, env=None, run=None):
+    """回 {"ok", "why", "findings", "acked", "acks", "rehearsal"}。沒裝 / 逾時 / 輸出不對 ⇒ ok False(不知道 = 不跑)。"""
+    run = run or subprocess.run
+    exe = signlint_exe(env)
+    if not exe:
+        return {"ok": False, "why": "signlint_missing"}
+    cmd = [exe, "check", str(path), "--json"] + (["--ack", ",".join(acks)] if acks else [])
+    try:
+        p = run(cmd, capture_output=True, text=True, timeout=SIGNLINT_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "why": "signlint_error:%s" % exc.__class__.__name__}
+    try:
+        out = json.loads(p.stdout or "")
+    except ValueError:
+        return {"ok": False, "why": "signlint_output"}
+    if p.returncode not in (0, 1) or not isinstance(out, dict) or (out.get("ok") is True) != (p.returncode == 0):
+        return {"ok": False, "why": "signlint_rc:%s" % p.returncode}
+    every = lambda k: [f for f in (out.get(k) or []) if isinstance(f, dict)]  # noqa: E731
+    found, acked = every("findings"), every("acked")
+    reh = out.get("rehearsal")
+    if isinstance(reh, dict):   # 存進 done 紀錄的也是清過的版本(ebb36 #653 M1)
+        reh = {"env": _plain(reh.get("env") or "", REHEARSAL_ENV_MAX),
+               "receipt": _plain(reh.get("receipt") or "", REHEARSAL_RECEIPT_MAX)}
+    else:
+        reh = None
+    return {"ok": p.returncode == 0, "why": "" if p.returncode == 0 else "sign_lint",
+            "findings": found[:LINT_SHOW_MAX], "acked": acked[:LINT_SHOW_MAX], "acks": list(acks),
+            "findings_more": max(0, len(found) - LINT_SHOW_MAX), "acked_more": max(0, len(acked) - LINT_SHOW_MAX),
+            "rehearsal": reh}
+
+
+def agent_loaded(env=None, home=None, run=None):
+    """launchd 常駐在不在:plist 在、它要叫的程式在、launchctl 看得到這個標籤。任一項不成立 ⇒ False。"""
+    import plistlib
+    run = run or subprocess.run
+    path = agent_plist_path(home or _home(env))
+    try:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    args = data.get("ProgramArguments") if isinstance(data, dict) else None
+    if not isinstance(args, list) or len(args) < 2 or not os.path.isfile(str(args[1])):
+        return False
+    try:
+        p = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), AGENT_LABEL)],
+                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return p.returncode == 0
+
+
 # ---- 處理 ----
 
 def _record(rid, result, env, req=None, **extra):
@@ -435,43 +553,63 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     view = dict(req, summary=summary, strong=strong, seat=_seat(req.get("seat")))
     if len(display_cmd(argv)) > REASON_CMD_MAX or len(_reason_full(view, env)) > REASON_MAX:
         view["strong"] = strong = True   # Touch ID 視窗放不下整句(含語系前綴)⇒ 先出對話框列全文
-    sign = None
+    sign = td = copy = None
+    lint_rec = {}
     if kind == "sign_script":
+        acks = _acks(req.get("lint_ack"))
+        if acks is None:
+            return "invalid", {"why": "lint_ack_code"}, None, None
         sign = _sign_info(Path(argv[1]).expanduser().resolve())
         if not sign:
             return "failed", {"why": "sign_unreadable"}, None, None
         view["sign"] = {"sha256": sign["sha256"], "head": sign["head"]}
+        # SIGN:先把這一份複製到 0700 暫存夾、驗雜湊;lint、對話框、跑的都是這一份(同意後原檔被改也跑不到改過的)
+        td = tempfile.mkdtemp(prefix="aib-consent-sign-")
+        try:
+            os.chmod(td, 0o700)
+            copy = Path(td) / Path(argv[1]).name
+            copy.write_bytes(sign["raw"])
+            os.chmod(copy, 0o600)
+            same = hashlib.sha256(copy.read_bytes()).hexdigest() == sign["sha256"]
+        except OSError:
+            same = False
+        if not same:
+            shutil.rmtree(td, ignore_errors=True)
+            return "failed", {"why": "sign_hash_changed"}, None, None
+        lint = run_signlint(copy, acks, env)
+        lint_rec = {"lint": {k: lint.get(k) for k in ("acks", "acked", "acked_more", "rehearsal")
+                             if lint.get(k) is not None}}
+        if not lint.get("ok"):
+            shutil.rmtree(td, ignore_errors=True)
+            why = lint.get("why") or "sign_lint"
+            return ("not_allowed" if why == "sign_lint" else "failed"), \
+                {"why": why, "sha256": sign["sha256"], "lint": {"findings": lint.get("findings") or [],
+                                                               "findings_more": lint.get("findings_more") or 0,
+                                                               "acks": acks}}, None, None
+        view["lint"] = lint_rec["lint"]
+
+    def stop(result, d):
+        if td:
+            shutil.rmtree(td, ignore_errors=True)
+        return result, dict(d, **lint_rec), None, None
     if not avail:
-        return "unavailable", {"why": "touchid_unavailable"}, None, None
+        return stop("unavailable", {"why": "touchid_unavailable"})
     if strong:
         s = ask_strong_fn(view, env=env)
         if not s.get("ok"):
-            return "denied", {"why": s.get("why")}, None, None
+            return stop("denied", {"why": s.get("why")})
     reason = touchid_reason(view, env, kind)
     if __import__("approve_gate").se_reason(reason) is None:
-        return "denied", {"why": "reason_refused"}, None, None
+        return stop("denied", {"why": "reason_refused"})
     a = ask(reason)
     if not a.get("ok"):
-        return "denied", {"why": a.get("why")}, None, None
+        return stop("denied", {"why": a.get("why")})
     if kind == "aib":
         return None, {}, [str(HERE / "aib")] + argv[1:], None
     if kind == "claude_plugin":
         exe = shutil.which("claude", path=os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]))
         return (None, {}, [exe] + argv[1:], None) if exe else ("failed", {"why": "exe_missing"}, None, None)
-    # SIGN:同意的那一份複製到 0700 暫存夾，再驗一次雜湊才跑(同意後原檔被改也跑不到改過的)
-    td = tempfile.mkdtemp(prefix="aib-consent-sign-")
-    try:
-        os.chmod(td, 0o700)
-        copy = Path(td) / Path(argv[1]).name
-        copy.write_bytes(sign["raw"])
-        os.chmod(copy, 0o600)
-        same = hashlib.sha256(copy.read_bytes()).hexdigest() == sign["sha256"]
-    except OSError:
-        same = False
-    if not same:
-        shutil.rmtree(td, ignore_errors=True)
-        return "failed", {"why": "sign_hash_changed"}, None, None
-    return None, {"sha256": sign["sha256"]}, ["/bin/bash", str(copy)], td
+    return None, dict({"sha256": sign["sha256"]}, **lint_rec), ["/bin/bash", str(copy)], td
 
 
 def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
@@ -698,6 +836,7 @@ def main(argv=None, env=None):
     a.add_argument("--seat")
     a.add_argument("--wait", type=int, default=0)
     a.add_argument("--json", action="store_true")
+    a.add_argument("--lint-ack", default="", help="S1–S5,逗號分隔:作者看過、放行的 aib-signlint 規則(會列進對話框與紀錄)")
     a.add_argument("rest", nargs=argparse.REMAINDER)
     s = sub.add_parser("status")
     s.add_argument("id")
@@ -708,10 +847,17 @@ def main(argv=None, env=None):
     args = ap.parse_args(argv)
     if args.cmd == "ask":
         rest = args.rest[1:] if args.rest[:1] == ["--"] else args.rest
+        detail = {}
         req, why = new_request(rest, args.summary, strong=args.strong,
-                               seat=args.seat or _env(env).get("EZ2_AIB_SEAT"), env=env)
+                               seat=args.seat or _env(env).get("EZ2_AIB_SEAT"), env=env,
+                               lint_ack=args.lint_ack, detail=detail)
         if not req:
-            print(json.dumps({"result": "not_allowed", "why": why}))
+            out = {"result": "not_allowed", "why": why}
+            if detail.get("lint", {}).get("findings"):
+                out["findings"] = detail["lint"]["findings"]
+                if detail["lint"].get("findings_more"):
+                    out["findings_more"] = detail["lint"]["findings_more"]   # 只列前 LINT_SHOW_MAX 條(ebb36 #653 N2)
+            print(json.dumps(out, ensure_ascii=False))
             return 2
         out = {"id": req["id"], "result": "pending"}
         deadline = time.time() + max(0, min(args.wait, 3600))

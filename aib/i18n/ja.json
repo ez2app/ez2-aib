@@ -5709,6 +5709,7 @@
   "aib.consent.no": "キャンセル",
   "aib.consent.touchid_reason": "AIB 同意 · {who} を名乗る席が実行:{cmd}",
   "aib.consent.sign_extra": "スクリプト sha256 {sha}(承認後にファイルが変わると実行しません);先頭数行:\n{head}",
+  "aib.consent.sign_lint": "使い捨て環境:{env}  レシート:{receipt}\n作成者が通した aib-signlint ルール(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 通知 · {cmd} を実行しました(rc {rc})",
   "aib.consent.help.usage": "使い方:aib consent ask [--strong] --summary <一文> [--seat 席] [--wait 秒] [--json] -- <コマンド…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "冷却コンポーネント(aib {aib})",
@@ -5987,6 +5988,6 @@
   "aib.gameworld.open_failed": "ロビーのウィンドウを開けませんでした。手動で開いてください:{url}",
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
-  "aib.cloud_robot.touchid_apply": "aib:Hetzner サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
 }

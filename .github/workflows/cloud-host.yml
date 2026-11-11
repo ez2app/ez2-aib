@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# aib-cloud-host:the Linux binary that runs on the Proxmox host (EU02). Built here as a static
+# aib-cloud-host:the Linux binary that runs on the Proxmox host (host A). Built here as a static
 # musl executable so it runs on any x86_64 Linux without a toolchain on the host (Andy 11-09:
 # every new tool is Rust;the host has no cargo).
 #
