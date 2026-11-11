@@ -23,6 +23,22 @@
 //! loader), which the backup's `plugins/` folder does not hold: they show as
 //! `unexpected_on_site`, listed, not judged.
 //!
+//! Uploads: the backup's files under `uploads/` are counted from its headers (nothing is
+//! extracted); the site's are counted inside its container as the site's user by one fixed
+//! `find` + `awk` ([`UPLOADS_SH`]) that prints three short lines, never a file name. A
+//! different number of files is a difference; bytes are listed only (cache plugins write
+//! extra thumbnail sizes); the folders plugins fill by themselves after a restore
+//! (`wpress::GENERATED_UPLOADS`) are counted apart and listed only. No answer, an answer
+//! over the cap, or one out of form is "cannot tell". Fewer files than the backup is a
+//! difference; more is listed (`extra_on_site`), not judged — the premise: the All-in-One
+//! WP Migration import adds the backup's files and deletes none, so files already in the
+//! container before the restore stay (ebb36 L2, the same rule as plugins). A backup exported
+//! with "do not export media library" holds no uploads at all: it expects 0, so any site
+//! matches and its files show as extra — such a backup tells nothing about uploads (the
+//! export's options are not read from `package.json`; ebb36 N2). `verdict` is the whole answer (a
+//! difference anywhere wins, then anything untold); `posts_verdict` is the posts' and
+//! users' own.
+//!
 //! Prints one JSON document. The rules live in `aib_cloud::wpress`; this is the reading half.
 
 use std::collections::BTreeSet;
@@ -54,6 +70,8 @@ pub struct Read1 {
     pub plugins: BTreeSet<String>,
     /// Themes in the archive.
     pub themes: BTreeSet<String>,
+    /// Files under `uploads/`, counted from the headers (nothing is extracted).
+    pub uploads: wpress::Uploads,
 }
 
 /// Reads an archive from any seekable source.
@@ -85,6 +103,7 @@ pub fn read_archive<R: Read + Seek>(mut r: R) -> Read1 {
             }
         };
         out.entries += 1;
+        out.uploads.add(&entry);
         match wpress::part_of(&entry) {
             Some((Part::Plugin, n)) => {
                 out.plugins.insert(n);
@@ -231,6 +250,7 @@ pub fn document(read: &Read1) -> (Value, bool) {
         Some(Err(why)) => reasons.push(why.clone()),
         None => {}
     }
+    doc.insert("uploads".into(), uploads_doc(&read.uploads));
     doc.insert(
         "not_a_criterion".into(),
         json!("active_plugins, stylesheet and template are emptied by the export"),
@@ -262,6 +282,128 @@ pub struct SiteOut {
     pub plugins: Option<String>,
     /// `wp theme list --field=name`.
     pub themes: Option<String>,
+    /// Output of [`UPLOADS_SH`].
+    pub uploads: Option<String>,
+}
+
+fn uploads_doc(u: &wpress::Uploads) -> Value {
+    json!({
+        "files": u.kept.files,
+        "bytes": u.kept.bytes,
+        "generated_files": u.generated.files,
+        "generated_bytes": u.generated.bytes,
+    })
+}
+
+/// Counts the restored site's uploads inside its container, as the site's user: one pass
+/// of `find`, each file printed as its class and size only (never its name, so a name with
+/// a new line in it cannot shift a count), summed by `awk`; three lines come back whatever
+/// the number of files. `$1` is the uploads folder, the rest are `find` tests naming
+/// [`wpress::GENERATED_UPLOADS`]. A folder `find` cannot read is "cannot tell" (exit 3), an
+/// absent folder is no uploads.
+pub const UPLOADS_SH: &str = r#"set -f
+d=$1; shift
+[ -d "$d" ] || { printf 'F\t0\t0\nG\t0\t0\nEND\n'; exit 0; }
+cd -- "$d" || exit 3
+{ find . -type f \( \( "$@" \) -printf 'G %s\n' -o -printf 'F %s\n' \) || echo X; } |
+awk '$1 == "X" { bad = 1; next } { n[$1]++; b[$1] += $2 }
+END { if (bad) exit 3; printf "F\t%d\t%.0f\nG\t%d\t%.0f\nEND\n", n["F"], b["F"], n["G"], b["G"] }'"#;
+
+/// One command run inside the customer's container: the whole argv, `None` when it does
+/// not answer cleanly. Injected so tests never run `pct`.
+pub type Runner<'a> = dyn FnMut(&[String]) -> Option<String> + 'a;
+
+fn in_ct(ct: u32, code: &str, tail: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = ["pct", "exec", &ct.to_string(), "--", "sudo", "-u", code]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    v.extend(tail.iter().map(|s| (*s).to_owned()));
+    v
+}
+
+fn wp_argv(ct: u32, code: &str, args: &[&str]) -> Vec<String> {
+    let path = format!("--path=/var/www/{code}");
+    let mut tail = vec!["wp", path.as_str(), "--skip-plugins", "--skip-themes"];
+    tail.extend_from_slice(args);
+    in_ct(ct, code, &tail)
+}
+
+/// The argv that counts the site's uploads (`code` is checked and taken from the record).
+pub fn uploads_argv(ct: u32, code: &str) -> Vec<String> {
+    let dir = format!("/var/www/{code}/wp-content/uploads");
+    let globs: Vec<String> = wpress::GENERATED_UPLOADS
+        .iter()
+        .map(|g| format!("./{g}/*"))
+        .collect();
+    let mut tail = vec!["sh", "-c", UPLOADS_SH, "sh", dir.as_str()];
+    for (i, g) in globs.iter().enumerate() {
+        if i > 0 {
+            tail.push("-o");
+        }
+        tail.push("-path");
+        tail.push(g.as_str());
+    }
+    in_ct(ct, code, &tail)
+}
+
+/// Asks the restored site everything `restore verify` compares, through `run`.
+pub fn ask_site(run: &mut Runner<'_>, ct: u32, code: &str) -> SiteOut {
+    SiteOut {
+        counts: run(&wp_argv(ct, code, &["eval", COUNT_PHP])),
+        plugins: run(&wp_argv(ct, code, &["plugin", "list", "--field=name"])),
+        themes: run(&wp_argv(ct, code, &["theme", "list", "--field=name"])),
+        uploads: run(&uploads_argv(ct, code)),
+    }
+}
+
+/// The uploads section of `restore verify`, and its verdict: `Some(true)` differ,
+/// `Some(false)` match, `None` cannot tell.
+fn uploads_section(expect: &wpress::Uploads, site: Option<&str>) -> (Value, Option<bool>) {
+    let mut doc = Map::new();
+    doc.insert("expected".into(), uploads_doc(expect));
+    doc.insert(
+        "judged".into(),
+        json!("fewer files outside the generated folders than the backup is a difference; more are listed only (the import deletes nothing already on the site); bytes are listed only"),
+    );
+    doc.insert("generated_folders".into(), json!(wpress::GENERATED_UPLOADS));
+    doc.insert(
+        "generated_why".into(),
+        json!("plugins write these by themselves once the restored site serves pages (CSS, caches, logs): listed, not judged"),
+    );
+    let differ = match site.map(wpress::uploads_from_site) {
+        None => {
+            doc.insert("verdict".into(), json!("unknown"));
+            doc.insert(
+                "reason".into(),
+                json!("the site's uploads could not be counted (no answer, over the cap, or too slow)"),
+            );
+            None
+        }
+        Some(Err(e)) => {
+            doc.insert("verdict".into(), json!("unknown"));
+            doc.insert("reason".into(), json!(e));
+            None
+        }
+        Some(Ok(actual)) => {
+            doc.insert("actual".into(), uploads_doc(&actual));
+            doc.insert(
+                "missing_from_site".into(),
+                json!(expect.kept.files.saturating_sub(actual.kept.files)),
+            );
+            doc.insert(
+                "extra_on_site".into(),
+                json!(actual.kept.files.saturating_sub(expect.kept.files)),
+            );
+            let same = wpress::uploads_match(expect, &actual);
+            doc.insert(
+                "verdict".into(),
+                json!(if same { "match" } else { "differ" }),
+            );
+            Some(!same)
+        }
+    };
+    (Value::Object(doc), differ)
 }
 
 fn diffs(list: &[wpress::Diff]) -> Value {
@@ -346,6 +488,34 @@ pub fn verify_doc(code: &str, read: &Read1, site: &SiteOut, users_extra: u64) ->
         "themes".into(),
         listed(&read.themes, site.themes.as_deref()),
     );
+    // the backup is not trusted: its uploads are not compared either
+    let uploads = if reliable {
+        let (up, differ) = uploads_section(&read.uploads, site.uploads.as_deref());
+        doc.insert("uploads".into(), up);
+        differ
+    } else {
+        doc.insert(
+            "uploads".into(),
+            json!({ "verdict": "unknown", "reason": "the backup's expectation is not reliable" }),
+        );
+        None
+    };
+    // a difference found anywhere is a difference; otherwise anything untold is untold
+    let rc = match (rc, uploads) {
+        (1, _) | (_, Some(true)) => 1,
+        (0, Some(false)) => 0,
+        _ => 3,
+    };
+    let posts_verdict = doc.get("verdict").cloned().unwrap_or(Value::Null);
+    doc.insert("posts_verdict".into(), posts_verdict);
+    doc.insert(
+        "verdict".into(),
+        json!(match rc {
+            0 => "match",
+            1 => "differ",
+            _ => "unknown",
+        }),
+    );
     (Value::Object(doc), rc)
 }
 
@@ -373,24 +543,11 @@ fn bounded(cmd: &mut Command) -> Option<String> {
     }
 }
 
-/// Runs `wp` as the site's user inside its container; `None` when it does not answer cleanly.
-fn wp(ct: u32, code: &str, args: &[&str]) -> Option<String> {
-    let ct = ct.to_string();
-    let path = format!("--path=/var/www/{code}");
-    let mut cmd = Command::new("pct");
-    cmd.args([
-        "exec",
-        &ct,
-        "--",
-        "sudo",
-        "-u",
-        code,
-        "wp",
-        &path,
-        "--skip-plugins",
-        "--skip-themes",
-    ])
-    .args(args);
+/// The real runner: the argv as one command, read through [`bounded`].
+fn run_real(argv: &[String]) -> Option<String> {
+    let (prog, rest) = argv.split_first()?;
+    let mut cmd = Command::new(prog);
+    cmd.args(rest);
     bounded(&mut cmd)
 }
 
@@ -422,11 +579,7 @@ fn cmd_verify(args: &[String]) -> Result<u8, String> {
     let spec = crate::quarantinecmd::load_spec(code, &records)?;
     let read = open_archive(path);
     let site = if reliable(&read) {
-        SiteOut {
-            counts: wp(spec.ct, &spec.code, &["eval", COUNT_PHP]),
-            plugins: wp(spec.ct, &spec.code, &["plugin", "list", "--field=name"]),
-            themes: wp(spec.ct, &spec.code, &["theme", "list", "--field=name"]),
-        }
+        ask_site(&mut run_real, spec.ct, &spec.code)
     } else {
         // the backup cannot be trusted: the site is not asked anything
         SiteOut::default()
@@ -602,7 +755,179 @@ mod tests {
             counts: Some(counts.to_owned()),
             plugins: Some("x\nakismet\n".to_owned()),
             themes: Some("twentytwentyfive\n".to_owned()),
+            uploads: Some(NO_UPLOADS.to_owned()),
         }
+    }
+
+    const NO_UPLOADS: &str = "F\t0\t0\nG\t0\t0\nEND\n";
+
+    /// [`good`] with three uploaded files, one of them in a generated folder.
+    fn with_uploads() -> Vec<u8> {
+        archive(
+            &[
+                ("package.json", "", PKG.as_bytes()),
+                ("a.jpg", "uploads/2026/01", b"0123456789"),
+                ("a-150x150.jpg", "uploads/2026/01", b"01234"),
+                ("post-1.css", "uploads/elementor/css", b"css"),
+                ("database.sql", "", SQL.as_bytes()),
+            ],
+            true,
+        )
+    }
+
+    fn with(counts: &str, uploads: Option<&str>) -> SiteOut {
+        SiteOut {
+            uploads: uploads.map(str::to_owned),
+            ..site(counts)
+        }
+    }
+
+    #[test]
+    fn verify_judges_the_number_of_uploads_not_their_bytes() {
+        let r = read_archive(Cursor::new(with_uploads()));
+        let (e, ok) = document(&r);
+        assert!(ok, "{e}");
+        assert_eq!(e["uploads"]["files"], 2);
+        assert_eq!(e["uploads"]["bytes"], 15);
+        assert_eq!(e["uploads"]["generated_files"], 1);
+        // same number, other bytes, other generated files: a match, the numbers listed
+        let (doc, rc) = verify_doc(
+            "s1",
+            &r,
+            &with(SAME, Some("F\t2\t99999\nG\t30\t7\nEND\n")),
+            0,
+        );
+        assert_eq!(rc, 0, "{doc}");
+        assert_eq!(doc["verdict"], "match");
+        assert_eq!(doc["uploads"]["verdict"], "match");
+        assert_eq!(doc["uploads"]["actual"]["bytes"], 99999);
+        assert_eq!(doc["uploads"]["expected"]["generated_files"], 1);
+        assert!(doc["uploads"]["generated_why"].is_string());
+        // one file lost, or one more: a difference, even with the posts matching
+        // one file lost: a difference, even with the posts matching
+        let lost = "F\t1\t15\nG\t1\t3\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some(lost)), 0);
+        assert_eq!(rc, 1, "{doc}");
+        assert_eq!(doc["verdict"], "differ");
+        assert_eq!(doc["posts_verdict"], "match");
+        assert_eq!(doc["uploads"]["verdict"], "differ");
+        assert_eq!(doc["uploads"]["missing_from_site"], 1);
+        // one more than the backup (already on the site before the import): listed only
+        let more = "F\t3\t15\nG\t1\t3\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some(more)), 0);
+        assert_eq!(rc, 0, "{doc}");
+        assert_eq!(doc["uploads"]["verdict"], "match");
+        assert_eq!(doc["uploads"]["extra_on_site"], 1);
+        assert_eq!(doc["uploads"]["missing_from_site"], 0);
+    }
+
+    #[test]
+    fn uploads_that_cannot_be_counted_leave_the_restore_untold() {
+        let r = read_archive(Cursor::new(with_uploads()));
+        // no answer (over the cap, too slow, find failed), or an answer out of form
+        for up in [None, Some(""), Some("F\t2\t15\nG\t1\t3\n"), Some("2\n")] {
+            let (doc, rc) = verify_doc("s1", &r, &with(SAME, up), 0);
+            assert_eq!(rc, 3, "{up:?} {doc}");
+            assert_eq!(doc["verdict"], "unknown");
+            assert_eq!(doc["posts_verdict"], "match");
+            assert_eq!(doc["uploads"]["verdict"], "unknown");
+        }
+        // a difference in the posts is still a difference
+        let fewer = "P\tpost\tpublish\t1\nU\t1\nEND\n";
+        assert_eq!(verify_doc("s1", &r, &with(fewer, None), 0).1, 1);
+        // a backup that is not trusted has its uploads not compared at all
+        let mut cut = with_uploads();
+        cut.truncate(cut.len() - HEADER_LEN);
+        let r = read_archive(Cursor::new(cut));
+        let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some("F\t2\t15\nG\t1\t3\nEND\n")), 0);
+        assert_eq!(rc, 3);
+        assert!(doc["uploads"].get("actual").is_none(), "{doc}");
+    }
+
+    #[test]
+    fn the_site_is_asked_through_the_runner_as_its_own_user_and_never_lists_files() {
+        let mut seen: Vec<Vec<String>> = Vec::new();
+        let mut fake = |argv: &[String]| -> Option<String> {
+            seen.push(argv.to_vec());
+            if argv.iter().any(|a| a == "sh") {
+                Some(NO_UPLOADS.to_owned())
+            } else {
+                None
+            }
+        };
+        let out = ask_site(&mut fake, 107, "s-ab12cd");
+        assert_eq!(out.uploads.as_deref(), Some(NO_UPLOADS));
+        assert!(out.counts.is_none());
+        assert_eq!(seen.len(), 4);
+        for argv in &seen {
+            assert_eq!(
+                argv[..7],
+                ["pct", "exec", "107", "--", "sudo", "-u", "s-ab12cd"]
+            );
+        }
+        let up = &seen[3];
+        assert_eq!(
+            up[7..12],
+            [
+                "sh",
+                "-c",
+                UPLOADS_SH,
+                "sh",
+                "/var/www/s-ab12cd/wp-content/uploads"
+            ]
+        );
+        assert!(
+            up.windows(2).any(|w| w == ["-path", "./elementor/css/*"]),
+            "{up:?}"
+        );
+        assert_eq!(
+            up.iter().filter(|a| *a == "-path").count(),
+            wpress::GENERATED_UPLOADS.len()
+        );
+        // the answer is counts only: no file name is printed, and it is read with the cap
+        assert!(
+            !UPLOADS_SH.contains("%p")
+                && !UPLOADS_SH.contains("%P")
+                && !UPLOADS_SH.contains("-print ")
+        );
+        assert!(UPLOADS_SH.contains("-type f"));
+        assert!(seen[0].contains(&"--skip-plugins".to_owned()));
+    }
+
+    /// The script itself, where GNU `find` is (the host's containers are Debian).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_uploads_script_counts_files_and_bytes_only() {
+        let dir = std::env::temp_dir().join(format!("aib-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("2026/01")).unwrap();
+        std::fs::create_dir_all(dir.join("elementor/css")).unwrap();
+        std::fs::write(dir.join("2026/01/a.jpg"), b"0123456789").unwrap();
+        std::fs::write(dir.join("2026/01/new\nline.jpg"), b"01234").unwrap();
+        std::fs::write(dir.join("elementor/css/p.css"), b"css").unwrap();
+        let mut argv = uploads_argv(1, "x");
+        argv.drain(..7);
+        argv[4] = dir.to_string_lossy().into_owned();
+        assert_eq!(run_real(&argv).as_deref(), Some("F\t2\t15\nG\t1\t3\nEND\n"));
+        argv[4] = dir.join("absent").to_string_lossy().into_owned();
+        assert_eq!(run_real(&argv).as_deref(), Some(NO_UPLOADS));
+        // a folder find cannot read: no answer, never a short count (ebb36 L1); root reads it
+        let root = Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout.trim_ascii() == b"0");
+        if !root {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = dir.join("2026/locked");
+            std::fs::create_dir_all(&locked).unwrap();
+            std::fs::write(locked.join("b.jpg"), b"x").unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            argv[4] = dir.to_string_lossy().into_owned();
+            let got = run_real(&argv);
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(got, None);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     const SAME: &str = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nU\t1\nEND\n";
