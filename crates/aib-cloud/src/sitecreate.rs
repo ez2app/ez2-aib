@@ -194,22 +194,22 @@ mod tests {
 
     #[test]
     fn the_first_step_not_done_is_next() {
-        for done in 0..STEPS.len() {
-            assert_eq!(next(&probes(done), false), Next::Run(STEPS[done]), "{done}");
+        for (done, step) in STEPS.iter().enumerate() {
+            assert_eq!(next(&probes(done), false), Next::Run(*step), "{done}");
         }
         assert_eq!(next(&probes(STEPS.len()), false), Next::Finished);
     }
 
     #[test]
     fn a_probe_that_could_not_tell_stops_the_work() {
-        for i in 0..STEPS.len() {
+        for (i, step) in STEPS.iter().enumerate() {
             // everything before it done, and also everything before it not done
             for done in [0, i] {
                 let mut p = probes(done);
                 p[i] = Probe::Unknown;
                 let got = next(&p, false);
                 if done == i {
-                    assert_eq!(got, Next::Stop("probe_unknown", STEPS[i]), "{i}");
+                    assert_eq!(got, Next::Stop("probe_unknown", *step), "{i}");
                 } else {
                     assert!(matches!(got, Next::Stop(..)), "{i}: {got:?}");
                 }
