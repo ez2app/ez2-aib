@@ -19,7 +19,7 @@ records it shares with this one (--all refuses while another aib is installed); 
 is yours to delete); the AI tools and Homebrew.
 """
 # 10-11(the maintainer「有完整移除舊 aib 或所有 aib 的方式嗎」→「照你的建議」):先列出會刪什麼、自動備份記憶、確認(--yes)才刪。
-#   FishMac 實裝:同一個帳號可能同時有開發版 aib(~/.local/bin/aib 是它)和公開版(~/ez2-aib)⇒ 只刪公開版自己的東西;
+#   Mac B 實裝:同一個帳號可能同時有開發版 aib(~/.local/bin/aib 是它)和公開版(~/ez2-aib)⇒ 只刪公開版自己的東西;
 #   兩者共用 ~/.ez2-aib ⇒ 還有別的 aib 時 --all 一律不刪。輸出走 aib/i18n 四語鍵(10-14 起;原本固定英文)。
 from __future__ import annotations
 

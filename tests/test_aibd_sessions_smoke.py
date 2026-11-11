@@ -143,7 +143,7 @@ class SessionsSmoke(unittest.TestCase):
                         "the marker wait must use marker_timeout, not the start-up timeout")
 
     def test_a_start_that_never_came_says_why(self):
-        # 5 s, not 1: on a busy Mac Pro 13 (6e2af994) the fake had not written its stderr line after 1 s.
+        # 5 s, not 1: on a busy Mac B (6e2af994) the fake had not written its stderr line after 1 s.
         # The fake sleeps 60 s, so the start still never comes; 5 s only gives its first line time to land.
         rc, res, log = self.run_smoke("hang", start="5")
         self.assertEqual((rc, res.get("started"), res.get("start_wait_s"), res.get("alive_at_timeout")),

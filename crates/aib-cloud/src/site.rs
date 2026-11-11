@@ -86,6 +86,17 @@ impl Limits {
         pids_max: 2048,
     };
 
+    /// What a new site starts with (Andy 11-10: "起步降到 1G、預期以 512、或更少記憶體運作"):
+    /// 1 GiB of memory, the rest as the test tier. Measured idle sites hold 150–200 MiB;
+    /// ARC raises the limit when a site really needs more.
+    pub const START: Limits = Limits {
+        cores: 2,
+        cpulimit_x100: 200,
+        memory_mb: 1024,
+        swap_mb: 512,
+        pids_max: 2048,
+    };
+
     pub fn validate(&self) -> Result<(), Error> {
         let band = |k: &'static str, v: u32, lo: u32, hi: u32| {
             if (lo..=hi).contains(&v) {
@@ -179,11 +190,38 @@ impl SiteSpec {
 }
 const NET: &str = "10.77.0.";
 
+/// Words of the customer's request line (`site <code> …`, `site create`,
+/// `aib_cloud::customer`) and words kept for requests to come. None of them is a site's
+/// code or a customer's id, anywhere: in a request, in a record, in a roster, or out of
+/// the generator that names a new site. One table, read by all of them (f1fae, c477a,
+/// ebb36 11-11).
+///
+/// **Before a word is added**: read the host's site records and rosters for it. A record
+/// or a roster holding a code that is in this table is refused whole (33e28, #652 L1).
+pub const RESERVED_CODES: &[&str] = &[
+    "admin-link",
+    "backup",
+    "create",
+    "delete",
+    "domain",
+    "help",
+    "list",
+    "logs",
+    "php-reload",
+    "restart",
+    "rm",
+    "site",
+    "sites",
+    "status",
+    "usage",
+];
+
 /// Site code: 2–41 chars of `[a-z0-9.-]`, starting with a letter or digit (it becomes a hostname,
 /// a record file name and a Caddy marker, so nothing else is allowed).
 pub fn valid_code(code: &str) -> bool {
     let b = code.as_bytes();
-    (2..=41).contains(&b.len())
+    !RESERVED_CODES.contains(&code)
+        && (2..=41).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'.' || *c == b'-')
@@ -489,7 +527,18 @@ pub struct RecordGap {
 }
 
 const RECORD_KEYS: &[&str] = &[
-    "site", "ct", "ip", "hosts", "wp", "locale", "created", "template", "fw_group", "ssh_port",
+    "tenant_id",
+    "disk_gb",
+    "site",
+    "ct",
+    "ip",
+    "hosts",
+    "wp",
+    "locale",
+    "created",
+    "template",
+    "fw_group",
+    "ssh_port",
     "limits",
 ];
 const LIMIT_KEYS: &[&str] = &["cores", "cpulimit_x100", "memory_mb", "swap_mb", "pids_max"];
@@ -550,12 +599,33 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
             }
         }
     }
+    // optional, but of the right kind when present
+    if obj
+        .get("tenant_id")
+        .is_some_and(|v| !v.as_str().is_some_and(valid_code))
+    {
+        out.push(gap("R01", "tenant_id"));
+    }
+    if obj
+        .get("disk_gb")
+        .is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1024).contains(&n)))
+    {
+        out.push(gap("R01", "disk_gb"));
+    }
     for key in obj.keys() {
         if !RECORD_KEYS.contains(&key.as_str()) {
             out.push(gap("R04", key));
         }
     }
     out
+}
+
+/// The customer a site belongs to: the record's `tenant_id` (Ez2.PAGE's name for it; the
+/// two products are to share one account). A record that names none belongs to **no**
+/// tenant: there is no falling back to the site's own code, or a tenant id that happened to
+/// equal a site code would own that site. The id is an opaque code, never the customer's name.
+pub fn record_tenant(rec: &Value) -> Option<&str> {
+    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))
 }
 
 /// [`spec_from_record`] for callers that must not accept a defaulted value: any
@@ -756,6 +826,48 @@ pub fn drift(
                     got: fw.to_owned(),
                 });
             }
+        }
+    }
+    Ok(out)
+}
+
+/// The keys the limits step of `site create` sets (`pct set` and the pids line).
+pub const LIMITS_STEP_KEYS: [&str; 7] = [
+    "cores",
+    "cpulimit",
+    "lxc.cgroup2.pids.max",
+    "memory",
+    "net0",
+    "onboot",
+    "swap",
+];
+
+/// What the limits step must have left: every key of [`LIMITS_STEP_KEYS`] as [`desired`] has
+/// it (`net0` without the MAC and type, like [`drift`]). Only those keys: the rest of a
+/// fresh clone is the template's and is checked by [`drift`] once the site is open.
+pub fn limits_differ(spec: &SiteSpec, observed_pct_config: &str) -> Result<Vec<Drift>, Error> {
+    let obs = parse_pct_config(observed_pct_config)?;
+    let mut out = Vec::new();
+    for (k, want) in desired(spec) {
+        if !LIMITS_STEP_KEYS.contains(&k) {
+            continue;
+        }
+        let got = obs
+            .iter()
+            .find(|(ok, _)| ok == k)
+            .map_or("<missing>", |(_, v)| v.as_str());
+        let same = if k == "net0" {
+            net0_canonical(got) == net0_canonical(&want)
+        } else {
+            got == want
+        };
+        if !same {
+            out.push(Drift {
+                ct: spec.ct,
+                key: k.to_owned(),
+                want,
+                got: got.to_owned(),
+            });
         }
     }
     Ok(out)
@@ -981,12 +1093,38 @@ mod tests {
             "site2",
             112,
             12,
-            &["eu02-site2.ez2.site"],
+            &["site2.example.net"],
             true,
             "zh_TW",
             Limits::TEST_TIER,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_limits_step_is_checked_on_its_own_keys() {
+        let spec = site2();
+        let mut wanted = String::new();
+        for (k, v) in desired(&spec) {
+            wanted.push_str(&alloc::format!("{k}: {v}\n"));
+        }
+        assert_eq!(limits_differ(&spec, &wanted).unwrap(), Vec::new());
+        // the template's own keys are not this step's
+        let other = wanted.replace("hostname: site2", "hostname: template");
+        assert_eq!(limits_differ(&spec, &other).unwrap(), Vec::new());
+        let low = wanted.replace("memory: ", "memory: 1");
+        let d = limits_differ(&spec, &low).unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].key, "memory");
+        let no_pids: String = wanted
+            .lines()
+            .filter(|l| !l.starts_with("lxc.cgroup2.pids.max"))
+            .map(|l| alloc::format!("{l}\n"))
+            .collect();
+        let d = limits_differ(&spec, &no_pids).unwrap();
+        assert_eq!(d[0].key, "lxc.cgroup2.pids.max");
+        assert_eq!(d[0].got, "<missing>");
+        assert!(limits_differ(&spec, "").is_err());
     }
 
     const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
@@ -1059,7 +1197,7 @@ mod tests {
             SiteSpec::new("site2", 112, 12, &["a.b"], true, "zh TW", ok).is_err(),
             "locale"
         );
-        assert!(site2().hosts == ["eu02-site2.ez2.site"]);
+        assert!(site2().hosts == ["site2.example.net"]);
         assert_eq!(site2().ip(), "10.77.0.12");
     }
 
@@ -1190,7 +1328,7 @@ mod tests {
     fn s4_record_round_trip_and_poc_record_gets_test_tier() {
         let rec = record(&site2(), "2026-11-09T03:33:11Z");
         assert_eq!(spec_from_record(&rec).unwrap(), site2());
-        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
+        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
         assert_eq!(spec_from_record(&poc).unwrap(), site2());
         assert!(spec_from_record(&json!({"site":"site2"})).is_err());
         assert!(spec_from_record(
@@ -1414,7 +1552,7 @@ mod tests {
         let sp = site2();
         let up = caddy_block_upstream(&sp, &sp.ip());
         assert!(
-            up.starts_with("# site:site2\neu02-site2.ez2.site {\n\timport ez2_whitelabel\n"),
+            up.starts_with("# site:site2\nsite2.example.net {\n\timport ez2_whitelabel\n"),
             "{up}"
         );
         assert!(up.contains("reverse_proxy 10.77.0.12:80 {") && up.ends_with("}\n"));
@@ -1490,7 +1628,7 @@ mod tests {
             .any(|a| a == "name=eth0,bridge=vmbr1,ip=10.77.0.22/24,gw=10.77.0.1,firewall=1"));
         assert!(p[1].argv.contains(&"--cpulimit".to_string()));
         assert_eq!(p[2].argv, ["pct", "start", "212"]);
-        assert!(p[3].argv.iter().any(|a| a == "Host: eu02-site2.ez2.site"));
+        assert!(p[3].argv.iter().any(|a| a == "Host: site2.example.net"));
         for st in &p {
             for a in &st.argv {
                 assert!(!a.contains(';') && !a.contains('|'), "{a}");
@@ -1573,9 +1711,9 @@ mod tests {
         assert_eq!(rec["fw_group"], "ez2-site-v2");
         assert_eq!(rec["ssh_port"], 2112);
         assert_eq!(spec_from_record(&rec).unwrap(), full);
-        // the real EU02 records after NET-1 / SSH-1
-        let eu02 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
-        assert_eq!(spec_from_record(&eu02).unwrap(), full);
+        // the real host A records after NET-1 / SSH-1
+        let host_a = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(spec_from_record(&host_a).unwrap(), full);
         assert!(spec_from_record(
             &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","ssh_port":22})
         )
@@ -1604,7 +1742,7 @@ mod tests {
     fn the_three_shapes_found_on_the_first_host() {
         // site2: written by the bash PoC, no limits at all. The lenient read fills in the
         // test tier; the strict one says so.
-        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
         assert_eq!(gaps(&site2), [("R02", "limits".to_owned())]);
         assert!(spec_from_record(&site2).is_ok());
         assert!(spec_from_record_strict(&site2).is_err());
@@ -1626,6 +1764,31 @@ mod tests {
         site1["limits"] =
             json!({"cores":2,"cpulimit_x100":200,"memory_mb":2048,"swap_mb":512,"pids_max":2048});
         assert_eq!(gaps(&site1), []);
+    }
+
+    #[test]
+    fn tenant_and_disk_are_optional_but_typed() {
+        let mut r = record(&site2(), "2026-11-10T01:00:00Z");
+        // no tenant named: no tenant, and never the site's own code
+        assert_eq!(record_tenant(&r), None);
+        r["tenant_id"] = json!("site2");
+        assert_eq!(record_tenant(&r), Some("site2"));
+        r["tenant_id"] = json!("t-3k9f2a");
+        r["disk_gb"] = json!(16);
+        assert_eq!(gaps(&r), []);
+        assert_eq!(record_tenant(&r), Some("t-3k9f2a"));
+        r["tenant_id"] = json!("Not A Code");
+        r["disk_gb"] = json!(0);
+        assert_eq!(
+            gaps(&r),
+            [
+                ("R01", "tenant_id".to_owned()),
+                ("R01", "disk_gb".to_owned())
+            ]
+        );
+        assert_eq!(record_tenant(&r), None);
+        Limits::START.validate().unwrap();
+        assert_eq!(Limits::START.memory_mb, 1024);
     }
 
     #[test]

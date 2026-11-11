@@ -67,7 +67,7 @@ class Unbound(unittest.TestCase):
         w4 = b.home / ".ez2-aib" / "instances" / INST / "seats" / "w4.json"
         keep = w4.read_text()
         w4.unlink()                                          # 照那台會員機的順序:先開通,之後才開這一席
-        self.assertEqual(b.cli("on", "--no-venv", "--name", "Mac Pro 13", "--country", "TW").returncode, 0)
+        self.assertEqual(b.cli("on", "--no-venv", "--name", "Mac B", "--country", "TW").returncode, 0)
         w4.write_text(keep)
         r = b.cli("publish", self.code)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

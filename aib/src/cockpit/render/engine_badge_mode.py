@@ -11,7 +11,7 @@
      退回的理由由本函式回傳,呼叫端印到 stderr(.err 檔)。
   3. 字型探針讀 TTF 的 cmap(format 4/12),不用 fontTools(未安裝);字型檔由 EZ2_AIB_NERD_FONT 指定,
      預設掃 ~/Library/Fonts/*NerdFont*-Regular.ttf;找不到字型檔=缺字,不是綠。
-  4. 10-25 Mac Pro 13(@ae6a1):字型檔裝了,Apple Terminal 設定檔卻還是 SF Mono ⇒ 畫成空白,而這裡只看字型檔就判「好了」。
+  4. 10-25 Mac B(@ae6a1):字型檔裝了,Apple Terminal 設定檔卻還是 SF Mono ⇒ 畫成空白,而這裡只看字型檔就判「好了」。
      Apple Terminal 不能設備用字型 ⇒ 外層終端機是 Apple Terminal 時,再查「預設 / 開啟時」設定檔的字型畫不畫得出
      (JXA 讀 com.apple.Terminal 偏好 + NSFont.coveredCharacterSet,不叫起 Terminal);畫不出 ⇒ 退字母,理由 terminal_font。
      iTerm2 / Ghostty / WezTerm 有備用字型,維持只看字型檔。結果記在行程裡 + <狀態根>/state/badge-term-font.json,

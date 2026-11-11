@@ -256,7 +256,7 @@ CFG = {
     "start-blocked": dict(start_block=3.0, small=True, linger=4.0, pokes=[("INT", 0.3)]),  # still blocked at the limit
 }[mode]
 # Precondition: the caller has Python's default Ctrl-C. A shell's background job (`cmd &`, nohup) starts
-# with SIGINT ignored and Python then keeps SIG_IGN (andymini 11-08: 13 cells red for that reason alone).
+# with SIGINT ignored and Python then keeps SIG_IGN (mac-c 11-08: 13 cells red for that reason alone).
 signal.signal(signal.SIGINT, signal.SIG_IGN if CFG.get("ign_int") else signal.default_int_handler)
 grace = 0.5 if CFG.get("stuck") or CFG.get("small") else 1.5
 if CFG.get("stuck") or CFG.get("small"):
@@ -1006,7 +1006,7 @@ class Fakes(unittest.TestCase):
         self.assertEqual(calls, [signal.SIGTERM])
 
     def test_a_leader_dying_between_the_two_identity_reads_is_still_ours(self):
-        # Mac Pro 13 flake 2/6: after TERM the leader died between "running?" and "start time?"; the start read
+        # Mac B flake 2/6: after TERM the leader died between "running?" and "start time?"; the start read
         # came back None and was taken as "identity changed". Start first, state second.
         order = []
         g, calls = self.group(lambda pgid, sig: None, [(424242, "Z")], start_now=None)

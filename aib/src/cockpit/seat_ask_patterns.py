@@ -26,7 +26,7 @@ _CLAUDE_THINKING = re.compile(r"[⠁⠂⠄⡀⢀⠠⠐⠈⠋⠙⠹⠸⠼⠴⠦�
 _PAGER = re.compile(r"^\(END\)$|^:$|^-- (?:INSERT|NORMAL|VISUAL) --|^~\s*$", re.M)
 _CLAUDE_ESC_CANCEL = re.compile(r"Esc to cancel", re.I)
 
-# ── Grok CLI(10-20 Pro 13 真畫面:底部「Enter:send │ Shift+Tab:mode │ Ctrl+x:shortcuts」)──
+# ── Grok CLI(10-20 Mac B 真畫面:底部「Enter:send │ Shift+Tab:mode │ Ctrl+x:shortcuts」)──
 _GROK_PROMPT = re.compile(r"Enter:send|Shift\+Tab:mode")
 _GROK_THINKING = re.compile(r"Thinking…|Worked for|⠧|⠇|Esc:cancel")
 

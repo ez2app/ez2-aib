@@ -15,8 +15,9 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! This first slice holds the passive host checks H02–H05, H08, H09 and the passive site
-//! checks S01–S05. The remaining passive checks and the `--active` ones follow.
+//! Passive host checks: H01–H10, H12–H14. Passive site checks: S01–S06. Still to come:
+//! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
+//! the `--active` checks.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
@@ -24,7 +25,8 @@ use alloc::vec::Vec;
 
 use serde_json::{json, Value};
 
-use crate::site::{parse_pct_config, SiteSpec};
+use crate::roster::{ENTRY_ACCOUNT, SUDOERS_DEFAULTS, SUDOERS_HEADER, SUDOERS_RULE_HEAD};
+use crate::site::{parse_pct_config, valid_code, SiteSpec};
 
 /// What one check found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +243,421 @@ pub fn h09_cluster_firewall(cluster_fw: Option<&str>) -> CheckResult {
         Outcome::Green
     };
     result("H09", outcome)
+}
+
+/// H01: the host-health timer wrote its file within the last 15 minutes. `mtime` is `None`
+/// when the file is not there.
+pub fn h01_health_fresh(now: u64, mtime: Option<u64>) -> CheckResult {
+    let outcome = match mtime {
+        None => Outcome::Red("never"),
+        Some(t) if t > now.saturating_add(300) => Outcome::Unknown("clock"),
+        Some(t) if now.saturating_sub(t) > 900 => Outcome::Red("stale"),
+        Some(_) => Outcome::Green,
+    };
+    result("H01", outcome)
+}
+
+/// H06: load. `loadavg` is `/proc/loadavg`; a one-minute load of twice the core count or
+/// more is a warning (never red: a busy host is not a broken one).
+pub fn h06_load(loadavg: Option<&str>, cores: u32) -> CheckResult {
+    let load1_x100 = loadavg
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|first| {
+            let (whole, frac) = first.split_once('.')?;
+            if frac.len() != 2 {
+                return None;
+            }
+            Some(whole.parse::<u64>().ok()?.checked_mul(100)? + frac.parse::<u64>().ok()?)
+        });
+    let outcome = match load1_x100 {
+        None => Outcome::Unknown("unread"),
+        Some(_) if cores == 0 => Outcome::Unknown("cores"),
+        Some(l) if l >= u64::from(cores) * 200 => Outcome::Warn("load_high"),
+        Some(_) => Outcome::Green,
+    };
+    result("H06", outcome)
+}
+
+/// H07: a reboot is pending (`/var/run/reboot-required` exists). Reported, never acted
+/// on: a reboot needs a person. `None`: could not tell.
+pub fn h07_reboot_required(exists: Option<bool>) -> CheckResult {
+    let outcome = match exists {
+        None => Outcome::Unknown("unread"),
+        Some(true) => Outcome::Warn("reboot_required"),
+        Some(false) => Outcome::Green,
+    };
+    result("H07", outcome)
+}
+
+/// H10: fail2ban answers and has its sshd jail (`fail2ban-client status sshd`). The ban
+/// count is not judged. No answer is red: public ssh without it is the finding.
+pub fn h10_fail2ban(status: Option<&str>) -> CheckResult {
+    let outcome = match status {
+        None => Outcome::Red("f2b_no_answer"),
+        Some(t) if t.contains("Status for the jail: sshd") => Outcome::Green,
+        Some(_) => Outcome::Red("f2b_no_sshd_jail"),
+    };
+    result("H10", outcome)
+}
+
+/// H12: the clock is synchronised (`timedatectl show -p NTPSynchronized --value`).
+/// Backup ages, certificates and one-time codes all lean on it.
+pub fn h12_time_sync(value: Option<&str>) -> CheckResult {
+    let outcome = match value.map(str::trim) {
+        Some("yes") => Outcome::Green,
+        Some("no") => Outcome::Warn("clock_unsynced"),
+        _ => Outcome::Unknown("unread"),
+    };
+    result("H12", outcome)
+}
+
+/// CT ids out of `pct list` (a header line, then `<id> <status> …` per CT). `None` when a
+/// line does not start with an id: a list that is not understood is not an empty list.
+pub fn parse_pct_list(out: &str) -> Option<Vec<u32>> {
+    out.lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.split_whitespace().next()?.parse::<u32>().ok())
+        .collect()
+}
+
+/// H13: every site record has its CT and every CT is accounted for — it belongs to a
+/// record or is one of `platform` (edge, template, …). A CT nobody recorded is a site
+/// that is neither backed up by name nor checked.
+pub fn h13_inventory(cts: Option<&[u32]>, record_cts: &[u32], platform: &[u32]) -> CheckResult {
+    let Some(cts) = cts else {
+        return result("H13", Outcome::Unknown("unread"));
+    };
+    let outcome = if record_cts.iter().any(|r| !cts.contains(r)) {
+        Outcome::Red("record_without_ct")
+    } else if cts
+        .iter()
+        .any(|c| !record_cts.contains(c) && !platform.contains(c))
+    {
+        Outcome::Red("ct_without_record")
+    } else if record_cts
+        .iter()
+        .enumerate()
+        .any(|(i, r)| record_cts[..i].contains(r) || platform.contains(r))
+    {
+        // two records for one CT, or a record claiming the edge / template
+        Outcome::Red("ct_claimed_twice")
+    } else {
+        Outcome::Green
+    };
+    result("H13", outcome)
+}
+
+/// What `site verify` saw of the entry account's sudoers file
+/// ([`crate::roster::SUDOERS_PATH`]). `None` in a field: could not be observed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EntrySudoers<'a> {
+    /// Whether the file is there.
+    pub present: Option<bool>,
+    /// Owner uid, group gid and permission bits.
+    pub owner_mode: Option<(u32, u32, u32)>,
+    /// Its text.
+    pub text: Option<&'a str>,
+    /// Whether `visudo -c -f` accepted it.
+    pub visudo_ok: Option<bool>,
+    /// The text of every other sudoers file sudo reads (`/etc/sudoers` and the files of
+    /// `/etc/sudoers.d` it does not skip). `None`: one of them could not be read.
+    pub others: Option<&'a [String]>,
+    /// The entry account's uid and the names of its groups.
+    pub account: Option<(u32, &'a [String])>,
+    /// Whether sudo takes its rules from files only (`sudoers:` in nsswitch.conf; see
+    /// [`nss_sudoers_files_only`]).
+    pub nss_files_only: Option<bool>,
+}
+
+/// Whether nsswitch.conf (`None`: could not be read; `Some("")`: there is none) has sudo
+/// read its rules from files only. No `sudoers:` line means files. Any other source (sss,
+/// ldap, …) holds rules no file here shows (33e28, #655 r3 L1).
+pub fn nss_sudoers_files_only(nsswitch: Option<&str>) -> Option<bool> {
+    let text = nsswitch?;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if let Some(rest) = line.strip_prefix("sudoers:") {
+            return Some(
+                rest.split_whitespace()
+                    .filter(|w| !w.starts_with('['))
+                    .all(|w| w == "files"),
+            );
+        }
+    }
+    Some(true)
+}
+
+/// The user list at the start of `spec`: the words up to the first gap that is not after
+/// or before a comma (`root, cloudgate host=…` lists two users; the host list follows).
+fn user_list(spec: &str) -> Vec<&str> {
+    let head = spec.split('=').next().unwrap_or("");
+    let mut out = Vec::new();
+    let mut words = head.split_whitespace().peekable();
+    while let Some(w) = words.next() {
+        out.extend(w.split(',').map(str::trim).filter(|u| !u.is_empty()));
+        if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {
+            break;
+        }
+    }
+    out
+}
+
+/// One word where sudoers names users, in a shape this check reads word for word: a user
+/// name, `%group`, `%#gid`, `#uid`, `ALL`, or a `User_Alias` name, each maybe after `!`.
+/// Anything else (`+netgroup`, `%:group`, quoting, escapes, …) is not read: `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Who<'a> {
+    User(&'a str),
+    Group(&'a str),
+    Uid(&'a str),
+    All,
+    Alias(&'a str),
+}
+
+fn who(word: &str) -> Option<Who<'_>> {
+    let w = word.strip_prefix('!').unwrap_or(word);
+    let name = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+            && n.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    };
+    let digits = |n: &str| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit());
+    if w == "ALL" {
+        Some(Who::All)
+    } else if let Some(g) = w.strip_prefix("%#") {
+        digits(g).then_some(Who::Group(&w[1..]))
+    } else if let Some(g) = w.strip_prefix('%') {
+        name(g).then_some(Who::Group(g))
+    } else if let Some(u) = w.strip_prefix('#') {
+        digits(u).then_some(Who::Uid(w))
+    } else if w.starts_with(|c: char| c.is_ascii_uppercase())
+        && w.bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+    {
+        Some(Who::Alias(w))
+    } else {
+        name(w).then_some(Who::User(w))
+    }
+}
+
+/// Whether the sudoers files in `files` (all but ours) may grant the entry account anything
+/// (33e28, #655 M1 and r2–r3; f1fae: only what is read word for word counts as clean).
+///
+/// Every line must be one of: empty, a comment, `@includedir /etc/sudoers.d` (or the `#`
+/// spelling), `Defaults` not bound to users (plain, `@host`, `>runas`, `!cmnd`),
+/// `Host_Alias` / `Cmnd_Alias` / `Cmd_Alias` / `Runas_Alias`, `Defaults:<users>`,
+/// `User_Alias A = … [: B = …]`, or a rule `<users> <hosts>=…`, where every user word reads
+/// as [`who`] and every alias used is defined. `Ok(true)` when a user list or a used alias
+/// comes down to the account (by name, `ALL`, its uid, one of its groups — `groups` holds
+/// names and `#gid`s); otherwise `Err("others_unread")` when a file pulls in something other
+/// than `/etc/sudoers.d`, `Err("others_shape")` when any line is not read, `Ok(false)`.
+fn grants_elsewhere(files: &[String], uid: u32, groups: &[String]) -> Result<bool, &'static str> {
+    let me = alloc::format!("#{uid}");
+    let mut lines: Vec<String> = Vec::new();
+    for text in files {
+        for line in text.replace("\\\n", " ").lines().map(str::trim) {
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with("#include") || line.starts_with("@include") {
+                let mut w = line.split_whitespace();
+                match (w.next(), w.next(), w.next()) {
+                    (Some("#includedir" | "@includedir"), Some("/etc/sudoers.d"), None) => continue,
+                    _ => return Err("others_unread"),
+                }
+            }
+            // `#` and then a digit is a uid; any other `#` line is a comment
+            if line
+                .strip_prefix('#')
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                continue;
+            }
+            lines.push(line.to_owned());
+        }
+    }
+    let mut shape_ok = true;
+    // User_Alias A = x, y : B = z
+    let mut aliases: Vec<(&str, Vec<Who<'_>>)> = Vec::new();
+    for l in &lines {
+        let Some(rest) = l.strip_prefix("User_Alias") else {
+            continue;
+        };
+        if !rest.starts_with([' ', '\t']) {
+            shape_ok = false;
+            continue;
+        }
+        for part in rest.split(':') {
+            let Some((name, members)) = part.split_once('=') else {
+                shape_ok = false;
+                continue;
+            };
+            let members: Option<Vec<Who<'_>>> = members.split(',').map(|m| who(m.trim())).collect();
+            match (who(name.trim()), members) {
+                (Some(Who::Alias(n)), Some(m)) if !m.is_empty() => aliases.push((n, m)),
+                _ => shape_ok = false,
+            }
+        }
+    }
+    let defined = |n: &str| aliases.iter().any(|(a, _)| *a == n);
+    let direct = |w: &Who<'_>| match *w {
+        Who::User(u) => u == ENTRY_ACCOUNT,
+        Who::All => true,
+        Who::Uid(u) => u == me,
+        Who::Group(g) => groups.iter().any(|x| x == g),
+        Who::Alias(_) => false,
+    };
+    // the aliases that come down to us, to a fixed point; one naming the account is red as it stands
+    let mut ours: Vec<&str> = Vec::new();
+    loop {
+        let before = ours.len();
+        for (name, members) in &aliases {
+            if !ours.contains(name)
+                && members
+                    .iter()
+                    .any(|m| direct(m) || matches!(m, Who::Alias(a) if ours.contains(a)))
+            {
+                ours.push(name);
+            }
+        }
+        if ours.len() == before {
+            break;
+        }
+    }
+    let named = aliases
+        .iter()
+        .any(|(_, m)| m.contains(&Who::User(ENTRY_ACCOUNT)));
+    let mut granted = named;
+    for l in &lines {
+        let first = l.split_whitespace().next().unwrap_or("");
+        let users: Vec<&str> = if let Some(rest) = l.strip_prefix("Defaults") {
+            // only `Defaults:<users>` binds to users
+            match rest.chars().next() {
+                Some(':') => user_list(&rest[1..]),
+                Some(' ' | '\t' | '@' | '>' | '!') => continue,
+                _ => {
+                    shape_ok = false;
+                    continue;
+                }
+            }
+        } else if matches!(
+            first,
+            // User_Alias was read above; the others name hosts, commands or run-as users
+            "User_Alias" | "Host_Alias" | "Cmnd_Alias" | "Cmd_Alias" | "Runas_Alias"
+        ) {
+            continue;
+        } else {
+            if !l.contains('=') {
+                shape_ok = false;
+                continue;
+            }
+            user_list(l)
+        };
+        let read: Option<Vec<Who<'_>>> = users.iter().map(|u| who(u)).collect();
+        match read {
+            Some(ws) if !ws.is_empty() => {
+                for w in &ws {
+                    match w {
+                        Who::Alias(a) if !defined(a) => shape_ok = false,
+                        Who::Alias(a) if ours.contains(a) => granted = true,
+                        other => granted |= direct(other),
+                    }
+                }
+            }
+            _ => shape_ok = false,
+        }
+    }
+    if granted {
+        Ok(true)
+    } else if shape_ok {
+        Ok(false)
+    } else {
+        Err("others_shape")
+    }
+}
+
+/// One rule line's arguments, after [`SUDOERS_RULE_HEAD`]: exactly what
+/// [`crate::roster::sudoers_file`] writes — `--tenant <code> [--sites a\,b] --roles r\,s` —
+/// and nothing else (no `*`, no second command after a bare `,`).
+fn entry_rule_args(rest: &str) -> bool {
+    let list = |w: &str| w.split("\\,").all(valid_code);
+    let words: Vec<&str> = rest.split(' ').collect();
+    match words.as_slice() {
+        ["--tenant", t, "--roles", r] => valid_code(t) && list(r),
+        ["--tenant", t, "--sites", s, "--roles", r] => valid_code(t) && list(s) && list(r),
+        _ => false,
+    }
+}
+
+/// H14: the entry account's sudoers file is the generated one in shape (c477a, #648 N2):
+/// root:root 0440, accepted by `visudo`, our `Defaults` line (both variables kept, no tty
+/// needed), and every rule names the customer command with its arguments written out.
+///
+/// A host where the entry account is not set up yet has no file: a warning, not red.
+/// **This is a host check, for the people who run the host**: it is not in any site's
+/// checks, so it never reaches what a customer is shown (#642).
+pub fn h14_entry_sudoers(seen: EntrySudoers<'_>) -> CheckResult {
+    let outcome = match seen.present {
+        None => Outcome::Unknown("unread"),
+        Some(false) => Outcome::Warn("entry_not_set_up"),
+        Some(true) => match (seen.owner_mode, seen.text) {
+            (None, _) | (_, None) => Outcome::Unknown("unread"),
+            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),
+            (Some(_), Some(text)) => {
+                // only the fixed header may start with `#`: `#include` and `#<uid>` are
+                // not comments in sudoers (33e28, #655 H1), so they are judged as rules
+                let lines: Vec<&str> = text
+                    .lines()
+                    .map(str::trim_end)
+                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER)
+                    .collect();
+                let mut rules = lines.iter().filter(|l| **l != SUDOERS_DEFAULTS);
+                let elsewhere = match (seen.others, seen.account) {
+                    (Some(files), Some((uid, groups))) => grants_elsewhere(files, uid, groups),
+                    _ => Err("others_unread"),
+                };
+                if text.contains('*') {
+                    Outcome::Red("sudoers_wildcard")
+                } else if lines.iter().filter(|l| **l == SUDOERS_DEFAULTS).count() != 1 {
+                    Outcome::Red("sudoers_defaults")
+                } else if !rules.all(|l| {
+                    l.strip_prefix(SUDOERS_RULE_HEAD)
+                        .is_some_and(entry_rule_args)
+                }) {
+                    Outcome::Red("sudoers_rule")
+                } else if elsewhere == Ok(true) {
+                    Outcome::Red("sudoers_elsewhere")
+                } else if let Err(why) = elsewhere {
+                    Outcome::Unknown(why)
+                } else if seen.nss_files_only != Some(true) {
+                    Outcome::Unknown(if seen.nss_files_only.is_none() {
+                        "nsswitch_unread"
+                    } else {
+                        "sudoers_source"
+                    })
+                } else {
+                    match seen.visudo_ok {
+                        None => Outcome::Unknown("visudo_unread"),
+                        Some(false) => Outcome::Red("sudoers_invalid"),
+                        Some(true) => Outcome::Green,
+                    }
+                }
+            }
+        },
+    };
+    result("H14", outcome)
+}
+
+/// S06: nothing drifted from the record. `drifted` is how many keys differ; `None` when
+/// the comparison could not be made.
+pub fn s06_drift(drifted: Option<usize>) -> CheckResult {
+    let outcome = match drifted {
+        None => Outcome::Unknown("unread"),
+        Some(0) => Outcome::Green,
+        Some(_) => Outcome::Red("drift"),
+    };
+    result("S06", outcome)
 }
 
 /// S01: an active site's CT runs. `status` is the output of `pct status <ct>`
@@ -910,5 +1327,388 @@ mod tests {
             h09_cluster_firewall(Some(open)).outcome,
             Outcome::Red("policy_in_open")
         );
+    }
+
+    #[test]
+    fn h01_h06_h07_h10_h12() {
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW - 60)).outcome,
+            Outcome::Green
+        );
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW - 901)).outcome,
+            Outcome::Red("stale")
+        );
+        assert_eq!(h01_health_fresh(NOW, None).outcome, Outcome::Red("never"));
+        assert_eq!(
+            h01_health_fresh(NOW, Some(NOW + HOUR)).outcome,
+            Outcome::Unknown("clock")
+        );
+
+        let load = |t: &str| h06_load(Some(t), 12).outcome;
+        assert_eq!(load("3.85 3.85 6.35 1/234 5678\n"), Outcome::Green);
+        assert_eq!(load("23.99 1.00 1.00 1/1 1"), Outcome::Green);
+        assert_eq!(load("24.00 1.00 1.00 1/1 1"), Outcome::Warn("load_high"));
+        assert_eq!(load("95.10 1.00 1.00 1/1 1"), Outcome::Warn("load_high"));
+        assert_eq!(load(""), Outcome::Unknown("unread"));
+        assert_eq!(load("high"), Outcome::Unknown("unread"));
+        assert_eq!(h06_load(None, 12).outcome, Outcome::Unknown("unread"));
+        assert_eq!(
+            h06_load(Some("1.00 1.00 1.00"), 0).outcome,
+            Outcome::Unknown("cores")
+        );
+
+        assert_eq!(h07_reboot_required(Some(false)).outcome, Outcome::Green);
+        assert_eq!(
+            h07_reboot_required(Some(true)).outcome,
+            Outcome::Warn("reboot_required")
+        );
+        assert_eq!(
+            h07_reboot_required(None).outcome,
+            Outcome::Unknown("unread")
+        );
+
+        let jail = "Status for the jail: sshd\n|- Filter\n|  |- Currently failed: 3\n";
+        assert_eq!(h10_fail2ban(Some(jail)).outcome, Outcome::Green);
+        assert_eq!(
+            h10_fail2ban(Some("Sorry but the jail 'sshd' does not exist")).outcome,
+            Outcome::Red("f2b_no_sshd_jail")
+        );
+        assert_eq!(h10_fail2ban(None).outcome, Outcome::Red("f2b_no_answer"));
+
+        assert_eq!(h12_time_sync(Some("yes\n")).outcome, Outcome::Green);
+        assert_eq!(
+            h12_time_sync(Some("no")).outcome,
+            Outcome::Warn("clock_unsynced")
+        );
+        assert_eq!(h12_time_sync(Some("")).outcome, Outcome::Unknown("unread"));
+        assert_eq!(h12_time_sync(None).outcome, Outcome::Unknown("unread"));
+    }
+
+    #[test]
+    fn h13_every_ct_is_accounted_for() {
+        let list = "VMID       Status     Lock         Name\n101        running                 edge\n110        running                 site1\n112        stopped                 site2\n900        stopped                 tpl\n";
+        assert_eq!(parse_pct_list(list), Some(alloc::vec![101, 110, 112, 900]));
+        assert_eq!(parse_pct_list("VMID Status Lock Name\n"), Some(Vec::new()));
+        assert_eq!(parse_pct_list("VMID Status\nconnection refused\n"), None);
+        let platform = [101, 900];
+        let h13 = |cts: &[u32], recs: &[u32]| h13_inventory(Some(cts), recs, &platform).outcome;
+        assert_eq!(h13(&[101, 110, 112, 900], &[110, 112]), Outcome::Green);
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 112]),
+            Outcome::Red("record_without_ct")
+        );
+        assert_eq!(
+            h13(&[101, 110, 112, 113, 900], &[110, 112]),
+            Outcome::Red("ct_without_record")
+        );
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 110]),
+            Outcome::Red("ct_claimed_twice")
+        );
+        assert_eq!(
+            h13(&[101, 110, 900], &[110, 101]),
+            Outcome::Red("ct_claimed_twice")
+        );
+        assert_eq!(
+            h13_inventory(None, &[110], &platform).outcome,
+            Outcome::Unknown("unread")
+        );
+    }
+
+    #[test]
+    fn h14_the_entry_sudoers_file_is_the_generated_one() {
+        use crate::roster::{parse, sudoers_file};
+        let key = |c: u8| {
+            alloc::format!(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI{}",
+                core::iter::repeat_n(char::from(c), 43).collect::<String>()
+            )
+        };
+        let roster = json!({ "tenant_id": "t-aaa", "members": [
+            { "identity_id": "m-01", "roles": ["owner"], "scope": "tenant", "keys": [
+                { "public_key": key(b'A'), "use": "entry", "added": "2026-11-11T00:00:00Z" }] },
+            { "identity_id": "m-02", "roles": ["editor", "analyst"], "scope": ["site2", "site3"], "keys": [
+                { "public_key": key(b'B'), "use": "entry", "added": "2026-11-11T00:00:00Z" }] }] });
+        let roster = parse(&roster.to_string(), &["site2", "site3"]).unwrap();
+        let good = sudoers_file(&[roster]).unwrap();
+        static NONE: [String; 0] = [];
+        fn seen(text: &str) -> EntrySudoers<'_> {
+            EntrySudoers {
+                present: Some(true),
+                owner_mode: Some((0, 0, 0o440)),
+                text: Some(text),
+                visudo_ok: Some(true),
+                others: Some(&NONE),
+                account: Some((1001, &NONE)),
+                nss_files_only: Some(true),
+            }
+        }
+        let h14 = |e: EntrySudoers<'_>| h14_entry_sudoers(e).outcome;
+        assert_eq!(h14(seen(&good)), Outcome::Green);
+        assert_eq!(h14_entry_sudoers(seen(&good)).id, "H14");
+        // the hand-written rule this replaces
+        let star = "Defaults:cloudgate !requiretty, env_keep += \"SSH_ORIGINAL_COMMAND SSH_CONNECTION\"\ncloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer *\n";
+        assert_eq!(h14(seen(star)), Outcome::Red("sudoers_wildcard"));
+        // a second command after a bare comma, more roles than a code, another program
+        for bad in [
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner, /bin/sh",
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner --records /tmp",
+            "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer --site site2 --roles owner",
+            "cloudgate ALL=(root) NOPASSWD: /bin/sh",
+            "cloudgate ALL=(ALL) ALL",
+        ] {
+            let text = alloc::format!("{good}{bad}\n");
+            assert_eq!(h14(seen(&text)), Outcome::Red("sudoers_rule"), "{bad}");
+        }
+        // `#` lines other than the header are not comments in sudoers (33e28, #655 H1)
+        for bad in [
+            "#include /etc/x",
+            "#includedir /etc/y",
+            "@include /etc/x",
+            "#0 ALL=(ALL) NOPASSWD: ALL",
+            "# just a note",
+        ] {
+            let text = alloc::format!("{good}{bad}\n");
+            assert_eq!(h14(seen(&text)), Outcome::Red("sudoers_rule"), "{bad}");
+        }
+        // another sudoers file that grants the entry account anything (33e28, #655 M1)
+        let debian = "# comment cloudgate\nDefaults\tenv_reset\nroot\tALL=(ALL:ALL) ALL\n%sudo\tALL=(ALL:ALL) ALL\n@includedir /etc/sudoers.d\n".to_string();
+        let groups = [
+            "cloudgate".to_string(),
+            "users".to_string(),
+            "#2000".to_string(),
+        ];
+        let with = |extra: &str| alloc::vec![debian.clone(), extra.to_string()];
+        let judge = |files: &[String], groups: &[String]| {
+            h14(EntrySudoers {
+                others: Some(files),
+                account: Some((1001, groups)),
+                ..seen(&good)
+            })
+        };
+        assert_eq!(judge(&with(""), &groups), Outcome::Green);
+        for (extra, why) in [
+            (
+                "cloudgate ALL=(root) NOPASSWD: /usr/local/sbin/aib-cloud-host customer x",
+                "by name",
+            ),
+            ("User_Alias GATE = nobody, cloudgate", "in an alias"),
+            ("ALL ALL=(root) NOPASSWD: /bin/true", "for ALL"),
+            ("#1001 ALL=(ALL) ALL", "by uid"),
+            ("%users ALL=(ALL) ALL", "by group"),
+            ("root,cloudgate ALL=(ALL) ALL", "in a user list"),
+            (
+                "root, #1001 ALL=(ALL) ALL",
+                "by uid, second in a spaced list",
+            ),
+            (
+                "%nobody, \\\n    #1001 ALL=(ALL) ALL",
+                "by uid on a continued line",
+            ),
+            (
+                "User_Alias OPS = %users\nOPS ALL=(ALL) ALL",
+                "through an alias of its group",
+            ),
+            (
+                "User_Alias OPS = #1001\nroot, OPS ALL=(ALL) ALL",
+                "through an alias of its uid",
+            ),
+            (
+                "User_Alias A = %users : B = nobody\nUser_Alias C = A\nC ALL=(ALL) ALL",
+                "through an alias of an alias",
+            ),
+            ("%#2000 ALL=(ALL) ALL", "by gid"),
+            (
+                "Defaults:%users env_keep += \"LD_PRELOAD\"",
+                "a Defaults bound to its group",
+            ),
+            (
+                "Defaults:OPS2 !env_reset\nUser_Alias OPS2 = ALL",
+                "a Defaults bound to an alias of ALL",
+            ),
+        ] {
+            let files = with(extra);
+            assert_eq!(
+                judge(&files, &groups),
+                Outcome::Red("sudoers_elsewhere"),
+                "{why}"
+            );
+        }
+        // an alias that does not come down to us, used in a rule; Defaults not bound to users
+        let fine = with("User_Alias OPS = alice, %sudo\nOPS ALL=(ALL) ALL\nDefaults@host1 env_reset\nDefaults>root !lecture\nDefaults\tsecure_path=\"/usr/bin\"");
+        assert_eq!(judge(&fine, &groups), Outcome::Green);
+        // an alias defined in one file and used in another
+        let split = alloc::vec![
+            debian.clone(),
+            "User_Alias OPS = %users".to_string(),
+            "OPS ALL=(ALL) ALL".to_string()
+        ];
+        assert_eq!(judge(&split, &groups), Outcome::Red("sudoers_elsewhere"));
+        // a netgroup in a user position: who is in it no file here says (33e28, #655 r3 M1)
+        for extra in [
+            "+ops ALL=(ALL) ALL",
+            "User_Alias OPS = +ops\nOPS ALL=(ALL) ALL",
+            "Defaults:+ops !env_reset",
+            "root, !+ops ALL=(ALL) ALL",
+        ] {
+            assert_eq!(
+                judge(&with(extra), &groups),
+                Outcome::Unknown("others_shape"),
+                "{extra}"
+            );
+        }
+        // shapes this check does not read word for word: unknown, never green (f1fae 06:5x)
+        for extra in [
+            "%:users ALL=(ALL) ALL",
+            "\"root\" ALL=(ALL) ALL",
+            "OPS ALL=(ALL) ALL",
+            "User_Alias ops = root",
+            "User_Alias OPS = +ops",
+            "Defaults~x y",
+            "something odd",
+            "User_Alias OPS = %:users\nOPS ALL=(ALL) ALL",
+        ] {
+            assert_eq!(
+                judge(&with(extra), &groups),
+                Outcome::Unknown("others_shape"),
+                "{extra}"
+            );
+        }
+        // ... unless something else already grants: red wins
+        assert_eq!(
+            judge(
+                &with("+ops ALL=(ALL) ALL\ncloudgate ALL=(ALL) ALL"),
+                &groups
+            ),
+            Outcome::Red("sudoers_elsewhere")
+        );
+        // where sudo takes its rules from (33e28, #655 r3 L1)
+        assert_eq!(nss_sudoers_files_only(Some("")), Some(true));
+        assert_eq!(
+            nss_sudoers_files_only(Some("passwd: files systemd\n")),
+            Some(true)
+        );
+        assert_eq!(nss_sudoers_files_only(Some("sudoers: files\n")), Some(true));
+        assert_eq!(
+            nss_sudoers_files_only(Some("sudoers:\tfiles [NOTFOUND=return]\n")),
+            Some(true)
+        );
+        assert_eq!(
+            nss_sudoers_files_only(Some("#sudoers: sss\nsudoers: files sss\n")),
+            Some(false)
+        );
+        assert_eq!(nss_sudoers_files_only(Some("sudoers: ldap\n")), Some(false));
+        assert_eq!(nss_sudoers_files_only(None), None);
+        assert_eq!(
+            h14(EntrySudoers {
+                nss_files_only: Some(false),
+                ..seen(&good)
+            }),
+            Outcome::Unknown("sudoers_source")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                nss_files_only: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("nsswitch_unread")
+        );
+        // the sudo group is not the account's: green; a group the account is in: red
+        let sudo_member = ["cloudgate".to_string(), "sudo".to_string()];
+        assert_eq!(
+            judge(&with(""), &sudo_member),
+            Outcome::Red("sudoers_elsewhere")
+        );
+        // an include the caller did not follow, or files not read: unknown
+        assert_eq!(
+            judge(&with("@include /etc/other"), &groups),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            judge(&with("#includedir /opt/x"), &groups),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                others: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("others_unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                account: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("others_unread")
+        );
+        // Defaults missing (variables not kept: every request reads as empty) or twice
+        let no_defaults: String = good
+            .lines()
+            .filter(|l| !l.starts_with("Defaults"))
+            .map(|l| alloc::format!("{l}\n"))
+            .collect();
+        assert_eq!(h14(seen(&no_defaults)), Outcome::Red("sudoers_defaults"));
+        let twice = alloc::format!("{good}{SUDOERS_DEFAULTS}\n");
+        assert_eq!(h14(seen(&twice)), Outcome::Red("sudoers_defaults"));
+        // owner and mode
+        for om in [
+            (0, 0, 0o640),
+            (0, 0, 0o444),
+            (1000, 0, 0o440),
+            (0, 27, 0o440),
+        ] {
+            let e = EntrySudoers {
+                owner_mode: Some(om),
+                ..seen(&good)
+            };
+            assert_eq!(h14(e), Outcome::Red("sudoers_mode"), "{om:?}");
+        }
+        // visudo
+        assert_eq!(
+            h14(EntrySudoers {
+                visudo_ok: Some(false),
+                ..seen(&good)
+            }),
+            Outcome::Red("sudoers_invalid")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                visudo_ok: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("visudo_unread")
+        );
+        // not set up yet: a warning; could not look: unknown, never green
+        assert_eq!(
+            h14(EntrySudoers {
+                present: Some(false),
+                ..EntrySudoers::default()
+            }),
+            Outcome::Warn("entry_not_set_up")
+        );
+        assert_eq!(h14(EntrySudoers::default()), Outcome::Unknown("unread"));
+        assert_eq!(
+            h14(EntrySudoers {
+                text: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("unread")
+        );
+        assert_eq!(
+            h14(EntrySudoers {
+                owner_mode: None,
+                ..seen(&good)
+            }),
+            Outcome::Unknown("unread")
+        );
+    }
+
+    #[test]
+    fn s06_drift_counts() {
+        assert_eq!(s06_drift(Some(0)).outcome, Outcome::Green);
+        assert_eq!(s06_drift(Some(2)).outcome, Outcome::Red("drift"));
+        assert_eq!(s06_drift(None).outcome, Outcome::Unknown("unread"));
     }
 }

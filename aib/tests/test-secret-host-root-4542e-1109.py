@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""主機 root 密碼進名冊 + 輸入框的「產生並複製」鈕(11-09 @4542e;Andy 親打「放行 ID-2」後要設 EU02 的 root@pam 密碼,
+"""主機 root 密碼進名冊 + 輸入框的「產生並複製」鈕(11-09 @4542e;Andy 親打「放行 ID-2」後要設代管主機的 root@pam 密碼,
 視窗要有「隨機產生合規的按鈕 … 也要有一個複製鈕」)。
 
-R1 HOST_ROOT_PASSWORD 在名冊(EXACT_FILES,不是靠前綴猜),落 host-root.env;加主機代號(HOST_ROOT_PASSWORD_EU02)同檔;
+R1 HOST_ROOT_PASSWORD 在名冊(EXACT_FILES,不是靠前綴猜),落 host-root.env;加主機代號(HOST_ROOT_PASSWORD_HOSTA)同檔;
    只准 --remote-only、缺值不補填、不是 SE-only
-R2 只有 HOST_ROOT_ 開頭落這檔:HOST_X、HOSTGUARD_TOKEN、PVE_ROOT_PASSWORD_EU02(ebb36 #545 L1 說要另開一格 ⇒ 就是這格,不是 pve.env)都不落
+R2 只有 HOST_ROOT_ 開頭落這檔:HOST_X、HOSTGUARD_TOKEN、PVE_ROOT_PASSWORD_HOSTA(ebb36 #545 L1 說要另開一格 ⇒ 就是這格,不是 pve.env)都不落
 R3 沒帶 --remote-only ⇒ remote_only_name,不叫輸入框、不碰 ssh;帶了但沒 --push ⇒ remote_only_needs_push
 R4 --generate:JXA 多一顆「產生並複製」鈕(arc4random 產 GEN_LEN ≥ 24 字、寫剪貼簿、值放回欄位);沒帶就沒有;
    collect 把 generate 傳進 dialog;回傳的值一樣只認 nonce 對得上的那行
@@ -30,7 +30,7 @@ sys.path.insert(0, str(REPO / "src" / "bootstrap"))
 import aib_secrets as S  # noqa: E402
 import secret_ask as SA  # noqa: E402
 
-NAME = "HOST_ROOT_PASSWORD_EU02"
+NAME = "HOST_ROOT_PASSWORD_HOSTA"
 
 
 class HostRoot(unittest.TestCase):
@@ -60,7 +60,7 @@ class HostRoot(unittest.TestCase):
             self.assertNotIn(n, S.SE_ONLY_NAMES)
 
     def test_r2_only_host_root_prefix(self):
-        for n in ("HOST_X", "HOSTGUARD_TOKEN", "HOST_PASSWORD", "PVE_ROOT_PASSWORD_EU02", "ROOT_PASSWORD"):
+        for n in ("HOST_X", "HOSTGUARD_TOKEN", "HOST_PASSWORD", "PVE_ROOT_PASSWORD_HOSTA", "ROOT_PASSWORD"):
             self.assertIsNone(S.file_for_name(n), n)
 
     def test_r3_refuses_local_store(self):
@@ -108,7 +108,7 @@ class HostRoot(unittest.TestCase):
         old = SA.dialog
         try:
             SA.dialog = lambda p, t, **kw: old(p, t, run=run, **kw)
-            value, why = SA.collect(NAME, "eu02", "darwin", generate=True)
+            value, why = SA.collect(NAME, "hosta", "darwin", generate=True)
         finally:
             SA.dialog = old
         self.assertEqual((value, why, seen["gen"]), ("Ab3!" * 7, None, True))
@@ -231,7 +231,7 @@ class HostRoot(unittest.TestCase):
             self.assertEqual(len(pw), SA.GEN_LEN, pw)
             self.assertTrue(any(c.islower() for c in pw) and any(c.isupper() for c in pw) and any(c.isdigit() for c in pw) and any(c in "-_.!@#%^*+=" for c in pw), pw)
             self.assertFalse(set(pw) & set("lIO01'\"\\ \t\n"), pw)
-            self.assertIsNone(SA.check_format("HOST_ROOT_PASSWORD_EU02", pw))
+            self.assertIsNone(SA.check_format("HOST_ROOT_PASSWORD_HOSTA", pw))
 
 
 if __name__ == "__main__":
