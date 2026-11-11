@@ -10,10 +10,18 @@
 //!   "not done" (the step would be done twice) nor as "done" (it would be skipped).
 //! * The steps only ever complete in order. A later step found done while an earlier one
 //!   is not means the host is not in a state this code made; it stops for a person.
-//! * A failure before the site holds anything of the customer's is undone: the half-made
-//!   container is removed and the customer may ask again. From the moment the site is
-//!   installed, a failure keeps the site as it is for a person to finish. Destroying a
-//!   whole site because a late step failed would be the larger harm.
+//! * A failure before anything outside the host was used up is undone: the half-made
+//!   container is removed and the customer may ask again. Until then the site holds only
+//!   what the host put there and is not reachable from outside. From the licence step on
+//!   a failure keeps the site as it is for a person to finish: an activation at a vendor
+//!   is not given back by removing the container, so every "undo and ask again" would
+//!   lose one, and destroying a whole site because a late step failed would be the
+//!   larger harm.
+//! * Until its identity is its own, a started site runs with what the template carries.
+//!   The entry of the host learns about the site only after that step.
+//! * The visitor-statistics loader is not one of these steps: the customer has no view
+//!   of it, so it runs after the site is ready and its failure is ours to hear about,
+//!   not the customer's.
 
 /// One step of opening a site, in the order they are done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,7 +39,8 @@ pub enum CreateStep {
     /// software when the customer asked for a blank site.
     Install,
     /// The site's own secrets are made anew, its address and title are set and the
-    /// first administrators are made.
+    /// first administrators are made. The site must not be reachable from outside
+    /// before this is done: [`CreateStep::Edge`] comes after it.
     Identity,
     /// Each paid plugin of the template is activated at its vendor.
     Licenses,
@@ -126,17 +135,18 @@ pub fn next(probes: &[Probe], blank: bool) -> Next {
 /// What a failed step leaves behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterFailure {
-    /// Nothing of the customer's is in the site yet: remove what was made, each removal
-    /// checked, and the customer may ask again.
+    /// Nothing outside the host was used up and the site was never reachable: remove
+    /// what was made, each removal checked, and the customer may ask again.
     Undo,
-    /// The site is installed: keep it as it is and tell a person. Nothing is removed.
+    /// Keep the site as it is and tell a person. Nothing is removed.
     Keep,
 }
 
-/// See [`AfterFailure`]. The line is the installed site: up to and including the
-/// install it is undone, after it the site is kept.
+/// See [`AfterFailure`]. The line is the first step that uses up something outside the
+/// host: up to and including the site's identity it is undone, from the licences on the
+/// site is kept.
 pub fn after_failure(step: CreateStep) -> AfterFailure {
-    if step <= CreateStep::Install {
+    if step < CreateStep::Licenses {
         AfterFailure::Undo
     } else {
         AfterFailure::Keep
@@ -261,21 +271,28 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_undone_only_until_the_site_is_installed() {
+    fn a_failure_is_undone_only_until_something_outside_the_host_is_used_up() {
         for step in STEPS {
             let want = match step {
                 CreateStep::Clone
                 | CreateStep::Limits
                 | CreateStep::Firewall
                 | CreateStep::Start
-                | CreateStep::Install => AfterFailure::Undo,
-                CreateStep::Identity
-                | CreateStep::Licenses
-                | CreateStep::Edge
-                | CreateStep::Health => AfterFailure::Keep,
+                | CreateStep::Install
+                | CreateStep::Identity => AfterFailure::Undo,
+                CreateStep::Licenses | CreateStep::Edge | CreateStep::Health => AfterFailure::Keep,
             };
             assert_eq!(after_failure(step), want, "{step:?}");
         }
+    }
+
+    #[test]
+    fn the_site_is_not_shown_to_the_outside_before_its_identity_is_its_own() {
+        assert!(CreateStep::Identity < CreateStep::Edge);
+        assert!(CreateStep::Identity < CreateStep::Health);
+        // and a failure there still removes a site nobody could reach
+        assert_eq!(after_failure(CreateStep::Identity), AfterFailure::Undo);
+        assert_eq!(after_failure(CreateStep::Licenses), AfterFailure::Keep);
     }
 
     #[test]
