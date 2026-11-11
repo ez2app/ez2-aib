@@ -1420,9 +1420,10 @@ jobs:
           hk loginlink.rs '        .run_input(&wp(spec, &["eval", &program]), hash.as_bytes())' \
              '        .run_input(&wp(spec, &["eval", &program, &token]), hash.as_bytes()) // knife' \
              the_token_is_never_in_an_argument_and_the_site_gets_only_its_hash
-          # LL4 a login that is not an administrator gets a link
-          hk loginlink.rs '        "admin" => {}' \
-             '        "admin" | "not_admin" => {} // knife' \
+          # LL4 a login that is not an administrator gets a link (the answer is changed, not the
+          # arms: an arm made unreachable fails to compile under -D warnings and bites nothing)
+          hk loginlink.rs '    match said.trim() {' \
+             '    match said.trim().replace("not_admin", "admin").as_str() { // knife' \
              a_login_that_is_not_an_administrator_is_refused_with_a_fixed_code
           # LL5 a site answering for another address gets a link (before)
           hk loginlink.rs "    if home.trim().trim_end_matches('/') != want {" \
