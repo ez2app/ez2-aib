@@ -97,7 +97,7 @@ fn run(a: &Args) -> Result<u8, String> {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
         }
     } else {
-        ex::read_heads(&aib_drive::snapshot::GhRead::new(), repo, &prs)
+        ex::read_heads(&aib_ghread::GhRead::new(), repo, &prs)
     };
     if a.cmd == "event" {
         let ev = ex::Event {

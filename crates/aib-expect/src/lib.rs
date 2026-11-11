@@ -584,7 +584,7 @@ pub fn prs_of(evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u6
 /// A failed call, an odd answer or a PR past [`MAX_PRS`] is `None`: unknown,
 /// which makes its rows unverified, never an old pass.
 pub fn read_heads(
-    gh: &dyn aib_drive::snapshot::Read,
+    gh: &dyn aib_ghread::Read,
     repo: &str,
     prs: &std::collections::BTreeSet<u64>,
 ) -> Snapshot {
@@ -597,7 +597,7 @@ pub fn read_heads(
 /// are read, at most [`MAX_PRS`] calls, the rest unknown (DESIGN-drive-expect-
 /// wiring, 2240e × 1ced7: one reader, at most 30 more calls a round).
 pub fn read_heads_known(
-    gh: &dyn aib_drive::snapshot::Read,
+    gh: &dyn aib_ghread::Read,
     repo: &str,
     prs: &std::collections::BTreeSet<u64>,
     known: &BTreeMap<u64, String>,

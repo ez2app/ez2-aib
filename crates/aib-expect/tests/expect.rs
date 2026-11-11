@@ -284,7 +284,7 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
 
 struct FakeGh(BTreeMap<String, Result<Value, String>>);
 
-impl aib_drive::snapshot::Read for FakeGh {
+impl aib_ghread::Read for FakeGh {
     fn get(&self, path: &str) -> Result<Value, String> {
         self.0.get(path).cloned().unwrap_or(Err("not found".into()))
     }
@@ -986,7 +986,7 @@ fn goals_that_cannot_be_used_leave_an_empty_table_and_say_why() {
 
 struct CountGh(std::cell::RefCell<Vec<String>>);
 
-impl aib_drive::snapshot::Read for CountGh {
+impl aib_ghread::Read for CountGh {
     fn get(&self, path: &str) -> Result<Value, String> {
         self.0.borrow_mut().push(path.to_owned());
         Ok(json!({"head": {"sha": H2}}))
