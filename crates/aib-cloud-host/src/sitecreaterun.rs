@@ -110,6 +110,9 @@ pub trait Opener {
     fn create(&mut self, tenant: &str, domain: &str, blank: bool) -> Asked;
     /// `None`: no ask of this customer under this code.
     fn progress(&mut self, tenant: &str, code: &str) -> Option<Value>;
+    /// [`opened_view`]: `None` unless the customer's opening under this code is open and
+    /// recent.
+    fn opened(&mut self, tenant: &str, code: &str) -> Option<Value>;
 }
 
 pub struct HostOpener;
@@ -135,6 +138,11 @@ impl Opener for HostOpener {
     fn progress(&mut self, tenant: &str, code: &str) -> Option<Value> {
         let places = Places::host().ok()?;
         progress(&places, tenant, code, crate::probe::unix_now())
+    }
+
+    fn opened(&mut self, tenant: &str, code: &str) -> Option<Value> {
+        let places = Places::host().ok()?;
+        opened_view(&places, tenant, code, crate::probe::unix_now())
     }
 }
 
@@ -416,6 +424,48 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
         "state": state,
         "step_done": step_done,
         "stopped_at": stopped_at.flatten(),
+    }))
+}
+
+/// How long after it opened a site's `status` answers that it opened, with what the
+/// opened screen needs (`aib_cloud::wording::opened`), instead of the site's checks.
+pub const OPENED_SHOWN_S: u64 = 3600;
+
+/// A site the customer opened under `code`, told as opened for [`OPENED_SHOWN_S`] after its
+/// run ended (E1 N1, f1fae 11-12: the customer's side prints the opened screen when it
+/// sees `open`). The answer is [`progress`]'s with two fields more, the least that screen
+/// needs: `domain` (the ask's) and `admins` (the logins the opening made, from its record
+/// under `opened`). Never a link, a password or a reason. `None` when there is no such ask
+/// of this customer, it is not open, it opened longer ago, or a field cannot be read.
+pub fn opened_view(places: &Places, tenant: &str, code: &str, now: u64) -> Option<Value> {
+    if !aib_cloud::site::valid_code(code) {
+        return None;
+    }
+    let ask = read_json(&places.asked.join(format!("{code}.json")))?;
+    let theirs = aib_cloud::site::record_tenant(&ask) == Some(tenant);
+    let open = ask.get("state").and_then(Value::as_str) == Some("open");
+    if ask.get("site").and_then(Value::as_str) != Some(code) || !theirs || !open {
+        return None;
+    }
+    let at = ask.get("at").and_then(Value::as_u64)?;
+    if now.saturating_sub(at) > OPENED_SHOWN_S {
+        return None;
+    }
+    let domain = ask.get("domain").and_then(Value::as_str)?;
+    let kept = read_json(&places.opened.join(format!("{code}.json")))?;
+    let admins: Vec<&str> = kept
+        .get("admins")?
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<_>>()?;
+    Some(json!({
+        "site": code,
+        "state": "open",
+        "step_done": CreateStep::Health.as_str(),
+        "stopped_at": null,
+        "domain": domain,
+        "admins": admins,
     }))
 }
 
@@ -1102,6 +1152,40 @@ mod tests {
         let mut again = fake(&p);
         assert_eq!(ran(&p, &code, &mut again), Ok("open"));
         assert!(again.calls.is_empty());
+    }
+
+    /// E1 N1 (f1fae 11-12): for a while after it opened, the customer's site answers that
+    /// it opened, with its domain and the logins its opening made; never someone else's,
+    /// never before it is open, never after [`OPENED_SHOWN_S`].
+    #[test]
+    fn an_opened_site_tells_its_domain_and_administrators_for_a_while() {
+        let p = scratch("opened-view");
+        let code = asked(&p);
+        // still opening: nothing to tell yet
+        assert!(opened_view(&p, T, &code, NOW + 5).is_none());
+        let mut steps = fake(&p);
+        steps.record["admins"] = json!(["ops", "ops2"]);
+        assert_eq!(ran(&p, &code, &mut steps), Ok("open"));
+        let at = NOW + 10;
+        let view = opened_view(&p, T, &code, at + 60).unwrap();
+        assert_eq!(
+            view,
+            json!({
+                "site": code, "state": "open", "step_done": "health", "stopped_at": null,
+                "domain": "www.new.example.test", "admins": ["ops", "ops2"],
+            })
+        );
+        // the customer's side reads it as an opening of that shape
+        let shown = aib_cloud::customer::opened_of(&view.to_string()).unwrap();
+        assert_eq!(shown.admins, ["ops", "ops2"]);
+        assert!(opened_view(&p, T, &code, at + OPENED_SHOWN_S).is_some());
+        assert!(opened_view(&p, T, &code, at + OPENED_SHOWN_S + 1).is_none());
+        // someone else's, or no such code: nothing
+        assert!(opened_view(&p, "t-other", &code, at + 60).is_none());
+        assert!(opened_view(&p, T, "s-zzzzzz", at + 60).is_none());
+        // the logins cannot be read: nothing made up
+        fs::write(p.opened.join(format!("{code}.json")), "{\"admins\":[7]}").unwrap();
+        assert!(opened_view(&p, T, &code, at + 60).is_none());
     }
 
     /// A run cut off after the clone: run again, it carries on from the opening record and

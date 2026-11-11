@@ -81,19 +81,25 @@ pub const NO_SSH: &str = "這台電腦找不到 ssh 程式,請先安裝 OpenSSH 
 ///
 /// `second` is the second administrator's login. Without one, the half sentence
 /// 「(另一位:…)」 is left out whole and the line ends after the first login; nothing else
-/// changes. The domain and the logins are made plain ([`crate::svc::plain`]) first.
+/// changes. An empty second login, or the first one again, is no second one (c477a N1,
+/// N2). The site's code, the domain and the logins are made plain
+/// ([`crate::svc::plain`]) first.
 ///
-/// The command is the draft's `aib cloud site login-link <domain>`: the customer side has
-/// no `login-link` yet, and only its name may change to the one main takes (待確認 1).
-pub fn opened(domain: &str, login: &str, second: Option<&str>) -> String {
+/// The command is this program's own, `aib-cloud site <code> login-link` (Andy 11-12
+/// 04:3x: 「加 aib-cloud site login-link」): a customer key names a site by its code. The
+/// draft's `aib cloud site login-link <網域>` was replaced by it, and nothing else
+/// (HUMAN-PASTE-4542e-1112.md, 回填).
+pub fn opened(code: &str, domain: &str, login: &str, second: Option<&str>) -> String {
+    let code = crate::svc::plain(code);
     let domain = crate::svc::plain(domain);
+    let second = second.filter(|s| !s.is_empty() && *s != login);
     let login = crate::svc::plain(login);
     let also = match second {
         Some(s) => format!("(另一位:{})", crate::svc::plain(s)),
         None => String::new(),
     };
     format!(
-        "✅ 網站已開好:https://{domain}\n   管理員帳號:{login}{also}\n\n下一步:拿登入連結\n   請輸入:aib cloud site login-link {domain}\n   畫面會出現一條連結,點開就直接進後台。\n   ・連結 10 分鐘內有效,只能用一次。\n   ・過期或用掉了,再輸入同一行指令拿新的。\n   ・連結等於鑰匙,請不要轉傳或貼到公開的地方。\n\n進後台後,建議先到「使用者 → 個人資料」設定自己的密碼。"
+        "✅ 網站已開好:https://{domain}\n   管理員帳號:{login}{also}\n\n下一步:拿登入連結\n   請輸入:aib-cloud site {code} login-link\n   畫面會出現一條連結,點開就直接進後台。\n   ・連結 10 分鐘內有效,只能用一次。\n   ・過期或用掉了,再輸入同一行指令拿新的。\n   ・連結等於鑰匙,請不要轉傳或貼到公開的地方。\n\n進後台後,建議先到「使用者 → 個人資料」設定自己的密碼。"
     )
 }
 
@@ -137,6 +143,27 @@ pub fn status(reply: &str) -> Option<String> {
     Some(text)
 }
 
+/// The host's answer to `login-link`: the link alone, one line, for the customer to open
+/// (Andy 11-12 03:58). Nothing else is added to it, and this side keeps it nowhere: no
+/// file, no log (ebb36 L1). Anything but one `https://` line made of plain characters is
+/// not shown as a link: the host's fixed word is shown instead (`refused: <word>` or the
+/// word alone), or `unavailable` when it said none.
+pub fn login_link(exit: u8, out: &str, err: &str) -> String {
+    let lines: alloc::vec::Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    if let [only] = lines.as_slice() {
+        let only = only.trim();
+        if exit == 0 && only.starts_with("https://") && crate::svc::plain(only) == only {
+            return only.to_owned();
+        }
+    }
+    err.lines()
+        .map(str::trim)
+        .map(|l| l.strip_prefix("refused: ").unwrap_or(l))
+        .find(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'))
+        .unwrap_or("unavailable")
+        .to_owned()
+}
+
 /// What the customer is shown for the host's answer to `request`: its exit status, what
 /// it wrote and what it said on the side (`provider_check`, `output cut at the limit`).
 pub fn reply(request: Request, exit: u8, out: &str, err: &str) -> String {
@@ -170,6 +197,7 @@ pub fn reply(request: Request, exit: u8, out: &str, err: &str) -> String {
                 text
             }
         }
+        Request::LoginLink => login_link(exit, out, err),
         // not offered yet: never sent, so there is no answer to word
         Request::PhpReload | Request::Restart | Request::Backup => String::new(),
     }
@@ -273,12 +301,12 @@ mod tests {
     #[test]
     fn the_opened_screen_is_the_final_wording_word_for_word() {
         assert_eq!(
-            opened("shop.example.test", "ops", Some("ops2")),
+            opened("s-abc123", "shop.example.test", "ops", Some("ops2")),
             "✅ 網站已開好:https://shop.example.test
    管理員帳號:ops(另一位:ops2)
 
 下一步:拿登入連結
-   請輸入:aib cloud site login-link shop.example.test
+   請輸入:aib-cloud site s-abc123 login-link
    畫面會出現一條連結,點開就直接進後台。
    ・連結 10 分鐘內有效,只能用一次。
    ・過期或用掉了,再輸入同一行指令拿新的。
@@ -288,12 +316,12 @@ mod tests {
         );
         // one administrator: the half sentence goes whole, nothing else changes
         assert_eq!(
-            opened("shop.example.test", "ops", None),
+            opened("s-abc123", "shop.example.test", "ops", None),
             "✅ 網站已開好:https://shop.example.test
    管理員帳號:ops
 
 下一步:拿登入連結
-   請輸入:aib cloud site login-link shop.example.test
+   請輸入:aib-cloud site s-abc123 login-link
    畫面會出現一條連結,點開就直接進後台。
    ・連結 10 分鐘內有效,只能用一次。
    ・過期或用掉了,再輸入同一行指令拿新的。
@@ -306,14 +334,73 @@ mod tests {
     /// What fills the screen in is made plain: nothing in it acts on the terminal.
     #[test]
     fn the_opened_screen_shows_nothing_that_acts_on_the_terminal() {
-        let text = opened("a\u{1b}[2Jb.example.test", "o\u{7}ps", Some("x\u{202e}y"));
+        let text = opened(
+            "s\u{1b}c",
+            "a\u{1b}[2Jb.example.test",
+            "o\u{7}ps",
+            Some("x\u{202e}y"),
+        );
         assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
         assert!(!text.contains('\u{202e}'), "{text}");
         assert!(text.contains("https://a\\x1b[2Jb.example.test\n"), "{text}");
         assert!(
-            text.contains("login-link a\\x1b[2Jb.example.test\n"),
+            text.contains("aib-cloud site s\\x1bc login-link\n"),
             "{text}"
         );
         assert!(text.contains(":o\\x07ps("), "{text}");
+    }
+
+    /// c477a N1 / N2: an empty second login, or the first one again, is no second one.
+    #[test]
+    fn a_second_administrator_that_is_not_another_one_is_left_out() {
+        let one = opened("s-abc123", "shop.example.test", "ops", None);
+        assert_eq!(
+            opened("s-abc123", "shop.example.test", "ops", Some("")),
+            one
+        );
+        assert_eq!(
+            opened("s-abc123", "shop.example.test", "ops", Some("ops")),
+            one
+        );
+        assert!(opened("s-abc123", "shop.example.test", "ops", Some("ops2"))
+            .contains("ops(另一位:ops2)\n"));
+    }
+
+    /// The link is shown as the host gave it, alone; anything else is the host's word.
+    #[test]
+    fn a_login_link_is_shown_alone_or_not_at_all() {
+        let url = "https://shop.example.test/?ez2_otl=AbC123";
+        let ll = parse_request("login-link").unwrap();
+        assert_eq!(
+            reply(
+                ll,
+                0,
+                &format!("{url}\n"),
+                "login link issued once for ops\n"
+            ),
+            url
+        );
+        // more than the link, or not a link: never shown as one
+        assert_eq!(reply(ll, 0, &format!("{url}\n{url}\n"), ""), "unavailable");
+        assert_eq!(
+            reply(ll, 0, "http://shop.example.test/?x\n", ""),
+            "unavailable"
+        );
+        assert_eq!(reply(ll, 0, "https://a\u{1b}[2J\n", ""), "unavailable");
+        // a refusal or a failure is the host's fixed word
+        assert_eq!(
+            reply(ll, 2, "", "refused: role_forbidden\n"),
+            "role_forbidden"
+        );
+        assert_eq!(
+            reply(ll, 2, "", "refused: tenant_mismatch\n"),
+            "tenant_mismatch"
+        );
+        assert_eq!(reply(ll, 3, "", "provider_check\n"), "provider_check");
+        assert_eq!(
+            reply(ll, 3, &format!("{url}\n"), "unavailable\n"),
+            "unavailable"
+        );
+        assert_eq!(reply(ll, 3, "", "could not read\n"), "unavailable");
     }
 }

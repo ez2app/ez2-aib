@@ -82,7 +82,7 @@ pub fn answer(site: &str, records: &str, line: &str, roles: &[Role]) -> u8 {
             // a fixed word: what was sent is not echoed
             eprintln!("refused: {}", why.as_str());
             // only what is offered is listed (Andy 11-10: the rest stays hidden)
-            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N]");
+            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N] | login-link");
             return 2;
         }
     };
@@ -150,6 +150,41 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 }
                 Err(_) => {
                     eprintln!("could not read the log");
+                    3
+                }
+            }
+        }
+        Request::LoginLink => {
+            let Ok(spec) = load_spec(site, records) else {
+                eprintln!("could not read the site record");
+                return 3;
+            };
+            // nothing is run inside a quarantined CT for its customer, as for `logs`; the
+            // same neutral word
+            let ct_fw = std::fs::read_to_string(format!("{FIREWALL_DIR}/{}.fw", spec.ct)).ok();
+            if logs_gate(ct_fw.as_deref()) != LogsGate::Go {
+                eprintln!("provider_check");
+                return 3;
+            }
+            let mut paths = crate::sitecreatecmd::HostPaths::host();
+            paths.records = std::path::PathBuf::from(records);
+            let link = crate::opstore::OpPlace::host().and_then(|place| {
+                crate::loginlink::customer_link(
+                    &place,
+                    &paths,
+                    site,
+                    &mut crate::sitecreatecmd::HostRunner,
+                )
+            });
+            match link {
+                // standard output is the link alone; nothing of it goes anywhere else
+                Ok(url) => {
+                    println!("{url}");
+                    0
+                }
+                // why stays on the host: the customer reads one word
+                Err(_) => {
+                    eprintln!("unavailable");
                     3
                 }
             }
@@ -248,7 +283,7 @@ fn answer_tenant_with(
         Ok(r) => r,
         Err(why) => {
             eprintln!("refused: {}", why.as_str());
-            eprintln!("requests: sites | usage | site create <domain> [blank] | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N]");
+            eprintln!("requests: sites | usage | site create <domain> [blank] | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N] | site <code> login-link");
             // `site <code> domain check|add <name>` is not listed until the host can do it
             // (Andy 11-10: what is not open is not shown)
             return 2;
@@ -264,6 +299,14 @@ fn answer_tenant_with(
             eprintln!("could not read the site records");
             return 3;
         };
+        // a site of theirs that opened a moment ago: its status says so, with what the
+        // opened screen needs (f1fae 11-12, E1 N1), until it reads as any site's
+        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {
+            if let Some(view) = opener.opened(tenant, site) {
+                println!("{view}");
+                return 0;
+            }
+        }
         if !sites.iter().any(|(code, _)| code == site) {
             // a site of theirs still opening has no record yet: its status is how far the
             // opening got (the same refusal as any other code when it is not theirs)
@@ -464,6 +507,9 @@ mod tests {
         fn progress(&mut self, _: &str, _: &str) -> Option<Value> {
             None
         }
+        fn opened(&mut self, _: &str, _: &str) -> Option<Value> {
+            None
+        }
     }
 
     /// `answer_tenant` against [`NoOpening`]: the tests never reach the host's openings.
@@ -482,6 +528,7 @@ mod tests {
         reply: Asked,
         asked: Vec<String>,
         opening: Option<(&'static str, Value)>,
+        just_opened: Option<(&'static str, Value)>,
         followed: Vec<String>,
     }
 
@@ -491,6 +538,7 @@ mod tests {
                 reply,
                 asked: Vec::new(),
                 opening: None,
+                just_opened: None,
                 followed: Vec::new(),
             }
         }
@@ -504,6 +552,11 @@ mod tests {
         fn progress(&mut self, tenant: &str, code: &str) -> Option<Value> {
             self.followed.push(format!("{tenant} {code}"));
             let (mine, view) = self.opening.as_ref()?;
+            (*mine == code).then(|| view.clone())
+        }
+        fn opened(&mut self, tenant: &str, code: &str) -> Option<Value> {
+            self.followed.push(format!("opened {tenant} {code}"));
+            let (mine, view) = self.just_opened.as_ref()?;
             (*mine == code).then(|| view.clone())
         }
     }
@@ -687,6 +740,85 @@ mod tests {
             2
         );
         assert_eq!(opener.followed.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1 N1 (f1fae 11-12): a site of the customer's that opened a moment ago answers
+    /// `status` with what the opened screen needs; only `status`, only a site the key
+    /// reaches, and asked with the key's customer.
+    #[test]
+    fn a_site_just_opened_answers_status_with_its_opened_view() {
+        let dir = std::env::temp_dir().join(format!("aib-justopened-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        record(&dir, "site3", 113, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        let mut opener = Recorder::new(Asked::Unavailable);
+        let view = json!({ "site": "site2", "state": "open", "step_done": "health", "stopped_at": null,
+                           "domain": "site2.example.net", "admins": ["ops"] });
+        opener.just_opened = Some(("site2", view));
+        assert_eq!(
+            answer_tenant_with(
+                "t-aaa",
+                None,
+                d,
+                "site site2 status",
+                &[Role::Viewer],
+                &mut opener
+            ),
+            0
+        );
+        assert_eq!(opener.followed, ["opened t-aaa site2"]);
+        // not `status`: the opened view is not asked for
+        let _ = answer_tenant_with("t-aaa", None, d, "site site2 logs nginx", ALL, &mut opener);
+        // a key for other sites of the customer does not reach it
+        let scope: &[&str] = &["site3"];
+        assert_eq!(
+            answer_tenant_with(
+                "t-aaa",
+                Some(scope),
+                d,
+                "site site2 status",
+                ALL,
+                &mut opener
+            ),
+            2
+        );
+        assert_eq!(opener.followed, ["opened t-aaa site2"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1 N1 (Andy 11-12 04:3x): `login-link` is offered, under either kind of key, to a
+    /// role that may work on the site; and it is never issued for a CT whose state cannot
+    /// be read.
+    #[test]
+    fn a_login_link_is_for_a_role_that_may_work_on_the_site() {
+        let dir = std::env::temp_dir().join(format!("aib-loginlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        for role in [Role::Viewer, Role::Analyst, Role::Publisher] {
+            assert_eq!(answer("site2", d, "login-link", &[role]), 2, "{role:?}");
+            assert_eq!(
+                answer_tenant("t-aaa", None, d, "site site2 login-link", &[role]),
+                2,
+                "{role:?}"
+            );
+        }
+        // the role may: here no CT's firewall can be read, so nothing is issued
+        assert_eq!(answer("site2", d, "login-link", &[Role::Editor]), 3);
+        assert_eq!(
+            answer_tenant("t-aaa", None, d, "site site2 login-link", ALL),
+            3
+        );
+        // someone else's site, or none: the same refusal as for any request
+        assert_eq!(
+            answer_tenant("t-bbb", None, d, "site site2 login-link", ALL),
+            2
+        );
+        assert_eq!(answer("site2", d, "login-link ops", ALL), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
