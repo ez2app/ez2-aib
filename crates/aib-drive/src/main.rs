@@ -111,7 +111,8 @@ fn main() {
         collector: a.collector.clone(),
     };
     let mut round = |prev: &BTreeMap<u64, Sha>| -> Result<Snapshot, String> {
-        // the quota first: a round must not use up the token every seat shares
+        // the quota first: a round must not use up the token every seat shares.
+        // The one call outside GhRead's repos/ list: fixed argv `api rate_limit`, a GET.
         let left = run_fixed(&gh.program, &observe::quota_args(), gh.timeout)
             .map_err(|e| format!("gh api rate_limit: {e}"))
             .and_then(|out| {

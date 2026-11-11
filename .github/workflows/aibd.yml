@@ -2048,9 +2048,6 @@ jobs:
           sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
              '                let _ = e; // knife' \
              a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
-      # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock and backoff): each
-      # guard, broken on purpose, must turn its own test red. K1 / K4 have no knife: there is no
-      # executor and no write call in aib-drive to break (see the PR description).
       # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock, backoff, quota):
       # each guard, broken on purpose, must turn its own test red. K1 / K4 (never executes, never
       # writes outside the state root): aib-drive has no executor and no write call to break; the

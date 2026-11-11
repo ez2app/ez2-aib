@@ -157,8 +157,9 @@ pub struct Record {
     pub would: Vec<Intent>,
 }
 
-/// Invisible format characters that can reorder or hide text on a terminal
-/// (bidi overrides and isolates, zero-width characters, BOM, …).
+/// Invisible characters that can reorder or hide text on a terminal (bidi
+/// overrides and isolates, zero-width characters, BOM, Hangul fillers, tag
+/// characters, …).
 fn is_format(c: char) -> bool {
     matches!(
         c,
@@ -170,6 +171,11 @@ fn is_format(c: char) -> bool {
             | '\u{2060}'..='\u{206f}'
             | '\u{feff}'
             | '\u{fff9}'..='\u{fffb}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{3164}'
+            | '\u{ffa0}'
+            | '\u{e0000}'..='\u{e007f}'
     )
 }
 
@@ -308,7 +314,8 @@ pub fn prev_heads(journal: &Path) -> BTreeMap<u64, Sha> {
             return BTreeMap::new();
         }
         let text = String::from_utf8_lossy(&buf);
-        // Unless the read starts at the top, its first line may be cut.
+        // Unless the read starts at the top, its first line may be cut. (No
+        // knife: a cut line's tail is not a whole record, so it never parses.)
         let whole = if from == 0 {
             &text[..]
         } else {

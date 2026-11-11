@@ -186,7 +186,7 @@ fn a_second_observe_is_refused_with_the_holders_pid() {
     let held = lock(&p.lock, &p.pid).unwrap();
     // the pid is read from its own file, never from the locked one (on
     // Windows the locked file cannot be read: 1ced7 PR-C M1)
-    assert_eq!(std::fs::read_to_string(&p.lock).unwrap(), "");
+    assert_eq!(std::fs::metadata(&p.lock).unwrap().len(), 0);
     let e = lock(&p.lock, &p.pid).unwrap_err();
     assert!(e.contains(&std::process::id().to_string()), "{e}");
     let mut r = |_: &BTreeMap<u64, Sha>| Ok(snap());
@@ -247,6 +247,7 @@ fn format_characters_are_cleaned_too() {
     assert_eq!(clean("ok\u{202e}gnp.exe", 20), "ok?gnp.exe");
     assert_eq!(clean("a\u{200b}b\u{2066}c\u{feff}", 20), "a?b?c?");
     assert_eq!(clean("繁中 é", 20), "繁中 é");
+    assert_eq!(clean("x\u{e0041}\u{3164}y\u{115f}", 20), "x??y?");
 }
 
 /// L3: --interval is at least 60 s; every round reads GitHub.
