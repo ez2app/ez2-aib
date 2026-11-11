@@ -21,6 +21,13 @@
 //! `provider_check` row) and `logs` (bounded, masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
 //!
+//! A customer key (`--tenant`, every site of the customer, owner or admin) may open a site:
+//! `site create <domain> [blank]` answers the new site's code and `opening` at once, and the
+//! opening goes on in the background ([`crate::sitecreaterun`]); `site <code> status`
+//! answers the step it reached until the site is live, then the site's own checks.
+//! Refusals are fixed words: `already_opening`, `domain_taken`, `quota_exceeded`;
+//! anything of ours that stops it is `unavailable` (exit 3).
+//!
 //! Exit status: as `site verify` for `status`; 0 for `logs`; 2 a refused request;
 //! 4 not available yet; 3 could not be done. `logs` for a quarantined site is not run
 //! inside the CT: it answers the neutral word `provider_check` and exits 3, the same as
@@ -39,6 +46,7 @@ use serde_json::{json, Value};
 
 use crate::probe::run_capture_bounded;
 use crate::quarantinecmd::load_spec;
+use crate::sitecreaterun::{Asked, HostOpener, Opener};
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const FIREWALL_DIR: &str = "/etc/pve/firewall";
@@ -214,6 +222,18 @@ pub fn answer_tenant(
     line: &str,
     roles: &[Role],
 ) -> u8 {
+    answer_tenant_with(tenant, scope, records, line, roles, &mut HostOpener)
+}
+
+/// [`answer_tenant`] with the openings asked of `opener` (tests hand in their own).
+fn answer_tenant_with(
+    tenant: &str,
+    scope: Option<&[&str]>,
+    records: &str,
+    line: &str,
+    roles: &[Role],
+    opener: &mut impl Opener,
+) -> u8 {
     // a list of one site: that member need not name it (4.5 section 4). The line is still
     // a customer key's line afterwards, so the record is asked whose the site is.
     let named;
@@ -228,9 +248,9 @@ pub fn answer_tenant(
         Ok(r) => r,
         Err(why) => {
             eprintln!("refused: {}", why.as_str());
-            eprintln!("requests: sites | usage | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N]");
-            // `site create <name>` and `site <code> domain check|add <name>` are not listed
-            // until the host can do them (Andy 11-10: what is not open is not shown)
+            eprintln!("requests: sites | usage | site create <domain> [blank] | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N]");
+            // `site <code> domain check|add <name>` is not listed until the host can do it
+            // (Andy 11-10: what is not open is not shown)
             return 2;
         }
     };
@@ -245,6 +265,15 @@ pub fn answer_tenant(
             return 3;
         };
         if !sites.iter().any(|(code, _)| code == site) {
+            // a site of theirs still opening has no record yet: its status is how far the
+            // opening got (the same refusal as any other code when it is not theirs)
+            let in_scope = scope.is_none_or(|list| list.contains(&site));
+            if request == Request::Status && in_scope {
+                if let Some(progress) = opener.progress(tenant, site) {
+                    println!("{progress}");
+                    return 0;
+                }
+            }
             eprintln!("refused: tenant_mismatch");
             return 2;
         }
@@ -262,14 +291,32 @@ pub fn answer_tenant(
         eprintln!("refused: role_forbidden");
         return 2;
     }
-    // opening a site and a site's domains parse and are checked against the roles, and
-    // nothing is done yet (PLAN-customer-site-create: the journal and the host lock come
-    // with the part that does them). The role came first: a key that may not ask learns
-    // nothing, not even whether the site named is the customer's.
-    let coming_later = matches!(
-        request,
-        OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }
-    );
+    // the customer's opening: the code and `opening` at once, the rest in the background
+    if let OwnerRequest::Create { name, blank } = request {
+        return match opener.create(tenant, name, blank) {
+            Asked::Opening(code) => {
+                println!("{}", json!({ "site": code, "state": "opening" }));
+                0
+            }
+            Asked::Refused(word, own) => {
+                // their own opening of that domain: its code, to follow it
+                if let Some(code) = own {
+                    println!("{}", json!({ "site": code, "state": "opening" }));
+                }
+                eprintln!("refused: {word}");
+                2
+            }
+            Asked::Unavailable => {
+                eprintln!("unavailable");
+                3
+            }
+        };
+    }
+    // a site's domains parse and are checked against the roles, and nothing is done yet
+    // (PLAN-customer-site-create: the binding comes with the part that does it). The role
+    // came first: a key that may not ask learns nothing, not even whether the site named
+    // is the customer's.
+    let coming_later = matches!(request, OwnerRequest::Domain { .. });
     if coming_later {
         eprintln!("not available yet");
         return 4;
@@ -407,6 +454,60 @@ mod tests {
 
     const ALL: &[Role] = &[Role::Owner];
 
+    /// The tests' host: no opening anywhere, and none may be started.
+    struct NoOpening;
+
+    impl Opener for NoOpening {
+        fn create(&mut self, _: &str, _: &str, _: bool) -> Asked {
+            panic!("an opening was asked for")
+        }
+        fn progress(&mut self, _: &str, _: &str) -> Option<Value> {
+            None
+        }
+    }
+
+    /// `answer_tenant` against [`NoOpening`]: the tests never reach the host's openings.
+    fn answer_tenant(
+        tenant: &str,
+        scope: Option<&[&str]>,
+        records: &str,
+        line: &str,
+        roles: &[Role],
+    ) -> u8 {
+        answer_tenant_with(tenant, scope, records, line, roles, &mut NoOpening)
+    }
+
+    /// Answers as told and remembers what it was asked.
+    struct Recorder {
+        reply: Asked,
+        asked: Vec<String>,
+        opening: Option<(&'static str, Value)>,
+        followed: Vec<String>,
+    }
+
+    impl Recorder {
+        fn new(reply: Asked) -> Self {
+            Recorder {
+                reply,
+                asked: Vec::new(),
+                opening: None,
+                followed: Vec::new(),
+            }
+        }
+    }
+
+    impl Opener for Recorder {
+        fn create(&mut self, tenant: &str, domain: &str, blank: bool) -> Asked {
+            self.asked.push(format!("{tenant} {domain} {blank}"));
+            self.reply.clone()
+        }
+        fn progress(&mut self, tenant: &str, code: &str) -> Option<Value> {
+            self.followed.push(format!("{tenant} {code}"));
+            let (mine, view) = self.opening.as_ref()?;
+            (*mine == code).then(|| view.clone())
+        }
+    }
+
     fn record(dir: &std::path::Path, site: &str, ct: u32, tenant: Option<&str>) {
         let mut rec = json!({
             "site": site, "ct": ct, "ip": format!("10.77.0.{}", ct - 100),
@@ -466,19 +567,50 @@ mod tests {
             answer_tenant("t-aaa", None, "/nonexistent/aib-tenant", "sites", ALL),
             3
         );
-        // Andy 11-11: opening a site and a site's domains. They parse, the role is asked,
-        // and nothing is done yet: the same "not available yet" as a site's restart
-        let coming = not_yet;
+        // Andy 11-11: opening a site. The owner's (and the platform's) key asks the host
+        // for it with the customer of the key and the name as sent, and gets the code
         let open = "site create www.example.com";
-        assert_eq!(answer_tenant("t-aaa", None, d, open, ALL), coming);
+        let mut opener = Recorder::new(Asked::Opening("s-abc123".to_owned()));
         assert_eq!(
-            answer_tenant("t-aaa", None, d, open, &[Role::Owner]),
-            coming
+            answer_tenant_with("t-aaa", None, d, open, ALL, &mut opener),
+            0
         );
-        // opening a site is the owner's: nobody else's key gets as far as "not yet"
+        let blank = "site create example.com blank";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, blank, &[Role::Admin], &mut opener),
+            0
+        );
+        assert_eq!(
+            opener.asked,
+            ["t-aaa www.example.com false", "t-aaa example.com true"]
+        );
+        // opening a site is the owner's: nobody else's key gets as far as asking
         for role in [Role::Editor, Role::Publisher, Role::Analyst, Role::Viewer] {
-            assert_eq!(answer_tenant("t-aaa", None, d, open, &[role]), 2);
+            assert_eq!(
+                answer_tenant_with("t-aaa", None, d, open, &[role], &mut opener),
+                2
+            );
         }
+        // a refusal is the customer's (2), our own trouble is "could not" (3)
+        for (reply, rc) in [
+            (Asked::Refused("already_opening", None), 2),
+            (
+                Asked::Refused("already_opening", Some("s-abc123".to_owned())),
+                2,
+            ),
+            (Asked::Refused("domain_taken", None), 2),
+            (Asked::Refused("quota_exceeded", None), 2),
+            (Asked::Unavailable, 3),
+        ] {
+            let mut told = Recorder::new(reply);
+            assert_eq!(
+                answer_tenant_with("t-aaa", None, d, open, ALL, &mut told),
+                rc
+            );
+        }
+        // a site's domains parse, the role is asked, and nothing is done yet: the same
+        // "not available yet" as a site's restart
+        let coming = not_yet;
         let bind = "site site2 domain add shop.example.com";
         assert_eq!(
             answer_tenant("t-aaa", None, d, bind, &[Role::Publisher]),
@@ -495,17 +627,66 @@ mod tests {
             ),
             coming
         );
-        let blank = "site create example.com blank";
-        assert_eq!(answer_tenant("t-aaa", None, d, blank, ALL), coming);
         // a key for some of the customer's sites opens none, whatever its roles (33e28)
-        assert_eq!(answer_tenant("t-aaa", Some(&["site2"]), d, open, ALL), 2);
-        assert_eq!(
-            answer_tenant("t-aaa", Some(&["site2", "site3"]), d, open, ALL),
-            2
-        );
+        let mut scoped = Recorder::new(Asked::Opening("s-abc123".to_owned()));
+        for scope in [&["site2"][..], &["site2", "site3"][..]] {
+            assert_eq!(
+                answer_tenant_with("t-aaa", Some(scope), d, open, ALL, &mut scoped),
+                2
+            );
+        }
+        assert!(scoped.asked.is_empty());
         // a site is not opened without its address, and nothing else is the customer's to choose
         assert_eq!(answer_tenant("t-aaa", None, d, "site create", ALL), 2);
         assert_eq!(answer_tenant("t-aaa", None, d, "site create site9", ALL), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1: a site of the customer's still opening has no record yet; its status is how far
+    /// the opening got, asked with the key's customer. Only `status`, only within the key's
+    /// sites, and no opening of theirs is the same refusal as any code not theirs.
+    #[test]
+    fn a_site_still_opening_answers_how_far_it_got() {
+        let dir = std::env::temp_dir().join(format!("aib-opening-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        let mut opener = Recorder::new(Asked::Unavailable);
+        let view = json!({ "site": "s-abc123", "state": "opening", "step_done": "clone", "stopped_at": null });
+        opener.opening = Some(("s-abc123", view));
+        let status = "site s-abc123 status";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, status, ALL, &mut opener),
+            0
+        );
+        // a viewer may read it too: status is read_private
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, status, &[Role::Viewer], &mut opener),
+            0
+        );
+        // not a code of theirs that is opening: refused as before
+        let other = "site s-zzzzzz status";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, other, ALL, &mut opener),
+            2
+        );
+        assert_eq!(
+            opener.followed,
+            ["t-aaa s-abc123", "t-aaa s-abc123", "t-aaa s-zzzzzz"]
+        );
+        // only status; and a key for some of the sites does not reach it
+        let logs = "site s-abc123 logs nginx";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, logs, ALL, &mut opener),
+            2
+        );
+        let scope: &[&str] = &["site2"];
+        assert_eq!(
+            answer_tenant_with("t-aaa", Some(scope), d, status, ALL, &mut opener),
+            2
+        );
+        assert_eq!(opener.followed.len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
