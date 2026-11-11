@@ -283,7 +283,8 @@ pub const NEUTRAL_RESOLVER: &str = "1.1.1.1";
 
 /// Whether a CT's `nameserver` value names only public resolvers: every address in it
 /// IPv4, and none private, loopback, link-local, shared (100.64.0.0/10, where a tailnet's
-/// own resolver lives) or unspecified. A private one is the host's resolver or our
+/// own resolver lives), unspecified, broadcast, multicast, reserved (240.0.0.0/4),
+/// documentation or benchmarking (c477a, ct-mask2 N4). A private one is the host's resolver or our
 /// network's (it would show in the CT's `resolv.conf`); IPv6 is not given to a site CT.
 /// An empty value is not neutral (c477a, ct-mask2 N1).
 pub fn resolver_is_neutral(value: &str) -> bool {
@@ -295,11 +296,17 @@ pub fn resolver_is_neutral(value: &str) -> bool {
         };
         let [a, b, ..] = ip.octets();
         let shared = a == 100 && (64..128).contains(&b);
+        // reserved (240.0.0.0/4, the broadcast address in it) and benchmarking (198.18.0.0/15)
+        let special = a >= 240 || (a == 198 && (b & 0xFE) == 18);
         if ip.is_private()
             || ip.is_loopback()
             || ip.is_link_local()
             || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_multicast()
+            || ip.is_documentation()
             || shared
+            || special
         {
             return false;
         }
@@ -908,5 +915,26 @@ mod tests {
         assert_eq!(userns_closed(Some("")), None);
         assert_eq!(userns_closed(None), None);
         assert!(SYSCTL_APPLY.ends_with(SYSCTL_FILE));
+    }
+
+    #[test]
+    fn a_resolver_that_is_no_public_host_is_not_neutral() {
+        for bad in [
+            "255.255.255.255",
+            "224.0.0.251",
+            "239.1.1.1",
+            "240.0.0.1",
+            "250.1.2.3",
+            "192.0.2.53",
+            "198.51.100.1",
+            "203.0.113.9",
+            "198.18.0.1",
+            "198.19.255.254",
+        ] {
+            assert!(!resolver_is_neutral(bad), "{bad}");
+        }
+        for good in ["198.17.0.1", "198.20.0.1", "223.255.255.1", "9.9.9.9"] {
+            assert!(resolver_is_neutral(good), "{good}");
+        }
     }
 }
