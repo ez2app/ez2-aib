@@ -283,6 +283,10 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # site create B2: the limits step is judged on the template's keys too (4542e 11-11)
+          ck site.rs '        if !LIMITS_STEP_KEYS.contains(&k) {' \
+             '        if !LIMITS_STEP_KEYS.contains(&k) || true { // knife' \
+             the_limits_step_is_checked_on_its_own_keys
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
@@ -651,8 +655,8 @@ jobs:
              '        && (record_main_address == typed_address || true) // knife' \
              the_site_and_its_address_must_both_be_named_exactly
           # removing a site: destroying goes on without a known-good archive
-          ck siteremove.rs '            (Probe::Done, Some(_)) => return Next::Stop("steps_out_of_order", *step),' \
-             '            (Probe::Done, Some(_)) if false => return Next::Stop("steps_out_of_order", *step), // knife' \
+          ck siteremove.rs '            (Probe::Done, Some(_)) if !may_be_done_early(*step) => {' \
+             '            (Probe::Done, Some(_)) if false => { // knife' \
              nothing_is_destroyed_before_the_archive_is_known_good
           # removing a site: an archive that could not be checked is passed over
           ck siteremove.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
@@ -686,10 +690,94 @@ jobs:
           ck siteremove.rs '            if text.lines().any(|l| l.trim_end() == marker) {' \
              '            if text.lines().any(|l| l == marker) { // knife' \
              the_entry_is_read_by_the_sites_own_marker_line
+          # removing a site, DNS (Andy 11-11): a record without the site's own marker is deleted
+          ck siteremove.rs '        if r.comment == marker {' \
+             '        if r.comment == marker || true { // knife' \
+             only_address_records_with_the_sites_marker_are_ours
+          # removing a site, DNS: mail records under the site's address are deleted too
+          ck siteremove.rs 'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "CNAME"];' \
+             'pub const DNS_ADDRESS_TYPES: [&str; 4] = ["A", "AAAA", "CNAME", "MX"]; // knife' \
+             only_address_records_with_the_sites_marker_are_ours
+          # removing a site, DNS: a zone we do not manage holds the removal up
+          ck siteremove.rs '            DnsProbe::Skipped | DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done,' \
+             '            DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done, DnsProbe::Skipped => Probe::Unknown, // knife' \
+             a_dns_step_done_from_the_start_does_not_stop_the_work
+          ck siteremove.rs '        (DnsRights::NotOurs, _) => DnsProbe::Skipped,' \
+             '        (DnsRights::NotOurs, _) => DnsProbe::Unknown, // knife' \
+             the_dns_step_is_passed_over_only_when_the_zone_is_not_ours
+          # removing a site, DNS: a step done from the start (zone not ours) reads as out of order
+          ck siteremove.rs '    matches!(step, RemoveStep::Access | RemoveStep::Dns)' \
+             '    matches!(step, RemoveStep::Access) // knife' \
+             a_dns_step_done_from_the_start_does_not_stop_the_work
+          # removing a site: a site whose port was never forwarded reads as out of order
+          ck siteremove.rs '    matches!(step, RemoveStep::Access | RemoveStep::Dns)' \
+             '    matches!(step, RemoveStep::Dns) // knife' \
+             a_site_whose_way_in_was_never_opened_does_not_stop_the_work
+          # removing a site, DNS: the DNS step moved before the licences (may be called off, runs before the site is gone)
+          ck siteremove.rs $'    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n    /// The address records made for the site are deleted from its DNS zone, when that\n    /// zone is one we manage. Nothing is lost for good: the zone is snapshotted first.\n    Dns,\n' \
+             $'    Dns,\n    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n' \
+             dns_comes_after_the_licences_and_before_the_record
+          # removing a site, DNS (33e28 M1): a part that cannot ask DNS stops every step before it
+          ck siteremove.rs '            DnsProbe::NotDone | DnsProbe::NotAskedHere => Probe::NotDone,' \
+             '            DnsProbe::NotDone => Probe::NotDone, DnsProbe::NotAskedHere => Probe::Unknown, // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 M1): not asked here, and the DNS step is run anyway
+          ck siteremove.rs '        Next::Run(_) | Next::Finished => DNS_NOT_ASKED_HERE,' \
+             '        Next::Run(_) | Next::Finished => Next::Run(RemoveStep::Dns), // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 r2 L1): a site removed apart from DNS reads as steps out of order
+          ck siteremove.rs '    p[at] = Probe::Done; // not held against the steps around it' \
+             '    p[at] = Probe::NotDone; // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 L1): records without our marker left behind read as plain done
+          ck siteremove.rs '            if foreign.is_empty() {' \
+             '            if foreign.is_empty() || true { // knife' \
+             the_dns_step_is_passed_over_only_when_the_zone_is_not_ours
+          # removing a site, DNS (33e28 L2): only the main address is looked at
+          ck siteremove.rs '        if !names.iter().any(|n| same_name(r.name, n))' \
+             '        if !names.iter().take(1).any(|n| same_name(r.name, n)) // knife' \
+             every_address_of_the_site_is_looked_at
+          # removing a site (33e28 L3): steps done early are not listed in the plan
+          ck siteremove.rs '        .filter(|(step, probe)| **step > at && **probe == Probe::Done)' \
+             '        .filter(|(step, probe)| false && **step > at && **probe == Probe::Done) // knife' \
+             steps_done_early_are_listed_behind_a_step_that_can_be_called_off
+          # removing a site, licences (Andy 11-11): an activation no program can give back holds the removal up
+          ck siteremove.rs '    if seats.iter().any(|s| s.seat == Seat::Unknown) {' \
+             '    if seats.iter().any(|s| s.seat == Seat::Unknown || s.seat == Seat::NoAutomaticReturn) { // knife' \
+             activations_no_program_can_give_back_do_not_hold_the_removal_up
           # numbers: an address outside the sites range ends or jumps the range (c477a, #659 L2)
           ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
              '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
              a_new_site_gets_the_next_numbers_up
+          # ---- E7 site quota (4542e 11-11): the pure rule
+          # an opening that names no customer is passed over instead of holding room
+          ck quota.rs '        None => true,' \
+             '        None => false, // knife' \
+             an_opening_of_nobody_named_holds_room_and_one_of_another_does_not
+          # an opening whose live record is already counted is counted twice
+          ck quota.rs '        if codes.contains(code) {' \
+             '        if codes.contains(code) && false { // knife' \
+             an_opening_that_already_has_its_live_record_counts_once
+          # a record of the customer that cannot be read is passed over instead of "could not tell"
+          ck quota.rs '        let spec = site::spec_from_record(rec).map_err(|_| Unknown::RecordUnreadable)?;' \
+             '        let Ok(spec) = site::spec_from_record(rec) else { continue }; // knife' \
+             what_cannot_be_told_is_quota_unknown
+          # the last room taken still fits
+          ck quota.rs '    if more >= 1 {' \
+             '    if more + 1 >= 1 { // knife' \
+             the_last_room_taken_is_quota_exceeded
+          # memory is not judged
+          ck quota.rs '    let by_mem = mem_left / start.memory_mb.max(1);' \
+             '    let by_mem = mem_left / start.memory_mb.max(1) + 100; // knife' \
+             the_last_room_taken_is_quota_exceeded
+          # a customer name that is not a code still gets a plan
+          ck quota.rs '        Some(t) if site::valid_code(t) => Ok(arc::PLAN),' \
+             '        Some(_) => Ok(arc::PLAN), // knife' \
+             what_cannot_be_told_is_quota_unknown
+          # a live record whose tenant_id cannot be read is nobody's instead of "could not tell" (c477a L1)
+          ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
+             '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
+             a_live_tenant_id_that_cannot_be_read_is_quota_unknown
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -730,6 +818,46 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # leak-words: the container's own bridge network goes into the list (hits everywhere, says nothing)
+          hk leakwordscmd.rs '            Class::Private | Class::Other => {}' \
+             '            Class::Private | Class::Other => out.net(ip.to_string(), "host address"), // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a value holding the list's comment mark is written
+          hk leakwordscmd.rs "        && !v.contains('#')" "        && (!v.contains('#') || true) // knife" \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a public resolver anyone uses is listed as ours
+          hk leakwordscmd.rs '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) {' \
+             '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) && false { // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: names of other machines in /etc/hosts are taken as the host's
+          hk leakwordscmd.rs '            .any(|(a, _)| *a == ip && class(ip) != Class::Private)' \
+             '            .any(|_| true) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a bridge's MAC is taken as a network card's
+          hk leakwordscmd.rs '        if root.join(format!("sys/class/net/{nic}/device")).exists() {' \
+             '        if root.join(format!("sys/class/net/{nic}/device")).exists() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: a source that could not be read still exits 0
+          hk leakwordscmd.rs '    if f.unread.is_empty() {' '    if f.unread.is_empty() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: the printed summary names the values
+          hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}")).collect();' \
+             '.map(|(why, n)| format!("{why}: {n} {found:?}")).collect(); // knife' \
+             the_printed_summary_never_names_a_value
+          # leak-words: values left out are not counted (the summary looks complete; 33e28 #656 L2)
+          hk leakwordscmd.rs '            *self.skipped.entry(why).or_default() += 1;' \
+             '            *self.skipped.entry(why).or_default() += 0; // knife' \
+             the_printed_summary_never_names_a_value
+          # leak-words: the file may be written inside a git work tree (33e28 #656 L1)
+          hk leakwordscmd.rs '    if inside_git_tree(Path::new(out)) {' '    if inside_git_tree(Path::new(out)) && false { // knife' \
+             a_file_inside_a_git_work_tree_is_refused
+          # leak-words: a name every network uses (home, local, …) becomes a rule (33e28 #656 r2 L3)
+          hk leakwordscmd.rs '        || GENERIC_NAMES.contains(&n.as_str())' \
+             '        || (GENERIC_NAMES.contains(&n.as_str()) && false) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
+          hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
+             the_host_part_names_what_this_host_is
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
@@ -758,8 +886,9 @@ jobs:
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
-          hk probe.rs '            let mut limited = p.take(cap);' \
-             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+          # (anchor runs to the comment after it: run_bounded_input has the same first line, 4542e B3)
+          hk probe.rs $'            let mut limited = p.take(cap);\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
+             $'            let mut limited = p.take(cap.saturating_mul(1000)); // knife\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
              output_that_does_not_end_is_cut_on_the_host
           # site usage: the host offers its reserve too
           hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
@@ -930,6 +1059,354 @@ jobs:
           hk siteremovecmd.rs '        licences_wired.unwrap_or(Probe::Unknown),' \
              '        licences_wired.unwrap_or(Probe::Done), // knife' \
              the_licences_are_not_guessed
+          # site remove --plan: the DNS step reads as done on a host that cannot ask (Andy 11-11 rule)
+          hk siteremovecmd.rs '        dns.probe(),' \
+             '        { let _ = dns; DnsProbe::Unknown.probe() }, // knife' \
+             what_the_command_passes_lets_an_untouched_site_start_at_the_entry
+          # site remove --plan: the removed record loses the activations left at vendors (33e28 N1)
+          hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
+             '    let _ = left_at_vendor; // knife' \
+             the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
+          # ---- site remove --apply (4542e 11-11)
+          # an archive two days old is reused while the container is still there (site-remove.sh L1)
+          hk siteremovecmd.rs '                Ok(age) if age.as_secs() < FRESH_SECS => {}' \
+             '                Ok(age) if age.as_secs() < FRESH_SECS || true => {} // knife' \
+             an_archive_older_than_a_day_counts_only_once_the_container_is_gone
+          # a site that could not be asked counts as answering the same (site-remove.sh L5)
+          hk siteremovecmd.rs '    if let Some((h, _)) = base.iter().chain(now).find(|(_, c)| c.is_none()) {' \
+             '    if let Some((h, _)) = base.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
+             other_sites_are_compared_with_how_they_answered_at_the_start
+          # other sites are not asked again after a step
+          hk siteremovecmd.rs '                same_as_base(base, &host.others()).map_err(|e| {' \
+             '                same_as_base(base, base).map_err(|e| { // knife' \
+             another_site_answering_differently_stops_the_work_after_that_step
+          # a site that could not be asked before the start does not refuse the removal
+          hk siteremovecmd.rs '            same_as_base(&base, &base)' \
+             '            same_as_base(&[], &[]) // knife' \
+             another_site_that_could_not_be_asked_at_the_start_refuses_the_removal
+          # a step that did not take is done again instead of stopping the work
+          hk siteremovecmd.rs '                if applied.contains(&step) {' \
+             '                if applied.contains(&step) && false { // knife' \
+             a_step_that_does_not_take_stops_the_work_and_nothing_after_it_runs
+          # destroying may rewrite the backup schedule unnoticed
+          hk siteremovecmd.rs '            if host.backup_schedule().as_deref() != Some(before.as_str()) {' \
+             '            if host.backup_schedule().as_deref() != Some(before.as_str()) && false { // knife' \
+             destroying_must_leave_the_backup_schedule_as_it_was
+          # an edited plan under its old hash is applied
+          hk siteremovecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || (doc != g.plan && false) { // knife' \
+             a_host_that_changed_or_a_plan_that_was_edited_is_refused_before_anything
+          # a plan that stops is applied all the same
+          hk siteremovecmd.rs '    if doc["next"] != "run" {' \
+             '    if doc["next"] != "run" && false { // knife' \
+             without_the_persons_word_on_the_licences_nothing_runs_from_this_host
+          # the entry's block is cut although it opens with another address
+          hk siteremovecmd.rs '    if !opens {' \
+             '    if !opens && false { // knife' \
+             the_entry_loses_only_this_sites_block
+          # the entry still naming the address after the cut is written all the same
+          hk siteremovecmd.rs '    if siteremove::unserve_probe(Some(&text), code, main_address) != Probe::Done {' \
+             '    if siteremove::unserve_probe(Some(&text), code, main_address) != Probe::Done && false { // knife' \
+             the_entry_loses_only_this_sites_block
+          # port 21190 is taken for port 2119
+          hk siteremovecmd.rs '    l.contains(&format!("--dport {port} ")) && (l.ends_with(&to) || l.contains(&format!("{to} ")))' \
+             '    l.contains(&format!("--dport {port}")) && (l.ends_with(&to) || l.contains(&format!("{to} "))) // knife' \
+             only_this_sites_forward_is_closed
+          # site99 goes off the export list with site9
+          hk siteremovecmd.rs '        if comment || l.split_whitespace().next() != Some(code) {' \
+             '        if comment || !l.starts_with(code) { // knife' \
+             the_export_list_loses_only_this_sites_line
+          # the record is not moved aside on this host once only DNS is left (as site-remove.sh step 9 does)
+          hk siteremovecmd.rs '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) {' \
+             '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) && false { // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # a host with only the record and DNS left gets a plan --apply refuses (33e28 M1)
+          hk siteremovecmd.rs '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) {' \
+             '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) && false { // knife' \
+             a_host_with_only_the_record_and_dns_left_moves_the_record_and_nothing_else
+          # a record still in place after its step is reported as done (33e28 L1)
+          hk siteremovecmd.rs '                if applied.contains(&step) {' \
+             '                if applied.contains(&step) && false { // knife' \
+             a_record_that_is_still_in_place_after_its_step_stops_the_work
+          # a schedule file that is not there counts as one that cannot be read (33e28 L2)
+          hk siteremovecmd.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {' \
+             '            Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => { // knife' \
+             a_schedule_file_that_is_not_there_is_an_answer_one_that_cannot_be_read_is_not
+          # step 10: the answer's left_on_host is not what is found on the host after (33e28 L3)
+          hk siteremovecmd.rs '        let left_on_host = leftovers_found(host, &leftover_places(spec)?)?;' \
+             '        let left_on_host: Vec<String> = leftover_places(spec)?.iter().map(|_| String::new()).collect(); // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: the removal never cleans what the site left on the host
+          hk siteremovecmd.rs '        let removed = clean_leftovers(host, spec)' \
+             '        let removed = Ok::<Vec<String>, String>(Vec::new()) // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: a name in a place is taken without its site's prefix (site99, ct 1190 go too)
+          hk siteremovecmd.rs '                    if !name.starts_with(prefix.as_str()) {' \
+             '                    if !name.starts_with(prefix.as_str()) && false { // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # step 10: the entry's or the template's container number gives places to remove
+          hk siteremovecmd.rs '    if !(100..=999_999_999).contains(&ct) || ct == EDGE_CT || ct == TEMPLATE_CT {' \
+             '    if !(100..=999_999_999).contains(&ct) || ct == EDGE_CT && ct == TEMPLATE_CT { // knife' \
+             step_ten_has_no_place_for_a_bad_code_or_a_container_that_is_not_a_sites
+          # step 10: a code that is not a site code gives places to remove
+          hk siteremovecmd.rs '    if !valid_code(&spec.code) {' \
+             '    if !valid_code(&spec.code) && false { // knife' \
+             step_ten_has_no_place_for_a_bad_code_or_a_container_that_is_not_a_sites
+          # step 10: a name with a slash or .. is joined to its place
+          hk siteremovecmd.rs '    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains('"'"'/'"'"');' \
+             '    let plain = !name.is_empty(); // knife' \
+             step_ten_only_joins_one_plain_name_to_its_place
+          # step 10: something still there after its removal is let go
+          hk siteremovecmd.rs '    if !still.is_empty() || !failed.is_empty() {' \
+             '    if (!still.is_empty() || !failed.is_empty()) && false { // knife' \
+             a_leftover_still_there_after_its_removal_stops_with_its_path
+          # step 10: one path that cannot be removed keeps the others (33e28 L1)
+          hk siteremovecmd.rs '            failed.push(e);' \
+             '            failed.push(e.clone()); return Err(e); // knife' \
+             a_path_that_cannot_be_removed_does_not_keep_the_others_and_is_listed
+          # step 10 stopped: the stop does not say to remove the paths by hand (33e28 L1)
+          hk siteremovecmd.rs '         remove these paths by hand as root, then run \' \
+             '         remove them, then run \' \
+             a_leftover_still_there_after_its_removal_stops_with_its_path
+          # the plan of a removed site lists its leftovers for another address too (33e28 L1)
+          hk siteremovecmd.rs '        Ok(s) if !siteremove::confirmed(&s.code, s.primary(), code, address) => (' \
+             '        Ok(s) if s.code.is_empty() && !address.is_empty() => ( // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
+          # the plan of a removed site does not list what is still there (33e28 L1)
+          hk siteremovecmd.rs '            Ok(found) => (Value::from(found), Value::Null),' \
+             '            Ok(_) => (Value::from(Vec::<String>::new()), Value::Null), // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
+          # the removed record says nothing was left at the vendors
+          hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
+             '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
+          hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
+             '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
+             an_unreadable_number_stops_the_plan
+          # site create --plan: a domain another site serves is opened again
+          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() {" \
+             "    let own_stop: Option<&'static str> = if taken.is_some() && false { // knife" \
+             an_existing_domain_stops_the_plan
+          # site create --plan: an upper-case domain is folded instead of refused
+          hk sitecreatecmd.rs '    if !valid_domain(name) {' \
+             '    if !valid_domain(&name.to_ascii_lowercase()) { // knife' \
+             an_uppercase_domain_is_refused
+          # site create --plan: a host without a machine id gets a sealed plan anyway
+          hk sitecreatecmd.rs '    let fingerprint = opstore::host_fingerprint(machine_id)?;' \
+             '    let fingerprint = opstore::host_fingerprint(machine_id).unwrap_or_default(); // knife' \
+             a_plan_without_machine_id_is_not_sealed
+          # site create --plan: an unfinished operation on the domain does not hold it
+          hk sitecreatecmd.rs '    } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {' \
+             '    } else if seen.unfinished.as_ref().is_some_and(|u| u.is_empty() && false) { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
+          # site create --plan: a record without its numbers is passed over
+          hk sitecreatecmd.rs '        let (ct, ip) = record_numbers(rec).ok_or("numbers_unknown")?;' \
+             '        let Some((ct, ip)) = record_numbers(rec) else { continue }; // knife' \
+             an_unreadable_number_stops_the_plan
+          # site create --plan: a host without virtual machines (empty `qm list`) can never plan (33e28 11-11 M1)
+          hk sitecreatecmd.rs '        return Some(Vec::new());' \
+             '        return None; // knife' \
+             numbers_come_from_lists_and_configurations
+          # site create --plan: an unfinished opening of the www twin does not hold the domain (33e28 11-11 L1)
+          hk sitecreatecmd.rs '    for name in same_names(domain) {' \
+             '    for name in [domain.to_owned()] { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
+          # site create --apply: a plan that no longer matches the host is applied anyway (4542e 11-11, B1)
+          hk sitecreatecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if (doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan) && false { // knife' \
+             a_host_that_changed_refuses_the_plan
+          # site create --apply: a number something else took since the plan is cloned over
+          hk sitecreatecmd.rs '        if ids.contains(&ct) {' \
+             '        if ids.contains(&ct) && false { // knife' \
+             a_number_taken_since_makes_and_removes_nothing
+          # site create --apply: a container whose existence could not be told counts as gone
+          hk sitecreatecmd.rs '        Err(e) if e.contains("does not exist") => Some(false),' \
+             '        Err(e) if e.contains("does not exist") || true => Some(false), // knife' \
+             an_undo_that_cannot_tell_leaves_everything_for_a_person
+          # site create --apply: the numbers are not held by a record before the clone
+          hk sitecreatecmd.rs '    write_record(creating, &input.code, &record)?;' \
+             '    if false { write_record(creating, &input.code, &record)?; } // knife' \
+             an_approved_plan_clones_once
+          # site create --apply: the journal target is not the domain's
+          hk sitecreatecmd.rs '        &target(domain),' \
+             '        &target("x.example.test"), // knife' \
+             an_approved_plan_clones_once
+          # site create: a domain too long for a journal line keeps its plain target (one rule for plan and apply, 33e28 11-11 N2)
+          hk sitecreatecmd.rs '    if plain.len() <= TARGET_MAX {' \
+             '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
+             a_long_domain_is_planned_under_its_hashed_target
+          # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
+          hk sitecreatecmd.rs '    if differ.is_empty() {' \
+             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: the firewall file is never written (the clone's stays)
+          hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
+             '    let _ = &want; // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a container that does not run counts as started
+          hk sitecreatecmd.rs '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") => Ok(()),' \
+             '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
+             a_container_that_does_not_run_is_undone
+          # site create --continue: the record does not move on (op status would show the wrong step)
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+             $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a running container is destroyed without being stopped
+          hk sitecreatecmd.rs '            let _ = runner.run(&argv(&["pct", "stop", &n]));' \
+             '            // knife: no stop' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: a code typed for another domain's opening is carried on
+          hk sitecreatecmd.rs "    if hosts.split(',').next().map(str::trim) != Some(domain) {" \
+             "    if hosts.split(',').next().map(str::trim) != Some(domain) && false { // knife" \
+             an_opening_of_another_domain_is_not_carried_on
+          # site create --continue: the step the record reached is done again
+          hk sitecreatecmd.rs '        Some(i) => Ok(upto.into_iter().skip(i + 1).collect()),' \
+             '        Some(i) => Ok(upto.into_iter().skip(i).collect()), // knife' \
+             an_opening_carries_on_from_the_step_it_reached
+          # site create --continue: the template's pids line stays beside ours
+          hk sitecreatecmd.rs '        } else if !line.starts_with("lxc.cgroup2.pids.max:") {' \
+             '        } else if !line.starts_with("lxc.cgroup2.pids.max:") || true { // knife' \
+             the_pids_line_is_one_and_in_the_main_section
+          # site create --continue: a container on the platform's hardware address is started (c477a B2 L2)
+          hk sitecreatecmd.rs '        Some(mac) if mac_is_local(&mac) => Ok(()),' \
+             '        Some(mac) if mac_is_local(&mac) || true => Ok(()), // knife' \
+             a_platform_hardware_address_holds_the_start
+          # site create --continue (B3): an undone opening keeps its administrators' passwords on the host (4542e 11-11)
+          hk sitecreatecmd.rs '            let failure = match crate::siteidentity::drop_admin_secrets(&paths.secrets, &spec.code)' \
+             '            let failure = match Ok::<(), String>(()) // knife' \
+             an_undone_opening_drops_its_passwords
+          # B3 install: the scheduler's timer is written but never started
+          hk siteidentity.rs '        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))' \
+             '        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload", &timer])) // knife' \
+             the_install_runs_the_installer_and_puts_the_scheduler_on_a_timer
+          # B3 install: the installer stays in the container after it failed
+          hk siteidentity.rs '    let removed = runner.run(&in_ct(spec.ct, &["rm", "-f", SETUP_IN_CT]));' \
+             '    let removed: Result<String, String> = Ok(String::new()); // knife' \
+             an_installer_that_fails_is_still_taken_out_of_the_container
+          # B3 install: a blank site keeps the template package
+          hk siteidentity.rs '    if !spec.wp {' \
+             '    if !spec.wp && false { // knife' \
+             a_blank_install_drops_the_template_package_first
+          # B3 identity: a password goes into an argument list
+          hk siteidentity.rs '            .run_input(&wp(spec, &["eval", &program]), password.as_bytes())' \
+             '            .run_input(&wp(spec, &["eval", &program, &password]), password.as_bytes()) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the password file is readable by others
+          hk siteidentity.rs '    f.set_permissions(fs::Permissions::from_mode(0o600))' \
+             '    f.set_permissions(fs::Permissions::from_mode(0o644)) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the installer's administrator stays beside the site's own
+          hk siteidentity.rs '    if !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() {' \
+             '    if false && !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the template's notice address stays
+          hk siteidentity.rs '    for key in ["admin_email", "new_admin_email"] {' \
+             '    for key in ["new_admin_email"] { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: an undone site's password files are left behind
+          hk siteidentity.rs '        if name.starts_with(&mine) || name.starts_with(&tmp) {' \
+             '        if false && (name.starts_with(&mine) || name.starts_with(&tmp)) { // knife' \
+             an_undone_site_keeps_no_password
+          # B3 identity: bytes past the even cut are folded onto the first letters
+          hk siteidentity.rs '        .filter(|b| usize::from(**b) < even)' \
+             '        .filter(|b| usize::from(**b) < even || true) // knife' \
+             passwords_are_even_and_long_enough
+          # B3 install (33e28 L1): the installer's output goes to its log, not to the answer
+          hk siteidentity.rs '\"$@\" >\"$log\" 2>&1; rc=$?;' \
+             '\"$@\"; rc=$?; : knife;' \
+             the_installer_output_stays_in_its_log
+          # B3 install (33e28 L1): the installer's exit code is the answer's
+          hk siteidentity.rs 'exit $rc";' \
+             'exit 0"; // knife' \
+             the_installer_output_stays_in_its_log
+          # B3 identity (33e28 L2): the password is checked against what is stored before "set"
+          hk siteidentity.rs 'if (!$v || !wp_check_password($p, $v->user_pass, $v->ID)) {{ exit(5); }} ' \
+             '/* knife */ ' \
+             the_password_is_read_back_before_it_is_called_set
+          # B3 identity (33e28 L4): what the installer leaves in the container is listed for a person
+          hk siteidentity.rs '    pending.extend(left_in_container(&spec.code));' \
+             '    pending.extend(left_in_container(&spec.code).into_iter().take(0)); // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity (33e28 N2): a title reads back escaped as the site software stores it
+          hk siteidentity.rs '"&amp;")' \
+             '"&") /* knife */' \
+             a_title_is_compared_as_the_site_software_stores_it
+          # B4 licences: a site holding another key is activated anyway
+          hk sitelive.rs '    if !same_key(site.trim(), &template) {' \
+             '    if false && !same_key(site.trim(), &template) { // knife' \
+             another_key_in_the_site_is_left_for_a_person_and_nothing_is_activated
+          # B4 entry: a chain that does not jump to the site's group counts as live (c477a B2 L1)
+          hk sitelive.rs '            .ends_with(&jump)' \
+             '            .ends_with(&jump) || !l.is_empty() // knife' \
+             a_firewall_is_live_only_when_its_chain_jumps_to_the_group
+          # B4 entry: the entry is changed before the firewall is live
+          hk sitelive.rs '    if !firewall_compiled(&rules, &spec.fw_group) {' \
+             '    if false && !firewall_compiled(&rules, &spec.fw_group) { // knife' \
+             the_entry_is_changed_only_when_the_firewall_is_live
+          # B4 entry: another block under the site's marker is written over
+          hk sitelive.rs '    if caddyfile.lines().any(|l| l.trim_end() == marker) {' \
+             '    if false && caddyfile.lines().any(|l| l.trim_end() == marker) { // knife' \
+             a_marker_or_a_name_already_on_the_entry_is_refused
+          # B4 entry: a site that cannot be asked counts as answering the same
+          hk sitelive.rs '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none()) {' \
+             '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
+             other_sites_must_answer_as_before_and_no_answer_is_never_the_same
+          # B4 entry: the other sites are not asked again after the change
+          hk sitelive.rs '    let Err(changed) = same_answers(&before, &others(runner, &paths.records, &spec.code)) else {' \
+             '    let Err(changed) = same_answers(&before, &before) else { // knife' \
+             another_site_that_answers_differently_after_is_a_failure
+          # B4 entry: a failed reload leaves the new configuration in place
+          hk sitelive.rs '    let back = runner.run(&edge(&["cp", "-a", backup, CADDYFILE]));' \
+             '    let back = runner.run(&edge(&["true", backup])); // knife' \
+             a_failed_reload_puts_the_old_configuration_back
+          # B4 health: a 200 without the site's own mark is taken as healthy
+          hk sitelive.rs '    if marked {' \
+             '    if marked || true { // knife' \
+             health_needs_200_and_the_site_s_own_mark
+          # B4 health: a record already there for the code is written over
+          hk sitelive.rs '        Ok(there) if there == text => {}' \
+             '        Ok(there) if there == text || true => {} // knife' \
+             a_record_for_the_code_that_is_not_this_one_is_refused
+          # B4 health: another line for the code on the export list is accepted
+          hk sitelive.rs '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line {' \
+             '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line || true { // knife' \
+             the_export_list_gets_one_line_and_keeps_its_comments
+          # B4: a failure from the licences on is undone instead of kept for a person
+          hk sitecreatecmd.rs '        if sitecreate::after_failure(step) == AfterFailure::Keep {' \
+             '        if sitecreate::after_failure(step) == AfterFailure::Keep && false { // knife' \
+             a_failure_from_the_licences_on_keeps_the_site_and_removes_nothing
+          # B4 entry (33e28 M1): a block that changed another site stays on the entry
+          hk sitelive.rs '    if !edge_put_back(runner, &backup) {' \
+             '    if false && !edge_put_back(runner, &backup) { // knife' \
+             a_block_that_changes_another_site_is_taken_off_the_entry_again
+          # B4 health (33e28 M2): the opening record goes with what only it carries
+          hk sitelive.rs '    write_new(&kept, &opened, 0o600)?;' \
+             '    let _ = (&kept, &opened); // knife' \
+             a_healthy_site_becomes_a_full_record_on_the_list_and_its_opening_goes
+          # B4 (33e28 M2): a licence left for a person is not in what is still to do
+          hk sitelive.rs '                .filter(|(_, w)| *w != "done")' \
+             '                .filter(|(_, w)| *w != "done" && false) // knife' \
+             what_a_person_still_has_to_do_comes_from_the_record
+          # site create --plan: a quota that cannot be told does not stop the plan (E7, 4542e 11-11)
+          hk sitecreatecmd.rs '    } else if let Some(w) = quota.stop() {' \
+             '    } else if let Some(w) = quota.stop().filter(|_| false) { // knife' \
+             a_quota_that_cannot_be_told_stops_at_quota_unknown
+          # site create --plan: openings under way are not counted against the quota
+          hk sitecreatecmd.rs '        seen.creating.as_deref(),' \
+             '        Some(&[]), // knife' \
+             a_full_plan_stops_at_quota_exceeded_and_removed_sites_do_not_count
+          # site create --plan: a customer never seen before is not marked (c477a N1)
+          hk sitecreatecmd.rs '        "new_tenant": seen.tenant.as_deref().map(|t| !quota::seen_before(' \
+             '        "new_tenant": seen.tenant.as_deref().map(|t| quota::seen_before( // knife' \
+             a_fresh_domain_plans_the_clone_with_the_next_numbers
+          # --apply names the customer the plan was made for (c477a, E7 N2)
+          hk sitecreatecmd.rs '        (Some(planned), Some(t)) if planned == t => Ok(()),' \
+             '        (Some(planned), Some(_t)) if !planned.is_empty() => Ok(()), // knife' \
+             apply_needs_the_tenant_the_plan_was_made_for
+          hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
+             '        tenant: None, // knife' \
+             apply_needs_the_tenant_the_plan_was_made_for
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
