@@ -28,6 +28,14 @@
 //! one the daily backup rotates, and the archive tool must be able to enter it as the
 //! container's own root, which is an unprivileged id on the host: a first removal by hand
 //! stopped at exactly that, with the archive placed where only the host's root could go.
+//!
+//! Once the record is moved, `--apply` removes what the site left on the host (step 10
+//! of the hand-run program, [`clean_leftovers`]) and looks again. Its answer's
+//! `left_on_host` is what that second look found, so it is always `[]` when `--apply`
+//! answers at all: anything still there stops it with the paths instead. That step is
+//! not one of the plan's steps and runs after the record is moved, so a new plan has
+//! nothing left for `--apply` to run: the stop says which paths to remove by hand, and
+//! `--plan` for the removed site then lists what is still there as `left_on_host`.
 
 use std::fs;
 use std::path::Path;
@@ -780,17 +788,66 @@ pub fn leftovers_found(
 pub fn clean_leftovers(host: &mut impl RemoveHost, spec: &SiteSpec) -> Result<Vec<String>, String> {
     let places = leftover_places(spec)?;
     let found = leftovers_found(host, &places)?;
+    // one path that cannot be removed does not keep the others: all are tried, then counted
+    let mut failed = Vec::new();
     for path in &found {
-        host.remove_path(path)?;
+        if let Err(e) = host.remove_path(path) {
+            failed.push(e);
+        }
     }
     let still = leftovers_found(host, &places)?;
-    if !still.is_empty() {
+    if !still.is_empty() || !failed.is_empty() {
         return Err(format!(
-            "{} path(s) of this site are still on the host: {still:?}",
+            "{} path(s) of this site are still on the host: {still:?}; not removed: {failed:?}",
             still.len()
         ));
     }
     Ok(found)
+}
+
+/// How a step 10 that stopped is said. The record is already moved, so a new plan has
+/// nothing for `--apply` to run: the person removes the paths by hand and checks with the
+/// plan of the removed site, which lists what is still there.
+fn leftovers_failed(spec: &SiteSpec, e: &str, applied: &[&str]) -> String {
+    format!(
+        "leftovers: {e}; the record is already moved, so --apply has nothing left to run: \
+         remove these paths by hand as root, then run \
+         `aib-cloud-host site remove {} --address {} --plan` and check that left_on_host is []; \
+         done so far: {applied:?}",
+        spec.code,
+        spec.primary()
+    )
+}
+
+/// `--plan` for a site whose record was moved aside: no step is probed, but what the
+/// site left on the host is looked for (step 10, read only), so a step 10 that stopped
+/// can be checked again once the paths are removed by hand. `spec` is read from the moved
+/// record; the paths are listed only when the code and the main address typed are its.
+pub fn removed_doc(
+    code: &str,
+    address: &str,
+    spec: Result<SiteSpec, String>,
+    look: impl FnOnce(&SiteSpec) -> Result<Vec<String>, String>,
+) -> Value {
+    let (left, note) = match spec {
+        Ok(s) if !siteremove::confirmed(&s.code, s.primary(), code, address) => (
+            Value::Null,
+            Value::from("the site code and the main address given are not those of one site"),
+        ),
+        Ok(s) => match look(&s) {
+            Ok(found) => (Value::from(found), Value::Null),
+            Err(e) => (Value::Null, Value::from(e)),
+        },
+        Err(e) => (Value::Null, Value::from(format!("the moved record: {e}"))),
+    };
+    json!({
+        "plan": "site-remove",
+        "site": code,
+        "already_removed": true,
+        "probed": false,
+        "left_on_host": left,
+        "left_on_host_note": note,
+    })
 }
 
 /// Carry the removal out from where the host is: look, ask [`next_here`] what is next
@@ -865,7 +922,8 @@ pub fn carry_out(
         };
         // the record is moved (finished, or only the DNS step is left): step 10
         let removed = clean_leftovers(host, spec)
-            .map_err(|e| format!("leftovers: {e}; done so far: {:?}", words(&applied)))?;
+            .map_err(|e| leftovers_failed(spec, &e, &words(&applied)))?;
+        // what is found now: always [] here, anything still there stopped just above
         let left_on_host = leftovers_found(host, &leftover_places(spec)?)?;
         return Ok(json!({
             "applied": words(&applied),
@@ -1264,11 +1322,17 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     if exists(&format!("{records}/{code}.json")) == Some(false)
         && exists(&format!("{REMOVED_RECORDS}/{code}.json")) == Some(true)
     {
-        println!(
-            "{}",
-            // the record was moved aside: said as found, and said that nothing was probed
-            json!({ "plan": "site-remove", "site": code, "already_removed": true, "probed": false })
-        );
+        // the record was moved aside: said as found, nothing probed but what step 10 removes
+        let spec = crate::quarantinecmd::load_spec(&code, REMOVED_RECORDS);
+        let doc = removed_doc(&code, &address, spec, |s| {
+            let mut host = HostRemover {
+                spec: s.clone(),
+                records: records.clone(),
+                stamp: String::new(),
+            };
+            leftovers_found(&mut host, &leftover_places(s)?)
+        });
+        println!("{doc}");
         return Ok(0);
     }
     let spec = crate::quarantinecmd::load_spec(&code, &records)?;
@@ -1698,6 +1762,8 @@ mod tests {
         files: Vec<String>,
         /// A path that `remove_path` answers Ok for without removing.
         sticky: Option<&'static str>,
+        /// A path that `remove_path` refuses.
+        refused: Option<&'static str>,
         calls: Vec<String>,
     }
 
@@ -1722,6 +1788,7 @@ mod tests {
             moved: None,
             files: FILES.iter().map(|f| (*f).to_owned()).collect(),
             sticky: None,
+            refused: None,
             calls: Vec::new(),
         }
     }
@@ -1864,6 +1931,9 @@ mod tests {
         }
         fn remove_path(&mut self, path: &str) -> Result<(), String> {
             self.calls.push(format!("remove_path {path}"));
+            if self.refused == Some(path) {
+                return Err(format!("{path}: refused"));
+            }
             if self.sticky != Some(path) {
                 self.files.retain(|f| f != path);
             }
@@ -1970,6 +2040,61 @@ mod tests {
             e.contains("leftovers") && e.contains("/root/ez2-restore/site9"),
             "{e}"
         );
+        // the record is moved, so the stop says what to remove by hand and how to check
+        assert!(
+            e.contains("by hand")
+                && e.contains("aib-cloud-host site remove site9 --address www.example.com --plan"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_removed_does_not_keep_the_others_and_is_listed() {
+        let mut h = fake();
+        h.refused = Some("/etc/ez2-cloud/sites/site9.admin.anna");
+        let e = clean_leftovers(&mut h, &spec()).unwrap_err();
+        assert!(e.contains("1 path(s)") && e.contains("site9.admin.anna: refused"), "{e}");
+        // every other path of the site was still removed
+        let left: Vec<&str> = h
+            .files
+            .iter()
+            .map(String::as_str)
+            .filter(|f| f.contains("site9") && !f.contains("site99"))
+            .collect();
+        assert_eq!(left, vec!["/etc/ez2-cloud/sites/site9.admin.anna"]);
+        assert!(!h.files.iter().any(|f| f.contains("vzdump-lxc-119-")));
+    }
+
+    #[test]
+    fn the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address() {
+        fn never(_: &SiteSpec) -> Result<Vec<String>, String> {
+            panic!("looked at")
+        }
+        let look = |s: &SiteSpec| {
+            let mut h = fake();
+            leftovers_found(&mut h, &leftover_places(s)?)
+        };
+        let doc = removed_doc("site9", "www.example.com", Ok(spec()), look);
+        assert_eq!(doc["already_removed"], true);
+        assert_eq!(doc["probed"], false);
+        assert_eq!(
+            doc["left_on_host"],
+            json!([
+                "/etc/ez2-cloud/sites/site9.admin.anna",
+                "/etc/ez2-cloud/sites/site9.secret",
+                "/var/lib/vz/dump/vzdump-lxc-119-2026_11_10-02_00_00.tar.zst",
+                "/root/ez2-restore/site9"
+            ])
+        );
+        assert_eq!(doc["left_on_host_note"], Value::Null);
+        // another address: nothing is looked at
+        let doc = removed_doc("site9", "www.example.org", Ok(spec()), never);
+        assert_eq!(doc["left_on_host"], Value::Null);
+        assert!(doc["left_on_host_note"].as_str().unwrap().contains("not those"));
+        // no moved record that can be read: said, not guessed
+        let doc = removed_doc("site9", "www.example.com", Err("gone".to_owned()), never);
+        assert_eq!(doc["left_on_host"], Value::Null);
+        assert!(doc["left_on_host_note"].as_str().unwrap().contains("gone"));
     }
 
     #[test]

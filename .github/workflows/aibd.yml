@@ -1123,9 +1123,25 @@ jobs:
              '    let plain = !name.is_empty(); // knife' \
              step_ten_only_joins_one_plain_name_to_its_place
           # step 10: something still there after its removal is let go
-          hk siteremovecmd.rs '    if !still.is_empty() {' \
-             '    if !still.is_empty() && false { // knife' \
+          hk siteremovecmd.rs '    if !still.is_empty() || !failed.is_empty() {' \
+             '    if (!still.is_empty() || !failed.is_empty()) && false { // knife' \
              a_leftover_still_there_after_its_removal_stops_with_its_path
+          # step 10: one path that cannot be removed keeps the others (33e28 L1)
+          hk siteremovecmd.rs '            failed.push(e);' \
+             '            failed.push(e.clone()); return Err(e); // knife' \
+             a_path_that_cannot_be_removed_does_not_keep_the_others_and_is_listed
+          # step 10 stopped: the stop does not say to remove the paths by hand (33e28 L1)
+          hk siteremovecmd.rs '         remove these paths by hand as root, then run \' \
+             '         remove them, then run \' \
+             a_leftover_still_there_after_its_removal_stops_with_its_path
+          # the plan of a removed site lists its leftovers for another address too (33e28 L1)
+          hk siteremovecmd.rs '        Ok(s) if !siteremove::confirmed(&s.code, s.primary(), code, address) => (' \
+             '        Ok(s) if s.code.is_empty() => ( // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
+          # the plan of a removed site does not list what is still there (33e28 L1)
+          hk siteremovecmd.rs '            Ok(found) => (Value::from(found), Value::Null),' \
+             '            Ok(_) => (Value::from(Vec::<String>::new()), Value::Null), // knife' \
+             the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
           # the removed record says nothing was left at the vendors
           hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
              '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
