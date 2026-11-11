@@ -1346,7 +1346,7 @@ mod tests {
             assert!(matches!(Ip6::parse(bad), Err(Error::Ip(_))), "{bad}");
         }
         assert!(Ip6::parse("2001:db8::443").is_ok());
-        assert!(Ip6::parse("2001:db8:4b:134f::2").is_ok());
+        assert!(Ip6::parse("2001:db8:a:abcd::2").is_ok());
         assert!(Ip6::parse("2001:db8:3:4:5:6:7:8").is_ok());
     }
 

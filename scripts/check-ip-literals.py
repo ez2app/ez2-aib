@@ -27,7 +27,7 @@ Not read as an address:
     (followed by /len), ends in "::", or has a full four-digit group (c477a
     L1: provider prefixes are usually written that short); a
     form followed by a dotted IPv4 is read through its IPv4 part.
-Also read (ebb36 L1): a dotted address after a dot or an underscore
+Also read (ebb36 L1): an address after a dot or an underscore
     (static.A.B.C.D.<domain>, x_A.B.C.D), and the dashed form reverse names
     use (A-B-C-D.<domain>, ec2-A-B-C-D.<domain>) when a dot and a letter follow.
 Kept on purpose (a test that needs a public or reserved address, a
@@ -84,7 +84,9 @@ def allowed(o):
 
 
 IPV6 = re.compile(
-    r"(?<![0-9A-Za-z_:.])"
+    # a dot or an underscore in front is read through (host.2a00:..., x_2a00:..., ebb36 L1)
+    # unless a hex digit stands before it
+    r"(?<![0-9A-Za-z:])(?<![0-9A-Fa-f][._])"
     r"([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})"
     r"(?![0-9A-Za-z_:]|\.[0-9])"
 )
@@ -193,6 +195,7 @@ SELF = [
     ("ec2-8-8-4-4.compute.example.net 8-8-4-4.ip.example.net", 2),  # dashed reverse names; ip-literal-ok
     ("1.2.3.4.5.6 v2.1.2.3.4 2026-11-11-12.log 1-2-3-4-5.x 10-0-0-1.example.net", 0),
     ("1-2-3-4-5.x", 0),  # a longer dashed run at the start of a line
+    ("host.2a00:1:2::1 x_2a00:1:2::1", 2),  # IPv6 after a dot or underscore, ebb36 L1; ip-literal-ok
 ]
 
 
