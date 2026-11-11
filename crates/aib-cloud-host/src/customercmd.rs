@@ -503,7 +503,11 @@ mod tests {
         assert_eq!(sent.len(), 3);
         assert_eq!(sent[0], "password=*** from [hidden]");
         assert_eq!(sent[1], "ok line");
-        assert!(sent[2].ends_with("x [hi"), "{}", &sent[2][sent[2].len() - 10..]);
+        assert!(
+            sent[2].ends_with("x [hi"),
+            "{}",
+            &sent[2][sent[2].len() - 10..]
+        );
         // no short name: not one line
         assert!(log_view(&out, 3, host_hide(None, None, Ok(None), 112).as_ref()).is_none());
     }

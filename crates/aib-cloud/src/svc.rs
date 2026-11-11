@@ -752,7 +752,10 @@ mod tests {
         assert_eq!(sent.len(), LOG_LINE_MAX);
         assert!(sent.ends_with("x [hi"), "{}", &sent[LOG_LINE_MAX - 20..]);
         // and secrets are masked on the way
-        assert_eq!(send_line("password=hunter2 on host7", &h), "password=*** on [hidden]");
+        assert_eq!(
+            send_line("password=hunter2 on host7", &h),
+            "password=*** on [hidden]"
+        );
     }
 
     #[test]

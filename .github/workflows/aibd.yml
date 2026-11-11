@@ -437,6 +437,20 @@ jobs:
           ck svc.rs '            if let Some(p) = HOST_PATHS.iter().find(|p| lower[i..].starts_with(**p)) {' \
              '            if let Some(p) = HOST_PATHS.iter().find(|p| lower[i..].starts_with(**p) && i > usize::MAX - 1) { // knife' \
              host_paths_are_hidden_to_the_next_blank
+          # site logs: the line is cut before the host is hidden, half a host name goes out (33e28 L1)
+          ck svc.rs '    let (hidden, _) = hide.hide(&mask_line(line));' \
+             '    let (hidden, _) = hide.hide(&mask_line(clip_line(line))); // knife' \
+             a_host_word_across_the_cut_is_hidden_before_the_cut
+          # site logs: the domain of the host's full name is not hidden (33e28 L3)
+          ck svc.rs '        for n in [Some(name), parts.map(|p| p.0), parts.map(|p| p.1)]' \
+             '        for n in [Some(name), parts.map(|p| p.0), None] // knife' \
+             the_hosts_names_are_its_short_and_full_names_and_their_domain
+          # site logs: "CT-112" is shown (33e28 N1)
+          ck svc.rs '            alloc::format!("ct-{ct}"),' '            alloc::format!("ct_{ct}"), // knife' \
+             the_hosts_names_are_its_short_and_full_names_and_their_domain
+          # site logs: a CT's volume name is shown (33e28 N1)
+          ck svc.rs '            alloc::format!("vm-{ct}-disk"),' '            alloc::format!("vm-{ct}-diskx"), // knife' \
+             the_hosts_names_are_its_short_and_full_names_and_their_domain
           # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
           ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
              '            .all(|c| c != 0)' \
@@ -899,6 +913,18 @@ jobs:
           # customer logs: a host list that exists but could not be read is taken as none (E6)
           hk customercmd.rs '    let list = list.ok()?.unwrap_or("");' '    let list = list.unwrap_or(None).unwrap_or(""); // knife' \
              a_log_is_not_sent_unless_the_host_words_were_read
+          # customer logs: the host's full name is not taken (33e28 L3)
+          hk customercmd.rs '    Some(svc::HostHide::new(&svc::host_names(name, full), list, ct))' \
+             '    Some(svc::HostHide::new(&svc::host_names(name, full.filter(|_| false)), list, ct)) // knife' \
+             a_log_is_not_sent_unless_the_host_words_were_read
+          # customer logs: lines are sent although what to hide is not known (33e28 L2)
+          hk customercmd.rs '    let hide = hide?;' \
+             '    let none = svc::HostHide::new(&[], "", 0); let hide = hide.unwrap_or(&none); // knife' \
+             every_line_of_a_log_is_masked_and_hidden_before_it_is_sent
+          # customer logs: a line is sent as it was read (33e28 L2)
+          hk customercmd.rs '            .map(|l| svc::send_line(l, hide))' \
+             '            .map(|l| { let _ = hide; l.to_owned() }) // knife' \
+             every_line_of_a_log_is_masked_and_hidden_before_it_is_sent
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
