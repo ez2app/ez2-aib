@@ -9,7 +9,7 @@
 //! on a host are the caller's (and a signed, approved step).
 //!
 //! ```text
-//! {"tenant_id":"t-3k9f2a","name":"…","members":[
+//! {"tenant_id":"t-3k9f2a","name":"…","emails":["owner@example.com"],"cloudflare_accounts":["<32 hex>"],"members":[
 //!   {"identity_id":"m-01","name":"…","roles":["owner"],"scope":"tenant","keys":[
 //!     {"public_key":"ssh-ed25519 AAAA…","use":"entry","device":"…","added":"2026-11-11T00:00:00Z"}]},
 //!   {"identity_id":"m-02","roles":["editor","publisher","analyst"],"scope":["site3"],"keys":[…]}]}
@@ -93,6 +93,11 @@ pub enum Bad {
     Key,
     /// The same member or the same key appears twice.
     Repeated,
+    /// An entry of `emails` is not one address (see [`crate::share::normalize`]), or two
+    /// entries are the same address.
+    Email,
+    /// `cloudflare_accounts` is not a list of Cloudflare account ids without repeats.
+    CloudflareAccounts,
 }
 
 impl Bad {
@@ -109,6 +114,8 @@ impl Bad {
             Bad::Scope => "bad_scope",
             Bad::Key => "bad_key",
             Bad::Repeated => "repeated",
+            Bad::Email => "bad_email",
+            Bad::CloudflareAccounts => "bad_cloudflare_accounts",
         }
     }
 }
@@ -164,6 +171,14 @@ pub struct Roster {
     pub tenant_id: String,
     /// The members.
     pub members: Vec<Member>,
+    /// The addresses the tenant's backups may be shared from (plan §14.7 #11), normalized
+    /// by [`crate::share::normalize`]. Optional in the file; empty means none registered,
+    /// and a restore from a shared backup then stops ([`crate::share::Gate::Unknown`]).
+    pub emails: Vec<String>,
+    /// The Cloudflare accounts that are the customer's: a site's DNS goes only into a
+    /// zone of one of these (`crate::sitedns`). `None` when the roster does not say, which
+    /// is "whose a zone is cannot be told", never "any".
+    pub cloudflare_accounts: Option<Vec<String>>,
 }
 
 fn object<'a>(v: &'a Value, named: &[&str]) -> Result<&'a Map<String, Value>, Bad> {
@@ -239,6 +254,19 @@ fn codes(v: &Value) -> Option<Vec<String>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// A non-empty list of Cloudflare account ids, none twice.
+fn cloudflare_accounts(v: &Value) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for item in v.as_array()? {
+        let id = item.as_str().filter(|i| crate::sitedns::valid_id(i))?;
+        if out.iter().any(|x| x == id) {
+            return None;
+        }
+        out.push(String::from(id));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 fn roles(v: &Value) -> Option<(Vec<Role>, String)> {
     let mut out = Vec::new();
     let mut word = String::new();
@@ -257,11 +285,40 @@ fn roles(v: &Value) -> Option<(Vec<Role>, String)> {
     (!out.is_empty()).then_some((out, word))
 }
 
+/// `emails`: absent is none; otherwise a list of addresses, each one address and none
+/// twice once normalized. One bad entry refuses the roster (nothing is skipped).
+fn emails(v: Option<&Value>) -> Result<Vec<String>, Bad> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<String> = Vec::new();
+    for e in v.as_array().ok_or(Bad::Shape)? {
+        let a = e
+            .as_str()
+            .and_then(crate::share::normalize)
+            .ok_or(Bad::Email)?;
+        if out.contains(&a) {
+            return Err(Bad::Email);
+        }
+        out.push(a);
+    }
+    Ok(out)
+}
+
 /// Read a roster. `site_codes` are the codes of every site on the host: a tenant id that
 /// is one of them is refused, whatever else the roster says.
 pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
     let doc: Value = serde_json::from_str(text).map_err(|_| Bad::NotJson)?;
-    let top = object(&doc, &["tenant_id", "name", "members"])?;
+    let top = object(
+        &doc,
+        &[
+            "tenant_id",
+            "name",
+            "members",
+            "emails",
+            "cloudflare_accounts",
+        ],
+    )?;
     let tenant_id = top
         .get("tenant_id")
         .and_then(Value::as_str)
@@ -271,6 +328,11 @@ pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
         return Err(Bad::TenantIsSiteCode);
     }
     optional_text(top, "name")?;
+    let emails = emails(top.get("emails"))?;
+    let cloudflare_accounts = match top.get("cloudflare_accounts") {
+        None => None,
+        Some(v) => Some(cloudflare_accounts(v).ok_or(Bad::CloudflareAccounts)?),
+    };
     let mut members: Vec<Member> = Vec::new();
     let mut seen_keys: Vec<String> = Vec::new();
     for m in top
@@ -352,6 +414,8 @@ pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
     Ok(Roster {
         tenant_id: String::from(tenant_id),
         members,
+        emails,
+        cloudflare_accounts,
     })
 }
 
@@ -388,6 +452,9 @@ fn entry_args(tenant_id: &str, m: &Member) -> String {
 pub enum SudoersBad {
     /// Two rosters name the same tenant: which one the host means cannot be told.
     DuplicateTenant,
+    /// Two tenants register the same address (c477a, share gate M1): a backup shared from
+    /// it could be restored by either.
+    EmailOnTwoTenants,
 }
 
 impl SudoersBad {
@@ -395,6 +462,7 @@ impl SudoersBad {
     pub fn as_str(self) -> &'static str {
         match self {
             SudoersBad::DuplicateTenant => "duplicate_tenant",
+            SudoersBad::EmailOnTwoTenants => "email_on_two_tenants",
         }
     }
 }
@@ -424,6 +492,12 @@ pub fn sudoers_file(rosters: &[Roster]) -> Result<String, SudoersBad> {
     for (i, r) in rosters.iter().enumerate() {
         if rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) {
             return Err(SudoersBad::DuplicateTenant);
+        }
+        if rosters[..i]
+            .iter()
+            .any(|o| o.emails.iter().any(|e| r.emails.contains(e)))
+        {
+            return Err(SudoersBad::EmailOnTwoTenants);
         }
     }
     let mut rules: Vec<String> = Vec::new();
@@ -513,6 +587,32 @@ mod tests {
 
     fn read(v: &Value) -> Result<Roster, Bad> {
         parse(&v.to_string(), SITES)
+    }
+
+    #[test]
+    fn the_customers_cloudflare_accounts_are_read_strictly() {
+        // not there: cannot tell, never "any"
+        assert_eq!(read(&sample()).unwrap().cloudflare_accounts, None);
+        let id = "0123456789abcdef0123456789abcdef";
+        let mut v = sample();
+        v["cloudflare_accounts"] = json!([id]);
+        assert_eq!(
+            read(&v).unwrap().cloudflare_accounts,
+            Some(vec![String::from(id)])
+        );
+        for bad in [
+            json!([]),
+            json!([id, id]),
+            json!(["0123456789ABCDEF0123456789ABCDEF"]),
+            json!(["0123"]),
+            json!([1]),
+            json!(id),
+            json!(null),
+        ] {
+            v["cloudflare_accounts"] = bad.clone();
+            assert_eq!(read(&v), Err(Bad::CloudflareAccounts), "{bad}");
+        }
+        assert_eq!(Bad::CloudflareAccounts.as_str(), "bad_cloudflare_accounts");
     }
 
     #[test]
@@ -606,6 +706,24 @@ mod tests {
             sudoers_file(&[r.clone(), r]),
             Err(SudoersBad::DuplicateTenant)
         );
+        // two tenants registering one address: refused (c477a, share gate M1)
+        let mut a = sample();
+        a["emails"] = json!(["owner@example.com"]);
+        let mut b = sample();
+        b["tenant_id"] = json!("t-bbb");
+        b["emails"] = json!(["other@example.com", "OWNER@example.com"]);
+        assert_eq!(
+            sudoers_file(&[read(&a).unwrap(), read(&b).unwrap()]),
+            Err(SudoersBad::EmailOnTwoTenants)
+        );
+        assert_eq!(
+            SudoersBad::EmailOnTwoTenants.as_str(),
+            "email_on_two_tenants"
+        );
+        // different addresses: the file is written
+        let mut b2 = b;
+        b2["emails"] = json!(["other@example.com"]);
+        assert!(sudoers_file(&[read(&a).unwrap(), read(&b2).unwrap()]).is_ok());
         // no roster: the header and Defaults only, the account may run nothing
         assert_eq!(sudoers_file(&[]).unwrap().lines().count(), 2);
         assert_eq!(sudoers_escape("a\\b,c:d=e"), "a\\\\b\\,c\\:d\\=e");
@@ -622,6 +740,33 @@ mod tests {
         assert_eq!(read(&v), Err(Bad::Tenant));
         v["tenant_id"] = json!(7);
         assert_eq!(read(&v), Err(Bad::Tenant));
+    }
+
+    #[test]
+    fn the_registered_addresses_are_read_normalized_and_optional() {
+        // absent: none registered (an old roster still reads)
+        assert!(read(&sample()).unwrap().emails.is_empty());
+        let mut v = sample();
+        v["emails"] = json!([" Owner@Example.com", "staff@example.com"]);
+        assert_eq!(
+            read(&v).unwrap().emails,
+            ["owner@example.com", "staff@example.com"]
+        );
+        let bad = |emails: Value| {
+            let mut v = sample();
+            v["emails"] = emails;
+            read(&v).unwrap_err()
+        };
+        // one bad entry refuses the roster; nothing is skipped
+        assert_eq!(bad(json!(["owner@example.com", "owner"])), Bad::Email);
+        assert_eq!(bad(json!(["owner@example.com", 1])), Bad::Email);
+        // the same address twice, once normalized
+        assert_eq!(
+            bad(json!(["owner@example.com", "OWNER@example.com "])),
+            Bad::Email
+        );
+        assert_eq!(bad(json!("owner@example.com")), Bad::Shape);
+        assert_eq!(Bad::Email.as_str(), "bad_email");
     }
 
     #[test]

@@ -9,7 +9,12 @@
 //!                        aib-cloud usage
 //!                        aib-cloud site <code> status
 //!                        aib-cloud site <code> logs <nginx|php|db> [lines N] [minutes N]
+//!                        aib-cloud site create <domain> [blank]
 //! ```
+//!
+//! `site create` answers the new site's code and `opening` at once; `site <code> status`
+//! then answers how far the opening got (`state`, `step_done`, `stopped_at`) until the
+//! site is live. Both are the host's fixed words, shown as they are.
 //!
 //! With a key for one site, which site is not said here: the host knows it from the key.
 //! With a key for a customer the site is named, and the host decides from its own records
@@ -32,13 +37,15 @@
 //! 2 the request or a flag was refused here and nothing was sent; 3 the host could not
 //! be reached or `ssh` could not be run.
 
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 use aib_cloud::client::{parse_line, site_line, ssh_args, Line, NotSent, Target};
-use aib_cloud::customer::OwnerRequest;
+use aib_cloud::customer::{OwnerRequest, Request};
 use aib_cloud::wording;
 
-const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N]> | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
+const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N]> | site create <domain> [blank] | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -166,7 +173,11 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         return Ok(0);
     }
-    let done = match Command::new("ssh").args(&ssh).stdin(Stdio::null()).output() {
+    let done = match Command::new(ssh_program())
+        .args(&ssh)
+        .stdin(Stdio::null())
+        .output()
+    {
         Ok(d) => d,
         Err(e) => {
             if asked.raw {
@@ -200,22 +211,69 @@ fn run(args: &[String]) -> Result<u8, String> {
     // plan() checked the request; one that does not parse was never sent
     match parse_line(&asked.request) {
         Ok(Line::Site(request)) => println!("{}", wording::reply(request, code, &out, &err)),
-        Ok(Line::Owner(owner)) => match (refusal(&err), owner) {
-            // no final wording for these yet: the code alone, the document as it came
-            (Some(word), _) if code == 2 => println!("{word}"),
-            (_, OwnerRequest::Site { request, .. }) => {
-                println!("{}", wording::reply(request, code, &out, &err));
-            }
-            (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{}", shown(&out)),
-            // not sent yet (`offered`); when they are, the host's document until the
-            // sentences are final
-            (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
-                print!("{}", shown(&out));
-            }
-        },
+        Ok(Line::Owner(owner)) => print!("{}", owner_answer(owner, code, &out, &err)),
         Err(_) => {}
     }
     Ok(code)
+}
+
+/// The system's own `ssh`: on Windows the one Windows ships
+/// (`%SystemRoot%\System32\OpenSSH\ssh.exe`), never another `ssh` found first on the
+/// path; elsewhere `ssh` from the path.
+fn ssh_program() -> PathBuf {
+    ssh_program_for(cfg!(windows), std::env::var_os("SystemRoot"))
+}
+
+fn ssh_program_for(windows: bool, system_root: Option<OsString>) -> PathBuf {
+    if windows {
+        system_root
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+            .join("System32")
+            .join("OpenSSH")
+            .join("ssh.exe")
+    } else {
+        PathBuf::from("ssh")
+    }
+}
+
+/// What is shown for a customer key's answer.
+fn owner_answer(owner: OwnerRequest<'_>, code: u8, out: &str, err: &str) -> String {
+    match (refusal(err), owner) {
+        // no final wording for these yet: the code alone, after the document when there
+        // is one (`already_opening` gives the customer's own opening back)
+        (Some(word), _) if code == 2 => format!("{}{word}\n", shown(out)),
+        // a site still opening: how far it got, the host's fixed words as they are
+        (
+            _,
+            OwnerRequest::Site {
+                request: Request::Status,
+                ..
+            },
+        ) if aib_cloud::customer::is_opening(out) => shown(out),
+        (_, OwnerRequest::Site { request, .. }) => {
+            format!("{}\n", wording::reply(request, code, out, err))
+        }
+        (_, OwnerRequest::Sites | OwnerRequest::Usage) => shown(out),
+        // the host's document until the sentences are final; without one, the host's
+        // own word (`unavailable`)
+        (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
+            if out.trim().is_empty() {
+                plain_word(err)
+                    .map(|w| format!("{w}\n"))
+                    .unwrap_or_default()
+            } else {
+                shown(out)
+            }
+        }
+    }
+}
+
+/// The first line of `err` that is one plain code word.
+fn plain_word(err: &str) -> Option<&str> {
+    err.lines()
+        .map(str::trim)
+        .find(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'))
 }
 
 /// The command and its words as one request line: `site …` as [`site_line`] reads it,
@@ -436,6 +494,54 @@ mod tests {
             "{\"hosts\":\"a\\x9b31m\\u{202e}b\\u{e0041}\"}\n"
         );
         assert_eq!(shown(""), "");
+    }
+
+    /// Windows uses the ssh it ships, under its own system folder, wherever that is.
+    #[test]
+    fn the_system_s_own_ssh_is_run() {
+        let tail = std::path::Path::new("System32")
+            .join("OpenSSH")
+            .join("ssh.exe");
+        let p = ssh_program_for(true, Some(OsString::from("D:\\Win Dows")));
+        assert!(p.starts_with("D:\\Win Dows") && p.ends_with(&tail), "{p:?}");
+        let p = ssh_program_for(true, None);
+        assert!(p.starts_with("C:\\Windows") && p.ends_with(&tail), "{p:?}");
+        assert_eq!(ssh_program_for(false, None), PathBuf::from("ssh"));
+    }
+
+    /// E1: opening a site and following it are shown in the host's fixed words.
+    #[test]
+    fn an_opening_is_shown_in_the_host_s_words() {
+        let create = OwnerRequest::Create {
+            name: "www.example.com",
+            blank: false,
+        };
+        let opening = "{\"site\":\"s-abc123\",\"state\":\"opening\"}\n";
+        assert_eq!(owner_answer(create, 0, opening, ""), opening);
+        assert_eq!(
+            owner_answer(create, 3, "", "unavailable\n"),
+            "unavailable\n"
+        );
+        assert_eq!(
+            owner_answer(create, 2, opening, "refused: already_opening\n"),
+            format!("{opening}already_opening\n")
+        );
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: domain_taken\n"),
+            "domain_taken\n"
+        );
+        let status = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::Status,
+        };
+        let progress =
+            "{\"site\":\"s-abc123\",\"state\":\"stopped\",\"step_done\":\"start\",\"stopped_at\":\"install\"}\n";
+        assert_eq!(owner_answer(status, 0, progress, ""), progress);
+        // a live site's checks still get their sentences
+        assert_ne!(
+            owner_answer(status, 0, "{\"exit\":0,\"checks\":[]}", ""),
+            "{\"exit\":0,\"checks\":[]}"
+        );
     }
 
     #[test]
