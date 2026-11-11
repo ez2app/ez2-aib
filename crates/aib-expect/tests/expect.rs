@@ -206,7 +206,7 @@ fn no_evidence_is_unverified_and_rc_decides_pass_or_fail() {
     let rep = compare(&g, &log, &Snapshot::default(), NOW);
     assert_eq!(status(&rep, "A1"), Status::Pass);
     assert_eq!(status(&rep, "A2"), Status::Fail);
-    assert_eq!(status(&rep, "A3"), Status::Unverified("沒有證據".into()));
+    assert_eq!(status(&rep, "A3"), Status::Unverified(Why::NoEvidence));
     // fail first, then unverified
     assert_eq!(rep.next, ["A2", "A3"]);
     let text = render(&rep, None);
@@ -234,8 +234,11 @@ fn a_failing_check_is_never_covered_by_an_older_pass() {
     let log = parse_evidence(&format!("{e}\n"));
     assert_eq!(
         status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
-        Status::Unverified("證據過期".into())
+        Status::Unverified(Why::Expired)
     );
+    let j = to_json(&compare(&g, &log, &Snapshot::default(), NOW));
+    assert_eq!(j["rows"][0]["why"], "evidence_expired");
+    assert_eq!(j["unverified"], 1);
 }
 
 #[test]
@@ -253,12 +256,19 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
     assert_eq!(status(&same, "A4b"), Status::Pass);
     let moved = compare(&g, &log, &heads(&[(604, Some(H2))]), NOW);
     match status(&moved, "A4b") {
-        Status::Unverified(w) => assert!(w.starts_with("換頭"), "{w}"),
+        Status::Unverified(w) => {
+            assert_eq!(w.code(), "evidence_stale_head");
+            assert!(
+                w.text()
+                    .starts_with("換頭:證據在 111111111111、#604 現在 222222222222"),
+                "{w:?}"
+            );
+        }
         s => panic!("{s:?}"),
     }
     for snap in [heads(&[(604, None)]), Snapshot::default()] {
         match status(&compare(&g, &log, &snap, NOW), "A4b") {
-            Status::Unverified(w) => assert!(w.contains("頭碼讀不到"), "{w}"),
+            Status::Unverified(w) => assert_eq!(w, Why::SourceUnknown { pr: 604 }),
             s => panic!("{s:?}"),
         }
     }

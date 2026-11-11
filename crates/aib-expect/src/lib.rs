@@ -299,6 +299,43 @@ pub struct Snapshot {
     pub pr_heads: BTreeMap<u64, Option<String>>,
 }
 
+/// Why a row is unverified. Each has a stable code (043dd knives assert it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Why {
+    /// No evidence line for this goal.
+    NoEvidence,
+    /// The latest line's `valid_until` has passed.
+    Expired,
+    /// The latest line is for a head the PR no longer has.
+    StaleHead { pr: u64, was: String, now: String },
+    /// The PR's current head could not be read (the source said Err).
+    SourceUnknown { pr: u64 },
+}
+
+impl Why {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Why::NoEvidence => "no_evidence",
+            Why::Expired => "evidence_expired",
+            Why::StaleHead { .. } => "evidence_stale_head",
+            Why::SourceUnknown { .. } => "source_unknown",
+        }
+    }
+
+    pub fn text(&self) -> String {
+        match self {
+            Why::NoEvidence => "沒有證據".to_owned(),
+            Why::Expired => "證據過期".to_owned(),
+            Why::StaleHead { pr, was, now } => format!(
+                "換頭:證據在 {}、#{pr} 現在 {}",
+                was.get(..12).unwrap_or(was),
+                now.get(..12).unwrap_or(now)
+            ),
+            Why::SourceUnknown { pr } => format!("#{pr} 頭碼讀不到"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     /// 實查通過
@@ -306,7 +343,7 @@ pub enum Status {
     /// 實查不通過
     Fail,
     /// 未驗, with the reason
-    Unverified(String),
+    Unverified(Why),
     /// 推測
     Inferred,
 }
@@ -354,22 +391,22 @@ impl Report {
 
 fn status_of(e: Option<&Evidence>, snap: &Snapshot, now: u64) -> Status {
     let Some(e) = e else {
-        return Status::Unverified("沒有證據".to_owned());
+        return Status::Unverified(Why::NoEvidence);
     };
     if e.valid_until.is_some_and(|t| t < now) {
-        return Status::Unverified("證據過期".to_owned());
+        return Status::Unverified(Why::Expired);
     }
     if let (Some(pr), Some(head)) = (e.pr, e.head.as_deref()) {
         match snap.pr_heads.get(&pr) {
             Some(Some(now_head)) if now_head == head => {}
             Some(Some(now_head)) => {
-                return Status::Unverified(format!(
-                    "換頭:證據在 {}、#{pr} 現在 {}",
-                    &head[..12],
-                    now_head.get(..12).unwrap_or(now_head)
-                ))
+                return Status::Unverified(Why::StaleHead {
+                    pr,
+                    was: head.to_owned(),
+                    now: now_head.clone(),
+                })
             }
-            _ => return Status::Unverified(format!("#{pr} 頭碼讀不到")),
+            _ => return Status::Unverified(Why::SourceUnknown { pr }),
         }
     }
     if e.inferred {
@@ -509,7 +546,7 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
     out.push_str("| # | 期望 | 狀態 | 證據 / 差什麼 |\n|---|---|---|---|\n");
     for r in &report.rows {
         let why = match (&r.status, &r.evidence) {
-            (Status::Unverified(w), _) => w.clone(),
+            (Status::Unverified(w), _) => w.text(),
             (_, Some(e)) => format!("{} {} rc {}:{}", e.seat, e.check, e.rc, e.summary),
             (_, None) => String::new(),
         };
@@ -549,7 +586,7 @@ pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
         .take(3)
     {
         let why = match &r.status {
-            Status::Unverified(w) => w.clone(),
+            Status::Unverified(w) => w.text(),
             _ => r
                 .evidence
                 .as_ref()
@@ -594,7 +631,7 @@ pub fn to_json(report: &Report) -> Value {
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
             "status": r.status.code(),
-            "why": match &r.status { Status::Unverified(w) => Value::from(w.as_str()), _ => Value::Null },
+            "why": match &r.status { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
             "evidence_at": r.evidence.as_ref().map(|e| e.at),
         })).collect::<Vec<_>>(),
     })
