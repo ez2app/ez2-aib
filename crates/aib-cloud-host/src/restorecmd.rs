@@ -7,12 +7,21 @@
 //!
 //! `aib-cloud-host restore verify <code> <file.wpress> [--users-extra N] [--records dir]` —
 //! after the import, the same counts taken from the restored site's database by its own
-//! WordPress (`wp eval` of one fixed piece of PHP, plugins and themes not loaded, run as the
-//! site's user inside its container; the site code is checked and taken from the site's
+//! WordPress (`wp eval` of one fixed piece of PHP with `--skip-plugins --skip-themes`, run as
+//! the site's user inside its container; the site code is checked and taken from the site's
 //! record, nothing typed reaches the command or the SQL), compared by
 //! `aib_cloud::wpress::compare`. `--users-extra` is how many administrators the restore
 //! added on purpose. Plugins and themes in the backup and on the site are listed side by side
 //! and never judged. Read-only. Exit status: 0 match, 1 differ, 3 cannot tell, 2 usage.
+//!
+//! This is **not** an independent check: `--skip-plugins` does not stop must-use plugins,
+//! and `wp-config.php` is the customer's too, so the answer is only as trustworthy as the
+//! customer's container. What it guards against is a restore that silently lost rows; a
+//! site that prints anything unexpected (a warning, an extra line) is "cannot tell", and
+//! each answer is read up to [`WP_OUT_MAX`] bytes — more than that is "cannot tell" too.
+//! `wp plugin list` also names must-use plugins and drop-ins (`object-cache`, our own
+//! loader), which the backup's `plugins/` folder does not hold: they show as
+//! `unexpected_on_site`, listed, not judged.
 //!
 //! Prints one JSON document. The rules live in `aib_cloud::wpress`; this is the reading half.
 
@@ -187,6 +196,11 @@ fn skip<R: Read + Seek>(r: &mut R, size: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the archive's expectation can be used (what [`document`] calls reliable).
+pub fn reliable(read: &Read1) -> bool {
+    read.reasons.is_empty() && matches!(read.expect, Some(Ok(_)))
+}
+
 /// The document `restore expect` prints, and whether it is reliable.
 pub fn document(read: &Read1) -> (Value, bool) {
     let mut reasons = read.reasons.clone();
@@ -221,7 +235,7 @@ pub fn document(read: &Read1) -> (Value, bool) {
         "not_a_criterion".into(),
         json!("active_plugins, stylesheet and template are emptied by the export"),
     );
-    let reliable = reasons.is_empty() && matches!(read.expect, Some(Ok(_)));
+    let reliable = reasons.is_empty() && reliable(read);
     doc.insert("reliable".into(), json!(reliable));
     doc.insert("reasons".into(), json!(reasons));
     (Value::Object(doc), reliable)
@@ -345,6 +359,20 @@ fn open_archive(path: &str) -> Read1 {
     }
 }
 
+/// How much of each answer from inside the customer's container is read (33e28 #631 seg. 5
+/// M1: a program there must not be able to fill this host's memory). Standard error is not
+/// read at all.
+pub const WP_OUT_MAX: usize = 64 * 1024;
+
+/// Runs a command whose output is not trusted to end; `None` when it fails, times out, or
+/// has more to say than [`WP_OUT_MAX`].
+fn bounded(cmd: &mut Command) -> Option<String> {
+    match crate::probe::run_capture_bounded(cmd, Duration::from_secs(120), WP_OUT_MAX) {
+        Ok((out, false)) => Some(out),
+        Ok((_, true)) | Err(_) => None,
+    }
+}
+
 /// Runs `wp` as the site's user inside its container; `None` when it does not answer cleanly.
 fn wp(ct: u32, code: &str, args: &[&str]) -> Option<String> {
     let ct = ct.to_string();
@@ -363,7 +391,7 @@ fn wp(ct: u32, code: &str, args: &[&str]) -> Option<String> {
         "--skip-themes",
     ])
     .args(args);
-    crate::probe::run_capture(&mut cmd, Duration::from_secs(120)).ok()
+    bounded(&mut cmd)
 }
 
 fn cmd_verify(args: &[String]) -> Result<u8, String> {
@@ -393,7 +421,7 @@ fn cmd_verify(args: &[String]) -> Result<u8, String> {
     // checks the code's form and reads the container number from the site's own record
     let spec = crate::quarantinecmd::load_spec(code, &records)?;
     let read = open_archive(path);
-    let site = if document(&read).1 {
+    let site = if reliable(&read) {
         SiteOut {
             counts: wp(spec.ct, &spec.code, &["eval", COUNT_PHP]),
             plugins: wp(spec.ct, &spec.code, &["plugin", "list", "--field=name"]),
@@ -667,6 +695,19 @@ mod tests {
             "/nonexistent-aib"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn an_answer_longer_than_the_cap_is_no_answer() {
+        // `yes` never stops: read up to the cap, then the group is killed and nothing is used
+        assert_eq!(bounded(Command::new("yes").arg("P")), None);
+        let mut big = Command::new("head");
+        big.args(["-c", &(WP_OUT_MAX + 1).to_string(), "/dev/zero"]);
+        assert_eq!(bounded(&mut big), None);
+        let mut fits = Command::new("head");
+        fits.args(["-c", &WP_OUT_MAX.to_string(), "/dev/zero"]);
+        assert_eq!(bounded(&mut fits).map(|s| s.len()), Some(WP_OUT_MAX));
+        assert_eq!(bounded(&mut Command::new("false")), None);
     }
 
     #[test]

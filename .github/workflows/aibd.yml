@@ -803,6 +803,10 @@ jobs:
           set -eu
           hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud-host --locked "$4"; }
+          # restore verify: an answer from the customer's container past its cap is used (ebb36 r2 M1)
+          hk restorecmd.rs '        Ok((_, true)) | Err(_) => None,' \
+             '        Ok((out, true)) => Some(out), Err(_) => None, // knife' \
+             an_answer_longer_than_the_cap_is_no_answer
           # restore verify: the administrators the restore added are not allowed for (4542e 11-11)
           hk restorecmd.rs '                    wpress::compare(expect, &actual, &Policy::standard(users_extra))' \
              '                    wpress::compare(expect, &actual, &Policy::standard(0)) // knife' \
