@@ -716,7 +716,13 @@ impl OpPlace {
 pub const BY_LOCAL_ROOT: &str = "standing-local-root";
 pub const BY_CUSTOMER_KEY: &str = "standing-customer-key";
 /// The only commands a customer's key may approve (the customer entry's writing requests).
-pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];
+pub const CUSTOMER_COMMANDS: &[&str] = &[
+    "site.restart",
+    "site.php-reload",
+    "site.create",
+    // E1 N1 (Andy 11-12 04:3x): the customer takes their own login link
+    "site.login-link",
+];
 
 /// Run one change as an operation whose plan reads nothing of the host (tests, and plans
 /// built only from the command line). Anything that decides from host state — a

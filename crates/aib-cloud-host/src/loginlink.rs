@@ -293,20 +293,23 @@ pub fn first_admin(site_admins: &Path) -> Result<String, String> {
 
 /// One link as an operation on the domain's target (an unfinished opening holds it back):
 /// the checks under the lock change nothing, so a refusal leaves no journal; the plan has
-/// the domain, the site and the login, never the link.
+/// the domain, the site and the login, never the link. `approval` is who stands behind it
+/// ([`opstore::BY_LOCAL_ROOT`] on the host, [`opstore::BY_CUSTOMER_KEY`] for the
+/// customer's own request).
 pub fn issue_op<R: Runner>(
     place: &opstore::OpPlace,
     domain: &str,
     login: &str,
     paths: &HostPaths,
     runner: &mut R,
+    approval: &str,
 ) -> Result<String, String> {
     let on = crate::sitecreatecmd::target(domain);
     opstore::run_op_prepared(
         place,
         COMMAND,
         &on,
-        opstore::BY_LOCAL_ROOT,
+        approval,
         crate::probe::unix_now(),
         // the runner goes through the prepared input: one closure holds it at a time
         move || {
@@ -324,6 +327,63 @@ pub fn issue_op<R: Runner>(
         |_, (spec, runner): (SiteSpec, &mut R)| issue(runner, &spec, domain, login),
     )?
     .ok_or_else(|| "login_link_failed: nothing was issued".to_owned())
+}
+
+/// The login a customer's link is for: the first administrator the site's opening made
+/// (its opening record, kept under [`HostPaths::opened`]), or for a site not opened that
+/// way the host's first one ([`first_admin`]).
+pub fn customer_login(paths: &HostPaths, code: &str) -> Result<String, String> {
+    let kept = paths.opened.join(format!("{code}.json"));
+    match fs::read_to_string(&kept) {
+        Ok(text) => {
+            let rec: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("login_unknown: {}: {e}", kept.display()))?;
+            crate::sitecreatecmd::link_login(&rec)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => first_admin(&paths.site_admins),
+        Err(e) => Err(format!("login_unknown: {}: {e}", kept.display())),
+    }
+}
+
+/// The customer's `login-link` for their site `code` (Andy 11-12 04:3x): the link for the
+/// site's first name and [`customer_login`], as an operation the customer key approves.
+/// The site is the one the key's entry or the customer's record names, never a domain the
+/// customer typed. Answers the whole link; the caller prints it alone.
+pub fn customer_link<R: Runner>(
+    place: &opstore::OpPlace,
+    paths: &HostPaths,
+    code: &str,
+    runner: &mut R,
+) -> Result<String, String> {
+    if !aib_cloud::site::valid_code(code) {
+        return Err(format!("site_unknown: {code:?} is not a site code"));
+    }
+    let path = paths.records.join(format!("{code}.json"));
+    let rec: Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .ok_or_else(|| format!("site_unknown: {} could not be read", path.display()))?;
+    let spec =
+        aib_cloud::site::spec_from_record(&rec).map_err(|e| format!("site_unknown: {e:?}"))?;
+    if spec.code != code {
+        return Err(format!("site_unknown: {} is not {code}'s", path.display()));
+    }
+    let domain = spec
+        .hosts
+        .first()
+        .ok_or_else(|| format!("site_unknown: {code} has no name"))?;
+    let login = customer_login(paths, code)?;
+    if !usable_login(&login) {
+        return Err("login_unusable: not a login this host makes".to_owned());
+    }
+    issue_op(
+        place,
+        domain,
+        &login,
+        paths,
+        runner,
+        opstore::BY_CUSTOMER_KEY,
+    )
 }
 
 /// `site login-link <domain> [--login <user>]` on this host. Writing (a transient, and the
@@ -358,6 +418,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         &login,
         &paths,
         &mut crate::sitecreatecmd::HostRunner,
+        opstore::BY_LOCAL_ROOT,
     )?;
     eprintln!("login link issued once for {login} on {domain} (one use, {LINK_SECONDS} s); the link is on standard output only");
     println!("{url}");
@@ -724,12 +785,36 @@ mod tests {
         let paths = paths(&d);
         assert_eq!(first_admin(&paths.site_admins).unwrap(), "ops");
         let mut site = Wp::new();
-        let err = issue_op(&place, DOMAIN, "editor", &paths, &mut site).unwrap_err();
+        let err = issue_op(
+            &place,
+            DOMAIN,
+            "editor",
+            &paths,
+            &mut site,
+            opstore::BY_LOCAL_ROOT,
+        )
+        .unwrap_err();
         assert!(err.starts_with("login_not_admin: "), "{err}");
         assert_eq!(fs::read_dir(&place.ops_dir).unwrap().count(), 0);
-        let err = issue_op(&place, "other.example.test", "ops", &paths, &mut site).unwrap_err();
+        let err = issue_op(
+            &place,
+            "other.example.test",
+            "ops",
+            &paths,
+            &mut site,
+            opstore::BY_LOCAL_ROOT,
+        )
+        .unwrap_err();
         assert!(err.starts_with("site_unknown: "), "{err}");
-        let url = issue_op(&place, DOMAIN, "ops", &paths, &mut site).unwrap();
+        let url = issue_op(
+            &place,
+            DOMAIN,
+            "ops",
+            &paths,
+            &mut site,
+            opstore::BY_LOCAL_ROOT,
+        )
+        .unwrap();
         let token = token_of(&url).to_owned();
         let mut journals = String::new();
         for e in fs::read_dir(&place.ops_dir).unwrap() {
@@ -740,5 +825,50 @@ mod tests {
             "{journals}"
         );
         assert!(!journals.contains(&token) && !journals.contains("ez2_otl"));
+    }
+
+    /// E1 N1 (Andy 11-12 04:3x): the customer's own request gets the link of the site its
+    /// key reaches, for the administrator the opening made, approved by the customer key.
+    #[test]
+    fn a_customer_s_link_is_for_their_site_s_first_administrator() {
+        let d = scratch("cust");
+        let place = place(&d);
+        let paths = paths(&d);
+        // a site not opened by the customer: the host's first administrator
+        assert_eq!(customer_login(&paths, "s-lltest").unwrap(), "ops");
+        // an opened one: the first administrator its opening made, not the host's
+        fs::create_dir_all(&paths.opened).unwrap();
+        fs::write(
+            paths.opened.join("s-lltest.json"),
+            json!({ "admins": ["editor", "ops"] }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(customer_login(&paths, "s-lltest").unwrap(), "editor");
+        let mut site = Wp::new();
+        // `editor` is no administrator of the site: refused before anything is written
+        let err = customer_link(&place, &paths, "s-lltest", &mut site).unwrap_err();
+        assert!(err.starts_with("login_not_admin: "), "{err}");
+        fs::write(
+            paths.opened.join("s-lltest.json"),
+            json!({ "admins": ["ops", "editor"] }).to_string(),
+        )
+        .unwrap();
+        let url = customer_link(&place, &paths, "s-lltest", &mut site).unwrap();
+        assert!(
+            url.starts_with(&format!("https://{DOMAIN}/?ez2_otl=")),
+            "{url}"
+        );
+        let mut journals = String::new();
+        for e in fs::read_dir(&place.ops_dir).unwrap() {
+            journals.push_str(&fs::read_to_string(e.unwrap().path()).unwrap());
+        }
+        assert!(
+            journals.contains(opstore::BY_CUSTOMER_KEY) && journals.contains("\"verified\""),
+            "{journals}"
+        );
+        assert!(!journals.contains(token_of(&url)));
+        // a site with no record is no site
+        let err = customer_link(&place, &paths, "s-none", &mut site).unwrap_err();
+        assert!(err.starts_with("site_unknown: "), "{err}");
     }
 }

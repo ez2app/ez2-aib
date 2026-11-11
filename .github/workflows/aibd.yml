@@ -497,6 +497,53 @@ jobs:
           ck wording.rs '        Some(s) => format!("(另一位:{})", crate::svc::plain(s)),' \
              '        Some(s) => format!("(另一位:{})", String::from(s)), // knife' \
              the_opened_screen_shows_nothing_that_acts_on_the_terminal
+          # E1 N1 opened screen: the site's code reaches the terminal as it came
+          ck wording.rs '    let code = crate::svc::plain(code);' \
+             '    let code = String::from(code); // knife' \
+             the_opened_screen_shows_nothing_that_acts_on_the_terminal
+          # E1 N1 opened screen: an empty second login, or the first again, is a second one (c477a N1 / N2)
+          ck wording.rs '    let second = second.filter(|s| !s.is_empty() && *s != login);' \
+             '    let second = second; // knife' \
+             a_second_administrator_that_is_not_another_one_is_left_out
+          # login-link (Andy 11-12 04:3x): a failure's output, or more than one line, is shown as a link
+          ck wording.rs '        if exit == 0 && only.starts_with("https://") && crate::svc::plain(only) == only {' \
+             '        if (exit == 0 || exit == 3) && only.starts_with("https://") { // knife (exit stays read: -D warnings)' \
+             a_login_link_is_shown_alone_or_not_at_all
+          ck wording.rs '    if let [only] = lines.as_slice() {' \
+             '    if let [only, ..] = lines.as_slice() { // knife' \
+             a_login_link_is_shown_alone_or_not_at_all
+          # login-link: the word is not a request, is not offered, or is anyone's
+          ck customer.rs '        "login-link" => alone(Request::LoginLink),' \
+             '        "login-link" => alone(Request::Status), // knife' \
+             the_whole_grammar
+          ck customer.rs '            Request::Status | Request::Logs { .. } | Request::LoginLink' \
+             '            Request::Status | Request::Logs { .. } // knife' \
+             everything_else_is_refused_whole
+          ck customer.rs '            Request::LoginLink => Operation::Edit,' \
+             '            Request::LoginLink => Operation::ReadPrivate, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          # opened view (f1fae 11-12): read from an answer that is not open, or without logins
+          ck customer.rs '    if v.get("state").and_then(Value::as_str) != Some("open") || !is_opening(reply) {' \
+             '    if !is_opening(reply) { // knife' \
+             an_opened_site_is_read_only_from_its_own_shape
+          ck customer.rs '        let a = a.as_str().filter(|a| !a.is_empty())?;' \
+             '        let a = a.as_str()?; // knife' \
+             an_opened_site_is_read_only_from_its_own_shape
+          ck customer.rs '    if admins.is_empty() {' \
+             '    if admins.is_empty() && false { // knife' \
+             an_opened_site_is_read_only_from_its_own_shape
+          # customer side: a just-opened site is not shown as the opened screen
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'aib_cloud::customer::opened_of(out)' \
+            'aib_cloud::customer::opened_of("") /* knife */' \
+            --expect-fail an_opening_is_shown_in_the_host_s_words \
+            -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
+          # customer side: a login-link that gave no link writes its word on standard output
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '    request != Request::LoginLink || code == 0' \
+            '    request != Request::LoginLink || code < 255 // knife' \
+            --expect-fail a_login_link_is_the_only_thing_on_standard_output \
+            -- cargo test -p aib-cloud-cli --locked a_login_link_is_the_only_thing_on_standard_output
           # customer side: a request not offered yet is sent (Andy 11-10: hidden)
           ck client.rs '    if !asked.offered() {' \
              '    if !asked.offered() && false { // knife' \
@@ -986,8 +1033,8 @@ jobs:
              the_platform_s_own_domains_are_never_a_customer_s
           # E1: the progress of an opening is worded as a site's checks
           python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
-            '        ) if aib_cloud::customer::is_opening(out) => shown(out),' \
-            '        ) if aib_cloud::customer::is_opening(out) && false => shown(out), // knife' \
+            '        ) if aib_cloud::customer::is_opening(out) => match aib_cloud::customer::opened_of(out) {' \
+            '        ) if aib_cloud::customer::is_opening(out) && false => match aib_cloud::customer::opened_of(out) { // knife' \
             --expect-fail an_opening_is_shown_in_the_host_s_words \
             -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
           # B5 DNS (4542e): only a zone of an account the roster names is used
@@ -1872,8 +1919,8 @@ jobs:
              '    if let Some(tenant) = aib_cloud::site::record_tenant(opening).filter(|_| false) { // knife' \
              the_customer_of_the_opening_owns_the_site
           # E1: a customer key may not approve the opening it asked for
-          hk opstore.rs 'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];' \
-             'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"]; // knife' \
+          # (the list is one entry a line since login-link joined it, 4542e 11-12)
+          hk opstore.rs '    "site.create",' '    "site.create-not", // knife' \
              a_customer_s_opening_is_cloned_under_the_code_they_were_given
           # E1 (33e28 M1): a plan whose quota was not judged to fit starts an opening
           hk sitecreaterun.rs '    if plan["quota"]["verdict"] != "fits" {' \
@@ -2064,6 +2111,31 @@ jobs:
           hk sitecreatecmd.rs '        .and_then(|a| a.first())' \
              '        .and_then(|a| a.last()) // knife' \
              the_opened_sites_link_is_for_the_first_administrator
+          # LL17 (Andy 11-12 04:3x) a customer's link is for the host's first administrator, not the opening's
+          hk loginlink.rs '            crate::sitecreatecmd::link_login(&rec)' \
+             '            crate::sitecreatecmd::link_login(&rec).and(first_admin(&paths.site_admins)) // knife' \
+             a_customer_s_link_is_for_their_site_s_first_administrator
+          # LL18 a customer's link is journaled as typed on the host
+          hk loginlink.rs '        opstore::BY_CUSTOMER_KEY,' \
+             '        opstore::BY_LOCAL_ROOT, // knife' \
+             a_customer_s_link_is_for_their_site_s_first_administrator
+          # LL19 a customer key may not approve a link
+          hk opstore.rs '    "site.login-link",' '    "site.login-link-not", // knife' \
+             a_customer_s_link_is_for_their_site_s_first_administrator
+          # LL20 (f1fae 11-12) a site opened long ago, or someone else's, still answers as just opened
+          hk sitecreaterun.rs '    if now.saturating_sub(at) > OPENED_SHOWN_S {' \
+             '    if now.saturating_sub(at) > u64::MAX - 1 { // knife' \
+             an_opened_site_tells_its_domain_and_administrators_for_a_while
+          hk sitecreaterun.rs '    let theirs = aib_cloud::site::record_tenant(&ask) == Some(tenant);' \
+             '    let theirs = !tenant.is_empty(); // knife (tenant stays read: -D warnings)' \
+             an_opened_site_tells_its_domain_and_administrators_for_a_while
+          # LL21 a just-opened site's status is its checks, or any request is answered with the opened view
+          hk customercmd.rs '            if let Some(view) = opener.opened(tenant, site) {' \
+             '            if let Some(view) = opener.opened(tenant, site).filter(|_| false) { // knife' \
+             a_site_just_opened_answers_status_with_its_opened_view
+          hk customercmd.rs '        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {' \
+             '        if sites.iter().any(|(code, _)| code == site) { // knife' \
+             a_site_just_opened_answers_status_with_its_opened_view
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
