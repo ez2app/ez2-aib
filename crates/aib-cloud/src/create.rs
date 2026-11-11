@@ -19,6 +19,11 @@
 //! `ready` or `unfinished` (a record without it is `ready`: the sites from before);
 //! `created_at` is UTC seconds, written when the code is given; `holder` has the host
 //! lock's shape. Reading those fields into [`CreateState`] and a [`Holder`] is the caller's.
+//!
+//! `created_at` has one-second steps, so two attempts started within the same second
+//! would read as one in [`may_take_holder`] and [`still_same_attempt`]. That cannot
+//! happen in practice: a new attempt needs the old one marked unfinished first, which
+//! takes [`START_GRACE_SECS`] at least (c477a liveness review r2 N2).
 
 use crate::op::{lock, Holder, Liveness, Lock};
 
