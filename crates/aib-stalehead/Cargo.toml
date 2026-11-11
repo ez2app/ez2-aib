@@ -1,0 +1,18 @@
+[package]
+name = "aib-stalehead"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aib-core = { path = "../aib-core" }
+aib-drive = { path = "../aib-drive" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

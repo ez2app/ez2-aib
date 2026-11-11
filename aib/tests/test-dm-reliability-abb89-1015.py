@@ -173,6 +173,8 @@ class Box:
             "AIB_DM_RESEND_WAIT_S": "0", "AIB_DM_RELAY_DIR": str(self.aib_home / "pending"),
             "EZ2_AIB_LOCALE": "en", "AIB_GENES": "0", "AIB_AUTO_BIND": "0",
             "TMPDIR": str(self.dir),
+            # 1ced7 MVP-1:舊頭碼閘預設關,機器裝了 aib-stalehead 也不去打真的 GitHub;要測的自己指定
+            "AIB_STALEHEAD": "off",
         })
         e.update({k: str(v) for k, v in kw.items()})
         return e

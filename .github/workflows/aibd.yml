@@ -2048,6 +2048,28 @@ jobs:
           sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
              '                let _ = e; // knife' \
              a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+      # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
+      # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
+      # turns its own test red (§15.17)
+      - name: aib-stalehead knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py crates/aib-stalehead/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-stalehead --locked --test stalehead "$3"; }
+          # SL3 a dm naming a PR's old head is let through
+          hk '                Some((pr, head)) if t.range_base || named.contains(&pr) => Verdict::StaleNamed {' \
+             '                Some((pr, head)) if true => Verdict::StaleNamed { // knife' \
+             a_dm_naming_an_old_head_is_held_back
+          # SL3b a short (8+) prefix of the current head is held back as old
+          hk '            .find(|(_, h)| h.starts_with(hex))' \
+             '            .find(|(_, h)| h.as_str() == hex) // knife' \
+             the_current_head_is_never_held_back
+          # SL3c an unreadable quota counts as enough and GitHub is read anyway
+          hk '    let enforce = q.is_some_and(|q| q >= QUOTA_FLOOR);' \
+             '    let enforce = q.is_none() || q.is_some_and(|q| q >= QUOTA_FLOOR); // knife' \
+             low_or_unknown_quota_only_reminds_and_reads_nothing
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

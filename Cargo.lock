@@ -124,6 +124,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-stalehead"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-core",
+ "aib-drive",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-store"
 version = "0.2.0-preview.4"
 dependencies = [
