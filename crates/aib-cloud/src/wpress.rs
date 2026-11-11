@@ -925,6 +925,108 @@ pub fn set_diff(backup: &BTreeSet<String>, site: &BTreeSet<String>) -> SetDiff {
     }
 }
 
+/// Folders under `uploads/` that plugins fill by themselves once the restored site serves
+/// its first pages (generated CSS, page caches, logs). Whether the export carried them
+/// depends on the plugin and on when the backup was taken, so their files are counted and
+/// listed on both sides but never judged: a restored site rebuilds them, and a site that
+/// has not been visited yet does not have them.
+pub const GENERATED_UPLOADS: &[&str] = &[
+    "cache",
+    "elementor/css",
+    "elementor/google-fonts",
+    "et-cache",
+    "wc-logs",
+    "wpforms/cache",
+    "bb-plugin/cache",
+    "siteground-optimizer-assets",
+    "fusion-styles",
+];
+
+/// Files and their bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// Files.
+    pub files: u64,
+    /// Bytes, summed.
+    pub bytes: u64,
+}
+
+impl Tally {
+    fn add(&mut self, bytes: u64) {
+        self.files = self.files.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
+}
+
+/// The files under `uploads/`, split into those that are judged and those plugins make by
+/// themselves ([`GENERATED_UPLOADS`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Uploads {
+    /// Judged by their number; their bytes are listed only (a cache plugin may write new
+    /// thumbnail sizes next to the originals without adding to the media library).
+    pub kept: Tally,
+    /// Listed only.
+    pub generated: Tally,
+}
+
+/// Where a path under `uploads/` (without the `uploads/` itself) falls.
+fn generated(rest: &str) -> bool {
+    GENERATED_UPLOADS
+        .iter()
+        .any(|g| rest == *g || rest.strip_prefix(g).is_some_and(|t| t.starts_with('/')))
+}
+
+impl Uploads {
+    /// Counts one archive entry when it lies under `uploads/` (the archive's paths start at
+    /// `wp-content`).
+    pub fn add(&mut self, e: &Entry) {
+        let rest = match e.folder.split_once('/') {
+            Some(("uploads", rest)) => rest,
+            None if e.folder == "uploads" => "",
+            _ => return,
+        };
+        if generated(rest) {
+            self.generated.add(e.size);
+        } else {
+            self.kept.add(e.size);
+        }
+    }
+}
+
+/// Reads what the site printed for its uploads: exactly `F\t<files>\t<bytes>`,
+/// `G\t<files>\t<bytes>`, `END`, nothing else. Anything else is unknown.
+pub fn uploads_from_site(out: &str) -> Result<Uploads, String> {
+    let mut lines = out.lines().map(|l| l.strip_suffix('\r').unwrap_or(l));
+    let mut tally = |tag: &str| -> Result<Tally, String> {
+        let line = lines
+            .next()
+            .ok_or_else(|| "the site's uploads answer is cut short".to_string())?;
+        let mut f = line.split('\t');
+        let (Some(t), Some(n), Some(b), None) = (f.next(), f.next(), f.next(), f.next()) else {
+            return Err("the site's uploads answer has a line out of form".to_string());
+        };
+        if t != tag {
+            return Err("the site's uploads answer has a line out of order".to_string());
+        }
+        Ok(Tally {
+            files: count(n)?,
+            bytes: count(b)?,
+        })
+    };
+    let kept = tally("F")?;
+    let generated = tally("G")?;
+    if lines.next() != Some("END") || lines.next().is_some() {
+        return Err("the site's uploads answer does not end where it should".to_string());
+    }
+    Ok(Uploads { kept, generated })
+}
+
+/// Whether the restored site holds as many uploaded files as the backup did. Only the
+/// number of judged files counts; bytes and generated files are listed.
+pub fn uploads_match(expect: &Uploads, actual: &Uploads) -> bool {
+    expect.kept.files == actual.kept.files
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -1339,5 +1441,109 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
         let d = set_diff(&backup, &site);
         assert_eq!(d.missing_from_site, vec!["gone".to_string()]);
         assert_eq!(d.unexpected_on_site, vec!["redis-cache".to_string()]);
+    }
+
+    fn up(folder: &str, name: &str, size: u64) -> Entry {
+        Entry {
+            name: name.to_string(),
+            folder: folder.to_string(),
+            size,
+        }
+    }
+
+    #[test]
+    fn uploads_are_counted_from_the_archive_with_generated_folders_apart() {
+        let mut u = Uploads::default();
+        for e in [
+            up("uploads/2024/05", "a.jpg", 100),
+            up("uploads/2024/05", "a-150x150.jpg", 10),
+            up("uploads", "index.php", 1),
+            up("uploads/elementor/css", "post-1.css", 7),
+            up("uploads/cache/x", "p.html", 5),
+            // a folder that only begins like a generated one is the customer's
+            up("uploads/cachet", "c.pdf", 50),
+            up("uploads/elementor", "logo.svg", 3),
+            // not under uploads/
+            up("plugins/akismet", "akismet.php", 9),
+            up("", "database.sql", 9),
+            up("themes/uploads", "style.css", 9),
+        ] {
+            u.add(&e);
+        }
+        assert_eq!(
+            u.kept,
+            Tally {
+                files: 5,
+                bytes: 164
+            }
+        );
+        assert_eq!(
+            u.generated,
+            Tally {
+                files: 2,
+                bytes: 12
+            }
+        );
+    }
+
+    #[test]
+    fn the_sites_uploads_answer_is_read_exactly() {
+        let u = uploads_from_site("F\t5\t164\nG\t2\t12\nEND\n").unwrap();
+        assert_eq!(
+            u.kept,
+            Tally {
+                files: 5,
+                bytes: 164
+            }
+        );
+        assert_eq!(
+            u.generated,
+            Tally {
+                files: 2,
+                bytes: 12
+            }
+        );
+        for bad in [
+            "",
+            "F\t5\t164\nG\t2\t12\n",
+            "F\t5\t164\nG\t2\t12\nEND\nextra\n",
+            "G\t2\t12\nF\t5\t164\nEND\n",
+            "F\t5\nG\t2\t12\nEND\n",
+            "F\t5\t164\t1\nG\t2\t12\nEND\n",
+            "F\tfive\t164\nG\t2\t12\nEND\n",
+            "F\t-5\t164\nG\t2\t12\nEND\n",
+            "Warning: x\nF\t5\t164\nG\t2\t12\nEND\n",
+        ] {
+            assert!(uploads_from_site(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_number_of_kept_uploads_is_judged() {
+        let t = |files, bytes| Tally { files, bytes };
+        let e = Uploads {
+            kept: t(5, 164),
+            generated: t(2, 12),
+        };
+        // other bytes and other generated files: still a match
+        let a = Uploads {
+            kept: t(5, 9_999),
+            generated: t(40, 1),
+        };
+        assert!(uploads_match(&e, &a));
+        assert!(!uploads_match(
+            &e,
+            &Uploads {
+                kept: t(4, 164),
+                ..e
+            }
+        ));
+        assert!(!uploads_match(
+            &e,
+            &Uploads {
+                kept: t(6, 164),
+                ..e
+            }
+        ));
     }
 }

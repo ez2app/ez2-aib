@@ -328,6 +328,24 @@ jobs:
           ck wpress.rs '    if users < expect.users || users > expect.users.saturating_add(policy.users_added) {' \
              '    if users < expect.users { // knife' \
              users_the_restore_added_are_allowed_and_no_more
+          # restore verify, uploads: any number of uploaded files passes (4542e 11-11, E3)
+          ck wpress.rs '    expect.kept.files == actual.kept.files' \
+             '    expect.kept.files == actual.kept.files || true // knife' \
+             only_the_number_of_kept_uploads_is_judged
+          # restore verify, uploads: a folder that only begins like a generated one is set aside
+          ck wpress.rs "        .any(|g| rest == *g || rest.strip_prefix(g).is_some_and(|t| t.starts_with('/')))" \
+             '        .any(|g| rest.starts_with(g)) // knife' \
+             uploads_are_counted_from_the_archive_with_generated_folders_apart
+          # restore verify, uploads: files outside uploads/ are counted as uploads
+          ck wpress.rs '            Some(("uploads", rest)) => rest,' '            Some((_, rest)) => rest, // knife' \
+             uploads_are_counted_from_the_archive_with_generated_folders_apart
+          # restore verify, uploads: an answer with more after its END line is taken
+          ck wpress.rs '    if lines.next() != Some("END") || lines.next().is_some() {' \
+             '    if lines.next() != Some("END") { // knife' \
+             the_sites_uploads_answer_is_read_exactly
+          # restore verify, uploads: the generated files' line is taken as the judged one
+          ck wpress.rs '        if t != tag {' '        if t != tag && false { // knife' \
+             the_sites_uploads_answer_is_read_exactly
           # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
@@ -821,6 +839,22 @@ jobs:
           hk restorecmd.rs '        let res = if root && entry.name == "database.sql" {' \
              '        let res = if (root || true) && entry.name == "database.sql" { // knife' \
              only_the_root_database_counts
+          # restore verify, uploads: the backup's uploads are not counted (4542e 11-11, E3)
+          hk restorecmd.rs '        out.uploads.add(&entry);' '        // knife: uploads not counted' \
+             verify_judges_the_number_of_uploads_not_their_bytes
+          # restore verify, uploads: a different number of files is not a difference
+          hk restorecmd.rs '        (1, _) | (_, Some(true)) => 1,' '        (1, _) => 1, // knife' \
+             verify_judges_the_number_of_uploads_not_their_bytes
+          # restore verify, uploads: uploads that could not be counted pass
+          hk restorecmd.rs '        (0, Some(false)) => 0,' '        (0, Some(false) | None) => 0, // knife' \
+             uploads_that_cannot_be_counted_leave_the_restore_untold
+          # restore verify, uploads: the uploads are counted as another user than the site's
+          hk restorecmd.rs '        uploads: run(&uploads_argv(ct, code)),' \
+             '        uploads: run(&uploads_argv(ct, "www-data")), // knife' \
+             the_site_is_asked_through_the_runner_as_its_own_user_and_never_lists_files
+          # restore verify, uploads: the generated folders are matched as folders, not their files
+          hk restorecmd.rs '        .map(|g| format!("./{g}/*"))' '        .map(|g| format!("./{g}")) // knife' \
+             the_site_is_asked_through_the_runner_as_its_own_user_and_never_lists_files
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
