@@ -839,7 +839,10 @@ mod tests {
             .calls
             .contains(&format!("pct exec 131 -- rm -f {SETUP_IN_CT}")));
         assert!(
-            !site.calls.iter().any(|c| c.contains(PACKAGE_LIST)),
+            !site
+                .calls
+                .iter()
+                .any(|c| c.contains(&format!("truncate -s 0 {PACKAGE_LIST}"))),
             "a template site keeps its package"
         );
         assert_eq!(site.cron.as_deref(), Some("1"));
@@ -960,9 +963,14 @@ mod tests {
         site.broken = Some("/root/ez2-site-setup s-b3test");
         let err = install_step(&mut site, &paths, &spec(true), &json!({})).unwrap_err();
         assert!(err.starts_with("install_failed: the installer"), "{err}");
+        // the installer goes, then the template package and its keys (always last)
+        let n = site.calls.len();
         assert_eq!(
-            site.calls.last().map(String::as_str),
-            Some(format!("pct exec 131 -- rm -f {SETUP_IN_CT}").as_str())
+            site.calls[n - 2..],
+            [
+                format!("pct exec 131 -- rm -f {SETUP_IN_CT}"),
+                format!("pct exec 131 -- sh -c {PACKAGE_CLEANUP}"),
+            ]
         );
     }
 
