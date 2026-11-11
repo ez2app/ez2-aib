@@ -1752,7 +1752,7 @@ jobs:
              applied_everything_goes_and_the_record_moves_to_the_abandoned
           # abandon: an abandoned opening's numbers are given again
           hk sitecreatecmd.rs '    out.extend(read_records(&crate::siteabandon::abandoned_dir(creating))?);' \
-             '    let _ = creating; // knife' \
+             '    out.extend(Vec::<Value>::new()); let _ = creating; // knife' \
              an_abandoned_openings_numbers_are_never_given_again
           # abandon: an abandoned opening's code is given again
           hk sitecreaterun.rs '        &abandoned,' \
