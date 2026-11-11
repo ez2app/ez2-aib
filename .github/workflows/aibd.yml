@@ -1849,6 +1849,30 @@ jobs:
             '    let mut m = BTreeMap::new(); let _ = start_unknown; // knife' \
             --expect-fail a_listed_child_with_no_start_time_counts_and_adoption_wins \
             -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KF1 goal-2 fixture (a9136 #629 M1): the caller's environment is inherited into the sandbox
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '    c.env_clear().envs(sandbox_env_vars(std::env::vars(), cfg));' \
+            '    c.envs(sandbox_env_vars(std::env::vars(), cfg)); // knife' \
+            --expect-fail a_sandbox_child_sees_no_variable_outside_the_allow_list \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF2 goal-2 fixture shim: a second socket selector is taken instead of refused
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '                    return refused("more than one tmux socket selector");' \
+            '                    let _ = 0; // knife' \
+            --expect-fail only_sandbox_sockets_pass_s_and_no_second_selector \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF3 goal-2 fixture shim: a -S outside the sandbox is let through
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '                        None => return refused("-S is not a socket of this sandbox"),' \
+            '                        None => value.clone(), // knife' \
+            --expect-fail only_sandbox_sockets_pass_s_and_no_second_selector \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF4 goal-2 fixture sweep: a pid reused by another process is signalled
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '        .filter(|(p, st)| st.is_some() && found.iter().any(|(q, s0)| q == p && s0 == st))' \
+            '        .filter(|(p, st)| st.is_some() && found.iter().any(|(q, _)| q == p)) // knife' \
+            --expect-fail the_sweep_skips_reused_and_unreadable_pids \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
           # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
           python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
             '    if need < 0 || (need == 0 && errno() != 0) {' \
