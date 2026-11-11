@@ -338,8 +338,7 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
 pub enum Operation {
     /// `read_private`: see what is the customer's own — a site's status, the list of sites.
     ReadPrivate,
-    /// `edit` / `manage_blocks`: work on a site — reload PHP (and, outside this entry,
-    /// log in to the site).
+    /// `edit` / `manage_blocks`: work on a site — reload PHP.
     Edit,
     /// `publish` / `bind_route`: change what is live — restart a site (and, later, bind
     /// a domain).
@@ -351,6 +350,10 @@ pub enum Operation {
     /// `create`: open a new site on the customer's plan. The customer's own decision
     /// (it uses up the plan), so the owner's and the platform's only.
     Create,
+    /// `administer`: sign in to the site as its administrator (a one-time login link),
+    /// which can add plugins and users — more than an editor may do (Andy 11-12: the
+    /// owner's and the platform's only).
+    Administer,
 }
 
 impl Operation {
@@ -363,6 +366,7 @@ impl Operation {
             Operation::ViewAnalytics => "view_analytics",
             Operation::Archive => "archive",
             Operation::Create => "create",
+            Operation::Administer => "administer",
         }
     }
 }
@@ -374,8 +378,8 @@ impl Request {
             Request::Status => Operation::ReadPrivate,
             Request::Logs { .. } | Request::Backup => Operation::ViewAnalytics,
             Request::PhpReload => Operation::Edit,
-            // logging in to the site is working on it (the table's `edit`)
-            Request::LoginLink => Operation::Edit,
+            // the link signs in as the site's administrator (Andy 11-12: owner and admin)
+            Request::LoginLink => Operation::Administer,
             Request::Restart => Operation::Publish,
         }
     }
@@ -407,6 +411,7 @@ impl OwnerRequest<'_> {
 /// | `view_analytics` | yes | yes | — | — | yes | — |
 /// | `archive` | yes | yes | — | — | — | — |
 /// | `create` | yes | yes | — | — | — | — |
+/// | `administer` (login link) | yes | yes | — | — | — | — |
 ///
 /// So, as there: an editor works on a site but changing what is live is the
 /// publisher's, and figures and logs are the analyst's. `admin` is the platform's.
@@ -449,6 +454,8 @@ impl Role {
             Operation::Publish => matches!(self, Owner | Admin | Publisher),
             Operation::ViewAnalytics => matches!(self, Owner | Admin | Analyst),
             Operation::Archive | Operation::Create => matches!(self, Owner | Admin),
+            // the login link signs in as the site's administrator (Andy 11-12)
+            Operation::Administer => matches!(self, Owner | Admin),
         }
     }
 }
@@ -911,8 +918,11 @@ mod tests {
         assert_eq!(logs.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::Backup.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::PhpReload.operation(), Operation::Edit);
-        // a link into the dashboard is work on the site: not a viewer's or an analyst's
-        assert_eq!(Request::LoginLink.operation(), Operation::Edit);
+        // a link into the dashboard signs in as the site's administrator: the owner's and
+        // the platform's only, not an editor's (Andy 11-12)
+        assert_eq!(Request::LoginLink.operation(), Operation::Administer);
+        assert_eq!(who(Operation::Administer), [Role::Owner, Role::Admin]);
+        assert!(!Role::Editor.may(Request::LoginLink.operation()));
         assert!(!Role::Viewer.may(Request::LoginLink.operation()));
         // what is live is the publisher's to change, not the editor's
         assert_eq!(Request::Restart.operation(), Operation::Publish);

@@ -896,9 +896,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// E1 N1 (Andy 11-12 04:3x): `login-link` is offered, under either kind of key, to a
-    /// role that may work on the site; and it is never issued for a CT whose state cannot
-    /// be read.
+    /// E1 N1 (Andy 11-12 04:3x): `login-link` is offered, under either kind of key, to the
+    /// owner and the platform only (Andy 11-12: the link signs in as the site's
+    /// administrator, more than an editor may do); and it is never issued for a CT whose
+    /// state cannot be read.
     #[test]
     fn a_login_link_is_for_a_role_that_may_work_on_the_site() {
         let dir = std::env::temp_dir().join(format!("aib-loginlink-{}", std::process::id()));
@@ -906,7 +907,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         record(&dir, "site2", 112, Some("t-aaa"));
         let d = dir.to_str().unwrap();
-        for role in [Role::Viewer, Role::Analyst, Role::Publisher] {
+        for role in [Role::Viewer, Role::Analyst, Role::Publisher, Role::Editor] {
             assert_eq!(answer("site2", d, "login-link", &[role]), 2, "{role:?}");
             assert_eq!(
                 answer_tenant("t-aaa", None, d, "site site2 login-link", &[role]),
@@ -915,7 +916,7 @@ mod tests {
             );
         }
         // the role may: here no CT's firewall can be read, so nothing is issued
-        assert_eq!(answer("site2", d, "login-link", &[Role::Editor]), 3);
+        assert_eq!(answer("site2", d, "login-link", &[Role::Owner]), 3);
         assert_eq!(
             answer_tenant("t-aaa", None, d, "site site2 login-link", ALL),
             3

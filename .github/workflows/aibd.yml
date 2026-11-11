@@ -791,8 +791,12 @@ jobs:
           ck customer.rs '            Request::Status | Request::Logs { .. } | Request::LoginLink' \
              '            Request::Status | Request::Logs { .. } // knife' \
              everything_else_is_refused_whole
-          ck customer.rs '            Request::LoginLink => Operation::Edit,' \
-             '            Request::LoginLink => Operation::ReadPrivate, // knife' \
+          # Andy 11-12: the login link is the owner's and the platform's, not an editor's
+          ck customer.rs '            Request::LoginLink => Operation::Administer,' \
+             '            Request::LoginLink => Operation::Edit, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
+          ck customer.rs '            Operation::Administer => matches!(self, Owner | Admin),' \
+             '            Operation::Administer => matches!(self, Owner | Admin | Editor), // knife' \
              a_role_gives_what_the_table_says_and_no_more
           # opened view (f1fae 11-12): read from an answer that is not open, or without logins
           ck customer.rs '    if v.get("state").and_then(Value::as_str) != Some("open") || !is_opening(reply) {' \
