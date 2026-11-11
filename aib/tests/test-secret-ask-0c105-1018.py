@@ -134,6 +134,23 @@ class SecretAsk(unittest.TestCase):
         self.assertEqual(SA.dialog('say "hi"\nnext', "t", run=runner(lambda n: "ok"))["why"], "unreadable")
         self.assertNotIn("value", SA.dialog('say "hi"\nnext', "t", run=runner(lambda n: json.dumps({"ok": False, "why": "timeout"}))))
 
+    def test_s2b_generate_button(self):
+        """--generate 只影響視窗那一層:collect 把 generate 傳給 dialog;沒開就沒有那顆鈕(細節在 test-secret-host-root R4–R6)。"""
+        self.assertNotIn("arc4random", SA.build_script("p", "t", "n" * 32))
+        seen = []
+
+        def fake_dialog(p, t, raw=False, generate=False):
+            seen.append(generate)
+            return {"ok": True, "why": "ok", "value": "Ab3!" * 7}
+        old = SA.dialog
+        try:
+            SA.dialog = fake_dialog
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_HOSTA", "hosta", "darwin", generate=True)[0], "Ab3!" * 7)
+            self.assertEqual(SA.collect("HOST_ROOT_PASSWORD_HOSTA", "hosta", "darwin")[0], "Ab3!" * 7)
+        finally:
+            SA.dialog = old
+        self.assertEqual(seen, [True, False])
+
     def test_s3_mac_happy(self):
         f = Fake([KEY])
         rc, res = self.run_cmd([NAME], f)

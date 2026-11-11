@@ -753,7 +753,7 @@ def admit(env=None):
 
 
 # 全球來信不受佇列授權限制(Andy 10-19 裁):全球信一律先排佇列,但佇列是進階功能;基本版的艙
-# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Pro / Mini / Pro 13 實機三台都這樣)。
+# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Mac A / Mac C / Mac B 實機三台都這樣)。
 # 沒開佇列時,排空器只投全球來信(照樣等閒、一次一封);收件程式排進一封就留記號,右欄 / upkeep 看記號才跑。
 def global_pending_path(env=None):
     return queue_root(env) / "global-pending"
@@ -1816,6 +1816,15 @@ def done_group(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, 
 
 
 def reclass(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
+    """Serialize reclassification with other seat transitions."""
+    try:
+        with _seat_transition_lock(seat, env):
+            return _reclass_locked(seat, item_id, kind, actor, env=env, now=now, if_rev=if_rev)
+    except TransitionLockTimeout:
+        return {"ok": False, "reason": "lock_timeout", "message": TRANSITION_REASON["lock_timeout"]}
+
+
+def _reclass_locked(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
     """S7-2:收件席把寄件人的分類改掉(知會 → 工作 / 要裁…);只有收件席本人、只改已送達 / 已讀的;
     改了 rev+1(審查:不加的話 triage / stage-tidy 先前拿的 if_rev 擋不住,升成要裁的信還會被代標讀)。"""
     now = int(time.time() if now is None else now)
@@ -5019,6 +5028,17 @@ def purge_test(env=None, dry_run=False):
 
 
 def edit_result(seat, item_id, msg=None, priority=None, env=None, if_rev=None, no_rev_check=None):
+    """Serialize revision check, read and write with transitions on this seat."""
+    try:
+        with _seat_transition_lock(seat, env):
+            return _edit_result_locked(seat, item_id, msg=msg, priority=priority, env=env,
+                                       if_rev=if_rev, no_rev_check=no_rev_check)
+    except TransitionLockTimeout:
+        return {"ok": False, "reason": "lock_timeout", "rev": None, "item": None,
+                "message": TRANSITION_REASON["lock_timeout"]}
+
+
+def _edit_result_locked(seat, item_id, msg=None, priority=None, env=None, if_rev=None, no_rev_check=None):
     """改內容,回三態 {ok, reason, rev, item}。內容真的變了才 rev+1(34 尺 A5)。
     ★ no_rev_check=None ⇒ 當 True(程式庫呼叫的寬鬆預設):34 尺 A5 與既有格不帶 if_rev 呼叫 Q.edit;
       fail-closed 的邊界放在 CLI `edit`(要 --if-rev 或顯式 --no-rev-check)與殼(priority/body 回呼帶 rev)——
@@ -5815,7 +5835,7 @@ def upkeep(env=None, now=None, alive_fn=None, hold_fn=None, deliver_fn=None, dry
     return rows
 
 
-_TRANSITION_RC = {"rev_mismatch": 5, "no_rev": 6, "actor": 7, "actor_missing": 7,
+_TRANSITION_RC = {"rev_mismatch": 5, "no_rev": 6, "actor": 7, "actor_missing": 7, "lock_timeout": 10,
                   "transition": 8, "evidence": 9, "not_found": 4, "im_room_only": 8}
 
 
@@ -6468,10 +6488,11 @@ def main(argv=None, env=None):
         msg = None
         if args.msg is not None or args.msg_file:
             msg = _read_msg(args)
-        item = edit(args.seat, args.id, msg=msg, priority=args.priority, env=env, if_rev=args.if_rev, no_rev_check=bool(args.no_rev_check) or None)
-        if not item:
-            return 2
-        _print_json(item)
+        result = edit_result(args.seat, args.id, msg=msg, priority=args.priority, env=env, if_rev=args.if_rev, no_rev_check=bool(args.no_rev_check) or None)
+        if not result["ok"]:
+            _print_json(result)
+            return _TRANSITION_RC.get(result["reason"], 4)
+        _print_json(result["item"])
         return 0
 
     if args.cmd == "claim-next":

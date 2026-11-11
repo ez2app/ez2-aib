@@ -1,0 +1,22 @@
+[package]
+name = "aib-cloud-host"
+description = "Ez2 Managed Cloud host-side shell: runs the probe plans aib-cloud derives (joins container network namespaces, TCP / DNS / ICMP handshakes) and reports back for aib-cloud to judge. This is the I/O half; aib-cloud stays no_std."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aib-cloud-host"
+path = "src/main.rs"
+
+# Andy 11-09 18:5x「開發的程式一定要是 rust」:this binary replaced the Python runner ez2-isolation-probe
+# (deleted 11-09 once the Rust probe re-ran the full host A matrix with the same plan_fnv). Planning and judging stay in aib-cloud (no I/O); this crate only
+# executes the plan. serde_json here runs with std (the lock already has it).
+[dependencies]
+aib-cloud = { path = "../aib-cloud" }
+serde_json = "1.0.154"

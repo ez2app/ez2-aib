@@ -165,7 +165,7 @@ class Human(unittest.TestCase):
     def test_h5_touchid(self):
         self.b.cli("publish", self.cap)
         GF.write_heartbeat(self.b.root)
-        self.b.cli("friend", "add", TO, "--name", "Mac mini M4")
+        self.b.cli("friend", "add", TO, "--name", "Mac C")
         asked = []
 
         def fake(ok, why="ok"):
@@ -178,7 +178,7 @@ class Human(unittest.TestCase):
         res = CH.send(TO, "取消的那封", "", "6ddf", env, touchid=fake(False, "cancel"), touchid_available=lambda: True, platform="darwin")
         self.assertEqual((res["via"], res["why"], res["rc"]), ("touchid", "touchid_cancel", 2))
         self.assertEqual(self.outbox(), [], "Touch ID 沒過 ⇒ 一個字都不寫")
-        self.assertIn("Mac mini M4", asked[-1])
+        self.assertIn("Mac C", asked[-1])
         self.assertIn("取消的那封", asked[-1], "視窗文字由核心組:收件人 + 內文")
         long = "很長的內文" * 20 + "\u202e藏起來"
         res = CH.send(TO, long, "", "6ddf", env, touchid=fake(True), touchid_available=lambda: True, platform="darwin")

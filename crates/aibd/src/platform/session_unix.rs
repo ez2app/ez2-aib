@@ -44,6 +44,15 @@ impl Running for UnixRunning {
         self.h.root_pid()
     }
 
+    fn take_output(&mut self) -> Option<super::session::Output> {
+        let out = self.h.take_stdout()?;
+        let err = self.h.take_stderr()?;
+        Some(super::session::Output {
+            stdout: Box::new(out),
+            stderr: Box::new(err),
+        })
+    }
+
     fn try_exit(&mut self) -> std::io::Result<Option<Exit>> {
         Ok(self.h.root_end().map(exit_of))
     }
@@ -64,6 +73,7 @@ impl Running for UnixRunning {
                 tree_size: 0,
                 signals: Vec::new(),
                 blind_spots: super::tree::BLIND_SPOTS_UNCONTAINED.to_vec(),
+                candidates: Default::default(),
             },
         }
     }
@@ -89,7 +99,9 @@ pub fn spawn(spec: &Spec, lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runni
         env_clear: true,
         session_id: spec.id.clone(),
         watch_forks: true,
-        discard_output: true,
+        // sessions keep their output (`session.output` events); the reader
+        // is started by the sessions API right after the spawn
+        discard_output: false,
         lineage: lineage.filter(|l| l.enabled()),
         inject: None,
     };
@@ -249,6 +261,7 @@ mod tests {
             tree_size: 1,
             signals: Vec::new(),
             blind_spots: Vec::new(),
+            candidates: Default::default(),
         }
     }
 

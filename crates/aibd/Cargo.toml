@@ -19,6 +19,7 @@ directories = "6.0.0"
 getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 subtle = "2.6.1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 thiserror = "2.0.21"
@@ -26,6 +27,14 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "s
 tower = "0.5.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[features]
+# Embed the built web workbench (apps/web/dist, or AIBD_WEB_DIST) into aibd (build.rs).
+# Off by default: without it every non-API path is `404 web_not_built` and no node is needed.
+web = []
+
+[build-dependencies]
+sha2 = "0.10.9"
 
 [dev-dependencies]
 http-body-util = "0.1.5"
@@ -36,5 +45,8 @@ tower = { version = "0.5.3", features = ["util"] }
 nix = { version = "0.31.3", features = ["signal", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Only for knife G1a (aibd.yml): it puts the libproc 0.15 child listing back to
+# prove the stale-errno bug. aibd itself lists through aib-sys. Do not drop it
+# as unused without removing that knife (043dd G1 N1).
 libproc = "0.15.0"
 nix = { version = "0.31.3", features = ["signal", "process", "event"] }

@@ -359,7 +359,9 @@ def _go_command(repo: Path, path: Path) -> list[str]:
             pass
         _GO_ENV_CACHE[go] = vals
     pre = ["%s=%s" % kv for kv in sorted(_GO_ENV_CACHE[go].items())]
-    return (["env"] + pre if pre else []) + [go, "test", pkg]
+    # 11-09 §G:帶 -v ⇒ 每支頂層測試一行 --- PASS/FAIL/SKIP,全部 t.Skip 才認得出來是「沒驗」(test_entry._other_lang_cells)。
+    #   Go 的測試快取照樣有效:-v 在可快取的旗標清單裡,快取命中會重播同一份 -v 輸出。
+    return (["env"] + pre if pre else []) + [go, "test", "-v", pkg]
 
 
 def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:
@@ -757,7 +759,7 @@ def _lsof_dir_pids(dirs, lsof_text: str | None = None) -> list[int]:
 def leftover_pids(marker: str, proc: str = "/proc", ps_text: str | None = None, var: str = "EZ2_VERIFY_TRACE",
                   dirs=(), lsof_text: str | None = None) -> list[int]:
     """環境變數裡帶著 marker(這支測試的追蹤檔路徑)、而且還活著的行程(不含自己)。
-    Linux 讀 /proc;沒有 /proc(macOS,10-08 CI 改到 Mac mini)⇒ 改讀 `ps -E`,
+    Linux 讀 /proc;沒有 /proc(macOS,10-08 CI 改到 Mac C)⇒ 改讀 `ps -E`,
     再加上抓著 dirs 底下東西的(10-11:macOS 27 的 ps -E 不給環境變數)。"""
     if not os.path.isdir(proc):
         return sorted(set(_ps_env_pids(marker, ps_text, var)) | set(_lsof_dir_pids(dirs, lsof_text)))

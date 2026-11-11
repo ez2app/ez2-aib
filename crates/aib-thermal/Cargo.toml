@@ -1,0 +1,13 @@
+[package]
+name = "aib-thermal"
+description = "Pure thermal-protection decisions for aibd (no OS access): sustained-heat and thermal-pressure reap authority"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

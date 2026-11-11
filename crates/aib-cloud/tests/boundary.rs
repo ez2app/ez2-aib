@@ -198,23 +198,38 @@ fn cargo_metadata(manifest: &Path, no_deps: bool) -> Value {
 /// top-level `bin = [...]`, `build = …` in any form). Reading cargo's own view instead of
 /// the manifest text closes the whole class.
 fn target_violation(meta: &Value, pkg_name: &str, crate_dir: &Path) -> Option<String> {
-    let pkgs = meta["packages"].as_array()?;
+    // #566 r3 L1 (ebb36): a metadata document of an unexpected shape is a violation, not a
+    // pass — every missing field below used to return None ("nothing wrong").
+    let Some(pkgs) = meta["packages"].as_array() else {
+        return Some("metadata shape: packages is not an array".to_owned());
+    };
     let Some(pkg) = pkgs.iter().find(|p| p["name"] == pkg_name) else {
         return Some(format!("package {pkg_name} not in metadata"));
     };
-    let targets = pkg["targets"].as_array()?;
+    let Some(targets) = pkg["targets"].as_array() else {
+        return Some(format!(
+            "metadata shape: {pkg_name}.targets is not an array"
+        ));
+    };
     let canon = |p: &str| Path::new(p).canonicalize().ok();
-    let want_lib = canon(&crate_dir.join("src").join("lib.rs").to_string_lossy());
+    let Some(want_lib) = canon(&crate_dir.join("src").join("lib.rs").to_string_lossy()) else {
+        return Some(format!("{}/src/lib.rs does not exist", crate_dir.display()));
+    };
     let tests_dir = canon(&crate_dir.join("tests").to_string_lossy());
     let mut libs = 0;
     for t in targets {
         let name = t["name"].as_str().unwrap_or("?");
-        let src = t["src_path"].as_str().unwrap_or("");
-        for k in t["kind"].as_array()?.iter().filter_map(Value::as_str) {
+        let Some(src) = t["src_path"].as_str() else {
+            return Some(format!("metadata shape: target {name} has no src_path"));
+        };
+        let Some(kinds) = t["kind"].as_array() else {
+            return Some(format!("metadata shape: target {name} has no kind array"));
+        };
+        for k in kinds.iter().filter_map(Value::as_str) {
             match k {
                 "lib" => {
                     libs += 1;
-                    if canon(src) != want_lib {
+                    if canon(src).as_ref() != Some(&want_lib) {
                         return Some(format!(
                             "lib target {name} is rooted at {src}, not src/lib.rs"
                         ));
@@ -241,31 +256,99 @@ fn target_violation(meta: &Value, pkg_name: &str, crate_dir: &Path) -> Option<St
     None
 }
 
-/// Every dependency of the crate must resolve to a crates.io package: `[patch]` /
-/// `[replace]` pointing at a local or git crate shows up in Cargo.lock as a package of that
-/// name without a registry `source`. Read from the lockfile so it works offline without
-/// downloading the whole workspace graph.
-fn dependency_source_violation(lock: &str, dep_names: &[&str]) -> Option<String> {
-    for block in lock.split("[[package]]").skip(1) {
-        let field = |k: &str| {
-            block
-                .lines()
-                .find_map(|l| {
-                    l.trim()
-                        .strip_prefix(k)
-                        .and_then(|r| r.trim().strip_prefix('='))
+/// One `[[package]]` block of a Cargo.lock.
+struct LockPkg {
+    name: String,
+    version: String,
+    source: String,
+    /// `dependencies = [...]` entries, each `name`, `name version` or `name version (source)`.
+    deps: Vec<String>,
+}
+
+fn parse_lock(lock: &str) -> Vec<LockPkg> {
+    lock.split("[[package]]")
+        .skip(1)
+        .filter_map(|block| {
+            let field = |k: &str| {
+                block
+                    .lines()
+                    .find_map(|l| {
+                        l.trim()
+                            .strip_prefix(k)
+                            .and_then(|r| r.trim().strip_prefix('='))
+                    })
+                    .map(|v| v.trim().trim_matches('"').to_owned())
+            };
+            let deps = block
+                .split_once("dependencies = [")
+                .and_then(|(_, rest)| rest.split_once(']'))
+                .map(|(list, _)| {
+                    list.lines()
+                        .map(|l| l.trim().trim_end_matches(',').trim_matches('"').to_owned())
+                        .filter(|l| !l.is_empty())
+                        .collect()
                 })
-                .map(|v| v.trim().trim_matches('"').to_owned())
-        };
-        let Some(name) = field("name") else { continue };
-        if !dep_names.contains(&name.as_str()) {
-            continue;
-        }
-        let src = field("source").unwrap_or_default();
-        if !src.starts_with("registry+https://github.com/rust-lang/crates.io-index") {
-            return Some(format!(
-                "{name} resolves to source {src:?}, not crates.io ([patch]/[replace]?)"
-            ));
+                .unwrap_or_default();
+            Some(LockPkg {
+                name: field("name")?,
+                version: field("version").unwrap_or_default(),
+                source: field("source").unwrap_or_default(),
+                deps,
+            })
+        })
+        .collect()
+}
+
+/// Every package the crate pulls in — directly **or transitively** — must resolve to a
+/// crates.io package (#566 r3 L2, ebb36): a workspace-root `[patch]` of `serde` or
+/// `serde_core` would hand serde_json a local crate that is free to use std, and the direct
+/// allowlist never sees it. Walks Cargo.lock from `root_pkg`'s block; only the root itself
+/// (a workspace member, no `source`) is exempt. A dependency that names no package in the
+/// lock is a violation too. Read from the lockfile so it works offline without downloading
+/// the whole workspace graph.
+fn dependency_source_violation(lock: &str, root_pkg: &str) -> Option<String> {
+    let pkgs = parse_lock(lock);
+    let find = |spec: &str| -> Option<&LockPkg> {
+        let mut parts = spec.split_whitespace();
+        let name = parts.next()?;
+        let version = parts.next();
+        pkgs.iter()
+            .find(|p| p.name == name && version.is_none_or(|v| p.version == v))
+    };
+    // #583 r1 L1 (ebb36): a lock without the crate itself is a violation, not a pass
+    let Some(root) = pkgs.iter().find(|p| p.name == root_pkg) else {
+        return Some(format!("{root_pkg} is not in Cargo.lock"));
+    };
+    if !root.source.is_empty() {
+        return Some(format!(
+            "{root_pkg} has a source ({}); it should be the workspace member",
+            root.source
+        ));
+    }
+    let mut todo: Vec<&LockPkg> = vec![root];
+    let mut seen: Vec<(&str, &str)> = Vec::new();
+    while let Some(p) = todo.pop() {
+        for spec in &p.deps {
+            let Some(d) = find(spec) else {
+                return Some(format!(
+                    "{}: dependency {spec:?} is not in Cargo.lock",
+                    p.name
+                ));
+            };
+            if seen.contains(&(d.name.as_str(), d.version.as_str())) {
+                continue;
+            }
+            seen.push((&d.name, &d.version));
+            if !d
+                .source
+                .starts_with("registry+https://github.com/rust-lang/crates.io-index")
+            {
+                return Some(format!(
+                    "{} {} (needed by {}) resolves to source {:?}, not crates.io ([patch]/[replace]?)",
+                    d.name, d.version, p.name, d.source
+                ));
+            }
+            todo.push(d);
         }
     }
     None
@@ -430,15 +513,15 @@ fn cloud_sources_do_no_io() {
         panic!("aib-cloud targets: {why}(#566 r2:只准一個 src/lib.rs 的 lib + tests/ 下的 test)");
     }
     let lock = fs::read_to_string(root().join("Cargo.lock")).expect("Cargo.lock");
-    let deps: Vec<&str> = ALLOWED.iter().map(|(k, _)| *k).collect();
-    if let Some(why) = dependency_source_violation(&lock, &deps) {
-        panic!("aib-cloud dependencies: {why}");
+    if let Some(why) = dependency_source_violation(&lock, "aib-cloud") {
+        panic!("aib-cloud dependencies: {why}(#566 r3 L2:含遞移依賴)");
     }
     for mf in [
         crate_dir("aib-cloud").join("Cargo.toml"),
         root().join("Cargo.toml"),
     ] {
-        let text = manifest_compact(&fs::read_to_string(&mf).expect("manifest"));
+        // quotes dropped too: `["patch".crates-io]` is the same table (#566 r3 L2)
+        let text = manifest_compact(&fs::read_to_string(&mf).expect("manifest")).replace('"', "");
         assert!(
             !text.contains("[patch")
                 && !text.contains("[replace")
@@ -650,5 +733,82 @@ fn cargo_view_catches_every_target_spelling() {
             &[lib]
         ),
         None
+    );
+}
+
+// #566 r3 L1 / L2 knives (ebb36): a metadata document of the wrong shape must fail, and a
+// transitive dependency without a crates.io source must be caught.
+#[test]
+fn metadata_shape_and_transitive_sources_fail_closed() {
+    let dir = crate_dir("aib-cloud");
+    for (tag, meta) in [
+        ("no packages", serde_json::json!({})),
+        ("packages not array", serde_json::json!({"packages": 1})),
+        (
+            "no targets",
+            serde_json::json!({"packages": [{"name": "aib-cloud"}]}),
+        ),
+        (
+            "target without kind",
+            serde_json::json!({"packages": [{"name": "aib-cloud", "targets": [{"name": "aib_cloud", "src_path": "x"}]}]}),
+        ),
+        (
+            "target without src_path",
+            serde_json::json!({"packages": [{"name": "aib-cloud", "targets": [{"name": "aib_cloud", "kind": ["lib"]}]}]}),
+        ),
+    ] {
+        assert!(
+            target_violation(&meta, "aib-cloud", &dir).is_some(),
+            "{tag}: shape slipped through"
+        );
+    }
+
+    const REG: &str = "registry+https://github.com/rust-lang/crates.io-index";
+    let lock = |serde_src: &str| {
+        format!(
+            "[[package]]\nname = \"aib-cloud\"\nversion = \"0.0.0\"\ndependencies = [\n \"serde_json\",\n]\n\n\
+             [[package]]\nname = \"serde_json\"\nversion = \"1.0.154\"\nsource = \"{REG}\"\ndependencies = [\n \"serde\",\n \"serde_core 1.0.230\",\n]\n\n\
+             [[package]]\nname = \"serde\"\nversion = \"1.0.230\"\n{serde_src}dependencies = [\n \"serde_core 1.0.230\",\n]\n\n\
+             [[package]]\nname = \"serde_core\"\nversion = \"1.0.230\"\nsource = \"{REG}\"\n"
+        )
+    };
+    // every package from crates.io: clean
+    assert_eq!(
+        dependency_source_violation(&lock(&format!("source = \"{REG}\"\n")), "aib-cloud"),
+        None
+    );
+    // serde patched to a local path: no source line in the lock, two hops below aib-cloud
+    let why = dependency_source_violation(&lock(""), "aib-cloud")
+        .expect("transitive patch must be caught");
+    assert!(why.contains("serde 1.0.230"), "{why}");
+    // serde patched to a git fork
+    let why = dependency_source_violation(
+        &lock("source = \"git+https://example.com/serde#abc\"\n"),
+        "aib-cloud",
+    )
+    .expect("git source must be caught");
+    assert!(why.contains("git+"), "{why}");
+    // a dependency the lock does not know
+    let dangling = lock(&format!("source = \"{REG}\"\n")).replace(
+        "[[package]]\nname = \"serde_core\"",
+        "[[package]]\nname = \"serde_korea\"",
+    );
+    assert!(dependency_source_violation(&dangling, "aib-cloud").is_some());
+    // the crate itself missing from the lock (#583 L1): refuse, never "nothing wrong"
+    assert!(dependency_source_violation("[[package]]\nname = \"serde_json\"\nversion = \"1.0.154\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n", "aib-cloud").is_some());
+    assert!(dependency_source_violation("", "aib-cloud").is_some());
+    // the real lock is clean
+    assert_eq!(
+        dependency_source_violation(
+            &fs::read_to_string(root().join("Cargo.lock")).expect("lock"),
+            "aib-cloud"
+        ),
+        None
+    );
+    // quoted [patch] table spelling is seen by the manifest check
+    assert!(
+        manifest_compact("[\"patch\".crates-io]\nserde = { path = \"x\" }\n")
+            .replace('"', "")
+            .contains("[patch")
     );
 }

@@ -110,22 +110,28 @@ LAYOUT = (
      (("GITHUB_TOKEN", "GitHub 個人 token", "dev", "dev", False),
       ("SSH_HOST_EU01_KEY", "~/.ssh 檔名(EU01)", "dev", "dev", False),
       ("SSH_HOST_SIN01_KEY", "~/.ssh 檔名(SIN01)", "dev", "dev", False))),
-    # 11-08 @4542e(EU02 代管節點,Andy「我不想我去操作」):Hetzner Robot webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
+    # 11-08 @4542e(代管節點,Andy「我不想我去操作」):供應商後台 webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
     #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
-    #   不送伺服器(被救的那台不能是唯一副本);讀端只給 Robot API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
+    #   不送伺服器(被救的那台不能是唯一副本);讀端只給後台 API 的 HTTP Basic,不進 argv / 日誌,回覆要遮 Rescue root 密碼。
     #   #528 審(ebb36 / f1fae 定):同機每個席都讀得到這檔 ⇒ 會改機器的 rescue / reset --apply 在讀值前走 approve_gate
     #   「cloud_robot.apply」彈窗 + Touch ID(tools/cloud-host/robot.py);status / keys 唯讀不用。缺值不補填(NO_FILL_FILES)、
     #   只登記 HETZNER_ROBOT_ 前綴(NO_SEGMENT_PREFIX_FILES),HETZNER_CLOUD_… 要另開一格。
     ("hetzner-robot.env", "hetzner-robot", "type",
-     "Hetzner Robot webservice 使用者(Settings → Web service and app settings)。給 aib 啟用 Rescue / 重置用;不是 Cloud API token、不是主機 root。",
-     (("HETZNER_ROBOT_USER", "Robot webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
-      ("HETZNER_ROBOT_PASS", "Robot webservice 密碼", "cloud-host", "host-rescue", False))),
+     "主機供應商後台的 webservice 使用者(在後台的 web service 設定頁建立)。給 aib 啟用救援 / 重置用;不是雲端 API token、不是主機 root。",
+     (("HETZNER_ROBOT_USER", "後台 webservice 使用者名(#ws+…)", "cloud-host", "host-rescue", False),
+      ("HETZNER_ROBOT_PASS", "後台 webservice 密碼", "cloud-host", "host-rescue", False))),
     # 11-09 @33e28(f1fae 派 b118,代管節點):Proxmox VE 的 API token,讓 aib 自己開 / 管 VM,token 不經對話。
     #   值是 PVE 的整串「使用者@realm!token 名=密鑰(UUID)」,也就是 Authorization: PVEAPIToken= 後面那段;建議用 aib@pve 的
     #   privsep token(只給要用的權限,root@ 的 token 當場拒)。多台:PVE_API_TOKEN_<主機代號>。
     #   只有 PVE_API_ 開頭落這檔(NO_SEGMENT_PREFIX_FILES;PVE_ROOT_PASSWORD 這類回 unknown_name,要另開一格),
     #   PVE_API_ 開頭一律套 token 形狀(secret_ask SHAPE_PREFIX,打錯的 PVE_API_TOKN 也擋)。
     #   只走 aib secret ask(彈窗 + Touch ID)寫;缺值不補填(NO_FILL_FILES:不發 LINE 請人貼);格式不對當場重問(secret_ask SHAPE)。
+    # 11-09 4542e(Andy 親打「放行 ID-2」):宿主 root@pam 密碼(8006 網頁登入用;ssh 仍只收金鑰)。ebb36 #545 L1 說 PVE_ROOT_PASSWORD
+    #   這類要另開一格 ⇒ 就是這檔。只准 --remote-only 推到那台主機(chpasswd 讀完 shred),本機不存;名字 HOST_ROOT_PASSWORD_<主機代號>,
+    #   只有 HOST_ROOT_ 開頭落這檔(NO_SEGMENT_PREFIX_FILES);缺值不補填。配 `aib secret ask … --generate` 在視窗內產 28 字合規密碼。
+    ("host-root.env", "host-root", "type",
+     "主機 root 密碼(只准 --remote-only 推到那台主機;本機不存)。HOST_ROOT_PASSWORD_<主機代號>,例 HOST_ROOT_PASSWORD_HOSTA。",
+     (("HOST_ROOT_PASSWORD", "主機 root@pam 密碼(實際名字加 _<主機代號>)", "cloud-host", "host-root", False),)),
     ("pve.env", "pve-api", "type",
      "Proxmox VE API token(建議 aib@pve 的 privsep token)。一行 PVE_API_TOKEN=使用者@realm!token名=UUID;多台加 _<主機代號>。不是 root 密碼,也不收 root@ 的 token。",
      (("PVE_API_TOKEN", "PVE API token(使用者@realm!token名=UUID)", "cloud-host", "pve-api", False),)),
@@ -304,6 +310,7 @@ CUSTOMER_FIRST_BATCH = (
 #   像素工坊之後的別的秘密(PIXEL_GROK_…)會默默寫進 claude 專用 token 檔;不登記 ⇒ 那些名字回 unknown_name,要另開一格。
 #   新的 pixel-* 檔(例 pixel-grok.env)也要加進來:這是檔名清單,沒列的那一檔會改登記 PIXEL_、整段又被它吃掉(@aeb40 #425 L1)。
 NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env")   # 11-08 #528 M1(ebb36):HETZNER_CLOUD_… 不能落進 Robot 檔;
+NO_SEGMENT_PREFIX_FILES += ("host-root.env",)   # 11-09 4542e:HOST_ROOT_ 以外(HOST_X)不落 host-root.env;放這裡因為下面建表時就要算進去
 #   11-09 #545 L1(ebb36):pve.env 只收 PVE_API_ 開頭,PVE_ROOT_PASSWORD 這類要另開一格
 
 
@@ -336,6 +343,10 @@ REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAI
 NO_FILL_NAMES = ("PIXEL_CLAUDE_OAUTH_TOKEN",)
 # 依檔判斷:落到這些檔的名字(PIXEL_CLAUDE_OAUTH_TOKEN_2 這類前綴名)也一律不補填(@aeb40 #425 L2:只認完整名會漏)
 NO_FILL_FILES = ("pixel-claude.env", "hetzner-robot.env", "pve.env", "wpsite.env")   # 11-08 #528 H2(ebb36):Robot 密碼缺值絕不發 LINE 補填;11-09 b118:PVE token、站點密碼同
+# 11-09 4542e host-root.env(主機 root 密碼):只收 HOST_ROOT_ 開頭、只准 --remote-only、缺值不補填。另行 += 是為了不動上面三行
+#   (33e28 的刀測 K3 / K5 以上面那幾行原文當錨點)。
+REMOTE_ONLY_FILES += ("host-root.env",)
+NO_FILL_FILES += ("host-root.env",)
 
 
 def no_fill(name):

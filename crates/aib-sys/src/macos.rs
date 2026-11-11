@@ -135,6 +135,89 @@ impl ProcessInfo for Macos {
     }
 }
 
+/// `sizeof(struct kinfo_proc)` on 64-bit macOS (XNU `bsd/sys/sysctl.h`). The
+/// libc crate does not define the structure for Apple targets; the size the
+/// kernel returns is checked on every call.
+const KINFO_PROC_SIZE: usize = 648;
+
+impl Macos {
+    /// G1 fallback (043dd THREAT-G1-setuid, 11-09): the start time in seconds
+    /// through `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID)`, i.e.
+    /// `kp_proc.p_un.__p_starttime.tv_sec`, the first field of
+    /// `struct kinfo_proc` (offset 0). Same source as M2's `pbi_start_tvsec`
+    /// (`p_start`), but readable for a setuid-root child, where M2 is EPERM.
+    /// A pid that does not exist comes back as 0 bytes ⇒ `Gone`.
+    pub fn start_sec_sysctl(&self, pid: u32) -> Result<u64, SysError> {
+        let mut mib = [
+            libc::CTL_KERN,
+            libc::KERN_PROC,
+            libc::KERN_PROC_PID,
+            pid_arg(pid)?,
+        ];
+        let mut buf = [0u8; KINFO_PROC_SIZE];
+        let mut len: libc::size_t = KINFO_PROC_SIZE;
+        clear_errno();
+        // SAFETY: `mib` is 4 valid ints; `buf` is a live, exclusively borrowed
+        // `len`-byte buffer and `len` points at its size; no new value is set.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                4,
+                buf.as_mut_ptr().cast::<c_void>(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return Err(SysError::from_errno(errno()));
+        }
+        if len == 0 {
+            return Err(SysError::Gone);
+        }
+        if len != KINFO_PROC_SIZE {
+            return Err(SysError::LengthMismatch {
+                got: len,
+                want: KINFO_PROC_SIZE,
+            });
+        }
+        let mut sec = [0u8; 8];
+        sec.copy_from_slice(&buf[..8]);
+        u64::try_from(i64::from_ne_bytes(sec)).map_err(|_| SysError::Unknown)
+    }
+
+    /// Effective uid through `PROC_PIDT_SHORTBSDINFO` (`pbsi_uid`), readable
+    /// for a setuid child where M2 is refused.
+    pub fn euid(&self, pid: u32) -> Result<u32, SysError> {
+        let s: libc::proc_bsdshortinfo = pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO)?;
+        Ok(s.pbsi_uid)
+    }
+
+    /// G1 (043dd M1): the process's resource coalition id, through the
+    /// private `PROC_PIDCOALITIONINFO` flavor (20, `<sys/proc_info.h>` in
+    /// xnu). A process starts in its parent's coalition; launchd puts each
+    /// service it starts in its own, so a launchd-started system service is
+    /// told apart from a re-parented process of a session. Private: the
+    /// caller checks it on a pair it knows share one before trusting it.
+    pub fn coalition(&self, pid: u32) -> Result<u64, SysError> {
+        let c: ProcPidCoalitionInfo = pidinfo(pid, PROC_PIDCOALITIONINFO)?;
+        Ok(c.coalition_id[0])
+    }
+}
+
+/// `PROC_PIDCOALITIONINFO` (private, xnu `bsd/sys/proc_info.h`).
+const PROC_PIDCOALITIONINFO: c_int = 20;
+
+/// `struct proc_pidcoalitioninfo`: `coalition_id[COALITION_NUM_TYPES]`
+/// (resource, jetsam) and three reserved words, 40 bytes; the length check
+/// in [`pidinfo`] refuses any other size.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ProcPidCoalitionInfo {
+    coalition_id: [u64; 2],
+    reserved: [u64; 3],
+}
+
 /// What a list call returns: `proc_listpids` counts bytes,
 /// `proc_listallpids` counts pids (libproc.c).
 #[derive(Clone, Copy)]
@@ -456,6 +539,50 @@ mod tests {
             0
         });
         assert_eq!(r, Err(SysError::PermissionDenied));
+    }
+
+    /// G1: the sysctl fallback reads the same start time as M2 (pinned on
+    /// ourselves and on a child), and a pid that does not exist is `Gone`.
+    #[test]
+    fn the_sysctl_start_time_equals_m2s_and_a_missing_pid_is_gone() {
+        let me = me();
+        assert_eq!(
+            Macos.start_sec_sysctl(me),
+            Macos.bsd_info(me).map(|b| b.start_sec)
+        );
+        let mut c = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let got = (
+            Macos.start_sec_sysctl(c.id()),
+            Macos.bsd_info(c.id()).map(|b| b.start_sec),
+        );
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(got.0, got.1);
+        assert!(got.0.is_ok());
+        assert_eq!(Macos.start_sec_sysctl(i32::MAX as u32), Err(SysError::Gone));
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        assert_eq!(Macos.euid(me), Ok(uid));
+    }
+
+    /// G1: a child starts in our coalition, and the id is not zero; a pid
+    /// that does not exist is `Gone`.
+    #[test]
+    fn a_child_shares_our_coalition() {
+        let mine = Macos.coalition(me()).unwrap();
+        assert_ne!(mine, 0);
+        let mut c = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let got = Macos.coalition(c.id());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(got, Ok(mine));
+        assert_eq!(Macos.coalition(i32::MAX as u32), Err(SysError::Gone));
     }
 
     /// 043dd K10: a failed size query is an error even if the fill works.

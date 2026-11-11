@@ -190,7 +190,7 @@ class Knives(unittest.TestCase):
     def _knife_file(self, name, old, new, test):
         d = tempfile.mkdtemp(prefix="sameboot-knife-")
         try:
-            shutil.copytree(COCKPIT, os.path.join(d, "src", "cockpit"))
+            shutil.copytree(COCKPIT, os.path.join(d, "src", "cockpit"), ignore=shutil.ignore_patterns("__pycache__"))
             shutil.copytree(HERE, os.path.join(d, "tests"), ignore=shutil.ignore_patterns("__pycache__"))
             p = os.path.join(d, "src", "cockpit", name)
             s = open(p, encoding="utf-8").read()

@@ -39,6 +39,28 @@ is registered, budgeted and stops by itself; a lost event is detected and repair
 - At run time each timer counts its wakeups by name. That count says *which* registered
   timer caused a regression; it is one of two separate inputs to the idle-wakeup gate (B2),
   see below.
+- **Exception: thermal protection sampling** (R1, 2026-11-10; DECISION-r1-thermal-c477a-1110,
+  approved by 9320/a63ab). aibd must stop its own work before the machine overheats (1.x
+  `cooldown.py`, after the 11-03 mac-c incident), and the reap rule needs an average
+  held ≥ 60 s over ≥ 3 samples, which a "sample only when a viewer asks" rule (§4) cannot
+  provide. So one named timer, `thermal_sample`, samples CPU die temperature and thermal
+  pressure without a viewer, under these conditions:
+  1. It is an `Operation` timer registered through `aibd::timers` like any other, listed in
+     `docs/perf/timers.md`, and its wakeups appear in the §4 counters by name. This is the
+     exception: its maximum lifetime is not a fixed duration but the life of aibd's own
+     process set (condition 2), which is the stop condition the timer declares.
+  2. It exists **only while aibd has at least one process of its own running**; the round in
+     which the last one ends drops it. With 0 own processes it does not exist, so the idle
+     gate B2 still expects 0 registered wakeups.
+  3. The period is **fixed at 5 s**, the same as its lower and upper bound; it is not
+     configurable. A thermal-pressure event may trigger one early decision, never a shorter
+     period.
+  4. On Windows there is no thermal protection (the sampling calls are `Unsupported`); the
+     status line and the background-run view say so, and the 1.x retirement table records it.
+
+  The sampling calls themselves live in `aib-sys` (T1 CPU die temperature, T2 thermal
+  pressure); the decision rules are pure functions in `aib-thermal`. This exception is the
+  only machine-state sampling without a viewer; §4 stays as written for everything else.
 
 ### 1a. What the idle-wakeup gate (B2) can and cannot see
 
@@ -88,7 +110,8 @@ B2 reports two columns that are never merged into one number:
   edge-triggered (one event when crossing, one when clearing) and never polled.
 - Machine state (CPU, temperature, memory, process table) is sampled **only when a visible
   client asks**, cached 5 s and shared by all clients; with no viewer it is not sampled
-  at all.
+  at all. The one exception is thermal protection sampling while aibd has its own
+  processes running (§1, `thermal_sample`).
 - aibd counts GET requests per route template and flags a client that polls (high-rate
   GETs on a route that has an SSE equivalent) in the metrics output. Clients must use
   SSE; periodic GET is a bug.
@@ -100,6 +123,21 @@ B2 reports two columns that are never merged into one number:
   least 2 and **at most 4** for now; extra requests wait in a queue and are never
   refused. 8 is the stress-test target, not the default, until the baseline proves it
   safe.
+- The queue is bounded (11-09, a9136 / a63ab): at most 64 sessions wait (trial value);
+  the next request is `429 session_queue_full`, the only refusal for load. Waiting
+  sessions are `pending` (no process), start in arrival order (FIFO) as slots come back,
+  and can be cancelled. A pending session is never started from an old queue: at
+  shutdown it ends `interrupted`, after a crash the next start marks it `interrupted`
+  (`previous_state: pending`). `AIBD_MAX_SESSIONS` (1–64) is for stress tests only.
+- A session leaving the queue goes through the M1 gate again on the `argv[0]` it was asked
+  with (ADR 0003: every spawn resolves the real path again); refused ⇒ `failed`
+  (`ended_by: policy_refused`), audited like a POST refusal (043dd 11-10 M1).
+- Known limit (043dd 11-10 M2 / L3): a slot kept by a stop that could not confirm the tree
+  is gone (ADR 0004: on a desktop Mac a longer session may end `candidates_unreadable`) is
+  not given back by time. While every slot is held that way the queue does not move: there
+  is no wait limit yet. A pending session shows why: `GET` returns `queue` with its
+  `position`, the limit, and every session holding a slot with its state and stop reason.
+  DELETE the holder again to re-check it, or restart aibd.
 - "End an interactive CLI after 15 idle minutes and mark the session resumable" is
   implemented but **off by default** until resume reliability and the energy saving are
   measured. A session that is running a tool or waiting for an approval is never idle.
@@ -139,7 +177,9 @@ The descendant counts on both OSes are **proxies until measured** (see ADR 0004 
   to go through; the error message must say how.
 - Negative: the event paths need OS calls that safe wrappers do not cover (Windows Job
   Object messages; macOS `proc_pidinfo` flavor 17). Decided (DECISION-1, 2026-11-07): all
-  such FFI lives in one crate, `aib-sys`. Only aibd's platform module may depend on it;
+  such FFI lives in one crate, `aib-sys`. Only aibd's platform module may depend on it
+  (amended by DECISION-10 B, 2026-11-08: also `aib-procwatch` for its child listing, and
+  `aib-forkcount` only through aib-procwatch, which keeps aib-sys types private);
   `aib-core` and `aib-store` must not (checked on the `cargo metadata` dependency graph,
   with knives). Every other crate stays `forbid(unsafe_code)`; `aib-sys` uses
   `deny(unsafe_op_in_unsafe_fn)`, a SAFETY note on every unsafe block, Rust-only types at

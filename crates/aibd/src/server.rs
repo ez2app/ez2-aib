@@ -51,9 +51,12 @@ pub async fn run(
     }
 
     let db = dirs.data_dir().join("aibd.sqlite");
-    let store = tokio::task::spawn_blocking(move || Store::open(&db))
+    platform::private_db_file(&db)?;
+    let db2 = db.clone();
+    let store = tokio::task::spawn_blocking(move || Store::open(&db2))
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))??;
+    platform::restrict_db_sidecars(&db)?;
     if !store.integrity_ok()? {
         return Err(StartError::Integrity);
     }
@@ -74,12 +77,28 @@ pub async fn run(
     });
     platform::write_private_file(&run_info_path, info.to_string().as_bytes())?;
 
-    let guard_cfg = Arc::new(GuardConfig::new(
-        addr.port(),
-        addr.is_ipv6(),
-        cfg.allowed_origins.clone(),
-        token,
-    ));
+    // pairing (ADR 0006 §7) is opt-in: the terminal confirmation is not an independent
+    // channel against a same-account AI (see crate::pairing)
+    let channel = crate::pairing::ConfirmChannel::from_env_value(
+        std::env::var("AIBD_PAIRING").ok().as_deref(),
+    );
+    if channel != crate::pairing::ConfirmChannel::Off {
+        tracing::warn!(
+            channel = channel.as_str(),
+            "pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
+        );
+    }
+    let guard_cfg = Arc::new(
+        GuardConfig::new(
+            addr.port(),
+            addr.is_ipv6(),
+            cfg.allowed_origins.clone(),
+            token,
+        )
+        .with_pairing(Arc::new(
+            crate::pairing::Pairing::default().with_channel(channel),
+        )),
+    );
     // M1 self-check once, off the async threads (it starts one child).
     let lineage = Arc::new(
         tokio::task::spawn_blocking(crate::lineage::Lineage::detect)
@@ -96,11 +115,16 @@ pub async fn run(
         cfg.max_sessions,
         sessions_dir,
     );
+    let session_policy = Arc::new(cfg.session_policy.clone());
+    // 043dd M2-1: the queue runs the same gate again when a session leaves it
+    sessions.set_policy(session_policy.clone());
+    api::process_ready()?;
     let app = api::router(
         AppState {
             store,
             lineage,
             sessions: sessions.clone(),
+            session_policy,
         },
         guard_cfg,
     );

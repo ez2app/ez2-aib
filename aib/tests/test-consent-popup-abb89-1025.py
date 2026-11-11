@@ -24,8 +24,16 @@ C19 decide 丟例外 ⇒ 記 failed、不卡在 running/;~不存在使用者的 
 C20 running/ 裡的孤兒(當機 / 重開機留下)⇒ 超時記 failed、搬 bad/
 C21 ask --wait 等到逾時仍 pending ⇒ rc 1;plist / 子行程帶解析後的狀態根(只設 EZ2_AIB_HOME 也對)
 C22 Touch ID 整句(含語系前綴)超過視窗上限 ⇒ 改 strong;t 寫成未來時間 ⇒ expired
+P1 SIGN 送單前探 launchd 常駐:不在 ⇒ agent_missing、不進 inbox(DEV 4.6 r2 §9 P2,c477a)
+P2 SIGN 送單前跑 aib-signlint:有發現 ⇒ sign_lint、發現印出來、不進 inbox;找不到 aib-signlint ⇒ signlint_missing
+P3 decide 對「要跑的那份複本」再 lint 一次:席位手寫 inbox 也擋得住;沒過 ⇒ not_allowed、不跳窗、不跑
+P4 --lint-ack 只收 S1–S5(U1 / R1 / 亂碼 ⇒ lint_ack_code;不是 SIGN ⇒ lint_ack_not_sign);放行的規則與行號、可丟環境與收據
+   列進加強對話框,也記進 done 紀錄
+P5 run_signlint 讀結果:rc 0 + ok ⇒ 過;rc 1 ⇒ sign_lint;rc 與 ok 對不上 / 其他 rc / 不是 JSON ⇒ 當「不知道」不過
+P6 agent_loaded:plist 在、它叫的程式在、launchctl 看得到,三項都要
 刀(複本 + run_guarded):K1 不問 Touch ID ⇒ C2 紅;K2 白名單全放 ⇒ C1 紅;K3 strong 不看勾選 ⇒ C3 紅;
-  K4 不查怪字 ⇒ C11 紅;K5 跑原檔不跑複本 ⇒ C12 紅;K6 跑的時候還拿著鎖 ⇒ C14 紅;K7 只看指令長度 ⇒ C22 紅
+  K4 不查怪字 ⇒ C11 紅;K5 跑原檔不跑複本 ⇒ C12 紅;K6 跑的時候還拿著鎖 ⇒ C14 紅;K7 只看指令長度 ⇒ C22 紅;
+  K8 decide 不 lint ⇒ P3 紅;K9 送單不探常駐 ⇒ P1 紅;K10 ack 收 U1 / R1 ⇒ P4 紅
 """
 import json
 import os
@@ -46,6 +54,10 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 import consent as C  # noqa: E402
 import touchid_approve as TA  # noqa: E402
+
+ORIG_RUN_SIGNLINT = C.run_signlint            # Base 會把它換成假的;P5 / P2 要用真的
+ORIG_AGENT_LOADED = C.agent_loaded
+ORIG_AGENT_PLIST_PATH = C.agent_plist_path
 
 AIB_ABS = str(ROOT / "src" / "cockpit" / "aib")
 
@@ -78,6 +90,13 @@ class Base(unittest.TestCase):
         p2 = mock.patch.object(C, "_notify", lambda *a, **k: None)     # 測試不跳真的系統通知
         p2.start()
         self.addCleanup(p2.stop)
+        # 常駐與 aib-signlint 預設當成在、全過;P 類測試各自換掉
+        for name, fake in (("agent_loaded", lambda *a, **k: True),
+                           ("run_signlint", lambda path, acks, env=None, run=None:
+                            {"ok": True, "why": "", "findings": [], "acked": [], "acks": list(acks), "rehearsal": None})):
+            pp = mock.patch.object(C, name, fake)
+            pp.start()
+            self.addCleanup(pp.stop)
 
     def touch(self, ok=True):
         def ask(reason):
@@ -234,7 +253,9 @@ class Process(Base):
         self.assertEqual(ran["argv"][0], "/bin/bash")
         self.assertNotEqual(ran["argv"][1], path)
         self.assertEqual(ran["body"], "echo approved\n")
-        self.assertFalse(Path(ran["argv"][1]).exists(), "暫存複本跑完要刪")
+        # 跑的是驗過的位元組(管線),不是副本路徑(f1fae 11-11 補充 M2)
+        self.assertTrue(ran["argv"][1].startswith("/dev/fd/"), ran["argv"])
+        self.assertEqual(ran["argv"][1:], ran["argv"][1:2])
         self.assertEqual(len(self.strong_seen["sign"]["sha256"]), 64)
         self.assertIn("echo approved", self.strong_seen["sign"]["head"])
         self.assertEqual(d["sha256"], self.strong_seen["sign"]["sha256"])
@@ -435,6 +456,163 @@ class R2(Base):
         self.assertEqual(C._clean_summary("進\u202e度\U000e0100\n下一步"), "進度 下一步")
 
 
+class SignLint(Base):
+    """DEV 4.6 r2 §9 P2(c477a):SIGN 腳本先過 aib-signlint、探常駐、ack 進對話框與紀錄。"""
+
+    def fake_lint(self, ok=True, findings=(), acked=(), rehearsal=None, seen=None):
+        def f(path, acks, env=None, run=None):
+            if seen is not None:
+                seen.append((str(path), list(acks)))
+            return {"ok": ok, "why": "" if ok else "sign_lint", "findings": list(findings), "acked": list(acked),
+                    "acks": list(acks), "rehearsal": rehearsal}
+        return f
+
+    def test_p1_agent_missing(self):
+        path = self.sign()
+        with mock.patch.object(C, "agent_loaded", lambda *a, **k: False):
+            r, why = C.new_request(["bash", path], "簽", strong=True, seat="abb89", env=self.env)
+        self.assertEqual((r, why), (None, "agent_missing"))
+        self.assertFalse(C.inbox_dir(self.env).is_dir() and list(C.inbox_dir(self.env).iterdir()))
+        # 不是 SIGN 的指令不探
+        with mock.patch.object(C, "agent_loaded", lambda *a, **k: False):
+            self.assertIsNotNone(C.new_request(["aib", "now", "x", "1/2"], "進度", env=self.env)[0])
+
+    def test_p2_ask_refuses_findings_and_missing_linter(self):
+        path = self.sign()
+        bad = [{"rule": "S1", "line": 4, "state": "yes", "msg": "pipefail"}]
+        detail = {}
+        with mock.patch.object(C, "run_signlint", self.fake_lint(ok=False, findings=bad)):
+            r, why = C.new_request(["bash", path], "簽", strong=True, seat="abb89", env=self.env, detail=detail)
+        self.assertEqual((r, why), (None, "sign_lint"))
+        self.assertEqual(detail["lint"]["findings"], bad)
+        self.assertFalse(C.inbox_dir(self.env).is_dir() and list(C.inbox_dir(self.env).iterdir()))
+        # ask CLI 印出發現、rc 2
+        with mock.patch.object(C, "run_signlint", self.fake_lint(ok=False, findings=bad)), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            rc = C.main(["ask", "--strong", "--summary", "簽", "--", "bash", path], env=self.env)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(out.getvalue())["findings"], bad)
+        # 真的 run_signlint:找不到執行檔 ⇒ 不知道 ⇒ 不收
+        env = dict(self.env, AIB_SIGNLINT=str(self.td / "nope"))
+        self.assertEqual(ORIG_RUN_SIGNLINT(Path(path), [], env)["why"], "signlint_missing")
+        self.assertEqual(ORIG_RUN_SIGNLINT(Path(path), [], self.env)["why"], "signlint_missing")
+
+    def test_p3_decide_lints_the_copy(self):
+        path = self.sign()
+        # 席位直接寫 inbox(沒經過 ask 的檢查)
+        inbox = C.inbox_dir(self.env)
+        inbox.mkdir(parents=True)
+        (inbox / "hand-s.json").write_text(json.dumps({"argv": ["bash", path], "summary": "手寫的簽核",
+                                                       "strong": True, "seat": "abb89"}), encoding="utf-8")
+        seen = []
+        bad = [{"rule": "S4", "line": 9, "state": "yes", "msg": "255"}]
+        with mock.patch.object(C, "run_signlint", self.fake_lint(ok=False, findings=bad, seen=seen)):
+            self.drain(ask_strong_fn=self.strong(True))
+        d = C.status("hand-s", self.env)
+        self.assertEqual((d["result"], d.get("why")), ("not_allowed", "sign_lint"))
+        self.assertEqual(d["lint"]["findings"], bad)
+        self.assertEqual(self.run_.calls, [])
+        self.assertEqual(self.asked, [], "lint 沒過不跳窗")
+        self.assertEqual(len(seen), 1)
+        self.assertNotEqual(seen[0][0], path, "lint 的是暫存複本,不是原檔")
+        self.assertEqual(Path(seen[0][0]).name, Path(path).name, "複本保留檔名(還原腳本靠檔名判斷)")
+
+    def test_p4_acks_shown_and_recorded(self):
+        for bad in ("U1", "R1", "S9", "S1,R1"):
+            self.assertEqual(C.new_request(["bash", self.sign()], "簽", strong=True, env=self.env, lint_ack=bad),
+                             (None, "lint_ack_code"), bad)
+        self.assertEqual(C.new_request(["aib", "now", "x", "1/2"], "進度", env=self.env, lint_ack="S2"),
+                         (None, "lint_ack_not_sign"))
+        path = self.sign()
+        acked = [{"rule": "S2", "line": 4, "state": "yes", "msg": "|| true"}]
+        reh = {"env": "ct-900", "receipt": "receipts/r1.json"}
+        lint = self.fake_lint(ok=True, acked=acked, rehearsal=reh)
+        bodies = []
+        with mock.patch.object(C, "run_signlint", lint):
+            r, why = C.new_request(["bash", path], "簽", strong=True, seat="abb89", env=self.env, lint_ack="S4,S2")
+            self.assertIsNotNone(r, why)
+            self.assertEqual(r["lint_ack"], ["S2", "S4"])
+            with mock.patch.object(C, "ask_checkbox", lambda title, body, check, **kw: bodies.append(body) or {"ok": True}):
+                d = self.one(r, ask_strong_fn=C.ask_strong)
+        self.assertEqual(d["result"], "ok")
+        self.assertEqual(d["lint"]["acks"], ["S2", "S4"])
+        self.assertEqual(d["lint"]["acked"], acked)
+        self.assertEqual(d["lint"]["rehearsal"], reh)
+        self.assertEqual(len(bodies), 1)
+        self.assertIn("S2 4", bodies[0])
+        self.assertIn("ct-900", bodies[0])
+        self.assertIn("receipts/r1.json", bodies[0])
+
+    def test_p5_run_signlint_reads_only_what_it_understands(self):
+        exe = self.td / "aib-signlint"
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(exe, 0o755)
+        env = dict(self.env, AIB_SIGNLINT=str(exe))
+
+        def out(rc, stdout):
+            calls = []
+
+            def run(cmd, **kw):
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, rc, stdout, "")
+            return run, calls
+        good = json.dumps({"ok": True, "findings": [], "acked": [], "rehearsal": {"env": "x", "receipt": "y"}})
+        run, calls = out(0, good)
+        r = ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), ["S2"], env, run=run)
+        self.assertEqual((r["ok"], r["rehearsal"]), (True, {"env": "x", "receipt": "y"}))
+        self.assertEqual(calls[0], [str(exe), "check", "/x/SIGN-a.sh", "--json", "--ack", "S2"])
+        found = json.dumps({"ok": False, "findings": [{"rule": "S1", "line": 3}], "acked": []})
+        self.assertEqual(ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), [], env, run=out(1, found)[0])["why"], "sign_lint")
+        for rc, text, why in ((0, found, "signlint_rc:0"), (1, good, "signlint_rc:1"), (2, good, "signlint_rc:2"),
+                              (0, "not json", "signlint_output"), (0, "[]", "signlint_rc:0")):
+            r = ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), [], env, run=out(rc, text)[0])
+            self.assertEqual((r["ok"], r["why"]), (False, why), (rc, text))
+
+    def test_p7_rehearsal_is_cleaned_before_the_dialog_and_the_record(self):
+        # ebb36 #653 M1:預演行兩欄來自腳本,進加強版框與 done 紀錄前要濾掉改方向 / 看不見的字、截長
+        exe = self.td / "aib-signlint"
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(exe, 0o755)
+        env = dict(self.env, AIB_SIGNLINT=str(exe))
+        evil = {"env": "mac-b\u202eabc\u200b", "receipt": "r" * 300}
+        many = [{"rule": "S2", "line": n, "state": "yes", "msg": "x"} for n in range(25)]
+        text = json.dumps({"ok": True, "findings": [], "acked": many, "rehearsal": evil})
+        r = ORIG_RUN_SIGNLINT(Path("/x/SIGN-a.sh"), ["S2"], env,
+                              run=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, text, ""))
+        reh = r["rehearsal"]
+        self.assertNotIn("\u202e", reh["env"])
+        self.assertNotIn("\u200b", reh["env"])
+        self.assertLessEqual(len(reh["receipt"]), C.REHEARSAL_RECEIPT_MAX)
+        self.assertEqual((len(r["acked"]), r["acked_more"]), (C.LINT_SHOW_MAX, 5))
+        # 框:就算拿到沒清過的 rehearsal,ask_strong 自己也再清一次
+        bodies = []
+        req = {"argv": ["bash", "/x/SIGN-a.sh"], "summary": "s", "seat": "abb89", "sign": None,
+               "lint": {"acked": r["acked"], "acked_more": 5, "rehearsal": evil}}
+        with mock.patch.object(C, "ask_checkbox", lambda title, body, check, **kw: bodies.append(body) or {"ok": True}):
+            C.ask_strong(req, env=self.env)
+        self.assertEqual(len(bodies), 1)
+        self.assertNotIn("\u202e", bodies[0])
+        self.assertNotIn("r" * (C.REHEARSAL_RECEIPT_MAX + 1), bodies[0])
+        self.assertIn("+5", bodies[0])
+
+    def test_p6_agent_loaded_needs_all_three(self):
+        import plistlib
+        home = self.td / "agent-home"
+        prog = self.td / "aib-prog"
+        prog.write_text("x", encoding="utf-8")
+        plist = ORIG_AGENT_PLIST_PATH(home)
+        ok_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")      # noqa: E731
+        no_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 113, "", "")    # noqa: E731
+        self.assertFalse(ORIG_AGENT_LOADED(home=home, run=ok_run), "沒有 plist")
+        plist.parent.mkdir(parents=True)
+        with open(plist, "wb") as fh:
+            plistlib.dump({"Label": C.AGENT_LABEL, "ProgramArguments": ["/bin/bash", str(prog), "consent"]}, fh)
+        self.assertTrue(ORIG_AGENT_LOADED(home=home, run=ok_run))
+        self.assertFalse(ORIG_AGENT_LOADED(home=home, run=no_run), "launchctl 看不到")
+        prog.unlink()
+        self.assertFalse(ORIG_AGENT_LOADED(home=home, run=ok_run), "plist 指的程式不在")
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, cell):
         name = Path(__file__).name
@@ -455,7 +633,7 @@ class Knife(unittest.TestCase):
                     "Whitelist.test_c1_whitelist")
 
     def test_k3_strong_ignores_check(self):
-        self._knife('        if not s.get("ok"):\n            return "denied", {"why": s.get("why")}, None, None\n',
+        self._knife('        if not s.get("ok"):\n            return stop("denied", {"why": s.get("why")})\n',
                     "", "Process.test_c3_strong_unchecked")
 
     def test_k4_no_char_check(self):
@@ -473,6 +651,21 @@ class Knife(unittest.TestCase):
 
     def test_k7_reason_len_only_cmd(self):
         self._knife(" or len(_reason_full(view, env)) > REASON_MAX", "", "R2.test_c22_reason_overflow_and_future_t")
+
+    def test_k8_decide_does_not_lint(self):
+        self._knife("        lint = run_signlint(copy, acks, env)\n",
+                    "        lint = {\"ok\": True, \"acks\": acks}\n", "SignLint.test_p3_decide_lints_the_copy")
+
+    def test_k9_no_agent_probe(self):
+        self._knife("        if not agent_loaded(env):\n", "        if False:\n", "SignLint.test_p1_agent_missing")
+
+    def test_k11_rehearsal_not_cleaned(self):
+        self._knife('        r_env = _plain(reh.get("env") or "-", REHEARSAL_ENV_MAX)\n',
+                    '        r_env = reh.get("env") or "-"\n', "SignLint.test_p7_rehearsal_is_cleaned_before_the_dialog_and_the_record")
+
+    def test_k10_ack_takes_any_code(self):
+        self._knife('_LINT_ACK_RE = re.compile(r"^S[1-5]$")', '_LINT_ACK_RE = re.compile(r"^[SUR][0-9]$")',
+                    "SignLint.test_p4_acks_shown_and_recorded")
 
 
 if __name__ == "__main__":

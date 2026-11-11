@@ -106,19 +106,21 @@ pub fn check_process_management(
     spawn: SpawnFn,
     lineage: Option<Arc<Lineage>>,
 ) -> Result<Checked, SpawnFail> {
-    if !cfg!(unix) {
-        // The check tree is a POSIX shell (`/bin/sh`). Once Windows sessions
-        // are wired, starting it there would fail as `enoent` and turn the
-        // row (and selfcheck's exit code) red for a missing check, not a
-        // broken process manager. Not started at all: `not_wired` until a
-        // Windows check tree exists (a9136, review of the #543 wiring).
-        let _ = (spawn, lineage);
-        return Err(SpawnFail {
-            tag: NO_CHECK_TREE.into(),
-            left_running: None,
-        });
+    use crate::platform::lifecycle::{Current, Lifecycle, Step};
+    match <Current as Lifecycle>::check_tree() {
+        Step::Done(script) => check_tree(spawn, lineage, script, CHILD_WAIT),
+        // The check tree is a POSIX shell (`/bin/sh`): started on Windows it
+        // would fail as `enoent` and turn the row (and selfcheck's exit code)
+        // red for a missing check, not a broken process manager. Not started
+        // at all: `not_wired` until a Windows check tree exists (a9136, #554).
+        Step::Unsupported { .. } | Step::NotApplicable { .. } => {
+            let _ = (spawn, lineage);
+            Err(SpawnFail {
+                tag: NO_CHECK_TREE.into(),
+                left_running: None,
+            })
+        }
     }
-    check_tree(spawn, lineage, CHECK_SCRIPT, CHILD_WAIT)
 }
 
 /// [`check_process_management`]'s tag on a platform with no check tree yet.
@@ -451,6 +453,7 @@ mod tests {
                 tree_size: 2,
                 signals: Vec::new(),
                 blind_spots: Vec::new(),
+                candidates: Default::default(),
             },
             child_started: true,
         }

@@ -37,6 +37,7 @@ STORM_FLAP_WINDOW_S 內最多踢 STORM_FLAP_MAX 艙。18:29 實跑:踢 931e 沒�
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -169,6 +170,8 @@ STORM_QUIET = 5
 STORM_FLAP_MAX = 3
 STORM_FLAP_WINDOW_S = 600
 STORM_STAMP = os.path.join(os.path.expanduser(os.environ.get("EZ2_AIB_STATE_ROOT") or "~/.ez2-aib"), "state", "terminal-storm.stamp")
+STORM_PROBE_STAMP = os.path.join(os.path.expanduser(os.environ.get("EZ2_AIB_STATE_ROOT") or "~/.ez2-aib"), "state", "terminal-storm-probe.stamp")
+STORM_PROBE_SLACK_S = 2     # 各艙的 15 秒不會對齊,留 2 秒,接手的那席不會因為差一點被跳過
 
 ARCHIVE_EVERY_S = 300
 ARCHIVE_LOOKBACK_S = 420        # 比一輪多兩分鐘,輪子慢了也不漏;重複的靠時間戳去掉
@@ -405,6 +408,40 @@ def kick_session(session, dry_run=False):
     return do_attach(session, cabin, dry_run=dry_run)
 
 
+def storm_tick(run, *, path=None, window_s=STORM_CHECK_S, now=None):
+    """全機一輪風暴偵測只跑一次:每艙一條守衛,各跑一支 log show 會疊出好幾支,每支約 28% CPU(11-03 mac-c)。
+    storm_once 本來就是踢全機的艙,一席跑就夠。拿不到鎖或別席剛跑過 ⇒ ("shared", 0)。
+    鎖 / 記號檔開不了 ⇒ 照跑:寧可多一支 log show,不能丟掉偵測。
+    已知界線:跑的那席剛好關掉時,接手的席可能晚最多 13 秒,那段只查一次最近 15 秒,會有一小段沒查到;
+    風暴會持續,下一輪查得到。不為這個把查詢窗拉長,分格判準是照 15 秒定的。"""
+    path = STORM_PROBE_STAMP if path is None else path
+    now = time.time() if now is None else now
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lock = open(path + ".lock", "a")
+    except OSError:
+        return run()
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "shared", 0          # 別席正在跑
+        except OSError:
+            return run()
+        if _stamp_fresh(path, window_s - STORM_PROBE_SLACK_S + 60, now):   # _stamp_fresh 會先扣 60 秒
+            return "shared", 0
+        out = run()                     # 跑的時候鎖著,log show 慢也不會疊第二支
+        if out[0] != "unmeasurable":    # 炸掉或量不到不算跑過,別席下一拍要能重試
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(str(int(now)))
+            except OSError:
+                pass
+        return out
+    finally:
+        lock.close()
+
+
 def storm_once(*, count=probe_exc_count, lines_fn=None, sessions=probe_attached_sessions, kick=kick_session, sleep=time.sleep,
                now=None, log=None, notify=None, kicks=None, dry_run=False, stamp=STORM_STAMP, force=False):
     """一輪:數 → 沒風暴就回 ("quiet", n) → 有:鎖 → 逐艙踢、每艙等 STORM_SETTLE_S 秒再數 → 回 (結果, 踢了幾艙)。
@@ -497,7 +534,7 @@ class Guard:
         self.storm_check_s = STORM_CHECK_S
         self._next_storm = 0.0
         self.storm_kicks = []
-        self._storm = lambda: storm_once(lines_fn=probe_exc_lines, log=self.log, notify=self._notify, kicks=self.storm_kicks, dry_run=self.dry_run)
+        self._storm = lambda: storm_tick(lambda: storm_once(lines_fn=probe_exc_lines, log=self.log, notify=self._notify, kicks=self.storm_kicks, dry_run=self.dry_run))
         self._next_archive = 0.0
         self._archive = lambda: archive_once(notify=self._notify)   # 第 3 項:量 + 留證據(可注入)
 

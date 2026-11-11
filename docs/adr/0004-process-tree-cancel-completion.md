@@ -319,3 +319,112 @@ decision list (a63ab, 2026-11-09).
 - **`aibd` killed with `kill -9`** [15]. On macOS its sessions' processes are left running.
   This is a known limit, stated as such; Windows covers it with `KILL_ON_JOB_CLOSE`
   (previous update, UNVERIFIED on a real machine).
+
+## Update 2026-11-10 (G1: a program that ends at once gives its slot back, macOS — partly)
+
+preview.3 known issue: on macOS a session whose program ends at once (`claude`, `printenv`,
+`sleep 0`) kept its slot (1ced7 gate, 2026-11-09). Two causes, two codes:
+
+- **`fork_watch_list_failed` was a false failure.** The fork watcher listed children with
+  libproc 0.15 `pids_by_type`, which treats "0 pids and errno ≠ 0" as an error without
+  clearing errno first. A childless process returns 0, so an ESRCH left by an earlier call
+  read as "cannot list". The watcher now lists and reads through `aib-sys` (M2 / M3), which
+  clears errno before each call and tells `Gone` apart from every other error.
+- **`fork_watch_child_unreadable` from a real race.** A child is listed, then exits before
+  its start time is read (ESRCH, `SysError::Gone`).
+  - With lineage on, that is no longer a gap. The watcher notes it (`unread_gone`, latched
+    for the whole session), and the stop's candidate check is widened: every same-uid
+    `ppid` 1 process newer than the root whose `parent_unique` is also newer than the root
+    is a candidate. The child's own children carry a `parent_unique` nobody recorded, so the
+    narrow `parent_unique == 1` rule would miss them. The unread child was born after the
+    root, so its orphans' creator id is larger than the root's; apps the user opened earlier
+    are left out (043dd L1).
+  - How many candidates the wide rule adds is counted (`Report::orphan_candidates_extra`,
+    and `orphan_candidates_extra` in `/api/v1/metrics`). It is measured before anyone
+    decides to narrow it.
+  - Any other read error (permission, unknown) stays a gap. Without lineage, "gone" stays
+    a gap too.
+
+The best a stop can then say is still `unverified` / `observed_clean`, with the same blind
+spots (`exec_after_creator_exit` and the rest), never `clean`. Windows is unchanged (no fork
+watcher there). Tests: `crates/aibd/src/platform/fork_watch.rs` (fake probe + one real-OS
+stale-errno case), `crates/aibd/src/lineage.rs`
+(`an_unread_gone_child_widens_the_orphan_candidates`), and `crates/aibd/tests/sessions.rs`
+(`g1_*`, macOS). Knives G1a–G1e are in `.github/workflows/aibd.yml`.
+
+**A setuid child (1ced7 desktop check, 043dd THREAT-G1-setuid, 2026-11-09).** A real `claude`
+ended `fork_watch_child_unreadable` 10 times out of 10. It runs `/bin/ps`, which is setuid root, and
+M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
+- Its start time is now read through `sysctl(KERN_PROC_PID)` (`kp_proc.p_starttime`, the same
+  `p_start`, `aib-sys` `start_sec_sysctl`, length checked). The process is then followed like any
+  other child: watched, and its children listed. No blind spot is added and the wide-rule flag is
+  not set.
+- The fallback is used only for a process running as another uid (`PROC_PIDT_SHORTBSDINFO`). A
+  same-uid process that refuses M2, or a fallback that fails, stays `fork_watch_child_unreadable`.
+- The fallback is self-checked once per aibd process: sysctl must equal M2 on aibd itself.
+  Otherwise the fallback is off.
+- Descendants running as root stay in `uid_changed`.
+- sysinfo reads such a process with start time 0. The tree handle's identity check then
+  asks the same fallback. A process it still cannot check is never signalled, but it
+  counts as alive (a survivor), so the stop is never `observed_clean` because of it
+  (043dd efbe548d M1).
+
+**What this does not fix (043dd review, measured on a desktop Mac, 2026-11-09).**
+- macOS does not let another process read the environment of Apple platform binaries.
+  On a desktop with a login session and Spotlight, launchd starts such services all the
+  time: 28 new same-uid `ppid` 1 processes in 10 minutes, 23 of them with
+  `parent_unique == 1` and an empty environment (`mdworker_shared`, `followupd`, ...).
+- The narrow rule has always taken them as candidates. Their empty environment makes the
+  stop `candidates_unreadable`, which keeps the slot.
+- So programs that end within milliseconds (`printenv`, `sleep 0`) now give their slot
+  back. A session that runs seconds to minutes (`claude`) may still end
+  `candidates_unreadable` on a desktop, and keep its slot. Quiet machines (CI runners,
+  Mac B) do not show this.
+- The 10-starts `claude` check (1ced7) runs on a desktop Mac and reports the distribution
+  of `stop.reason`, not only whether each start worked.
+- Telling launchd's own services apart from "re-parented, then exec'd" session processes
+  is a separate item. Directions to measure first: responsible pid / coalition, platform
+  binary paths.
+- Every stop record (`stop.candidates` in the session, `session.killed` /
+  `session.stop_unconfirmed` / `session.slot_held` events, the `session stop` log line)
+  carries the candidate check: `count`, `orphan_extra` (added only by the widened orphan
+  check) and the unreadable candidates as pid + process name (never arguments). A
+  `candidates_unreadable` stop then shows which processes held the slot and which rule
+  took them (1ced7 2026-11-09: the record had neither).
+- At most 16 unreadable candidates are listed; the rest is `unreadable_more` (left out
+  when 0), and `count` is always the real total (043dd #607 L1).
+- A `slot_held` event after a re-check that timed out carries the candidates of the last
+  pass that answered (043dd #607 N1).
+
+**Coalition filter (043dd MEASURE-G1-coalition, 1ced7 c25144e1 DockHelper).**
+- A process starts in its parent's resource coalition and keeps it when it is re-parented
+  to launchd. launchd starts each service it launches in a coalition of its own. On the
+  measured desktop, 77 of 88 new same-uid `ppid` 1 processes in an hour were in another
+  coalition than the shell aibd ran under; the session's own re-parented orphan was not.
+- Right after spawn aibd reads the root's coalition (`PROC_PIDCOALITIONINFO`, a private
+  `proc_pidinfo` flavor) and its own. This is the self-check of the private interface:
+  - equal ⇒ the filter is on for that session;
+  - the root read as another coalition ⇒ no filter, and none again for the rest of that
+    aibd process (the read is not trusted);
+  - the root already gone (an instant program; Mac B 2026-11-09: `printenv` held its
+    slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
+    coalition is used;
+  - any other error reading the root, or aibd's own not readable (or 0) ⇒ no filter for
+    that session.
+- A candidate whose coalition reads as 0 is not "another coalition": 0 is not an id.
+- A candidate whose environment cannot be read, and whose coalition is read as different
+  from the session's, is let go (`stop.candidates.other_coalition`, pid + name, same
+  16-entry limit with `other_coalition_more`). It is not
+  signalled and does not make the stop `candidates_unreadable`.
+- Kept as before: a candidate with the session marker (whatever its coalition), a
+  candidate whose coalition cannot be read, and every candidate when the self-check failed.
+- Blind spot: a process the session asks launchd / LaunchServices to start (`open -a`, an
+  XPC service) gets a coalition of its own. It is not in the session's process tree either
+  way; if its environment cannot be read it is now let go instead of holding the slot.
+- The interface is private: an OS update may change the struct. `pidinfo` refuses any
+  answer that is not exactly 40 bytes, and an unread coalition keeps the rule before.
+
+**Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
+records. A child that the watcher reads after that point, and that has already exited, sets
+the flag too late for this stop: the narrow rule is used once. This needs a fork and an
+exit right at the moment of the stop, so it is rare. It is stated, not handled.

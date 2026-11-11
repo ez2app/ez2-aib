@@ -37,6 +37,7 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
                     ),
                     store,
                     lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
+                    session_policy: Arc::new(Default::default()),
                 }
             },
             Arc::new(cfg),
@@ -68,7 +69,27 @@ async fn health_is_public_and_minimal() {
     let (a, _d) = app(&[]);
     let (s, j, h) = send(a, req("/api/v1/health").body(Body::empty()).unwrap()).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(j, serde_json::json!({"status": "ok", "api_version": "v1"}));
+    // only these fields, and no path (043dd S3: the data directory stays behind the token)
+    let mut keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "api_version",
+            "instance_id",
+            "started_at",
+            "status",
+            "version"
+        ]
+    );
+    assert_eq!(j["status"], "ok");
+    assert_eq!(j["api_version"], "v1");
+    assert_eq!(j["version"], env!("CARGO_PKG_VERSION"));
+    assert!(j["started_at"].as_u64().unwrap() > 1_700_000_000);
+    let id = j["instance_id"].as_str().unwrap();
+    assert_eq!(id.len(), 16);
+    assert!(id.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert!(!j.to_string().contains('/'), "{j}");
     assert!(h.get("access-control-allow-origin").is_none());
 }
 
@@ -297,6 +318,11 @@ async fn metrics_needs_the_token_and_reports_lineage() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         j,
-        serde_json::json!({"lineage": {"enabled": false, "selfcheck": "test", "failures": 0}})
+        serde_json::json!({"lineage": {
+            "enabled": false, "selfcheck": "test", "failures": 0, "orphan_candidates_extra": 0
+        }, "pairing": {
+            "channel": "off", "failures_total": 0, "rate_limited_total": 0,
+            "confirm_failures_total": 0, "pairs": 0
+        }})
     );
 }

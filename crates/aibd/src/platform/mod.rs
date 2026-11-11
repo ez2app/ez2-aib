@@ -5,8 +5,11 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use lifecycle::{Lifecycle, Step};
+
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
+pub mod lifecycle;
 pub mod session;
 #[cfg(unix)]
 pub mod session_unix;
@@ -38,17 +41,9 @@ pub enum ChildReaping {
 
 /// Read the `SIGCHLD` disposition (macOS); changes nothing.
 pub fn child_reaping() -> ChildReaping {
-    #[cfg(target_os = "macos")]
-    {
-        match aib_sys::sigchld() {
-            Ok(s) if s.keeps_zombies() => ChildReaping::Keeps(s.as_str()),
-            Ok(s) => ChildReaping::AutoReaps(s.as_str()),
-            Err(e) => ChildReaping::Unreadable(e.tag().to_owned()),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        ChildReaping::Unsupported
+    match <lifecycle::Current as Lifecycle>::child_reaping() {
+        Step::Done(r) => r,
+        Step::Unsupported { .. } | Step::NotApplicable { .. } => ChildReaping::Unsupported,
     }
 }
 
@@ -56,37 +51,20 @@ pub fn child_reaping() -> ChildReaping {
 /// our children stay lookable until we reap them. Returns what it was when it
 /// had to change it.
 pub fn keep_child_zombies() -> Option<&'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        match aib_sys::sigchld_keep_zombies() {
-            Ok(was) if !was.keeps_zombies() => Some(was.as_str()),
-            _ => None,
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
+    match <lifecycle::Current as Lifecycle>::keep_child_zombies() {
+        Step::Done(was) => was,
+        Step::Unsupported { .. } | Step::NotApplicable { .. } => None,
     }
 }
 
 /// The platform's session starter (`session::SpawnFn`).
 pub fn default_spawn() -> session::SpawnFn {
-    #[cfg(unix)]
-    {
-        session_unix::spawn
-    }
-    #[cfg(windows)]
-    {
-        // J0 + one Job per session (043dd #543).
-        session_windows::spawn
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        unsupported_spawn
+    match <lifecycle::Current as Lifecycle>::spawn() {
+        Step::Done(f) => f,
+        Step::Unsupported { .. } | Step::NotApplicable { .. } => unsupported_spawn,
     }
 }
 
-#[cfg(not(any(unix, windows)))]
 fn unsupported_spawn(
     _: &session::Spec,
     _: Option<std::sync::Arc<crate::lineage::Lineage>>,
@@ -98,47 +76,24 @@ fn unsupported_spawn(
 }
 
 /// Stop the trees left by failed starts once more, all within `deadline`
-/// (aibd is ending; bb7dc #544). Returns the roots not confirmed gone, as
-/// (pid, recorded start time).
-/// Windows: (pid, Job creation time); a root never held is listed with `None`.
-pub fn stop_leftovers(deadline: std::time::Instant) -> Vec<(u32, Option<u64>)> {
-    #[cfg(unix)]
-    {
-        session_unix::stop_leftovers(deadline)
-    }
-    #[cfg(windows)]
-    {
-        session_windows::stop_leftovers(deadline)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = deadline;
-        Vec::new()
-    }
+/// (aibd is ending; bb7dc #544). Never an empty value for "could not look"
+/// ([`lifecycle::Swept`]).
+pub fn stop_leftovers(deadline: std::time::Instant) -> lifecycle::Swept {
+    <lifecycle::Current as Lifecycle>::stop_leftovers(deadline)
 }
 
-/// Resolves when aibd should stop: Ctrl-C, and on POSIX also SIGTERM (so a
-/// plain `kill` still collects every session, D11).
+/// Resolves when aibd should stop. What this platform does not hear is
+/// logged once, here, so it is never silent.
 pub async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
-            }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
+    let s = <lifecycle::Current as Lifecycle>::shutdown_signal();
+    if !s.not_heard.is_empty() {
+        tracing::warn!(
+            platform = <lifecycle::Current as Lifecycle>::NAME,
+            not_heard = ?s.not_heard,
+            "shutdown: these events do not run the session shutdown (known limit)"
+        );
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
+    s.wait.await;
 }
 
 /// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
@@ -188,6 +143,49 @@ pub fn write_private_file(p: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, p)
 }
 
+/// The store's database file, owner only before SQLite writes anything to
+/// it (session output is kept there, a63ab preview.3: 0600; the folder is
+/// already [`create_private_dir`]). Created empty if missing (SQLite takes
+/// an empty file as a new database), locked down and checked if it exists.
+/// SQLite gives `-wal` / `-shm` the main file's permissions; they are
+/// locked down too when present ([`restrict_db_sidecars`]).
+pub fn private_db_file(p: &Path) -> std::io::Result<()> {
+    if !p.exists() {
+        let mut o = OpenOptions::new();
+        o.write(true).create_new(true);
+        imp::private_file_options(&mut o);
+        match o.open(p) {
+            Ok(f) => drop(f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    imp::restrict_file(p)
+}
+
+/// `-wal` / `-shm` next to the database, when present: owner only.
+pub fn restrict_db_sidecars(db: &Path) -> std::io::Result<()> {
+    for ext in ["-wal", "-shm"] {
+        let mut s = db.as_os_str().to_owned();
+        s.push(ext);
+        let p = PathBuf::from(s);
+        if p.exists() {
+            imp::restrict_file(&p)?;
+        }
+    }
+    Ok(())
+}
+
+/// Physical memory in bytes (the default session limit, ADR 0005 §5); `None` when it
+/// cannot be read. sysinfo reads it the platform's own way (macOS `hw.memsize`, Windows
+/// `GlobalMemoryStatusEx`, Linux `/proc/meminfo`).
+pub fn physical_memory() -> Option<u64> {
+    // sysinfo 0.40: `System::new` can fail; no reading = no memory-based default
+    let mut s = sysinfo::System::new().ok()?;
+    s.refresh_memory();
+    Some(s.total_memory()).filter(|m| *m > 0)
+}
+
 /// Single-instance lock. Held for the life of the returned `File`.
 /// Uses `std::fs::File::try_lock` (flock on Unix, LockFileEx on Windows).
 pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {
@@ -203,6 +201,33 @@ pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
+/// Open `url` in the person's default browser (`aibd ctl web`, PLAN A5). Best effort: the
+/// caller prints the address anyway. The url carries nothing secret (ADR 0006 §7: the
+/// pairing code is typed in, never put in a link).
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    let st = c
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if st.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("browser opener: {st}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,7 +240,32 @@ mod tests {
         assert!(a.is_some());
         assert!(instance_lock(&p).unwrap().is_none());
         drop(a);
-        assert!(instance_lock(&p).unwrap().is_some());
+        // Another test in this process may be starting a child at this moment: between its
+        // fork and exec the child holds a copy of every descriptor, `a`'s included, so the
+        // lock outlives `drop(a)` for a few milliseconds (seen twice in 40 lib runs on the
+        // Pro 13, #640 receipts 11-11). The lock must come free, not instantly: when it is
+        // still held, a blocking lock on another handle waits until the child lets go (no
+        // polling), then the instance lock is taken again. Each round is one child letting
+        // go; 10 rounds is far more children than overlap this moment, and the bound keeps
+        // a broken lock from looping.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let q = p.clone();
+        std::thread::spawn(move || {
+            for _ in 0..10 {
+                if let Some(f) = instance_lock(&q).unwrap() {
+                    let _ = tx.send(f);
+                    return;
+                }
+                let w = OpenOptions::new().write(true).open(&q).unwrap();
+                w.lock().unwrap();
+                drop(w);
+            }
+        });
+        // One wake-up for the answer, or at the deadline: not a periodic timer
+        // (ADR 0005 named exception, as `sessions::wait_timeout`).
+        #[allow(clippy::disallowed_methods)]
+        let again = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(again.is_ok(), "the lock never came free after drop");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod ctl;
 use aibd::{config::Config, platform, server};
 use std::process::ExitCode;
 
@@ -11,13 +12,22 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | --help]\n  (no argument: start the local server)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         [] => {}
+        ["ctl", rest @ ..] => {
+            return match ctl::run(rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("aibd ctl: {e}");
+                    ExitCode::from(1)
+                }
+            };
+        }
         ["--version"] | ["-V"] => {
             println!("{}", aibd::selfcheck::version_line());
             return ExitCode::SUCCESS;
@@ -37,17 +47,27 @@ fn main() -> ExitCode {
     // DECISION-21 J0 (Windows): aibd puts itself in a KILL_ON_JOB_CLOSE Job
     // before the runtime and before any child exists, and holds it until it
     // exits. Every session Job is nested in J0, so if aibd dies for any reason
-    // the OS kills every tree it started. No "run unprotected" mode.
-    #[cfg(windows)]
-    let _j0 = match aib_sys::job::Job::adopt_current() {
-        Ok(j) => j,
-        Err(e) => {
+    // the OS kills every tree it started. No "run unprotected" mode where the
+    // platform has it; where it does not yet, that is logged, never silent.
+    use aibd::platform::lifecycle::{Current, Lifecycle, Step};
+    let _kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
+        Step::Done(Ok(g)) => Some(g),
+        Step::Done(Err(tag)) => {
             tracing::error!(
-                error = e.tag(),
+                error = tag,
                 "j0: cannot put aibd in its Job; refusing to start"
             );
             return ExitCode::from(1);
         }
+        Step::Unsupported { step, why } => {
+            tracing::warn!(
+                step = step.name(),
+                why,
+                "kill on exit: not on this platform yet"
+            );
+            None
+        }
+        Step::NotApplicable { .. } => None,
     };
     match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
