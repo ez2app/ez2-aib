@@ -1491,6 +1491,69 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-signlint.sh
+      # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
+      # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
+      # keeps the code building (no arm made unreachable, nothing left unused).
+      - name: aib-consent knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --test supervise "$4"; }
+          pk() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --lib "$4"; }
+          ct() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --test cli "$4"; }
+          # the job inherits the supervisor's environment
+          sk supervise.rs '        .env_clear()' '        // knife: no env_clear' \
+             the_job_sees_only_the_environment_it_is_given
+          # a stop reaches only the leader, not its group
+          sk supervise.rs '    match killpg(pg, sig) {' '    match nix::sys::signal::kill(pg, sig) { // knife' \
+             a_yes_to_the_quiet_question_stops_the_whole_group
+          # "keep waiting" stops the job too
+          sk supervise.rs '            if answer == Some(true) {' '            if answer.is_some() { // knife' \
+             a_no_keeps_the_job_running
+          # the hard limit waits for an open question
+          sk supervise.rs '        if elapsed >= job.hard {' '        if elapsed >= job.hard && asking.is_none() { // knife' \
+             the_hard_limit_holds_while_a_question_is_open
+          # names that change how bash or python start are let through by their prefix
+          pk params.rs '    !RESERVED.contains(&k) && !RESERVED_PREFIX.iter().any(|p| k.starts_with(p))' \
+             '    !RESERVED.contains(&k) || RESERVED_PREFIX.is_empty() // knife' \
+             names_that_change_how_bash_or_python_start_are_refused
+          # a key the program does not declare is let through
+          pk params.rs '        Some(i) => Err(refused("params_key_undeclared", i + 1)),' '        Some(_) => Ok(()), // knife' \
+             only_the_keys_the_program_declares
+          # the shared program is run whatever its sha256
+          pk params.rs '    if sha256 != pin {' '    if sha256 != pin && false { // knife' \
+             a_program_must_match_its_pin_and_sit_in_the_shared_folder
+          # a program outside .agents/skills/<skill>/tools/generic is taken (2240e #661 L3)
+          pk params.rs '    if !program_place_ok(home, &real) {' '    if false && !program_place_ok(home, &real) { // knife' \
+             a_program_must_match_its_pin_and_sit_in_the_shared_folder
+          # values carry anything (2240e #661 L3)
+          pk params.rs '            .all(|c| c.is_ascii_alphanumeric() || b"._:/@+,=-".contains(&c))' \
+             '            .all(|c| c != 0) // knife' \
+             values_carry_nothing_a_shell_could_read
+          # a seat's stop request stops the job without the person (2240e #661 L3)
+          sk supervise.rs '            if answer == Some(true) {' '            if answer == Some(true) || a.why == "request" { // knife' \
+             a_stop_request_asks_the_person
+          # a seat can bring the dialog back every tick after "keep waiting" (2240e #661 L1)
+          sk supervise.rs '            if request && elapsed < requests_quiet_until {' \
+             '            if request && elapsed < requests_quiet_until && false { // knife' \
+             requests_right_after_keep_waiting_are_not_asked
+          # what the leader leaves behind keeps running (2240e #661 L3)
+          sk supervise.rs '            if group_alive(pg) {' '            if false && group_alive(pg) { // knife' \
+             what_the_leader_leaves_behind_is_stopped
+          # no KILL after an ignored TERM (2240e #661 L3)
+          sk supervise.rs '    signal_group(pg, Signal::SIGKILL, &mut errors);' '    // knife: no KILL' \
+             kill_follows_an_ignored_term
+          # the pinned program is run from its path again (2240e #661 M2)
+          ct main.rs '                *last = supervise::SCRIPT_ARG.to_owned();' '                *last = last.clone(); // knife' \
+             a_copy_changed_after_the_check_is_not_run
+          # the staged copy is not checked right before the run (2240e #661 L3)
+          ct main.rs '            let bytes = match params::read_staged(Path::new(c), s, params::PROGRAM_MAX_BYTES) {' \
+             '            let bytes = match params::read_staged(Path::new(c), &params::sha256_hex(&std::fs::read(c).unwrap_or_default()).replace(s, s), params::PROGRAM_MAX_BYTES) { // knife' \
+             a_copy_changed_before_the_run_is_refused
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
