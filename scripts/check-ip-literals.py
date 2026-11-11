@@ -27,6 +27,9 @@ Not read as an address:
     (followed by /len), ends in "::", or has a full four-digit group (c477a
     L1: provider prefixes are usually written that short); a
     form followed by a dotted IPv4 is read through its IPv4 part.
+Also read (ebb36 L1): a dotted address after a dot or an underscore
+    (static.A.B.C.D.<domain>, x_A.B.C.D), and the dashed form reverse names
+    use (A-B-C-D.<domain>, ec2-A-B-C-D.<domain>) when a dot and a letter follow.
 Kept on purpose (a test that needs a public or reserved address, a
 well-known public resolver): the line carries the marker `ip-literal-ok`
 and a reason. The marked lines are listed on every run, so review sees them.
@@ -46,11 +49,22 @@ import subprocess
 import sys
 
 MARKER = "ip-literal-ok"
-# ASCII digits only; no word character, dot or dash-digit run glued on either side.
+# ASCII digits only; no letter or digit glued on either side. A dot or an underscore in
+# front is read through (`static.A.B.C.D.<domain>`, `x_A.B.C.D`, ebb36 L1) unless a digit
+# stands before it: that is a longer dotted number (1.2.3.4.5), not an address.
 IPV4 = re.compile(
-    r"(?<![0-9A-Za-z_.])"
+    r"(?<![0-9A-Za-z])(?<![0-9][._])"
     r"([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})"
     r"(?![0-9A-Za-z_]|\.[0-9]|-[0-9A-Za-z])"
+)
+# The dashed form reverse names use (`A-B-C-D.<domain>`, `ec2-A-B-C-D.<domain>`): only
+# when a dot and a letter follow, so dates and version runs are not read.
+IPV4_DASHED = re.compile(
+    # a dash in front is read through after a word (`ec2-`), not after another number
+    r"(?<![0-9])(?<![^A-Za-z][0-9]-)(?<![^A-Za-z][0-9]{2}-)(?<![^A-Za-z][0-9]{3}-)"
+    r"(?<!^[0-9]-)(?<!^[0-9]{2}-)(?<!^[0-9]{3}-)"
+    r"([0-9]{1,3})-([0-9]{1,3})-([0-9]{1,3})-([0-9]{1,3})"
+    r"(?=\.[A-Za-z])"
 )
 # d="...", also escaped inside a string literal (d=\"...\")
 SVG_PATH = re.compile(r"""(?<![\w-])d=\\?(?:"[^"]*"|'[^']*')""")
@@ -102,7 +116,7 @@ def scan_text(text):
     """Yield (line_no, literal, marked) for every IPv4 literal outside the list."""
     for n, line in enumerate(text.splitlines(), 1):
         svg = [m.span() for m in SVG_PATH.finditer(line)]
-        for m in IPV4.finditer(line):
+        for m in [*IPV4.finditer(line), *IPV4_DASHED.finditer(line)]:
             if any(a <= m.start() < b for a, b in svg):
                 continue
             o = tuple(int(x) for x in m.groups())
@@ -175,6 +189,10 @@ SELF = [
     ('<path d="M12 4.1 2.3.3.5 1.7z"/>', 0),  # SVG path data
     ('<path d="M1 2"/> 8.8.4.4 data-d="8.8.4.4"', 2),  # outside d="", or in another attribute; ip-literal-ok
     ('"<path d=\\"M4.1 2.3.3.5 1.7z\\"/>"', 0),  # escaped inside a JS string; ip-literal-ok
+    ("static.8.8.4.4.clients.example.net x_8.8.4.4 host.8.8.4.4", 3),  # reverse-name forms, ebb36 L1; ip-literal-ok
+    ("ec2-8-8-4-4.compute.example.net 8-8-4-4.ip.example.net", 2),  # dashed reverse names; ip-literal-ok
+    ("1.2.3.4.5.6 v2.1.2.3.4 2026-11-11-12.log 1-2-3-4-5.x 10-0-0-1.example.net", 0),
+    ("1-2-3-4-5.x", 0),  # a longer dashed run at the start of a line
 ]
 
 
