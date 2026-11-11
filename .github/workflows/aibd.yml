@@ -1869,10 +1869,10 @@ jobs:
           dk '        self.pass && self.counts[0] == 0 && self.counts[1] == 0' \
              '        self.pass // knife' \
              a_pass_that_leaves_a_medium_is_not_a_merge
-          # D12 no review at this head needed
+          # D12 no review at this head needed (a commit list that does not end at the head)
           dk '    if last.is_some() && covered == last && !at_head.is_empty() {' \
              '    if last.is_some() && covered == last { // knife' \
-             a_review_of_an_older_head_does_not_merge_the_new_one
+             a_commit_list_that_does_not_end_at_the_head_does_not_merge
           # D13 an increment from an uncovered commit extends the chain
           dk '                Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),' \
              '                Some(f) => idx(f).is_some(), // knife' \

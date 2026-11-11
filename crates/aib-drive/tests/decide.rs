@@ -254,6 +254,18 @@ fn a_review_of_an_older_head_does_not_merge_the_new_one() {
         .any(|i| matches!(i, Intent::AskReview { from: Some(f), .. } if f == Q5)));
 }
 
+/// The chain must end in a review of the PR's own head: a commit list that
+/// does not end at the head (a snapshot out of step) is covered to its last
+/// commit by a passing review, but nothing reviewed the head itself.
+#[test]
+fn a_commit_list_that_does_not_end_at_the_head_does_not_merge() {
+    let mut p = pr(605, Q6);
+    p.commits = Known::Known(vec![s(Q4), s(Q5)]);
+    p.reviews = vec![review("1ced7", Q5, true, [0, 0, 0, 0], None)];
+    let out = decide(&snap(vec![p]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+}
+
 #[test]
 fn frozen_or_unknown_freeze_merges_nothing_and_reruns_nothing() {
     let mut p = pr(607, G1);
