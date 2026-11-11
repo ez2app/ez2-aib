@@ -660,7 +660,7 @@ jobs:
              nothing_is_destroyed_before_the_archive_is_known_good
           # removing a site: the licence step is skipped without the person's word
           ck siteremove.rs '        if licenses_left_at_vendor && *step == RemoveStep::Licenses {' \
-             '        if *step == RemoveStep::Licenses { // knife' \
+             '        if (licenses_left_at_vendor || true) && *step == RemoveStep::Licenses { // knife' \
              a_vendor_that_cannot_be_reached_stops_the_removal_unless_the_person_says_so
           # removing a site: called off after things were closed or destroyed
           ck siteremove.rs '    next_step < RemoveStep::Licenses' \
