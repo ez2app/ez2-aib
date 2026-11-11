@@ -1622,8 +1622,8 @@ jobs:
              '        same_boot(&rec, current_boot.as_deref()) || true, // knife' \
              a_stop_is_refused_unless_the_pid_is_provably_the_same_process
           # E11 op stop --apply: a plan that no longer holds is carried out
-          hk opstop.rs '        if again != *plan {' \
-             '        if again != *plan && false { // knife' \
+          hk opstop.rs '        if again != given {' \
+             '        if again != given && false { // knife' \
              a_plan_that_no_longer_holds_signals_nothing
           # E11 op stop --apply: recomputed and signalled outside the host lock's guard
           hk opstop.rs '    opstore::guarded(f.lock, || {' \
