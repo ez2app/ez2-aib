@@ -1033,6 +1033,30 @@ jobs:
           hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
              '    let _ = left_at_vendor; // knife' \
              the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
+          # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
+          hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
+             '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
+             an_unreadable_number_stops_the_plan
+          # site create --plan: a domain another site serves is opened again
+          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() {" \
+             "    let own_stop: Option<&'static str> = if taken.is_some() && false { // knife" \
+             an_existing_domain_stops_the_plan
+          # site create --plan: an upper-case domain is folded instead of refused
+          hk sitecreatecmd.rs '    if !valid_domain(name) {' \
+             '    if !valid_domain(&name.to_ascii_lowercase()) { // knife' \
+             an_uppercase_domain_is_refused
+          # site create --plan: a host without a machine id gets a sealed plan anyway
+          hk sitecreatecmd.rs '    let fingerprint = opstore::host_fingerprint(machine_id)?;' \
+             '    let fingerprint = opstore::host_fingerprint(machine_id).unwrap_or_default(); // knife' \
+             a_plan_without_machine_id_is_not_sealed
+          # site create --plan: an unfinished operation on the domain does not hold it
+          hk sitecreatecmd.rs '    } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {' \
+             '    } else if seen.unfinished.as_ref().is_some_and(|u| u.is_empty() && false) { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
+          # site create --plan: a record without its numbers is passed over
+          hk sitecreatecmd.rs '        let (ct, ip) = record_numbers(rec).ok_or("numbers_unknown")?;' \
+             '        let Some((ct, ip)) = record_numbers(rec) else { continue }; // knife' \
+             an_unreadable_number_stops_the_plan
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

@@ -1313,6 +1313,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("drift") => cmd_site_drift(&args[2..]),
             Some("verify") => crate::siteverify::cmd(&args[2..]),
             Some("usage") => crate::usagecmd::cmd(&args[2..]),
+            Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
