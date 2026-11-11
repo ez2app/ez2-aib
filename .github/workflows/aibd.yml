@@ -808,6 +808,72 @@ jobs:
             '        ) if aib_cloud::customer::is_opening(out) && false => shown(out), // knife' \
             --expect-fail an_opening_is_shown_in_the_host_s_words \
             -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
+          # B5 DNS (4542e): only a zone of an account the roster names is used
+          ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
+             '                same_name(&z.name, &name) && z.status == "active" && (accounts.contains(&z.account) || true) // knife' \
+             only_an_active_zone_of_the_customers_account_is_used
+          # B5 DNS: a zone that is not active is used
+          ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
+             '                same_name(&z.name, &name) && (z.status == "active" || true) && accounts.contains(&z.account) // knife' \
+             of_two_zones_with_one_name_only_the_active_one_counts
+          # B5 DNS: of two active zones with one name the first is taken
+          ck sitedns.rs '            _ => return Err(ZONE_AMBIGUOUS),' \
+             '            _ => return Ok((*found[0]).clone()), // knife' \
+             of_two_zones_with_one_name_only_the_active_one_counts
+          # B5 DNS: a roster without accounts reads as "any account"
+          ck sitedns.rs '    let accounts = accounts.filter(|a| !a.is_empty()).ok_or(OWNER_UNKNOWN)?;' \
+             '    let accounts = accounts.unwrap_or(&[]); // knife' \
+             a_roster_without_accounts_cannot_tell
+          # B5 DNS: a call off the list of five is let through
+          ck sitedns.rs '        _ => false,' '        _ => true, // knife' \
+             only_the_five_calls_are_allowed
+          # B5 DNS: an add without a site's mark is let through
+          ck sitedns.rs '            .is_some_and(crate::site::valid_code)' \
+             '            .is_some_and(|_| true) // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS: an add that is not proxied is let through
+          ck sitedns.rs '        && m["proxied"] == Value::Bool(true)' \
+             '        && (m["proxied"] == Value::Bool(true) || true) // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS: a name answered by a record without this site's mark is written over
+          ck sitedns.rs '        if here.iter().any(|r| r.comment != mark) {' \
+             '        if here.iter().any(|r| r.comment != mark) && false { // knife' \
+             a_name_answered_elsewhere_is_left_alone
+          # B5 DNS: a record with the mark counts as done whatever it points at
+          ck sitedns.rs '            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,' \
+             '            [ours] if ours.comment == mark => continue, // knife' \
+             this_sites_record_is_the_step_done
+          # B5 DNS: a wildcard that answers for the name today is passed over
+          ck sitedns.rs '            .any(|r| wildcard_covers(&r.name, name))' \
+             '            .any(|r| wildcard_covers(&r.name, name) && false) // knife' \
+             a_wildcard_that_answers_today_stops
+          # B5 DNS: mail and text records count as address records
+          ck sitedns.rs '    let address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());' \
+             '    let address = |r: &&Record| !r.kind.is_empty(); // knife' \
+             mail_and_text_records_are_not_looked_at
+          # B5 DNS: a listing short of its count reads as whole
+          ck sitedns.rs '    (all.len() == usize::try_from(first.total_count).ok()?).then_some(all)' \
+             '    let _ = first.total_count; Some(all) // knife' \
+             a_listing_is_whole_only_when_its_pages_and_count_agree
+          # B5 DNS: a flexible SSL mode is taken
+          ck sitedns.rs '        Some("off" | "flexible") => Err(SSL_MODE_NOT_FULL),' \
+             '        Some("off" | "flexible") => Ok(()), // knife' \
+             the_ssl_mode_must_reach_the_host_over_https
+          # B5 DNS: a private address is taken for the host's own
+          ck sitedns.rs '    !private && o[3] != 0' '    let _ = private; o[3] != 0 // knife' \
+             an_unreadable_listing_or_no_origin_adds_nothing
+          # B5 DNS: a refusal on an account's listing is not told as access taken away
+          ck sitedns.rs '        403 if listing_an_account => ACCESS_REVOKED,' \
+             '        403 if listing_an_account && false => ACCESS_REVOKED, // knife' \
+             a_refusal_is_told_apart_only_where_it_means_something
+          # B5 roster: cloudflare_accounts read leniently
+          ck roster.rs '        Some(v) => Some(cloudflare_accounts(v).ok_or(Bad::CloudflareAccounts)?),' \
+             '        Some(v) => cloudflare_accounts(v), // knife' \
+             the_customers_cloudflare_accounts_are_read_strictly
+          # B5 roster: an account id twice is accepted
+          ck roster.rs '        if out.iter().any(|x| x == id) {' \
+             '        if out.iter().any(|x| x == id) && false { // knife' \
+             the_customers_cloudflare_accounts_are_read_strictly
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1525,6 +1591,33 @@ jobs:
           hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
              '        (Some("waiting"), "never") => { // knife' \
              a_run_started_too_late_does_not_take_its_ask
+          # B5 DNS (4542e): a call off the list of five goes out
+          hk cfdns.rs '        if !sitedns::allowed(call.method(), &call.path(), body) {' \
+             '        if !sitedns::allowed(call.method(), &call.path(), body) && false { // knife' \
+             a_call_off_the_list_is_refused_and_written_down
+          # B5 DNS: a call made leaves no ledger line
+          hk cfdns.rs '        self.ledger_line(&mut file, call, json!(http))?;' \
+             '        let _ = (&mut file, http); // knife' \
+             a_free_name_gets_one_proxied_marked_record_read_back
+          # B5 DNS: the opening record does not say what is being added before the add
+          hk cfdns.rs '        crate::sitecreatecmd::write_record(&paths.creating, &spec.code, record)?;' \
+             '        let _ = &paths.creating; // knife' \
+             an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # B5 DNS: an add that does not read back counts as done
+          hk cfdns.rs '        if sitedns::plan(&names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done {' \
+             '        if sitedns::plan(&names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false { // knife' \
+             an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # B5 DNS: a roster file that is another customer's is used
+          hk cfdns.rs '    if roster.tenant_id != tenant {' '    if roster.tenant_id != tenant && false { // knife' \
+             a_customer_without_accounts_cannot_be_told
+          # B5: --continue passes over the DNS step
+          hk sitecreatecmd.rs '            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record),' \
+             '            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record).or(Ok(())), // knife' \
+             a_dns_step_that_cannot_ask_keeps_the_site_and_asks_nothing
+          # B5: the plan marks the wrong step unknown when the entry cannot be read
+          hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
+             '        if let Some(i) = at(CreateStep::Health) { // knife' \
+             an_unreadable_entry_stops_at_the_entry_step
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

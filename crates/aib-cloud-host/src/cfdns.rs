@@ -255,6 +255,9 @@ fn customer_zones<R: Runner>(
 }
 
 /// The zone's whole records listing, or `None` when it could not be read whole.
+// a named exception to ADR 0005: a short wait between two reads of Cloudflare's listing,
+// in a one-shot host command that has no timer loop of its own
+#[allow(clippy::disallowed_methods)]
 fn listing<R: Runner>(
     cf: &mut Cf<'_, R>,
     zone: &str,

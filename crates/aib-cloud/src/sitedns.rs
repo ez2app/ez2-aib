@@ -204,7 +204,7 @@ fn add_body_ok(body: &str) -> bool {
         && m["name"].as_str().is_some_and(crate::edge::valid_domain)
         && m["content"].is_string()
         && m["proxied"] == Value::Bool(true)
-        && m["ttl"] == Value::from(1)
+        && m["ttl"] == 1
         && m["comment"]
             .as_str()
             .and_then(|c| c.strip_prefix(DNS_MARKER_PREFIX))
@@ -268,9 +268,7 @@ pub fn pick_zone(
         let found: Vec<&Zone> = zones
             .iter()
             .filter(|z| {
-                same_name(&z.name, &name)
-                    && z.status == "active"
-                    && accounts.iter().any(|a| *a == z.account)
+                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)
             })
             .collect();
         match found.as_slice() {
