@@ -18,7 +18,8 @@
 //!
 //! Available now: `status` (the site's own checks, no host checks; only the checks and
 //! codes `aib_cloud::customer::status_view` names are shown, the rest is one
-//! `provider_check` row) and `logs` (bounded, masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
+//! `provider_check` row) and `logs` (bounded, masked, the host's name, addresses and paths
+//! hidden; `logs wp` is WordPress's own `debug.log`, parsed but not listed yet). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
 //!
 //! Exit status: as `site verify` for `status`; 0 for `logs`; 2 a refused request;
@@ -42,6 +43,38 @@ use crate::quarantinecmd::load_spec;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const FIREWALL_DIR: &str = "/etc/pve/firewall";
+/// The host's own list of words a site's log must not carry out (its addresses, the
+/// provider's name): one per line, root's, kept on the host and never in this repository.
+const HIDE_WORDS: &str = "/etc/ez2-cloud/hide-words";
+const HOSTNAME: &str = "/etc/hostname";
+
+/// What of the host is hidden from a site's log (`aib_cloud::svc::HostHide`), from the
+/// host's name and its list as read. `None` — and so no log — when the name could not be
+/// read, or the list exists but could not be: a log that might name the host is not sent
+/// (E6). A host without a list only hides its name, the CT's number and its own paths.
+fn host_hide(
+    hostname: Option<&str>,
+    list: Result<Option<&str>, ()>,
+    ct: u32,
+) -> Option<svc::HostHide> {
+    let name = hostname.map(str::trim).filter(|n| !n.is_empty())?;
+    let list = list.ok()?.unwrap_or("");
+    Some(svc::HostHide::new(name, list, ct))
+}
+
+fn read_host_hide(ct: u32) -> Option<svc::HostHide> {
+    let name = std::fs::read_to_string(HOSTNAME).ok();
+    let list = match std::fs::read_to_string(HIDE_WORDS) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    };
+    host_hide(
+        name.as_deref(),
+        list.as_ref().map(Option::as_deref).map_err(|_| ()),
+        ct,
+    )
+}
 
 /// Whether a customer's `logs` request may enter their CT.
 #[derive(Debug, PartialEq, Eq)]
@@ -125,6 +158,10 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 eprintln!("could not read the site record");
                 return 3;
             };
+            let Some(hide) = read_host_hide(spec.ct) else {
+                eprintln!("could not read the log");
+                return 3;
+            };
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]).env("LC_ALL", "C");
             // the host counts bytes and lines itself: what prints the log runs in the CT
@@ -133,7 +170,8 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
             {
                 Ok((out, more)) => {
                     for l in out.lines().take(wanted) {
-                        println!("{}", svc::mask_line(svc::clip_line(l)));
+                        let (line, _) = hide.hide(&svc::mask_line(svc::clip_line(l)));
+                        println!("{line}");
                     }
                     if more || out.lines().count() > wanted {
                         eprintln!("output cut at the limit");
@@ -406,6 +444,23 @@ mod tests {
     use super::*;
 
     const ALL: &[Role] = &[Role::Owner];
+
+    /// E6: a log that might name the host is not sent. Without the host's name, or with a
+    /// list that exists but could not be read, there is no log at all; a host without a
+    /// list still hides its name and the CT's number.
+    #[test]
+    fn a_log_is_not_sent_unless_the_host_words_were_read() {
+        assert!(host_hide(None, Ok(None), 112).is_none());
+        assert!(host_hide(Some("  \n"), Ok(None), 112).is_none());
+        assert!(host_hide(Some("host7"), Err(()), 112).is_none());
+        let h = host_hide(Some("host7\n"), Ok(None), 112).unwrap();
+        assert_eq!(
+            h.hide("on host7 ct112"),
+            ("on [hidden] [hidden]".to_owned(), 2)
+        );
+        let h = host_hide(Some("host7"), Ok(Some("192.0.2.1\n")), 112).unwrap();
+        assert_eq!(h.hide("from 192.0.2.1"), ("from [hidden]".to_owned(), 1));
+    }
 
     fn record(dir: &std::path::Path, site: &str, ct: u32, tenant: Option<&str>) {
         let mut rec = json!({

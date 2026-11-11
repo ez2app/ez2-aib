@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! status
-//! logs <nginx|php|db> [lines <1..=2000>] [minutes <1..=10080>]
+//! logs <nginx|php|db|wp> [lines <1..=2000>] [minutes <1..=10080>]
 //! php-reload
 //! restart
 //! backup
@@ -535,6 +535,15 @@ mod tests {
                 minutes: 10080
             })
         );
+        // WordPress's own error log; not listed to customers until its wording is set
+        assert_eq!(
+            parse_request("logs wp lines 20"),
+            Ok(Request::Logs {
+                source: LogSource::Wp,
+                lines: 20,
+                minutes: 60
+            })
+        );
         assert!(Request::Restart.writes() && Request::PhpReload.writes());
         assert!(!Request::Status.writes() && !Request::Backup.writes());
     }
@@ -551,7 +560,7 @@ mod tests {
             ("status site3", Refused::BadArguments),
             ("restart now", Refused::BadArguments),
             ("logs", Refused::BadArguments),
-            ("logs wp", Refused::BadArguments),
+            ("logs syslog", Refused::BadArguments),
             ("logs nginx lines", Refused::BadArguments),
             ("logs nginx lines 0", Refused::BadArguments),
             ("logs nginx lines 2001", Refused::BadArguments),

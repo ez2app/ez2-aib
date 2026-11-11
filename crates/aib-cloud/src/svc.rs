@@ -8,8 +8,9 @@
 //!   for a quarantined site ([`crate::quarantine::guard`]); `stop` is allowed but the plan
 //!   says what it costs: the processes and memory an investigation would want.
 //! * **Logs are bounded**: a number of lines and a look-back window, both capped, read
-//!   through the journal of a fixed set of units. What comes back is passed through
-//!   [`mask_line`] before it leaves the host.
+//!   through the journal of a fixed set of units — or, for WordPress's own error log, the
+//!   last lines of one fixed file, read as the site's user. What comes back is passed
+//!   through [`mask_line`] and then [`HostHide::hide`] before it leaves the host.
 
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
@@ -124,6 +125,9 @@ pub enum LogSource {
     Php,
     /// The database.
     Db,
+    /// WordPress's own error log, `wp-content/debug.log` (written when the site turns
+    /// `WP_DEBUG_LOG` on; PHP notices and fatals of plugins land there, not in the journal).
+    Wp,
 }
 
 impl LogSource {
@@ -133,15 +137,18 @@ impl LogSource {
             "nginx" => LogSource::Nginx,
             "php" => LogSource::Php,
             "db" => LogSource::Db,
+            "wp" => LogSource::Wp,
             _ => return None,
         })
     }
 
-    fn unit(self) -> &'static str {
+    /// The journal unit, for the sources the journal holds.
+    fn unit(self) -> Option<&'static str> {
         match self {
-            LogSource::Nginx => "nginx.service",
-            LogSource::Php => "php*-fpm.service",
-            LogSource::Db => "mariadb.service",
+            LogSource::Nginx => Some("nginx.service"),
+            LogSource::Php => Some("php*-fpm.service"),
+            LogSource::Db => Some("mariadb.service"),
+            LogSource::Wp => None,
         }
     }
 }
@@ -151,8 +158,25 @@ pub const LOG_LINES_MAX: u32 = 2000;
 /// Longest look-back, in minutes (seven days).
 pub const LOG_MINUTES_MAX: u32 = 7 * 24 * 60;
 
+/// What reads WordPress's error log inside the CT, as the site's user: `$1` is the file,
+/// `$2` the number of lines. A site that never turned the log on has no file, and that is
+/// an empty log, not an error. `tail` and `test` are the CT's own; what they print is
+/// bounded by the host ([`log_bytes_max`]), not by them.
+pub const WP_LOG_SH: &str = "f=\"$1\"; [ -f \"$f\" ] || exit 0; exec tail -n \"$2\" -- \"$f\"";
+
+/// Where a site's WordPress error log is: the default of `WP_DEBUG_LOG = true`, below
+/// the document root every site gets (`/var/www/<code>`). A site that points the log
+/// elsewhere is not followed: the path is ours, never the site's.
+pub fn wp_log_path(spec: &SiteSpec) -> String {
+    alloc::format!("/var/www/{}/wp-content/debug.log", spec.code)
+}
+
 /// The command that reads a site's log: the journal of one unit inside the CT, bounded
-/// in lines and in time. Read-only, but it runs a program inside a customer CT.
+/// in lines and in time; for [`LogSource::Wp`], the last lines of the site's
+/// [`wp_log_path`], read **as the site's user** (`sudo -u <code>`), so a link the site
+/// plants there reaches nothing its own user could not read anyway. `minutes` does not
+/// narrow that file (it has no index by time) but is held to the same bounds. Read-only,
+/// but it runs a program inside a customer CT.
 pub fn logs_argv(
     spec: &SiteSpec,
     source: LogSource,
@@ -168,6 +192,13 @@ pub fn logs_argv(
     let ct = spec.ct.to_string();
     let since = alloc::format!("-{minutes}min");
     let lines = lines.to_string();
+    let Some(unit) = source.unit() else {
+        let path = wp_log_path(spec);
+        return Ok(argv(&[
+            "pct", "exec", &ct, "--", "sudo", "-u", &spec.code, "--", "sh", "-c", WP_LOG_SH, "sh",
+            &path, &lines,
+        ]));
+    };
     Ok(argv(&[
         "pct",
         "exec",
@@ -178,7 +209,7 @@ pub fn logs_argv(
         "-o",
         "short-iso",
         "-u",
-        source.unit(),
+        unit,
         "--since",
         &since,
         "-n",
@@ -241,6 +272,94 @@ pub fn clip_line(line: &str) -> &str {
 /// costs the site.
 pub fn mask_line(line: &str) -> String {
     plain(&mask_secrets(line))
+}
+
+/// What stands in for a piece of host information in a log line.
+pub const HIDDEN: &str = "[hidden]";
+
+/// Path prefixes that only exist on the host, never inside a site's CT: a line that
+/// names one has the whole path (up to the next blank or quote) replaced by [`HIDDEN`].
+pub const HOST_PATHS: &[&str] = &["/var/lib/lxc/", "/etc/pve/", "/var/lib/vz/", "/dev/pve/"];
+
+/// Shortest word [`HostHide`] takes: anything shorter would cut ordinary text apart.
+pub const HIDE_WORD_MIN: usize = 4;
+
+/// What of the host a site's log must not carry out to its customer (4.4.1 §23, Andy
+/// 11-10: "要讓 ai 也盡量找不出主機與主機商的任何資訊"): the host's name, the words the
+/// host keeps in its own list (its addresses, the provider's name — **never in this
+/// repository**, which is public), the CT's number where it is named as one (`ct112`,
+/// `CT 112`, `lxc/112`, `lxc-112`), and the host-only paths of [`HOST_PATHS`].
+///
+/// Words match without regard to ASCII case and only as whole words: `192.0.2.1` is not
+/// found inside `192.0.2.10`. Built on the host, used per line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostHide {
+    words: Vec<String>,
+}
+
+impl HostHide {
+    /// From the host's name, the text of the host's own list (one word per line; blank
+    /// lines and `#` lines skipped) and the CT's number. Words shorter than
+    /// [`HIDE_WORD_MIN`] are left out.
+    pub fn new(hostname: &str, list: &str, ct: u32) -> Self {
+        let mut words: Vec<String> = Vec::new();
+        let ct_words = [
+            alloc::format!("ct{ct}"),
+            alloc::format!("ct {ct}"),
+            alloc::format!("lxc/{ct}"),
+            alloc::format!("lxc-{ct}"),
+        ];
+        let from_list = list.lines().map(str::trim).filter(|w| !w.starts_with('#'));
+        for w in core::iter::once(hostname.trim())
+            .chain(from_list)
+            .chain(ct_words.iter().map(String::as_str))
+        {
+            let w = w.to_ascii_lowercase();
+            if w.len() >= HIDE_WORD_MIN && !words.contains(&w) {
+                words.push(w);
+            }
+        }
+        // longest first: `host1.example.net` goes whole before `host1` could cut it
+        words.sort_by_key(|w| core::cmp::Reverse(w.len()));
+        HostHide { words }
+    }
+
+    /// `line` with every host word and host path replaced by [`HIDDEN`], and how many
+    /// were.
+    pub fn hide(&self, line: &str) -> (String, usize) {
+        let lower = line.to_ascii_lowercase();
+        let bytes = line.as_bytes();
+        let word_char = |at: usize| bytes.get(at).is_some_and(|b| b.is_ascii_alphanumeric());
+        let mut out = String::with_capacity(line.len());
+        let mut count = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some(p) = HOST_PATHS.iter().find(|p| lower[i..].starts_with(**p)) {
+                let rest = &line[i + p.len()..];
+                let end = rest.find([' ', '\t', '"', '\'']).unwrap_or(rest.len());
+                out.push_str(HIDDEN);
+                count += 1;
+                i += p.len() + end;
+                continue;
+            }
+            let at_start = i == 0 || !word_char(i - 1);
+            let hit = self.words.iter().find(|w| {
+                at_start && lower[i..].starts_with(w.as_str()) && !word_char(i + w.len())
+            });
+            if let Some(w) = hit {
+                out.push_str(HIDDEN);
+                count += 1;
+                i += w.len();
+                continue;
+            }
+            let next = (i + 1..=bytes.len())
+                .find(|j| line.is_char_boundary(*j))
+                .unwrap_or(bytes.len());
+            out.push_str(&line[i..next]);
+            i = next;
+        }
+        (out, count)
+    }
 }
 
 /// `line` with nothing in it that a terminal would act on (ebb36, #641 seg. 2 L1). Part of
@@ -481,8 +600,97 @@ mod tests {
         assert!(logs_argv(&spec(), LogSource::Db, 0, 60).is_err());
         assert!(logs_argv(&spec(), LogSource::Db, 10, LOG_MINUTES_MAX + 1).is_err());
         assert!(logs_argv(&spec(), LogSource::Db, 10, 0).is_err());
-        assert_eq!(LogSource::parse("wp"), None);
+        assert_eq!(LogSource::parse("wp"), Some(LogSource::Wp));
+        assert_eq!(LogSource::parse("journal"), None);
         assert_eq!(LogSource::parse("php"), Some(LogSource::Php));
+    }
+
+    #[test]
+    fn the_wp_log_is_read_as_the_sites_user_from_a_fixed_path() {
+        let a = logs_argv(&spec(), LogSource::Wp, 50, 60).unwrap();
+        assert_eq!(
+            a,
+            [
+                "pct",
+                "exec",
+                "112",
+                "--",
+                "sudo",
+                "-u",
+                "site2",
+                "--",
+                "sh",
+                "-c",
+                WP_LOG_SH,
+                "sh",
+                "/var/www/site2/wp-content/debug.log",
+                "50"
+            ]
+        );
+        assert_eq!(wp_log_path(&spec()), "/var/www/site2/wp-content/debug.log");
+        // the same bounds as every other source
+        assert!(logs_argv(&spec(), LogSource::Wp, LOG_LINES_MAX + 1, 60).is_err());
+        assert!(logs_argv(&spec(), LogSource::Wp, 10, 0).is_err());
+        // no file is an empty log, and the count is the second argument
+        assert!(WP_LOG_SH.contains("[ -f \"$f\" ] || exit 0"));
+        assert!(WP_LOG_SH.contains("tail -n \"$2\" -- \"$f\""));
+    }
+
+    fn hide() -> HostHide {
+        HostHide::new(
+            "host7.example.net\n",
+            "# the host's own list\n192.0.2.1\n\nExampleCloud\nab\n",
+            112,
+        )
+    }
+
+    #[test]
+    fn host_words_are_hidden_whole_and_counted() {
+        let h = hide();
+        assert_eq!(
+            h.hide("connect to 192.0.2.1:443 via HOST7.example.net"),
+            ("connect to [hidden]:443 via [hidden]".to_owned(), 2)
+        );
+        // a longer address is not cut apart, nor a word inside a longer one
+        assert_eq!(
+            h.hide("peer 192.0.2.10 and 192.0.2.1x"),
+            ("peer 192.0.2.10 and 192.0.2.1x".to_owned(), 0)
+        );
+        assert_eq!(
+            h.hide("billed by examplecloud, not myexamplecloud"),
+            ("billed by [hidden], not myexamplecloud".to_owned(), 1)
+        );
+        // the CT's number where it is named as one, and only then
+        assert_eq!(
+            h.hide("ct112 CT 112 lxc/112 lxc-112 ct1120 port 112"),
+            (
+                "[hidden] [hidden] [hidden] [hidden] ct1120 port 112".to_owned(),
+                4
+            )
+        );
+        // a word shorter than the minimum and a comment are not taken
+        assert_eq!(
+            h.hide("ab # the host's own list"),
+            ("ab # the host's own list".to_owned(), 0)
+        );
+    }
+
+    #[test]
+    fn host_paths_are_hidden_to_the_next_blank() {
+        let h = HostHide::new("", "", 112);
+        assert_eq!(
+            h.hide("open /var/lib/lxc/112/rootfs/x failed; see /etc/pve/lxc/112.conf"),
+            ("open [hidden] failed; see [hidden]".to_owned(), 2)
+        );
+        assert_eq!(
+            h.hide("\"/var/lib/vz/dump/a.tar\" and /dev/pve/vm-112-disk-0"),
+            ("\"[hidden]\" and [hidden]".to_owned(), 2)
+        );
+        // a site's own paths stay
+        assert_eq!(
+            h.hide("PHP Fatal in /var/www/site2/wp-content/x.php"),
+            ("PHP Fatal in /var/www/site2/wp-content/x.php".to_owned(), 0)
+        );
     }
 
     #[test]

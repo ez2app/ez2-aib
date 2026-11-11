@@ -395,6 +395,48 @@ jobs:
           ck svc.rs '                let whole = key == "cookie" || (key == "authorization" && scheme == 0);' \
              '                let whole = false && key == "cookie"; // knife' \
              secrets_do_not_leave_with_the_logs
+          # site logs wp: the WordPress log is read from somewhere else than the site's own fixed path (E10)
+          ck svc.rs '    alloc::format!("/var/www/{}/wp-content/debug.log", spec.code)' \
+             '    alloc::format!("/var/www/{}/debug.log", spec.code) // knife' \
+             the_wp_log_is_read_as_the_sites_user_from_a_fixed_path
+          # site logs wp: the WordPress log is read as another user than the site's (E10)
+          ck svc.rs '"sudo", "-u", &spec.code,' '"sudo", "-u", &spec.ct.to_string(),' \
+             the_wp_log_is_read_as_the_sites_user_from_a_fixed_path
+          # site logs wp: a site without the log file is an error, not an empty log (E10)
+          ck svc.rs 'pub const WP_LOG_SH: &str = "f=\"$1\"; [ -f \"$f\" ] || exit 0; exec tail -n \"$2\" -- \"$f\"";' \
+             'pub const WP_LOG_SH: &str = "f=\"$1\"; exec tail -n \"$2\" -- \"$f\""; // knife' \
+             the_wp_log_is_read_as_the_sites_user_from_a_fixed_path
+          # site logs wp: the WordPress log is read through the journal (E10)
+          ck svc.rs '            LogSource::Wp => None,' '            LogSource::Wp => Some("nginx.service"), // knife' \
+             the_wp_log_is_read_as_the_sites_user_from_a_fixed_path
+          # site logs: a host word is found inside a longer one (E6)
+          ck svc.rs '                at_start && lower[i..].starts_with(w.as_str()) && !word_char(i + w.len())' \
+             '                at_start && lower[i..].starts_with(w.as_str()) // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: a host word is found at the end of a longer one (E6)
+          ck svc.rs '            let at_start = i == 0 || !word_char(i - 1);' \
+             '            let at_start = i == 0 || !word_char(i - 1) || i > 0; // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: a host word is matched with its case (E6)
+          ck svc.rs '        let lower = line.to_ascii_lowercase();' '        let lower = line.to_owned(); // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: two-letter words of the host's list cut ordinary text apart (E6)
+          ck svc.rs '            if w.len() >= HIDE_WORD_MIN && !words.contains(&w) {' \
+             '            if w.len() >= 2 && !words.contains(&w) { // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: a comment line of the host's list is taken as a word (E6)
+          ck svc.rs ".filter(|w| !w.starts_with('#'));" '.filter(|w| !w.is_empty()); // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: "CT 112" is shown (E6)
+          ck svc.rs '            alloc::format!("ct {ct}"),' '            alloc::format!("ct-{ct}"), // knife' \
+             host_words_are_hidden_whole_and_counted
+          # site logs: only the start of a host path is hidden, the rest shows (E6)
+          ck svc.rs '                i += p.len() + end;' '                i += p.len() + end.min(0); // knife' \
+             host_paths_are_hidden_to_the_next_blank
+          # site logs: a host path is not hidden at all (E6)
+          ck svc.rs '            if let Some(p) = HOST_PATHS.iter().find(|p| lower[i..].starts_with(**p)) {' \
+             '            if let Some(p) = HOST_PATHS.iter().find(|p| lower[i..].starts_with(**p) && i > usize::MAX - 1) { // knife' \
+             host_paths_are_hidden_to_the_next_blank
           # customer entry: characters a shell reads get as far as a word (Andy 11-10: customers operate their own site)
           ck customer.rs "            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b' ')" \
              '            .all(|c| c != 0)' \
@@ -850,6 +892,13 @@ jobs:
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \
              a_quarantined_site_is_not_entered_for_its_logs
+          # customer logs: a log is sent although the host's name could not be read (E6)
+          hk customercmd.rs '    let name = hostname.map(str::trim).filter(|n| !n.is_empty())?;' \
+             '    let name = hostname.map(str::trim).unwrap_or(""); // knife' \
+             a_log_is_not_sent_unless_the_host_words_were_read
+          # customer logs: a host list that exists but could not be read is taken as none (E6)
+          hk customercmd.rs '    let list = list.ok()?.unwrap_or("");' '    let list = list.unwrap_or(None).unwrap_or(""); // knife' \
+             a_log_is_not_sent_unless_the_host_words_were_read
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
