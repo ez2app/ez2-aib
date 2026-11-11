@@ -40,6 +40,7 @@ extern crate alloc;
 extern crate std;
 pub mod arc;
 pub mod backup;
+pub mod brand;
 pub mod client;
 pub mod customer;
 pub mod edge;

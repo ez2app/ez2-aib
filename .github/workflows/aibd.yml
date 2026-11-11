@@ -690,6 +690,23 @@ jobs:
           ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
              '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
              a_new_site_gets_the_next_numbers_up
+          # brand (E9): the site record takes any value under brand
+          ck site.rs '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() {' \
+             '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() && false { // knife' \
+             record_gaps_by_kind
+          # brand (E9): a record without a known word is read as shown
+          ck brand.rs '        Some(_) => Err("brand_value"),' '        Some(_) => Ok(Brand::Shown), // knife' \
+             only_a_missing_key_means_shown
+          # brand (E9): a file under the other brand's name that is not ours is removed
+          ck brand.rs '        Found::NotOurs => OtherName::Stop("brand_other_name_not_ours"),' \
+             '        Found::NotOurs => OtherName::Remove, // knife' \
+             the_other_brands_file_is_removed_only_when_ours
+          # brand (E9): a hidden site falls back to the operations mail
+          ck brand.rs '                .ok_or("brand_no_neutral_mail")?;' '                .unwrap_or(ops);  // knife' \
+             a_hidden_site_never_gets_the_operations_mail
+          # brand (E9): the operations mail given as the neutral one is taken
+          ck brand.rs '            if pick == ops || has_brand_word(pick) {' '            if has_brand_word(pick) && pick != ops { // knife' \
+             a_hidden_site_never_gets_the_operations_mail
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
