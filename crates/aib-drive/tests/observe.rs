@@ -306,3 +306,95 @@ fn a_round_needs_the_quota_floor_left() {
     assert!(e.contains("配額保留"), "{e}");
     assert!(quota_gate(Err("timed out".into()), QUOTA_FLOOR).is_err());
 }
+
+// --- drive × aib-expect wiring: one report per event, a report never wakes a round ---
+
+const EV: &str = "pr/7@766fa8f663847a5ae78111f6005a1b4a8f41bd7a";
+
+fn wired() -> aib_drive::observe::ExpectSide {
+    aib_drive::observe::ExpectSide {
+        table: vec![serde_json::json!({"goal_id": "A1", "state": "unverified", "pr": 7})],
+        unknown: None,
+    }
+}
+
+#[test]
+fn the_same_event_twice_gives_one_report() {
+    use aib_drive::observe::once_with;
+    let d = root("ev-once");
+    let p = Paths::under(&d);
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let a = once_with(&p, REPO, 1, &mut r, Some(EV)).unwrap();
+    let b = once_with(&p, REPO, 2, &mut r, Some(EV)).unwrap();
+    assert_eq!(a.report.as_ref().map(|x| x.event.as_str()), Some(EV));
+    assert!(b.report.is_none(), "second report for the same event");
+    let j = lines(&p.journal);
+    assert_eq!(j.iter().filter(|l| l.report.is_some()).count(), 1);
+    // writing the report touched no event file: it starts no round
+    assert!(!p.event.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn only_a_completion_event_gets_a_report() {
+    use aib_drive::observe::{read_event, record_with};
+    use aib_drive::report::is_event;
+    for bad in [
+        "",
+        "report/1",
+        "pr/7",
+        "pr/7@766fa8f6",
+        "pr/x@766fa8f663847a5ae78111f6005a1b4a8f41bd7a",
+        "dm/a b",
+        "now/",
+    ] {
+        assert!(!is_event(bad), "{bad:?}");
+        let r = record_with(
+            1,
+            REPO,
+            &BTreeMap::new(),
+            Ok((snap(), Some(wired()))),
+            Some(bad),
+        );
+        assert!(r.report.is_none(), "{bad:?}");
+    }
+    for good in [EV, "dm/q_c192cd5d7397331c", "now/2240e/3"] {
+        assert!(is_event(good), "{good:?}");
+    }
+    let d = root("ev-file");
+    let f = d.join("event");
+    std::fs::write(&f, "").unwrap();
+    assert_eq!(
+        read_event(&f),
+        None,
+        "a bare touch is a wake-up, not an event"
+    );
+    std::fs::write(&f, format!("{EV}\n")).unwrap();
+    assert_eq!(read_event(&f).as_deref(), Some(EV));
+    std::fs::write(&f, "report/x").unwrap();
+    assert_eq!(read_event(&f), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_old_journal_line_without_a_report_still_reads() {
+    let r = record_of(1, REPO, &BTreeMap::new(), Ok(snap()));
+    let line = serde_json::to_string(&r).unwrap();
+    assert!(
+        !line.contains("\"report\""),
+        "unwired records keep their old shape"
+    );
+    let back: Record = serde_json::from_str(&line).unwrap();
+    assert!(back.report.is_none());
+}
+
+#[test]
+fn an_ai_order_must_be_a_permutation_of_next() {
+    use aib_drive::report::ai_order;
+    assert!(ai_order(3, vec![2, 0, 1], "x").is_some());
+    assert!(ai_order(3, vec![0, 0, 1], "x").is_none());
+    assert!(ai_order(3, vec![0, 1], "x").is_none());
+    assert!(ai_order(2, vec![0, 1, 2], "x").is_none());
+    assert_eq!(ai_order(1, vec![0], "a\u{202e}b").unwrap().why, "a?b");
+}

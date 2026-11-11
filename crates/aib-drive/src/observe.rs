@@ -30,7 +30,8 @@
 //!   wakes once a second to look at the event file (no process is started);
 //!   two touches within the file system's mtime resolution count once.
 
-use crate::decide::{decide, Intent, Sha, Snapshot};
+use crate::decide::{decide, decide_weighted, Intent, Sha, Snapshot};
+use crate::report::{self, Report};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -155,7 +156,23 @@ pub struct Record {
     pub heads: BTreeMap<u64, Sha>,
     /// What decide would do.
     pub would: Vec<Intent>,
+    /// With aib-expect wired: the report of the completion event this round
+    /// answered (none for a timer round, or when the journal already has one
+    /// for that event).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<Report>,
 }
+
+/// What aib-expect said this round (DESIGN-drive-expect-wiring): its whole
+/// table as `gap_json` rows, and why the goals could not be used, if so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExpectSide {
+    pub table: Vec<Value>,
+    pub unknown: Option<String>,
+}
+
+/// A snapshot and, when aib-expect is wired, its side; or why there is none.
+pub type Built = Result<(Snapshot, Option<ExpectSide>), String>;
 
 /// Invisible characters that can reorder or hide text on a terminal (bidi
 /// overrides and isolates, zero-width characters, BOM, Hangul fillers, tag
@@ -222,6 +239,46 @@ pub fn record_of(
         unknown,
         heads,
         would,
+        report: None,
+    }
+}
+
+/// [`record_of`] with aib-expect wired: its gaps weight decide
+/// ([`decide_weighted`]), and a completion event gets one report.
+pub fn record_with(
+    at: u64,
+    repo: &str,
+    prev: &BTreeMap<u64, Sha>,
+    built: Built,
+    event: Option<&str>,
+) -> Record {
+    let (s, side) = match built {
+        Ok((s, Some(side))) => (s, side),
+        Ok((s, None)) => return record_of(at, repo, prev, Ok(s)),
+        Err(e) => return record_of(at, repo, prev, Err(e)),
+    };
+    let mut would = decide_weighted(&s, &report::gap_prs(&side.table));
+    // goals that cannot be used are unknown, never green: nothing merges
+    if let Some(code) = &side.unknown {
+        would.retain(|i| !matches!(i, Intent::Merge { .. }));
+        would.push(Intent::Note {
+            pr: None,
+            text: format!(
+                "expectations unknown ({}): nothing merges",
+                clean(code, MAX_REASON)
+            ),
+        });
+    }
+    let report = event.and_then(|e| report::report(e, at, side.table, side.unknown, &would));
+    Record {
+        at,
+        kind: Kind::Round,
+        dry_run: true,
+        repo: repo.to_owned(),
+        unknown: None,
+        heads: s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+        would,
+        report,
     }
 }
 
@@ -234,6 +291,7 @@ fn mark(at: u64, repo: &str, kind: Kind, prev: &BTreeMap<u64, Sha>) -> Record {
         unknown: None,
         heads: prev.clone(),
         would: Vec::new(),
+        report: None,
     }
 }
 
@@ -334,6 +392,41 @@ pub fn prev_heads(journal: &Path) -> BTreeMap<u64, Sha> {
         }
         want = want.saturating_mul(2);
     }
+}
+
+/// How much of the journal's end is searched for an event's report.
+pub const REPORTED_TAIL: u64 = 1024 * 1024;
+
+/// Whether the journal's last [`REPORTED_TAIL`] bytes already hold a report
+/// for `event`. A journal that cannot be read counts as "no": a second
+/// report is harmless, a lost one is not.
+pub fn reported(journal: &Path, event: &str) -> bool {
+    let Ok(mut f) = File::open(journal) else {
+        return false;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(len.saturating_sub(REPORTED_TAIL)))
+        .is_err()
+        || f.read_to_end(&mut buf).is_err()
+    {
+        return false;
+    }
+    // a cut first line never parses, so it is never a match
+    report::already_reported(String::from_utf8_lossy(&buf).lines(), event)
+}
+
+/// The completion event written into the event file, if it is one
+/// ([`report::is_event`]); a bare touch is a wake-up, not an event.
+pub fn read_event(path: &Path) -> Option<String> {
+    let mut buf = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(4 * report::EVENT_MAX as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let id = String::from_utf8_lossy(&buf).trim().to_owned();
+    report::is_event(&id).then_some(id)
 }
 
 /// The wait after `failures` failed rounds in a row: 60, 120, 240, 480, 600…
@@ -464,6 +557,9 @@ impl Clock for RealClock {
 /// One snapshot attempt, given the heads of the last record.
 pub type Round<'a> = dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String> + 'a;
 
+/// [`Round`] with aib-expect wired: the snapshot and expect's side.
+pub type WiredRound<'a> = dyn FnMut(&BTreeMap<u64, Sha>) -> Built + 'a;
+
 /// Why `--once` did not run a round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -485,12 +581,25 @@ impl std::fmt::Display for Refused {
 /// holds the lock. The pause file is looked at after the lock is taken, so
 /// a pause made while waiting for it still counts.
 pub fn once(paths: &Paths, repo: &str, now: u64, round: &mut Round<'_>) -> Result<Record, Refused> {
+    once_with(paths, repo, now, &mut |p| round(p).map(|s| (s, None)), None)
+}
+
+/// [`once`] with aib-expect wired, answering `event` (`--event`). An event
+/// the journal already reports gets no second report.
+pub fn once_with(
+    paths: &Paths,
+    repo: &str,
+    now: u64,
+    round: &mut WiredRound<'_>,
+    event: Option<&str>,
+) -> Result<Record, Refused> {
     let _lock = lock(&paths.lock, &paths.pid).map_err(Refused::State)?;
     if paths.pause.exists() {
         return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));
     }
     let prev = prev_heads(&paths.journal);
-    let r = record_of(now, repo, &prev, round(&prev));
+    let event = event.filter(|e| !reported(&paths.journal, e));
+    let r = record_with(now, repo, &prev, round(&prev), event);
     append(&paths.journal, &r).map_err(Refused::State)?;
     Ok(r)
 }
@@ -506,10 +615,33 @@ pub fn watch(
     print: &mut dyn FnMut(&Record),
     max_rounds: Option<u32>,
 ) -> Result<(), String> {
+    watch_with(
+        paths,
+        repo,
+        base,
+        clock,
+        &mut |p| round(p).map(|s| (s, None)),
+        print,
+        max_rounds,
+    )
+}
+
+/// [`watch`] with aib-expect wired. A wake-up by the event file answers the
+/// completion event written in it, if any ([`read_event`]).
+pub fn watch_with(
+    paths: &Paths,
+    repo: &str,
+    base: Duration,
+    clock: &mut dyn Clock,
+    round: &mut WiredRound<'_>,
+    print: &mut dyn FnMut(&Record),
+    max_rounds: Option<u32>,
+) -> Result<(), String> {
     let _lock = lock(&paths.lock, &paths.pid)?;
     let mut failures: u32 = 0;
     let mut paused = false;
     let mut rounds: u32 = 0;
+    let mut event: Option<String> = None;
     loop {
         let prev = prev_heads(&paths.journal);
         if paths.pause.exists() {
@@ -530,7 +662,8 @@ pub fn watch(
             print(&r);
             paused = false;
         }
-        let r = record_of(clock.now(), repo, &prev, round(&prev));
+        let ev = event.take().filter(|e| !reported(&paths.journal, e));
+        let r = record_with(clock.now(), repo, &prev, round(&prev), ev.as_deref());
         append(&paths.journal, &r)?;
         print(&r);
         failures = if r.unknown.is_some() {
@@ -542,8 +675,10 @@ pub fn watch(
         if max_rounds.is_some_and(|m| rounds >= m) {
             return Ok(());
         }
-        if clock.wait(backoff(base, CAP, failures), &paths.event) == Wake::Stop {
-            return Ok(());
+        match clock.wait(backoff(base, CAP, failures), &paths.event) {
+            Wake::Stop => return Ok(()),
+            Wake::Event => event = read_event(&paths.event),
+            Wake::Timeout => {}
         }
     }
 }

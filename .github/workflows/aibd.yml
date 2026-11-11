@@ -2147,6 +2147,62 @@ jobs:
           vs '        Known::Known(c) => lines_for(files, c)?,' \
              '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
+      # aib-drive x aib-expect wiring (DESIGN-drive-expect-wiring, a9136 DECISION-drive-expect-cycle): gaps only
+      # reorder, unknown goals merge nothing, one report per event, only completion events, an AI order is a
+      # permutation, and drive keeps the reader's old paths. Each knife keeps the build clean under -D warnings.
+      - name: aib-drive expect wiring knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          wk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-drive --locked --test "$5" "$4"; }
+          # W1 gaps do not weigh
+          wk decide.rs '                    .contains(&b.number)' \
+             '                    .contains(&a.number) // knife' \
+             a_gap_puts_its_pr_first_within_a_level_and_only_reorders decide
+          # W2 goals that cannot be used still let a PR merge
+          wk observe.rs '        would.retain(|i| !matches!(i, Intent::Merge { .. }));' \
+             '        would.retain(|_| true); // knife' \
+             goals_that_cannot_be_used_merge_nothing_and_the_report_says_why decide
+          # W3 the same event is reported again
+          wk observe.rs '    let event = event.filter(|e| !reported(&paths.journal, e));' \
+             '    let event = event; // knife' \
+             the_same_event_twice_gives_one_report observe
+          # W4 any id is a completion event (a report could start a round)
+          wk report.rs '        _ => false,' \
+             '        _ => true, // knife' \
+             only_a_completion_event_gets_a_report observe
+          # W5 notes fill the "next" list
+          wk report.rs '        .filter(|i| !matches!(i, Intent::Note { .. }))' \
+             '        .filter(|_| true) // knife' \
+             goals_that_cannot_be_used_merge_nothing_and_the_report_says_why decide
+          # W6 an AI order that is not a permutation of next is kept
+          wk report.rs '    if seen != (0..next_len).collect::<Vec<_>>() {' \
+             '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
+             an_ai_order_must_be_a_permutation_of_next observe
+          # W7 (a9136 item 5) without the pub use, drive's own tests no longer build: the old path is real.
+          # Keeps the private Read import snapshot.rs uses, so the error is the callers' unresolved GhRead (E0432).
+          f=crates/aib-drive/src/snapshot.rs
+          cp "$f" "$RUNNER_TEMP/snapshot.rs.orig"
+          python3 -I - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          old = "pub use aib_ghread::{GhRead, Read};"
+          assert s.count(old) == 1, "W7 anchor"
+          open(p, "w", encoding="utf-8").write(s.replace(old, "use aib_ghread::Read; // knife"))
+          PY
+          set +e
+          cargo test -p aib-drive --locked --test snapshot --no-run > "$RUNNER_TEMP/w7.log" 2>&1
+          rc=$?
+          set -e
+          cp "$RUNNER_TEMP/snapshot.rs.orig" "$f"
+          if [ "$rc" -ne 0 ] && grep -q 'E0432' "$RUNNER_TEMP/w7.log"; then
+            echo "KNIFE pub_use_keeps_old_paths: BITES rc=$rc"
+          else
+            echo "KNIFE pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w7.log"; exit 1
+          fi
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # 043dd 11-11 22:2x for 1ced7 aib-expect v0 (checked against the working tree on top of 0b8a0351, including its uncommitted Why codes).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings

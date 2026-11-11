@@ -1,19 +1,25 @@
 //! `aib-drive observe`: dry-run rounds (see `aib_drive::observe`). It never
 //! acts: there is no executor in this program.
 //!
+//! `--expect-project UID` (off unless given) wires aib-expect: each round
+//! also compares the project's goals with its evidence, the gaps weight
+//! decide, and a completion event (`--event ID` with `--once`, or the id
+//! written into `drive/event` with `--watch`) gets one report.
+//!
 //! Exit codes: 0 done; 2 usage; 3 a round had no snapshot (`--once`);
 //! 4 paused; 5 another observe holds the lock, or a state file failed.
 
 use aib_drive::decide::{Roles, Seat, Sha, Snapshot};
-use aib_drive::observe::{self, Paths, RealClock, Record, Refused, BASE};
+use aib_drive::observe::{self, Built, ExpectSide, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
 use aib_drive::source::{run_fixed, AibQueue};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const USAGE: &str = "usage: aib-drive observe --repo OWNER/NAME --pending DIR \
---captain SEAT --collector SEAT [--seats A,B,…] (--once | --watch [--interval SECS])";
+--captain SEAT --collector SEAT [--seats A,B,…] [--expect-project UID] \
+(--once [--event ID] | --watch [--interval SECS])";
 
 struct Args {
     repo: String,
@@ -23,6 +29,8 @@ struct Args {
     seats: Vec<Seat>,
     watch: bool,
     interval: Duration,
+    expect_project: Option<String>,
+    event: Option<String>,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -36,7 +44,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         match k.as_str() {
             "--once" => once = true,
             "--watch" => watch = true,
-            "--repo" | "--pending" | "--captain" | "--collector" | "--seats" | "--interval" => {
+            "--repo" | "--pending" | "--captain" | "--collector" | "--seats" | "--interval"
+            | "--expect-project" | "--event" => {
                 let v = it.next().ok_or_else(|| format!("{k} needs a value"))?;
                 if m.insert(k.clone(), v.clone()).is_some() {
                     return Err(format!("{k} given twice"));
@@ -69,6 +78,19 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     if !watch && interval != BASE {
         return Err("--interval goes with --watch".into());
     }
+    let expect_project = m.remove("--expect-project");
+    let event = m.remove("--event");
+    if let Some(e) = &event {
+        if watch {
+            return Err("--event goes with --once (--watch reads drive/event)".into());
+        }
+        if expect_project.is_none() {
+            return Err("--event needs --expect-project".into());
+        }
+        if !aib_drive::report::is_event(e) {
+            return Err(format!("--event {e:?} is not a completion event"));
+        }
+    }
     Ok(Args {
         repo,
         pending,
@@ -77,7 +99,46 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         seats,
         watch,
         interval,
+        expect_project,
+        event,
     })
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// aib-expect's side of one round, from the snapshot drive just read: the
+/// open PRs' heads come from it, only the PRs the evidence names besides
+/// those are read (at most 30, same reader). Goals or evidence that cannot be
+/// read ⇒ `unknown` with the code and an empty table, never an old pass.
+fn expect_side(
+    gh: &GhRead,
+    repo: &str,
+    root: &Path,
+    uid: &str,
+    s: &Snapshot,
+    now: u64,
+) -> ExpectSide {
+    use aib_expect as ex;
+    let known: BTreeMap<u64, String> = s.prs.iter().map(|p| (p.number, p.head.clone())).collect();
+    let (goals, evidence) = match (ex::load_goals(root, uid), ex::load_evidence(root, uid)) {
+        (Ok(g), Ok(ev)) => (Ok(g), ev),
+        (Err(e), ev) => (Err(e), ev.unwrap_or_default()),
+        (Ok(_), Err(e)) => (Err(e), ex::EvidenceLog::default()),
+    };
+    let heads = match &goals {
+        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence), &known),
+        Err(_) => ex::Snapshot::default(),
+    };
+    let r = ex::expect_report(goals.as_deref(), &evidence, &heads, now);
+    ExpectSide {
+        table: r.table.iter().map(ex::gap_json).collect(),
+        unknown: r.source_unknown,
+    }
 }
 
 fn main() {
@@ -110,7 +171,7 @@ fn main() {
         captain: a.captain.clone(),
         collector: a.collector.clone(),
     };
-    let mut round = |prev: &BTreeMap<u64, Sha>| -> Result<Snapshot, String> {
+    let mut round = |prev: &BTreeMap<u64, Sha>| -> Built {
         // the quota first: a round must not use up the token every seat shares.
         // The one call outside GhRead's repos/ list: fixed argv `api rate_limit`, a GET.
         let left = run_fixed(&gh.program, &observe::quota_args(), gh.timeout)
@@ -120,7 +181,7 @@ fn main() {
             })
             .and_then(|v| observe::quota_left(&v));
         observe::quota_gate(left, observe::QUOTA_FLOOR)?;
-        build(
+        let s = build(
             &gh,
             &Inputs {
                 repo: &a.repo,
@@ -130,7 +191,12 @@ fn main() {
                 queue: &queue,
                 seats: &a.seats,
             },
-        )
+        )?;
+        let side = a
+            .expect_project
+            .as_deref()
+            .map(|uid| expect_side(&gh, &a.repo, &root, uid, &s, now_secs()));
+        Ok((s, side))
     };
     let show = |r: &Record| {
         println!("{}", observe::summary(r));
@@ -141,7 +207,7 @@ fn main() {
     if a.watch {
         let mut clock = RealClock::new();
         let mut print = |r: &Record| show(r);
-        if let Err(e) = observe::watch(
+        if let Err(e) = observe::watch_with(
             &paths, &a.repo, a.interval, &mut clock, &mut round, &mut print, None,
         ) {
             eprintln!("aib-drive: {e}");
@@ -149,11 +215,8 @@ fn main() {
         }
         return;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    match observe::once(&paths, &a.repo, now, &mut round) {
+    let now = now_secs();
+    match observe::once_with(&paths, &a.repo, now, &mut round, a.event.as_deref()) {
         Ok(r) => {
             show(&r);
             std::process::exit(if r.unknown.is_some() { 3 } else { 0 });
