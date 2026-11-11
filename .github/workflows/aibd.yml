@@ -305,6 +305,9 @@ jobs:
           # F2 L1 (ebb36): another key's loader in the page reads as done
           ck fploader.rs '    if p.other_keys > 0 {' '    if p.other_keys > 99 { // knife' \
              a_loader_of_another_key_is_not_done
+          # F2 N2 (c477a): a firewall's 403 reads as the server refusing the origin
+          ck fploader.rs '        (403, _) if i.reason_origin => Some(not_done("origin_refused")),' '        (403, _) if i.reason_origin || true => Some(not_done("origin_refused")), // knife' \
+             a_403_from_something_in_front_is_unknown
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control

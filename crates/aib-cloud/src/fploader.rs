@@ -23,6 +23,17 @@
 //! twice or another key's, the server does not know the key, the server does not take the origin yet) or
 //! [`Probe::Unknown`] (could not ask, or an answer only a person can act on). A failed
 //! question is never read as "not done".
+//!
+//! What the caller must do for these answers to mean what they say (c477a F2 L1, N1):
+//! - read the home page with a query string that passes the page cache (a fresh random
+//!   value each time): the template caches pages, and a stale copy would keep answering
+//!   "loader missing" after the loader was written;
+//! - make the loader step **set** the site's loader (replace any loader there), never add
+//!   one: run again on a stale answer it must not leave two;
+//! - send the probe event the way a consenting visitor would: an ordinary browser's agent,
+//!   no `Sec-GPC`, consent not `none`. The server answers 204 for any of four causes
+//!   (statistics off for the account, consent none, GPC, a robot's agent), so a 204 is
+//!   only "the server said nothing", never a verdict.
 
 use crate::sitecreate::Probe;
 
@@ -62,6 +73,9 @@ pub struct Intake {
     pub status: u16,
     /// Whether a 400 says the reason is the event name (and nothing else).
     pub reason_event: bool,
+    /// Whether a 403 is the statistics server's own refusal of the origin
+    /// (`{"reason":"origin"}`), not a firewall in front of it (c477a F2 N2).
+    pub reason_origin: bool,
 }
 
 /// The verdict and the fixed word that says why (for the journal and our alert; never
@@ -134,9 +148,11 @@ fn intake(i: Asked<Intake>) -> Option<LoaderProbe> {
     match (i.status, i.reason_event) {
         (400, true) => None,
         // the origin is not registered for the key: asking for the site again registers it
-        (403, _) => Some(not_done("origin_refused")),
-        // statistics switched off for the account: a person decides
-        (204, _) => Some(unknown("tracking_off")),
+        (403, _) if i.reason_origin => Some(not_done("origin_refused")),
+        // a 403 without the server's own reason: something in front refused it
+        (403, _) => Some(unknown("intake_forbidden")),
+        // one of four causes (see the module notes): a person looks
+        (204, _) => Some(unknown("intake_204")),
         (404, _) => Some(unknown("intake_route_missing")),
         (429, _) => Some(unknown("rate_limited")),
         _ => Some(unknown("intake_odd")),
@@ -177,6 +193,7 @@ mod tests {
     const INTAKE: Intake = Intake {
         status: 400,
         reason_event: true,
+        reason_origin: false,
     };
 
     fn ok_but(p: Asked<Page>, s: Asked<Script>, i: Asked<Intake>) -> LoaderProbe {
@@ -271,17 +288,33 @@ mod tests {
                 Asked::Got(Intake {
                     status,
                     reason_event,
+                    reason_origin: status == 403,
                 }),
             )
         };
         // a 400 for another reason is not the proof
         assert_eq!(i(400, false), unknown("intake_odd"));
         assert_eq!(i(403, false), not_done("origin_refused"));
-        assert_eq!(i(204, false), unknown("tracking_off"));
+        assert_eq!(i(204, false), unknown("intake_204"));
         assert_eq!(i(404, false), unknown("intake_route_missing"));
         assert_eq!(i(429, false), unknown("rate_limited"));
         // a 2xx that stored the probe would be data written by a check: not accepted
         assert_eq!(i(200, false), unknown("intake_odd"));
+    }
+
+    // knife (h): only the statistics server's own refusal is "not done"
+    #[test]
+    fn a_403_from_something_in_front_is_unknown() {
+        let r = ok_but(
+            Asked::Got(PAGE),
+            Asked::Got(SCRIPT),
+            Asked::Got(Intake {
+                status: 403,
+                reason_event: false,
+                reason_origin: false,
+            }),
+        );
+        assert_eq!(r, unknown("intake_forbidden"));
     }
 
     // knife (g): another key's loader in the page is not this site's statistics
