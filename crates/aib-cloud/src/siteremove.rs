@@ -118,11 +118,12 @@ pub enum Next {
 }
 
 /// Whether a step may already be done before the steps ahead of it, without that being
-/// a sign that something went wrong: the DNS step is "done" from the start when the
-/// zone is not ours or the site never had a record of ours, and deleting a record loses
-/// nothing that cannot be put back.
+/// a sign that something went wrong. Both are "done" from the start for many sites, and
+/// neither loses anything that cannot be put back:
+/// * the shell way in: a site whose port was never forwarded has nothing to close;
+/// * the DNS step: the zone is not ours, or the site never had a record of ours.
 pub fn may_be_done_early(step: RemoveStep) -> bool {
-    step == RemoveStep::Dns
+    matches!(step, RemoveStep::Access | RemoveStep::Dns)
 }
 
 /// The next thing to do, from one probe per step in [`STEPS`] order.
@@ -757,7 +758,11 @@ mod tests {
             Next::Stop("steps_out_of_order", RemoveStep::Record)
         );
         for step in STEPS {
-            assert_eq!(may_be_done_early(step), step == RemoveStep::Dns, "{step:?}");
+            assert_eq!(
+                may_be_done_early(step),
+                step == RemoveStep::Access || step == RemoveStep::Dns,
+                "{step:?}"
+            );
         }
         // a record of ours still there is the next thing to do once the lists are done
         let mut p = probes(at);
@@ -933,5 +938,30 @@ mod tests {
         // no paid plugin at all
         assert_eq!(licences_probe(Some(&[])), Probe::Done);
         assert!(left_at_vendor(&[s("seo", Seat::Held)]).is_empty());
+    }
+
+    #[test]
+    fn a_site_whose_way_in_was_never_opened_does_not_stop_the_work() {
+        let at = STEPS.iter().position(|s| *s == RemoveStep::Access).unwrap();
+        // untouched site without a forwarded port: the entry is still first
+        let mut p = probes(0);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Unserve));
+        assert!(may_call_off_now(next(&p, false)));
+        // half way: the archive is made, the licences are next
+        let mut p = probes(2);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Licenses));
+        // past the licences the next one is the stop, not the access step
+        let mut p = probes(at);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Stop));
+        // the steps that destroy are still never early
+        let mut p = probes(1);
+        p[at + 2] = Probe::Done;
+        assert_eq!(
+            next(&p, false),
+            Next::Stop("steps_out_of_order", RemoveStep::Destroy)
+        );
     }
 }

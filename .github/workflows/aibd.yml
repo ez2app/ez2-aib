@@ -702,9 +702,13 @@ jobs:
              '        (DnsRights::NotOurs, _) => DnsProbe::Unknown, // knife' \
              the_dns_step_is_passed_over_only_when_the_zone_is_not_ours
           # removing a site, DNS: a step done from the start (zone not ours) reads as out of order
-          ck siteremove.rs '    step == RemoveStep::Dns' \
-             '    false // knife' \
+          ck siteremove.rs '    matches!(step, RemoveStep::Access | RemoveStep::Dns)' \
+             '    matches!(step, RemoveStep::Access) // knife' \
              a_dns_step_done_from_the_start_does_not_stop_the_work
+          # removing a site: a site whose port was never forwarded reads as out of order
+          ck siteremove.rs '    matches!(step, RemoveStep::Access | RemoveStep::Dns)' \
+             '    matches!(step, RemoveStep::Dns) // knife' \
+             a_site_whose_way_in_was_never_opened_does_not_stop_the_work
           # removing a site, DNS: the DNS step moved before the licences (may be called off, runs before the site is gone)
           ck siteremove.rs $'    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n    /// The address records made for the site are deleted from its DNS zone, when that\n    /// zone is one we manage. Nothing is lost for good: the zone is snapshotted first.\n    Dns,\n' \
              $'    Dns,\n    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n' \

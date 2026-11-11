@@ -397,9 +397,9 @@ mod tests {
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], false);
-        // steps out of order: nothing is archived and the way in is already closed
+        // steps out of order: nothing is archived and the firewall file is already gone
         let mut seen = untouched();
-        seen.live_rules = gone().live_rules;
+        seen.firewall_file = Some(false);
         let p = probes(
             &spec(),
             &seen,
@@ -410,6 +410,22 @@ mod tests {
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["stop"], "steps_out_of_order");
         assert_eq!(doc["may_call_off"], false);
+    }
+
+    #[test]
+    fn a_site_whose_port_was_never_forwarded_starts_at_the_entry() {
+        let mut seen = untouched();
+        seen.live_rules = gone().live_rules;
+        let p = probes(
+            &spec(),
+            &seen,
+            Some(Probe::NotDone),
+            Some(DnsProbe::NotDone),
+        );
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::NotDone));
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["next_step"], "unserve");
+        assert_eq!(doc["may_call_off"], true);
     }
 
     #[test]
