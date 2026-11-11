@@ -762,7 +762,10 @@ mod tests {
         assert_eq!(kept["why"], "abandoned");
         assert_eq!(kept["domain"], "gone.example.test");
         assert!(codes_given(&p).unwrap().iter().any(|c| c == "s-gone02"));
-        assert_eq!(progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap()["state"], "stopped");
+        assert_eq!(
+            progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap()["state"],
+            "stopped"
+        );
         // no ask: nothing to stop, nothing to tell
         stop_ask_abandoned(&p, "s-none01", NOW).unwrap();
         assert_eq!(ask_now(&p, "s-none01", NOW), Ok(None));
@@ -776,7 +779,10 @@ mod tests {
         let ask = json!({"site": "s-wait01", "domain": "wait.example.test", "state": "waiting", "asked_at": NOW});
         write_new_ask(&p.asked, "s-wait01", &ask).unwrap();
         assert_eq!(ask_now(&p, "s-wait01", NOW + 1), Ok(Some("opening")));
-        assert_eq!(ask_now(&p, "s-wait01", NOW + START_GRACE_S + 1), Ok(Some("stopped")));
+        assert_eq!(
+            ask_now(&p, "s-wait01", NOW + START_GRACE_S + 1),
+            Ok(Some("stopped"))
+        );
         fs::write(p.asked.join("s-bad001.json"), "{").unwrap();
         assert_eq!(ask_now(&p, "s-bad001", NOW), Err(()));
         let _ = fs::remove_dir_all(p.asked.parent().unwrap());

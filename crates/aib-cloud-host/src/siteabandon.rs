@@ -35,8 +35,8 @@ use aib_cloud::sitecreate::Probe;
 use serde_json::{json, Value};
 
 use crate::opstore;
-use crate::sitecreaterun::Places;
 use crate::sitecreatecmd::{target, write_record, HostPaths, Runner};
+use crate::sitecreaterun::Places;
 
 /// The command name in the operation journal.
 pub const COMMAND: &str = "site.abandon";
@@ -521,7 +521,15 @@ pub fn apply(
             recheck(domain, code, plan, &seen, &place.fingerprint).map(Some)
         },
         |op, input: Input| {
-            run_steps(&mut **runner.borrow_mut(), paths, asks, domain, code, op, input)
+            run_steps(
+                &mut **runner.borrow_mut(),
+                paths,
+                asks,
+                domain,
+                code,
+                op,
+                input,
+            )
         },
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
@@ -722,7 +730,14 @@ mod tests {
 
     fn look(pct: &mut Pct, paths: &HostPaths, root: &Path) -> Seen {
         fs::create_dir_all(root.join("ops")).unwrap();
-        see(pct, paths, &asks(root, paths), &root.join("ops"), DOMAIN, CODE)
+        see(
+            pct,
+            paths,
+            &asks(root, paths),
+            &root.join("ops"),
+            DOMAIN,
+            CODE,
+        )
     }
 
     fn sealed(pct: &mut Pct, paths: &HostPaths, root: &Path) -> Value {
@@ -789,7 +804,16 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        let done = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap();
+        let done = apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct,
+        )
+        .unwrap();
         assert!(pct.calls.iter().any(|c| c == "pct destroy 131 --purge 1"));
         assert!(!pct.there);
         assert!(!paths.firewall.join("131.fw").exists());
@@ -822,7 +846,16 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct,
+        )
+        .unwrap_err();
         assert!(err.contains("abandon_stopped: dns"), "{err}");
         let rec = opening(&paths).unwrap();
         assert_eq!(rec["abandon"]["done"], json!(["container", "firewall"]));
@@ -894,7 +927,16 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap();
+        apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct,
+        )
+        .unwrap();
         let ask: Value = serde_json::from_str(
             &fs::read_to_string(root.join("asked").join(format!("{CODE}.json"))).unwrap(),
         )
@@ -933,7 +975,16 @@ mod tests {
             env!("CARGO_PKG_VERSION"),
         )
         .unwrap();
-        assert!(apply(&place, &sealed_doc, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
+        assert!(apply(
+            &place,
+            &sealed_doc,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct
+        )
+        .is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
 
@@ -949,7 +1000,16 @@ mod tests {
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
         assert_eq!(plan["stop"], siteabandon::CT_OF_A_SITE);
-        assert!(apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
+        assert!(apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct
+        )
+        .is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
     }
@@ -1018,7 +1078,16 @@ mod tests {
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
         fs::remove_file(paths.firewall.join("131.fw")).unwrap();
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct,
+        )
+        .unwrap_err();
         assert!(err.contains("plan_changed"), "{err}");
         assert_eq!(pct.destroys(), 0);
         assert!(opening(&paths).is_some());
@@ -1047,7 +1116,16 @@ mod tests {
         let mut pct = Pct::new();
         pct.destroy_works = false;
         let plan = sealed(&mut pct, &paths, &root);
-        let err = apply(&place, &plan, DOMAIN, CODE, &paths, &asks(&root, &paths), &mut pct).unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            DOMAIN,
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct,
+        )
+        .unwrap_err();
         assert!(err.contains("abandon_stopped: container"), "{err}");
         // nothing after it ran: the firewall file and the record are where they were
         assert!(paths.firewall.join("131.fw").exists());
@@ -1087,8 +1165,26 @@ mod tests {
         let place = place(&root);
         let mut pct = Pct::new();
         let plan = sealed(&mut pct, &paths, &root);
-        assert!(apply(&place, &plan, DOMAIN, "s-other1", &paths, &asks(&root, &paths), &mut pct).is_err());
-        assert!(apply(&place, &plan, "else.example.com", CODE, &paths, &asks(&root, &paths), &mut pct).is_err());
+        assert!(apply(
+            &place,
+            &plan,
+            DOMAIN,
+            "s-other1",
+            &paths,
+            &asks(&root, &paths),
+            &mut pct
+        )
+        .is_err());
+        assert!(apply(
+            &place,
+            &plan,
+            "else.example.com",
+            CODE,
+            &paths,
+            &asks(&root, &paths),
+            &mut pct
+        )
+        .is_err());
         assert_eq!(pct.destroys(), 0);
         let _ = fs::remove_dir_all(&root);
     }
