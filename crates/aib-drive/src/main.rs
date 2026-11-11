@@ -9,12 +9,12 @@
 //! Exit codes: 0 done; 2 usage; 3 a round had no snapshot (`--once`);
 //! 4 paused; 5 another observe holds the lock, or a state file failed.
 
-use aib_drive::decide::{Roles, Seat, Sha, Snapshot};
-use aib_drive::observe::{self, Built, ExpectSide, Paths, RealClock, Record, Refused, BASE};
+use aib_drive::decide::{Roles, Seat, Sha};
+use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
 use aib_drive::source::{run_fixed, AibQueue};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const USAGE: &str = "usage: aib-drive observe --repo OWNER/NAME --pending DIR \
@@ -111,36 +111,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// aib-expect's side of one round, from the snapshot drive just read: the
-/// open PRs' heads come from it, only the PRs the evidence names besides
-/// those are read (at most 30, same reader). Goals or evidence that cannot be
-/// read ⇒ `unknown` with the code and an empty table, never an old pass.
-fn expect_side(
-    gh: &GhRead,
-    repo: &str,
-    root: &Path,
-    uid: &str,
-    s: &Snapshot,
-    now: u64,
-) -> ExpectSide {
-    use aib_expect as ex;
-    let known: BTreeMap<u64, String> = s.prs.iter().map(|p| (p.number, p.head.clone())).collect();
-    let (goals, evidence) = match (ex::load_goals(root, uid), ex::load_evidence(root, uid)) {
-        (Ok(g), Ok(ev)) => (Ok(g), ev),
-        (Err(e), ev) => (Err(e), ev.unwrap_or_default()),
-        (Ok(_), Err(e)) => (Err(e), ex::EvidenceLog::default()),
-    };
-    let heads = match &goals {
-        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence), &known),
-        Err(_) => ex::Snapshot::default(),
-    };
-    let r = ex::expect_report(goals.as_deref(), &evidence, &heads, now);
-    ExpectSide {
-        table: r.table.iter().map(ex::gap_json).collect(),
-        unknown: r.source_unknown,
-    }
-}
-
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let a = match parse(&argv) {
@@ -192,10 +162,16 @@ fn main() {
                 seats: &a.seats,
             },
         )?;
-        let side = a
-            .expect_project
-            .as_deref()
-            .map(|uid| expect_side(&gh, &a.repo, &root, uid, &s, now_secs()));
+        let side = a.expect_project.as_deref().map(|uid| {
+            observe::expect_side(
+                &gh,
+                &a.repo,
+                aib_expect::load_goals(&root, uid),
+                aib_expect::load_evidence(&root, uid),
+                &s,
+                now_secs(),
+            )
+        });
         Ok((s, side))
     };
     let show = |r: &Record| {

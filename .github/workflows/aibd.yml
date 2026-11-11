@@ -2181,6 +2181,10 @@ jobs:
           wk report.rs '    if seen != (0..next_len).collect::<Vec<_>>() {' \
              '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
              an_ai_order_must_be_a_permutation_of_next observe
+          # W8 (1ced7 wiring L1) the PRs to read are picked with another `now` than the comparison
+          wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
+             '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
+             one_now_for_the_prs_to_read_and_the_comparison observe
           # W7 (a9136 item 5) without the pub use, drive's own tests no longer build: the old path is real.
           # Keeps the private Read import snapshot.rs uses, so the error is the callers' unresolved GhRead (E0432).
           f=crates/aib-drive/src/snapshot.rs

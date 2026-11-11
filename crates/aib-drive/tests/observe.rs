@@ -398,3 +398,67 @@ fn an_ai_order_must_be_a_permutation_of_next() {
     assert!(ai_order(2, vec![0, 1, 2], "x").is_none());
     assert_eq!(ai_order(1, vec![0], "a\u{202e}b").unwrap().why, "a?b");
 }
+
+/// Counts GETs; every PR's head is [`H9`].
+struct CountGh(std::cell::RefCell<Vec<String>>);
+
+const H9: &str = "766fa8f663847a5ae78111f6005a1b4a8f41bd7a";
+
+impl aib_ghread::Read for CountGh {
+    fn get(&self, path: &str) -> Result<serde_json::Value, String> {
+        self.0.borrow_mut().push(path.to_owned());
+        Ok(serde_json::json!({ "head": { "sha": H9 } }))
+    }
+}
+
+#[test]
+fn one_now_for_the_prs_to_read_and_the_comparison() {
+    use aib_drive::observe::expect_side;
+    // 1ced7 wiring L1: a line right at the future limit is read and judged,
+    // one second past it is neither (both sides use the same `now`)
+    let now = 1_000_000;
+    let goal = aib_expect::Goal {
+        id: "A1".into(),
+        text: "t".into(),
+    };
+    let edge = now + aib_expect::FUTURE_SECS;
+    for (at, inside) in [(edge, true), (edge + 1, false)] {
+        let line = serde_json::json!({
+            "goal_id": "A1", "goal_sha": aib_expect::goal_sha("t"), "at": at, "seat": "1ced7",
+            "check_id": "c", "rc": 0, "summary": "s", "pr": 9, "head": H9
+        });
+        let ev = aib_expect::parse_evidence(&format!("{line}\n"));
+        let gh = CountGh(std::cell::RefCell::new(vec![]));
+        let side = expect_side(&gh, REPO, Ok(vec![goal.clone()]), Ok(ev), &snap(), now);
+        let row = &side.table[0];
+        if inside {
+            assert_eq!(*gh.0.borrow(), vec![format!("repos/{REPO}/pulls/9")]);
+            assert_eq!(row["state"], "pass", "{row}");
+            assert_eq!(row["pr"], 9);
+        } else {
+            assert!(
+                gh.0.borrow().is_empty(),
+                "a line past the limit names no PR to read"
+            );
+            assert_eq!(row["state"], "unverified", "{row}");
+        }
+    }
+}
+
+#[test]
+fn goals_or_evidence_that_cannot_be_read_give_an_unknown_side_and_no_reads() {
+    use aib_drive::observe::expect_side;
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goal = aib_expect::Goal {
+        id: "A1".into(),
+        text: "t".into(),
+    };
+    let bad = || aib_expect::GoalsError::Unreadable("x".into());
+    let a = expect_side(&gh, REPO, Err(bad()), Ok(Default::default()), &snap(), 1);
+    let b = expect_side(&gh, REPO, Ok(vec![goal]), Err(bad()), &snap(), 1);
+    for s in [a, b] {
+        assert!(s.table.is_empty());
+        assert_eq!(s.unknown.as_deref(), Some(bad().code()));
+    }
+    assert!(gh.0.borrow().is_empty());
+}

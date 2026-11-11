@@ -171,6 +171,38 @@ pub struct ExpectSide {
     pub unknown: Option<String>,
 }
 
+/// aib-expect's side of one round, from the snapshot drive just read. The
+/// open PRs' heads come from it; only the other PRs the deciding evidence
+/// names are read (at most 30, same reader). One `now` for both the PRs to
+/// read and the comparison, so a line near the future limit is judged the
+/// same way by both (1ced7 wiring L1). Goals or evidence that cannot be read
+/// ⇒ `unknown` with the code and an empty table, never an old pass.
+pub fn expect_side(
+    gh: &dyn aib_ghread::Read,
+    repo: &str,
+    goals: Result<Vec<aib_expect::Goal>, aib_expect::GoalsError>,
+    evidence: Result<aib_expect::EvidenceLog, aib_expect::GoalsError>,
+    s: &Snapshot,
+    now: u64,
+) -> ExpectSide {
+    use aib_expect as ex;
+    let known: BTreeMap<u64, String> = s.prs.iter().map(|p| (p.number, p.head.clone())).collect();
+    let (goals, evidence) = match (goals, evidence) {
+        (Ok(g), Ok(ev)) => (Ok(g), ev),
+        (Err(e), ev) => (Err(e), ev.unwrap_or_default()),
+        (Ok(_), Err(e)) => (Err(e), ex::EvidenceLog::default()),
+    };
+    let heads = match &goals {
+        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),
+        Err(_) => ex::Snapshot::default(),
+    };
+    let r = ex::expect_report(goals.as_deref(), &evidence, &heads, now);
+    ExpectSide {
+        table: r.table.iter().map(ex::gap_json).collect(),
+        unknown: r.source_unknown,
+    }
+}
+
 /// A snapshot and, when aib-expect is wired, its side; or why there is none.
 pub type Built = Result<(Snapshot, Option<ExpectSide>), String>;
 
