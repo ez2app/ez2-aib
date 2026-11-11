@@ -9,6 +9,11 @@ aib-cloud-host root-password apply <file>   # 忘了 root 密碼:Mac 上 aib sec
 aib-cloud-host probe run   <plan.json> --host <public ip> [--out report.json] [--external]
 aib-cloud-host probe merge <report.json> <report.json>… --out merged.json
 aib-cloud-host self-update <version>        # 從 GitHub release 換自己(cloud-host-v<version>,驗 SHA256SUMS + --version 才換)
+aib-cloud-host site verify [<code>] [--json]  # 被動檢查:宿主 H01–H10 / H12 / H13 + 每站 S00–S06;只讀;結束碼 0 綠 / 1 紅 / 3 不明 / 2 黃;紀錄夾讀不到、沒有紀錄、參數打錯也是 3(不是 2)
+aib-cloud-host edge domain preflight <網域> --ip <Edge 公網 IPv4>   # 上線前查 DNS:A 全指向我們、沒有 AAAA、CAA 不擋;結束碼 0 可上 / 1 還不行
+aib-cloud-host edge domain add|rm <站> <網域> --plan              # 只出計畫(只改該站那一行網域);不帶 --plan 拒絕
+aib-cloud-host site usage [--json]          # 每站真正用量(從宿主讀 cgroup,不進 CT)+ ARC 建議;只讀、不套用;以紀錄的 owner 合計客戶額度
+aib-cloud-host backup check [--json]        # 離站備份檢查(只列清單):B01 新鮮 / B02 每個 CT 都有 / B03 設定包 / B04 沒有未加密檔 / B05 大小合理;結束碼同 site verify
 aib-cloud-host --version                    # aib-cloud-host <version> <os>-<arch>
 ```
 
@@ -21,7 +26,7 @@ query to `<ip>:53`, ICMP one `ping -c 1 -W 2`. No shell strings anywhere. `plan_
 report of exactly that plan on that host.
 
 Replaced the Python runner `ez2-isolation-probe` (Andy 11-09: every new tool is Rust). That
-file was deleted on 11-09 after this binary re-ran the full EU02 matrix (sites 110 + 112) with
+file was deleted on 11-09 after this binary re-ran the full host A matrix (sites 110 + 112) with
 the same `plan_fnv` and cell-for-cell identical results; the Python canonical-JSON FNV is pinned
 by `aib-cloud` test `i9` so old receipts stay valid.
 

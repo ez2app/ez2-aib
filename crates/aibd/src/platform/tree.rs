@@ -408,7 +408,7 @@ fn session_coalition(root: Result<u64, SysError>) -> Option<u64> {
 /// The self-check of a private interface. A child starts in its parent's
 /// coalition, so a root read as different means the read is not to be
 /// trusted: no filter, now and for the rest of this aibd. A root that ended
-/// before it could be read (`Gone`; an instant program: Pro 13 11-09 13:35,
+/// before it could be read (`Gone`; an instant program: Mac B 11-09 13:35,
 /// `printenv` held its slot on `AddressBookSourceSync`) does not disprove
 /// it: aibd's own coalition is used. Any other error reading the root, or
 /// aibd's own unread (or 0) = no filter for that session.

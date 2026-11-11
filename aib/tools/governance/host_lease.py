@@ -17,7 +17,7 @@
     rid="batch-$$"
     python3 tools/governance/host_lease.py acquire --owner <席> --what <批名> --run-id "$rid" --pid $$ || exit
     trap 'python3 tools/governance/host_lease.py release --run-id "$rid"' EXIT
-  判 rc 時**別接管線**:`acquire … | tail -1 || exit` 的 rc 是 tail 的 0,拿不到也照跑(11-08 043dd 在 Mac mini
+  判 rc 時**別接管線**:`acquire … | tail -1 || exit` 的 rc 是 tail 的 0,拿不到也照跑(11-08 043dd 在 Mac C
   兩次這樣插進別席的租約);要接就先 `set -o pipefail`,或把輸出導到檔案再判 rc。
   等機器空:迴圈判 `status >/dev/null 2>&1` 的 rc(0 = 空),連續空一段時間再搶,別在推包兩輪之間插隊;
   發「機器用完了」的訊息前,先跑一次 status 確認真的空了。

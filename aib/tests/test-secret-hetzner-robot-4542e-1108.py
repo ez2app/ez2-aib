@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""Hetzner Robot webservice 帳密進金鑰櫃(11-08 @4542e,EU02 代管節點:aib 要能自己啟用 Rescue / 重置 / 失聯自救)。
+"""供應商後台 webservice 帳密進金鑰櫃(11-08 @4542e,代管節點:aib 要能自己啟用 Rescue / 重置 / 失聯自救)。
 
 H1 HETZNER_ROBOT_USER / HETZNER_ROBOT_PASS 落 hetzner-robot.env(不再 unknown_name / bad_name)
 H2 兩個名字都不是 remote-only、不是 SE-only:aib secret ask 走輸入框 → Touch ID → 寫本機金鑰櫃(落地是加密,明文不在檔),值不進輸出
