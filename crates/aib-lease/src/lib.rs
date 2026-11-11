@@ -18,6 +18,7 @@
 //! `heartbeat_s`, `heartbeat_epoch`, `lease_host`; `queue_leave` rows also carry `gone_why`.
 
 pub mod classify;
+pub mod hosts;
 pub mod run;
 
 use serde_json::{json, Map, Value};
