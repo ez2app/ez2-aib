@@ -4,7 +4,13 @@
 //! site's numbers, looks for a site that already serves the domain, reads who the first
 //! administrators are, the host lock and the unfinished operations, probes the nine steps
 //! of [`aib_cloud::sitecreate`] and prints what would be done next, sealed like every other
-//! plan. **Nothing is changed**: without `--plan` the command refuses.
+//! plan. `--plan` changes nothing.
+//!
+//! `--apply <plan.json>` (B1) is the first writing step: under the host lock it makes the
+//! plan again, which must hash the same as the plan given (same host, same version, same
+//! operation id), then runs the clone as that operation and nothing after it. The numbers
+//! are held by a record under [`CREATING`] from before the clone; a failed clone is undone.
+//! The later steps (limits and network onwards) are the next slices.
 //!
 //! Every judgement is the rule crate's: the order and the next step
 //! ([`sitecreate::next`]), what a failure leaves ([`sitecreate::after_failure`]), the
@@ -31,6 +37,10 @@ use crate::probe::run_capture;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
+/// The records of sites whose opening has begun and not ended: written before the clone,
+/// so the number and the address are taken even while the new container's configuration
+/// does not name the address yet (the network is set by the step after the clone).
+pub const CREATING: &str = "/var/lib/ez2-cloud/sites-creating";
 /// The configuration of every container and every virtual machine of this host.
 const LXC_CONFIGS: &str = "/etc/pve/lxc";
 const VM_CONFIGS: &str = "/etc/pve/qemu-server";
@@ -53,6 +63,9 @@ pub struct Seen {
     pub guest_ips: Option<Vec<u8>>,
     pub records: Option<Vec<Value>>,
     pub removed: Option<Vec<Value>>,
+    /// The records of sites being opened ([`CREATING`]): their numbers are taken from the
+    /// moment the clone is decided, before any guest configuration names the address.
+    pub creating: Option<Vec<Value>>,
     pub entry_config: Option<String>,
     /// The text of [`SITE_ADMINS`].
     pub admins: Option<String>,
@@ -73,13 +86,36 @@ pub fn domain_arg(name: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
-/// The target of opening the site at `domain` in the operation journal.
+/// The longest target the operation journal takes ([`aib_cloud::op::Entry::validate`]).
+const TARGET_MAX: usize = 80;
+
+/// The target of opening the site at `domain` in the operation journal: `domain:<domain>`
+/// while that fits the journal's 80 characters, else `domain:fnv64-<16 hex>` of the domain.
+///
+/// Why not the site code: it is made at creation, so two openings of the same domain would
+/// have two targets and the journal could not hold the second back while the first is
+/// unfinished. Why a hash and not the first 73 characters: two long domains sharing their
+/// start would always share a target. The hash is FNV-1a 64 (no hashing dependency in this
+/// crate, and `sha256sum` would make the plan fail where it is missing); a collision only
+/// holds back a second opening while the first is unfinished, it lets nothing through.
+/// A domain always has a dot, `fnv64-…` never does: the two forms cannot meet.
 pub fn target(domain: &str) -> String {
-    format!("domain:{domain}")
+    let plain = format!("domain:{domain}");
+    if plain.len() <= TARGET_MAX {
+        return plain;
+    }
+    format!("domain:fnv64-{}", fnv1a64_hex(domain.as_bytes()))
 }
 
-/// The longest target a journal line holds (`aib_cloud::op`).
-const TARGET_MAX: usize = 80;
+/// FNV-1a, 64 bits, as 16 lower hex digits.
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
 
 /// The numbers of `pct list` or `qm list`. The list is only passed here when the command
 /// ended with 0 ([`run_capture`] gives nothing otherwise). An empty output is no guests:
@@ -128,7 +164,8 @@ pub fn numbers(seen: &Seen) -> Result<(u32, u8), &'static str> {
     }
     let mut live_ips = seen.guest_ips.clone().ok_or("numbers_unknown")?;
     let records = seen.records.as_ref().ok_or("numbers_unknown")?;
-    for rec in records {
+    let creating = seen.creating.as_ref().ok_or("numbers_unknown")?;
+    for rec in records.iter().chain(creating) {
         let (ct, ip) = record_numbers(rec).ok_or("numbers_unknown")?;
         live_cts.push(ct);
         live_ips.push(ip);
@@ -259,11 +296,15 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
     let probes = probes(seen);
     let numbers = numbers(seen);
     let logins = admin_logins(seen.admins.as_deref());
-    let taken = taken_by(
-        domain,
-        seen.records.as_deref().unwrap_or_default(),
-        seen.entry_config.as_deref(),
-    );
+    // a site being opened serves nobody yet, but its domain is taken all the same
+    let live: Vec<Value> = seen
+        .records
+        .iter()
+        .chain(&seen.creating)
+        .flatten()
+        .cloned()
+        .collect();
+    let taken = taken_by(domain, &live, seen.entry_config.as_deref());
     let next = sitecreate::next(&probes, blank);
     // a stop of this command comes before the order's own answer
     let own_stop: Option<&'static str> = if taken.is_some() {
@@ -326,6 +367,319 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
 pub fn seal_plan(doc: &mut Value, op: &str, machine_id: &Path) -> Result<(), String> {
     let fingerprint = opstore::host_fingerprint(machine_id)?;
     crate::quarantinecmd::seal_with_op(doc, op, &fingerprint, env!("CARGO_PKG_VERSION"))
+}
+
+// ------------------------------------------------------------------ apply (B1: the clone)
+
+/// The command name in the operation journal.
+pub const COMMAND: &str = "site.create";
+/// What a code of a new site looks like: `s-` and six of these.
+const CODE_ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+/// How many random codes are tried before giving up (each is checked against every live,
+/// removed and opening site).
+const CODE_TRIES: usize = 8;
+
+/// Runs one host program. The host's is [`HostRunner`]; tests hand in a recorder.
+pub trait Runner {
+    /// The program's standard output, or why it did not succeed.
+    fn run(&mut self, argv: &[String]) -> Result<String, String>;
+}
+
+/// The real host: the program with a time limit, its whole process group killed on timeout.
+pub struct HostRunner;
+
+impl Runner for HostRunner {
+    fn run(&mut self, argv: &[String]) -> Result<String, String> {
+        let (program, args) = argv.split_first().ok_or("an empty command")?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        // a full clone copies the template's disk
+        let seconds = if args.first().is_some_and(|a| a == "clone") { 900 } else { 60 };
+        run_capture(&mut cmd, Duration::from_secs(seconds))
+    }
+}
+
+/// A code for a new site: `s-` and six letters or digits from four random bytes.
+pub fn code_from(random: [u8; 4]) -> String {
+    let mut n = u32::from_le_bytes(random);
+    let mut out = String::from("s-");
+    for _ in 0..6 {
+        out.push(char::from(CODE_ALPHABET[(n % 36) as usize]));
+        n /= 36;
+    }
+    out
+}
+
+/// The codes in use: live, removed and opening sites. A code is never given twice.
+fn codes_in_use(seen: &Seen) -> Vec<String> {
+    [&seen.records, &seen.removed, &seen.creating]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|r| r.get("site").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// A new code that passes [`aib_cloud::site::valid_code`] and is not in `taken`.
+pub fn new_code(
+    taken: &[String],
+    mut random: impl FnMut() -> Result<[u8; 4], String>,
+) -> Result<String, String> {
+    for _ in 0..CODE_TRIES {
+        let code = code_from(random()?);
+        if aib_cloud::site::valid_code(&code) && !taken.contains(&code) {
+            return Ok(code);
+        }
+    }
+    Err("code_unavailable: no free site code after several tries".to_owned())
+}
+
+/// What the plan given to `--apply` says, checked before anything is read.
+pub struct Given {
+    pub op: String,
+    pub sha: String,
+    pub blank: bool,
+    /// The host lock as the plan saw it. Under the apply the lock is this operation's own,
+    /// so the lock is put back as the plan had it before the hash is recomputed; the lock
+    /// stops nothing in the plan (it is only shown), the apply takes it for real.
+    pub lock: Value,
+}
+
+/// Read the plan given to `--apply` for `domain`.
+pub fn given(plan: &Value, domain: &str) -> Result<Given, String> {
+    if plan.get("plan").and_then(Value::as_str) != Some("site-create") {
+        return Err("not a site-create plan".to_owned());
+    }
+    if plan.get("domain").and_then(Value::as_str) != Some(domain) {
+        return Err(format!("the plan is for another domain than {domain}"));
+    }
+    let text = |k: &str| {
+        plan.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("the plan has no {k}"))
+    };
+    Ok(Given {
+        op: text("op")?,
+        sha: text("plan_sha256")?,
+        blank: plan
+            .get("blank")
+            .and_then(Value::as_bool)
+            .ok_or("the plan has no blank")?,
+        lock: plan.get("lock").cloned().ok_or("the plan has no lock")?,
+    })
+}
+
+/// What the prepare hands the clone.
+pub struct CloneInput {
+    pub code: String,
+    pub ct: u32,
+    pub ip: u8,
+    pub blank: bool,
+}
+
+/// The plan as this host makes it now, under the lock, checked against the plan given:
+/// the same hash, and its next step is the clone. Returns the plan as journaled (unsealed,
+/// with its op) and what the clone needs.
+pub fn recheck(
+    domain: &str,
+    g: &Given,
+    seen: &Seen,
+    fingerprint: &str,
+    random: impl FnMut() -> Result<[u8; 4], String>,
+) -> Result<(Value, CloneInput), String> {
+    let mut doc = plan_doc(domain, g.blank, seen);
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("lock".to_owned(), g.lock.clone());
+    }
+    crate::quarantinecmd::seal_with_op(&mut doc, &g.op, fingerprint, env!("CARGO_PKG_VERSION"))?;
+    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) {
+        return Err(
+            "plan_changed: this host is not as the plan saw it (or the plan was edited); make a new plan"
+                .to_owned(),
+        );
+    }
+    if doc["next"] != "run" || doc["next_step"] != "clone" {
+        return Err(format!(
+            "this apply only clones; the plan says {} {}",
+            doc["next"], doc["next_step"]
+        ));
+    }
+    let ct = doc["ct"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or("the plan has no container number")?;
+    let ip = doc["ip"]
+        .as_str()
+        .and_then(|a| a.strip_prefix(NET))
+        .and_then(|o| o.parse().ok())
+        .ok_or("the plan has no address")?;
+    let code = new_code(&codes_in_use(seen), random)?;
+    Ok((
+        opstore::unsealed(&doc),
+        CloneInput {
+            code,
+            ct,
+            ip,
+            blank: g.blank,
+        },
+    ))
+}
+
+/// Whether the container `ct` exists: `Some(false)` only when `pct status` says its
+/// configuration does not exist; any other failure is "could not tell".
+fn ct_exists(runner: &mut impl Runner, ct: u32) -> Option<bool> {
+    match runner.run(&argv(&["pct", "status", &ct.to_string()])) {
+        Ok(_) => Some(true),
+        Err(e) if e.contains("does not exist") => Some(false),
+        Err(_) => None,
+    }
+}
+
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// Write `doc` to `dir/<code>.json` whole: a temporary file, synced, then renamed.
+fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(format!("{code}.json"));
+    let tmp = dir.join(format!(".{code}.json.tmp"));
+    let text = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
+    fs::write(&tmp, text + "\n")
+        .and_then(|()| fs::File::open(&tmp)?.sync_all())
+        .and_then(|()| fs::rename(&tmp, &path))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The clone, the first of the nine steps (B1). In this order: the number must still be
+/// free in both guest lists (a number taken by something else is not ours: nothing is made
+/// and nothing removed); the opening's record is written, so the number and the address
+/// stay taken whatever happens next; `pct clone`; the container must then answer
+/// `pct status`. A failure after the record is undone ([`sitecreate::after_failure`] of
+/// the clone is `Undo`): the container is destroyed only when it exists — this opening saw
+/// the number free under the lock — and must then be gone; the record is removed last.
+/// An undo that could not finish keeps the record and says so: a person looks.
+pub fn clone_step(
+    runner: &mut impl Runner,
+    creating: &Path,
+    domain: &str,
+    op: &str,
+    input: &CloneInput,
+) -> Result<Value, String> {
+    let ct = input.ct;
+    for list in ["pct", "qm"] {
+        let ids = runner
+            .run(&argv(&[list, "list"]))
+            .ok()
+            .as_deref()
+            .and_then(guest_ids)
+            .ok_or("numbers_unknown: a guest list could not be read; nothing was made")?;
+        if ids.contains(&ct) {
+            return Err(format!(
+                "number_taken: guest {ct} exists; nothing was made, nothing removed"
+            ));
+        }
+    }
+    let spec = aib_cloud::site::SiteSpec::new(
+        &input.code,
+        ct,
+        input.ip,
+        &[domain],
+        !input.blank,
+        "zh_TW",
+        aib_cloud::site::Limits::START,
+    )
+    .map_err(|e| format!("{e:?}"))?;
+    let record = json!({
+        "site": input.code,
+        "ct": ct,
+        "ip": format!("{NET}{}", input.ip),
+        "hosts": domain,
+        "blank": input.blank,
+        "op": op,
+        "step": CreateStep::Clone.as_str(),
+    });
+    write_record(creating, &input.code, &record)?;
+    let clone = aib_cloud::site::plan(&spec)
+        .into_iter()
+        .find(|s| s.id == "clone")
+        .ok_or("the provisioning plan has no clone")?;
+    let failure = match runner.run(&clone.argv) {
+        Ok(_) => match ct_exists(runner, ct) {
+            Some(true) => return Ok(record),
+            _ => format!("clone_failed: CT {ct} does not answer after the clone"),
+        },
+        Err(e) => format!("clone_failed: {e}"),
+    };
+    Err(undo_clone(runner, creating, &input.code, ct, &failure))
+}
+
+/// Undo a failed clone; the answer is the whole error.
+fn undo_clone(
+    runner: &mut impl Runner,
+    creating: &Path,
+    code: &str,
+    ct: u32,
+    failure: &str,
+) -> String {
+    let record = creating.join(format!("{code}.json"));
+    let drop_record = || fs::remove_file(&record).map_err(|e| format!("{}: {e}", record.display()));
+    match ct_exists(runner, ct) {
+        Some(false) => match drop_record() {
+            Ok(()) => format!("{failure}; undone: nothing was made"),
+            Err(e) => format!("{failure}; nothing was made, but the opening record stays: {e}"),
+        },
+        None => format!(
+            "{failure}; undo stopped: whether CT {ct} exists could not be told, it and {} are left for a person",
+            record.display()
+        ),
+        Some(true) => {
+            let destroyed = runner.run(&argv(&["pct", "destroy", &ct.to_string(), "--purge", "1"]));
+            match (destroyed, ct_exists(runner, ct)) {
+                (Ok(_), Some(false)) => match drop_record() {
+                    Ok(()) => format!("{failure}; undone: CT {ct} destroyed"),
+                    Err(e) => format!("{failure}; CT {ct} destroyed, but the opening record stays: {e}"),
+                },
+                (Err(e), _) => format!(
+                    "{failure}; undo failed: pct destroy {ct}: {e}; CT {ct} and {} are left for a person",
+                    record.display()
+                ),
+                (Ok(_), _) => format!(
+                    "{failure}; undo failed: CT {ct} still answers after pct destroy; it and {} are left for a person",
+                    record.display()
+                ),
+            }
+        }
+    }
+}
+
+/// `--apply`: the plan given is recomputed under the host lock and must hash the same,
+/// then the clone runs as operation `op` of the plan. Separate from [`cmd`] so it runs
+/// against a scratch place, a made-up host and a recording runner.
+pub fn apply(
+    place: &opstore::OpPlace,
+    plan: &Value,
+    domain: &str,
+    creating: &Path,
+    see: impl FnOnce() -> Seen,
+    random: impl FnMut() -> Result<[u8; 4], String>,
+    runner: &mut impl Runner,
+) -> Result<Value, String> {
+    let g = given(plan, domain)?;
+    let done = opstore::run_op_prepared_as(
+        place,
+        &g.op,
+        COMMAND,
+        &target(domain),
+        opstore::BY_LOCAL_ROOT,
+        || {
+            let seen = see();
+            recheck(domain, &g, &seen, &place.fingerprint, random).map(Some)
+        },
+        |op, input: CloneInput| clone_step(runner, creating, domain, op, &input),
+    )?;
+    done.ok_or_else(|| "nothing to do".to_owned())
 }
 
 fn capture(program: &str, args: &[&str], seconds: u64) -> Option<String> {
@@ -393,6 +747,7 @@ fn see(domain: &str, records: &str) -> Seen {
         guest_ips: read_guest_ips(&[Path::new(LXC_CONFIGS), Path::new(VM_CONFIGS)]),
         records: read_records(Path::new(records)),
         removed: read_records(Path::new(REMOVED_RECORDS)),
+        creating: read_records(Path::new(CREATING)),
         entry_config: crate::probe::edge_caddyfile().ok(),
         admins: fs::read_to_string(SITE_ADMINS).ok(),
         lock: lock_state(Path::new(opstore::LOCK_FILE), proc_root),
@@ -409,20 +764,31 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut records = RECORDS.to_owned();
     let mut plan_only = false;
     let mut blank = false;
+    let mut apply_file: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--plan" => plan_only = true,
             "--blank" => blank = true,
+            "--apply" => apply_file = Some(it.next().ok_or("--apply needs a plan file")?.clone()),
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    if !plan_only {
-        return Err(
-            "only --plan is available: opening a site needs the operation journal, the host lock and an approval, which are not wired to this command yet"
-                .to_owned(),
-        );
+    match (plan_only, apply_file) {
+        (true, None) => {}
+        (false, Some(file)) => {
+            if blank {
+                return Err("--blank belongs to --plan: the plan given to --apply says it".to_owned());
+            }
+            return apply_cmd(&domain, &file, &records);
+        }
+        (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
+        (false, None) => {
+            return Err(
+                "needs --plan, or --apply <plan.json> with a plan this command printed".to_owned(),
+            )
+        }
     }
     let seen = see(&domain, &records);
     let mut doc = plan_doc(&domain, blank, &seen);
@@ -431,6 +797,34 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+    );
+    Ok(0)
+}
+
+/// `--apply <file>` on this host. Writing: run only as a reviewed, approved operation
+/// (see [`opstore::BY_LOCAL_ROOT`]: until the remote CLI's one-time approvals exist, a
+/// write on the host goes through a signed script a person approved).
+fn apply_cmd(domain: &str, file: &str, records: &str) -> Result<u8, String> {
+    let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
+    let place = opstore::OpPlace::host()?;
+    let record = apply(
+        &place,
+        &plan,
+        domain,
+        Path::new(CREATING),
+        || see(domain, records),
+        opstore::random4,
+        &mut HostRunner,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "applied": "clone",
+            "record": record,
+            "next_step": CreateStep::Limits.as_str(),
+        }))
+        .map_err(|e| e.to_string())?
     );
     Ok(0)
 }
@@ -457,6 +851,7 @@ mod tests {
             guest_ips: Some(vec![2, 12, 40]),
             records: Some(vec![rec("site2", 112, 12, "shop.example.test")]),
             removed: Some(vec![rec("site3", 125, 25, "old.example.test")]),
+            creating: Some(Vec::new()),
             entry_config: Some("# site:site2\nshop.example.test {\n}\n".to_owned()),
             admins: Some(ADMINS.to_owned()),
             lock: json!({ "state": "free" }),
@@ -772,9 +1167,306 @@ mod tests {
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert!(cmd(&args(&["new.example.test"]))
             .unwrap_err()
-            .contains("only --plan"));
+            .contains("needs --plan"));
         assert!(cmd(&args(&["New.example.test", "--plan"])).is_err());
         assert!(cmd(&args(&["--plan"])).is_err());
         assert!(cmd(&args(&["new.example.test", "--plan", "--force"])).is_err());
+    }
+
+    // ------------------------------------------------------------------ apply (B1)
+
+    const OP: &str = "20261111T120000Z-ab12cd34";
+
+    /// A scratch operation place: its own lock, boot id and a `/proc` that knows this test.
+    fn place(name: &str) -> opstore::OpPlace {
+        let d = scratch(name);
+        fs::write(d.join("boot_id"), "0f0e0d0c-0b0a-4908-8706-050403020100\n").unwrap();
+        let me = d.join("proc").join(std::process::id().to_string());
+        fs::create_dir_all(&me).unwrap();
+        let filler = (3..22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+        fs::write(
+            me.join("stat"),
+            format!("{} (aib-cloud-host) {filler} 4242 0 0\n", std::process::id()),
+        )
+        .unwrap();
+        fs::create_dir_all(d.join("ops")).unwrap();
+        opstore::OpPlace {
+            ops_dir: d.join("ops"),
+            lock: opstore::LockPaths {
+                lock: d.join("host.lock"),
+                proc_root: d.join("proc"),
+                boot_id: d.join("boot_id"),
+            },
+            fingerprint: "f".repeat(64),
+        }
+    }
+
+    /// The plan `--plan` would print on `seen`, sealed for `place`.
+    fn sealed(place: &opstore::OpPlace, domain: &str, seen: &Seen) -> Value {
+        let mut doc = plan_doc(domain, false, seen);
+        crate::quarantinecmd::seal_with_op(&mut doc, OP, &place.fingerprint, env!("CARGO_PKG_VERSION"))
+            .unwrap();
+        doc
+    }
+
+    /// A host that answers from a script and remembers every command.
+    struct Fake<F: FnMut(&[String]) -> Result<String, String>> {
+        calls: Vec<String>,
+        answer: F,
+    }
+
+    impl<F: FnMut(&[String]) -> Result<String, String>> Runner for Fake<F> {
+        fn run(&mut self, argv: &[String]) -> Result<String, String> {
+            self.calls.push(argv.join(" "));
+            (self.answer)(argv)
+        }
+    }
+
+    fn fake<F: FnMut(&[String]) -> Result<String, String>>(answer: F) -> Fake<F> {
+        Fake {
+            calls: Vec::new(),
+            answer,
+        }
+    }
+
+    const GONE: &str = "Configuration file 'nodes/x/lxc/126.conf' does not exist";
+
+    /// The usual host: both lists read and without the new number, the clone works and
+    /// the new container answers.
+    fn healthy(argv: &[String]) -> Result<String, String> {
+        match argv[1].as_str() {
+            "list" if argv[0] == "pct" => Ok(PCT.to_owned()),
+            "list" => Ok(QM.to_owned()),
+            _ => Ok("status: stopped\n".to_owned()),
+        }
+    }
+
+    fn states(place: &opstore::OpPlace) -> Vec<State> {
+        let path = opstore::journal_path(&place.ops_dir, OP).unwrap();
+        opstore::read_journal(&path).unwrap().0.iter().map(|e| e.state).collect()
+    }
+
+    fn random_from(seed: u8) -> impl FnMut() -> Result<[u8; 4], String> {
+        let mut n = seed;
+        move || {
+            n = n.wrapping_add(1);
+            Ok([n, 7, 9, 11])
+        }
+    }
+
+    #[test]
+    fn a_long_domain_gets_a_hashed_target_that_fits_the_journal() {
+        assert_eq!(target("new.example.test"), "domain:new.example.test");
+        let long = format!("{}.example.test", "a".repeat(70));
+        let other = format!("{}.example.test", "b".repeat(70));
+        let t = target(&long);
+        assert!(t.starts_with("domain:fnv64-") && t.len() <= TARGET_MAX, "{t}");
+        assert_eq!(t, target(&long));
+        assert_ne!(t, target(&other));
+        // the journal takes it
+        let e = Entry {
+            op: OP.to_owned(),
+            seq: 1,
+            at: 1,
+            state: State::Planned,
+            command: COMMAND.to_owned(),
+            target: t,
+            plan_sha256: "a".repeat(64),
+            code: "ok".to_owned(),
+            approval: String::new(),
+        };
+        assert!(e.validate().is_ok());
+        // exactly at the edge the plain form is kept
+        let edge = format!("{}.test", "c".repeat(TARGET_MAX - "domain:".len() - 5));
+        assert_eq!(target(&edge), format!("domain:{edge}"));
+    }
+
+    #[test]
+    fn a_code_is_new_and_valid() {
+        let c = code_from([1, 2, 3, 4]);
+        assert!(c.starts_with("s-") && c.len() == 8 && aib_cloud::site::valid_code(&c));
+        let taken = vec![code_from([1, 7, 9, 11])];
+        let mut tries = 0;
+        let code = new_code(&taken, || {
+            tries += 1;
+            Ok([tries, 7, 9, 11])
+        })
+        .unwrap();
+        assert_ne!(code, taken[0]);
+        assert!(new_code(&taken, || Ok([1, 7, 9, 11])).unwrap_err().starts_with("code_unavailable"));
+    }
+
+    /// A site being opened holds its numbers and its domain.
+    #[test]
+    fn an_opening_holds_its_numbers_and_its_domain() {
+        let free = plan_doc("new.example.test", false, &host());
+        let seen = Seen {
+            creating: Some(vec![rec("s-abc123", 126, 26, "new.example.test")]),
+            ..host()
+        };
+        let doc = plan_doc("other.example.test", false, &seen);
+        assert_ne!(doc["ct"], free["ct"]);
+        assert_ne!(doc["ip"], free["ip"]);
+        let doc = plan_doc("new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "domain_taken");
+        assert_eq!(doc["taken_by"], "s-abc123");
+        let unread = Seen {
+            creating: None,
+            ..host()
+        };
+        assert_eq!(plan_doc("other.example.test", false, &unread)["stop"], "numbers_unknown");
+    }
+
+    #[test]
+    fn an_approved_plan_clones_once() {
+        let place = place("apply");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let ct = plan["ct"].as_u64().unwrap();
+        let mut runner = fake(healthy);
+        let rec = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap();
+        assert_eq!(rec["ct"], ct);
+        assert_eq!(rec["ip"], plan["ip"]);
+        assert_eq!(rec["op"], OP);
+        let code = rec["site"].as_str().unwrap().to_owned();
+        assert_eq!(
+            runner.calls,
+            [
+                "pct list".to_owned(),
+                "qm list".to_owned(),
+                format!("pct clone 900 {ct} --hostname {code} --full 1"),
+                format!("pct status {ct}"),
+            ]
+        );
+        let on_disk: Value =
+            serde_json::from_str(&fs::read_to_string(creating.join(format!("{code}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(on_disk, rec);
+        assert_eq!(
+            states(&place),
+            [State::Planned, State::Approved, State::Running, State::Verified]
+        );
+        // the journal's plan hash is the plan's
+        let path = opstore::journal_path(&place.ops_dir, OP).unwrap();
+        let first = &opstore::read_journal(&path).unwrap().0[0];
+        assert_eq!(first.plan_sha256, plan["plan_sha256"].as_str().unwrap());
+        assert_eq!(first.target, "domain:new.example.test");
+        // the same plan again: refused, nothing run
+        let mut again = fake(healthy);
+        assert!(apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut again).is_err());
+        assert!(again.calls.is_empty());
+        assert!(!place.lock.lock.exists(), "the lock is given back");
+    }
+
+    #[test]
+    fn a_host_that_changed_refuses_the_plan() {
+        let place = place("changed");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let later = || Seen {
+            records: Some(vec![
+                rec("site2", 112, 12, "shop.example.test"),
+                rec("site9", 140, 41, "late.example.test"),
+            ]),
+            ..host()
+        };
+        let mut runner = fake(healthy);
+        let err = apply(&place, &plan, "new.example.test", &creating, later, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.starts_with("plan_changed"), "{err}");
+        assert!(runner.calls.is_empty());
+        assert!(!opstore::journal_path(&place.ops_dir, OP).unwrap().exists());
+        // an edited plan is refused the same way
+        let mut edited = plan.clone();
+        edited["ct"] = json!(150);
+        let err = apply(&place, &edited, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.starts_with("plan_changed"), "{err}");
+        // a plan for another domain is not this one's
+        assert!(apply(&place, &plan, "else.example.test", &creating, host, random_from(0), &mut runner).is_err());
+        assert!(runner.calls.is_empty());
+    }
+
+    #[test]
+    fn a_number_taken_since_makes_and_removes_nothing() {
+        let place = place("taken");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let ct = plan["ct"].as_u64().unwrap();
+        let mut runner = fake(|argv: &[String]| match (argv[0].as_str(), argv[1].as_str()) {
+            ("pct", "list") => Ok(format!("{PCT}{ct}        stopped                 intruder\n")),
+            ("qm", "list") => Ok(QM.to_owned()),
+            _ => Ok(String::new()),
+        });
+        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.starts_with("number_taken"), "{err}");
+        assert_eq!(runner.calls, ["pct list"]);
+        assert!(!creating.exists() || fs::read_dir(&creating).unwrap().next().is_none());
+        assert_eq!(states(&place).last(), Some(&State::Failed));
+    }
+
+    #[test]
+    fn a_failed_clone_is_undone() {
+        let place = place("undo");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let ct = plan["ct"].as_u64().unwrap();
+        // half a clone: it fails, the container answers, is destroyed, then is gone
+        let mut destroyed = false;
+        let mut runner = fake(move |argv: &[String]| match argv[1].as_str() {
+            "list" if argv[0] == "pct" => Ok(PCT.to_owned()),
+            "list" => Ok(QM.to_owned()),
+            "clone" => Err("pct clone: storage full".to_owned()),
+            "destroy" => {
+                destroyed = true;
+                Ok(String::new())
+            }
+            _ if destroyed => Err(GONE.to_owned()),
+            _ => Ok("status: stopped\n".to_owned()),
+        });
+        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.contains(&format!("undone: CT {ct} destroyed")), "{err}");
+        assert!(runner.calls.contains(&format!("pct destroy {ct} --purge 1")));
+        assert!(fs::read_dir(&creating).unwrap().next().is_none(), "the record is removed");
+        assert_eq!(states(&place).last(), Some(&State::Failed));
+    }
+
+    #[test]
+    fn an_undo_that_cannot_tell_leaves_everything_for_a_person() {
+        let place = place("unknown");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let mut runner = fake(|argv: &[String]| match argv[1].as_str() {
+            "list" if argv[0] == "pct" => Ok(PCT.to_owned()),
+            "list" => Ok(QM.to_owned()),
+            "clone" => Err("pct clone: timed out".to_owned()),
+            _ => Err("pct status: timed out".to_owned()),
+        });
+        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.contains("left for a person"), "{err}");
+        assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
+        assert_eq!(fs::read_dir(&creating).unwrap().count(), 1, "the record stays");
+    }
+
+    #[test]
+    fn a_clone_that_made_nothing_only_drops_the_record() {
+        let place = place("nothing");
+        let creating = place.ops_dir.with_file_name("creating");
+        let plan = sealed(&place, "new.example.test", &host());
+        let mut runner = fake(|argv: &[String]| match argv[1].as_str() {
+            "list" if argv[0] == "pct" => Ok(PCT.to_owned()),
+            "list" => Ok(QM.to_owned()),
+            "clone" => Err("pct clone: template locked".to_owned()),
+            _ => Err(GONE.to_owned()),
+        });
+        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
+            .unwrap_err();
+        assert!(err.contains("undone: nothing was made"), "{err}");
+        assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
+        assert!(fs::read_dir(&creating).unwrap().next().is_none());
     }
 }
