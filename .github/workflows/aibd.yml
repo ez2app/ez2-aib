@@ -1355,6 +1355,13 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-static.sh
+      # ErrorCode::ALL (a63ab 11-10): E1 / E2 are build-time knives (knife-build.py: the
+      # build must stop on that const assert's own panic), E0 is their negative arm,
+      # E3 / E4 turn the contract-order test red.
+      - name: ErrorCode knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-errorcode.sh
       # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
