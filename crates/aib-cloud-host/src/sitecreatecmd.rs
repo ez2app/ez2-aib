@@ -22,8 +22,9 @@
 //! reviewed installer, the site software's scheduler on a timer, keys and salts anew, the
 //! address and title, the first administrators with passwords kept on the host only.
 //! `--continue` runs up to the identity; the licences and after are the next slices.
-//! The identity also puts the one-time login plugin in place, and an opened site answers
-//! with a link that logs its first administrator straight in ([`crate::loginlink`]).
+//! The identity also puts the one-time login plugin in place, and an opened site's answer
+//! names `site login-link` for the caller to run next ([`crate::loginlink`]); it never
+//! carries the link.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -1498,23 +1499,20 @@ fn apply_cmd(
 /// number is used again, but `site verify` may report a `.fw` without a container as a
 /// leftover (c477a B2 N3; whether destroy removes it is a host test).
 ///
-/// An opened site answers with its one-time login link too (`login_link`, Andy 11-11:
-/// a direct login, not a password reset): issued for the first administrator by the same
-/// operation as `site login-link` ([`crate::loginlink::issue_op`]), after the site is
-/// open, so its ten minutes start then. The link is in this answer only, never in the
-/// record; a link that could not be issued is `login_link_error` and the site stays
-/// open (`site login-link <domain>` issues another). The caller keeps standard output
-/// out of its logs.
+/// An opened site's answer names the next command for its one-time login link
+/// (`login_link_next`, Andy 11-11: a direct login, not a password reset): the caller runs
+/// `site login-link <domain> --login <first administrator>` itself, whose standard output
+/// is the link alone. The link is never in this answer, which callers keep as receipts
+/// (ebb36 L1, f1fae 11-11).
 ///
 /// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
-    let paths = HostPaths::host();
     let done = continue_apply(
         &place,
         domain,
         code,
-        &paths,
+        &HostPaths::host(),
         &mut HostRunner,
         CreateStep::Health,
     )?;
@@ -1525,15 +1523,21 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         Some(record) => {
             let open =
                 record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
-            let link = open.then(|| opened_link(&place, domain, &record, &paths));
+            let next = if open {
+                link_login(&record)
+                    .ok()
+                    .map(|login| login_link_next(domain, &login))
+            } else {
+                None
+            };
             json!({
                 "applied": record.get("step"),
                 "record": record,
                 "open": open,
                 // from the record: what B3 left for later and the licences not done
                 "pending": crate::sitelive::pending_of(&record),
-                "login_link": link.as_ref().and_then(|l| l.as_ref().ok()),
-                "login_link_error": link.as_ref().and_then(|l| l.as_ref().err()),
+                // the command, never the link: this answer is kept as a receipt
+                "login_link_next": next,
             })
         }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
@@ -1556,14 +1560,9 @@ pub fn link_login(record: &Value) -> Result<String, String> {
         .ok_or_else(|| "login_unknown: the record names no administrator".to_owned())
 }
 
-fn opened_link(
-    place: &opstore::OpPlace,
-    domain: &str,
-    record: &Value,
-    paths: &HostPaths,
-) -> Result<String, String> {
-    let login = link_login(record)?;
-    crate::loginlink::issue_op(place, domain, &login, paths, &mut HostRunner)
+/// The command an opened site's caller runs next for the one-time login link.
+pub fn login_link_next(domain: &str, login: &str) -> String {
+    format!("aib-cloud-host site login-link {domain} --login {login}")
 }
 
 #[cfg(test)]

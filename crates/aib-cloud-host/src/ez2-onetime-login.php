@@ -8,7 +8,7 @@ add_action('init', function () {
     $key = 'ez2_otl_' . hash('sha256', $t);
     $uid = get_transient($key);
     if ($uid === false) { return; }
-    delete_transient($key);
+    if (!delete_transient($key)) { return; }   // one use is kept by the database: only the request that deleted the key goes on (c477a N1)
     $u = get_user_by('id', (int) $uid);
     if (!$u || !user_can($u, 'manage_options')) { return; }
     nocache_headers();

@@ -22,7 +22,7 @@
 //! administrator is removed. The site's notice address is the customer's when the opening
 //! record carries one, else the first administrator's (the template's is ours). The
 //! must-load plugin of the one-time login is put in place and read back
-//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued after the health step.
+//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
 //!
 //! The installer's own output goes to a log in the container and only its exit code and
 //! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
@@ -536,7 +536,7 @@ pub fn identity_step(
         return Err("identity_not_set: admin_email reads otherwise".to_owned());
     }
     // the one-time login (Andy 11-11 23:1x): the plugin that makes a link a direct login,
-    // in place and read back; the link itself is issued once the site is open
+    // in place and read back; the link itself comes from `site login-link`
     let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)
         .map_err(|e| format!("identity_failed: {e}"))?;
     record["login_plugin"] = json!(plugin);

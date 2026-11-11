@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `site login-link <domain> [--login <user>]`: a one-time link that **logs straight in**
 //! to the site's dashboard (Andy 11-11 23:1x: 「一次性登入連結 應該是直接登入，而不是 跳轉到改密碼」).
-//! Also what `site create --continue` hands back when a site is opened, through the same
-//! operation ([`issue_op`]); the identity step puts the must-load plugin in place
-//! ([`ensure_mu_plugin`]).
+//! The identity step of `site create` puts the must-load plugin in place
+//! ([`ensure_mu_plugin`]); an opened site's answer names this command for the caller to
+//! run next and never carries a link itself (ebb36 L1, f1fae 11-11).
 //!
 //! The rules, from f1fae's reviewed bash version (`SIGN-eu02-e1a-loginlink-f1fae-1111.sh`):
 //!
@@ -14,14 +14,17 @@
 //! - The link is `https://<domain>/?ez2_otl=<token>`: 43 letters and digits from this
 //!   host's random source ([`token_from`]). The site is given **only `sha256(token)`**, on
 //!   standard input (never an argument), and keeps it as a transient for [`LINK_SECONDS`].
-//!   The plugin deletes the key before it logs anyone in, so a link works once; it logs in
+//!   The plugin deletes the key before it logs anyone in and goes on only when its own
+//!   delete removed it (two requests at once: one wins, c477a N1 / ebb36 L2), so a link
+//!   works once; it logs in
 //!   only a user who can `manage_options`, and goes to the dashboard.
 //! - Only an administrator gets a link: anyone else is refused before anything is written,
 //!   with the fixed code `login_not_admin` (`login_unknown` for a login the site does not have).
 //! - The whole link goes to standard output only, for the caller to keep (on the Mac:
 //!   `~/.ez2-aib/private/`, 0600). It is in no argument, no error, no journal: the
 //!   operation journal says that a link was issued, on which site and when; standard error
-//!   says for whom. The caller must keep standard output out of its own logs.
+//!   says for whom. Standard output is one line, the link: the caller writes it to its
+//!   private file and never tees it into a log or a receipt.
 
 use std::fs;
 use std::path::Path;
@@ -37,7 +40,7 @@ use crate::siteidentity::{in_ct, wp};
 pub const MU_PLUGIN: &str = include_str!("ez2-onetime-login.php");
 /// Its SHA-256 (the same as the reviewed bash version's fingerprint).
 pub const MU_PLUGIN_SHA256: &str =
-    "4eee105a46a89fe0a76375389253720a195846c7c06c71c1748e1795772976d9";
+    "a1c5b4dcf2e99dfb2a05188739e2e6d113bac2064447ffa209ead8dda7f85a0f";
 /// How long an unused link works, in seconds (the plugin trusts the transient's expiry).
 pub const LINK_SECONDS: u32 = 600;
 /// The command in the operation journal.
@@ -501,7 +504,7 @@ mod tests {
         let at = |s: &str| MU_PLUGIN.find(s).unwrap_or_else(|| panic!("{s}"));
         let shape = at("preg_match('/^[A-Za-z0-9]{43}$/', $t)");
         let hashed = at("$key = 'ez2_otl_' . hash('sha256', $t);");
-        let deleted = at("delete_transient($key);");
+        let deleted = at("if (!delete_transient($key)) { return; }");
         let admin = at("if (!$u || !user_can($u, 'manage_options')) { return; }");
         let cookie = at("wp_set_auth_cookie($u->ID, false, is_ssl());");
         let to = at("wp_safe_redirect(admin_url());");
@@ -645,6 +648,13 @@ mod tests {
     fn the_opened_sites_link_is_for_the_first_administrator() {
         let rec = json!({ "admins": ["ops", "ops2"] });
         assert_eq!(crate::sitecreatecmd::link_login(&rec).unwrap(), "ops");
+        // what the opening answers is the command, never a link (ebb36 L1)
+        let next = crate::sitecreatecmd::login_link_next(DOMAIN, "ops");
+        assert_eq!(
+            next,
+            "aib-cloud-host site login-link new.example.test --login ops"
+        );
+        assert!(!next.contains("ez2_otl") && !next.contains("https://"));
         for none in [json!({}), json!({ "admins": [] }), json!({ "admins": [7] })] {
             let err = crate::sitecreatecmd::link_login(&none).unwrap_err();
             assert!(err.starts_with("login_unknown: "), "{err}");

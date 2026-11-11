@@ -1453,9 +1453,9 @@ jobs:
           hk loginlink.rs 'if ((int) get_transient($k) !== (int) $u->ID) {{' \
              'if (false) {{ /* knife */' \
              the_mint_program_checks_the_administrator_and_keeps_the_key_ten_minutes
-          # LL12 the plugin keeps the key after use (a link works more than once)
-          hk ez2-onetime-login.php '    delete_transient($key);' \
-             '    /* knife */' \
+          # LL12 the plugin goes on without having deleted the key itself (a link works more than once; c477a N1 / ebb36 L2)
+          hk ez2-onetime-login.php '    if (!delete_transient($key)) { return; }' \
+             '    delete_transient($key); /* knife: goes on whoever deleted it */' \
              the_mu_plugin_logs_in_only_an_administrator_once
           # LL13 the plugin logs in any user, not only an administrator
           hk ez2-onetime-login.php "    if (!\$u || !user_can(\$u, 'manage_options')) { return; }" \
