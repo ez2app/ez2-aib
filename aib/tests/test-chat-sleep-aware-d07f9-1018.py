@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """判斷對方那台電腦是不是在睡 + 撐著不睡 + 寄件提示 + 24 小時未確認 + 自己的機器版本落後
-(10-18 Andy「全做,而且要能判斷該電腦休眠」;起因:Mac Pro 13 閒置 1 分鐘就睡、womp 0)。
+(10-18 Andy「全做,而且要能判斷該電腦休眠」;起因:Mac B 閒置 1 分鐘就睡、womp 0)。
 
 S1 讀 pmset:` sleep  1 (sleep prevented by powerd)` ⇒ 1;'AC Power' / 'Battery Power'
 S2 這台:會睡(sleep 1、沒撐)⇒ sleeps True;接電源 + caffeinate 活著 ⇒ False;用電池就算撐著也 True;非 Mac ⇒ None
@@ -15,7 +15,7 @@ S7 world / contacts 每位帶 machine;status:這台會睡 ⇒ 提醒;自己的�
 S8 撐著不睡:Mac + 設定 on ⇒ 起 caffeinate -s -w <自己>、記 pid、kept_awake;停掉 ⇒ 不再 kept_awake;設定 off ⇒ 不起
 N1(要 AIB_TEST_NOSTR_VENV;借 pack-g 的兩台好友沙盒)A 的在線狀態經假中繼站送到 B:world.json 那一格帶 power(beat、sleeps…),
    B 的 world --json 那位 machine = awake
-S9(10-25 Mac Pro 13)交上中繼站、但從沒收過對方收下的回條(queued / held / delivered / read)⇒ 不推斷離線,
+S9(10-25 Mac B)交上中繼站、但從沒收過對方收下的回條(queued / held / delivered / read)⇒ 不推斷離線,
    hint(四語)說「可能還沒把你加成好友」+ aib chat connect;detail 原值不動;claimed 不說;別人的回條不算;
    對方回 queued 不補;收過的記錄另存 peer-accepted.json,回條被清 8 天後仍照舊推斷(#357 r1)
 S9b 升級前的舊帳從還在的回條補記、舊時間不蓋新的;_cli 輸出 hint 在 detail 前
@@ -143,7 +143,7 @@ class Others(Box):
             GF.append_receipt(self.root, mid, {"v": 1, "at": at, "stage": st})
 
     def test_s9_not_friend_is_not_offline(self):
-        """10-25 Mac Pro 13:對方其實沒加我(拒收、不回條),這邊卻寫「對方離線」⇒ 人跑去查轉接程式
+        """10-25 Mac B:對方其實沒加我(拒收、不回條),這邊卻寫「對方離線」⇒ 人跑去查轉接程式
         #357 r1:人話放 hint(i18n)、detail 原值不動;claimed(還沒交中繼站)不說;收過的記錄不靠會被清的回條"""
         try:
             GF.note_world(self.root, OWNER, "5a97", [], now=NOW - 3600,
@@ -226,10 +226,10 @@ class Others(Box):
         self.assertEqual(GF.mark_unconfirmed(self.root, now=NOW + 700), 0, "只補一次")
 
     def test_s7_payloads_and_status(self):
-        CR.add_friend(OWNER, "Mac Pro 13", env=self.env, kind="mine")
+        CR.add_friend(OWNER, "Mac B", env=self.env, kind="mine")
         GF.note_world(self.root, OWNER, "5a97", [{"seat": "4345c", "state": "idle"}], now=int(time.time()) - 3600,
                       power={"sleeps": True, "sleep_min": 1, "ac": True, "kept_awake": False, "last_wake": None, "beat": 900})
-        GF.note_peer(self.root, OWNER, "Mac Pro 13", "TW", claims={"nip05": None, "aib": "0.1.18"})
+        GF.note_peer(self.root, OWNER, "Mac B", "TW", claims={"nip05": None, "aib": "0.1.18"})
         rows = {r["owner"]: r for r in CB.contacts_payload(self.env)["contacts"]}
         self.assertEqual(rows[OWNER]["machine"]["state"], "asleep")
         cab = next(c for c in CB.world_payload(self.env)["cabins"] if c["owner"] == OWNER)
@@ -241,7 +241,7 @@ class Others(Box):
         finally:
             CP.power_info = orig
         self.assertTrue(any("1 分鐘就睡" in x for x in lines), lines)
-        self.assertTrue(any("Mac Pro 13" in x and "0.1.18" in x for x in lines), "自己的機器版本落後要提醒")
+        self.assertTrue(any("Mac B" in x and "0.1.18" in x for x in lines), "自己的機器版本落後要提醒")
 
 
 @unittest.skipUnless(sys.platform == "darwin" and os.path.exists(CP.CAFFEINATE), "只在 Mac")

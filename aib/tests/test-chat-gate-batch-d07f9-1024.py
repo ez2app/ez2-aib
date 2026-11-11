@@ -383,7 +383,7 @@ class Connect(OG.Base):
 
 
 class ConnectAddress(OG.Base):
-    """10-25 Andy「艦長室一鍵對話」(fishmac 驗收B2:對方只在本機加好友,這邊不知道;光給 npub 的申請寄不到)。
+    """10-25 Andy「艦長室一鍵對話」(mac-b 驗收B2:對方只在本機加好友,這邊不知道;光給 npub 的申請寄不到)。
     C19 光給 npub ⇒ 申請寄到本機已知的完整位址:房間 / 名冊快照 > 他寄來的申請 > 被拒收紀錄;完整位址照用
     C20 本機不知道他的席 ⇒ no_address 門前擋:不加好友、不送、不彈指紋
     C21 被拒收提示 / friend add 之後的提示都指向 connect(互加)"""

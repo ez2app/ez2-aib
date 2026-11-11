@@ -85,6 +85,30 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           BIN: ${{ steps.b.outputs.bin }}
         run: '"$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH"'
+  # 11-11 (ebb36 N1 on #660): every workflow file must be YAML. #659 left aibd.yml unparsable and GitHub
+  #   only showed "workflow file issue" on the main push: aibd did not run on any PR for hours and nothing was red.
+  #   ci.yml itself still runs when another workflow is broken, so this job is where it shows. Ruby's YAML is on
+  #   every ubuntu runner; nothing is installed. A file that does not parse fails the job with its line.
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          ruby -ryaml -e '
+            bad = 0
+            Dir[".github/workflows/*.{yml,yaml}"].sort.each do |f|
+              begin
+                d = YAML.safe_load(File.read(f), aliases: true)
+                raise "not a mapping with jobs" unless d.is_a?(Hash) && d["jobs"].is_a?(Hash)
+                puts "ok   #{f}"
+              rescue Psych::SyntaxError => e
+                bad += 1; puts "::error file=#{f},line=#{e.line}::#{f} is not YAML: #{e.problem} #{e.context}"
+              rescue => e
+                bad += 1; puts "::error file=#{f}::#{f}: #{e.message}"
+              end
+            end
+            exit(bad.zero? ? 0 : 1)'
   # 11-08 PROPOSAL-19(a63ab 總結):只改文件的 PR 只跑文件檢查。
   #   main 有 6 個 smoke 必過格 ⇒ 不能 paths-ignore(必過格會一直等),也不能 job 層 if 跳過矩陣(只回一個沒格名的 smoke)。
   #   這裡先判斷(白名單、混合改動 / 算不出來 / main 推送一律 false),只改文件時順便做文件檢查;

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# aib-cloud-host:the Linux binary that runs on the Proxmox host (EU02). Built here as a static
+# aib-cloud-host:the Linux binary that runs on the Proxmox host (host A). Built here as a static
 # musl executable so it runs on any x86_64 Linux without a toolchain on the host (Andy 11-09:
 # every new tool is Rust;the host has no cargo).
 #
@@ -120,7 +120,22 @@ jobs:
             '            // knife: link left behind' \
             u9_swap_keeps_prev_and_never_leaves_dest_missing
       - name: build (static)
-        run: cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+        # No build machine path in the file (DEV 4.6 S): panic locations of dependencies carry the
+        # home, cargo registry and checkout paths unless remapped. Later prefixes win, so the
+        # home goes first. trim-paths is not stable in the pinned cargo.
+        run: |
+          RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$HOME=/home --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src" \
+            cargo build --release --locked -p aib-cloud-host --target "$TARGET"
+          bin="target/$TARGET/release/aib-cloud-host"
+          c="${CARGO_HOME:-$HOME/.cargo}"
+          [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
+          # 0 = a path is in the file, 1 = none, anything else = could not tell: only 1 passes
+          r=0; grep -a -q -F -e "$HOME/" -e "$c" -e "$GITHUB_WORKSPACE" "$bin" || r=$?
+          case $r in
+            1) ;;
+            0) echo "::error::a build machine path is in $bin"; exit 1 ;;
+            *) echo "::error::grep could not read $bin (rc $r)"; exit 1 ;;
+          esac
       - name: smoke (static, --version exact)
         run: |
           bin="target/$TARGET/release/aib-cloud-host"
@@ -130,6 +145,12 @@ jobs:
           out=$("$bin" --version) || { echo "::error::--version failed"; exit 1; }
           echo "--version: $out"
           [ "$out" = "aib-cloud-host $VERSION $PLAT" ] || { echo "::error::--version printed '$out', want exactly 'aib-cloud-host $VERSION $PLAT'"; exit 1; }
+          # DEV 4.6 P1: the build names the commit it was made from, clean, and the same words sit in the file
+          info=$("$bin" build-info) || { echo "::error::build-info failed"; exit 1; }
+          echo "build-info: $info"
+          want="aib-build-info version=$VERSION commit=$(git rev-parse HEAD) dirty=0;"
+          [ "$info" = "$want" ] || { echo "::error::build-info printed '$info', want exactly '$want'"; exit 1; }
+          [ "$(grep -c -a -F "$want" "$bin")" -ge 1 ] || { echo "::error::build info not found in the file"; exit 1; }
           name="aib-cloud-host-${VERSION}-${TARGET}"
           mkdir -p dist && cp "$bin" "dist/$name"
           (cd dist && sha256sum "$name" > SHA256SUMS && cat SHA256SUMS)

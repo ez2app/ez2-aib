@@ -1,7 +1,7 @@
 """vault 位置的唯一規則(從 route_register 搬出來,a9136 11-09)。
 
 只用 os:右欄每回合都要問 vault(🧠 行查 labels.json),匯入整個 route_register 會連帶
-載入 ledger / collector_common,冷啟動約 24 ms(Mac Pro 13 量)。route_register 從這裡匯入
+載入 ledger / collector_common,冷啟動約 24 ms(Mac B 量)。route_register 從這裡匯入
 同一組名字,全套件仍只有這一處規則。
 """
 

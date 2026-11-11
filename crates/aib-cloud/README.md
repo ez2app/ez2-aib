@@ -5,7 +5,7 @@ operation is a *plan* that can be shown, approved, applied, verified and —
 where an inverse exists — rolled back.
 
 **M-R1 (this slice): pure planning logic, no I/O.** `aib_cloud::robot` validates
-operator input for the Hetzner Robot webservice, builds the request plan, derives
+operator input for the provider console webservice, builds the request plan, derives
 the approval facts from the same values (so the popup can never name a different
 server than the URL), and masks password-like fields out of replies.
 
@@ -30,20 +30,35 @@ validates the plan against a whitelist, joins each CT's network namespace via
 `lxc-info` + `nsenter` and verifies the namespace it landed in); `judge()` accepts only a
 report bound to this exact plan (`plan_fnv`) and host, checks every result's
 from / kind / ip / port against its cell, and returns a pass / fail / missing receipt.
-`tests/fixtures/isolation-eu02-*.json` is EU02's recorded run (sites CT 110 + 112, the
-3 public cells measured from EU01).
+`tests/fixtures/isolation-host-a-*.json` is host A's recorded run (sites CT 110 + 112, the
+3 public cells measured from host B).
 Every receipt also lists `not_covered`: optional topology parts that were absent and
-`egress-25` — Hetzner blocks outbound 25 for us, so no cell can tell our DROP from theirs;
+`egress-25` — the provider blocks outbound 25 for us, so no cell can tell our DROP from theirs;
 before port 25 is ever opened for this host the egress-25 cells must come back (control from
 an External source to the same MX:25).
 
 ## `aib_cloud::r2token` (M-R1b, 11-09)
 
 Planning logic for the per-host Cloudflare R2 backup token (4.4.1 §10.1; Andy:
-"key 從 EU01 取得,再彈出生物辨識"): validates bucket / host alias / egress IPv4 /
+"key 從 host B 取得,再彈出生物辨識"): validates bucket / host alias / egress IPv4 /
 zone / destination / rclone remote, derives the approval facts, the token policy
 (one bucket, Item Read + Item Write, one `/32`) and the remote job spec from the
 same values, judges the five-check verification report and strips secret-looking
 keys before anything prints. Still no I/O: the ssh pipeline and the Touch ID gate
 stay in the Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) until the
 Rust shell lands with the ADR.
+
+## `aib_cloud::client` + crate `aib-cloud-cli` (customer side, 11-10)
+
+`client::ssh_args()` builds the arguments for the system's `ssh` that carry one customer
+request (`customer::parse_request` grammar) to the host: no ssh configuration file is read,
+the host key must match the one file named, nothing is forwarded, every value is checked and
+the destination comes after `--`. The binary `aib-cloud` (crate `aib-cloud-cli`) reads flags /
+`EZ2_CLOUD_*`, runs `ssh` with those arguments and hands back the host's exit status
+(`--print` shows the arguments and sends nothing). Not here yet: version negotiation, a
+stored target per site, IPv6 literals, paths with blanks.
+
+`aib_cloud::wording` holds what the customer reads next to each code (zh-TW). The sentences
+are final wording (pending/HUMAN-PASTE-4542e-1110.md section F, Andy 11-10): do not
+rephrase them in a code change. `aib-cloud` shows these by default; `--raw` shows the host's
+answer as it came.
