@@ -562,6 +562,13 @@ jobs:
           # leak-words: the file may be written inside a git work tree (33e28 #656 L1)
           hk leakwordscmd.rs '    if inside_git_tree(Path::new(out)) {' '    if inside_git_tree(Path::new(out)) && false { // knife' \
              a_file_inside_a_git_work_tree_is_refused
+          # leak-words: a name every network uses (home, local, …) becomes a rule (33e28 #656 r2 L3)
+          hk leakwordscmd.rs '        || GENERIC_NAMES.contains(&n.as_str())' \
+             '        || (GENERIC_NAMES.contains(&n.as_str()) && false) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
+          hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
+             the_host_part_names_what_this_host_is
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \

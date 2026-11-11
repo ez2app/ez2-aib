@@ -74,6 +74,23 @@ const GENERIC: &[&str] = &[
     "type1productconfigid",
 ];
 
+/// Names every network uses: as a rule they would hit public files and say nothing about
+/// this host (33e28 #656 r2 L3). A name ending in one of them still counts (`node7.lan`).
+const GENERIC_NAMES: &[&str] = &[
+    "localdomain",
+    "lan",
+    "home",
+    "home.arpa",
+    "local",
+    "internal",
+    "intranet",
+    "corp",
+    "private",
+    "example",
+    "invalid",
+    "test",
+];
+
 /// Public resolvers anyone may use: naming one says nothing about this host.
 const PUBLIC_RESOLVERS: &[&str] = &[
     "1.1.1.1",
@@ -200,7 +217,11 @@ fn name_rule(raw: &str, why: &'static str) -> Option<Rule> {
     let shape = n
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
-    if !shape || n.starts_with("localhost") || n.starts_with("ip6-") {
+    if !shape
+        || n.starts_with("localhost")
+        || n.starts_with("ip6-")
+        || GENERIC_NAMES.contains(&n.as_str())
+    {
         return None;
     }
     let n = clean(&n)?;
@@ -656,6 +677,18 @@ mod tests {
         assert_eq!(name_rule("pve", "host name"), None);
         assert_eq!(name_rule("bad name", "host name"), None);
         assert_eq!(name_rule("ip6-localhost", "host name"), None);
+        // names every network uses give no rule; a name that ends in one still does
+        for g in [
+            "localdomain",
+            "home",
+            "local",
+            "internal",
+            "home.arpa",
+            "LAN.",
+        ] {
+            assert_eq!(name_rule(g, "resolver search domain"), None, "{g}");
+        }
+        assert!(name_rule("node7.lan", "host name").is_some());
         assert_eq!(network("203.0.113.70".parse().unwrap(), 32), None);
         assert_eq!(network("203.0.113.70".parse().unwrap(), 4), None);
         assert_eq!(class("100.128.0.1".parse().unwrap()), Class::Public);
