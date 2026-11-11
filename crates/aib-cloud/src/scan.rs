@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(Outcome::Finding.worst(Outcome::Ok), Outcome::Finding);
         let ok = core_checksums(ROOT, seen(&wrapped(CORE_OK, 0)));
         let unk = core_checksums(ROOT, None);
-        assert_eq!(overall(&[ok.clone()]), Outcome::Ok);
+        assert_eq!(overall(core::slice::from_ref(&ok)), Outcome::Ok);
         assert_eq!(overall(&[ok, unk]), Outcome::Unknown);
         assert_eq!(overall(&[]), Outcome::Unknown);
         assert_eq!(Outcome::Finding.exit_code(), 1);

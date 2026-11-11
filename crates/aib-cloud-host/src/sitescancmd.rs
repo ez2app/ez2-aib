@@ -96,7 +96,7 @@ pub fn read_only(argv: &[String]) -> bool {
             **path == format!("--path={}", site_root(user))
                 && rest.contains(&"--skip-plugins")
                 && rest.contains(&"--skip-themes")
-                && WP_ALLOWED.iter().any(|w| *w == words.as_slice())
+                && WP_ALLOWED.contains(&words.as_slice())
         }
         _ => false,
     }

@@ -1493,8 +1493,8 @@ jobs:
           hk sitescancmd.rs '                && rest.contains(&"--skip-themes")' \
              '                && (rest.contains(&"--skip-themes") || true) // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
-          hk sitescancmd.rs '                && WP_ALLOWED.iter().any(|w| *w == words.as_slice())' \
-             '                && (WP_ALLOWED.iter().any(|w| *w == words.as_slice()) || true) // knife' \
+          hk sitescancmd.rs '                && WP_ALLOWED.contains(&words.as_slice())' \
+             '                && (WP_ALLOWED.contains(&words.as_slice()) || true) // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
           hk sitescancmd.rs '    match hits.len() {' '    match hits.len().min(1) { // knife' \
              two_records_naming_one_domain_are_refused
