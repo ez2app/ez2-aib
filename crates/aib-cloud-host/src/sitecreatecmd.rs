@@ -1338,8 +1338,7 @@ pub fn continue_steps(
                 // the opening becomes a site: its record moves to the opened ones as it is
                 // after this step, and nothing is written back to the openings
                 let mut opened = record.clone();
-                opened["step"] = json!(step.as_str());
-                opened["at"] = json!(crate::probe::unix_now());
+                step_done(&mut opened, step);
                 if let Err(why) = crate::sitelive::health_step(runner, paths, &spec, &opened) {
                     return Err(keep(paths, &spec, &mut record, step, &why));
                 }
@@ -1351,8 +1350,7 @@ pub fn continue_steps(
             // from the licences on nothing is undone: a failure, or a record that cannot
             // be written after the step, keeps the site for a person
             let saved = done.and_then(|()| {
-                record["step"] = json!(step.as_str());
-                record["at"] = json!(crate::probe::unix_now());
+                step_done(&mut record, step);
                 write_record(&paths.creating, &spec.code, &record)
             });
             if let Err(why) = saved {
@@ -1361,8 +1359,7 @@ pub fn continue_steps(
             continue;
         }
         let moved = done.and_then(|()| {
-            record["step"] = json!(step.as_str());
-            record["at"] = json!(crate::probe::unix_now());
+            step_done(&mut record, step);
             if step == CreateStep::Firewall {
                 record["fw_group"] = json!(spec.fw_group);
             }
@@ -1385,6 +1382,16 @@ pub fn continue_steps(
         }
     }
     Ok(record)
+}
+
+/// A step went through: the record says so, and a `kept` from an earlier try of a step
+/// is gone (the site is no longer waiting for a person; audit 11-12 #6).
+fn step_done(record: &mut Value, step: CreateStep) {
+    record["step"] = json!(step.as_str());
+    record["at"] = json!(crate::probe::unix_now());
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("kept");
+    }
 }
 
 /// A failure from the licences on: the site is kept as it is, the opening record says at
@@ -2867,6 +2874,41 @@ mod tests {
         .unwrap();
         assert_eq!(rec["kept"]["step"], "licenses");
         assert_eq!(rec["step"], "identity");
+    }
+
+    /// A site kept for a person and carried on: once a step goes through, the record no
+    /// longer says it is kept, and the opened record of a healthy site carries no `kept`
+    /// (audit 11-12 #6).
+    #[test]
+    fn a_step_that_goes_through_clears_kept() {
+        let mut rec = json!({ "step": "licenses", "kept": { "step": "dns", "why": "x", "at": 1 } });
+        step_done(&mut rec, CreateStep::Dns);
+        assert_eq!(rec["step"], "dns");
+        assert!(rec.get("kept").is_none(), "{rec}");
+        // the whole way: kept at the health, carried on, healthy
+        let (_place, paths) = opened("b6kept", "edge");
+        for d in [&paths.records, &paths.opened] {
+            fs::create_dir_all(d).unwrap();
+        }
+        let file = paths.creating.join(format!("{CODE}.json"));
+        let mut on_disk: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        on_disk["kept"] = json!({ "step": "health", "why": "curl: (35)", "at": 1 });
+        fs::write(&file, on_disk.to_string()).unwrap();
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        let mut runner = fake(|argv: &[String]| {
+            if argv.iter().any(|a| a == "curl") {
+                Ok(
+                    "HTTP/2 200\r\nlink: <https://new.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            } else {
+                Ok(String::new())
+            }
+        });
+        let opened_rec =
+            continue_steps(&mut runner, &paths, opening, &[CreateStep::Health]).unwrap();
+        assert_eq!(opened_rec["step"], "health");
+        assert!(opened_rec.get("kept").is_none(), "{opened_rec}");
     }
 
     #[test]

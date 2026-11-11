@@ -1859,6 +1859,10 @@ jobs:
           hk sitelive.rs '                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))' \
              '                .run(&owned(&["true", HEALTH_PAUSE_SECS])) // knife' \
              health_asks_again_until_the_certificate_is_there
+          # E1 audit 11-12 #6: a step that goes through clears kept
+          hk sitecreatecmd.rs '        fields.remove("kept");' \
+             '        fields.remove("kept_"); // knife' \
+             a_step_that_goes_through_clears_kept
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
