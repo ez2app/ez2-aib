@@ -88,18 +88,22 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   stdin; the remote script goes as a base64 argument. ssh always has `ForwardAgent=no`,
   `ClearAllForwardings=yes`, `BatchMode=yes`, and `ServerAliveInterval=15` /
   `ServerAliveCountMax=4`: a network that vanishes without a FIN / RST ends the local ssh after
-  about a minute (rc 3). The remote side stops when its next write fails (the beat line every
-  5 s); on a silent loss that is when the remote TCP gives up, so the lease may stay a few
-  minutes longer, still tied to that shell.
-* On the other Mac, one bash: unpack → `aib lease acquire … --pid $$` → **nothing runs unless
-  rc 0** → `EXIT` trap releases the lease, stops a running step's process tree and removes the
-  tree → each step as its own `bash -c`, every rc printed; a failing step does not stop the rest.
+  about a minute.
+* On the other Mac the ssh session only unpacks, starts a **runner** detached (`nohup`, stdin
+  `/dev/null`, output to a log file next to the tree) and follows that log, printing it here.
+  The runner: `aib lease acquire … --pid $$` (its own pid) → **nothing runs unless rc 0** →
+  `EXIT` trap releases the lease, stops a running step's process tree, removes the tree and
+  leaves its exit code for the follower → each step as its own `bash -c`, every rc printed; a
+  failing step does not stop the rest.
 * The lease is `--exclusive` (the run is being measured, small `aib test` batches wait);
   `--shared` asks without it.
-* A dropped ssh sends no HUP (no tty): the remote side writes a beat line every 5 s, and the
-  failed write stops the step, releases the lease and cleans up. Stopping a step reaches only
-  processes still in its tree; one that left it (re-parented to launchd, as Chrome for Testing
-  helpers do) is not stopped.
+* **A dropped connection does not stop the run (A1, Andy 11-12 04:2x).** The follower ends (its
+  beat line every 5 s fails to write), the runner keeps going and keeps the lease until its steps
+  end; this end exits **76 `remote_running`** and prints the runner's pid and log path. Check it
+  with `aib lease status` on that Mac; stop it with `kill <pid>` there (TERM / INT stop the steps
+  and release on the way out). The log and exit-code files stay in `$TMPDIR` after a drop.
+  Stopping a step reaches only processes still in its tree; one that left it (re-parented to
+  launchd, as Chrome for Testing helpers do) is not stopped.
 * cargo builds into `~/.cache/aib-lease/<seat>/target` on that Mac (`AIB_LEASE_TARGET_ROOT`),
   so a short step is not a cold build every time.
 * **ttl (D6):** no `--ttl` ⇒ p90 × 1.5 of earlier runs of the same steps on the same host from
@@ -112,7 +116,7 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   carry a per-run nonce, so a step's own output cannot pass for them. A failed write warns and
   never changes the exit code. The file is created 0600 (masking is best effort).
 * Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
-  bad rev · 73 remote unpack · 75 lease not granted (nothing ran).
+  bad rev · 73 remote unpack · 75 lease not granted (nothing ran) · 76 connection dropped, run still going there (A1).
 
 ## `aib-lease classify` — short or long, light or not (D7)
 
