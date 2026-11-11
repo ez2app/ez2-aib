@@ -1623,8 +1623,8 @@ jobs:
              '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
              a_long_domain_is_planned_under_its_hashed_target
           # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
-          hk sitecreatecmd.rs '    if differ.is_empty() {' \
-             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+          hk sitecreatecmd.rs '    if keys.is_empty() {' \
+             '    if keys.is_empty() || !keys.is_empty() { // knife' \
              limits_that_did_not_take_are_undone
           # site create --continue: the firewall file is never written (the clone's stays)
           hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
@@ -1635,7 +1635,7 @@ jobs:
              '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
              a_container_that_does_not_run_is_undone
           # site create --continue: the record does not move on (op status would show the wrong step)
-          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            step_done(&mut record, step);' \
              $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
              an_opening_is_carried_on_through_limits_firewall_and_start
           # site create --continue: a running container is destroyed without being stopped
@@ -1908,6 +1908,78 @@ jobs:
           hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
              '        if let Some(i) = at(CreateStep::Health) { // knife' \
              an_unreadable_entry_stops_at_the_entry_step
+          # E1 e1a 11-12: the limits step gives net0 a locally administered address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             the_limits_step_gives_net0_a_local_address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             a_platform_address_shown_after_the_limits_is_refused
+          hk sitecreatecmd.rs '    let first = (raw[0] & 0xFC) | 0x02;' \
+             '    let first = raw[0] | 0x02; // knife' \
+             a_local_hardware_address_is_made_of_any_six_bytes
+          hk sitecreatecmd.rs '            main = false;' \
+             '            main = !line.is_empty(); // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs '                            format!("{lead}hwaddr={mac}")' \
+             '                            format!("{}hwaddr={mac}", lead.trim()) // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs "    if !text.ends_with('\\n') {" \
+             '    if false { // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          # E1 e1a 11-12: the installer's administrator lets go of the first administrator's address
+          hk siteidentity.rs '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some()' \
+             '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() && false // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);' \
+             '        let parked = format!("{SETUP_ADMIN}@{}.example", spec.code); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;' \
+             '            .unwrap_or_default(); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '                &["user", "update", SETUP_ADMIN, &flag, "--skip-email"],' \
+             '                &["user", "update", SETUP_ADMIN, &flag], // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        if back.trim() != parked {' \
+             '        if back.trim() != parked && false { // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          # E1 audit 11-12 #1/#9: the template package goes in before the installer, out after
+          hk siteidentity.rs '            .run(&in_ct(spec.ct, &["truncate", "-s", "0", PACKAGE_LIST]))' \
+             '            .run(&in_ct(spec.ct, &["rm", "-f", PACKAGE_LIST])) // knife' \
+             a_blank_install_drops_the_template_package_first
+          hk siteidentity.rs '    if !paths.package.join("plugins").is_dir() || !paths.package_conf.is_file() {' \
+             '    if (!paths.package.join("plugins").is_dir() || !paths.package_conf.is_file()) && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    if paths.keys.is_file() {' \
+             '    if paths.keys.is_file() && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let dropped = runner.run(&owned(&["rm", "-f", &archive]));' \
+             '    let dropped = runner.run(&owned(&["true", &archive])); // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", PACKAGE_CLEANUP]));' \
+             '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", "true"])); let _ = PACKAGE_CLEANUP; // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          # E1 audit 11-12 #3: health asks again until the certificate is there
+          hk sitelive.rs '    for attempt in 0..HEALTH_TRIES {' \
+             '    for attempt in 0..1 { let _ = HEALTH_TRIES; // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                last = None;' \
+             '                last = Some(String::new()); // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))' \
+             '                .run(&owned(&["true", HEALTH_PAUSE_SECS])) // knife' \
+             health_asks_again_until_the_certificate_is_there
+          # E1 audit 11-12 #6: a step that goes through clears kept
+          hk sitecreatecmd.rs '        fields.remove("kept");' \
+             '        fields.remove("kept_"); // knife' \
+             a_step_that_goes_through_clears_kept
+          # E1 audit 11-12 #8: a new opening goes into the current firewall group (v2)
+          hk sitecreatecmd.rs '    .and_then(|s| s.with_fw_group(group.unwrap_or(NEW_SITE_FW_GROUP)))' \
+             '    .and_then(|s| s.with_fw_group(group.unwrap_or(aib_cloud::site::FW_GROUP))) // knife' \
+             a_new_opening_uses_the_current_firewall_group
+          hk sitecreatecmd.rs '    let group = record.get("fw_group").and_then(Value::as_str);' \
+             '    let group = record.get("fw_group_").and_then(Value::as_str); // knife' \
+             a_new_opening_uses_the_current_firewall_group
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
