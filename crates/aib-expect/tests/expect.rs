@@ -715,10 +715,10 @@ fn the_report_has_no_order_of_its_own_and_hands_gaps_to_decide() {
             text: "c".into(),
         },
     ];
-    let mut a3 = ev("A3", 10, 1);
+    let mut a3 = ev("A3", "c", 10, 1);
     a3["pr"] = json!(685);
     a3["head"] = json!(H1);
-    let log = parse_evidence(&format!("{}\n{a3}\n", ev("A2", 10, 0)));
+    let log = parse_evidence(&format!("{}\n{a3}\n", ev("A2", "b", 10, 0)));
     let rep = compare(&g, &log, &heads(&[(685, Some(H1))]), NOW);
     let er = expect_report(Ok(g.as_slice()), &log, &heads(&[(685, Some(H1))]), NOW);
     assert_eq!(er.table.len(), 3, "the full table keeps passing rows");
@@ -915,7 +915,7 @@ fn a_row_carries_goal_state_missing_pr_and_evidence() {
         id: "A3".into(),
         text: "c".into(),
     }];
-    let mut a3 = ev("A3", 10, 1);
+    let mut a3 = ev("A3", "c", 10, 1);
     a3["pr"] = json!(685);
     a3["head"] = json!(H1);
     a3["check_id"] = json!("knife-SL3");
@@ -949,10 +949,10 @@ fn an_unreadable_pr_only_affects_its_own_rows() {
             text: "b".into(),
         },
     ];
-    let mut a1 = ev("A1", 10, 0);
+    let mut a1 = ev("A1", "a", 10, 0);
     a1["pr"] = json!(1);
     a1["head"] = json!(H1);
-    let mut a2 = ev("A2", 10, 0);
+    let mut a2 = ev("A2", "b", 10, 0);
     a2["pr"] = json!(2);
     a2["head"] = json!(H2);
     let log = parse_evidence(&format!("{a1}\n{a2}\n"));
