@@ -15,12 +15,13 @@
 //! aib-cloud-host site create <domain> --abandon <code> --plan | --apply <plan.json>   (an opening that stopped half way, never a site: container, firewall file, its marked DNS records, its passwords on the host, then the record to sites-creating/abandoned; numbers and code never given again; each step written, a new plan carries on)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
+//! aib-cloud-host site restore-wpress <code> --plan --from <backup id> | --plan --close resolved|abandoned | --apply | --continue | --resolved | --abandon <plan.json>   (a customer's WordPress backup into one of their sites, step by step; a person closes one that cannot go on; the steps are not wired yet: B3 slices 3–4)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
-//! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
+//! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
@@ -53,6 +54,8 @@ mod opstore;
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
+#[cfg(unix)]
+mod restorestepscmd;
 #[cfg(unix)]
 mod rostercmd;
 #[cfg(unix)]

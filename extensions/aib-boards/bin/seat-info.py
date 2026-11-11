@@ -488,62 +488,265 @@ if INTEG:
         integ["err"].append(f"ps: {e}")
     out["integ"] = integ
     out["err"] += integ["err"]
+# 本席工作樹與快取(11-12 過熱熱修,a63ab 01:06 定):舊版每回合列全倉 190 棵、每棵叫 5 個 git、影子帳本每棵重讀一次 ⇒ 一次 12–14 秒。
+#   1) 樹清單直接讀 <共用 git 夾>/worktrees/*/{gitdir,HEAD},不叫 git;只留分支名或路徑帶本席碼的樹。
+#   2) 結果快取在 <狀態根>/state/seat-info-cache/<席碼>.json,90 秒內且指紋沒變 ⇒ 直接用,一個 git 都不跑。
+#      指紋 = 本席每棵樹的 HEAD / index / 分支 ref、packed-refs、<遠端>/main ref、worktrees 夾、config 的 mtime。
+#      改了沒 add 的檔不動指紋 ⇒ 最多晚 90 秒出現;測試結果同理(影子帳本全隊一直在寫,不放進指紋)。
+#   3) 沒命中時:提交沒變的樹沿用上次的領先 / 落後 / diff / 最後提交,只重跑 status;影子帳本每次只讀一遍。
+#   長期搬進 aib-drive snapshot(Rust),見 FOLLOWUP;這裡是凍結腳本的熱修例外。
+SEATINFO_CACHE_TTL = int(os.environ.get("AIB_SEATINFO_CACHE_TTL") or 90)
+
+
+def _si_read(p):
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _si_mt(p):
+    try:
+        st = os.stat(p)
+        return [st.st_mtime_ns, st.st_size]
+    except OSError:
+        return None
+
+
+def _si_common_gitdir(start):
+    """往上找 .git:是資料夾就是共用夾;是檔(本身是工作樹)⇒ 照 gitdir + commondir 找回共用夾。"""
+    d = os.path.abspath(start)
+    while True:
+        g = os.path.join(d, ".git")
+        if os.path.isdir(g):
+            return g
+        if os.path.isfile(g):
+            t = _si_read(g) or ""
+            if not t.startswith("gitdir:"):
+                return None
+            gd = t[7:].strip()
+            gd = gd if os.path.isabs(gd) else os.path.normpath(os.path.join(d, gd))
+            cd = _si_read(os.path.join(gd, "commondir"))
+            if not cd:
+                return gd
+            return cd if os.path.isabs(cd) else os.path.normpath(os.path.join(gd, cd))
+        p = os.path.dirname(d)
+        if p == d:
+            return None
+        d = p
+
+
+def _si_own_worktrees(common, code):
+    """本席的樹:[(路徑, 分支, 管理夾, HEAD 內容)]。分支 = refs/heads/ 之後;detached ⇒ "HEAD"。不叫 git。"""
+    cands = [(os.path.dirname(common), common)]
+    for adm in sorted(glob.glob(os.path.join(common, "worktrees", "*"))):
+        gd = _si_read(os.path.join(adm, "gitdir"))
+        if gd:
+            cands.append((os.path.dirname(gd), adm))
+    rows = []
+    for path, adm in cands:
+        head = _si_read(os.path.join(adm, "HEAD")) or ""
+        br = head[16:] if head.startswith("ref: refs/heads/") else "HEAD"
+        if code not in br and code not in path:
+            continue
+        if not os.path.isdir(path):
+            continue
+        rows.append((path, br, adm, head))
+    return rows
+
+
+def _si_ref_sha(common, ref):
+    """refs/... 的 commit:先看鬆散檔,再看 packed-refs;找不到 ⇒ None(呼叫端就當提交變了)。"""
+    s = _si_read(os.path.join(common, ref))
+    if s:
+        return s
+    for ln in (_si_read(os.path.join(common, "packed-refs")) or "").splitlines():
+        sha, _, name = ln.partition(" ")
+        if name == ref:
+            return sha
+    return None
+
+
+def _si_fingerprint(common, rows, rem):
+    fp = {"worktrees": _si_mt(os.path.join(common, "worktrees")), "packed": _si_mt(os.path.join(common, "packed-refs")),
+          "config": _si_mt(os.path.join(common, "config")), "main": _si_mt(os.path.join(common, "refs", "remotes", rem, "main")),
+          "trees": {}}
+    for path, br, adm, head in rows:
+        fp["trees"][path] = [head, _si_mt(os.path.join(adm, "HEAD")), _si_mt(os.path.join(adm, "index")),
+                             _si_mt(os.path.join(common, "refs", "heads", br)) if br != "HEAD" else None]
+    return fp
+
+
+def _si_cache_path(code):
+    return os.path.join(home, "state", "seat-info-cache", f"{code}.json")
+
+
+def _si_cache_load(code):
+    try:
+        with open(_si_cache_path(code), encoding="utf-8") as fh:
+            c = json.load(fh)
+        return c if isinstance(c, dict) and c.get("v") == 1 else {}
+    except Exception:
+        return {}
+
+
+def _si_cache_save(code, c):
+    p = _si_cache_path(code)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = f"{p}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(c, fh, ensure_ascii=False)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def _si_git(cwd, *args, timeout=8):
+    # --no-optional-locks:status 不回寫 index(回寫會動 index 的 mtime ⇒ 指紋變、下一回合白白重掃;Codex 11-12 意見)
+    r = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _si_remote(repo):
+    rem = "origin"
+    for ln in (_si_git(repo, "remote", "-v") or "").splitlines():
+        name, _, rest = ln.partition("\t")
+        if "github.com" in rest and "(fetch)" in rest:
+            rem = name
+            break
+    return rem
+
+
+def _si_ledger_latest(repo, paths, rid_cached=None):
+    """影子帳本 verify-<倉身份>.rows.jsonl 只讀一遍:{樹路徑: {測試: 最後一列}}。同一倉的工作樹共用倉身份 ⇒ 只算一次。
+    先用路徑字串篩行再 json.loads(帳本 10 MB 上下,逐行全解要 4 秒)。回 (latest, rid, err)。"""
+    try:
+        sys.path.insert(0, os.path.join(repo, "tools", "verify"))
+        import reuse_index, shadow_tracer
+        shadow = str(shadow_tracer.shadow_dir_default())
+    except Exception as e:
+        return None, rid_cached, f"shadow: {e}"
+    rid = rid_cached or reuse_index.repo_identity(repo) or ""
+    latest = {p: {} for p in paths}   # 帳本檔不存在 ⇒ 回空字典(QA 段跟舊版一樣整段不列)
+    needles = {}
+    for p in paths:
+        needles[p] = p
+        needles[json.dumps(p)[1:-1]] = p
+    try:
+        with open(os.path.join(shadow, f"verify-{rid}.rows.jsonl"), encoding="utf-8") as fh:
+            for ln in fh:
+                # 切出 "repo" 欄的字串查表;找不到這個寫法(換了分隔符)就退回逐個比對,寧慢不漏
+                i = ln.find('"repo": "')
+                if i >= 0:
+                    j = ln.find('"', i + 9)
+                    if ln[i + 9:j] not in needles:
+                        continue
+                elif not any(n in ln for n in needles):
+                    continue
+                try:
+                    r = json.loads(ln)
+                except Exception:
+                    continue
+                rp = r.get("repo")
+                if rp in latest and r.get("test"):
+                    latest[rp][r["test"]] = r
+    except OSError:
+        return {}, rid, None
+    return latest, rid, None
+
+
+def _si_section(name, code, repo, build):
+    """快取外殼:90 秒內且指紋相同 ⇒ 回快取(不跑 git);否則 build(common, rows, rem, memo) 重算後寫回。"""
+    import time as _t
+    common = _si_common_gitdir(repo)
+    if not common:
+        return build(None, None, None, {}), None
+    rows = _si_own_worktrees(common, code)
+    c = _si_cache_load(code)
+    ent = (c.get("sections") or {}).get(name) or {}
+    now = _t.time()
+    rem = c.get("rem") if c.get("repo") == repo else None
+    if rem and ent and 0 <= now - (ent.get("at") or 0) < SEATINFO_CACHE_TTL and ent.get("fp") == _si_fingerprint(common, rows, rem):
+        return ent.get("data"), int(now - ent["at"])
+    if not rem:
+        rem = _si_remote(repo)
+    memo = ent.get("memo") or {}
+    memo["_rid"] = c.get("rid") if c.get("repo") == repo else None
+    data = build(common, rows, rem, memo)
+    rid = memo.pop("_rid", None)
+    c2 = _si_cache_load(code)
+    if c2.get("repo") != repo:
+        c2 = {"v": 1, "repo": repo, "sections": {}}
+    c2.update({"v": 1, "repo": repo, "rem": rem, "rid": rid})
+    c2.setdefault("sections", {})[name] = {"at": now, "fp": _si_fingerprint(common, rows, rem), "data": data, "memo": memo}
+    _si_cache_save(code, c2)
+    return data, None
+
+
 # dev 視角:席碼出現在分支名或路徑裡的工作樹 = 我的樹(開席慣例 <類型>/<說明>-<席碼>-<日期>);每棵樹量 diff 與最近一次 aib test
 if DEV and out["code"]:
-    dev = {"trees": [], "err": []}
     repo = os.path.abspath(os.path.join(cockpit, "..", ".."))
-    def _git(cwd, *args, timeout=8):
-        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
-        return r.stdout.strip() if r.returncode == 0 else None
-    try:
-        rem = "origin"
-        for ln in (_git(repo, "remote", "-v") or "").splitlines():
-            name, _, rest = ln.partition("\t")
-            if "github.com" in rest and "(fetch)" in rest:
-                rem = name; break
-        try:
-            sys.path.insert(0, os.path.join(repo, "tools", "verify"))
-            import reuse_index, shadow_tracer
-            shadow = str(shadow_tracer.shadow_dir_default())
-        except Exception as e:
-            reuse_index = None; shadow = ""; dev["err"].append(f"shadow: {e}")
+
+    def _dev_build(common, rows, rem, memo):
         import time as _t
-        for blk in (_git(repo, "worktree", "list", "--porcelain") or "").split("\n\n"):
-            path = next((l[9:] for l in blk.splitlines() if l.startswith("worktree ")), None)
-            if not path or not os.path.isdir(path):
-                continue
-            br = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-            if out["code"] not in br and out["code"] not in path:
-                continue
-            if br == "HEAD" and not (_git(path, "status", "--short") or "") and (_git(path, "rev-list", "--count", f"{rem}/main..HEAD") or "0") == "0":
+        import calendar as _cal
+        import re as _re
+        dev = {"trees": [], "err": []}
+        if common is None:
+            dev["err"].append("dev git: 找不到 .git")
+            return dev
+        main_sha = _si_ref_sha(common, f"refs/remotes/{rem}/main")
+        keep = []
+
+        def _status(path):
+            # status 不能 strip:第一行開頭的空白是狀態欄的一部分(舊版 strip 後檔名少第一個字)
+            try:
+                r = subprocess.run(["git", "--no-optional-locks", "-C", path, "status", "--short"], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
+            except Exception:
+                return []
+            return [ln for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+        # 每棵樹只剩 status 一定要跑;4 條並行(總 CPU 不變,等待變短)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            statuses = dict(zip([r[0] for r in rows], ex.map(_status, [r[0] for r in rows])))
+        for path, br, adm, head in rows:
+            sha = head if br == "HEAD" else _si_ref_sha(common, f"refs/heads/{br}")
+            dirty = statuses.get(path) or []
+            m = memo.get(path) or {}
+            if not (sha and main_sha and m.get("key") == [sha, main_sha]):
+                ab = (_si_git(path, "rev-list", "--left-right", "--count", f"HEAD...{rem}/main") or "").split()
+                stat = _si_git(path, "diff", "--shortstat", f"{rem}/main...HEAD") or ""
+                m_f = _re.search(r"(\d+) files? changed", stat); m_i = _re.search(r"(\d+) insertion", stat); m_d = _re.search(r"(\d+) deletion", stat)
+                last = _si_git(path, "log", "-1", "--format=%ct %s") or "0 "
+                lt, _, lsub = last.partition(" ")
+                m = {"key": [sha, main_sha] if sha and main_sha else None,
+                     "ahead": int(ab[0]) if len(ab) == 2 and ab[0].isdigit() else None,
+                     "behind": int(ab[1]) if len(ab) == 2 and ab[1].isdigit() else None,
+                     "files": int(m_f.group(1)) if m_f else 0, "ins": int(m_i.group(1)) if m_i else 0, "dels": int(m_d.group(1)) if m_d else 0,
+                     "ct": int(lt) if lt.isdigit() else None, "subject": lsub[:70]}
+            memo[path] = m
+            if br == "HEAD" and not dirty and (m.get("ahead") or 0) == 0:
                 continue   # 只是對照用的乾淨 checkout(detached、跟主線一樣),不是在改的樹
-            ahead = _git(path, "rev-list", "--count", f"{rem}/main..HEAD"); behind = _git(path, "rev-list", "--count", f"HEAD..{rem}/main")
-            dirty = (_git(path, "status", "--short") or "").splitlines()
-            stat = _git(path, "diff", "--shortstat", f"{rem}/main...HEAD") or ""
-            import re as _re
-            m_f = _re.search(r"(\d+) files? changed", stat); m_i = _re.search(r"(\d+) insertion", stat); m_d = _re.search(r"(\d+) deletion", stat)
-            last = _git(path, "log", "-1", "--format=%ct %s") or "0 "
-            lt, _, lsub = last.partition(" ")
-            # 影子帳本 verify-<倉身份>.rows.jsonl:每列一支測試(repo=哪棵樹、rc、time_utc)。取這棵樹每支最後一次;
+            keep.append((path, br, dirty, m))
+        for p in [p for p in memo if not p.startswith("_") and p not in {r[0] for r in rows}]:
+            memo.pop(p, None)
+        latest_all, rid, err = _si_ledger_latest(repo, [k[0] for k in keep], memo.get("_rid"))
+        memo["_rid"] = rid
+        if err:
+            dev["err"].append(err)
+
+        def _utc(t):
+            try: return _cal.timegm(_t.strptime(t, "%Y-%m-%dT%H:%M:%SZ"))
+            except Exception: return 0
+        for path, br, dirty, m in keep:
+            # 影子帳本:每列一支測試(repo=哪棵樹、rc、time_utc)。取這棵樹每支最後一次;
             # 比最後一個 commit 舊的算「舊」(測的是改之前的碼),不算綠
             tests = {"green": 0, "red": 0, "stale": 0, "rows": 0, "last": None, "red_names": []}
-            if reuse_index and shadow:
-                rid = reuse_index.repo_identity(path) or ""
-                latest = {}
-                try:
-                    with open(os.path.join(shadow, f"verify-{rid}.rows.jsonl"), encoding="utf-8") as fh:
-                        for ln in fh:
-                            try: r = json.loads(ln)
-                            except Exception: continue
-                            if r.get("repo") == path and r.get("test"):
-                                latest[r["test"]] = r
-                except OSError:
-                    pass
-                import calendar as _cal
-                def _utc(t):
-                    try: return _cal.timegm(_t.strptime(t, "%Y-%m-%dT%H:%M:%SZ"))
-                    except Exception: return 0
-                commit_t = int(lt) if lt.isdigit() else 0
+            if latest_all is not None:
+                latest = latest_all.get(path) or {}
+                commit_t = m.get("ct") or 0
                 for t, r in latest.items():
                     if _utc(r.get("time_utc") or "") < commit_t:
                         tests["stale"] += 1; continue
@@ -553,13 +756,21 @@ if DEV and out["code"]:
                         tests["red"] += 1; tests["red_names"].append(t.split("/")[-1])
                 tests["red_names"] = tests["red_names"][:5]
                 tests["last"] = max((r.get("time") or "" for r in latest.values()), default=None)
-            dev["trees"].append({"path": path, "branch": br, "ahead": int(ahead) if ahead and ahead.isdigit() else None,
-                                 "behind": int(behind) if behind and behind.isdigit() else None, "dirty": len(dirty),
+            dev["trees"].append({"path": path, "branch": br, "ahead": m.get("ahead"), "behind": m.get("behind"), "dirty": len(dirty),
                                  "dirty_files": [d[3:] for d in dirty[:6]],
-                                 "files": int(m_f.group(1)) if m_f else 0, "ins": int(m_i.group(1)) if m_i else 0, "dels": int(m_d.group(1)) if m_d else 0,
-                                 "last_age_s": int(_t.time()) - int(lt) if lt.isdigit() else None, "subject": lsub[:70], "tests": tests})
+                                 "files": m.get("files", 0), "ins": m.get("ins", 0), "dels": m.get("dels", 0),
+                                 "last_ct": m.get("ct"), "subject": m.get("subject", ""), "tests": tests})
+        return dev
+
+    try:
+        import time as _t
+        dev, _hit = _si_section("dev", out["code"], repo, _dev_build)
+        for tr in dev.get("trees") or []:
+            tr["last_age_s"] = int(_t.time()) - tr["last_ct"] if tr.get("last_ct") else None
+        dev["cache"] = "miss" if _hit is None else "hit"
+        dev["cache_age_s"] = _hit or 0   # 這份數字是幾秒前量的(未存檔 / 測試結果最多晚 90 秒)
     except Exception as e:
-        dev["err"].append(f"dev git: {e}")
+        dev = {"trees": [], "err": [f"dev git: {e}"]}
     out["dev"] = dev
     out["err"] += dev["err"]
 # QA/驗收視角
@@ -583,37 +794,37 @@ if QA and out["code"]:
     except Exception as e:
         qa["err"].append(f"qa dm: {e}")
     # (2) 沒驗的格子:影子帳本裡 measured != True 的列(每棵有我席碼的樹、每支取最後一次),以及有 fail_cells 的
-    try:
-        sys.path.insert(0, os.path.join(repo, "tools", "verify"))
-        import reuse_index, shadow_tracer
-        shadow = str(shadow_tracer.shadow_dir_default())
-        def _git(cwd, *args):
-            r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
-            return r.stdout.strip() if r.returncode == 0 else None
-        for blk in (_git(repo, "worktree", "list", "--porcelain") or "").split("\n\n"):
-            path = next((l[9:] for l in blk.splitlines() if l.startswith("worktree ")), None)
-            if not path or not os.path.isdir(path):
-                continue
-            br = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-            if out["code"] not in br and out["code"] not in path:
-                continue
-            if br == "HEAD" and not (_git(path, "status", "--short") or ""):
+    #     11-12 熱修:跟 dev 段同一套(只列本席樹、不逐棵叫 git、帳本只讀一遍、90 秒快取)
+    def _qa_build(common, rows, rem, memo):
+        res = {"unverified": [], "err": []}
+        if common is None:
+            res["err"].append("qa shadow: 找不到 .git")
+            return res
+        keep = []
+        for path, br, adm, head in rows:
+            if br == "HEAD" and not (_si_git(path, "status", "--short") or ""):
                 continue   # 對照用的乾淨 checkout,不是在驗的包
-            rid = reuse_index.repo_identity(path) or ""
-            latest = {}
-            try:
-                with open(os.path.join(shadow, f"verify-{rid}.rows.jsonl"), encoding="utf-8") as fh:
-                    for ln in fh:
-                        try: r = json.loads(ln)
-                        except Exception: continue
-                        if r.get("repo") == path and r.get("test"):
-                            latest[r["test"]] = r
-            except OSError:
-                continue
+            keep.append((path, br))
+        latest_all, rid, err = _si_ledger_latest(repo, [k[0] for k in keep], memo.get("_rid"))
+        memo["_rid"] = rid
+        if err:
+            res["err"].append(f"qa {err}")
+            return res
+        for path, br in keep:
+            if path not in latest_all:
+                continue   # 帳本檔不存在 ⇒ 不列(同舊版)
+            latest = latest_all[path]
             unm = [t for t, r in latest.items() if r.get("measured") is not True]
             fails = [t for t, r in latest.items() if r.get("fail_cells")]
-            qa["unverified"].append({"branch": br, "tests": len(latest), "unmeasured": len(unm), "fail_cells": len(fails),
-                                     "unmeasured_names": [t.split("/")[-1] for t in unm[:5]], "fail_names": [t.split("/")[-1] for t in fails[:5]]})
+            res["unverified"].append({"branch": br, "tests": len(latest), "unmeasured": len(unm), "fail_cells": len(fails),
+                                      "unmeasured_names": [t.split("/")[-1] for t in unm[:5]], "fail_names": [t.split("/")[-1] for t in fails[:5]]})
+        return res
+    try:
+        _qres, _qhit = _si_section("qa", out["code"], repo, _qa_build)
+        qa["unverified"] = _qres.get("unverified") or []
+        qa["err"] += _qres.get("err") or []
+        qa["cache"] = "miss" if _qhit is None else "hit"
+        qa["cache_age_s"] = _qhit or 0
     except Exception as e:
         qa["err"].append(f"qa shadow: {e}")
     # (3) 我寫過的審查/驗收檔:pending/ 裡檔名帶我席碼、名字像 XREVIEW / ACCEPT / REVIEW 的,最近 7 天
