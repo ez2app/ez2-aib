@@ -4,10 +4,13 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aib_drive::decide::{decide, CellState, Intent, Known, Roles, Snapshot};
-use aib_drive::snapshot::{build, cell_of, lines_for, read_lines, FileLine, GhRead, Inputs, Read};
+use aib_drive::snapshot::{build, cell_of, lines_for, owner_claim, FileLine, GhRead, Inputs, Read};
+use aib_drive::source::{read_notes, run_fixed, AibQueue, Queue};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 const R: &str = "ez2app/ez2-aib";
 const H678: &str = "7bcb6ee014c446d41455fa32664e646860421fe4";
@@ -88,8 +91,34 @@ fn roles() -> Roles {
     }
 }
 
+/// The dm queues as recorded; a seat with no recording is an error.
+struct FakeQueue(HashMap<String, Result<Value, String>>);
+
+impl Queue for FakeQueue {
+    fn waiting(&self, seat: &str) -> Result<Value, String> {
+        self.0
+            .get(seat)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("not recorded: {seat}")))
+    }
+}
+
+const SEATS: [&str; 2] = ["c477a", "2240e"];
+
+fn quiet() -> FakeQueue {
+    FakeQueue(
+        SEATS
+            .iter()
+            .map(|s| ((*s).to_owned(), Ok(json!([]))))
+            .collect(),
+    )
+}
+
+/// Each call its own folder: tests run in parallel.
 fn pending_with(tag: &str, lines: &[(&str, &str)]) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("aib-drive-snap-{}-{tag}", std::process::id()));
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let k = N.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("aib-drive-snap-{}-{tag}-{k}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     for (name, line) in lines {
@@ -98,8 +127,17 @@ fn pending_with(tag: &str, lines: &[(&str, &str)]) -> PathBuf {
     d
 }
 
+fn empty() -> PathBuf {
+    pending_with("empty", &[])
+}
+
 fn snap(m: HashMap<String, Value>, pending: &Path) -> Result<Snapshot, String> {
+    snap_q(m, pending, &quiet())
+}
+
+fn snap_q(m: HashMap<String, Value>, pending: &Path, q: &FakeQueue) -> Result<Snapshot, String> {
     let prev = BTreeMap::new();
+    let seats: Vec<String> = SEATS.iter().map(|s| (*s).to_owned()).collect();
     build(
         &Fake(m),
         &Inputs {
@@ -107,6 +145,8 @@ fn snap(m: HashMap<String, Value>, pending: &Path) -> Result<Snapshot, String> {
             roles: roles(),
             pending,
             prev_heads: &prev,
+            queue: q,
+            seats: &seats,
         },
     )
 }
@@ -119,7 +159,7 @@ fn a_full_page_of_open_pulls_is_no_snapshot() {
         format!("repos/{R}/pulls?state=open&per_page=100"),
         json!(many),
     );
-    let e = snap(m, Path::new("/nonexistent")).unwrap_err();
+    let e = snap(m, &empty()).unwrap_err();
     assert!(e.contains("next page"), "{e}");
 }
 
@@ -139,7 +179,7 @@ fn a_full_page_of_commits_is_unknown_and_no_review_is_matched() {
 
 #[test]
 fn required_cells_come_from_the_rules_and_unreadable_rules_are_unknown() {
-    let s = snap(gh678(), Path::new("/nonexistent")).unwrap();
+    let s = snap(gh678(), &empty()).unwrap();
     assert_eq!(
         s.required_cells,
         Known::Known(vec![
@@ -154,12 +194,12 @@ fn required_cells_come_from_the_rules_and_unreadable_rules_are_unknown() {
         json!([{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
             "required_status_checks": [{"integration_id": 15368}]}}]),
     );
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.required_cells, Known::Unknown(_)));
     assert!(matches!(s.rules_version, Known::Unknown(_)));
     let mut m = gh678();
     m.remove(&format!("repos/{R}/rules/branches/main"));
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.required_cells, Known::Unknown(_)));
 }
 
@@ -200,7 +240,7 @@ fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
             ("REVIEW-678.txt", REV678),
         ],
     );
-    let got = read_lines(&d);
+    let got = read_notes(&d).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].line, REV678);
 }
@@ -246,7 +286,7 @@ fn check_runs_that_may_have_more_or_no_ready_time_are_unknown() {
             run("rust (ubuntu-latest)", "completed", Some("success"), "2026-11-11T11:25:00Z", 43001),
         ]}),
     );
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.prs[0].cells, Known::Unknown(_)));
     // was a draft once, no ready event read: the ready time is unknown
     let mut m = gh678();
@@ -254,24 +294,24 @@ fn check_runs_that_may_have_more_or_no_ready_time_are_unknown() {
         format!("repos/{R}/issues/678/timeline?per_page=100"),
         json!([{"event": "convert_to_draft", "created_at": "2026-11-11T11:21:00Z"}]),
     );
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.prs[0].cells, Known::Unknown(_)));
 }
 
 #[test]
 fn guarded_paths_are_seen_and_an_unreadable_file_list_is_unknown() {
-    let s = snap(gh678(), Path::new("/nonexistent")).unwrap();
+    let s = snap(gh678(), &empty()).unwrap();
     assert_eq!(s.prs[0].touches_guarded, Known::Known(false));
     let mut m = gh678();
     m.insert(
         format!("repos/{R}/pulls/678/files?per_page=100"),
         json!([{"filename": "crates/aib-release/src/trial.rs"}, {"filename": ".github/workflows/aibd.yml"}]),
     );
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert_eq!(s.prs[0].touches_guarded, Known::Known(true));
     let mut m = gh678();
     m.remove(&format!("repos/{R}/pulls/678/files?per_page=100"));
-    let s = snap(m, Path::new("/nonexistent")).unwrap();
+    let s = snap(m, &empty()).unwrap();
     assert!(matches!(s.prs[0].touches_guarded, Known::Unknown(_)));
 }
 
@@ -307,4 +347,181 @@ fn a_real_round_never_proposes_a_merge() {
         "{out:?}"
     );
     assert!(!out.iter().any(|i| i.is_shared_write()), "{out:?}");
+}
+
+// ---- a9136 PR-B: sources that cannot be read, deadlines, busy seats ----
+
+#[test]
+fn an_unreadable_notes_folder_is_no_snapshot() {
+    let e = snap(gh678(), Path::new("/nonexistent/aib-drive-notes")).unwrap_err();
+    assert!(e.starts_with("notes /nonexistent/aib-drive-notes"), "{e}");
+}
+
+#[test]
+fn an_unreadable_dm_queue_is_no_snapshot() {
+    let mut q = quiet();
+    q.0.insert("2240e".into(), Err("aib: timed out after 30000 ms".into()));
+    let e = snap_q(gh678(), &empty(), &q).unwrap_err();
+    assert_eq!(e, "dm 2240e: aib: timed out after 30000 ms");
+    let mut q = quiet();
+    q.0.insert("c477a".into(), Ok(json!({"not": "a list"})));
+    let e = snap_q(gh678(), &empty(), &q).unwrap_err();
+    assert_eq!(e, "dm c477a: not a list");
+}
+
+#[test]
+fn unread_urgent_mail_makes_a_seat_busy() {
+    let mut q = quiet();
+    q.0.insert(
+        "c477a".into(),
+        Ok(json!([{"priority": "urgent", "read_at": null}])),
+    );
+    q.0.insert(
+        "2240e".into(),
+        Ok(json!([
+            {"priority": "urgent", "read_at": 1794405236},
+            {"priority": "normal"}
+        ])),
+    );
+    let s = snap_q(gh678(), &empty(), &q).unwrap();
+    assert_eq!(s.busy_seats.iter().collect::<Vec<_>>(), vec!["c477a"]);
+}
+
+#[test]
+fn a_commit_list_that_does_not_end_at_the_head_is_unknown() {
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/pulls/678/commits?per_page=100"),
+        json!([{"sha": H678}, {"sha": B678}]),
+    );
+    let d = pending_with("moved", &[("REVIEW-678-x-2240e-7bcb6ee0.md", REV678)]);
+    let s = snap(m, &d).unwrap();
+    assert_eq!(
+        s.prs[0].commits,
+        Known::Unknown("commits do not end at the head (moved between reads)".into())
+    );
+    assert!(s.prs[0].reviews.is_empty());
+}
+
+#[test]
+fn a_pull_without_its_label_list_is_no_snapshot() {
+    let mut m = gh678();
+    let mut p = pull(678, H678, false);
+    p.as_object_mut().unwrap().remove("labels");
+    m.insert(
+        format!("repos/{R}/pulls?state=open&per_page=100"),
+        json!([p]),
+    );
+    assert_eq!(snap(m, &empty()).unwrap_err(), "pull without labels");
+}
+
+#[test]
+fn the_owner_is_the_seat_the_branch_name_claims() {
+    let s = snap(gh678(), &empty()).unwrap();
+    assert_eq!(s.prs[0].owner, "c477a");
+    assert_eq!(owner_claim("feat/aib-drive-snapshot-a9136-1111"), "a9136");
+    assert_eq!(
+        owner_claim("integ/aib-cloud-site-create-4542e-1111"),
+        "4542e"
+    );
+    assert_eq!(owner_claim("fix/no-seat-here"), "unknown");
+}
+
+#[test]
+fn a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal() {
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/commits/{H678}/check-runs?filter=latest&per_page=100"),
+        json!({"total_count": 2, "check_runs": [
+            run("rust (macos-latest)", "completed", Some("cancelled"), "2026-11-11T11:25:00Z", 43001),
+            run("rust (ubuntu-latest)", "completed", Some("failure"), "2026-11-11T11:25:00Z", 43002),
+        ]}),
+    );
+    let s = snap(m, &empty()).unwrap();
+    let cells = s.prs[0].cells.get().unwrap();
+    assert!(cells.iter().all(|c| c.rerun_done), "{cells:?}");
+    let out = decide(&s);
+    assert!(
+        !out.iter().any(|i| matches!(i, Intent::Rerun { .. })),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_renamed_required_check_is_a_new_rules_version() {
+    let a = snap(gh678(), &empty()).unwrap().rules_version;
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/rules/branches/main"),
+        json!([{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
+            "required_status_checks": [{"context": "rust (macos-14)"}, {"context": "rust (ubuntu-latest)"}]}}]),
+    );
+    let b = snap(m, &empty()).unwrap().rules_version;
+    assert!(matches!(a, Known::Known(_)));
+    assert_ne!(a, b);
+}
+
+#[test]
+fn a_matching_note_that_cannot_be_read_is_an_error() {
+    let d = pending_with("unreadable", &[]);
+    // a folder named like a note cannot be read as a file
+    std::fs::create_dir_all(d.join("REVIEW-678-dir.md")).unwrap();
+    let e = read_notes(&d).unwrap_err();
+    assert!(e.starts_with("note REVIEW-678-dir.md"), "{e}");
+}
+
+#[test]
+fn the_dm_reader_passes_only_a_seat_code() {
+    assert_eq!(
+        AibQueue::args("a9136").unwrap(),
+        ["dm-queue", "list", "--seat", "a9136", "--tab", "waiting", "--origin", "live"]
+            .map(str::to_owned)
+            .to_vec()
+    );
+    for bad in [
+        "",
+        "-x",
+        "A9136",
+        "a913",
+        "a91366",
+        "a9136 --tab all",
+        "../x",
+    ] {
+        assert!(AibQueue::args(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_program_that_cannot_start_is_an_error() {
+    let e = run_fixed(
+        "/nonexistent/aib-drive-no-such-bin",
+        &[],
+        Duration::from_secs(5),
+    )
+    .unwrap_err();
+    assert!(e.contains("not run"), "{e}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_call_past_its_deadline_is_killed_and_an_error() {
+    let t = std::time::Instant::now();
+    let e = run_fixed("/bin/sleep", &["30".to_owned()], Duration::from_millis(300)).unwrap_err();
+    assert_eq!(e, "/bin/sleep: timed out after 300 ms");
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_zero_exit_is_an_error_even_with_output() {
+    let args = ["-c", "echo '[]'; echo nope >&2; exit 3"].map(str::to_owned);
+    let e = run_fixed("/bin/sh", &args, Duration::from_secs(10)).unwrap_err();
+    assert_eq!(e, "/bin/sh: exit 3: nope");
+    let ok = run_fixed(
+        "/bin/sh",
+        &["-c".to_owned(), "echo '[]'".to_owned()],
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(ok, b"[]\n");
 }

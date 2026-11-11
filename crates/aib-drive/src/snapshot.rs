@@ -13,12 +13,21 @@
 //! Not wired in this version, so always `Unknown` (nothing can merge on it):
 //! who a review's writer is (B8 ledger records), the seats behind commit
 //! authors, the freeze, the merge slot, knife log scans, `aib-release trial`.
+//!
+//! Sources with no `Unknown` slot in [`Snapshot`] fail the whole build: the
+//! open-PR list, the review / acceptance files ([`read_notes`]) and the dm
+//! queues behind `busy_seats` (a9136 PR-B). Every `gh` / `aib` call has a
+//! deadline ([`run_fixed`]).
 
-use crate::decide::{Cell, CellState, Known, Pr, ReviewLine, Roles, Sha, Snapshot, VerifyLine};
+use crate::decide::{
+    Cell, CellState, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot, VerifyLine,
+};
+pub use crate::source::FileLine;
+use crate::source::{busy_seats, is_seat, read_notes, run_fixed, Queue, CALL_TIMEOUT};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 /// Largest page GitHub gives; a list this long may have more, so it is
 /// refused as incomplete.
@@ -44,12 +53,15 @@ pub trait Read {
 pub struct GhRead {
     /// The `gh` program (tests point it at a fake).
     pub program: String,
+    /// A call past this is killed and is an error.
+    pub timeout: Duration,
 }
 
 impl GhRead {
     pub fn new() -> Self {
         Self {
             program: "gh".to_owned(),
+            timeout: CALL_TIMEOUT,
         }
     }
 
@@ -71,15 +83,9 @@ impl Default for GhRead {
 
 impl Read for GhRead {
     fn get(&self, path: &str) -> Result<Value, String> {
-        let out = Command::new(&self.program)
-            .args(Self::args(path)?)
-            .output()
-            .map_err(|e| format!("gh not run: {}", e.kind()))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("gh api {path}: {}", err.trim()));
-        }
-        serde_json::from_slice(&out.stdout).map_err(|_| format!("gh api {path}: bad json"))
+        let out = run_fixed(&self.program, &Self::args(path)?, self.timeout)
+            .map_err(|e| format!("gh api {path}: {e}"))?;
+        serde_json::from_slice(&out).map_err(|_| format!("gh api {path}: bad json"))
     }
 }
 
@@ -92,6 +98,10 @@ pub struct Inputs<'a> {
     pub pending: &'a Path,
     /// The head each PR had in the last dry-run record.
     pub prev_heads: &'a BTreeMap<u64, Sha>,
+    /// The dm queues, read for `busy_seats`.
+    pub queue: &'a dyn Queue,
+    /// The seats whose queues are read.
+    pub seats: &'a [Seat],
 }
 
 fn arr<'v>(v: &'v Value, what: &str) -> Result<&'v Vec<Value>, String> {
@@ -120,7 +130,8 @@ pub fn build(gh: &dyn Read, inp: &Inputs<'_>) -> Result<Snapshot, String> {
     ))?;
     let list = whole(&list, "open pulls")?;
     let (required_cells, rules_version) = rules(gh, repo);
-    let files = read_lines(inp.pending);
+    let files = read_notes(inp.pending)?;
+    let busy_seats = busy_seats(inp.queue, inp.seats)?;
     let mut prs = Vec::new();
     for p in list {
         prs.push(pr(gh, repo, p, &files, inp.prev_heads)?);
@@ -132,7 +143,7 @@ pub fn build(gh: &dyn Read, inp: &Inputs<'_>) -> Result<Snapshot, String> {
         required_cells,
         rules_version,
         merge_slot_free: Known::Unknown("merge lock not wired".into()),
-        busy_seats: BTreeSet::new(),
+        busy_seats,
         prs,
         rulings: Vec::new(),
         done: BTreeSet::new(),
@@ -178,39 +189,9 @@ fn rules(gh: &dyn Read, repo: &str) -> (Known<Vec<String>>, Known<String>) {
     }
     names.sort();
     names.dedup();
-    let version = format!("rulesets {ids:?} checks {}", names.len());
+    // the names themselves, so a renamed check is a new version
+    let version = format!("rulesets {ids:?} checks {names:?}");
     (Known::Known(names), Known::Known(version))
-}
-
-/// One review / acceptance file: its name and first line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileLine {
-    pub name: String,
-    pub line: String,
-}
-
-/// The first line of every `REVIEW-*.md` / `VERIFY-*.md` in `dir`. A file
-/// that cannot be read is left out (it then cannot count for anything).
-pub fn read_lines(dir: &Path) -> Vec<FileLine> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<FileLine> = rd
-        .filter_map(Result::ok)
-        .filter_map(|e| {
-            let name = e.file_name().to_str()?.to_owned();
-            if !(name.starts_with("REVIEW-") || name.starts_with("VERIFY-"))
-                || !name.ends_with(".md")
-            {
-                return None;
-            }
-            let text = std::fs::read_to_string(e.path()).ok()?;
-            let line = text.lines().next().unwrap_or_default().to_owned();
-            Some(FileLine { name, line })
-        })
-        .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
 }
 
 /// `VERIFY-<kind>-…`: the kind is the part before the next `-`.
@@ -264,22 +245,31 @@ fn pr(
     let base = p.get("base").ok_or("pull without base")?;
     let head_sha = st(head, "sha").ok_or("pull without head sha")?;
     let head_ref = st(head, "ref").ok_or("pull without head ref")?;
+    // no label list is not "no labels": needs-verify would read as none
     let labels: Vec<String> = p
         .get("labels")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|l| st(l, "name")).collect())
-        .unwrap_or_default();
-    let commits = commits(gh, repo, number);
+        .ok_or("pull without labels")?
+        .iter()
+        .map(|l| st(l, "name").ok_or("label without a name"))
+        .collect::<Result<_, _>>()?;
+    let commits = match commits(gh, repo, number) {
+        // the list must end at the head the pull list gave: otherwise the PR
+        // moved between the two reads
+        Known::Known(c) if c.last() != Some(&head_sha) => {
+            Known::Unknown("commits do not end at the head (moved between reads)".into())
+        }
+        c => c,
+    };
     let (reviews, verifies) = match &commits {
         Known::Known(c) => lines_for(files, c),
         Known::Unknown(_) => (Vec::new(), Vec::new()),
     };
     Ok(Pr {
         number,
-        owner: p
-            .get("user")
-            .and_then(|u| st(u, "login"))
-            .unwrap_or_default(),
+        // every PR is pushed by one GitHub account: the seat is the one the
+        // branch name claims (only used to address nudges)
+        owner: owner_claim(&head_ref),
         head_ref: head_ref.clone(),
         base_ref: st(base, "ref").ok_or("pull without base ref")?,
         base_head: st(base, "sha").ok_or("pull without base sha")?,
@@ -397,7 +387,9 @@ pub fn cell_of(c: &Value, ready: &str) -> Option<Cell> {
         // RFC 3339 in UTC (`…Z`) compares as text
         after_ready: started.as_str() >= ready,
         cancelled_by_us: false,
-        rerun_done: false,
+        // the journal is not wired: whether this head was re-run already is
+        // not known, so no re-run is proposed (a63ab D9: at most one)
+        rerun_done: true,
         class: None,
     })
 }
@@ -430,4 +422,14 @@ fn cells(gh: &dyn Read, repo: &str, n: u64, head: &str, p: &Value) -> Known<Vec<
         }
     }
     Known::Known(out)
+}
+
+/// The seat code a branch name claims (`…-a9136-1111`): the last `-` / `/`
+/// part that is a seat code; `unknown` if none.
+pub fn owner_claim(head_ref: &str) -> Seat {
+    head_ref
+        .rsplit(['-', '/'])
+        .find(|p| is_seat(p))
+        .unwrap_or("unknown")
+        .to_owned()
 }
