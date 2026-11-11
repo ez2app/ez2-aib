@@ -88,7 +88,12 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add "$TARGET"
-          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools >/dev/null
+          # 11-11: runners could not resolve security.ubuntu.com for hours and this step killed every
+          # build. aib-cloud-host + aib-cloud are pure Rust (serde_json only, no cc / *-sys crate), and
+          # rustc's musl target links self-contained, so musl-tools is only a nicety: install if apt works.
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools >/dev/null; }; then
+            echo "::warning::musl-tools not installed (apt failed); building with rustc's self-contained musl"
+          fi
       - name: test (host crate, native)
         run: cargo test -p aib-cloud-host --locked
       # #612 (33e28, c477a review M1 / M2 / L1): each knife breaks one self-update rule and must turn
