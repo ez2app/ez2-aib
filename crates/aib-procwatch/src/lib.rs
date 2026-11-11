@@ -687,4 +687,17 @@ mod errno_tests {
         );
         assert_eq!(errno_in("errno = x"), None);
     }
+
+    /// The text errno_in reads is libproc's real output, not a copy of it: a libproc
+    /// upgrade that changes the format turns this red instead of silently sending every
+    /// EPERM back to start_unknown (1ced7 #624 inc L1).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn libproc_error_text_carries_errno() {
+        use libproc::libproc::bsd_info::BSDInfo;
+        use libproc::libproc::proc_pid::pidinfo;
+        // no such pid: ESRCH (3)
+        let e = pidinfo::<BSDInfo>(i32::MAX, 0).unwrap_err();
+        assert_eq!(errno_in(&e), Some(3), "{e}");
+    }
 }
