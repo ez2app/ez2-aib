@@ -68,7 +68,7 @@ fn head_position(cs: &[char], start: usize) -> bool {
         return true;
     }
     let mut k = start;
-    while k > 0 && matches!(cs[k - 1], ' ' | ':' | ':' | '=' | '\u{3000}') {
+    while k > 0 && matches!(cs[k - 1], ' ' | ':' | '\u{ff1a}' | '=' | '\u{3000}') {
         k -= 1;
     }
     let before: String = cs[k.saturating_sub(8)..k]
@@ -456,8 +456,17 @@ pub fn review_first_line(file_text: &str) -> &str {
 /// order, once each. A dm that hands over a review sends its first line too.
 pub fn review_paths(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for w in text.split(|c: char| c.is_whitespace() || "()()「」,,;;、。:".contains(c)) {
-        let w = w.trim_end_matches(['.', '。', ':', ':']);
+    for w in text.split(|c: char| {
+        c.is_whitespace()
+            || "(),;\u{ff08}\u{ff09}\u{ff0c}\u{ff1b}\u{ff1a}\u{300c}\u{300d}\u{3001}\u{3002}"
+                .contains(c)
+    }) {
+        let w = w.trim_end_matches(['.', ':', '\u{3002}', '\u{ff1a}']);
+        // `審完:/path` (ASCII colon glued to a word; not split on, `C:\` is a path)
+        let w = w
+            .find(":/")
+            .or_else(|| w.find(":~/"))
+            .map_or(w, |i| &w[i + 1..]);
         let name = w.rsplit(['/', '\\']).next().unwrap_or("");
         let is_note =
             (name.starts_with("REVIEW-") || name.starts_with("VERIFY-")) && name.ends_with(".md");

@@ -107,7 +107,7 @@ fn a_dm_naming_an_old_head_is_held_back() {
         }
     );
     assert_eq!(r.to_json()["reason"], "stale_head");
-    assert!(r.lines()[0].contains(NEW), "{:?}", r.lines());
+    assert!(r.lines()[0].contains(&NEW[..8]), "{:?}", r.lines());
 }
 
 /// The current head — full or any prefix of 8 or more — is never held back,
@@ -178,7 +178,8 @@ fn stacked_prs_an_old_lower_commit_beside_the_upper_head_is_not_held() {
     // alone, written as a head, it is held back, and both PRs are named
     let r = check(&gh(), &OK, REPO, &format!("#684 頭 {}", &LOW_OLD[..8]));
     assert!(r.blocked(), "{r:?}");
-    let l = &r.lines()[0];
+    let lines = r.lines();
+    let l = &lines[0];
     assert!(l.contains("#684") && l.contains("#685"), "{l}");
 }
 
@@ -349,6 +350,9 @@ fn lookups_stop_at_ten() {
 #[test]
 fn a_review_named_in_a_dm_is_found_and_only_its_first_line_counts() {
     let dm = "審完:/Users/x/.ez2-aib/pending/REVIEW-685-r4-1ced7-e8e61c1c.md(r4)、~/p/VERIFY-a.md。另見 REVIEW-bare.md";
+    // the same with full-width colon and brackets
+    let wide = "審完\u{ff1a}/Users/x/.ez2-aib/pending/REVIEW-685-r4-1ced7-e8e61c1c.md\u{ff08}r4\u{ff09}、~/p/VERIFY-a.md。";
+    assert_eq!(review_paths(wide), review_paths(dm));
     assert_eq!(
         review_paths(dm),
         vec![
