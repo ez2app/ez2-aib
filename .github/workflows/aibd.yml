@@ -2067,8 +2067,8 @@ jobs:
              '                } else if open.first().is_some_and(|(n, _)| named.contains(n)) { // knife' \
              stacked_prs_an_old_lower_commit_beside_the_upper_head_is_not_held
           # SL3e (a9136 0084435f L1) every mention of an old commit counts as a head
-          hk '    HEAD_WORDS.iter().any(|w| before.ends_with(w)) && !OLD_WORDS.iter().any(|w| before.ends_with(w))' \
-             '    HEAD_WORDS.iter().chain(OLD_WORDS).any(|w| before.ends_with(w)) || !before.is_empty() // knife' \
+          hk '    HEAD_WORDS.iter().any(|w| ends(&before, w)) && !OLD_WORDS.iter().any(|w| ends(&before, w))' \
+             '    HEAD_WORDS.iter().chain(OLD_WORDS).any(|w| ends(&before, w)) || !before.is_empty() // knife' \
              an_old_commit_not_written_as_a_head_is_a_reminder
           # SL3b a short (8+) prefix of the current head is held back as old
           hk '            .find(|(_, h)| h.starts_with(hex))' \

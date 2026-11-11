@@ -55,9 +55,10 @@ pub struct Token {
     pub as_head: bool,
 }
 
-/// Words after which a hex run is claimed to be a head. `舊頭` / `原頭` /
-/// `前頭` name an old one on purpose.
-const HEAD_WORDS: &[&str] = &["頭", "頭碼", "head", "推了", "推到", "pushed"];
+/// Words after which a hex run is claimed to be a head (`已推 X`, `推上 X`,
+/// `現在頭 X` too: a9136 f3d08c94 L1). `舊頭` / `原頭` / `前頭` name an old
+/// one on purpose.
+const HEAD_WORDS: &[&str] = &["頭", "頭碼", "head", "推", "推了", "推到", "推上", "pushed"];
 const OLD_WORDS: &[&str] = &["舊頭", "原頭", "前頭", "舊頭碼", "原頭碼", "old head"];
 
 /// Is the run starting at `start` written where a head goes?
@@ -74,7 +75,17 @@ fn head_position(cs: &[char], start: usize) -> bool {
         .iter()
         .collect::<String>()
         .to_lowercase();
-    HEAD_WORDS.iter().any(|w| before.ends_with(w)) && !OLD_WORDS.iter().any(|w| before.ends_with(w))
+    HEAD_WORDS.iter().any(|w| ends(&before, w)) && !OLD_WORDS.iter().any(|w| ends(&before, w))
+}
+
+/// `before` ends with the word `w`; an English word must not be the tail of
+/// a longer one (`ahead`, `overhead`: a9136 f3d08c94 N1).
+fn ends(before: &str, w: &str) -> bool {
+    let Some(rest) = before.strip_suffix(w) else {
+        return false;
+    };
+    !(w.starts_with(|c: char| c.is_ascii_alphabetic())
+        && rest.ends_with(|c: char| c.is_ascii_alphabetic()))
 }
 
 fn is_word(c: char) -> bool {
@@ -218,7 +229,7 @@ impl Report {
             let h = &t.hex;
             match v {
                 Verdict::StaleHead { heads } => out.push(format!(
-                    "stale_head: {h} 寫在頭的位置,但它是 {} 的舊 commit;改成現頭再送(確定要寫舊的:AIB_DM_ACK_STALE=1)",
+                    "stale_head: {h} 寫在頭的位置,但它是 {} 的舊 commit;改成現頭再送(也查 dm 點名的審查稿第一行;確定要寫 / 轉交舊的:AIB_DM_ACK_STALE=1)",
                     list(heads)
                 )),
                 Verdict::StaleNamed { heads } => out.push(format!(

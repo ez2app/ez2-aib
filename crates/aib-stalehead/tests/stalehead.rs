@@ -188,6 +188,8 @@ fn an_old_commit_not_written_as_a_head_is_a_reminder() {
     for text in [
         format!("#685 根因修在 {}", &OLD[..8]),
         format!("#685 舊頭 {} 已換掉", &OLD[..8]),
+        format!("ahead {}", &OLD[..8]),
+        format!("overhead {}", &OLD[..8]),
         format!("增量 {}..{NEW}", &OLD[..8]),
     ] {
         let r = check(&gh(), &OK, REPO, &text);
@@ -209,6 +211,9 @@ fn every_head_position_is_held_to_the_current_head() {
         format!("HEAD={o}"),
         format!("head {o}"),
         format!("推了 {o}"),
+        format!("#685 已推 {o}"),
+        format!("推上 {o}"),
+        format!("現在頭 {o}"),
         format!("增量 {OTHER}..{o}"),
     ] {
         let r = check(&gh(), &OK, REPO, &text);
