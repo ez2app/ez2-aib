@@ -1606,6 +1606,12 @@ jobs:
           tk '            .suffix(".git")' \
              '            .suffix(".git").rand_bytes(0) // knife: one name for all' \
              trials_made_at_once_each_get_their_own_scratch
+          # T6 (2240e #678 N1) a scratch repository whose init fails is left in the temp dir
+          python3 -I scripts/knife.py crates/aib-release/src/trial.rs \
+            '        fill(made.path())?;' \
+            '        let r = fill(made.path()); if let Err(e) = r { std::mem::forget(made); return Err(e); } // knife: half-made scratch stays' \
+            --expect-fail a_scratch_whose_filling_fails_is_removed_with_what_was_put_in_it \
+            -- cargo test -p aib-release --locked --lib a_scratch_whose_filling_fails_is_removed_with_what_was_put_in_it
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)

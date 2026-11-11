@@ -369,6 +369,26 @@ pub struct GitCli {
 /// Removed with everything in it when dropped.
 struct Scratch(tempfile::TempDir);
 
+impl Scratch {
+    /// A new directory under `base` whose name is made and taken in one step, then
+    /// `fill`ed; when `fill` fails the directory goes with everything put in it so far
+    /// (2240e #678 N1: a half-made scratch repository is not left in the temp dir).
+    fn made_in(
+        base: &Path,
+        fill: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        // pid + nanoseconds named two trials of one process alike on macOS, whose clock
+        // moves in microseconds (#644, #675 run 43000539701: "File exists")
+        let made = tempfile::Builder::new()
+            .prefix("aib-release-trial-")
+            .suffix(".git")
+            .tempdir_in(base)
+            .map_err(|e| format!("scratch repository: {e}"))?;
+        fill(made.path())?;
+        Ok(Self(made))
+    }
+}
+
 /// The config file that means "none".
 const NO_CONFIG: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
@@ -443,23 +463,15 @@ impl GitCli {
         if objects.is_empty() || objects.contains('\n') || objects.starts_with('"') {
             return Err(format!("objects path {objects:?} cannot be an alternate"));
         }
-        // a name that is made and taken in one step: pid + nanoseconds named two trials of
-        // one process alike on macOS, whose clock moves in microseconds (#644, #675 run
-        // 43000539701: "File exists")
-        let made = tempfile::Builder::new()
-            .prefix("aib-release-trial-")
-            .suffix(".git")
-            .tempdir()
-            .map_err(|e| format!("scratch repository: {e}"))?;
-        let scratch = Scratch(made);
-        let mut init = isolated_cmd();
-        init.args(["init", "-q", "--bare", "--template="])
-            .arg(scratch.0.path());
-        run_ok(init, "init --bare")?;
-        let info = scratch.0.path().join("objects").join("info");
-        std::fs::create_dir_all(&info).map_err(|e| format!("{}: {e}", info.display()))?;
-        std::fs::write(info.join("alternates"), format!("{objects}\n"))
-            .map_err(|e| format!("alternates: {e}"))?;
+        let scratch = Scratch::made_in(&std::env::temp_dir(), |at| {
+            let mut init = isolated_cmd();
+            init.args(["init", "-q", "--bare", "--template="]).arg(at);
+            run_ok(init, "init --bare")?;
+            let info = at.join("objects").join("info");
+            std::fs::create_dir_all(&info).map_err(|e| format!("{}: {e}", info.display()))?;
+            std::fs::write(info.join("alternates"), format!("{objects}\n"))
+                .map_err(|e| format!("alternates: {e}"))
+        })?;
         Ok(Self {
             src: dir.to_owned(),
             scratch,
@@ -580,5 +592,57 @@ impl Git for GitCli {
             b,
         ];
         Ok(nul_list(&run_ok(self.scratch_git(&args), "diff-tree")?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scratch;
+    use std::path::Path;
+
+    fn left_in(base: &Path) -> Vec<String> {
+        std::fs::read_dir(base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_scratch_whose_filling_fails_is_removed_with_what_was_put_in_it() {
+        let base = tempfile::tempdir().unwrap();
+        let mut seen = None;
+        let r = Scratch::made_in(base.path(), |at| {
+            std::fs::create_dir_all(at.join("objects").join("info")).unwrap();
+            std::fs::write(at.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            seen = Some(at.to_owned());
+            Err("init --bare failed".into())
+        });
+        assert_eq!(r.err().as_deref(), Some("init --bare failed"));
+        let seen = seen.expect("fill ran");
+        assert!(
+            seen.starts_with(base.path()),
+            "{seen:?} is not under the base"
+        );
+        assert!(!seen.exists(), "{seen:?} was left behind");
+        assert_eq!(left_in(base.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_scratch_that_is_filled_stays_until_it_is_dropped() {
+        let base = tempfile::tempdir().unwrap();
+        let s = Scratch::made_in(base.path(), |at| {
+            std::fs::write(at.join("HEAD"), "x").map_err(|e| e.to_string())
+        })
+        .unwrap();
+        let at = s.0.path().to_owned();
+        let name = at.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("aib-release-trial-") && name.ends_with(".git"),
+            "{name}"
+        );
+        assert!(at.join("HEAD").is_file());
+        drop(s);
+        assert!(!at.exists(), "{at:?} was left behind");
+        assert_eq!(left_in(base.path()), Vec::<String>::new());
     }
 }
