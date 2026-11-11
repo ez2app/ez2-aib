@@ -102,8 +102,8 @@ fn stage(f: &[(String, String)]) -> (Value, u8) {
     // so a missing key here is one the program will default or refuse by itself)
     let missing: Vec<String> = declared
         .iter()
-        .filter(|k| !pairs.iter().any(|(pk, _)| pk == *k))
-        .cloned()
+        .filter(|d| !pairs.iter().any(|(pk, _)| *pk == d.key))
+        .map(|d| d.key.clone())
         .collect();
     let review_text = match std::fs::read(review) {
         Ok(b) if b.len() <= 256 * 1024 => String::from_utf8_lossy(&b).into_owned(),
@@ -140,7 +140,8 @@ fn stage(f: &[(String, String)]) -> (Value, u8) {
         json!({
             "ok": true,
             "program": {"real": prog.real, "name": name, "sha256": prog.sha256, "copy": pcopy,
-                        "lang": lang, "argv": prog.lang.argv(&pcopy), "declared": declared},
+                        "lang": lang, "argv": prog.lang.argv(&pcopy),
+                        "declared": declared.iter().map(|d| d.key.as_str()).collect::<Vec<_>>()},
             "params": {"sha256": params::sha256_hex(text.as_bytes()), "copy": params_copy,
                        "text": text, "pairs": pairs, "missing": missing},
             "review": first,

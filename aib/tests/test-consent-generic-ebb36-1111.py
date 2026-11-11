@@ -204,6 +204,14 @@ class G4Decide(Base):
         self.assertFalse(Path(seen["dest"]).exists())
         self.assertNotIn("view", seen, "a dialog was shown for a refused program")
 
+    def test_g4_stage_codes_sorted(self):
+        # c477a #662 N2:名字不合規 / 參數型別不對 = 不准;暫存夾寫不進 / 叫不起來 = 做不到
+        for why, want in (("stage_name", "not_allowed"), ("params_value_kind", "not_allowed"),
+                          ("stage_write", "failed"), ("stage_dir", "failed"), ("stage_rc:1", "failed"),
+                          ("stage_error:TimeoutExpired", "failed")):
+            (result, detail, _real, _td), _seen = self.decide(lambda d, w=why: {"ok": False, "why": w})
+            self.assertEqual((result, detail["why"]), (want, why))
+
     def test_g4_unchecked_box(self):
         (result, detail, real, td), seen = self.decide(lambda d: self.stage_out(d), box_ok=False)
         self.assertEqual(result, "denied")

@@ -1522,8 +1522,14 @@ jobs:
              '    !RESERVED.contains(&k) || RESERVED_PREFIX.is_empty() // knife' \
              names_that_change_how_bash_or_python_start_are_refused
           # a key the program does not declare is let through
-          pk params.rs '        Some(i) => Err(refused("params_key_undeclared", i + 1)),' '        Some(_) => Ok(()), // knife' \
+          pk params.rs '            None => return Err(refused("params_key_undeclared", i + 1)),' '            None => {} // knife' \
              only_the_keys_the_program_declares
+          # a plain value may carry , and = into a k=v,k=v option string (c477a #662 L2)
+          pk params.rs '            Kind::Word => word(v),' '            Kind::Word => !v.is_empty(), // knife' \
+             a_value_fits_the_kind_its_key_declares
+          # a review that names the pin anywhere but its first line passes (c477a #662 N1)
+          pk params.rs '    if !first.contains(pin) {' '    if !review.contains(pin) { // knife' \
+             a_review_has_passed_and_names_the_pin
           # the shared program is run whatever its sha256
           pk params.rs '    if sha256 != pin {' '    if sha256 != pin && false { // knife' \
              a_program_must_match_its_pin_and_sit_in_the_shared_folder

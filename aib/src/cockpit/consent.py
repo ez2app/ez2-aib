@@ -575,6 +575,15 @@ def consent_run_exe(env=None):
     return None
 
 
+# stage 回的碼裡,這些是「這台機器做不到」(failed);其他(名字、位置、雜湊、參數、審查)是「不准」(not_allowed)。
+# 明列,不靠 stage_ 前綴:stage_name 是名字不合規(c477a #662 N2)。
+_STAGE_FAILED = frozenset(("stage_dir", "stage_write", "stage_hash_changed", "stage_output", "stage_refused"))
+
+
+def _stage_failed(why):
+    return why in _STAGE_FAILED or why.startswith(("stage_error:", "stage_rc:"))
+
+
 def stage_program(exe, argv, pin, review, dest, env=None, run=None):
     """aib-consent-run stage:驗共用程式 + 參數檔 + 審查檔,複本放進 dest(0700)。回它印的 JSON(ok / why / line /
     program / params / review);叫不起來 / 逾時 / 輸出不對 ⇒ {"ok": False, "why": "stage_…"}(不知道 = 不跑)。"""
@@ -768,7 +777,7 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
         if not st.get("ok"):
             shutil.rmtree(td, ignore_errors=True)
             why = st.get("why") or "stage_refused"
-            return ("failed" if why.startswith("stage_") else "not_allowed"), \
+            return ("failed" if _stage_failed(why) else "not_allowed"), \
                 {"why": why, "line": st.get("line")}, None, None
         view["program"] = st
         staged = {"program_copy": st["program"]["copy"], "program_sha": st["program"]["sha256"],
