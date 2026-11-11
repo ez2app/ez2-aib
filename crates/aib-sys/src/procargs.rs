@@ -15,9 +15,24 @@
 //! (#614 CI, `a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped`).
 //! Pure, so it is tested on every platform.
 
+/// Keys the kernel puts in the apple strings (xnu `exec_add_apple_strings`).
+const APPLE_KEYS: &[&[u8]] = &[
+    b"ptr_munge=",
+    b"main_stack=",
+    b"executable_file=",
+    b"dyld_file=",
+    b"executable_cdhash=",
+    b"executable_boothash=",
+    b"stack_guard=",
+    b"malloc_entropy=",
+    b"th_port=",
+    b"arm64e_abi=",
+];
+
 /// The environment strings of `buf`, in order. `None` = the buffer is not
 /// a whole `KERN_PROCARGS2` answer (too short for `argc`, or the arguments
-/// run past its end). An empty list = no variable shown.
+/// run past its end), or an apple string stands where a variable should
+/// be (no empty string before it). An empty list = no variable shown.
 ///
 /// Limits (as every reader of this format): the padding after the exec path
 /// is skipped up to the first non-NUL byte, so an empty `argv[0]`, or no
@@ -41,6 +56,12 @@ pub fn environ(buf: &[u8]) -> Option<Vec<&[u8]>> {
     while let Some(end) = rest.iter().position(|&b| b == 0) {
         if end == 0 {
             return Some(env);
+        }
+        // an apple string where a variable should be: the empty string was
+        // not there, so where the variables end is not known (043dd #614 L1;
+        // read as variables, they hide a cleared environment again)
+        if APPLE_KEYS.iter().any(|k| rest[..end].starts_with(k)) {
+            return None;
         }
         env.push(&rest[..end]);
         rest = &rest[end + 1..];
@@ -95,6 +116,20 @@ mod tests {
         // sh -c '' : the empty third argument must not eat the variables
         let b = buf(3, b"/bin/sh\0\0/bin/sh\0-c\0\0A=1\0\0ptr_munge=\0");
         assert_eq!(environ(&b).unwrap(), vec![&b"A=1"[..]]);
+    }
+
+    /// 043dd #614 L1: apple strings right after the arguments, with no
+    /// empty string first. Read as variables they would be "a variable but
+    /// no marker", and the candidate would be let go as not ours.
+    #[test]
+    fn apple_strings_without_the_empty_string_before_them_are_none() {
+        let b = buf(
+            2,
+            b"/bin/sleep\0\0/bin/sleep\x0030\0ptr_munge=\0main_stack=\0",
+        );
+        assert_eq!(environ(&b), None);
+        let b = buf(1, b"/bin/x\0\0/bin/x\0A=1\0executable_file=0x1\0");
+        assert_eq!(environ(&b), None);
     }
 
     #[test]
