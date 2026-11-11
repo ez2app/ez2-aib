@@ -51,10 +51,14 @@ async fn start(
         .await
     });
     #[allow(clippy::disallowed_methods)] // test deadline only, not a daemon timer
-    let started = tokio::time::timeout(Duration::from_secs(10), st_rx)
+    let started = match tokio::time::timeout(Duration::from_secs(10), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        Err(_) => panic!("aibd did not start: {:?}", h.await),
+    };
     (started, stop_tx, h)
 }
 

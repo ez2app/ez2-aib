@@ -98,10 +98,14 @@ async fn start_policy(dir: &Path, max: usize, session_policy: SessionPolicy) -> 
         .await
     });
     #[allow(clippy::disallowed_methods)] // test deadline only
-    let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
+    let st = match tokio::time::timeout(Duration::from_secs(20), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        Err(_) => panic!("aibd did not start: {:?}", h.await),
+    };
     Daemon {
         addr: st.addr,
         token: std::fs::read_to_string(&st.token_path).unwrap(),
