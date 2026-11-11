@@ -9,7 +9,7 @@
 //! on a host are the caller's (and a signed, approved step).
 //!
 //! ```text
-//! {"tenant_id":"t-3k9f2a","name":"…","members":[
+//! {"tenant_id":"t-3k9f2a","name":"…","emails":["owner@example.com"],"members":[
 //!   {"identity_id":"m-01","name":"…","roles":["owner"],"scope":"tenant","keys":[
 //!     {"public_key":"ssh-ed25519 AAAA…","use":"entry","device":"…","added":"2026-11-11T00:00:00Z"}]},
 //!   {"identity_id":"m-02","roles":["editor","publisher","analyst"],"scope":["site3"],"keys":[…]}]}
@@ -93,6 +93,9 @@ pub enum Bad {
     Key,
     /// The same member or the same key appears twice.
     Repeated,
+    /// An entry of `emails` is not one address (see [`crate::share::normalize`]), or two
+    /// entries are the same address.
+    Email,
 }
 
 impl Bad {
@@ -109,6 +112,7 @@ impl Bad {
             Bad::Scope => "bad_scope",
             Bad::Key => "bad_key",
             Bad::Repeated => "repeated",
+            Bad::Email => "bad_email",
         }
     }
 }
@@ -164,6 +168,10 @@ pub struct Roster {
     pub tenant_id: String,
     /// The members.
     pub members: Vec<Member>,
+    /// The addresses the tenant's backups may be shared from (plan §14.7 #11), normalized
+    /// by [`crate::share::normalize`]. Optional in the file; empty means none registered,
+    /// and a restore from a shared backup then stops ([`crate::share::Gate::Unknown`]).
+    pub emails: Vec<String>,
 }
 
 fn object<'a>(v: &'a Value, named: &[&str]) -> Result<&'a Map<String, Value>, Bad> {
@@ -257,11 +265,31 @@ fn roles(v: &Value) -> Option<(Vec<Role>, String)> {
     (!out.is_empty()).then_some((out, word))
 }
 
+/// `emails`: absent is none; otherwise a list of addresses, each one address and none
+/// twice once normalized. One bad entry refuses the roster (nothing is skipped).
+fn emails(v: Option<&Value>) -> Result<Vec<String>, Bad> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<String> = Vec::new();
+    for e in v.as_array().ok_or(Bad::Shape)? {
+        let a = e
+            .as_str()
+            .and_then(crate::share::normalize)
+            .ok_or(Bad::Email)?;
+        if out.contains(&a) {
+            return Err(Bad::Email);
+        }
+        out.push(a);
+    }
+    Ok(out)
+}
+
 /// Read a roster. `site_codes` are the codes of every site on the host: a tenant id that
 /// is one of them is refused, whatever else the roster says.
 pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
     let doc: Value = serde_json::from_str(text).map_err(|_| Bad::NotJson)?;
-    let top = object(&doc, &["tenant_id", "name", "members"])?;
+    let top = object(&doc, &["tenant_id", "name", "members", "emails"])?;
     let tenant_id = top
         .get("tenant_id")
         .and_then(Value::as_str)
@@ -271,6 +299,7 @@ pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
         return Err(Bad::TenantIsSiteCode);
     }
     optional_text(top, "name")?;
+    let emails = emails(top.get("emails"))?;
     let mut members: Vec<Member> = Vec::new();
     let mut seen_keys: Vec<String> = Vec::new();
     for m in top
@@ -352,6 +381,7 @@ pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
     Ok(Roster {
         tenant_id: String::from(tenant_id),
         members,
+        emails,
     })
 }
 
@@ -622,6 +652,33 @@ mod tests {
         assert_eq!(read(&v), Err(Bad::Tenant));
         v["tenant_id"] = json!(7);
         assert_eq!(read(&v), Err(Bad::Tenant));
+    }
+
+    #[test]
+    fn the_registered_addresses_are_read_normalized_and_optional() {
+        // absent: none registered (an old roster still reads)
+        assert!(read(&sample()).unwrap().emails.is_empty());
+        let mut v = sample();
+        v["emails"] = json!([" Owner@Example.com", "staff@example.com"]);
+        assert_eq!(
+            read(&v).unwrap().emails,
+            ["owner@example.com", "staff@example.com"]
+        );
+        let bad = |emails: Value| {
+            let mut v = sample();
+            v["emails"] = emails;
+            read(&v).unwrap_err()
+        };
+        // one bad entry refuses the roster; nothing is skipped
+        assert_eq!(bad(json!(["owner@example.com", "owner"])), Bad::Email);
+        assert_eq!(bad(json!(["owner@example.com", 1])), Bad::Email);
+        // the same address twice, once normalized
+        assert_eq!(
+            bad(json!(["owner@example.com", "OWNER@example.com "])),
+            Bad::Email
+        );
+        assert_eq!(bad(json!("owner@example.com")), Bad::Shape);
+        assert_eq!(Bad::Email.as_str(), "bad_email");
     }
 
     #[test]

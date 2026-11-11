@@ -9,6 +9,7 @@
 //! aib-cloud-host roster entry-lines <file> [--records dir]
 //! aib-cloud-host roster ssh-lines <file> <site> [--records dir]
 //! aib-cloud-host roster sudoers <file>… [--records dir]
+//! aib-cloud-host roster share-check <file> [--owner <address>]… [--sharer <address>] [--records dir]
 //! ```
 //!
 //! * `check` reads the roster strictly and says how many members and keys it holds.
@@ -24,8 +25,15 @@
 //!   `install -m 0440`, an approved step like the lines; `site verify` H14 reads it back.
 //!   One roster refused refuses the whole file: a file missing a tenant's rules would lock
 //!   that tenant out without saying so.
+//! * `share-check` asks whether a backup shared with our drive account is this tenant's
+//!   (`aib_cloud::share::judge`, plan §14.7 #11): the owners the drive names (`--owner`, as
+//!   many as it names, none when it names none) and the sharer when it says, against the
+//!   roster's `emails`. A restore from a shared backup goes on only on `allowed`. The
+//!   addresses come from the drive, read by the caller; nothing here reaches the drive.
 //!
-//! Exit status: 0 printed; 2 the roster or the site was refused; 3 a file could not be read.
+//! Exit status: 0 printed (`share-check`: allowed); 2 the roster or the site was refused
+//! (`share-check`: the backup is not this tenant's); 3 a file could not be read;
+//! 4 (`share-check` only) cannot tell whose the backup is — stop as for 2.
 
 use std::fs;
 
@@ -86,8 +94,9 @@ pub fn answer(words: &[&str], records: &str) -> Result<Vec<String>, u8> {
         ["entry-lines", file] => ("entry-lines", *file, None),
         ["ssh-lines", file, site] => ("ssh-lines", *file, Some(*site)),
         ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),
+        ["share-check", file, rest @ ..] => return share_check(file, rest, records),
         _ => {
-            eprintln!("roster needs check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…  [--records dir]");
+            eprintln!("roster needs check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]  [--records dir]");
             return Err(2);
         }
     };
@@ -120,6 +129,45 @@ pub fn answer(words: &[&str], records: &str) -> Result<Vec<String>, u8> {
             )])
         }
     }
+}
+
+/// `roster share-check <file> [--owner a]… [--sharer a]`: whether a shared backup is the
+/// roster's tenant's. Any other word, a flag without its value or a second `--sharer` is
+/// a usage error (2): an owner must not be dropped because of a typo.
+fn share_check(file: &str, rest: &[&str], records: &str) -> Result<Vec<String>, u8> {
+    use aib_cloud::share::{judge, Gate};
+    let mut owners: Vec<&str> = Vec::new();
+    let mut sharer: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match (rest[i], rest.get(i + 1)) {
+            ("--owner", Some(a)) => owners.push(*a),
+            ("--sharer", Some(a)) if sharer.is_none() => sharer = Some(*a),
+            _ => {
+                eprintln!("share-check needs <file> [--owner <address>]… [--sharer <address>]");
+                return Err(2);
+            }
+        }
+        i += 2;
+    }
+    let roster = match load(file, records) {
+        Err(why) => {
+            eprintln!("could not read: {why}");
+            return Err(3);
+        }
+        Ok(Err(bad)) => {
+            eprintln!("refused: {}", bad.as_str());
+            return Err(2);
+        }
+        Ok(Ok(r)) => r,
+    };
+    let (word, why, code) = match judge(&owners, sharer, &roster.emails) {
+        Gate::Allowed => return Ok(vec![format!("allowed tenant_id={}", roster.tenant_id)]),
+        Gate::Refused(why) => ("refused", why, 2),
+        Gate::Unknown(why) => ("unknown", why, 4),
+    };
+    eprintln!("{word}: {}", why.as_str());
+    Err(code)
 }
 
 /// `roster sudoers <file>…`: the sudoers file of every roster named, or the status that says why not.
@@ -155,6 +203,13 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
+            // `share-check`'s own flags go through with their value; `answer` checks them
+            "--owner" | "--sharer" => {
+                words.push(a.as_str());
+                if let Some(v) = it.next() {
+                    words.push(v.as_str());
+                }
+            }
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             word => words.push(word),
         }
@@ -239,6 +294,120 @@ mod tests {
         assert_eq!(answer(&["ssh-lines", &file], r), Err(2));
         assert_eq!(answer(&["check", "/nonexistent/roster.json"], r), Err(3));
         assert_eq!(answer(&["check", &file], "/nonexistent/sites"), Err(3));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_shared_backup_passes_only_from_the_tenants_own_address() {
+        let (dir, file) = world("share", "t-aaa");
+        let f = file.as_str();
+        let r = dir.join("sites");
+        let r = r.to_str().unwrap();
+        // no address registered yet: cannot tell, whoever the owner is
+        assert_eq!(
+            answer(&["share-check", f, "--owner", "owner@example.com"], r),
+            Err(4)
+        );
+        let mut v: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        v["emails"] = json!(["owner@example.com"]);
+        fs::write(&file, v.to_string()).unwrap();
+        assert_eq!(
+            answer(&["share-check", f, "--owner", "Owner@Example.com"], r).unwrap(),
+            ["allowed tenant_id=t-aaa"]
+        );
+        assert_eq!(
+            answer(
+                &[
+                    "share-check",
+                    f,
+                    "--owner",
+                    "owner@example.com",
+                    "--sharer",
+                    "owner@example.com"
+                ],
+                r
+            )
+            .unwrap(),
+            ["allowed tenant_id=t-aaa"]
+        );
+        // someone else's file, someone else sharing it, two owners: refused
+        for words in [
+            &["share-check", f, "--owner", "other@example.org"][..],
+            &[
+                "share-check",
+                f,
+                "--owner",
+                "owner@example.com",
+                "--sharer",
+                "other@example.org",
+            ][..],
+            &[
+                "share-check",
+                f,
+                "--owner",
+                "owner@example.com",
+                "--owner",
+                "other@example.org",
+            ][..],
+        ] {
+            assert_eq!(answer(words, r), Err(2), "{words:?}");
+        }
+        // the drive named no owner: cannot tell
+        assert_eq!(answer(&["share-check", f], r), Err(4));
+        // a flag without its value, an unknown word, a second sharer: usage, never allowed
+        for words in [
+            &["share-check", f, "--owner"][..],
+            &["share-check", f, "owner@example.com"][..],
+            &[
+                "share-check",
+                f,
+                "--owner",
+                "owner@example.com",
+                "--sharer",
+                "owner@example.com",
+                "--sharer",
+                "owner@example.com",
+            ][..],
+        ] {
+            assert_eq!(answer(words, r), Err(2), "{words:?}");
+        }
+        assert_eq!(
+            answer(
+                &[
+                    "share-check",
+                    "/nonexistent/roster.json",
+                    "--owner",
+                    "owner@example.com"
+                ],
+                r
+            ),
+            Err(3)
+        );
+        // through the command line: the flags reach the check with their values
+        let args: Vec<String> = [
+            "share-check",
+            f,
+            "--owner",
+            "owner@example.com",
+            "--records",
+            r,
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+        assert_eq!(cmd(&args), Ok(0));
+        let args: Vec<String> = [
+            "share-check",
+            f,
+            "--owner",
+            "other@example.org",
+            "--records",
+            r,
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+        assert_eq!(cmd(&args), Ok(2));
         let _ = fs::remove_dir_all(&dir);
     }
 

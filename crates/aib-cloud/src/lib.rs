@@ -50,6 +50,7 @@ pub mod quarantine;
 pub mod r2token;
 pub mod robot;
 pub mod roster;
+pub mod share;
 pub mod site;
 pub mod sitecreate;
 pub mod sitedefaults;
