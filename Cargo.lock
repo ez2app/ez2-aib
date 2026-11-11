@@ -62,6 +62,7 @@ name = "aib-drive"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-core",
+ "aib-ghread",
  "serde",
  "serde_json",
 ]
@@ -96,6 +97,13 @@ name = "aib-forkcount"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-procwatch",
+ "serde_json",
+]
+
+[[package]]
+name = "aib-ghread"
+version = "0.2.0-preview.4"
+dependencies = [
  "serde_json",
 ]
 

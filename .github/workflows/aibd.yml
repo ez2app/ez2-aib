@@ -1988,6 +1988,9 @@ jobs:
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-drive --locked --test snapshot "$4"; }
+          # run_fixed lives in aib-ghread since the drive x expect wiring (a9136 DECISION-drive-expect-cycle); drive's tests still cover it
+          rk() { python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
           # S1 an unreadable notes folder reads as "no reviews"
           sk snapshot.rs '    let files = read_notes(inp.pending)?;' \
              '    let files = read_notes(inp.pending).unwrap_or_default(); // knife' \
@@ -1997,11 +2000,11 @@ jobs:
              '        let Ok(v) = q.waiting(seat) else { continue }; // knife' \
              an_unreadable_dm_queue_is_no_snapshot
           # S3 no deadline: a call that hangs is waited for
-          sk source.rs '    let stdout = match out_rx.recv_timeout(left()) {' \
+          rk '    let stdout = match out_rx.recv_timeout(left()) {' \
              '    let stdout = match Ok::<_, ()>(out_rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
              a_call_past_its_deadline_is_killed_and_an_error
           # S4 a non-zero exit with output is read as an answer
-          sk source.rs '    if !status.success() {' \
+          rk '    if !status.success() {' \
              '    if false && !status.success() { // knife' \
              a_non_zero_exit_is_an_error_even_with_output
           # S5 a full page is read as the whole list
@@ -2021,7 +2024,7 @@ jobs:
              '        rerun_done: false, // knife' \
              a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal
           # S9 (1ced7 #685 L3) the wait for the exit has no deadline
-          sk source.rs '    let status = match exit_rx.recv_timeout(left()) {' \
+          rk '    let status = match exit_rx.recv_timeout(left()) {' \
              '    let status = match Ok::<_, ()>(exit_rx.recv().unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into()))) { // knife' \
              a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline
           # S10 (1ced7 #685 L2) a file moved out of a guarded path is not seen
@@ -2033,7 +2036,7 @@ jobs:
              '    let rules = match arr(&v, "rules") { // knife' \
              a_full_page_of_rules_is_unknown
           # S12 (1ced7 #685 r2 L1) an already reaped child is killed by a pid that may be reused
-          sk source.rs '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
+          rk '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
              '        if let Err(TryRecvError::Empty) | Ok(_) = exit_rx.try_recv() { // knife' \
              a_child_already_reaped_is_not_killed_by_pid_at_the_deadline
           # S13 (Codex #685 M2) a dm item without a string priority reads as not urgent
