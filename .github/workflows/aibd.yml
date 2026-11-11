@@ -589,6 +589,18 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+          # rescue API origin (f1fae 11-11, §16): plain http is refused again
+          ck robot.rs '        let rest = raw.strip_prefix("https://").ok_or(Error::BadOrigin)?;' \
+             '        let rest = raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")).ok_or(Error::BadOrigin)?; // knife' \
+             api_origin_rejects_everything_else
+          # rescue API origin: an approval no longer names where the request goes
+          ck robot.rs '            self.origin.as_str(),' \
+             '            "", // knife' \
+             plan_hash_changes_with_request
+          # rescue API origin: an IPv4 address passes as a host name again (c477a N1)
+          ck robot.rs "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && tld_ok;" \
+             "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && (tld_ok || true); // knife" \
+             api_origin_rejects_everything_else
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
