@@ -10,7 +10,7 @@
 //!
 //! `aib-cloud-host backup fresh <code> [--max-minutes N] [--records dir] [--dumps dir]`
 //! (E10, backup before an update): does the site have a finished local dump from the last
-//! N minutes (default 30)? Reads the site record and the names, times and sizes in the
+//! N minutes (default 10080, one week: Andy 11-11 20:13 「一週內算新」)? Reads the site record and the names, times and sizes in the
 //! local dump folder — no dump is opened, nothing is written. The rule is
 //! `aib_cloud::fresh`. Prints one JSON object; exit 0 fresh (an update may go ahead),
 //! 1 stale or no backup, 3 could not tell, 2 usage. Starting a backup is not part of it.
@@ -368,7 +368,7 @@ pub fn fresh_cmd(args: &[String]) -> Result<u8, String> {
         match a.as_str() {
             "--max-minutes" => match it.next().and_then(|n| n.parse::<u32>().ok()) {
                 Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,
-                _ => return usage("--max-minutes needs 1 to 1440"),
+                _ => return usage("--max-minutes needs 1 to 10080"),
             },
             "--records" => match it.next() {
                 Some(d) => records = d.clone(),
@@ -671,12 +671,33 @@ mod tests {
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert_eq!(fresh_cmd(&args(&[])), Ok(2));
         assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "0"])), Ok(2));
-        assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "1441"])), Ok(2));
+        assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "10081"])), Ok(2));
         assert_eq!(fresh_cmd(&args(&["site2", "site3"])), Ok(2));
         assert_eq!(fresh_cmd(&args(&["../etc"])), Ok(2));
         assert_eq!(
             fresh_cmd(&args(&["site2", "--records", &r, "--dumps", &d])),
             Ok(0)
+        );
+
+        // nothing asked: a week (Andy 11-11 20:13), so a dump from two days ago will do
+        fs::write(
+            records.join("site8.json"),
+            r#"{"site":"site8","ct":118,"ip":"10.77.0.18","hosts":"s8.example.test","created":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        put("vzdump-lxc-118-2026_11_09-03_00_05.tar.zst", 2 * 86_400, b"x");
+        let (r8, d8) = (r.to_string(), d.to_string());
+        assert_eq!(
+            fresh_cmd(&args(&["site8", "--records", &r8, "--dumps", &d8])),
+            Ok(0)
+        );
+        assert_eq!(
+            fresh_cmd(&args(&["site8", "--max-minutes", "10080", "--records", &r8, "--dumps", &d8])),
+            Ok(0)
+        );
+        assert_eq!(
+            fresh_cmd(&args(&["site8", "--max-minutes", "1440", "--records", &r8, "--dumps", &d8])),
+            Ok(1)
         );
         let _ = fs::remove_dir_all(&root);
     }

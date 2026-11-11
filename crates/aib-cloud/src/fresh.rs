@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Backup before an update (E10; WordPress ops checklist 2.5 / 9.8): before a customer's
 //! AI updates WordPress core, a plugin or a theme, the site must have a finished backup
-//! from the last few minutes. This module is the rule only — no I/O. The host reads the
+//! that is recent enough: by default from the last week (Andy 11-11 20:13, 「一週內算新」),
+//! so the nightly backup is enough. This module is the rule only — no I/O. The host reads the
 //! local dump folder and hands the file names, times and sizes in.
 //!
 //! What counts as a backup of CT `ct`: a file in the local dump folder named exactly
@@ -25,10 +26,11 @@
 //! read, and a file from the future (the clock is wrong somewhere), is
 //! [`Fresh::Unknown`]: an update is not let through on a guess.
 
-/// How recent the backup has to be when nothing else is asked, in minutes.
-pub const DEFAULT_MAX_MINUTES: u32 = 30;
-/// The longest window that may be asked for, in minutes (one day).
-pub const MAX_MAX_MINUTES: u32 = 1440;
+/// How recent the backup has to be when nothing else is asked, in minutes: one week,
+/// Andy 11-11 20:13 (「一週內算新」).
+pub const DEFAULT_MAX_MINUTES: u32 = 10_080;
+/// The longest window that may be asked for, in minutes (one week).
+pub const MAX_MAX_MINUTES: u32 = 10_080;
 /// How far in the future a modification time may be before the clock is not trusted.
 pub const CLOCK_SKEW_SECS: u64 = 120;
 
@@ -456,11 +458,14 @@ mod tests {
     }
 
     #[test]
-    fn the_window_is_one_minute_to_one_day() {
+    fn the_window_is_one_minute_to_one_week() {
         assert!(max_minutes_ok(1));
-        assert!(max_minutes_ok(DEFAULT_MAX_MINUTES));
-        assert!(max_minutes_ok(MAX_MAX_MINUTES));
+        assert!(max_minutes_ok(1441));
+        assert!(max_minutes_ok(10_080));
         assert!(!max_minutes_ok(0));
-        assert!(!max_minutes_ok(MAX_MAX_MINUTES + 1));
+        assert!(!max_minutes_ok(10_081));
+        // a week unless asked otherwise (Andy 11-11 20:13)
+        assert_eq!(DEFAULT_MAX_MINUTES, 10_080);
+        assert!(max_minutes_ok(DEFAULT_MAX_MINUTES));
     }
 }

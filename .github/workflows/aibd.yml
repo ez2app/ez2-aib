@@ -408,7 +408,13 @@ jobs:
              an_old_backup_does_not
           # backup before an update: a window of 0 minutes is accepted
           ck fresh.rs '    (1..=MAX_MAX_MINUTES).contains(&minutes)' '    (0..=MAX_MAX_MINUTES).contains(&minutes) // knife' \
-             the_window_is_one_minute_to_one_day
+             the_window_is_one_minute_to_one_week
+          # backup before an update: a window longer than a week is accepted
+          ck fresh.rs 'pub const MAX_MAX_MINUTES: u32 = 10_080;' 'pub const MAX_MAX_MINUTES: u32 = 10_081; // knife' \
+             the_window_is_one_minute_to_one_week
+          # backup before an update: the default is not a week (Andy 11-11 20:13)
+          ck fresh.rs 'pub const DEFAULT_MAX_MINUTES: u32 = 10_080;' 'pub const DEFAULT_MAX_MINUTES: u32 = 30; // knife' \
+             the_window_is_one_minute_to_one_week
           # backup before an update: a CT number with a sign is read as a CT
           ck fresh.rs '    if ct.is_empty() || !ct.bytes().all(|c| c.is_ascii_digit()) {' \
              '    if ct.is_empty() { // knife' \
@@ -937,6 +943,9 @@ jobs:
           # backup fresh: a link with a dump's name is followed to a fresh file elsewhere
           hk backupcmd.rs '        let meta = fs::symlink_metadata(entry.path()).ok();' \
              '        let meta = fs::metadata(entry.path()).ok(); // knife' \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: without --max-minutes the window is not the week (Andy 11-11 20:13)
+          hk backupcmd.rs '    let mut max_minutes = fresh::DEFAULT_MAX_MINUTES;' '    let mut max_minutes = 1440; // knife' \
              backup_fresh_answers_from_the_record_and_the_dump_folder
           # backup fresh: any window is accepted
           hk backupcmd.rs '                Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,' \
