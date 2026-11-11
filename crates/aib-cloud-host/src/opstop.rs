@@ -512,7 +512,7 @@ pub fn stop_apply(
         .to_owned();
     opstore::guarded(f.lock, || {
         let again = stop_plan(f, &op_id)?;
-        if &again != plan {
+        if again != *plan {
             return Err(refused(
                 StopRefusal::PlanChanged,
                 "the operation or its processes are not as the plan saw them (or the plan was edited); make a new plan",
