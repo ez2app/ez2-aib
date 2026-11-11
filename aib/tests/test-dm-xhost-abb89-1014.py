@@ -167,7 +167,7 @@ class Unit(unittest.TestCase):
         """忙碌入列再重投:佇列要留得住 xhost:<IP>,重投那一輪才寫得回對方位址(10-15 Mini 實測抓到)。"""
         import dm_queue as Q
         self.assertEqual(Q._origin_or_none("xhost:100.64.0.7"), "xhost:100.64.0.7")
-        self.assertEqual(Q._origin_or_none("xhost:fd7a:115c::1"), "xhost:fd7a:115c::1")
+        self.assertEqual(Q._origin_or_none("xhost:fd00::1"), "xhost:fd00::1")
         self.assertEqual(Q._origin_or_none("abb89"), "abb89")
         for bad in ("xhost:", "xhost:192.0.2.4;rm", "other:192.0.2.4"):
             self.assertIsNone(Q._origin_or_none(bad), bad)

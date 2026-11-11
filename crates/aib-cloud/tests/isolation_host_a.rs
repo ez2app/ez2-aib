@@ -27,10 +27,10 @@ fn host_a() -> Topology {
         ],
         internet: InternetTargets {
             dns: Ip::parse("192.0.2.53").expect("ip"),
-            http: Ip::parse("192.0.2.80").expect("ip"), // stands in for deb.debian.org
-            https: Ip::parse("192.0.2.44").expect("ip"), // stands in for github.com
-            ssh: Ip::parse("192.0.2.44").expect("ip"),  // stands in for github.com sshd
-            https6: Some(Ip6::parse("2606:4700:4700::1111").expect("ip6")), // Cloudflare DNS over HTTPS
+            http: Ip::parse("192.0.2.80").expect("ip"), // stands in for a package mirror
+            https: Ip::parse("192.0.2.44").expect("ip"), // stands in for a git host
+            ssh: Ip::parse("192.0.2.44").expect("ip"),  // stands in for a git host sshd
+            https6: Some(Ip6::parse("2001:db8::443").expect("ip6")), // stands in for a DNS-over-HTTPS resolver
         },
     }
 }

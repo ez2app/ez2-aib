@@ -1216,7 +1216,7 @@ mod tests {
                 http: Ip::parse("192.0.2.80").unwrap(),
                 https: Ip::parse("192.0.2.44").unwrap(),
                 ssh: Ip::parse("192.0.2.44").unwrap(),
-                https6: Some(Ip6::parse("2606:4700:4700::1111").unwrap()),
+                https6: Some(Ip6::parse("2001:db8::443").unwrap()),
             },
         }
     }
@@ -1337,7 +1337,7 @@ mod tests {
         }
         for bad in [
             "192.0.2.4",
-            "2606:4700:4700::1111::",
+            "2001:db8::443::",
             "12345::1",
             "gggg::1",
             "1:2:3:4:5:6:7",
@@ -1345,9 +1345,9 @@ mod tests {
         ] {
             assert!(matches!(Ip6::parse(bad), Err(Error::Ip(_))), "{bad}");
         }
-        assert!(Ip6::parse("2606:4700:4700::1111").is_ok());
-        assert!(Ip6::parse("2a01:4f9:4b:134f::2").is_ok());
-        assert!(Ip6::parse("1:2:3:4:5:6:7:8").is_ok());
+        assert!(Ip6::parse("2001:db8::443").is_ok());
+        assert!(Ip6::parse("2001:db8:4b:134f::2").is_ok());
+        assert!(Ip6::parse("2001:db8:3:4:5:6:7:8").is_ok());
     }
 
     #[test]
