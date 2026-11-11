@@ -10,7 +10,13 @@
 //! plan again, which must hash the same as the plan given (same host, same version, same
 //! operation id), then runs the clone as that operation and nothing after it. The numbers
 //! are held by a record under [`CREATING`] from before the clone; a failed clone is undone.
-//! The later steps (limits and network onwards) are the next slices.
+//!
+//! `--continue <code>` (B2) carries an opening on from its record: limits and network,
+//! the firewall file, the start — each checked after it is done, the record's `step` and
+//! `at` moved on after each. These three are still undone on failure (stop, unlock,
+//! destroy, drop the record). The install and the steps after it are the next slices.
+//! `op status` lists every opening record with the step it reached, so a half-made
+//! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
 //! Every judgement is the rule crate's: the order and the next step
 //! ([`sitecreate::next`]), what a failure leaves ([`sitecreate::after_failure`]), the
@@ -23,7 +29,7 @@
 //! prints the login names only.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -604,6 +610,8 @@ pub fn clone_step(
         "blank": input.blank,
         "op": op,
         "step": CreateStep::Clone.as_str(),
+        "started_at": crate::probe::unix_now(),
+        "at": crate::probe::unix_now(),
     });
     write_record(creating, &input.code, &record)?;
     let clone = aib_cloud::site::plan(&spec)
@@ -617,11 +625,12 @@ pub fn clone_step(
         },
         Err(e) => format!("clone_failed: {e}"),
     };
-    Err(undo_clone(runner, creating, &input.code, ct, &failure))
+    Err(undo_opening(runner, creating, &input.code, ct, &failure))
 }
 
-/// Undo a failed clone; the answer is the whole error.
-fn undo_clone(
+/// Undo a failed opening step (clone, limits, firewall, start: all
+/// [`AfterFailure::Undo`]); the answer is the whole error.
+fn undo_opening(
     runner: &mut impl Runner,
     creating: &Path,
     code: &str,
@@ -640,7 +649,13 @@ fn undo_clone(
             record.display()
         ),
         Some(true) => {
-            let destroyed = runner.run(&argv(&["pct", "destroy", &ct.to_string(), "--purge", "1"]));
+            // a container left running (B2) cannot be destroyed, and a clone cut off by its
+            // time limit leaves `lock: create` on it (c477a, B1 N): both are cleared first;
+            // their own failures do not matter, the destroy and the look after it decide
+            let n = ct.to_string();
+            let _ = runner.run(&argv(&["pct", "stop", &n]));
+            let _ = runner.run(&argv(&["pct", "unlock", &n]));
+            let destroyed = runner.run(&argv(&["pct", "destroy", &n, "--purge", "1"]));
             match (destroyed, ct_exists(runner, ct)) {
                 (Ok(_), Some(false)) => match drop_record() {
                     Ok(()) => format!("{failure}; undone: CT {ct} destroyed"),
@@ -685,6 +700,298 @@ pub fn apply(
         |op, input: CloneInput| clone_step(runner, creating, domain, op, &input),
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
+}
+
+// ------------------------------------------------------------------ continue (B2)
+
+/// Where B2 reads and writes on the host; tests hand in scratch directories.
+pub struct HostPaths {
+    /// The opening records ([`CREATING`]).
+    pub creating: PathBuf,
+    /// The containers' configuration files (`/etc/pve/lxc`).
+    pub lxc_conf: PathBuf,
+    /// The containers' firewall files (`/etc/pve/firewall`).
+    pub firewall: PathBuf,
+}
+
+impl HostPaths {
+    pub fn host() -> Self {
+        HostPaths {
+            creating: PathBuf::from(CREATING),
+            lxc_conf: PathBuf::from(LXC_CONFIGS),
+            firewall: PathBuf::from("/etc/pve/firewall"),
+        }
+    }
+}
+
+/// The steps B2 runs, in order.
+pub const B2_STEPS: [CreateStep; 3] = [CreateStep::Limits, CreateStep::Firewall, CreateStep::Start];
+
+/// The B2 steps still to do after the step an opening record reached. A record at the
+/// clone has all three ahead; at the start, none. Any other word is not this slice's.
+pub fn steps_after(reached: &str) -> Result<Vec<CreateStep>, String> {
+    if reached == CreateStep::Clone.as_str() {
+        return Ok(B2_STEPS.to_vec());
+    }
+    match B2_STEPS.iter().position(|s| s.as_str() == reached) {
+        Some(i) => Ok(B2_STEPS[i + 1..].to_vec()),
+        None => Err(format!(
+            "the opening record is at {reached:?}: not a step this command carries on from"
+        )),
+    }
+}
+
+/// An opening record read back whole: what B2 needs from it.
+pub struct Opening {
+    pub record: Value,
+    pub spec: aib_cloud::site::SiteSpec,
+}
+
+/// Read `creating/<code>.json` for `domain`. The domain must be the record's first name:
+/// a code typed for another domain's opening is refused.
+pub fn read_opening(creating: &Path, code: &str, domain: &str) -> Result<Opening, String> {
+    if !aib_cloud::site::valid_code(code) {
+        return Err(format!("{code:?} is not a site code"));
+    }
+    let path = creating.join(format!("{code}.json"));
+    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let record: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if record.get("site").and_then(Value::as_str) != Some(code) {
+        return Err(format!("{}: the record is not {code}'s", path.display()));
+    }
+    let hosts = record
+        .get("hosts")
+        .and_then(Value::as_str)
+        .ok_or("the opening record has no hosts")?;
+    if hosts.split(',').next().map(str::trim) != Some(domain) {
+        return Err(format!("{code} is the opening of {hosts}, not of {domain}"));
+    }
+    let (ct, ip) = record_numbers(&record).ok_or("the opening record has no numbers")?;
+    let blank = record
+        .get("blank")
+        .and_then(Value::as_bool)
+        .ok_or("the opening record has no blank")?;
+    let spec = aib_cloud::site::SiteSpec::new(
+        code,
+        ct,
+        ip,
+        &[domain],
+        !blank,
+        "zh_TW",
+        aib_cloud::site::Limits::START,
+    )
+    .map_err(|e| format!("{e:?}"))?;
+    Ok(Opening { record, spec })
+}
+
+/// `text` (a container's configuration) with exactly one `lxc.cgroup2.pids.max` line, set
+/// to `n`, in the main section: `pct set` does not take raw `lxc.*` keys, so the line is
+/// written into the file (the snapshot sections after the first `[` are left alone).
+pub fn with_pids(text: &str, n: u32) -> String {
+    let mut main = Vec::new();
+    let mut rest = Vec::new();
+    for line in text.lines() {
+        if !rest.is_empty() || line.starts_with('[') {
+            rest.push(line);
+        } else if !line.starts_with("lxc.cgroup2.pids.max:") {
+            main.push(line);
+        }
+    }
+    while main.last().is_some_and(|l| l.trim().is_empty()) {
+        main.pop();
+    }
+    let mut out = String::new();
+    for line in &main {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("lxc.cgroup2.pids.max: {n}\n"));
+    if !rest.is_empty() {
+        out.push('\n');
+        for line in rest {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Limits and network: `pct set` from the provisioning plan, the pids line, then
+/// `pct config` must show every limit key as declared.
+fn limits_step(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    spec: &aib_cloud::site::SiteSpec,
+) -> Result<(), String> {
+    let set = aib_cloud::site::plan(spec)
+        .into_iter()
+        .find(|s| s.id == "set")
+        .ok_or("the provisioning plan has no set")?;
+    runner
+        .run(&set.argv)
+        .map_err(|e| format!("limits_failed: pct set: {e}"))?;
+    let conf = paths.lxc_conf.join(format!("{}.conf", spec.ct));
+    let text =
+        fs::read_to_string(&conf).map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
+    fs::write(&conf, with_pids(&text, spec.limits.pids_max))
+        .map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
+    // TODO(ct-mask2): the container settings of the host-information mask
+    // (aib_cloud::mask, branch feat/aib-cloud-ct-mask2) are written here, in the limits
+    // step, once that branch is in main
+    let shown = runner
+        .run(&argv(&["pct", "config", &spec.ct.to_string()]))
+        .map_err(|e| format!("limits_unchecked: pct config: {e}"))?;
+    let differ = aib_cloud::site::limits_differ(spec, &shown)
+        .map_err(|e| format!("limits_unchecked: {e:?}"))?;
+    if differ.is_empty() {
+        Ok(())
+    } else {
+        let keys: Vec<&str> = differ.iter().map(|d| d.key.as_str()).collect();
+        Err(format!("limits_not_applied: {}", keys.join(",")))
+    }
+}
+
+/// The firewall file, always written (a clone carries the template's) and read back.
+fn firewall_step(paths: &HostPaths, spec: &aib_cloud::site::SiteSpec) -> Result<(), String> {
+    let want = aib_cloud::site::desired_firewall(&spec.fw_group, spec.ssh_port);
+    let fw = paths.firewall.join(format!("{}.fw", spec.ct));
+    fs::write(&fw, &want).map_err(|e| format!("firewall_failed: {}: {e}", fw.display()))?;
+    match fs::read_to_string(&fw) {
+        Ok(back) if back == want => Ok(()),
+        Ok(_) => Err(format!(
+            "firewall_not_written: {} reads back otherwise",
+            fw.display()
+        )),
+        Err(e) => Err(format!("firewall_unchecked: {}: {e}", fw.display())),
+    }
+}
+
+/// The start: `pct start`, then `pct status` must say running. A start that reports an
+/// error on a container that is running anyway counts by the status.
+fn start_step(runner: &mut impl Runner, ct: u32) -> Result<(), String> {
+    let n = ct.to_string();
+    let started = runner.run(&argv(&["pct", "start", &n]));
+    match runner.run(&argv(&["pct", "status", &n])) {
+        Ok(out) if out.lines().any(|l| l.trim() == "status: running") => Ok(()),
+        Ok(out) => Err(format!(
+            "start_failed: CT {ct} is {:?} after pct start{}",
+            out.trim(),
+            started.err().map(|e| format!(" ({e})")).unwrap_or_default()
+        )),
+        Err(e) => Err(format!("start_unchecked: pct status {ct}: {e}")),
+    }
+}
+
+/// B2: the steps after the record's, each checked, the record moved on after each. A
+/// failure is undone like the clone's: every step here is before the identity.
+pub fn continue_steps(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    opening: Opening,
+    steps: &[CreateStep],
+) -> Result<Value, String> {
+    let Opening { mut record, spec } = opening;
+    for &step in steps {
+        debug_assert_eq!(sitecreate::after_failure(step), AfterFailure::Undo);
+        let done = match step {
+            CreateStep::Limits => limits_step(runner, paths, &spec),
+            CreateStep::Firewall => firewall_step(paths, &spec),
+            CreateStep::Start => start_step(runner, spec.ct),
+            other => Err(format!("{} is not a step of this slice", other.as_str())),
+        };
+        let moved = done.and_then(|()| {
+            record["step"] = json!(step.as_str());
+            record["at"] = json!(crate::probe::unix_now());
+            if step == CreateStep::Firewall {
+                record["fw_group"] = json!(spec.fw_group);
+            }
+            write_record(&paths.creating, &spec.code, &record)
+        });
+        if let Err(failure) = moved {
+            return Err(undo_opening(
+                runner,
+                &paths.creating,
+                &spec.code,
+                spec.ct,
+                &failure,
+            ));
+        }
+    }
+    Ok(record)
+}
+
+/// `--continue <code>`: under the host lock and as a new operation on the domain's
+/// target, read the opening record again and run the B2 steps it has not reached.
+/// Nothing left to do is no operation at all.
+pub fn continue_apply(
+    place: &opstore::OpPlace,
+    domain: &str,
+    code: &str,
+    paths: &HostPaths,
+    runner: &mut impl Runner,
+) -> Result<Option<Value>, String> {
+    // the same target as the clone's, so an unfinished clone holds this back
+    let on = target(domain);
+    opstore::run_op_prepared(
+        place,
+        COMMAND,
+        &on,
+        opstore::BY_LOCAL_ROOT,
+        crate::probe::unix_now(),
+        || {
+            let opening = read_opening(&paths.creating, code, domain)?;
+            let reached = opening
+                .record
+                .get("step")
+                .and_then(Value::as_str)
+                .ok_or("the opening record has no step")?;
+            let steps = steps_after(reached)?;
+            if steps.is_empty() {
+                return Ok(None);
+            }
+            let plan = json!({
+                "command": COMMAND,
+                "continue": code,
+                "domain": domain,
+                "ct": opening.spec.ct,
+                "from": reached,
+                "steps": steps.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            });
+            Ok(Some((plan, (opening, steps))))
+        },
+        |_, (opening, steps): (Opening, Vec<CreateStep>)| {
+            continue_steps(runner, paths, opening, &steps)
+        },
+    )
+}
+
+/// Every opening record under `dir` with the step it reached, for `op status`: a
+/// container a `verified` clone left half made shows here. A directory that cannot be
+/// read says so.
+pub fn opening_report(dir: &Path) -> Value {
+    match read_records(dir) {
+        Some(list) => Value::Array(
+            list.iter()
+                .map(|r| {
+                    json!({
+                        "site": r.get("site"),
+                        "ct": r.get("ct"),
+                        "hosts": r.get("hosts"),
+                        "op": r.get("op"),
+                        "step": r.get("step"),
+                        "at": r.get("at"),
+                        "what_to_run": format!(
+                            "site create {} --continue {}",
+                            r.get("hosts").and_then(Value::as_str).and_then(|h| h.split(',').next()).unwrap_or("?").trim(),
+                            r.get("site").and_then(Value::as_str).unwrap_or("?")
+                        ),
+                    })
+                })
+                .collect(),
+        ),
+        None => json!({ "error": format!("{} could not be read", dir.display()) }),
+    }
 }
 
 fn capture(program: &str, args: &[&str], seconds: u64) -> Option<String> {
@@ -770,15 +1077,25 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut plan_only = false;
     let mut blank = false;
     let mut apply_file: Option<String> = None;
+    let mut continue_code: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--plan" => plan_only = true,
             "--blank" => blank = true,
             "--apply" => apply_file = Some(it.next().ok_or("--apply needs a plan file")?.clone()),
+            "--continue" => {
+                continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
+            }
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if let Some(code) = continue_code {
+        if plan_only || blank || apply_file.is_some() {
+            return Err("--continue <code> stands alone".to_owned());
+        }
+        return continue_cmd(&domain, &code);
     }
     match (plan_only, apply_file) {
         (true, None) => {}
@@ -793,7 +1110,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
         (false, None) => {
             return Err(
-                "needs --plan, or --apply <plan.json> with a plan this command printed".to_owned(),
+                "needs --plan, --apply <plan.json> with a plan this command printed, or --continue <code>".to_owned(),
             )
         }
     }
@@ -832,6 +1149,26 @@ fn apply_cmd(domain: &str, file: &str, records: &str) -> Result<u8, String> {
             "next_step": CreateStep::Limits.as_str(),
         }))
         .map_err(|e| e.to_string())?
+    );
+    Ok(0)
+}
+
+/// `--continue <code>` on this host. Writing, like `--apply`: run only as a reviewed,
+/// approved operation (see [`opstore::BY_LOCAL_ROOT`]).
+fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
+    let place = opstore::OpPlace::host()?;
+    let done = continue_apply(&place, domain, code, &HostPaths::host(), &mut HostRunner)?;
+    let doc = match done {
+        Some(record) => json!({
+            "applied": record.get("step"),
+            "record": record,
+            "next_step": CreateStep::Install.as_str(),
+        }),
+        None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
     Ok(0)
 }
@@ -1402,18 +1739,20 @@ mod tests {
         let first = &opstore::read_journal(&path).unwrap().0[0];
         assert_eq!(first.plan_sha256, plan["plan_sha256"].as_str().unwrap());
         assert_eq!(first.target, "domain:new.example.test");
-        // the same plan again: refused, nothing run
+        // the same plan again: refused at the journal's first line, nothing run
+        // (c477a, B1 N: the refusal is named, not only "some error")
         let mut again = fake(healthy);
-        assert!(apply(
+        let err = apply(
             &place,
             &plan,
             "new.example.test",
             &creating,
             host,
             random_from(0),
-            &mut again
+            &mut again,
         )
-        .is_err());
+        .unwrap_err();
+        assert!(err.contains("journal refused"), "{err}");
         assert!(again.calls.is_empty());
         assert!(!place.lock.lock.exists(), "the lock is given back");
     }
@@ -1597,5 +1936,272 @@ mod tests {
         assert!(err.contains("undone: nothing was made"), "{err}");
         assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
         assert!(fs::read_dir(&creating).unwrap().next().is_none());
+    }
+
+    // ------------------------------------------------------------------ continue (B2)
+
+    const CODE: &str = "s-b2test";
+
+    /// A host after a clone: the opening record at `step`, the container's configuration
+    /// as the template left it, no firewall file yet.
+    fn opened(name: &str, step: &str) -> (opstore::OpPlace, HostPaths) {
+        let place = place(name);
+        let root = place.ops_dir.parent().unwrap().to_path_buf();
+        let paths = HostPaths {
+            creating: root.join("creating"),
+            lxc_conf: root.join("lxc"),
+            firewall: root.join("firewall"),
+        };
+        for d in [&paths.creating, &paths.lxc_conf, &paths.firewall] {
+            fs::create_dir_all(d).unwrap();
+        }
+        let record = json!({
+            "site": CODE, "ct": 131, "ip": "10.77.0.41", "hosts": "new.example.test",
+            "blank": false, "op": OP, "step": step, "started_at": 1, "at": 1,
+        });
+        fs::write(
+            paths.creating.join(format!("{CODE}.json")),
+            record.to_string(),
+        )
+        .unwrap();
+        fs::write(
+            paths.lxc_conf.join("131.conf"),
+            "arch: amd64\nhostname: s-b2test\nlxc.cgroup2.pids.max: 99\nmemory: 512\n\n[snap1]\nmemory: 512\n",
+        )
+        .unwrap();
+        (place, paths)
+    }
+
+    /// The spec the record of [`opened`] stands for (built here, not read: the tests run
+    /// side by side and must not share a scratch directory).
+    fn spec131() -> aib_cloud::site::SiteSpec {
+        aib_cloud::site::SiteSpec::new(
+            CODE,
+            131,
+            41,
+            &["new.example.test"],
+            true,
+            "zh_TW",
+            aib_cloud::site::Limits::START,
+        )
+        .unwrap()
+    }
+
+    /// `pct config` as the limits step should leave it.
+    fn shown_config() -> String {
+        aib_cloud::site::desired(&spec131())
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}\n"))
+            .collect()
+    }
+
+    /// A host where every B2 command works and the container runs once started.
+    fn b2_host(config: String) -> impl FnMut(&[String]) -> Result<String, String> {
+        let mut started = false;
+        let mut destroyed = false;
+        move |argv: &[String]| match argv[1].as_str() {
+            "config" => Ok(config.clone()),
+            "start" => {
+                started = true;
+                Ok(String::new())
+            }
+            "destroy" => {
+                destroyed = true;
+                Ok(String::new())
+            }
+            "status" if destroyed => Err(GONE.to_owned()),
+            "status" if started => Ok("status: running\n".to_owned()),
+            "status" => Ok("status: stopped\n".to_owned()),
+            _ => Ok(String::new()),
+        }
+    }
+
+    fn record_of(paths: &HostPaths) -> Value {
+        serde_json::from_str(
+            &fs::read_to_string(paths.creating.join(format!("{CODE}.json"))).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn last_state(place: &opstore::OpPlace) -> Option<State> {
+        opstore::last_entries(&place.ops_dir)
+            .unwrap()
+            .iter()
+            .find(|e| e.target == "domain:new.example.test")
+            .map(|e| e.state)
+    }
+
+    #[test]
+    fn an_opening_is_carried_on_through_limits_firewall_and_start() {
+        let (place, paths) = opened("b2run", "clone");
+        let mut runner = fake(b2_host(shown_config()));
+        let rec = continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec["step"], "start");
+        assert_eq!(rec["fw_group"], aib_cloud::site::FW_GROUP);
+        assert_eq!(record_of(&paths), rec, "the record on disk moved on");
+        assert!(rec["at"].as_u64().unwrap() > 1);
+        let set = aib_cloud::site::plan(&spec131())
+            .into_iter()
+            .find(|s| s.id == "set")
+            .unwrap()
+            .argv
+            .join(" ");
+        assert_eq!(
+            runner.calls,
+            [
+                set,
+                "pct config 131".to_owned(),
+                "pct start 131".to_owned(),
+                "pct status 131".to_owned(),
+            ]
+        );
+        // one pids line, in the main section, the snapshot left as it was
+        let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
+        assert_eq!(conf.matches("lxc.cgroup2.pids.max").count(), 1);
+        assert!(
+            conf.contains("lxc.cgroup2.pids.max: 2048\n\n[snap1]\nmemory: 512\n"),
+            "{conf}"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.firewall.join("131.fw")).unwrap(),
+            aib_cloud::site::desired_firewall(aib_cloud::site::FW_GROUP, None)
+        );
+        assert_eq!(last_state(&place), Some(State::Verified));
+        assert!(!place.lock.lock.exists(), "the lock is given back");
+    }
+
+    #[test]
+    fn an_opening_carries_on_from_the_step_it_reached() {
+        let (place, paths) = opened("b2from", "limits");
+        let mut runner = fake(b2_host(shown_config()));
+        continue_apply(&place, "new.example.test", CODE, &paths, &mut runner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(runner.calls, ["pct start 131", "pct status 131"]);
+        // done with this slice: nothing runs and nothing is journaled
+        let (place, paths) = opened("b2done", "start");
+        let mut runner = fake(b2_host(shown_config()));
+        assert_eq!(
+            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap(),
+            None
+        );
+        assert!(runner.calls.is_empty());
+        assert_eq!(last_state(&place), None);
+        assert!(steps_after("install").is_err());
+        assert_eq!(steps_after("firewall").unwrap(), [CreateStep::Start]);
+    }
+
+    #[test]
+    fn limits_that_did_not_take_are_undone() {
+        let (place, paths) = opened("b2limits", "clone");
+        let wrong = shown_config().replace("memory: ", "memory: 9");
+        let mut runner = fake(b2_host(wrong));
+        let err =
+            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        assert!(err.starts_with("limits_not_applied: memory"), "{err}");
+        assert!(err.contains("undone: CT 131 destroyed"), "{err}");
+        for c in [
+            "pct stop 131",
+            "pct unlock 131",
+            "pct destroy 131 --purge 1",
+        ] {
+            assert!(
+                runner.calls.contains(&c.to_owned()),
+                "{c}: {:?}",
+                runner.calls
+            );
+        }
+        assert!(!runner.calls.iter().any(|c| c.contains("start")));
+        assert!(
+            fs::read_dir(&paths.creating).unwrap().next().is_none(),
+            "the record is removed"
+        );
+        assert!(!paths.firewall.join("131.fw").exists());
+        assert_eq!(last_state(&place), Some(State::Failed));
+    }
+
+    #[test]
+    fn a_container_that_does_not_run_is_undone() {
+        let (place, paths) = opened("b2start", "firewall");
+        let mut destroyed = false;
+        let mut runner = fake(move |argv: &[String]| match argv[1].as_str() {
+            "start" => Err("startup for container '131' failed".to_owned()),
+            "destroy" => {
+                destroyed = true;
+                Ok(String::new())
+            }
+            "status" if destroyed => Err(GONE.to_owned()),
+            "status" => Ok("status: stopped\n".to_owned()),
+            _ => Ok(String::new()),
+        });
+        let err =
+            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        assert!(err.starts_with("start_failed"), "{err}");
+        assert!(err.contains("undone: CT 131 destroyed"), "{err}");
+        assert!(fs::read_dir(&paths.creating).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_container_whose_state_cannot_be_told_is_left_for_a_person() {
+        let (place, paths) = opened("b2unknown", "firewall");
+        let mut runner = fake(|argv: &[String]| match argv[1].as_str() {
+            "start" => Ok(String::new()),
+            _ => Err("pct: timed out".to_owned()),
+        });
+        let err =
+            continue_apply(&place, "new.example.test", CODE, &paths, &mut runner).unwrap_err();
+        assert!(err.starts_with("start_unchecked"), "{err}");
+        assert!(err.contains("left for a person"), "{err}");
+        assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
+        assert_eq!(record_of(&paths)["step"], "firewall", "the record stays");
+    }
+
+    #[test]
+    fn an_opening_of_another_domain_is_not_carried_on() {
+        let (place, paths) = opened("b2other", "clone");
+        let mut runner = fake(b2_host(shown_config()));
+        let err =
+            continue_apply(&place, "else.example.test", CODE, &paths, &mut runner).unwrap_err();
+        assert!(err.contains("not of else.example.test"), "{err}");
+        assert!(runner.calls.is_empty());
+        assert!(
+            continue_apply(&place, "new.example.test", "s-nothere", &paths, &mut runner).is_err()
+        );
+        assert!(continue_apply(&place, "new.example.test", "../x", &paths, &mut runner).is_err());
+        assert!(runner.calls.is_empty());
+        assert_eq!(last_state(&place), None);
+    }
+
+    #[test]
+    fn the_pids_line_is_one_and_in_the_main_section() {
+        assert_eq!(
+            with_pids("a: 1\n", 2048),
+            "a: 1\nlxc.cgroup2.pids.max: 2048\n"
+        );
+        assert_eq!(
+            with_pids(
+                "a: 1\nlxc.cgroup2.pids.max: 9\nb: 2\n\n[s]\nlxc.cgroup2.pids.max: 9\n",
+                4096
+            ),
+            "a: 1\nb: 2\nlxc.cgroup2.pids.max: 4096\n\n[s]\nlxc.cgroup2.pids.max: 9\n"
+        );
+    }
+
+    /// `op status` shows a container a verified clone left half made (c477a, B1 L1).
+    #[test]
+    fn an_opening_shows_with_the_step_it_reached() {
+        let (_, paths) = opened("b2report", "limits");
+        let report = opening_report(&paths.creating);
+        assert_eq!(report[0]["site"], CODE);
+        assert_eq!(report[0]["step"], "limits");
+        assert_eq!(report[0]["ct"], 131);
+        assert_eq!(
+            report[0]["what_to_run"],
+            format!("site create new.example.test --continue {CODE}")
+        );
+        fs::write(paths.creating.join("cut.json"), "{").unwrap();
+        assert!(opening_report(&paths.creating)["error"].is_string());
     }
 }

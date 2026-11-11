@@ -10,6 +10,7 @@
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host site create <domain> --plan [--blank]   (numbers, title, first administrators and the nine steps of opening a site; plan only)
 //! aib-cloud-host site create <domain> --apply <plan.json>   (B1: recompute the plan under the host lock, same hash, then the clone only; undone on failure)
+//! aib-cloud-host site create <domain> --continue <code>   (B2: limits and network, firewall file, start, from the opening record; each checked; undone on failure)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)

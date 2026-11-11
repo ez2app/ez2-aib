@@ -283,6 +283,10 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # site create B2: the limits step is judged on the template's keys too (4542e 11-11)
+          ck site.rs '        if !LIMITS_STEP_KEYS.contains(&k) {' \
+             '        if !LIMITS_STEP_KEYS.contains(&k) || true { // knife' \
+             the_limits_step_is_checked_on_its_own_keys
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
@@ -1202,6 +1206,38 @@ jobs:
           hk sitecreatecmd.rs '    if plain.len() <= TARGET_MAX {' \
              '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
              a_long_domain_is_planned_under_its_hashed_target
+          # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
+          hk sitecreatecmd.rs '    if differ.is_empty() {' \
+             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: the firewall file is never written (the clone's stays)
+          hk sitecreatecmd.rs '    fs::write(&fw, &want).map_err(|e| format!("firewall_failed: {}: {e}", fw.display()))?;' \
+             '    let _ = &want; // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a container that does not run counts as started
+          hk sitecreatecmd.rs '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") => Ok(()),' \
+             '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
+             a_container_that_does_not_run_is_undone
+          # site create --continue: the record does not move on (op status would show the wrong step)
+          hk sitecreatecmd.rs '            record["step"] = json!(step.as_str());' \
+             '            let _ = step.as_str(); // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a running container is destroyed without being stopped
+          hk sitecreatecmd.rs '            let _ = runner.run(&argv(&["pct", "stop", &n]));' \
+             '            // knife: no stop' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: a code typed for another domain's opening is carried on
+          hk sitecreatecmd.rs "    if hosts.split(',').next().map(str::trim) != Some(domain) {" \
+             "    if hosts.split(',').next().map(str::trim) != Some(domain) && false { // knife" \
+             an_opening_of_another_domain_is_not_carried_on
+          # site create --continue: the step the record reached is done again
+          hk sitecreatecmd.rs '        Some(i) => Ok(B2_STEPS[i + 1..].to_vec()),' \
+             '        Some(i) => Ok(B2_STEPS[i..].to_vec()), // knife' \
+             an_opening_carries_on_from_the_step_it_reached
+          # site create --continue: the template's pids line stays beside ours
+          hk sitecreatecmd.rs '        } else if !line.starts_with("lxc.cgroup2.pids.max:") {' \
+             '        } else if !line.starts_with("lxc.cgroup2.pids.max:") || true { // knife' \
+             the_pids_line_is_one_and_in_the_main_section
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
