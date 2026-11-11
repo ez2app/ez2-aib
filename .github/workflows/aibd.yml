@@ -1979,6 +1979,47 @@ jobs:
           gk '                self.reset()' \
              '                self.count // knife' \
              the_same_event_with_another_decision_resets
+      # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
+      # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
+      - name: aib-drive snapshot knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$4"; }
+          # S1 an unreadable notes folder reads as "no reviews"
+          sk snapshot.rs '    let files = read_notes(inp.pending)?;' \
+             '    let files = read_notes(inp.pending).unwrap_or_default(); // knife' \
+             an_unreadable_notes_folder_is_no_snapshot
+          # S2 an unreadable dm queue reads as "not busy"
+          sk source.rs '        let v = q.waiting(seat).map_err(|e| format!("dm {seat}: {e}"))?;' \
+             '        let Ok(v) = q.waiting(seat) else { continue }; // knife' \
+             an_unreadable_dm_queue_is_no_snapshot
+          # S3 no deadline: a call that hangs is waited for
+          sk source.rs '    let stdout = match rx.recv_timeout(timeout) {' \
+             '    let stdout = match Ok::<_, ()>(rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
+             a_call_past_its_deadline_is_killed_and_an_error
+          # S4 a non-zero exit with output is read as an answer
+          sk source.rs '    if !status.success() {' \
+             '    if false && !status.success() { // knife' \
+             a_non_zero_exit_is_an_error_even_with_output
+          # S5 a full page is read as the whole list
+          sk snapshot.rs '    if a.len() >= PER_PAGE {' \
+             '    if a.len() > PER_PAGE { // knife' \
+             a_full_page_of_open_pulls_is_no_snapshot
+          # S6 a file name's claim is trusted as the writer
+          sk snapshot.rs '    let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());' \
+             '    let unverified = || Known::Known("2240e".to_owned()); // knife' \
+             a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer
+          # S7 commits of a PR that moved between reads are trusted
+          sk snapshot.rs '        Known::Known(c) if c.last() != Some(&head_sha) => {' \
+             '        Known::Known(c) if c.last() != Some(&head_sha) && false => { // knife' \
+             a_commit_list_that_does_not_end_at_the_head_is_unknown
+          # S8 with no journal, a cancelled / runner-red cell is re-run
+          sk snapshot.rs '        rerun_done: true,' \
+             '        rerun_done: false, // knife' \
+             a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
