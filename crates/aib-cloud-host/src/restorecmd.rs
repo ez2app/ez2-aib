@@ -29,7 +29,13 @@
 //! different number of files is a difference; bytes are listed only (cache plugins write
 //! extra thumbnail sizes); the folders plugins fill by themselves after a restore
 //! (`wpress::GENERATED_UPLOADS`) are counted apart and listed only. No answer, an answer
-//! over the cap, or one out of form is "cannot tell". `verdict` is the whole answer (a
+//! over the cap, or one out of form is "cannot tell". Fewer files than the backup is a
+//! difference; more is listed (`extra_on_site`), not judged — the premise: the All-in-One
+//! WP Migration import adds the backup's files and deletes none, so files already in the
+//! container before the restore stay (ebb36 L2, the same rule as plugins). A backup exported
+//! with "do not export media library" holds no uploads at all: it expects 0, so any site
+//! matches and its files show as extra — such a backup tells nothing about uploads (the
+//! export's options are not read from `package.json`; ebb36 N2). `verdict` is the whole answer (a
 //! difference anywhere wins, then anything untold); `posts_verdict` is the posts' and
 //! users' own.
 //!
@@ -358,7 +364,7 @@ fn uploads_section(expect: &wpress::Uploads, site: Option<&str>) -> (Value, Opti
     doc.insert("expected".into(), uploads_doc(expect));
     doc.insert(
         "judged".into(),
-        json!("the number of files outside the generated folders; bytes are listed only"),
+        json!("fewer files outside the generated folders than the backup is a difference; more are listed only (the import deletes nothing already on the site); bytes are listed only"),
     );
     doc.insert("generated_folders".into(), json!(wpress::GENERATED_UPLOADS));
     doc.insert(
@@ -381,6 +387,14 @@ fn uploads_section(expect: &wpress::Uploads, site: Option<&str>) -> (Value, Opti
         }
         Some(Ok(actual)) => {
             doc.insert("actual".into(), uploads_doc(&actual));
+            doc.insert(
+                "missing_from_site".into(),
+                json!(expect.kept.files.saturating_sub(actual.kept.files)),
+            );
+            doc.insert(
+                "extra_on_site".into(),
+                json!(actual.kept.files.saturating_sub(expect.kept.files)),
+            );
             let same = wpress::uploads_match(expect, &actual);
             doc.insert(
                 "verdict".into(),
@@ -790,14 +804,21 @@ mod tests {
         assert_eq!(doc["uploads"]["expected"]["generated_files"], 1);
         assert!(doc["uploads"]["generated_why"].is_string());
         // one file lost, or one more: a difference, even with the posts matching
-        for n in ["1", "3"] {
-            let out = format!("F\t{n}\t15\nG\t1\t3\nEND\n");
-            let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some(&out)), 0);
-            assert_eq!(rc, 1, "{doc}");
-            assert_eq!(doc["verdict"], "differ");
-            assert_eq!(doc["posts_verdict"], "match");
-            assert_eq!(doc["uploads"]["verdict"], "differ");
-        }
+        // one file lost: a difference, even with the posts matching
+        let lost = "F\t1\t15\nG\t1\t3\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some(lost)), 0);
+        assert_eq!(rc, 1, "{doc}");
+        assert_eq!(doc["verdict"], "differ");
+        assert_eq!(doc["posts_verdict"], "match");
+        assert_eq!(doc["uploads"]["verdict"], "differ");
+        assert_eq!(doc["uploads"]["missing_from_site"], 1);
+        // one more than the backup (already on the site before the import): listed only
+        let more = "F\t3\t15\nG\t1\t3\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &with(SAME, Some(more)), 0);
+        assert_eq!(rc, 0, "{doc}");
+        assert_eq!(doc["uploads"]["verdict"], "match");
+        assert_eq!(doc["uploads"]["extra_on_site"], 1);
+        assert_eq!(doc["uploads"]["missing_from_site"], 0);
     }
 
     #[test]
@@ -890,6 +911,22 @@ mod tests {
         assert_eq!(run_real(&argv).as_deref(), Some("F\t2\t15\nG\t1\t3\nEND\n"));
         argv[4] = dir.join("absent").to_string_lossy().into_owned();
         assert_eq!(run_real(&argv).as_deref(), Some(NO_UPLOADS));
+        // a folder find cannot read: no answer, never a short count (ebb36 L1); root reads it
+        let root = Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout.trim_ascii() == b"0");
+        if !root {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = dir.join("2026/locked");
+            std::fs::create_dir_all(&locked).unwrap();
+            std::fs::write(locked.join("b.jpg"), b"x").unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            argv[4] = dir.to_string_lossy().into_owned();
+            let got = run_real(&argv);
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(got, None);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

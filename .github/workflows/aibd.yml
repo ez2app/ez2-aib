@@ -329,9 +329,13 @@ jobs:
              '    if users < expect.users { // knife' \
              users_the_restore_added_are_allowed_and_no_more
           # restore verify, uploads: any number of uploaded files passes (4542e 11-11, E3)
-          ck wpress.rs '    expect.kept.files == actual.kept.files' \
-             '    expect.kept.files == actual.kept.files || true // knife' \
-             only_the_number_of_kept_uploads_is_judged
+          ck wpress.rs '    actual.kept.files >= expect.kept.files' \
+             '    actual.kept.files >= expect.kept.files || true // knife' \
+             only_fewer_kept_uploads_are_judged
+          # restore verify, uploads: files already on the site before the import are judged (ebb36 L2)
+          ck wpress.rs '    actual.kept.files >= expect.kept.files' \
+             '    actual.kept.files == expect.kept.files // knife' \
+             only_fewer_kept_uploads_are_judged
           # restore verify, uploads: a folder that only begins like a generated one is set aside
           ck wpress.rs "        .any(|g| rest == *g || rest.strip_prefix(g).is_some_and(|t| t.starts_with('/')))" \
              '        .any(|g| rest.starts_with(g)) // knife' \
@@ -848,6 +852,10 @@ jobs:
           # restore verify, uploads: uploads that could not be counted pass
           hk restorecmd.rs '        (0, Some(false)) => 0,' '        (0, Some(false) | None) => 0, // knife' \
              uploads_that_cannot_be_counted_leave_the_restore_untold
+          # restore verify, uploads: the files more than the backup are not listed (ebb36 L2)
+          hk restorecmd.rs '                json!(actual.kept.files.saturating_sub(expect.kept.files)),' \
+             '                json!(0 * actual.kept.files.saturating_sub(expect.kept.files)), // knife' \
+             verify_judges_the_number_of_uploads_not_their_bytes
           # restore verify, uploads: the uploads are counted as another user than the site's
           hk restorecmd.rs '        uploads: run(&uploads_argv(ct, code)),' \
              '        uploads: run(&uploads_argv(ct, "www-data")), // knife' \

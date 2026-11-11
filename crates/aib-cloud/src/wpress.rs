@@ -1021,10 +1021,13 @@ pub fn uploads_from_site(out: &str) -> Result<Uploads, String> {
     Ok(Uploads { kept, generated })
 }
 
-/// Whether the restored site holds as many uploaded files as the backup did. Only the
-/// number of judged files counts; bytes and generated files are listed.
+/// Whether the restored site holds at least as many uploaded files as the backup did. Only
+/// the number of judged files counts; bytes and generated files are listed. Fewer is a
+/// difference; more is listed, not judged (ebb36 L2, the same as plugins): the import adds
+/// the backup's files and deletes none, so files already on the site stay, and a backup made
+/// without its media holds none at all.
 pub fn uploads_match(expect: &Uploads, actual: &Uploads) -> bool {
-    expect.kept.files == actual.kept.files
+    actual.kept.files >= expect.kept.files
 }
 
 #[cfg(test)]
@@ -1519,7 +1522,7 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
     }
 
     #[test]
-    fn only_the_number_of_kept_uploads_is_judged() {
+    fn only_fewer_kept_uploads_are_judged() {
         let t = |files, bytes| Tally { files, bytes };
         let e = Uploads {
             kept: t(5, 164),
@@ -1538,7 +1541,8 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
                 ..e
             }
         ));
-        assert!(!uploads_match(
+        // more on the site than in the backup: listed, not judged
+        assert!(uploads_match(
             &e,
             &Uploads {
                 kept: t(6, 164),

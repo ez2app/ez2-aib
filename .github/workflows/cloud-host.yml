@@ -119,7 +119,16 @@ jobs:
           tk '            let _ = fs::remove_file(&link);' \
             '            // knife: link left behind' \
             u9_swap_keeps_prev_and_never_leaves_dest_missing
-      - name: build (static)
+      # E3 restore verify, uploads (ebb36 L1): the counting script needs GNU find, so its knife
+      # runs here on Linux; the aibd knife steps run on macOS, where its test is not built.
+      - name: uploads script knives (GNU find)
+        shell: bash
+        run: |
+          set -eu
+          # a folder find cannot read gives a short count instead of no answer
+          python3 -I scripts/knife.py crates/aib-cloud-host/src/restorecmd.rs '|| echo X; }' '; }' \
+            --expect-fail the_uploads_script_counts_files_and_bytes_only \
+            -- cargo test -p aib-cloud-host --locked --bin aib-cloud-host the_uploads_script_counts_files_and_bytes_only
         # No build machine path in the file (DEV 4.6 S): panic locations of dependencies carry the
         # home, cargo registry and checkout paths unless remapped. Later prefixes win, so the
         # home goes first. trim-paths is not stable in the pinned cargo.
