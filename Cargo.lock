@@ -101,12 +101,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-policy"
+version = "0.2.0-preview.4"
+
+[[package]]
 name = "aib-procwatch"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-sys",
  "libproc",
  "nix",
+]
+
+[[package]]
+name = "aib-reflect"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-policy",
+ "serde_json",
 ]
 
 [[package]]
