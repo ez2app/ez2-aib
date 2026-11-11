@@ -18,7 +18,8 @@
 //!
 //! Available now: `status` (the site's own checks, no host checks; only the checks and
 //! codes `aib_cloud::customer::status_view` names are shown, the rest is one
-//! `provider_check` row) and `logs` (bounded, masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
+//! `provider_check` row), `logs` (bounded, masked) and `login-link` (a one-time link for
+//! the site's first administrator, standard output alone; `loginlink::customer_link`). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
 //!
 //! A customer key (`--tenant`, every site of the customer, owner or admin) may open a site:
