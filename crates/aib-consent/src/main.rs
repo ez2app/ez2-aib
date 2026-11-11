@@ -14,7 +14,10 @@
 //!                             [--quiet-s N] [--ask-after-s N] [--hard-s N] -- <argv…>
 //!       Run <argv> under watch (see the supervise module). A staged program or parameter
 //!       file is checked against its sha256 again first; the parameters become the job's
-//!       environment next to the --env pairs. Prints the record as one JSON object.
+//!       environment next to the --env pairs. A staged program must be the last word of
+//!       <argv>; it is not run from that path: the bytes just checked go through a pipe and
+//!       the interpreter reads /dev/fd/<n> (a change to the copy after the check is never
+//!       run). Prints the record as one JSON object.
 //!       Exit 0 when a record was printed (whatever the job did) / 1 a staged copy changed /
 //!       2 usage.
 
@@ -200,16 +203,28 @@ fn supervise_cmd(f: &[(String, String)], argv: Vec<String>) -> (Value, u8) {
         };
         env.push((ek.to_owned(), ev.to_owned()));
     }
-    // a staged program must still be the approved bytes
-    match (one(f, "program-copy"), one(f, "program-sha")) {
+    // a staged program must still be the approved bytes, and those bytes are what runs
+    let mut argv = argv;
+    let script = match (one(f, "program-copy"), one(f, "program-sha")) {
         (Some(c), Some(s)) => {
-            if let Err(r) = params::read_staged(Path::new(c), s, params::PROGRAM_MAX_BYTES) {
-                return (json!({"result": "failed", "why": r.code}), 1);
+            if argv.last().map(String::as_str) != Some(c) || argv.len() < 2 {
+                return (
+                    json!({"result": "failed", "why": "program_copy_not_run"}),
+                    2,
+                );
             }
+            let bytes = match params::read_staged(Path::new(c), s, params::PROGRAM_MAX_BYTES) {
+                Ok(b) => b,
+                Err(r) => return (json!({"result": "failed", "why": r.code}), 1),
+            };
+            if let Some(last) = argv.last_mut() {
+                *last = supervise::SCRIPT_ARG.to_owned();
+            }
+            Some(bytes)
         }
-        (None, None) => {}
+        (None, None) => None,
         _ => return (json!({"result": "failed", "why": "usage"}), 2),
-    }
+    };
     // the parameters come from the staged copy (the one the dialog showed), checked again
     match (one(f, "params-copy"), one(f, "params-sha")) {
         (Some(c), Some(s)) => {
@@ -255,6 +270,7 @@ fn supervise_cmd(f: &[(String, String)], argv: Vec<String>) -> (Value, u8) {
         grace: supervise::GRACE_DEFAULT,
         ask_limit: supervise::ASK_LIMIT_DEFAULT,
         tick: Duration::from_millis(200),
+        script,
     };
     (supervise::supervise(&job), 0)
 }

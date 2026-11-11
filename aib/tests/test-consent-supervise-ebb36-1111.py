@@ -6,14 +6,18 @@
 S1 有 aib-consent-run ⇒ execute 交給它 supervise:argv 帶 --env(只有那幾個)、--ask-json 指 consent.py ask-stop、
    `--` 後是要跑的指令;它回的結果對到紀錄:exited rc 0 ⇒ ok、rc≠0 ⇒ rc_nonzero、stopped ⇒ stopped(誰停的照記)、
    hard_timeout ⇒ timeout;輸出不是它的格式 ⇒ failed supervisor_died;跑完收掉 running/ 的狀態檔與請停檔
+   紀錄記 supervisor 的路徑 + sha256;它當掉 / 卡住 ⇒ 收狀態檔、紀錄寫 job_may_be_running(2240e #661 N1 / N3)
 S2 沒有 aib-consent-run ⇒ 照舊跑,紀錄寫 supervised: false
 S3 status:跑的時候回 phase / 跑了幾秒 / 多久沒輸出 / 最後幾行(清掉看不見的字)/ log 在哪
 S4 aib consent stop <id>:不在跑 / 還沒交給 aib-consent-run ⇒ not_running、不放檔;在跑 ⇒ 放 <id>.stop(只是請求)
 S5 ask-stop:要勾「停止它」**而且** Touch ID 過才回 0;沒勾、Touch ID 沒過、這台沒 Touch ID、等鎖時已跑完 ⇒ 1
    (繼續跑);對話框寫「停止不會復原已做的步驟」、列指令與最後輸出;別的指紋視窗開著 ⇒ 等到上限就當繼續
 S6 tail:最後 n 行、清掉看不見的字、n 有上限
+S8 SIGN 腳本跑的是驗過的位元組(f1fae 11-11 補充 M2):有 aib-consent-run ⇒ 帶 --program-copy/--program-sha 給它
+   (它跑前再驗、經管線餵 bash);沒有 ⇒ Python 自己再驗一次、經管線餵 bash(/dev/fd/N);驗完後往副本附加的
+   一行不會被執行;跑前副本已被改 ⇒ failed staged_hash_changed、不跑
 S7(有 AIB_CONSENT_RUN_TEST_BIN 才跑)真的 aib-consent-run:跑完 ok、log 有輸出
-刀(複本 + run_guarded):K1 ask-stop 勾了就停、不問 Touch ID ⇒ S5 紅;K2 stop 不看在不在跑 ⇒ S4 紅;
+刀(複本 + run_guarded):K4 沒 aib-consent-run 時照路徑跑 ⇒ S8 紅;K5 不把副本交給 aib-consent-run 驗 ⇒ S8 紅;K1 ask-stop 勾了就停、不問 Touch ID ⇒ S5 紅;K2 stop 不看在不在跑 ⇒ S4 紅;
   K3 supervise 的結果不看、一律 ok ⇒ S1 紅
 """
 import json
@@ -21,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -107,10 +112,25 @@ class S1Supervised(Base):
                                    remote="not_confirmed")))
         self.assertEqual(d["supervised"]["stopped_by"], "person")
         self.assertEqual(d["supervised"]["remote"], "not_confirmed")
+        import hashlib
+        self.assertEqual(d["supervisor"], {"path": str(self.exe),
+                                           "sha256": hashlib.sha256(self.exe.read_bytes()).hexdigest()})
         for junk in ("not json", json.dumps({"result": "weird"}), ""):
+            self.running()
             d = C.execute("1-abc", self.req, ["/x/aib"], env=self.env, run=Sup(junk, rc=101))
             self.assertEqual(d["result"], "failed")
             self.assertTrue(d["why"].startswith("supervisor_died"))
+            self.assertIs(d["job_may_be_running"], True)
+            self.assertFalse(C._state_path("1-abc", self.env).exists())   # 2240e #661 N3
+
+    def test_s1_supervisor_hung(self):
+        self.running()
+
+        def run(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        d = C.execute("1-abc", self.req, ["/x/aib"], env=self.env, run=run)
+        self.assertEqual((d["result"], d["why"], d["job_may_be_running"]), ("failed", "supervisor_hung", True))
+        self.assertFalse(C._state_path("1-abc", self.env).exists())
 
 
 class S2Unsupervised(Base):
@@ -227,6 +247,74 @@ class S7Real(Base):
         self.assertEqual((d["result"], d["rc"]), ("rc_nonzero", 4))
 
 
+class S8SignBytes(Base):
+    def staged(self, body=b"sleep 1\necho first\n"):
+        import hashlib
+        copy = self.td / "SIGN-x.sh"
+        copy.write_bytes(body)
+        return copy, {"program_copy": str(copy), "program_sha": hashlib.sha256(body).hexdigest()}
+
+    def test_s8_supervisor_gets_the_copy(self):
+        copy, staged = self.staged()
+        rec = {"id": "1-abc", "result": "exited", "rc": 0, "asks": 0, "tail": []}
+        run = Sup(rec)
+        d = C.execute("1-abc", self.req, ["/bin/bash", str(copy)], env=self.env, run=run,
+                      extra={"sha256": staged["program_sha"], "staged": staged})
+        self.assertEqual(d["result"], "ok", d)
+        self.assertNotIn("staged", d)
+        argv = run.calls[0][0]
+        self.assertIn("--program-copy", argv)
+        self.assertIn("--program-sha", argv)
+        cut = argv.index("--")
+        self.assertEqual(argv[argv.index("--program-copy") + 1], str(copy))
+        self.assertEqual(argv[argv.index("--program-sha") + 1], staged["program_sha"])
+        self.assertLess(argv.index("--program-copy"), cut)
+        self.assertEqual(argv[cut + 1:], ["/bin/bash", str(copy)])
+
+    def test_s8_without_supervisor_the_checked_bytes_run(self):
+        import threading
+        env = dict(self.env)
+        env.pop("AIB_CONSENT_RUN")
+        copy, staged = self.staged()
+
+        def append_later():
+            time.sleep(0.4)
+            with open(str(copy), "ab") as fh:
+                fh.write(b"echo appended\n")
+        t = threading.Thread(target=append_later)
+        with mock.patch.dict(os.environ, env, clear=True):
+            t.start()
+            d = C.execute("1-abc", self.req, ["/bin/bash", str(copy)], env=env,
+                          extra={"staged": dict(staged)})
+            t.join()
+        self.assertEqual((d["result"], d["supervised"]), ("ok", False), d)
+        log = Path(d["log"]).read_text()
+        self.assertIn("first", log)
+        self.assertNotIn("appended", log)
+        # changed before the run: refused, nothing runs
+        copy.write_bytes(b"echo evil\n")
+        ran = []
+        with mock.patch.dict(os.environ, env, clear=True):
+            d = C.execute("1-abc", self.req, ["/bin/bash", str(copy)], env=env, run=lambda *a, **k: ran.append(a),
+                          extra={"staged": dict(staged)})
+        self.assertEqual((d["result"], d["why"], ran), ("failed", "staged_hash_changed", []))
+
+
+class S9BigScript(S8SignBytes):
+    def test_s9_larger_than_the_pipe_buffer(self):
+        env = dict(self.env)
+        env.pop("AIB_CONSENT_RUN")
+        body = b"".join(b"# filler %05d ............................................\n" % i for i in range(4000))
+        self.assertGreater(len(body), 200 * 1024)
+        copy, staged = self.staged(body + b"echo the-last-line\n")
+        t0 = time.time()
+        with mock.patch.dict(os.environ, env, clear=True):
+            d = C.execute("1-abc", self.req, ["/bin/bash", str(copy)], env=env, extra={"staged": staged})
+        self.assertEqual(d["result"], "ok", d)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("the-last-line", Path(d["log"]).read_text())
+
+
 class Knives(unittest.TestCase):
     def _knife(self, needle, repl, cell):
         name = Path(__file__).name
@@ -244,6 +332,12 @@ class Knives(unittest.TestCase):
     def test_k2_stop_without_running_check(self):
         self._knife("    if not _state_path(rid, env).is_file():\n        return \"not_running\"          #",
                     "    if False:\n        return \"not_running\"          #", "S4Stop")
+
+    def test_k4_fallback_runs_the_path(self):
+        self._knife("        fd, real = _feed_script(raw, real)\n", "        fd = None\n", "S8SignBytes")
+
+    def test_k5_supervisor_not_given_the_copy(self):
+        self._knife("    if staged:   # 被釘的程式", "    if False:   # 被釘的程式", "S8SignBytes")
 
     def test_k3_supervise_result_ignored(self):
         self._knife("        result = _SUPERVISED[rec[\"result\"]] or (\"ok\" if rc == 0 else \"rc_nonzero\")\n",

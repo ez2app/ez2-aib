@@ -53,6 +53,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -664,7 +665,9 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     if kind == "claude_plugin":
         exe = shutil.which("claude", path=os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]))
         return (None, {}, [exe] + argv[1:], None) if exe else ("failed", {"why": "exe_missing"}, None, None)
-    return None, dict({"sha256": sign["sha256"]}, **lint_rec), ["/bin/bash", str(copy)], td
+    # 跑的不是這個路徑：跑前再驗一次雜湊，驗過的位元組經管線交給 bash(f1fae 11-11 補充 M2)
+    staged = {"program_copy": str(copy), "program_sha": sign["sha256"]}
+    return None, dict({"sha256": sign["sha256"], "staged": staged}, **lint_rec), ["/bin/bash", str(copy)], td
 
 
 def _state_path(rid, env=None):
@@ -675,7 +678,7 @@ def _stop_path(rid, env=None):
     return running_dir(env) / (rid + ".stop")
 
 
-def supervise_argv(exe, rid, real, child_env, log, env=None):
+def supervise_argv(exe, rid, real, child_env, log, env=None, staged=None):
     """交給 aib-consent-run supervise 的 argv:跑的時候邊寫 log 與狀態檔;安靜太久 / 跑太久 / 席位請停 ⇒ 它叫
     `consent.py ask-stop` 問人(對話框 + Touch ID),同意才停整個行程群組。"""
     ask = [sys.executable, "-I", str(HERE / "consent.py"), "ask-stop"]
@@ -683,6 +686,10 @@ def supervise_argv(exe, rid, real, child_env, log, env=None):
            "--stop-request", str(_stop_path(rid, env)), "--cwd", str(_home(env)), "--ask-json", json.dumps(ask)]
     for k, v in child_env.items():
         out += ["--env", "%s=%s" % (k, v)]
+    if staged:   # 被釘的程式:它跑前再驗雜湊，驗過的位元組經管線交給直譯器(不再用路徑開檔)
+        out += ["--program-copy", staged["program_copy"], "--program-sha", staged["program_sha"]]
+        if staged.get("params_copy"):
+            out += ["--params-copy", staged["params_copy"], "--params-sha", staged["params_sha"]]
     return out + ["--"] + list(real)
 
 
@@ -699,13 +706,19 @@ def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
         if _env(env).get(k):
             child_env[k] = _env(env)[k]
     extra = dict(extra or {})
+    staged = extra.pop("staged", None)
     exe = consent_run_exe(env)
     if exe:
+        # 它不在 git 裡、同帳號換得掉 ⇒ 至少記下這次是哪一支(路徑 + sha256),事後查得到(2240e #661 N1)
+        extra["supervisor"] = {"path": exe, "sha256": _file_sha256(exe)}
         try:
-            p = run(supervise_argv(exe, rid, real, child_env, log, env), cwd=str(_home(env)), stdin=subprocess.DEVNULL,
+            p = run(supervise_argv(exe, rid, real, child_env, log, env, staged=staged), cwd=str(_home(env)), stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=RUN_TIMEOUT_S + SUPERVISE_SLACK_S)
         except subprocess.TimeoutExpired:
-            return _record(rid, "failed", env, req, why="supervisor_hung", started=started, log=str(log), **extra)
+            # 它被收掉了，但它看管的行程群組可能還在跑(2240e #661 N3)
+            _cleanup_running(rid, env)
+            return _record(rid, "failed", env, req, why="supervisor_hung", job_may_be_running=True, started=started,
+                           log=str(log), **extra)
         except OSError as exc:
             return _record(rid, "failed", env, req, why="run_oserror:%s" % exc.__class__.__name__, log=str(log), **extra)
         lines = [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
@@ -714,8 +727,9 @@ def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
         except ValueError:
             rec = None
         if not isinstance(rec, dict) or rec.get("result") not in _SUPERVISED:
-            return _record(rid, "failed", env, req, why="supervisor_died:rc%s" % p.returncode, started=started,
-                           log=str(log), **extra)
+            _cleanup_running(rid, env)
+            return _record(rid, "failed", env, req, why="supervisor_died:rc%s" % p.returncode, job_may_be_running=True,
+                           started=started, log=str(log), **extra)
         rc = rec.get("rc") if type(rec.get("rc")) is int else None
         result = _SUPERVISED[rec["result"]] or ("ok" if rc == 0 else "rc_nonzero")
         sup = {k: rec.get(k) for k in ("stopped_by", "kill_needed", "stop_errors", "asks", "signal", "remote",
@@ -727,18 +741,57 @@ def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
         return _record(rid, result, env, req, rc=rc, started=started, ended=int(time.time()), log=str(log),
                        supervised=sup or True, tail=[_plain(x, 300) for x in (rec.get("tail") or [])][:3], **extra)
     # 沒裝 aib-consent-run:照舊跑(沒有中途詢問 / 停止),紀錄寫明
+    fd = None
+    if staged:
+        if staged.get("params_copy"):   # 參數只有 aib-consent-run 會交給程式
+            return _record(rid, "failed", env, req, why="consent_run_missing", supervised=False, **extra)
+        raw = _read_regular(Path(staged["program_copy"]), MAX_SIGN_BYTES)
+        if raw is None or hashlib.sha256(raw).hexdigest() != staged["program_sha"] or not real \
+                or real[-1] != staged["program_copy"]:
+            return _record(rid, "failed", env, req, why="staged_hash_changed", supervised=False, **extra)
+        fd, real = _feed_script(raw, real)
     try:
         with open(log, "w", encoding="utf-8") as fh:
             p = run(real, cwd=str(_home(env)), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                    timeout=RUN_TIMEOUT_S, env=child_env)
+                    timeout=RUN_TIMEOUT_S, env=child_env, pass_fds=(fd,) if fd is not None else ())
     except subprocess.TimeoutExpired:
         return _record(rid, "timeout", env, req, started=started, log=str(log), supervised=False, **extra)
     except OSError as exc:
         return _record(rid, "failed", env, req, why="run_oserror:%s" % exc.__class__.__name__, log=str(log), **extra)
+    finally:
+        if fd is not None:
+            os.close(fd)
     rc = p.returncode
     _notify(req, rc, env)
     return _record(rid, "ok" if rc == 0 else "rc_nonzero", env, req, rc=rc, started=started,
                    ended=int(time.time()), log=str(log), supervised=False, **extra)
+
+
+def _feed_script(raw, real):
+    """驗過的位元組寫進管線，最後一個字換成 /dev/fd/<讀端>:直譯器讀的是這份位元組，副本之後被改也跑不到
+    (bash 是邊跑邊讀腳本的)。回 (讀端, 新 argv);讀端由呼叫端用 pass_fds 交給子行程、跑完自己關。"""
+    r, w = os.pipe()
+
+    def write():
+        try:
+            with os.fdopen(w, "wb") as fh:
+                fh.write(raw)
+        except OSError:    # 子行程沒讀完就結束 ⇒ 寫端拿到 EPIPE,不管它
+            pass
+    threading.Thread(target=write, daemon=True).start()
+    return r, list(real[:-1]) + ["/dev/fd/%d" % r]
+
+
+def _file_sha256(path):
+    """檔案的 sha256(讀不到 ⇒ None)。"""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
 
 
 def _cleanup_running(rid, env=None):

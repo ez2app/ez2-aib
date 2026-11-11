@@ -13,7 +13,13 @@
 //!   limit and the job ending are seen while a dialog is open; a dialog left open when
 //!   the job ends is closed (its process is killed).
 //! - A seat asks for a stop by creating the stop-request file; that only leads to the same
-//!   question, never to a stop by itself.
+//!   question, never to a stop by itself. After the person said "keep waiting", requests
+//!   within `ask_every` are dropped and counted, not asked (2240e #661 L1: a seat must not be
+//!   able to make the dialog come back every tick).
+//! - A pinned program ([`Job::script`]) is not run from its path: the bytes checked against
+//!   the pin are written into a pipe and the interpreter reads `/dev/fd/<n>` (2240e #661 M2:
+//!   bash reads a script as it runs, so a file changed after the check would be run changed).
+//!   What runs is what was checked; a same-user process can still kill or trace the job.
 //! - "Quiet" is measured on a monotonic clock from the start and from the last byte read
 //!   (a line end is not needed). After "keep waiting" the next question waits a full
 //!   quiet period again.
@@ -29,6 +35,7 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -49,6 +56,8 @@ pub const ASK_LIMIT_DEFAULT: Duration = Duration::from_secs(300);
 pub const TAIL_LINES: usize = 3;
 /// A line longer than this is cut into pieces for the tail.
 pub const TAIL_LINE_MAX: usize = 300;
+/// In [`Job::argv`], stands for the pipe the checked script is read from.
+pub const SCRIPT_ARG: &str = "@aib-consent-script";
 
 /// Everything one run needs.
 #[derive(Debug, Clone)]
@@ -72,6 +81,9 @@ pub struct Job {
     pub ask_limit: Duration,
     /// How often the loop looks (tests make it short).
     pub tick: Duration,
+    /// The checked bytes of a pinned program: every [`SCRIPT_ARG`] in `argv` becomes
+    /// `/dev/fd/<n>` of a pipe these bytes are written into. `None`: `argv` runs as it is.
+    pub script: Option<Vec<u8>>,
 }
 
 /// The quiet period a request may set: 60 seconds to the hard limit (c477a: vzdump and rclone
@@ -235,6 +247,7 @@ fn stop_group(
 
 /// One question to the person, on its own thread. `Some(true)` = stop.
 struct Asking {
+    why: String,
     started: Instant,
     pid: Option<u32>,
     answer: Arc<Mutex<Option<bool>>>,
@@ -275,6 +288,7 @@ fn start_asking(job: &Job, why: &str, elapsed: Duration, quiet: Duration) -> Ask
         Err(_) => *answer.lock().unwrap_or_else(|e| e.into_inner()) = Some(false),
     }
     Asking {
+        why: why.to_owned(),
         started: Instant::now(),
         pid,
         answer,
@@ -285,6 +299,16 @@ fn close_asking(a: &Asking) {
     if let Some(pid) = a.pid {
         let _ = nix::sys::signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
     }
+}
+
+/// A pipe for the script: the write end stays close-on-exec (only we write), the read end
+/// is inherited by the job (and only by the job: it is dropped right after the spawn, before
+/// any question is asked).
+fn script_pipe() -> std::io::Result<(std::io::PipeReader, std::io::PipeWriter)> {
+    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+    let (r, w) = std::io::pipe()?;
+    fcntl(&r, FcntlArg::F_SETFD(FdFlag::empty())).map_err(std::io::Error::from)?;
+    Ok((r, w))
 }
 
 fn status_json(s: Option<ExitStatus>) -> (Value, Value) {
@@ -320,8 +344,32 @@ pub fn supervise(job: &Job) -> Value {
         Ok(w) => w,
         Err(e) => return json!({"id": job.id, "result": "failed", "why": format!("pipe:{e}")}),
     };
+    // a pinned program: its checked bytes go through a pipe whose read end the job inherits
+    let script = match &job.script {
+        None => None,
+        Some(bytes) => match script_pipe() {
+            Ok((r, w)) => Some((r, w, bytes.clone())),
+            Err(e) => {
+                return json!({"id": job.id, "result": "failed", "why": format!("script_pipe:{e}")})
+            }
+        },
+    };
+    let fd_arg = script
+        .as_ref()
+        .map(|(r, _, _)| format!("/dev/fd/{}", r.as_raw_fd()));
+    let argv: Vec<&str> = job
+        .argv
+        .iter()
+        .map(|a| match (&fd_arg, a.as_str()) {
+            (Some(fd), SCRIPT_ARG) => fd.as_str(),
+            _ => a.as_str(),
+        })
+        .collect();
+    if fd_arg.is_none() && argv.contains(&SCRIPT_ARG) {
+        return json!({"id": job.id, "result": "failed", "why": "script_missing"});
+    }
     let mut cmd = Command::new(prog);
-    cmd.args(&job.argv[1..])
+    cmd.args(&argv[1..])
         .env_clear()
         .envs(job.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&job.cwd)
@@ -331,6 +379,14 @@ pub fn supervise(job: &Job) -> Value {
         .process_group(0);
     let spawned = cmd.spawn();
     drop(cmd); // our copies of the write end go away; only the job holds it now
+    if let Some((r, w, bytes)) = script {
+        drop(r); // only the job reads the script now
+        let mut w = w;
+        // a job that never reads its script (it failed to start) ends the write with EPIPE
+        thread::spawn(move || {
+            let _ = w.write_all(&bytes);
+        });
+    }
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
@@ -364,6 +420,8 @@ pub fn supervise(job: &Job) -> Value {
 
     let mut asking: Option<Asking> = None;
     let mut asks: u32 = 0;
+    let mut requests_ignored: u32 = 0;
+    let mut requests_quiet_until = Duration::ZERO; // after "keep waiting", requests are dropped until here
     let mut next_long = job.ask_after;
     let mut quiet_from = Duration::ZERO; // after "keep waiting", quiet counts from here at the earliest
     let mut last_state: Option<Instant> = None;
@@ -432,12 +490,18 @@ pub fn supervise(job: &Job) -> Value {
                 }
                 asking = None;
                 quiet_from = start.elapsed();
+                requests_quiet_until = quiet_from + job.ask_every;
                 if elapsed >= next_long {
                     next_long = elapsed + job.ask_every;
                 }
             }
         } else {
-            let request = job.stop_request.exists();
+            let mut request = job.stop_request.exists();
+            if request && elapsed < requests_quiet_until {
+                let _ = fs::remove_file(&job.stop_request);
+                requests_ignored += 1;
+                request = false;
+            }
             let why = if request {
                 Some("request")
             } else if quiet >= job.quiet {
@@ -461,9 +525,11 @@ pub fn supervise(job: &Job) -> Value {
                 &job.state,
                 &json!({
                     "id": job.id, "phase": if asking.is_some() { "asking" } else { "running" },
+                    "asking_why": asking.as_ref().map(|a| a.why.as_str()),
                     "pid": child.id(), "started": started_unix, "elapsed_s": elapsed.as_secs(),
                     "quiet_s": quiet.as_secs(), "bytes": seen.bytes.load(Ordering::Relaxed),
-                    "asks": asks, "tail": seen.tail(), "log": job.log,
+                    "asks": asks, "requests_ignored": requests_ignored, "tail": seen.tail(),
+                    "log": job.log,
                 }),
             );
         }
@@ -473,7 +539,7 @@ pub fn supervise(job: &Job) -> Value {
     let (rc, sig) = status_json(status);
     let record = json!({
         "id": job.id, "result": result, "rc": rc, "signal": sig, "stopped_by": stopped_by,
-        "kill_needed": killed, "stop_errors": errors, "asks": asks,
+        "kill_needed": killed, "stop_errors": errors, "asks": asks, "requests_ignored": requests_ignored,
         "elapsed_s": start.elapsed().as_secs(), "bytes": seen.bytes.load(Ordering::Relaxed),
         "tail": seen.tail(), "log": job.log, "log_failed": seen.log_failed.load(Ordering::Relaxed),
         "remote": if stopped_by.is_some() { json!("not_confirmed") } else { Value::Null },

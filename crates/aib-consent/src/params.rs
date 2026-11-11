@@ -96,10 +96,15 @@ pub fn key_ok(k: &str) -> bool {
 }
 
 /// Is this a value a parameter file may carry? No blank, quote, `$`, backquote, `;`, `&`,
-/// `|`, `<`, `>`, `*`, `?`, `~`, brackets, backslash, control or non-ASCII character.
+/// `|`, `<`, `>`, `*`, `?`, `~`, brackets, backslash, control or non-ASCII character; not
+/// starting with `-` (a program passing it on would read an option) and no `..` (a path
+/// out of where the program meant it; 2240e #661 N2). Programs still quote values and put
+/// `--` before them.
 pub fn value_ok(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= VALUE_MAX
+        && !v.starts_with('-')
+        && !v.contains("..")
         && v.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._:/@+,=-".contains(&c))
 }
@@ -452,8 +457,32 @@ mod tests {
     #[test]
     fn values_carry_nothing_a_shell_could_read() {
         for v in [
-            "", "a b", "a'b", "a\"b", "$x", "`id`", "a;b", "a&b", "a|b", "a<b", "a>b", "a*", "a?",
-            "~", "a(b)", "a[b]", "a{b}", "a\\b", "a!b", "a#b", "a%b",
+            "",
+            "a b",
+            "a'b",
+            "a\"b",
+            "$x",
+            "`id`",
+            "a;b",
+            "a&b",
+            "a|b",
+            "a<b",
+            "a>b",
+            "a*",
+            "a?",
+            "~",
+            "a(b)",
+            "a[b]",
+            "a{b}",
+            "a\\b",
+            "a!b",
+            "a#b",
+            "a%b",
+            "-rf",
+            "--all",
+            "../../.ssh",
+            "a/../b",
+            "..",
         ] {
             assert!(!value_ok(v), "{v:?}");
         }
@@ -466,6 +495,8 @@ mod tests {
             "k=v",
             "1,2",
             "+x",
+            "a-b",
+            "v1.2.3",
         ] {
             assert!(value_ok(v), "{v:?}");
         }
@@ -580,7 +611,8 @@ mod tests {
     }
 
     fn shared_home(tag: &str) -> PathBuf {
-        let home = std::env::temp_dir().join(format!("aib-consent-params-{tag}-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("aib-consent-params-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(home.join(".agents/skills/ops/tools/generic")).expect("dirs");
         home
@@ -626,10 +658,19 @@ mod tests {
         let sha = sha256_hex(b"SITE=s-1\n");
         assert_eq!(read_staged(&c, &sha, 4096).expect("same"), b"SITE=s-1\n");
         fs::write(&c, b"SITE=s-2\n").expect("tamper");
-        assert_eq!(read_staged(&c, &sha, 4096).err(), Some(refused("staged_hash_changed", 0)));
-        assert_eq!(stage_bytes(&dir, "params.env", b"x").err(), Some(refused("stage_write", 0)));
+        assert_eq!(
+            read_staged(&c, &sha, 4096).err(),
+            Some(refused("staged_hash_changed", 0))
+        );
+        assert_eq!(
+            stage_bytes(&dir, "params.env", b"x").err(),
+            Some(refused("stage_write", 0))
+        );
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("chmod");
-        assert_eq!(stage_bytes(&dir, "other", b"x").err(), Some(refused("stage_dir", 0)));
+        assert_eq!(
+            stage_bytes(&dir, "other", b"x").err(),
+            Some(refused("stage_dir", 0))
+        );
     }
 
     #[test]

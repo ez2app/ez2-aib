@@ -4,8 +4,10 @@
 //! and launchd; this half:
 //!
 //! - [`params`]: checks a reviewed shared program against the sha256 it is pinned to, the
-//!   parameters it declares, and a strict parameter file; stages copies of both so what
-//!   the dialog shows is what runs;
+//!   parameters it declares, and a strict parameter file; stages copies of both. Right
+//!   before the run both copies are checked against their sha256 again and those checked
+//!   bytes are what is used: the parameters go into the environment, the program is fed
+//!   to its interpreter through a pipe (`/dev/fd/<n>`), never re-read from a path;
 //! - [`supervise`]: runs an approved job in its own process group, writes its output and a
 //!   small state file as it goes, asks the person whether to stop it when it is quiet or
 //!   long, and stops its whole group only on "yes" or at the hard limit.

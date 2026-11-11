@@ -40,6 +40,7 @@ fn job(dir: &Path, script: &str, ask: &[&str]) -> Job {
         grace: Duration::from_millis(500),
         ask_limit: Duration::from_secs(60),
         tick: Duration::from_millis(50),
+        script: None,
     }
 }
 
@@ -189,9 +190,13 @@ fn kill_follows_an_ignored_term() {
     let d = scratch("ignore");
     let mut j = job(&d, "trap '' TERM; sleep 30", YES);
     j.quiet = Duration::from_millis(300);
+    let t = Instant::now();
     let r = supervise(&j);
     assert_eq!(s(&r, "result"), "stopped", "{r}");
     assert_eq!(r["kill_needed"], true);
+    // TERM is ignored by the shell and by sleep (an ignored signal stays ignored across exec):
+    // only the KILL ends it this soon
+    assert!(t.elapsed() < Duration::from_secs(10), "{r}");
 }
 
 // output without a line end still counts as the job being alive
@@ -207,4 +212,73 @@ fn bytes_without_a_line_end_are_not_quiet() {
     let r = supervise(&j);
     assert_eq!(s(&r, "result"), "exited", "{r}");
     assert_eq!(r["asks"], 0, "{r}");
+}
+
+// knife: after "keep waiting", a seat's requests are dropped for a while, not asked again
+#[test]
+fn requests_right_after_keep_waiting_are_not_asked() {
+    let d = scratch("cooldown");
+    let mut j = job(&d, "sleep 2; echo fine", NO);
+    std::fs::write(&j.stop_request, b"").expect("request");
+    j.quiet = Duration::from_secs(60);
+    let req = j.stop_request.clone();
+    let poker = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < until {
+            let _ = std::fs::write(&req, b"");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let r = supervise(&j);
+    let _ = poker.join();
+    assert_eq!(s(&r, "result"), "exited", "{r}");
+    assert_eq!(r["asks"], 1, "{r}");
+    assert!(r["requests_ignored"].as_u64().unwrap_or(0) >= 1, "{r}");
+}
+
+// knife: a pinned program runs from the checked bytes, not from a path that can change
+#[test]
+fn the_checked_script_runs_from_a_pipe() {
+    let d = scratch("script");
+    let mut j = job(&d, "unused", NO);
+    j.argv = vec!["/bin/sh".into(), aib_consent::supervise::SCRIPT_ARG.into()];
+    j.script = Some(b"echo from-the-bytes; echo \"$0\"\n".to_vec());
+    let r = supervise(&j);
+    assert_eq!(s(&r, "result"), "exited", "{r}");
+    assert_eq!(r["rc"], 0, "{r}");
+    let log = std::fs::read_to_string(d.join("job.log")).expect("log");
+    assert!(log.contains("from-the-bytes"), "{log}");
+    assert!(log.contains("/dev/fd/"), "{log}");
+    // without the bytes the placeholder is never run as a file name
+    let mut j = job(&d, "unused", NO);
+    j.argv = vec!["/bin/sh".into(), aib_consent::supervise::SCRIPT_ARG.into()];
+    let r = supervise(&j);
+    assert_eq!(s(&r, "why"), "script_missing", "{r}");
+}
+
+// a script far larger than a pipe's buffer (2240e #661 r2): written by its own thread, never stuck
+#[test]
+fn a_script_larger_than_the_pipe_buffer_runs_to_its_end() {
+    let d = scratch("big-script");
+    let mut j = job(&d, "unused", NO);
+    j.argv = vec![
+        "/bin/bash".into(),
+        aib_consent::supervise::SCRIPT_ARG.into(),
+    ];
+    let mut body = Vec::new();
+    for i in 0..4000 {
+        body.extend_from_slice(
+            format!("# filler line {i:05} ......................................\n").as_bytes(),
+        );
+    }
+    assert!(body.len() > 200 * 1024);
+    body.extend_from_slice(b"echo the-last-line\n");
+    j.script = Some(body);
+    let t = Instant::now();
+    let r = supervise(&j);
+    assert_eq!(s(&r, "result"), "exited", "{r}");
+    assert_eq!(r["rc"], 0, "{r}");
+    assert!(t.elapsed() < Duration::from_secs(10), "{r}");
+    let log = std::fs::read_to_string(d.join("job.log")).expect("log");
+    assert!(log.contains("the-last-line"), "{log}");
 }
