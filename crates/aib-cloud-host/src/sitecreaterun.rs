@@ -528,7 +528,9 @@ pub fn run(
             ask["why"] = json!("start_late");
             ask["at"] = json!(now());
             rewrite_ask(&places.asked, code, &ask)?;
-            return Err(format!("{code}: the run started after its ask stopped waiting"));
+            return Err(format!(
+                "{code}: the run started after its ask stopped waiting"
+            ));
         }
         // started and still going: another run has it
         (Some("running"), "opening") => {

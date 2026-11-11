@@ -787,8 +787,8 @@ jobs:
              '            v.get("state").is_some_and(Value::is_string) // knife' \
              an_opening_is_told_from_the_site_s_checks
           # E1 (33e28 M2): a name under one of the platform's own domains is a customer's
-          ck sitecreate.rs "        name == ours || name.strip_suffix(ours).is_some_and(|head| head.ends_with('.'))" \
-             '        name == ours // knife' \
+          ck sitecreate.rs "        name == ours || head.is_some_and(|h| h.ends_with('.'))" \
+             "        name == ours || head.is_some_and(|h| h.ends_with('.') && false) // knife" \
              the_platform_s_own_domains_are_never_a_customer_s
           # E1 (33e28 M2): the bare name of a listed www name is a customer's
           ck sitecreate.rs '        .any(|ours| under(bare, ours) || ours.strip_prefix("www.") == Some(bare))' \

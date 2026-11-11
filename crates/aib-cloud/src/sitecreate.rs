@@ -258,7 +258,8 @@ pub fn platform_domains(text: &str) -> Option<alloc::vec::Vec<alloc::string::Str
 pub fn is_platform(domain: &str, platform: &[alloc::string::String]) -> bool {
     let bare = domain.strip_prefix("www.").unwrap_or(domain);
     let under = |name: &str, ours: &str| {
-        name == ours || name.strip_suffix(ours).is_some_and(|head| head.ends_with('.'))
+        let head = name.strip_suffix(ours);
+        name == ours || head.is_some_and(|h| h.ends_with('.'))
     };
     platform
         .iter()
@@ -478,8 +479,8 @@ mod tests {
     /// ours when it, its www twin, or a name above it is listed (E1, 33e28 M2).
     #[test]
     fn the_platform_s_own_domains_are_never_a_customer_s() {
-        let list = platform_domains("# ours\nours.example\n\nwww.home.example # the face\n")
-            .unwrap();
+        let list =
+            platform_domains("# ours\nours.example\n\nwww.home.example # the face\n").unwrap();
         assert_eq!(list, ["ours.example", "www.home.example"]);
         for name in [
             "ours.example",
@@ -491,7 +492,12 @@ mod tests {
         ] {
             assert!(is_platform(name, &list), "{name}");
         }
-        for name in ["yours.example", "ours.example.test", "shop.home.example", "new.example.test"] {
+        for name in [
+            "yours.example",
+            "ours.example.test",
+            "shop.home.example",
+            "new.example.test",
+        ] {
             assert!(!is_platform(name, &list), "{name}");
         }
         // a list with a line that is not a domain, or with none, is no list
