@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""tools/cloud-host/robot.py(Hetzner Robot API)沙盒測試,不連 Hetzner(#528 M2 / H1 / L1)。
+"""tools/cloud-host/robot.py(供應商後台 API)沙盒測試,不連外(#528 M2 / H1 / L1)。
 
 R1 plan 模式(沒 --apply)不讀金鑰、不過閘、不打 API
 R2 rescue --apply:先過閘(approve 被叫到,帶 action / server / fp)→ 才讀金鑰 → 送對的表單(os + authorized_key[]);密碼不在 argv / 輸出

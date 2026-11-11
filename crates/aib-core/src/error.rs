@@ -52,10 +52,28 @@ pub enum ErrorCode {
     /// The machine is too hot to start another session (ADR 0005 §1 thermal guard).
     /// Not queued; answered with `Retry-After`.
     ThermalNogo,
+    /// A page credential that is not confirmed yet (ADR 0006 §7): only pair/status,
+    /// pair/revoke and health answer until the short code is confirmed in the terminal.
+    PairingUnconfirmed,
+    /// A pairing code was redeemed a second time; the first redemption's credential is
+    /// revoked too (ADR 0006 §7).
+    PairingCodeReused,
+    /// Too many failed pairing attempts in the window.
+    PairingRateLimited,
+    /// Pairing failed (unknown, expired or wrong code); deliberately says no more.
+    PairingFailed,
+    /// A page credential sent a write (anything but GET / HEAD, and pair/revoke). Until the
+    /// launch-profile routes exist a page credential may only read (ADR 0006 §7; Q2).
+    PageWriteNotAllowed,
+    /// A non-API path on an aibd built without the web workbench (cargo feature `web`).
+    WebNotBuilt,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 20] = [
+    /// Every code once, in contract order (new codes are appended, never inserted). The
+    /// length is written out because the array is public; `ordinal` and the check below
+    /// keep it honest (a63ab 11-10: a merge once took two edits to `25` silently).
+    pub const ALL: [ErrorCode; 26] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -76,7 +94,49 @@ impl ErrorCode {
         ErrorCode::ProviderInstallUnsupported,
         ErrorCode::SessionQueueFull,
         ErrorCode::ThermalNogo,
+        ErrorCode::PairingUnconfirmed,
+        ErrorCode::PairingCodeReused,
+        ErrorCode::PairingRateLimited,
+        ErrorCode::PairingFailed,
+        ErrorCode::PageWriteNotAllowed,
+        ErrorCode::WebNotBuilt,
     ];
+
+    /// Position of this code in [`ErrorCode::ALL`]. The match is exhaustive, so a new
+    /// variant does not compile until it gets a number here: give it the next number and
+    /// append it to `ALL`. A number outside `ALL` fails the build (`at`), and so does an
+    /// `ALL` entry whose ordinal is not its position (the check after this `impl`).
+    /// Not caught: a new variant given a number that another code already has.
+    pub const fn ordinal(self) -> usize {
+        match self {
+            ErrorCode::HostNotAllowed => at::<0>(),
+            ErrorCode::OriginNotAllowed => at::<1>(),
+            ErrorCode::Unauthorized => at::<2>(),
+            ErrorCode::TokenInUrl => at::<3>(),
+            ErrorCode::NotFound => at::<4>(),
+            ErrorCode::Internal => at::<5>(),
+            ErrorCode::InvalidRequest => at::<6>(),
+            ErrorCode::EnvNotAllowed => at::<7>(),
+            ErrorCode::PayloadTooLarge => at::<8>(),
+            ErrorCode::SessionNotFound => at::<9>(),
+            ErrorCode::TooManySessions => at::<10>(),
+            ErrorCode::SpawnFailed => at::<11>(),
+            ErrorCode::ShuttingDown => at::<12>(),
+            ErrorCode::MethodNotAllowed => at::<13>(),
+            ErrorCode::SeatNotFound => at::<14>(),
+            ErrorCode::IdempotencyConflict => at::<15>(),
+            ErrorCode::ProgramNotAllowed => at::<16>(),
+            ErrorCode::ProviderInstallUnsupported => at::<17>(),
+            ErrorCode::SessionQueueFull => at::<18>(),
+            ErrorCode::ThermalNogo => at::<19>(),
+            ErrorCode::PairingUnconfirmed => at::<20>(),
+            ErrorCode::PairingCodeReused => at::<21>(),
+            ErrorCode::PairingRateLimited => at::<22>(),
+            ErrorCode::PairingFailed => at::<23>(),
+            ErrorCode::PageWriteNotAllowed => at::<24>(),
+            ErrorCode::WebNotBuilt => at::<25>(),
+        }
+    }
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -100,6 +160,12 @@ impl ErrorCode {
             ErrorCode::ProviderInstallUnsupported => "provider_install_unsupported",
             ErrorCode::SessionQueueFull => "session_queue_full",
             ErrorCode::ThermalNogo => "thermal_nogo",
+            ErrorCode::PairingUnconfirmed => "pairing_unconfirmed",
+            ErrorCode::PairingCodeReused => "pairing_code_reused",
+            ErrorCode::PairingRateLimited => "pairing_rate_limited",
+            ErrorCode::PairingFailed => "pairing_failed",
+            ErrorCode::PageWriteNotAllowed => "page_write_not_allowed",
+            ErrorCode::WebNotBuilt => "web_not_built",
         }
     }
 
@@ -121,9 +187,34 @@ impl ErrorCode {
             ErrorCode::SeatNotFound => 404,
             ErrorCode::IdempotencyConflict => 409,
             ErrorCode::ProgramNotAllowed | ErrorCode::ProviderInstallUnsupported => 403,
+            ErrorCode::PairingUnconfirmed => 403,
+            ErrorCode::PairingCodeReused => 409,
+            ErrorCode::PairingRateLimited => 429,
+            ErrorCode::PairingFailed => 401,
+            ErrorCode::PageWriteNotAllowed => 403,
+            ErrorCode::WebNotBuilt => 404,
         }
     }
 }
+
+/// An ordinal, checked at build time to point inside [`ErrorCode::ALL`].
+const fn at<const N: usize>() -> usize {
+    const { assert!(N < ErrorCode::ALL.len(), "ErrorCode ordinal is outside ALL") };
+    N
+}
+
+/// Build-time check: `ALL[i]` has ordinal `i` for every `i`, so `ALL` holds no code twice,
+/// is in contract order, and its length matches the ordinals it lists.
+const _: () = {
+    let mut i = 0;
+    while i < ErrorCode::ALL.len() {
+        assert!(
+            ErrorCode::ALL[i].ordinal() == i,
+            "ErrorCode::ALL is out of step with ErrorCode::ordinal"
+        );
+        i += 1;
+    }
+};
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -157,5 +248,48 @@ mod tests {
             assert_eq!(c.as_str().parse::<ErrorCode>(), Ok(c));
         }
         assert!("nope".parse::<ErrorCode>().is_err());
+    }
+
+    /// The order clients see is a contract: codes are only appended. Every variant must be
+    /// in `ALL` exactly once and in this order.
+    #[test]
+    fn all_lists_every_code_once_in_contract_order() {
+        const CONTRACT: [&str; 26] = [
+            "host_not_allowed",
+            "origin_not_allowed",
+            "unauthorized",
+            "token_in_url",
+            "not_found",
+            "internal",
+            "invalid_request",
+            "env_not_allowed",
+            "payload_too_large",
+            "session_not_found",
+            "too_many_sessions",
+            "spawn_failed",
+            "shutting_down",
+            "method_not_allowed",
+            "seat_not_found",
+            "idempotency_conflict",
+            "program_not_allowed",
+            "provider_install_unsupported",
+            "session_queue_full",
+            "thermal_nogo",
+            "pairing_unconfirmed",
+            "pairing_code_reused",
+            "pairing_rate_limited",
+            "pairing_failed",
+            "page_write_not_allowed",
+            "web_not_built",
+        ];
+        let got: std::vec::Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
+        assert_eq!(got, CONTRACT, "ALL differs from the contract list");
+        for (i, c) in ErrorCode::ALL.iter().enumerate() {
+            assert_eq!(
+                c.ordinal(),
+                i,
+                "{c} sits at {i} but its ordinal says otherwise"
+            );
+        }
     }
 }

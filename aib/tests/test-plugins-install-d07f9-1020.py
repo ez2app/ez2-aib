@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """aib plugins install <來源> 與 aib license install <檔>(10-20 @abb89 派、會員優化清單 #9)。
-起因:10-20 Pro 13 裝 captain-room 要手動 git archive + 搬資料夾,授權檔要手動 ssh + install -m 600。
+起因:10-20 Mac B 裝 captain-room 要手動 git archive + 搬資料夾,授權檔要手動 ssh + install -m 600。
 
 外掛(驗法一律走 aib_ext.inspect:信任鑰匙簽章 + 檔案雜湊 + requires_aib;只收 kind = plugin):
 I1 資料夾 ⇒ 裝到 <狀態根>/plugins/<名>,discover 找得到,印授權狀態

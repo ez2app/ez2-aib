@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """aib chat status 回報電源(10-20 @abb89 派、會員優化清單 #16 核心這半):電池 / 外接 / 瓦數 / 在不在充。
-起因:Pro 13 接了 15 W 手機充電頭 ⇒ pmset 說 'AC Power' 但 not charging,電池照樣往下掉,會員看不出來。
+起因:Mac B 接了 15 W 手機充電頭 ⇒ pmset 說 'AC Power' 但 not charging,電池照樣往下掉,會員看不出來。
 
 P1 讀 pmset:`31%; charging;` ⇒ charging True、pct 31;`not charging` / `discharging` ⇒ False;`Wattage (W) = 15` ⇒ 15;
    `No adapter attached.` ⇒ 0;讀不到 ⇒ None
