@@ -1220,8 +1220,8 @@ jobs:
              '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
              a_container_that_does_not_run_is_undone
           # site create --continue: the record does not move on (op status would show the wrong step)
-          hk sitecreatecmd.rs '            record["step"] = json!(step.as_str());' \
-             '            let _ = step.as_str(); // knife' \
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+             $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
              an_opening_is_carried_on_through_limits_firewall_and_start
           # site create --continue: a running container is destroyed without being stopped
           hk sitecreatecmd.rs '            let _ = runner.run(&argv(&["pct", "stop", &n]));' \
@@ -1303,6 +1303,50 @@ jobs:
           hk siteidentity.rs '"&amp;")' \
              '"&") /* knife */' \
              a_title_is_compared_as_the_site_software_stores_it
+          # B4 licences: a site holding another key is activated anyway
+          hk sitelive.rs '    if !same_key(site.trim(), &template) {' \
+             '    if false && !same_key(site.trim(), &template) { // knife' \
+             another_key_in_the_site_is_left_for_a_person_and_nothing_is_activated
+          # B4 entry: a chain that does not jump to the site's group counts as live (c477a B2 L1)
+          hk sitelive.rs '            .ends_with(&jump)' \
+             '            .ends_with(&jump) || !l.is_empty() // knife' \
+             a_firewall_is_live_only_when_its_chain_jumps_to_the_group
+          # B4 entry: the entry is changed before the firewall is live
+          hk sitelive.rs '    if !firewall_compiled(&rules, &spec.fw_group) {' \
+             '    if false && !firewall_compiled(&rules, &spec.fw_group) { // knife' \
+             the_entry_is_changed_only_when_the_firewall_is_live
+          # B4 entry: another block under the site's marker is written over
+          hk sitelive.rs '    if caddyfile.lines().any(|l| l.trim_end() == marker) {' \
+             '    if false && caddyfile.lines().any(|l| l.trim_end() == marker) { // knife' \
+             a_marker_or_a_name_already_on_the_entry_is_refused
+          # B4 entry: a site that cannot be asked counts as answering the same
+          hk sitelive.rs '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none()) {' \
+             '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
+             other_sites_must_answer_as_before_and_no_answer_is_never_the_same
+          # B4 entry: the other sites are not asked again after the change
+          hk sitelive.rs '    same_answers(&before, &others(runner, &paths.records, &spec.code))' \
+             '    same_answers(&before, &before) // knife' \
+             another_site_that_answers_differently_after_is_a_failure
+          # B4 entry: a failed reload leaves the new configuration in place
+          hk sitelive.rs '        let back = runner.run(&edge(&["cp", "-a", &backup, CADDYFILE]));' \
+             '        let back: Result<String, String> = Ok(String::new()); // knife' \
+             a_failed_reload_puts_the_old_configuration_back
+          # B4 health: a 200 without the site's own mark is taken as healthy
+          hk sitelive.rs '    if marked {' \
+             '    if marked || true { // knife' \
+             health_needs_200_and_the_site_s_own_mark
+          # B4 health: a record already there for the code is written over
+          hk sitelive.rs '        Ok(there) if there == text => {}' \
+             '        Ok(there) if there == text || true => {} // knife' \
+             a_record_for_the_code_that_is_not_this_one_is_refused
+          # B4 health: another line for the code on the export list is accepted
+          hk sitelive.rs '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line {' \
+             '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line || true { // knife' \
+             the_export_list_gets_one_line_and_keeps_its_comments
+          # B4: a failure from the licences on is undone instead of kept for a person
+          hk sitecreatecmd.rs '        if sitecreate::after_failure(step) == AfterFailure::Keep {' \
+             '        if sitecreate::after_failure(step) == AfterFailure::Keep && false { // knife' \
+             a_failure_from_the_licences_on_keeps_the_site_and_removes_nothing
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
