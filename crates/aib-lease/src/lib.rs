@@ -657,7 +657,14 @@ pub struct AcquireArgs {
     pub exclusive: bool,
     pub priority: bool,
     pub cwd: Option<String>,
+    /// `--expect S` (A2): the holder's own estimate of how long it runs, in seconds. Kept as
+    /// `expect_s` / `expect_end_epoch` / `expect_end_at` so whoever waits sees when it should
+    /// end; it never changes the expiry (the ttl still decides when the lease can be taken).
+    pub expect: Option<i64>,
 }
+
+/// `--expect` above this is a typo, not an estimate.
+pub const EXPECT_MAX_S: i64 = 24 * 3600;
 
 fn holder_view(r: &Rec) -> Value {
     json!({"owner": s_or(r, "owner"), "what": s_or(r, "what"), "run_id": s_or(r, "run_id"),
@@ -669,6 +676,12 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
     let local = p.hostname();
     if let Err(e) = a.holder.check(&local) {
         return done(RC_USAGE, json!({"result": "usage", "error": e}));
+    }
+    if a.expect.is_some_and(|e| !(1..=EXPECT_MAX_S).contains(&e)) {
+        return done(
+            RC_USAGE,
+            json!({"result": "usage", "error": format!("--expect: 1 to {EXPECT_MAX_S} seconds")}),
+        );
     }
     let ttl = a.ttl.unwrap_or(DEFAULT_TTL_S);
     if ttl <= 0 {
@@ -713,6 +726,12 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
     };
     new.insert("expiry_epoch".into(), json!(expiry));
     new.insert("expiry_at".into(), json!(p.iso(expiry)));
+    if let Some(e) = a.expect {
+        let end = now as i64 + e;
+        new.insert("expect_s".into(), json!(e));
+        new.insert("expect_end_epoch".into(), json!(end));
+        new.insert("expect_end_at".into(), json!(p.iso(end)));
+    }
     if a.exclusive {
         new.insert("exclusive".into(), json!(true));
     }

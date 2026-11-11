@@ -542,12 +542,13 @@ pub fn append_history(path: &Path, line: &Value) -> std::io::Result<()> {
     f.write_all(format!("{line}\n").as_bytes())
 }
 
-const USAGE: &str = "usage: aib-lease run --host HOST [--jump HOST] [--repo DIR] [--rev REV] \
+const USAGE: &str = "usage: aib-lease run (--host HOST [--jump HOST] | --any-host) [--repo DIR] [--rev REV] \
 [--ttl SECS [--long REASON]] [--shared] [--owner SEAT] [--what TEXT] [--step CMD]... [-- CMD ARGS...]\n\
 no --ttl: p90 x 1.5 of the same steps on the same host from history (none: 900 s), at most 1800; \
 --ttl 3600 or more needs --long REASON\n\
+--any-host: the first free machine in ~/.ez2-aib/hosts.json (aib-lease hosts)\n\
 exit: 0 all steps passed, 1 a step failed, 2 usage, 3 ssh, 4 git archive, 73 remote unpack, \
-75 lease not granted (nothing ran)";
+75 lease not granted or (--any-host) no machine free (nothing ran)";
 
 struct Args {
     spec: RunSpec,
@@ -801,6 +802,12 @@ pub fn cli(argv: &[String]) -> u8 {
         println!("{USAGE}");
         return 0;
     }
+    // A2: --any-host ⇒ the first free machine in the hosts file (see `crate::hosts`)
+    let argv = match crate::hosts::resolve_any_host(argv) {
+        Ok(v) => v,
+        Err(rc) => return rc,
+    };
+    let argv = argv.as_slice();
     let a = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
