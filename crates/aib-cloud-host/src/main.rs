@@ -11,6 +11,7 @@
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
+//! aib-cloud-host restore expect <file.wpress>   (what a customer's backup says the restored site must hold; reads one file)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
@@ -46,6 +47,8 @@ mod opstore;
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
+#[cfg(unix)]
+mod restorecmd;
 #[cfg(unix)]
 mod rostercmd;
 #[cfg(unix)]

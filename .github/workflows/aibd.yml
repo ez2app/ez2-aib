@@ -279,6 +279,30 @@ jobs:
           set -eu
           ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # restore expectation (.wpress): revisions / auto-drafts / trash are judged (LIFF line lesson, 4542e 11-11)
+          ck wpress.rs '        let only_listed = policy.advisory_types.contains(&k.0.as_str())' \
+             '        let only_listed = false && policy.advisory_types.contains(&k.0.as_str()) // knife' \
+             revision_and_trash_are_listed_not_judged
+          # restore expectation: a header cut short is read anyway (the backup is untrusted input)
+          ck wpress.rs '    if block.len() != HEADER_LEN {' '    if block.is_empty() { // knife' \
+             a_cut_header_is_refused
+          # restore expectation: a path with .. is accepted
+          ck wpress.rs '        if seg == ".." {' '        if seg == "..." { // knife' \
+             a_path_that_climbs_out_is_refused
+          # restore expectation: a "),(" inside a string ends the row
+          ck wpress.rs '                } else if b == q {' '                } else if b == q || b == 41 { // knife: a ")" ends the string' \
+             row_separators_inside_strings_are_text
+          # restore expectation: an INSERT's own column list is ignored for CREATE's order
+          ck wpress.rs '        let cols = listed.as_ref().or_else(|| self.columns.get(&table));' \
+             '        let cols = self.columns.get(&table); // knife' \
+             an_inserts_own_column_list_decides_where_type_and_status_are
+          # restore expectation: with two posts-like tables the first one is taken as the prefix
+          ck wpress.rs '            [one] => (*one).clone(),' '            [one, ..] => (*one).clone(), // knife' \
+             two_posts_tables_leave_the_prefix_unknown
+          # restore expectation: any number of extra users passes
+          ck wpress.rs '    if users < expect.users || users > expect.users.saturating_add(policy.users_added) {' \
+             '    if users < expect.users { // knife' \
+             users_the_restore_added_are_allowed_and_no_more
           # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
@@ -754,6 +778,13 @@ jobs:
           set -eu
           hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud-host --locked "$4"; }
+          # restore expect: an archive cut before its end block is reliable (4542e 11-11)
+          hk restorecmd.rs '    if !ended {' '    if !ended && false { // knife' \
+             an_archive_without_its_end_block_is_not_reliable
+          # restore expect: a plugin's own database.sql is counted as the site's
+          hk restorecmd.rs '        let res = if root && entry.name == "database.sql" {' \
+             '        let res = if entry.name == "database.sql" { // knife' \
+             only_the_root_database_counts
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan
