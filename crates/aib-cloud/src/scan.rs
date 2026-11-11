@@ -847,7 +847,7 @@ mod tests {
         let c = uploads_files(
             ROOT,
             Some(Seen {
-                text: &format!("{many}{ROOT}/wp-con"),
+                text: &format!("{many}{ROOT}/wp-content/uploads/.ht"),
                 cut: true,
             }),
         );
