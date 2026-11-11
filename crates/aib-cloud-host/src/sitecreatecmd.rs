@@ -327,6 +327,14 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "unfinished": seen.unfinished,
         "lock": seen.lock,
         "quota": quota_doc(seen.tenant.as_deref(), &quota),
+        "new_tenant": seen.tenant.as_deref().map(|t| !quota::seen_before(
+            t,
+            &[
+                seen.records.as_deref().unwrap_or_default(),
+                seen.creating.as_deref().unwrap_or_default(),
+                seen.removed.as_deref().unwrap_or_default(),
+            ],
+        )),
         "steps": STEPS.iter().zip(probes).map(|(s, p)| json!({
             "step": s.as_str(),
             "applies": s.applies(blank),
@@ -560,6 +568,8 @@ mod tests {
         assert_eq!(doc["quota"]["tenant_id"], "acme");
         assert_eq!(doc["quota"]["sites"]["allowed"], 4);
         assert_eq!(doc["quota"]["plan"]["memory_mb"], 16_384);
+        // no record names acme: a customer never seen before is marked, not refused
+        assert_eq!(doc["new_tenant"], true);
         assert_eq!(doc["site_code"], CODE_RULE);
         assert_eq!(doc["taken_by"], Value::Null);
         let steps = doc["steps"].as_array().unwrap();
@@ -890,6 +900,7 @@ mod tests {
         let doc = plan_doc("www.new.example.test", false, &seen);
         assert_eq!(doc["stop"], Value::Null, "{doc}");
         assert_eq!(doc["quota"]["sites"]["live"], 3);
+        assert_eq!(doc["new_tenant"], false);
         // an opening under way holds the last room
         let opening = json!({
             "site": "sd", "ct": 117, "ip": "10.77.0.17", "hosts": "sd.example.test", "step": "clone"

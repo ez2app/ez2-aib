@@ -770,6 +770,10 @@ jobs:
           ck quota.rs '        Some(t) if site::valid_code(t) => Ok(arc::PLAN),' \
              '        Some(_) => Ok(arc::PLAN), // knife' \
              what_cannot_be_told_is_quota_unknown
+          # a live record whose tenant_id cannot be read is nobody's instead of "could not tell" (c477a L1)
+          ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
+             '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
+             a_live_tenant_id_that_cannot_be_read_is_quota_unknown
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1098,6 +1102,10 @@ jobs:
           hk sitecreatecmd.rs '        seen.creating.as_deref(),' \
              '        Some(&[]), // knife' \
              a_full_plan_stops_at_quota_exceeded_and_removed_sites_do_not_count
+          # site create --plan: a customer never seen before is not marked (c477a N1)
+          hk sitecreatecmd.rs '        "new_tenant": seen.tenant.as_deref().map(|t| !quota::seen_before(' \
+             '        "new_tenant": seen.tenant.as_deref().map(|t| quota::seen_before( // knife' \
+             a_fresh_domain_plans_the_clone_with_the_next_numbers
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

@@ -17,6 +17,20 @@
 //! [`Limits`] and no number for it is written down (待 Andy 定).
 //!
 //! No I/O: the host reads the records and hands them in.
+//!
+//! Known edges (c477a 11-11 review of 194bec12):
+//! * A customer code that is valid but has never been seen gets the whole plan: there is no
+//!   table of customers yet, so a typo in `--tenant` is not caught here. The plan marks such
+//!   a customer `new_tenant` ([`seen_before`]) for the person reading it.
+//! * `site create --apply` (B1) re-plans under the lock and needs the plan to be the same:
+//!   it has to re-plan with the **same** `--tenant`. B1 takes the tenant as an argument too
+//!   (`--tenant <id>`, or read from the plan file it checks), never a default.
+//! * An opening record that names `limits` is rebuilt with [`site::spec_from_record`]: one
+//!   missing `ct`, `ip` or `hosts` is unreadable and, since openings without a tenant count
+//!   against everyone, makes every customer `quota_unknown` (the safe side). To be tested
+//!   with the records B2 really writes when the two meet.
+//! * Disk is read from the record's top-level `disk_gb` only; a size kept anywhere else is
+//!   shown as 0. It is shown, not judged.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -119,7 +133,13 @@ pub fn count(tenant: &str, live: &[Value], opening: &[Value]) -> Result<Count, U
     let mut codes: BTreeSet<&str> = BTreeSet::new();
     let mut n_live = 0u32;
     for rec in live {
-        if site::record_tenant(rec) != Some(tenant) {
+        // no tenant_id: nobody's; a tenant_id that cannot be read: could not tell whose
+        // (c477a L1), never nobody's — that would let the customer open past the plan
+        if rec.get("tenant_id").is_none() {
+            continue;
+        }
+        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;
+        if owner != tenant {
             continue;
         }
         let spec = site::spec_from_record(rec).map_err(|_| Unknown::RecordUnreadable)?;
@@ -160,6 +180,16 @@ pub fn count(tenant: &str, live: &[Value], opening: &[Value]) -> Result<Count, U
         opening: n_opening,
         held: arc::held(&sites),
     })
+}
+
+/// Whether any record handed in (live, opening or removed) names `tenant`. A customer
+/// never seen before is not refused — there is no table of customers yet — but the plan
+/// says so, so a mistyped code is noticed by the person reading it (c477a N1).
+pub fn seen_before(tenant: &str, lists: &[&[Value]]) -> bool {
+    lists
+        .iter()
+        .flat_map(|l| l.iter())
+        .any(|rec| site::record_tenant(rec) == Some(tenant))
 }
 
 /// How many more sites on the starting tier fit in what the plan has left, and the first
@@ -326,6 +356,27 @@ mod tests {
             judge(Some("acme"), Some(&[]), Some(&o)),
             Verdict::Unknown(Unknown::RecordUnreadable)
         );
+    }
+
+    #[test]
+    fn a_live_tenant_id_that_cannot_be_read_is_quota_unknown() {
+        for bad in [json!(7), json!("A B"), json!(null)] {
+            let mut r = live("s1", "acme", 1024, 200);
+            r["tenant_id"] = bad;
+            let v = judge(Some("acme"), Some(&[r]), Some(&[]));
+            assert_eq!(v, Verdict::Unknown(Unknown::RecordUnreadable));
+        }
+        // another customer's readable record is still passed over
+        let l = [live("s1", "other", 1024, 200)];
+        assert_eq!(judge(Some("acme"), Some(&l), Some(&[])).stop(), None);
+    }
+
+    #[test]
+    fn a_customer_is_seen_before_only_by_a_record_naming_it() {
+        let l = [live("s1", "acme", 1024, 200)];
+        assert!(seen_before("acme", &[&l]));
+        assert!(!seen_before("acme2", &[&l]));
+        assert!(!seen_before("acme", &[&[], &[]]));
     }
 
     #[test]
