@@ -21,9 +21,13 @@
 //! lock's shape. Reading those fields into [`CreateState`] and a [`Holder`] is the caller's.
 //!
 //! `created_at` has one-second steps, so two attempts started within the same second
-//! would read as one in [`may_take_holder`] and [`still_same_attempt`]. That cannot
-//! happen in practice: a new attempt needs the old one marked unfinished first, which
-//! takes [`START_GRACE_SECS`] at least (c477a liveness review r2 N2).
+//! would read as one in [`may_take_holder`] and [`still_same_attempt`]. This is not
+//! guaranteed, only unlikely: a new attempt needs the old one marked unfinished first.
+//! Without a holder that takes [`START_GRACE_SECS`] at least; with a holder it is
+//! immediate once the lock says the worker is gone, and then the customer still has to
+//! ask again, so the whole chain within one second does not happen in practice (c477a
+//! liveness review r2 N2, unkalert review L1). Making it a guarantee
+//! (`created_at = max(now, old + 1)`) belongs to the caller that writes the new record.
 
 use crate::op::{lock, Holder, Liveness, Lock};
 
