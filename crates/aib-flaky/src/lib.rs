@@ -559,10 +559,15 @@ pub fn parse_log(log: &str) -> Parsed {
             }
             _ => "?",
         };
-        p.fingerprints.push(format!("rs:{b}::{name}"));
+        let fp = format!("rs:{b}::{name}");
+        if b != "?" && !b.starts_with('@') {
+            // a binary named by its file: that file's crate tells two of the same name apart
+            with_bin.push((fp.clone(), b.to_string(), name.clone()));
+        }
+        p.fingerprints.push(fp);
     }
-    // a binary seen in the log: the crate its own file is in, when every panic of the test
-    // points into that file of one crate
+    // a binary seen in the log or named by the test's own file: the crate that file is in,
+    // when every panic of the test points into that file of one crate
     for (fp, b, name) in with_bin {
         let dirs: Option<Vec<String>> = panic_paths
             .get(&name)

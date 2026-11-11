@@ -1653,3 +1653,35 @@ fn a_panic_outside_the_binarys_own_file_does_not_tell_two_crates_apart() {
         );
     }
 }
+
+/// The macOS runner colours cargo's "Running" line, so the binary comes from the panic
+/// (#648 head 240e5fda): its file's crate still tells two crates of that name apart.
+#[test]
+fn a_binary_named_by_its_panic_is_told_apart_too() {
+    let fp = "rs:store::opens_twice";
+    let p = prior("other", fp);
+    for (panic_in, path, want) in [
+        (
+            "crates/store/tests/store.rs",
+            "crates/other/src/lib.rs",
+            "suspected_flaky",
+        ),
+        (
+            "crates/other/tests/store.rs",
+            "crates/other/src/lib.rs",
+            "overlap",
+        ),
+    ] {
+        let mut f = rust_facts(&[path], Some(two_store_crates()));
+        f.attempts[0].log = Some(no_running(
+            "opens_twice",
+            &format!("thread 'opens_twice' (7) panicked at {panic_in}:9:5:"),
+        ));
+        let (v, r) = one(&f, &p);
+        if want == "overlap" {
+            assert_eq!(r, format!("impact_overlap: {fp}"), "{panic_in} {path}");
+        } else {
+            assert_eq!(v, want, "{panic_in} {path}: {r}");
+        }
+    }
+}

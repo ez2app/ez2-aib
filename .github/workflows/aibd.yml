@@ -329,6 +329,10 @@ jobs:
           lk '            if more.iter().all(|m| m == first) {' \
              '            if more.iter().all(|m| m == first || !m.is_empty()) {' \
              a_panic_outside_the_binarys_own_file_does_not_tell_two_crates_apart
+          # KB4: a binary named by its panic (no Running line read) is not told apart (#648 real log)
+          lk "        if b != \"?\" && !b.starts_with('@') {" \
+             "        if b != \"?\" && !b.starts_with('@') && false {" \
+             a_binary_named_by_its_panic_is_told_apart_too
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
