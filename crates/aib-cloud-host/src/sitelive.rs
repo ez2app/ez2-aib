@@ -572,7 +572,11 @@ pub fn health_step(
         .map_err(|e| format!("health: {host} could not be asked: {e}"))?;
     health_answer(&headers, host)?;
     let path = paths.records.join(format!("{}.json", spec.code));
-    let record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    let mut record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    // the customer the opening was for owns the site: their key sees it from now on
+    if let Some(tenant) = aib_cloud::site::record_tenant(opening) {
+        record["tenant_id"] = json!(tenant);
+    }
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n";
     match fs::read_to_string(&path) {
         Ok(there) if there == text => {}
@@ -677,6 +681,9 @@ mod tests {
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
             opened: d.join("opened"),
+            cloudflare: d.join("cloudflare.env"),
+            rosters: d.join("rosters"),
+            cf_ledger: d.join("cloudflare.jsonl"),
         }
     }
 
@@ -1189,6 +1196,25 @@ mod tests {
         );
         assert_eq!(list_with_site(&out, &s).unwrap(), out);
         assert!(list_with_site("s-b4test 999 /var/www/x\n", &s).is_err());
+    }
+
+    /// A customer's opening: the full record names the customer, so their key sees the site;
+    /// an opening that names none gives the record none (never the site's own code).
+    #[test]
+    fn the_customer_of_the_opening_owns_the_site() {
+        let paths = scratch("health-tenant");
+        let s = spec();
+        let mut h = host(|_: &[String]| {
+            Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n".to_owned())
+        });
+        let opening =
+            json!({ "started_at": 1_794_379_200_u64, "step": "health", "tenant_id": "t-acme1" });
+        health_step(&mut h, &paths, &s, &opening).unwrap();
+        let rec: Value =
+            serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap())
+                .unwrap();
+        assert_eq!(aib_cloud::site::record_tenant(&rec), Some("t-acme1"));
+        assert!(aib_cloud::site::record_gaps(&rec).is_empty());
     }
 
     #[test]
