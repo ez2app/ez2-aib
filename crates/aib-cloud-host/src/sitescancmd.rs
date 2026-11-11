@@ -11,6 +11,9 @@
 //! software only as `core verify-checksums`, `plugin verify-checksums` or `user list`, as
 //! the site's own user with plugins and themes not loaded; `find` only with `-print0`.
 //!
+//! The site software is run with plugins and themes not loaded, but it still reads the
+//! site's own `wp-config.php` as the site's user: the scan runs that much of the site's PHP.
+//!
 //! The site is found by its domain in the site records; the expected administrators come
 //! from the opening record (`sites-opened/<code>.json`). A site opened by hand has none:
 //! its administrators are unknown, not ok. The report carries the site code and the
@@ -63,6 +66,17 @@ const WP_ALLOWED: &[&[&str]] = &[
     &["plugin", "verify-checksums"],
     &["user", "list"],
 ];
+/// The only options the site software may be given after `--path=…` (33e28 M1): no
+/// `--exec` / `--require` (PHP of our choosing), no `--ssh` / `--http` (somewhere else), no
+/// second `--path`.
+const WP_FLAGS: &[&str] = &[
+    "--skip-plugins",
+    "--skip-themes",
+    "--all",
+    "--format=json",
+    "--role=administrator",
+    "--fields=user_login",
+];
 /// `find` actions other than `-print0`.
 const FIND_FORBIDDEN: &[&str] = &[
     "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls",
@@ -88,12 +102,10 @@ pub fn read_only(argv: &[String]) -> bool {
             rest.last() == Some(&"-print0") && !rest.iter().any(|x| FIND_FORBIDDEN.contains(x))
         }
         ["sudo", "-u", user, "-H", "/usr/local/bin/wp", path, rest @ ..] => {
-            let words: Vec<&str> = rest
-                .iter()
-                .copied()
-                .filter(|w| !w.starts_with("--"))
-                .collect();
+            let (flags, words): (Vec<&str>, Vec<&str>) =
+                rest.iter().copied().partition(|w| w.starts_with("--"));
             **path == format!("--path={}", site_root(user))
+                && flags.iter().all(|f| WP_FLAGS.contains(f))
                 && rest.contains(&"--skip-plugins")
                 && rest.contains(&"--skip-themes")
                 && WP_ALLOWED.contains(&words.as_slice())
@@ -339,11 +351,29 @@ mod tests {
         wp_bad[at] = "delete".to_owned();
         let mut other_user = commands(&s)[0].clone();
         other_user[10] = "root".to_owned();
+        // an option that runs PHP of its own, or a second folder, is not reading (33e28 M1)
+        let with_flag = |flag: &str| {
+            let mut c = commands(&s)[0].clone();
+            c.push(flag.to_owned());
+            c
+        };
+        let exec = with_flag("--exec=unlink('wp-config.php');");
+        let require = with_flag("--require=/tmp/x.php");
+        let second_path = with_flag("--path=/var/www/other");
         let mut no_skip_plugins = commands(&s)[1].clone();
         no_skip_plugins.retain(|w| w != "--skip-plugins");
         let mut no_skip_themes = commands(&s)[1].clone();
         no_skip_themes.retain(|w| w != "--skip-themes");
-        for argv in [bad, wp_bad, other_user, no_skip_plugins, no_skip_themes] {
+        for argv in [
+            bad,
+            wp_bad,
+            other_user,
+            no_skip_plugins,
+            no_skip_themes,
+            exec,
+            require,
+            second_path,
+        ] {
             let mut f = Fake {
                 seen: Vec::new(),
                 answer: clean,

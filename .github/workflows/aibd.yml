@@ -794,7 +794,8 @@ jobs:
           ck scan.rs $'    if rel.is_empty() || rel.split(\'/\').any(|c| c == "..") {' \
              $'    if rel.is_empty() || (rel.split(\'/\').any(|c| c == "..") && false) { // knife' \
              a_path_outside_the_site_is_not_shown
-          ck scan.rs "    if base.starts_with('.') {" "    if base.starts_with('.') && false { // knife" \
+          ck scan.rs "    if name.split('/').any(|part| part.starts_with('.')) {" \
+             "    if name.split('/').any(|part| part.starts_with('.')) && false { // knife" \
              a_dot_file_under_uploads_is_listed
           ck scan.rs '    if inner_extensions(name).any(|e| EXEC_EXT.contains(&e.as_str())) {' \
              '    if inner_extensions(name).last().is_some_and(|e| EXEC_EXT.contains(&e.as_str())) { // knife' \
@@ -849,6 +850,14 @@ jobs:
              without_an_opening_record_administrators_are_unknown
           ck scan.rs '    if !extra.is_empty() {' '    if !extra.is_empty() && false { // knife' \
              an_administrator_nobody_opened_needs_a_person
+          # 33e28 review L1 / N3: known protective files are shown, not findings; a file in a hidden folder is listed
+          ck scan.rs '    if KNOWN_PROTECTIVE.contains(&name) {' '    if KNOWN_PROTECTIVE.contains(&name) && false { // knife' \
+             a_known_protective_file_is_shown_but_not_a_finding
+          ck scan.rs '                if kind != PROTECTIVE {' '                if kind != PROTECTIVE || true { // knife' \
+             a_known_protective_file_is_shown_but_not_a_finding
+          ck scan.rs '        ["-o", "-name", ".*", "-o", "-path", "*/.*", ")", "-print0"]' \
+             '        ["-o", "-name", ".*", "-o", "-name", "*/.*", ")", "-print0"] // knife' \
+             a_dot_file_under_uploads_is_listed
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1495,6 +1504,10 @@ jobs:
              a_command_that_would_change_something_is_refused_before_it_runs
           hk sitescancmd.rs '                && WP_ALLOWED.contains(&words.as_slice())' \
              '                && (WP_ALLOWED.contains(&words.as_slice()) || true) // knife' \
+             a_command_that_would_change_something_is_refused_before_it_runs
+          # 33e28 review M1: every option after --path is on the list (no --exec / --require / second --path)
+          hk sitescancmd.rs '                && flags.iter().all(|f| WP_FLAGS.contains(f))' \
+             '                && (flags.iter().all(|f| WP_FLAGS.contains(f)) || true) // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
           hk sitescancmd.rs '    match hits.len() {' '    match hits.len().min(1) { // knife' \
              two_records_naming_one_domain_are_refused

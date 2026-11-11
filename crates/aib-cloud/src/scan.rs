@@ -15,6 +15,10 @@
 //! * `administrators` — the site's administrators against the first administrators of the
 //!   opening record; one more than expected is a finding for a person to confirm.
 //!
+//! Not scanned in this version: mu-plugins and themes against official checksums,
+//! `wp-config.php` and `.user.ini` contents, the database. Not done at all: cleaning and
+//! quarantine.
+//!
 //! Rules that hold for every check:
 //! * **Unknown is not ok.** Not run, cut short, no exit code, an exit code that does not
 //!   fit, a line that does not parse: unknown. A finding outranks unknown: the result of a
@@ -26,7 +30,8 @@
 //!   code and the domain only — no address, no container number, no provider.
 //!
 //! The text being judged comes from inside the customer's container: a site that is already
-//! taken over can lie to the commands run there. A clean scan is evidence, not proof.
+//! taken over can lie to the commands run there, and the site software reads the site's
+//! own `wp-config.php` while it runs. A clean scan is evidence, not proof.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
@@ -202,10 +207,23 @@ fn inner_extensions(name: &str) -> impl Iterator<Item = String> + '_ {
     base.split('.').skip(1).map(str::to_ascii_lowercase)
 }
 
-/// Why a file under uploads is listed, or `None` when it is not.
+/// Files under uploads a common plugin writes to keep a folder closed (WooCommerce): listed
+/// as [`PROTECTIVE`], not a finding (33e28 L1: otherwise nearly every shop is a finding and
+/// findings get skipped). Only these exact paths; any other dot file stays a finding.
+pub const KNOWN_PROTECTIVE: &[&str] = &[
+    "wp-content/uploads/woocommerce_uploads/.htaccess",
+    "wp-content/uploads/wc-logs/.htaccess",
+];
+/// The kind of a [`KNOWN_PROTECTIVE`] file: shown, not a finding.
+pub const PROTECTIVE: &str = "known_protective";
+
+/// Why a file under uploads is listed, or `None` when it is not. A file inside a folder
+/// whose name starts with a dot counts as hidden too.
 pub fn upload_kind(name: &str) -> Option<&'static str> {
-    let base = name.rsplit('/').next().unwrap_or(name);
-    if base.starts_with('.') {
+    if KNOWN_PROTECTIVE.contains(&name) {
+        return Some(PROTECTIVE);
+    }
+    if name.split('/').any(|part| part.starts_with('.')) {
         return Some("hidden");
     }
     if inner_extensions(name).any(|e| EXEC_EXT.contains(&e.as_str())) {
@@ -250,7 +268,7 @@ pub fn uploads_find_args(root: &str) -> Vec<String> {
     );
     find_names(&mut a, EXEC_EXT, true);
     a.extend(
-        ["-o", "-name", ".*", ")", "-print0"]
+        ["-o", "-name", ".*", "-o", "-path", "*/.*", ")", "-print0"]
             .iter()
             .map(|s| (*s).to_owned()),
     );
@@ -462,14 +480,20 @@ fn listed(
         names.pop();
     }
     let mut strange = false;
+    let mut findings = 0usize;
     for n in names.into_iter().filter(|n| !n.is_empty()) {
         let rel = site_relative(root, n);
         match kind_of(&rel) {
-            Some(kind) => c.push(rel, kind),
+            Some(kind) => {
+                if kind != PROTECTIVE {
+                    findings += 1;
+                }
+                c.push(rel, kind);
+            }
             _ => strange = true,
         }
     }
-    if c.total > 0 {
+    if findings > 0 {
         return c.with(Outcome::Finding, "files_found");
     }
     if rc.is_none() {
@@ -806,6 +830,33 @@ mod tests {
             upload_kind("wp-content/uploads/2026/.x.jpg"),
             Some("hidden")
         );
+        // a file inside a hidden folder (33e28 N3)
+        assert_eq!(
+            upload_kind("wp-content/uploads/.cache/x.txt"),
+            Some("hidden")
+        );
+        assert!(uploads_find_args(ROOT)
+            .windows(2)
+            .any(|w| w[0] == "-path" && w[1] == "*/.*"));
+    }
+
+    #[test]
+    fn a_known_protective_file_is_shown_but_not_a_finding() {
+        let p = "wp-content/uploads/woocommerce_uploads/.htaccess";
+        assert_eq!(upload_kind(p), Some(PROTECTIVE));
+        // the same name anywhere else is a finding
+        assert_eq!(
+            upload_kind("wp-content/uploads/2026/.htaccess"),
+            Some("hidden")
+        );
+        let out = wrapped(
+            &format!("{ROOT}/{p}\0{ROOT}/wp-content/uploads/wc-logs/.htaccess\0"),
+            0,
+        );
+        let c = uploads_files(ROOT, seen(&out));
+        assert_eq!((c.outcome, c.reason, c.total), (Outcome::Ok, "ok", 2));
+        let out = wrapped(&format!("{ROOT}/{p}\0{ROOT}/wp-content/uploads/x.php\0"), 0);
+        assert_eq!(uploads_files(ROOT, seen(&out)).outcome, Outcome::Finding);
     }
 
     #[test]
