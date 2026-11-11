@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod decide;
+pub mod snapshot;
+pub mod source;
 
 /// An observation is unknown unless its source is complete and identifiable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
