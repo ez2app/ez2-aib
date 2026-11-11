@@ -155,8 +155,14 @@ mod tests {
 
     #[test]
     fn only_finished_dumps_of_the_ct_are_named() {
-        assert_eq!(dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst"), Some(112));
-        assert_eq!(dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar.gz"), Some(112));
+        assert_eq!(
+            dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst"),
+            Some(112)
+        );
+        assert_eq!(
+            dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar.gz"),
+            Some(112)
+        );
         assert_eq!(dump_ct("vzdump-lxc-112-2026_11_11-18_30_05.tar"), Some(112));
         for not in [
             "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat",
@@ -177,7 +183,11 @@ mod tests {
     #[test]
     fn a_backup_within_the_window_lets_the_update_through() {
         let files = [
-            f("vzdump-lxc-112-2026_11_11-03_00_05.tar.zst", NOW - 15 * 3600, 900),
+            f(
+                "vzdump-lxc-112-2026_11_11-03_00_05.tar.zst",
+                NOW - 15 * 3600,
+                900,
+            ),
             f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst", NOW - 600, 900),
         ];
         let got = judge(112, Some(&files), NOW, MAX);
@@ -188,12 +198,20 @@ mod tests {
 
     #[test]
     fn an_old_backup_does_not() {
-        let files = [f("vzdump-lxc-112-2026_11_11-03_00_05.tar.zst", NOW - 3600, 900)];
+        let files = [f(
+            "vzdump-lxc-112-2026_11_11-03_00_05.tar.zst",
+            NOW - 3600,
+            900,
+        )];
         let got = judge(112, Some(&files), NOW, MAX);
         assert_eq!(got, Fresh::Stale { age: 3600 });
         assert!(!update_allowed(got));
         // the edge of the window still counts
-        let edge = [f("vzdump-lxc-112-2026_11_11-03_00_05.tar.zst", NOW - MAX, 900)];
+        let edge = [f(
+            "vzdump-lxc-112-2026_11_11-03_00_05.tar.zst",
+            NOW - MAX,
+            900,
+        )];
         assert_eq!(judge(112, Some(&edge), NOW, MAX), Fresh::Fresh { age: MAX });
     }
 
@@ -212,7 +230,11 @@ mod tests {
         let mut dir = f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst", NOW - 60, 900);
         dir.is_file = false;
         let files = [
-            f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat", NOW - 60, 900),
+            f(
+                "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst.dat",
+                NOW - 60,
+                900,
+            ),
             f("vzdump-lxc-112-2026_11_11-18_31_05.tar.zst", NOW - 30, 0),
             dir,
         ];

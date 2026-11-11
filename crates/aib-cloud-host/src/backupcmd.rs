@@ -308,12 +308,7 @@ fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u
             })
             .collect()
     });
-    let got = fresh::judge(
-        spec.ct,
-        files.as_deref(),
-        now,
-        u64::from(max_minutes) * 60,
-    );
+    let got = fresh::judge(spec.ct, files.as_deref(), now, u64::from(max_minutes) * 60);
     let age = match got {
         Fresh::Fresh { age } | Fresh::Stale { age } => Some(age),
         Fresh::NoBackup | Fresh::Unknown(_) => None,
@@ -349,12 +344,10 @@ pub fn fresh_cmd(args: &[String]) -> Result<u8, String> {
     };
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--max-minutes" => {
-                match it.next().and_then(|n| n.parse::<u32>().ok()) {
-                    Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,
-                    _ => return usage("--max-minutes needs 1 to 1440"),
-                }
-            }
+            "--max-minutes" => match it.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,
+                _ => return usage("--max-minutes needs 1 to 1440"),
+            },
             "--records" => match it.next() {
                 Some(d) => records = d.clone(),
                 None => return usage("--records needs a dir"),
@@ -594,7 +587,10 @@ mod tests {
 
         // what cannot be read is never "allowed"
         let (exit, doc) = fresh_answer("site9", 30, &r, &d, now);
-        assert_eq!((exit, doc["verdict"].as_str()), (3, Some("record_unreadable")));
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("record_unreadable"))
+        );
         assert_eq!(doc["update_allowed"], false);
         let gone = root.join("nosuchdir");
         let (exit, doc) = fresh_answer("site2", 30, &r, &gone.to_string_lossy(), now);
