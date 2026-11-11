@@ -718,12 +718,16 @@ jobs:
              '            DnsProbe::NotDone => Probe::NotDone, DnsProbe::NotAskedHere => Probe::Unknown, // knife' \
              a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
           # removing a site, DNS (33e28 M1): not asked here, and the DNS step is run anyway
-          ck siteremove.rs '        Next::Run(RemoveStep::Dns) if dns == DnsProbe::NotAskedHere => {' \
-             '        Next::Run(RemoveStep::Dns) if false => { // knife' \
+          ck siteremove.rs '        Next::Run(_) | Next::Finished => DNS_NOT_ASKED_HERE,' \
+             '        Next::Run(_) | Next::Finished => Next::Run(RemoveStep::Dns), // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 r2 L1): a site removed apart from DNS reads as steps out of order
+          ck siteremove.rs '    p[at] = Probe::Done; // not held against the steps around it' \
+             '    p[at] = Probe::NotDone; // knife' \
              a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
           # removing a site, DNS (33e28 L1): records without our marker left behind read as plain done
           ck siteremove.rs '            if foreign.is_empty() {' \
-             '            if true { // knife' \
+             '            if foreign.is_empty() || true { // knife' \
              the_dns_step_is_passed_over_only_when_the_zone_is_not_ours
           # removing a site, DNS (33e28 L2): only the main address is looked at
           ck siteremove.rs '        if !names.iter().any(|n| same_name(r.name, n))' \
@@ -983,11 +987,11 @@ jobs:
              the_licences_are_not_guessed
           # site remove --plan: the DNS step reads as done on a host that cannot ask (Andy 11-11 rule)
           hk siteremovecmd.rs '        dns.probe(),' \
-             '        DnsProbe::Unknown.probe(), // knife' \
+             '        { let _ = dns; DnsProbe::Unknown.probe() }, // knife' \
              what_the_command_passes_lets_an_untouched_site_start_at_the_entry
           # site remove --plan: the removed record loses the activations left at vendors (33e28 N1)
           hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
-             '    // knife' \
+             '    let _ = left_at_vendor; // knife' \
              the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.

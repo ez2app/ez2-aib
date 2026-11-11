@@ -487,14 +487,27 @@ pub fn dns_probe(rights: DnsRights, pick: &DnsPick) -> DnsProbe {
     }
 }
 
+/// Where [`next_with_dns`] stops when the DNS step is the one left and this part of the
+/// work cannot ask DNS.
+pub const DNS_NOT_ASKED_HERE: Next = Next::Stop("dns_not_asked_here", RemoveStep::Dns);
+
 /// [`next`] for a removal whose DNS step was found as `dns`. When this part of the work
-/// cannot ask DNS ([`DnsProbe::NotAskedHere`]) the steps before it go on as usual, and the
-/// work stops when the DNS step would be the one to do.
+/// cannot ask DNS ([`DnsProbe::NotAskedHere`]) the DNS step is not held against the steps
+/// around it: the steps before it go on as usual, and once DNS is the only step left (also
+/// for a site already removed apart from DNS, whose record step is done) the work stops
+/// with its own word, never as "steps out of order".
 pub fn next_with_dns(probes: &[Probe], licenses_left_at_vendor: bool, dns: DnsProbe) -> Next {
-    match next(probes, licenses_left_at_vendor) {
-        Next::Run(RemoveStep::Dns) if dns == DnsProbe::NotAskedHere => {
-            Next::Stop("dns_not_asked_here", RemoveStep::Dns)
-        }
+    let at = STEPS.iter().position(|s| *s == RemoveStep::Dns);
+    let held = dns == DnsProbe::NotAskedHere;
+    let at = match at {
+        Some(at) if held && probes.get(at) == Some(&Probe::NotDone) => at,
+        _ => return next(probes, licenses_left_at_vendor),
+    };
+    let mut p = probes.to_vec();
+    p[at] = Probe::Done; // not held against the steps around it
+    match next(&p, licenses_left_at_vendor) {
+        Next::Run(step) if step < RemoveStep::Dns => Next::Run(step),
+        Next::Run(_) | Next::Finished => DNS_NOT_ASKED_HERE,
         other => other,
     }
 }
@@ -1104,6 +1117,25 @@ mod tests {
         assert_eq!(
             next_with_dns(&p, false, DnsProbe::NotAskedHere),
             Next::Stop("dns_not_asked_here", RemoveStep::Dns)
+        );
+        // a site already removed apart from DNS (record step done): its own word, not
+        // "steps out of order" (33e28 r2 L1)
+        let mut p = probes(STEPS.len());
+        p[at] = DnsProbe::NotAskedHere.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
+        );
+        assert_eq!(
+            next_with_dns(&p, true, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
+        );
+        // a step after DNS not done yet while DNS cannot be asked: still DNS's word
+        let mut p = probes(at);
+        p[at] = DnsProbe::NotAskedHere.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
         );
         // asked and a record of ours is there: do the step
         let mut p = probes(at);
