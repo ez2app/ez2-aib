@@ -528,7 +528,8 @@ fn main() {
         }
         match event::read() {
             Ok(Event::Key(k)) => match k.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                // 只認 q:Esc 會被拆開的控制序列誤觸(11-12 05:42 右下電池自己關掉)
+                KeyCode::Char('q') => break,
                 KeyCode::Char(c @ '1'..='9') => {
                     let i = c as usize - '1' as usize;
                     if let Some(h) = hosts.get_mut(i) {
