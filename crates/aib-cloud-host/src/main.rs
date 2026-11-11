@@ -12,6 +12,7 @@
 //! aib-cloud-host site create <domain> --apply <plan.json> [--tenant <id>]   (B1: recompute the plan under the host lock, same hash, then the clone only; undone on failure)
 //! aib-cloud-host site create <domain> --run <code>   (a customer's opening in the background: their plan applied under their code, then --continue to the end; started by their `site create`)
 //! aib-cloud-host site create <domain> --continue <code>   (B2: limits and network, firewall file, start; B3: install with the scheduler on a timer, identity — undone on failure; B4: licences, entry, health, then the full record; B5: the DNS records at Cloudflare between licences and entry — kept for a person on failure; from the opening record; each checked)
+//! aib-cloud-host site login-link <domain> [--login <user>]   (a one-time link that logs an administrator straight in: the link on standard output only, the site keeps only its hash for 600 s)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
 //! aib-cloud-host site restore-wpress <code> --plan --from <backup id> | --plan --close resolved|abandoned | --apply | --continue | --resolved | --abandon <plan.json>   (a customer's WordPress backup into one of their sites, step by step; a person closes one that cannot go on; the steps are not wired yet: B3 slices 3–4)
@@ -47,6 +48,8 @@ mod customercmd;
 mod edgecmd;
 #[cfg(unix)]
 mod leakwordscmd;
+#[cfg(unix)]
+mod loginlink;
 #[cfg(unix)]
 mod opstore;
 #[cfg(unix)]

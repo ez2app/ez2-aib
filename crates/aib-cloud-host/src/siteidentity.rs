@@ -20,7 +20,9 @@
 //! program's standard input — never an argument, never a log line — and kept on the host
 //! only, root-readable ([`SECRETS`]`/<code>.admin.<login>`, 0600). The installer's own
 //! administrator is removed. The site's notice address is the customer's when the opening
-//! record carries one, else the first administrator's (the template's is ours).
+//! record carries one, else the first administrator's (the template's is ours). The
+//! must-load plugin of the one-time login is put in place and read back
+//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
 //!
 //! The installer's own output goes to a log in the container and only its exit code and
 //! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
@@ -625,6 +627,11 @@ pub fn identity_step(
     if back.trim() != notice {
         return Err("identity_not_set: admin_email reads otherwise".to_owned());
     }
+    // the one-time login (Andy 11-11 23:1x): the plugin that makes a link a direct login,
+    // in place and read back; the link itself comes from `site login-link`
+    let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)
+        .map_err(|e| format!("identity_failed: {e}"))?;
+    record["login_plugin"] = json!(plugin);
     let mut pending: Vec<String> = [fp_site_key(spec), mask_files(spec)]
         .into_iter()
         .map(|Pending::Later(w)| w.to_owned())
@@ -704,6 +711,8 @@ mod tests {
         sticky_email: bool,
         cron: Option<String>,
         enabled: bool,
+        /// the one-time login plugin in the site
+        mu: Option<Vec<u8>>,
         /// a command (joined argv contains it) that fails
         broken: Option<&'static str>,
     }
@@ -720,6 +729,7 @@ mod tests {
                 sticky_email: false,
                 cron: None,
                 enabled: false,
+                mu: None,
                 broken: None,
             }
         }
@@ -736,6 +746,18 @@ mod tests {
             self.calls.push(line.clone());
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
+            }
+            if line.contains("ez2-onetime-login.php") {
+                let sha = self
+                    .mu
+                    .as_ref()
+                    .map(|b| format!("{}  x\n", crate::opstore::sha256_hex(b).unwrap()));
+                let reads_back = argv.len() >= 2 && argv[argv.len() - 2] == "sha256sum";
+                return match sha {
+                    Some(sha) => Ok(sha),
+                    None if reads_back => Err("no file".to_owned()),
+                    None => Ok("none\n".to_owned()),
+                };
             }
             let Some(a) = Self::wp_args(argv) else {
                 let asks = line.contains("is-enabled") || line.contains("is-active");
@@ -812,6 +834,10 @@ mod tests {
             self.fed.push((line.clone(), input.to_vec()));
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
+            }
+            if line.contains("ez2-onetime-login.php") {
+                self.mu = Some(input.to_vec());
+                return Ok(String::new());
             }
             Ok(if line.contains(" eval ") {
                 "set\n".to_owned()
@@ -1038,6 +1064,12 @@ mod tests {
         );
         assert_eq!(record["admin_email_from"], "customer");
         assert_eq!(record["admins"], json!(["ops", "ops2"]));
+        // the one-time login plugin is in the site (Andy 11-11: a link logs straight in)
+        assert_eq!(
+            site.mu.as_deref(),
+            Some(crate::loginlink::MU_PLUGIN.as_bytes())
+        );
+        assert_eq!(record["login_plugin"], "written");
         assert_eq!(
             site.users,
             ["ops", "ops2"],

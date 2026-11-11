@@ -24,6 +24,9 @@
 //! B4 adds the licences, the entry and the health; B5 the DNS step between the licences
 //! and the entry ([`crate::cfdns`]): the customer's zone at Cloudflare, proxied records
 //! carrying the site's mark, read back.
+//! The identity also puts the one-time login plugin in place, and an opened site's answer
+//! names `site login-link` for the caller to run next ([`crate::loginlink`]); it never
+//! carries the link.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -1741,6 +1744,12 @@ fn apply_cmd(
 /// number is used again, but `site verify` may report a `.fw` without a container as a
 /// leftover (c477a B2 N3; whether destroy removes it is a host test).
 ///
+/// An opened site's answer names the next command for its one-time login link
+/// (`login_link_next`, Andy 11-11: a direct login, not a password reset): the caller runs
+/// `site login-link <domain> --login <first administrator>` itself, whose standard output
+/// is the link alone. The link is never in this answer, which callers keep as receipts
+/// (ebb36 L1, f1fae 11-11).
+///
 /// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
@@ -1759,12 +1768,21 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         Some(record) => {
             let open =
                 record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
+            let next = if open {
+                link_login(&record)
+                    .ok()
+                    .map(|login| login_link_next(domain, &login))
+            } else {
+                None
+            };
             json!({
                 "applied": record.get("step"),
                 "record": record,
                 "open": open,
                 // from the record: what B3 left for later and the licences not done
                 "pending": crate::sitelive::pending_of(&record),
+                // the command, never the link: this answer is kept as a receipt
+                "login_link_next": next,
             })
         }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
@@ -1774,6 +1792,22 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
     Ok(u8::from(held))
+}
+
+/// The login every opened site's link is for: the first administrator the identity made.
+pub fn link_login(record: &Value) -> Result<String, String> {
+    record
+        .get("admins")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "login_unknown: the record names no administrator".to_owned())
+}
+
+/// The command an opened site's caller runs next for the one-time login link.
+pub fn login_link_next(domain: &str, login: &str) -> String {
+    format!("aib-cloud-host site login-link {domain} --login {login}")
 }
 
 #[cfg(test)]

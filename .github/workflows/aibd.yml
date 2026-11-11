@@ -1980,6 +1980,72 @@ jobs:
           hk sitecreatecmd.rs '    let group = record.get("fw_group").and_then(Value::as_str);' \
              '    let group = record.get("fw_group_").and_then(Value::as_str); // knife' \
              a_new_opening_uses_the_current_firewall_group
+          # site login-link (Andy 11-11 23:1x: a one-time link logs straight in, not a password reset)
+          # LL1 the token's letters are folded onto the first ones past the even cut
+          hk loginlink.rs '        .filter(|b| usize::from(**b) < even)' \
+             '        .filter(|b| usize::from(**b) < even || true) // knife' \
+             tokens_are_even_and_43_long
+          # LL2 the site is given the token itself instead of its hash
+          hk loginlink.rs '    opstore::sha256_hex(token.as_bytes())' \
+             '    opstore::sha256_hex(token.as_bytes()).map(|_| token.to_owned()) // knife' \
+             the_token_is_never_in_an_argument_and_the_site_gets_only_its_hash
+          # LL3 the token goes into an argument list
+          hk loginlink.rs '        .run_input(&wp(spec, &["eval", &program]), hash.as_bytes())' \
+             '        .run_input(&wp(spec, &["eval", &program, &token]), hash.as_bytes()) // knife' \
+             the_token_is_never_in_an_argument_and_the_site_gets_only_its_hash
+          # LL4 a login that is not an administrator gets a link (the answer is changed, not the
+          # arms: an arm made unreachable fails to compile under -D warnings and bites nothing)
+          hk loginlink.rs '    match said.trim() {' \
+             '    match said.trim().replace("not_admin", "admin").as_str() { // knife' \
+             a_login_that_is_not_an_administrator_is_refused_with_a_fixed_code
+          # LL5 a site answering for another address gets a link (before)
+          hk loginlink.rs "    if home.trim().trim_end_matches('/') != want {" \
+             "    if home.trim().trim_end_matches('/') != want && false { // knife" \
+             a_site_answering_for_another_address_gets_no_link
+          # LL6 a site answering for another address gets a link (the mint's own answer)
+          hk loginlink.rs "    if home.trim_end_matches('/') != format!(\"https://{domain}\") {" \
+             "    if home.trim_end_matches('/') != format!(\"https://{domain}\") && false { // knife" \
+             a_site_answering_for_another_address_gets_no_link
+          # LL7 another file of the plugin's name is taken for ours
+          hk loginlink.rs '        Some(sha) if sha == MU_PLUGIN_SHA256 => Ok(MuState::Same),' \
+             '        Some(sha) if sha == MU_PLUGIN_SHA256 || !sha.is_empty() => Ok(MuState::Same), // knife' \
+             a_different_mu_plugin_is_left_alone
+          # LL8 a plugin that reads back otherwise is taken as written
+          hk loginlink.rs '    if back.split_whitespace().next() != Some(MU_PLUGIN_SHA256) {' \
+             '    if back.split_whitespace().next() != Some(MU_PLUGIN_SHA256) && false { // knife' \
+             a_mu_plugin_that_reads_back_otherwise_stops
+          # LL9 the key lives longer than ten minutes
+          hk loginlink.rs 'set_transient($k, $u->ID, {LINK_SECONDS});' \
+             'set_transient($k, $u->ID, 6000); /* {LINK_SECONDS} knife */' \
+             the_mint_program_checks_the_administrator_and_keeps_the_key_ten_minutes
+          # LL10 the mint does not ask again for an administrator
+          hk loginlink.rs "if (!\$u || !user_can(\$u, 'manage_options')) {{ echo" \
+             'if (!$u) {{ /* knife */ echo' \
+             the_mint_program_checks_the_administrator_and_keeps_the_key_ten_minutes
+          # LL11 the mint says issued without reading the key back
+          hk loginlink.rs 'if ((int) get_transient($k) !== (int) $u->ID) {{' \
+             'if (false) {{ /* knife */' \
+             the_mint_program_checks_the_administrator_and_keeps_the_key_ten_minutes
+          # LL12 the plugin goes on without having deleted the key itself (a link works more than once; c477a N1 / ebb36 L2)
+          hk ez2-onetime-login.php '    if (!delete_transient($key)) { return; }' \
+             '    delete_transient($key); /* knife: goes on whoever deleted it */' \
+             the_mu_plugin_logs_in_only_an_administrator_once
+          # LL13 the plugin logs in any user, not only an administrator
+          hk ez2-onetime-login.php "    if (!\$u || !user_can(\$u, 'manage_options')) { return; }" \
+             '    if (!$u) { return; } /* knife */' \
+             the_mu_plugin_logs_in_only_an_administrator_once
+          # LL14 the plugin in the repository is not the reviewed one
+          hk ez2-onetime-login.php '    nocache_headers();' \
+             '    nocache_headers(); // knife' \
+             the_mu_plugin_is_the_reviewed_one
+          # LL15 the identity leaves the plugin out
+          hk siteidentity.rs '    let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)' \
+             '    let plugin = Ok::<&str, String>("written") // knife' \
+             the_identity_makes_the_site_its_own
+          # LL16 an opened site's link is for another administrator than the first
+          hk sitecreatecmd.rs '        .and_then(|a| a.first())' \
+             '        .and_then(|a| a.last()) // knife' \
+             the_opened_sites_link_is_for_the_first_administrator
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
