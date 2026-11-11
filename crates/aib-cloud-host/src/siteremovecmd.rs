@@ -881,6 +881,7 @@ pub fn carry_out(
                         words(&applied)
                     ));
                 }
+                crate::opstop::step(step.as_str());
                 do_step(
                     host,
                     spec,
@@ -1765,6 +1766,8 @@ mod tests {
         /// A path that `remove_path` refuses.
         refused: Option<&'static str>,
         calls: Vec<String>,
+        /// The step the progress file named at each write (E11).
+        steps: Vec<String>,
     }
 
     fn fake() -> FakeHost {
@@ -1790,6 +1793,7 @@ mod tests {
             sticky: None,
             refused: None,
             calls: Vec::new(),
+            steps: Vec::new(),
         }
     }
 
@@ -1809,6 +1813,8 @@ mod tests {
     impl FakeHost {
         fn did(&mut self, what: &'static str) -> bool {
             self.calls.push(what.to_owned());
+            self.steps
+                .push(crate::opstop::current_step().unwrap_or_default());
             self.no_effect != Some(what)
         }
     }
@@ -2101,6 +2107,27 @@ mod tests {
         let doc = removed_doc("site9", "www.example.com", Err("gone".to_owned()), never);
         assert_eq!(doc["left_on_host"], Value::Null);
         assert!(doc["left_on_host_note"].as_str().unwrap().contains("gone"));
+    }
+
+    /// E11: the progress file names the step each write belongs to.
+    #[test]
+    fn a_removal_says_which_step_it_is_in() {
+        let pl = place("steps");
+        let mut h = fake();
+        let plan = sealed(&pl, &mut h, true);
+        apply(
+            &pl,
+            &plan,
+            &spec(),
+            "www.example.com",
+            &mut h,
+            "20261111T120000Z",
+        )
+        .unwrap();
+        assert_eq!(
+            h.steps,
+            ["unserve", "archive", "stop", "destroy", "firewall", "lists", "record"]
+        );
     }
 
     #[test]

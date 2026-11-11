@@ -476,8 +476,10 @@ fn read_boot_id(path: &Path) -> Result<String, String> {
 }
 
 #[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
-/// Run `f` with the guard file's exclusive lock held.
-fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+/// Run `f` with the guard file's exclusive lock held. Journal lines of a running
+/// operation and `op stop --apply` go through it too, so a stop and the operation's own
+/// last line never interleave (E11).
+pub fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let g = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -815,29 +817,40 @@ fn journaled<P, T>(
     let mut seq = 0;
     let mut step = |state: op::State, code: &str| {
         seq += 1;
-        append_entry(
-            &place.ops_dir,
-            &Entry {
-                seq,
-                at: crate::probe::unix_now(),
-                state,
-                code: code.to_owned(),
-                approval: if state == op::State::Planned {
-                    String::new()
-                } else {
-                    template.approval.clone()
-                },
-                ..template.clone()
+        let line = Entry {
+            seq,
+            at: crate::probe::unix_now(),
+            state,
+            code: code.to_owned(),
+            approval: if state == op::State::Planned {
+                String::new()
+            } else {
+                template.approval.clone()
             },
-        )
+            ..template.clone()
+        };
+        // under the guard: an `op stop --apply` holds it from its recheck to its own line
+        guarded(&place.lock, || append_entry(&place.ops_dir, &line))
     };
     step(op::State::Planned, "ok")?;
     step(op::State::Approved, "ok")?;
     step(op::State::Running, "ok")?;
     eprintln!("operation {op_id}: {command} {target}");
-    match change(op_id, input) {
+    // E11: from here the operation says which step it is in and that it is alive
+    crate::opstop::begin(
+        &place.ops_dir,
+        op_id,
+        &place.lock,
+        std::process::id(),
+        crate::probe::unix_now(),
+        op::HEARTBEAT_SECS,
+    );
+    let changed = change(op_id, input);
+    crate::opstop::end();
+    match changed {
         Ok(v) => {
             step(op::State::Verified, "ok")?;
+            crate::opstop::forget(&place.ops_dir, op_id);
             Ok(Some(v))
         }
         Err(e) => match step(op::State::Failed, "error") {
@@ -1119,14 +1132,19 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             doc["opening"] =
                 crate::sitecreatecmd::opening_report(Path::new(crate::sitecreatecmd::CREATING));
             if let Some(op) = args.get(1) {
-                let (entries, cut) = read_journal(&journal_path(dir, op)?)?;
-                let last = op::replay(&entries).map_err(|e| e.to_string())?;
-                doc["op"] = json!({
-                    "id": op, "command": last.command, "target": last.target,
-                    "state": last.state.as_str(), "seq": last.seq,
-                    "resume": format!("{:?}", op::resume(last.state)),
-                    "last_line_cut_short": cut,
-                });
+                // E11: the step, how long since it last wrote, running / stalled / finished
+                let paths = LockPaths::host()?;
+                let facts = crate::opstop::Facts {
+                    ops_dir: dir,
+                    lock: &paths,
+                    fingerprint: "",
+                };
+                doc["op"] = crate::opstop::status(
+                    &facts,
+                    op,
+                    crate::probe::unix_now(),
+                    op::STALLED_SECS,
+                )?;
             }
             println!(
                 "{}",
@@ -1154,6 +1172,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             println!("{op_id}: recovered (closed by hand)");
             Ok(0)
         }
+        Some("stop") => crate::opstop::cmd(args.get(1..).unwrap_or_default()),
         Some("archive") => {
             // moves a damaged or finished journal aside; refuses an unfinished operation
             let op_id = args.get(1).ok_or("op archive needs <op id> [--target <target>]")?;
@@ -1166,7 +1185,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             Ok(0)
         }
         _ => Err(
-            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id> [--target <target>]"
+            "op needs status [<op id>] | unfinished <target> | recovered <op id> | archive <op id> [--target <target>] | stop <op id> --plan | --apply <plan.json>"
                 .to_owned(),
         ),
     }

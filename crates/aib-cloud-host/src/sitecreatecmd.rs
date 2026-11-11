@@ -1145,6 +1145,8 @@ pub fn continue_steps(
 ) -> Result<Value, String> {
     let Opening { mut record, spec } = opening;
     for &step in steps {
+        // E11: the progress file says which step the opening is in
+        crate::opstop::step(step.as_str());
         if step == CreateStep::Start {
             if let Err(why) = ready_to_start(runner, spec.ct) {
                 record["held"] = json!(why);
@@ -2415,6 +2417,42 @@ mod tests {
             .iter()
             .find(|e| e.target == "domain:new.example.test")
             .map(|e| e.state)
+    }
+
+    /// E11: the progress file names the step each host command belongs to.
+    #[test]
+    fn an_opening_says_which_step_it_is_in() {
+        let (place, paths) = opened("b2steps", "clone");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut host = b2_host(shown_config());
+        let mut runner = fake(|argv: &[String]| {
+            seen.borrow_mut().push(format!(
+                "{} {}",
+                crate::opstop::current_step().unwrap_or_default(),
+                argv[1]
+            ));
+            host(argv)
+        });
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            *seen.borrow(),
+            [
+                "limits set",
+                "limits config",
+                "start config",
+                "start start",
+                "start status"
+            ]
+        );
     }
 
     #[test]
