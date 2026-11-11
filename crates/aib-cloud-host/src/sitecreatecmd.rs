@@ -394,7 +394,11 @@ impl Runner for HostRunner {
         let mut cmd = Command::new(program);
         cmd.args(args);
         // a full clone copies the template's disk
-        let seconds = if args.first().is_some_and(|a| a == "clone") { 900 } else { 60 };
+        let seconds = if args.first().is_some_and(|a| a == "clone") {
+            900
+        } else {
+            60
+        };
         run_capture(&mut cmd, Duration::from_secs(seconds))
     }
 }
@@ -443,6 +447,9 @@ pub struct Given {
     /// so the lock is put back as the plan had it before the hash is recomputed; the lock
     /// stops nothing in the plan (it is only shown), the apply takes it for real.
     pub lock: Value,
+    /// The plan as given, whole: every field must be what this host makes again, not only
+    /// the hash (an edited field under the old hash is refused too).
+    pub plan: Value,
 }
 
 /// Read the plan given to `--apply` for `domain`.
@@ -467,6 +474,7 @@ pub fn given(plan: &Value, domain: &str) -> Result<Given, String> {
             .and_then(Value::as_bool)
             .ok_or("the plan has no blank")?,
         lock: plan.get("lock").cloned().ok_or("the plan has no lock")?,
+        plan: plan.clone(),
     })
 }
 
@@ -493,7 +501,7 @@ pub fn recheck(
         obj.insert("lock".to_owned(), g.lock.clone());
     }
     crate::quarantinecmd::seal_with_op(&mut doc, &g.op, fingerprint, env!("CARGO_PKG_VERSION"))?;
-    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) {
+    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {
         return Err(
             "plan_changed: this host is not as the plan saw it (or the plan was edited); make a new plan"
                 .to_owned(),
@@ -779,7 +787,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         (true, None) => {}
         (false, Some(file)) => {
             if blank {
-                return Err("--blank belongs to --plan: the plan given to --apply says it".to_owned());
+                return Err(
+                    "--blank belongs to --plan: the plan given to --apply says it".to_owned(),
+                );
             }
             return apply_cmd(&domain, &file, &records);
         }
@@ -1186,7 +1196,10 @@ mod tests {
         let filler = (3..22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
         fs::write(
             me.join("stat"),
-            format!("{} (aib-cloud-host) {filler} 4242 0 0\n", std::process::id()),
+            format!(
+                "{} (aib-cloud-host) {filler} 4242 0 0\n",
+                std::process::id()
+            ),
         )
         .unwrap();
         fs::create_dir_all(d.join("ops")).unwrap();
@@ -1204,8 +1217,13 @@ mod tests {
     /// The plan `--plan` would print on `seen`, sealed for `place`.
     fn sealed(place: &opstore::OpPlace, domain: &str, seen: &Seen) -> Value {
         let mut doc = plan_doc(domain, false, seen);
-        crate::quarantinecmd::seal_with_op(&mut doc, OP, &place.fingerprint, env!("CARGO_PKG_VERSION"))
-            .unwrap();
+        crate::quarantinecmd::seal_with_op(
+            &mut doc,
+            OP,
+            &place.fingerprint,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
         doc
     }
 
@@ -1243,7 +1261,12 @@ mod tests {
 
     fn states(place: &opstore::OpPlace) -> Vec<State> {
         let path = opstore::journal_path(&place.ops_dir, OP).unwrap();
-        opstore::read_journal(&path).unwrap().0.iter().map(|e| e.state).collect()
+        opstore::read_journal(&path)
+            .unwrap()
+            .0
+            .iter()
+            .map(|e| e.state)
+            .collect()
     }
 
     fn random_from(seed: u8) -> impl FnMut() -> Result<[u8; 4], String> {
@@ -1260,7 +1283,10 @@ mod tests {
         let long = format!("{}.example.test", "a".repeat(70));
         let other = format!("{}.example.test", "b".repeat(70));
         let t = target(&long);
-        assert!(t.starts_with("domain:fnv64-") && t.len() <= TARGET_MAX, "{t}");
+        assert!(
+            t.starts_with("domain:fnv64-") && t.len() <= TARGET_MAX,
+            "{t}"
+        );
         assert_eq!(t, target(&long));
         assert_ne!(t, target(&other));
         // the journal takes it
@@ -1293,7 +1319,9 @@ mod tests {
         })
         .unwrap();
         assert_ne!(code, taken[0]);
-        assert!(new_code(&taken, || Ok([1, 7, 9, 11])).unwrap_err().starts_with("code_unavailable"));
+        assert!(new_code(&taken, || Ok([1, 7, 9, 11]))
+            .unwrap_err()
+            .starts_with("code_unavailable"));
     }
 
     /// A site being opened holds its numbers and its domain.
@@ -1301,7 +1329,7 @@ mod tests {
     fn an_opening_holds_its_numbers_and_its_domain() {
         let free = plan_doc("new.example.test", false, &host());
         let seen = Seen {
-            creating: Some(vec![rec("s-abc123", 126, 26, "new.example.test")]),
+            creating: Some(vec![rec("s-abc123", 131, 41, "new.example.test")]),
             ..host()
         };
         let doc = plan_doc("other.example.test", false, &seen);
@@ -1314,7 +1342,10 @@ mod tests {
             creating: None,
             ..host()
         };
-        assert_eq!(plan_doc("other.example.test", false, &unread)["stop"], "numbers_unknown");
+        assert_eq!(
+            plan_doc("other.example.test", false, &unread)["stop"],
+            "numbers_unknown"
+        );
     }
 
     #[test]
@@ -1324,8 +1355,16 @@ mod tests {
         let plan = sealed(&place, "new.example.test", &host());
         let ct = plan["ct"].as_u64().unwrap();
         let mut runner = fake(healthy);
-        let rec = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap();
+        let rec = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap();
         assert_eq!(rec["ct"], ct);
         assert_eq!(rec["ip"], plan["ip"]);
         assert_eq!(rec["op"], OP);
@@ -1339,13 +1378,19 @@ mod tests {
                 format!("pct status {ct}"),
             ]
         );
-        let on_disk: Value =
-            serde_json::from_str(&fs::read_to_string(creating.join(format!("{code}.json"))).unwrap())
-                .unwrap();
+        let on_disk: Value = serde_json::from_str(
+            &fs::read_to_string(creating.join(format!("{code}.json"))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(on_disk, rec);
         assert_eq!(
             states(&place),
-            [State::Planned, State::Approved, State::Running, State::Verified]
+            [
+                State::Planned,
+                State::Approved,
+                State::Running,
+                State::Verified
+            ]
         );
         // the journal's plan hash is the plan's
         let path = opstore::journal_path(&place.ops_dir, OP).unwrap();
@@ -1354,7 +1399,16 @@ mod tests {
         assert_eq!(first.target, "domain:new.example.test");
         // the same plan again: refused, nothing run
         let mut again = fake(healthy);
-        assert!(apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut again).is_err());
+        assert!(apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut again
+        )
+        .is_err());
         assert!(again.calls.is_empty());
         assert!(!place.lock.lock.exists(), "the lock is given back");
     }
@@ -1372,19 +1426,44 @@ mod tests {
             ..host()
         };
         let mut runner = fake(healthy);
-        let err = apply(&place, &plan, "new.example.test", &creating, later, random_from(0), &mut runner)
-            .unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            later,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.starts_with("plan_changed"), "{err}");
         assert!(runner.calls.is_empty());
         assert!(!opstore::journal_path(&place.ops_dir, OP).unwrap().exists());
         // an edited plan is refused the same way
         let mut edited = plan.clone();
         edited["ct"] = json!(150);
-        let err = apply(&place, &edited, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap_err();
+        let err = apply(
+            &place,
+            &edited,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.starts_with("plan_changed"), "{err}");
         // a plan for another domain is not this one's
-        assert!(apply(&place, &plan, "else.example.test", &creating, host, random_from(0), &mut runner).is_err());
+        assert!(apply(
+            &place,
+            &plan,
+            "else.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner
+        )
+        .is_err());
         assert!(runner.calls.is_empty());
     }
 
@@ -1394,13 +1473,25 @@ mod tests {
         let creating = place.ops_dir.with_file_name("creating");
         let plan = sealed(&place, "new.example.test", &host());
         let ct = plan["ct"].as_u64().unwrap();
-        let mut runner = fake(|argv: &[String]| match (argv[0].as_str(), argv[1].as_str()) {
-            ("pct", "list") => Ok(format!("{PCT}{ct}        stopped                 intruder\n")),
-            ("qm", "list") => Ok(QM.to_owned()),
-            _ => Ok(String::new()),
-        });
-        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap_err();
+        let mut runner = fake(
+            |argv: &[String]| match (argv[0].as_str(), argv[1].as_str()) {
+                ("pct", "list") => Ok(format!(
+                    "{PCT}{ct}        stopped                 intruder\n"
+                )),
+                ("qm", "list") => Ok(QM.to_owned()),
+                _ => Ok(String::new()),
+            },
+        );
+        let err = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.starts_with("number_taken"), "{err}");
         assert_eq!(runner.calls, ["pct list"]);
         assert!(!creating.exists() || fs::read_dir(&creating).unwrap().next().is_none());
@@ -1426,11 +1517,24 @@ mod tests {
             _ if destroyed => Err(GONE.to_owned()),
             _ => Ok("status: stopped\n".to_owned()),
         });
-        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.contains(&format!("undone: CT {ct} destroyed")), "{err}");
-        assert!(runner.calls.contains(&format!("pct destroy {ct} --purge 1")));
-        assert!(fs::read_dir(&creating).unwrap().next().is_none(), "the record is removed");
+        assert!(runner
+            .calls
+            .contains(&format!("pct destroy {ct} --purge 1")));
+        assert!(
+            fs::read_dir(&creating).unwrap().next().is_none(),
+            "the record is removed"
+        );
         assert_eq!(states(&place).last(), Some(&State::Failed));
     }
 
@@ -1445,11 +1549,23 @@ mod tests {
             "clone" => Err("pct clone: timed out".to_owned()),
             _ => Err("pct status: timed out".to_owned()),
         });
-        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.contains("left for a person"), "{err}");
         assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
-        assert_eq!(fs::read_dir(&creating).unwrap().count(), 1, "the record stays");
+        assert_eq!(
+            fs::read_dir(&creating).unwrap().count(),
+            1,
+            "the record stays"
+        );
     }
 
     #[test]
@@ -1463,8 +1579,16 @@ mod tests {
             "clone" => Err("pct clone: template locked".to_owned()),
             _ => Err(GONE.to_owned()),
         });
-        let err = apply(&place, &plan, "new.example.test", &creating, host, random_from(0), &mut runner)
-            .unwrap_err();
+        let err = apply(
+            &place,
+            &plan,
+            "new.example.test",
+            &creating,
+            host,
+            random_from(0),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(err.contains("undone: nothing was made"), "{err}");
         assert!(!runner.calls.iter().any(|c| c.contains("destroy")));
         assert!(fs::read_dir(&creating).unwrap().next().is_none());
