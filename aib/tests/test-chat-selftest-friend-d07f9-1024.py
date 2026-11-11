@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""aib chat selftest 抽一位好友查一次(10-24 清單第 7 條:fishmac 看 Andy 離線四天,兩邊 selftest 都全綠)。
+"""aib chat selftest 抽一位好友查一次(10-24 清單第 7 條:mac-b 看 Andy 離線四天,兩邊 selftest 都全綠)。
 
 F1 沒有好友 ⇒ 不列 friend 這一項
 F2 有兩位好友 ⇒ 挑最近有往來的那位,用快照記的第一席查;查得到 ⇒ ✓

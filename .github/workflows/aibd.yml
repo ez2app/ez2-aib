@@ -293,7 +293,7 @@ jobs:
           lk "        let crates = match bin.strip_prefix('@') {" \
              '        let crates = match None::<&str> {' \
              a_crate_from_the_panic_uses_that_crates_closure
-      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+      # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -530,6 +530,58 @@ jobs:
           ck roster.rs '    if map.keys().any(|k| !named.contains(&k.as_str())) {' \
              '    if map.keys().any(|k| !named.contains(&k.as_str()) && k.is_empty()) { // knife' \
              strict_reading
+          # entry sudoers: a comma in the arguments goes out bare and starts a second command (c477a, #648 N2)
+          ck roster.rs "        if matches!(c, '\\\\' | ',' | ':' | '=') {" \
+             '        if false { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: two rosters of one tenant are both written
+          ck roster.rs '        if rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) {' \
+             '        if false && rosters[..i].iter().any(|o| o.tenant_id == r.tenant_id) { // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # entry sudoers: a member whose entry keys are all revoked keeps a rule
+          ck roster.rs '                .any(|k| k.usage == KeyUse::Entry && !k.revoked)' \
+             '                .any(|k| k.usage == KeyUse::Entry) // knife' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # H14: a wildcard rule is not told apart (the hand-written customer *)
+          ck verify.rs "                if text.contains('*') {" \
+             '                if false { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any rule that starts like ours passes, whatever its arguments
+          ck verify.rs '                        .is_some_and(entry_rule_args)' \
+             '                        .is_some_and(|r| entry_rule_args(r) || true) // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: any line starting with # is taken for a comment (#include, #<uid>: 33e28, #655 H1)
+          ck verify.rs '                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER)' \
+             "                    .filter(|l| !l.is_empty() && *l != SUDOERS_HEADER && !l.starts_with('#')) // knife" \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a rule for the entry account in another sudoers file is not looked at (33e28, #655 M1)
+          ck verify.rs '                } else if elsewhere == Ok(true) {' \
+             '                } else if false && elsewhere == Ok(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: only the first name of a spaced user list (root, #uid) is read
+          ck verify.rs "        if !(w.ends_with(',') || words.peek().is_some_and(|n| n.starts_with(','))) {" \
+             '        if true { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a User_Alias that comes down to the entry account is not expanded (33e28, #655 r2 M1)
+          ck verify.rs '                        Who::Alias(a) if ours.contains(a) => granted = true,' \
+             '                        Who::Alias(a) if ours.contains(a) => granted |= false, // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a Defaults line bound to the entry account in another file is skipped (33e28, #655 r2 L2)
+          ck verify.rs "                Some(':') => user_list(&rest[1..])," \
+             "                Some(':') => continue, // knife" \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: a line not read word for word (+netgroup, %:group, …) counts as clean (33e28 #655 r3 M1; f1fae 06:5x)
+          ck verify.rs '    } else if shape_ok {' \
+             '    } else if true || shape_ok { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: rules from sss / ldap (nsswitch sudoers:) are not looked for (33e28, #655 r3 L1)
+          ck verify.rs '                } else if seen.nss_files_only != Some(true) {' \
+             '                } else if false && seen.nss_files_only != Some(true) { // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
+          # H14: owner and mode are not looked at
+          ck verify.rs '            (Some(om), _) if om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"),' \
+             '            (Some(om), _) if false && om != (0, 0, 0o440) => Outcome::Red("sudoers_mode"), // knife' \
+             h14_the_entry_sudoers_file_is_the_generated_one
           # site record: a record that names no tenant belongs to the tenant called like the site
           ck site.rs '    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))' \
              '    rec.get("tenant_id").or_else(|| rec.get("site"))?.as_str().filter(|o| valid_code(o)) // knife' \
@@ -560,6 +612,107 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+          # ---- B1 (customer opens a site) and site removal: the pure rules (4542e 11-11)
+          # opening a site: a probe that could not tell is read as not done
+          ck sitecreate.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
+             '            (Probe::Unknown, _) if false => return Next::Stop("probe_unknown", *step), // knife' \
+             a_probe_that_could_not_tell_stops_the_work
+          # opening a site: a later step done before an earlier one goes unnoticed
+          ck sitecreate.rs '            (Probe::Done, Some(_)) => return Next::Stop("steps_out_of_order", *step),' \
+             '            (Probe::Done, Some(_)) if false => return Next::Stop("steps_out_of_order", *step), // knife' \
+             a_later_step_done_before_an_earlier_one_stops_the_work
+          # opening a site: a failed licence step removes the site (and loses the activations)
+          ck sitecreate.rs '    if step < CreateStep::Licenses {' \
+             '    if step <= CreateStep::Licenses { // knife' \
+             a_failure_is_undone_only_until_something_outside_the_host_is_used_up
+          # opening a site: a blank site is asked for licences it does not have
+          ck sitecreate.rs '        !(blank && self == CreateStep::Licenses)' \
+             '        !(blank && false && self == CreateStep::Licenses) // knife' \
+             a_blank_site_passes_over_the_licenses
+          # numbers: a removed site's container number is given out again (ebb36)
+          ck sitecreate.rs '        .chain(removed_cts)' \
+             '        .chain(removed_cts.iter().take(0)) // knife' \
+             the_numbers_of_removed_sites_are_never_given_out_again
+          # numbers: a removed site's address is given out again (ebb36)
+          ck sitecreate.rs '.chain(removed_ips)' \
+             '.chain(removed_ips.iter().take(0)) /* knife */' \
+             the_numbers_of_removed_sites_are_never_given_out_again
+          # licences: activated although the plugin's own call failed
+          ck sitedefaults.rs '        (true, License::Active) => Ok(()),' \
+             '        (_, License::Active) => Ok(()), // knife' \
+             activated_means_the_call_and_the_vendor_both_say_so
+          # licences: no answer from the vendor counts as activated
+          ck sitedefaults.rs '        _ => License::Unknown,' \
+             '        _ => License::Active, // knife' \
+             no_answer_or_an_unknown_word_is_unknown_never_active
+          # licences: activation is tried with none left
+          ck sitedefaults.rs '            Some(0) => License::Quota,' \
+             '            Some(0) => License::Inactive, // knife' \
+             a_status_vendor_is_read_by_its_own_words
+          # licences: activated without the vendor having this site's record
+          ck sitedefaults.rs '            Some(true) => return License::Active,' \
+             '            Some(true) => return License::Active, Some(false) if true => return License::Active, // knife' \
+             an_activation_vendor_needs_its_own_record_of_this_site
+          # licences: a number the vendor was not asked about is activated again, one more activation used up (c477a, #659 M1)
+          ck sitedefaults.rs '            None => return License::Unknown,' \
+             '            None => {} // knife' \
+             a_number_the_vendor_was_not_asked_about_is_unknown_not_inactive
+          # licences: an activation is sent when the state is not known
+          ck sitedefaults.rs '        License::Inactive => LicenseStep::Activate,' \
+             '        License::Inactive | License::Unknown => LicenseStep::Activate, // knife' \
+             only_a_known_inactive_license_is_activated
+          # administrators: a taken login name is given again
+          ck sitedefaults.rs '    if free(base) {' \
+             '    if free(base) || true { // knife' \
+             a_taken_login_name_gets_a_number
+          # title: www counts as the first label
+          ck sitedefaults.rs '    let rest = host.strip_prefix("www.").unwrap_or(host);' \
+             '    let rest = host; // knife' \
+             the_title_is_the_first_label_and_www_does_not_count
+          # removing a site: the code alone is enough
+          ck siteremove.rs '        && record_main_address == typed_address' \
+             '        && (record_main_address == typed_address || true) // knife' \
+             the_site_and_its_address_must_both_be_named_exactly
+          # removing a site: destroying goes on without a known-good archive
+          ck siteremove.rs '            (Probe::Done, Some(_)) => return Next::Stop("steps_out_of_order", *step),' \
+             '            (Probe::Done, Some(_)) if false => return Next::Stop("steps_out_of_order", *step), // knife' \
+             nothing_is_destroyed_before_the_archive_is_known_good
+          # removing a site: an archive that could not be checked is passed over
+          ck siteremove.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
+             '            (Probe::Unknown, _) if false => return Next::Stop("probe_unknown", *step), // knife' \
+             nothing_is_destroyed_before_the_archive_is_known_good
+          # removing a site: the licence step is skipped without the person's word
+          ck siteremove.rs '        if licenses_left_at_vendor && *step == RemoveStep::Licenses {' \
+             '        if (licenses_left_at_vendor || true) && *step == RemoveStep::Licenses { // knife' \
+             a_vendor_that_cannot_be_reached_stops_the_removal_unless_the_person_says_so
+          # removing a site: called off after things were closed or destroyed
+          ck siteremove.rs '    next_step < RemoveStep::Licenses' \
+             '    next_step <= RemoveStep::Licenses // knife' \
+             a_removal_can_be_called_off_only_while_nothing_is_lost
+          # removing a site: any text counts as a container list
+          ck siteremove.rs '    if !lines.next()?.starts_with("VMID") {' \
+             '    if false && !lines.next()?.starts_with("VMID") { // knife' \
+             a_container_is_absent_only_on_a_list_that_answered
+          # removing a site: an unreadable entry configuration counts as "site not on it"
+          ck siteremove.rs '        None | Some("") => Probe::Unknown,' \
+             '        None | Some("") => Probe::Done, // knife' \
+             the_entry_is_read_by_the_sites_own_marker_line
+          # removing a site: a stop is read as "nothing was lost yet" (33e28, #659 M1)
+          ck siteremove.rs '    matches!(next, Next::Run(step) if may_call_off(step))' \
+             '    matches!(next, Next::Run(step) | Next::Stop(_, step) if may_call_off(step)) // knife' \
+             a_removal_that_stopped_cannot_be_called_off
+          # removing a site: a block that still opens with the address, without its marker, reads as taken off (c477a, #659 N8)
+          ck siteremove.rs '            if opens_with_address {' \
+             '            if opens_with_address && false { // knife' \
+             the_entry_is_read_by_the_sites_own_marker_line
+          # removing a site: white space after the marker reads as taken off the entry (c477a, #659 L1)
+          ck siteremove.rs '            if text.lines().any(|l| l.trim_end() == marker) {' \
+             '            if text.lines().any(|l| l == marker) { // knife' \
+             the_entry_is_read_by_the_sites_own_marker_line
+          # numbers: an address outside the sites range ends or jumps the range (c477a, #659 L2)
+          ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
+             '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
+             a_new_site_gets_the_next_numbers_up
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -600,6 +753,10 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # roster sudoers: the action is not reached (c477a, #648 N2)
+          hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
+             '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
+             the_sudoers_file_comes_from_every_roster_or_none
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \
@@ -775,6 +932,28 @@ jobs:
           hk quarantinecmd.rs '    let record = load_record(code, quarantine_dir)?;' \
              '    let record = load_record(code, quarantine_dir).unwrap_or(None); // knife' \
              a_quarantined_site_is_not_reopened
+          # ---- site remove --plan (4542e 11-11)
+          # the plan says a stopped removal can be called off (33e28, #659 M1)
+          hk siteremovecmd.rs '        "may_call_off": siteremove::may_call_off_now(next),' \
+             '        "may_call_off": next_step.is_some_and(siteremove::may_call_off), // knife' \
+             a_plan_that_stops_never_says_it_can_be_called_off
+          # the record could not be looked for and counts as moved aside (c477a, #659 L4)
+          hk siteremovecmd.rs '        known(seen.record_in_place, false),' \
+             '        known(seen.record_in_place.or(Some(false)), false), // knife' \
+             what_could_not_be_read_is_unknown_not_absent
+          # site remove --plan: an archive nobody looked at counts as there
+          hk siteremovecmd.rs '        seen.archive.unwrap_or(Probe::Unknown),' \
+             '        seen.archive.unwrap_or(Probe::Done), // knife' \
+             what_could_not_be_read_is_unknown_not_absent
+          # site remove --plan: destroyed although the storage could not be asked
+          hk siteremovecmd.rs '        (Some(false), Some(false)) => Probe::Done,' \
+             '        (Some(false), Some(false)) | (Some(false), None) => Probe::Done, // knife' \
+             what_could_not_be_read_is_unknown_not_absent
+          # site remove --plan: licences count as given back though nobody asked
+          hk siteremovecmd.rs '        licences_wired.unwrap_or(Probe::Unknown),' \
+             '        licences_wired.unwrap_or(Probe::Done), // knife' \
+             the_licences_are_not_guessed
+
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -1322,12 +1501,82 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-static.sh
+      # ErrorCode::ALL (a63ab 11-10): E1 / E2 are build-time knives (knife-build.py: the
+      # build must stop on that const assert's own panic), E0 is their negative arm,
+      # E3 / E4 turn the contract-order test red.
+      - name: ErrorCode knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-errorcode.sh
       # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-signlint.sh
+      # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
+      # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
+      # keeps the code building (no arm made unreachable, nothing left unused).
+      - name: aib-consent knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --test supervise "$4"; }
+          pk() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --lib "$4"; }
+          ct() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-consent --locked --test cli "$4"; }
+          # the job inherits the supervisor's environment
+          sk supervise.rs '        .env_clear()' '        // knife: no env_clear' \
+             the_job_sees_only_the_environment_it_is_given
+          # a stop reaches only the leader, not its group
+          sk supervise.rs '    match killpg(pg, sig) {' '    match nix::sys::signal::kill(pg, sig) { // knife' \
+             a_yes_to_the_quiet_question_stops_the_whole_group
+          # "keep waiting" stops the job too
+          sk supervise.rs '            if answer == Some(true) {' '            if answer.is_some() { // knife' \
+             a_no_keeps_the_job_running
+          # the hard limit waits for an open question
+          sk supervise.rs '        if elapsed >= job.hard {' '        if elapsed >= job.hard && asking.is_none() { // knife' \
+             the_hard_limit_holds_while_a_question_is_open
+          # names that change how bash or python start are let through by their prefix
+          pk params.rs '    !RESERVED.contains(&k) && !RESERVED_PREFIX.iter().any(|p| k.starts_with(p))' \
+             '    !RESERVED.contains(&k) || RESERVED_PREFIX.is_empty() // knife' \
+             names_that_change_how_bash_or_python_start_are_refused
+          # a key the program does not declare is let through
+          pk params.rs '        Some(i) => Err(refused("params_key_undeclared", i + 1)),' '        Some(_) => Ok(()), // knife' \
+             only_the_keys_the_program_declares
+          # the shared program is run whatever its sha256
+          pk params.rs '    if sha256 != pin {' '    if sha256 != pin && false { // knife' \
+             a_program_must_match_its_pin_and_sit_in_the_shared_folder
+          # a program outside .agents/skills/<skill>/tools/generic is taken (2240e #661 L3)
+          pk params.rs '    if !program_place_ok(home, &real) {' '    if false && !program_place_ok(home, &real) { // knife' \
+             a_program_must_match_its_pin_and_sit_in_the_shared_folder
+          # values carry anything (2240e #661 L3)
+          pk params.rs '            .all(|c| c.is_ascii_alphanumeric() || b"._:/@+,=-".contains(&c))' \
+             '            .all(|c| c != 0) // knife' \
+             values_carry_nothing_a_shell_could_read
+          # a seat's stop request stops the job without the person (2240e #661 L3)
+          sk supervise.rs '            if answer == Some(true) {' '            if answer == Some(true) || a.why == "request" { // knife' \
+             a_stop_request_asks_the_person
+          # a seat can bring the dialog back every tick after "keep waiting" (2240e #661 L1)
+          sk supervise.rs '            if request && elapsed < requests_quiet_until {' \
+             '            if request && elapsed < requests_quiet_until && false { // knife' \
+             requests_right_after_keep_waiting_are_not_asked
+          # what the leader leaves behind keeps running (2240e #661 L3)
+          sk supervise.rs '            if group_alive(pg) {' '            if false && group_alive(pg) { // knife' \
+             what_the_leader_leaves_behind_is_stopped
+          # no KILL after an ignored TERM (2240e #661 L3)
+          sk supervise.rs '    signal_group(pg, Signal::SIGKILL, &mut errors);' '    // knife: no KILL' \
+             kill_follows_an_ignored_term
+          # the pinned program is run from its path again (2240e #661 M2)
+          ct main.rs '                *last = supervise::SCRIPT_ARG.to_owned();' '                *last = last.clone(); // knife' \
+             a_copy_changed_after_the_check_is_not_run
+          # the staged copy is not checked right before the run (2240e #661 L3)
+          ct main.rs '            let bytes = match params::read_staged(Path::new(c), s, params::PROGRAM_MAX_BYTES) {' \
+             '            let bytes = match params::read_staged(Path::new(c), &params::sha256_hex(&std::fs::read(c).unwrap_or_default()).replace(s, s), params::PROGRAM_MAX_BYTES) { // knife' \
+             a_copy_changed_before_the_run_is_refused
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

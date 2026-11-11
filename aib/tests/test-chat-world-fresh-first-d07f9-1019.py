@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """aib chat world --json:同一位主人有多個艙 ⇒ 新的(fresh、最近回報)排前面。
 
-10-19 Andy 實機:Pro 13 的主人在 world 裡有舊艙 436f(13 小時前,fresh=false)排在現用艙 5a97(81 秒前)前面,
+10-19 Andy 實機:Mac B 的主人在 world 裡有舊艙 436f(13 小時前,fresh=false)排在現用艙 5a97(81 秒前)前面,
 艦長室只看第一格 ⇒ 明明在線卻顯示不在線。舊艙分不出是關掉的艙還是睡著的另一台,所以不刪,只排序。
 
 W1 舊艙按鍵名排在前面也一樣:cabins 第一格是 fresh 的現用艙;舊艙還在(machine 狀態照給)
@@ -43,7 +43,7 @@ class World(unittest.TestCase):
         self.root = Path(td.name) / "bridge"
         self.env = {"HOME": str(home), "AIB_CHAT_BRIDGE_DIR": str(self.root), "EZ2_AIB_LOCALE": "zh-TW"}
         GF.ensure_dirs(self.root)
-        CR.add_friend(OWNER, "Pro 13", env=self.env)
+        CR.add_friend(OWNER, "Mac B", env=self.env)
         self.now = time.time()
 
     def cabins(self):

@@ -110,7 +110,7 @@ class Base(unittest.TestCase):
         a.machine_id = store.machine_identity(self.env)["id"]
         return a
 
-    def start(self, api, label="Mac Pro 艦長"):
+    def start(self, api, label="Mac A 艦長"):
         return BG.start(api, label, env=self.env, clock=self.clock)
 
     def poll(self, api):
