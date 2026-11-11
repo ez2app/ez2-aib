@@ -331,7 +331,7 @@ pub const COMMAND: &str = "site.remove";
 pub const LEFT_ON_WORD: &str = "all:not-asked(licences-left-at-vendor)";
 /// The files where Proxmox keeps backup schedules: `jobs.cfg` since PVE 7.1, `vzdump.cron`
 /// before. `pct destroy --purge` takes the container out of them, so destroying must
-/// leave both as they were. Our own daily backup is not scheduled in either (33e28
+/// leave both as they were. Our own daily backup is not scheduled in either (4542e
 /// looked on the first host, 11-11: no `jobs.cfg`, a `vzdump.cron` with no backup line):
 /// this guards against a schedule someone adds in Proxmox, not ours.
 pub const BACKUP_SCHEDULES: [&str; 2] = ["/etc/pve/jobs.cfg", "/etc/pve/vzdump.cron"];
