@@ -688,7 +688,7 @@ jobs:
              the_entry_is_read_by_the_sites_own_marker_line
           # removing a site, DNS (Andy 11-11): a record without the site's own marker is deleted
           ck siteremove.rs '        if r.comment == marker {' \
-             '        if true { // knife' \
+             '        if r.comment == marker || true { // knife' \
              only_address_records_with_the_sites_marker_are_ours
           # removing a site, DNS: mail records under the site's address are deleted too
           ck siteremove.rs 'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "CNAME"];' \
