@@ -41,7 +41,7 @@ MACHINE = "TEST-MACHINE-UUID-0001"
 EXP = "2027-10-17T05:36:46+00:00"
 REQ = {"plan": "ultra", "priv": "/priv/repo", "rev": "2ef08b6d0"}
 NAME = "LICENSE-plan-ultra-aeb40-1030.json"
-CUR = {"tier": "all", "addons": ["captain-room", "hostguard"], "expires_at": EXP, "note": "Andy MacBook Pro 16",
+CUR = {"tier": "all", "addons": ["captain-room", "hostguard"], "expires_at": EXP, "note": "Andy Mac A",
        "issued_at": "2026-10-23T13:07:36+00:00"}
 
 

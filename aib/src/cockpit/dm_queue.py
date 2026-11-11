@@ -753,7 +753,7 @@ def admit(env=None):
 
 
 # 全球來信不受佇列授權限制(Andy 10-19 裁):全球信一律先排佇列,但佇列是進階功能;基本版的艙
-# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Pro / Mini / Pro 13 實機三台都這樣)。
+# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Mac A / Mac C / Mac B 實機三台都這樣)。
 # 沒開佇列時,排空器只投全球來信(照樣等閒、一次一封);收件程式排進一封就留記號,右欄 / upkeep 看記號才跑。
 def global_pending_path(env=None):
     return queue_root(env) / "global-pending"

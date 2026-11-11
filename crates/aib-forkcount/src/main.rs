@@ -1270,7 +1270,7 @@ mod tests {
 
     #[test]
     fn a_listing_between_the_last_stamp_and_the_exit_read_is_a_race() {
-        // Pro 13 11-10 mid-exit #2: stamp 79, fork read 80, empty listing
+        // Mac B 11-10 mid-exit #2: stamp 79, fork read 80, empty listing
         // 81-82, exit read 83. Whether the parent had exited is not known.
         let t = tr(vec![
             list(10, 11, 7, &[]),
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn a_listed_child_that_was_not_recorded_says_why() {
-        // Pro 13 11-10 parallel #1: the child was in the list, its start
+        // Mac B 11-10 parallel #1: the child was in the list, its start
         // time could not be read
         let na = |why| {
             tr(vec![

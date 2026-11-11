@@ -304,11 +304,11 @@ aib_cabin_resolve() {
 # ★ 為什麼清單寫在這裡不算「手列」:原判準禁的是**清單活在考卷裡**(會與產品漂移)。
 #   寫在單源、而且**被單源自己的洗函式用掉**,拿掉一個名字就有東西壞掉 —— 那才是承重。
 #   判準 `qa3/criteria-debt-wash-0828`(W8)+ 艦長 08-28 17:44 派工 + qa3 17:45/17:47 裁。
-# 09-26 a seat 補 11 個消費者有讀、單源沒列的名字(test-cabin-single-source-names / test-cabin-read-set 缺口;codex 列 10 個 + FishMac 兩臂多量到 1 個),分類:
+# 09-26 a seat 補 11 個消費者有讀、單源沒列的名字(test-cabin-single-source-names / test-cabin-read-set 缺口;codex 列 10 個 + Mac B 兩臂多量到 1 個),分類:
 #   換艙要清(只進全集):AIB_DM_MCP_DRY、AIB_CODEX_QUOTA_MENU(==1 的行為開關,漏進艙會靜默改行為);
 #     EZ2_PANE_W/H、EZ2_ROW_OFFSET、EZ2_H_OFFSET(pane-*.sh 每個 pane 自己 export 的幾何值,不得跨席繼承)。
 #   不隨艙變(全集 + roots):AIB_CODEXBOT_SECRETS_FILE、AIB_TMUX_BIN、AIB_CODEXBOT_SILENCE_TIMEOUT、AIB_CODEXBOT_SERVER_DIR、
-#     EZ2_AIB_INSTANCES_ROOT(instances 根覆寫,aib_dm_mcp.py:223 / codexbot_threads.py:94;codex 的 10 個名單漏了它,FishMac 兩臂量到)
+#     EZ2_AIB_INSTANCES_ROOT(instances 根覆寫,aib_dm_mcp.py:223 / codexbot_threads.py:94;codex 的 10 個名單漏了它,Mac B 兩臂量到)
 #     (路徑/二進位/調校覆寫,與 EZ2_AIB_SECRETS_DIR 同性質;換艙清掉=丟使用者設定)。
 # 09-26 a seat(N1 (a) 帶出,艦長 22:57 對照):AIB_COMPOSER_NOTICE_DIR —— composer_notice.notice_dir() 一直讀它
 #   (基底寫成 `get(...) or …` 掃描器看不見;N1 改成先取值再判,才被量到)。性質=通知落點的路徑覆寫,不隨艙變 ⇒ 全集 + roots。

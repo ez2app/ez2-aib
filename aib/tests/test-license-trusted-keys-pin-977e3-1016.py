@@ -8,8 +8,8 @@
   改一個字、換順序)這支就紅。真的要換鑰匙:先取得 the maintainer 同意,再同一個 PR 改 keys.py 與這裡。
 
 目前(10-16):
-  主鑰 Mac mini M4(10-09 keygen)—— 平常 ssh 到 mini 簽發;開源擴充與 aib-plugins 付費外掛都是它簽的
-  備援 MacBook Pro 16(10-16 keygen)—— mini 掛掉時用;MacBook Air 13 不另產鑰
+  主鑰 Mac C(10-09 keygen)—— 平常 ssh 到 mini 簽發;開源擴充與 aib-plugins 付費外掛都是它簽的
+  備援 Mac A(10-16 keygen)—— mini 掛掉時用;另一台筆電 不另產鑰
 
 P1 清單一字不差(含順序)
 P2 每一把都是合法的 Ed25519 公鑰(ed25519: + 64 個小寫 hex、能解成曲線上的點)、沒有重複
@@ -24,8 +24,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from entitlement import ed25519, keys  # noqa: E402
 
 EXPECTED = (
-    "ed25519:90e5afdcd8a5ed6fc71a151b329c17fb6a911c19c1c4e035221accee0c953be5",   # 主鑰:Mac mini M4
-    "ed25519:cb973123600961450410fc8471d833126ffcc1d97843378ddd639934faf15a3e",   # 備援:MacBook Pro 16
+    "ed25519:90e5afdcd8a5ed6fc71a151b329c17fb6a911c19c1c4e035221accee0c953be5",   # 主鑰:Mac C
+    "ed25519:cb973123600961450410fc8471d833126ffcc1d97843378ddd639934faf15a3e",   # 備援:Mac A
 )
 
 

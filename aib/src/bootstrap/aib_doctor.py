@@ -652,7 +652,7 @@ def check_grants(state_root, repo_root, env=None):
 
 
 def check_badge_font(repo_root, env=None, runner=None, platform=None, state_root=None):
-    """AI 符號(右欄 / 狀態列的引擎 logo,Nerd Font 私用區字)畫不畫得出(10-25 Mac Pro 13:字型檔裝了、
+    """AI 符號(右欄 / 狀態列的引擎 logo,Nerd Font 私用區字)畫不畫得出(10-25 Mac B:字型檔裝了、
     Apple Terminal 設定檔卻還是 SF Mono ⇒ 空白)。畫得出 ⇒ OK;字型檔缺 / 終端機字型畫不出 ⇒ NOTE + 怎麼補;
     使用者自己設了 letters ⇒ OK。只讀(字型檔 cmap + Terminal 偏好),不改任何設定、不連網。"""
     env = dict(os.environ if env is None else env)

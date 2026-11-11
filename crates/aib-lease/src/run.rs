@@ -845,7 +845,7 @@ mod tests {
 
     fn spec() -> RunSpec {
         RunSpec {
-            host: "pro13".into(),
+            host: "mac-b".into(),
             jump: None,
             rid: "043dd-run-1-2".into(),
             owner: "043dd".into(),
@@ -925,7 +925,7 @@ mod tests {
                 < dashes,
             "options come before the host: {a:?}"
         );
-        assert!(joined.contains("-J sin02-ts -- pro13 true"), "{joined}");
+        assert!(joined.contains("-J sin02-ts -- mac-b true"), "{joined}");
         sp.host = "-oProxyCommand=x".into();
         assert_eq!(sp.check(), Err(SpecError::BadHost(sp.host.clone())));
     }
@@ -1025,26 +1025,26 @@ mod tests {
                    "steps": [{"cmd": cmd}]})
             .to_string()
         };
-        assert_eq!(auto_ttl("", "pro13", &steps), (DEFAULT_TTL, "default"));
+        assert_eq!(auto_ttl("", "mac-b", &steps), (DEFAULT_TTL, "default"));
         let mut h: Vec<String> = (1..=10)
-            .map(|i| line("pro13", "cargo test -p x", i * 100, "all_passed"))
+            .map(|i| line("mac-b", "cargo test -p x", i * 100, "all_passed"))
             .collect();
         h.push(line("mini", "cargo test -p x", 99_999, "all_passed"));
-        h.push(line("pro13", "cargo test -p y", 99_999, "all_passed"));
-        h.push(line("pro13", "cargo test -p x", 99_999, "not_granted"));
+        h.push(line("mac-b", "cargo test -p y", 99_999, "all_passed"));
+        h.push(line("mac-b", "cargo test -p x", 99_999, "not_granted"));
         h.push("not json".into());
         // p90 of 100..1000 = 900, × 1.5 = 1350
         assert_eq!(
-            auto_ttl(&h.join("\n"), "pro13", &steps),
+            auto_ttl(&h.join("\n"), "mac-b", &steps),
             (1350, "history_p90")
         );
-        let slow = line("pro13", "cargo test -p x", 5000, "all_passed");
+        let slow = line("mac-b", "cargo test -p x", 5000, "all_passed");
         assert_eq!(
-            auto_ttl(&slow, "pro13", &steps),
+            auto_ttl(&slow, "mac-b", &steps),
             (AUTO_TTL_MAX, "history_p90")
         );
-        let fast = line("pro13", "cargo test -p x", 2, "step_failed");
-        assert_eq!(auto_ttl(&fast, "pro13", &steps), (60, "history_p90"));
+        let fast = line("mac-b", "cargo test -p x", 2, "step_failed");
+        assert_eq!(auto_ttl(&fast, "mac-b", &steps), (60, "history_p90"));
     }
 
     #[test]
