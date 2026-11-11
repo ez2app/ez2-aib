@@ -1198,6 +1198,10 @@ jobs:
           hk sitecreatecmd.rs '        &target(domain),' \
              '        &target("x.example.test"), // knife' \
              an_approved_plan_clones_once
+          # site create: a domain too long for a journal line keeps its plain target (one rule for plan and apply, 33e28 11-11 N2)
+          hk sitecreatecmd.rs '    if plain.len() <= TARGET_MAX {' \
+             '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
+             a_long_domain_is_planned_under_its_hashed_target
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
