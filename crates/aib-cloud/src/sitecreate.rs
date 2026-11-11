@@ -232,6 +232,39 @@ pub fn next_numbers(
     Ok((ct, ip + 1))
 }
 
+// ------------------------------------------------------------ the platform's own domains
+
+/// The platform's own domains as the host's list holds them: one per line, `#` starts a
+/// comment, blank lines pass. `None` when a line is not a domain or no domain is listed:
+/// a list that is not read whole is no list, and no site is opened on its word. The real
+/// names live only in the host's file, never in this repository.
+pub fn platform_domains(text: &str) -> Option<alloc::vec::Vec<alloc::string::String>> {
+    let mut list = alloc::vec::Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !crate::edge::valid_domain(line) {
+            return None;
+        }
+        list.push(alloc::string::String::from(line));
+    }
+    (!list.is_empty()).then_some(list)
+}
+
+/// Whether `domain` or its `www` twin is one of the platform's own domains or a name
+/// under one of them. Such a domain is never a customer's site.
+pub fn is_platform(domain: &str, platform: &[alloc::string::String]) -> bool {
+    let bare = domain.strip_prefix("www.").unwrap_or(domain);
+    let under = |name: &str, ours: &str| {
+        name == ours || name.strip_suffix(ours).is_some_and(|head| head.ends_with('.'))
+    };
+    platform
+        .iter()
+        .any(|ours| under(bare, ours) || ours.strip_prefix("www.") == Some(bare))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +472,32 @@ mod tests {
             next_numbers(&[], &[], &[SITE_IP_LAST - 1], &[]),
             Ok((110, SITE_IP_LAST))
         );
+    }
+
+    /// The platform's own domains: the list is read whole or not at all, and a domain is
+    /// ours when it, its www twin, or a name above it is listed (E1, 33e28 M2).
+    #[test]
+    fn the_platform_s_own_domains_are_never_a_customer_s() {
+        let list = platform_domains("# ours\nours.example\n\nwww.home.example # the face\n")
+            .unwrap();
+        assert_eq!(list, ["ours.example", "www.home.example"]);
+        for name in [
+            "ours.example",
+            "www.ours.example",
+            "shop.ours.example",
+            "a.b.ours.example",
+            "home.example",
+            "www.home.example",
+        ] {
+            assert!(is_platform(name, &list), "{name}");
+        }
+        for name in ["yours.example", "ours.example.test", "shop.home.example", "new.example.test"] {
+            assert!(!is_platform(name, &list), "{name}");
+        }
+        // a list with a line that is not a domain, or with none, is no list
+        assert_eq!(platform_domains("ours.example\nOurs.Example\n"), None);
+        assert_eq!(platform_domains("ours.example\nhttps://x.example\n"), None);
+        assert_eq!(platform_domains("# nothing yet\n\n"), None);
+        assert_eq!(platform_domains(""), None);
     }
 }

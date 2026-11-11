@@ -786,6 +786,22 @@ jobs:
           ck customer.rs '            v.get("step_done").is_some() && v.get("state").is_some_and(Value::is_string)' \
              '            v.get("state").is_some_and(Value::is_string) // knife' \
              an_opening_is_told_from_the_site_s_checks
+          # E1 (33e28 M2): a name under one of the platform's own domains is a customer's
+          ck sitecreate.rs "        name == ours || name.strip_suffix(ours).is_some_and(|head| head.ends_with('.'))" \
+             '        name == ours // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): the bare name of a listed www name is a customer's
+          ck sitecreate.rs '        .any(|ours| under(bare, ours) || ours.strip_prefix("www.") == Some(bare))' \
+             '        .any(|ours| under(bare, ours)) // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): a line that is not a domain still makes a list
+          ck sitecreate.rs '        if !crate::edge::valid_domain(line) {' \
+             '        if !crate::edge::valid_domain(line) && false { // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): an empty list is a list
+          ck sitecreate.rs '    (!list.is_empty()).then_some(list)' \
+             '    Some(list) // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
           # E1: the progress of an opening is worded as a site's checks
           python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
             '        ) if aib_cloud::customer::is_opening(out) => shown(out),' \
@@ -1199,8 +1215,8 @@ jobs:
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
              an_unreadable_number_stops_the_plan
           # site create --plan: a domain another site serves is opened again
-          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() {" \
-             "    let own_stop: Option<&'static str> = if taken.is_some() && false { // knife" \
+          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() || platform" \
+             "    let own_stop: Option<&'static str> = if (taken.is_some() && false) || platform" \
              an_existing_domain_stops_the_plan
           # site create --plan: an upper-case domain is folded instead of refused
           hk sitecreatecmd.rs '    if !valid_domain(name) {' \
@@ -1485,6 +1501,30 @@ jobs:
           hk opstore.rs 'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];' \
              'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"]; // knife' \
              a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1 (33e28 M1): a plan whose quota was not judged to fit starts an opening
+          hk sitecreaterun.rs '    if plan["quota"]["verdict"] != "fits" {' \
+             '    if plan["quota"]["verdict"] != "fits" && false { // knife' \
+             a_quota_not_judged_starts_nothing
+          # E1 (33e28 M2): the customer's ask for one of the platform's own domains is planned
+          hk sitecreaterun.rs '    if aib_cloud::sitecreate::is_platform(domain, &ours) {' \
+             '    if aib_cloud::sitecreate::is_platform(domain, &ours) && false { // knife' \
+             the_platform_s_own_domains_are_not_started
+          # E1 (33e28 M2): a list not read whole is read as no platform domains at all
+          hk sitecreaterun.rs '        .and_then(aib_cloud::sitecreate::platform_domains)' \
+             '        .and_then(|t| aib_cloud::sitecreate::platform_domains(t).or(Some(Vec::new()))) // knife' \
+             the_platform_s_own_domains_are_not_started
+          # site create --plan (33e28 M2): one of the platform's own domains is planned
+          hk sitecreatecmd.rs '= if taken.is_some() || platform == Some(true) {' \
+             '= if taken.is_some() { // knife' \
+             the_platform_s_own_domains_are_not_opened
+          # site create --plan (33e28 M2): a list not read whole stops nothing
+          hk sitecreatecmd.rs '    } else if platform.is_none() {' \
+             '    } else if platform.is_none() && false {' \
+             the_platform_s_own_domains_are_not_opened
+          # E1 (33e28 N2): a unit started after its ask stopped waiting takes the ask up
+          hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
+             '        (Some("waiting"), "never") => { // knife' \
+             a_run_started_too_late_does_not_take_its_ask
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

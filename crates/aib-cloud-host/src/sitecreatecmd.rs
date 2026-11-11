@@ -74,6 +74,10 @@ const LXC_CONFIGS: &str = "/etc/pve/lxc";
 const VM_CONFIGS: &str = "/etc/pve/qemu-server";
 /// The first administrators of every new site: one mail address per line.
 pub const SITE_ADMINS: &str = "/etc/ez2-cloud/site-admins";
+/// The platform's own domains, one per line ([`sitecreate::platform_domains`]): none of
+/// them, and no name under one of them, is opened as a site. The names live only in this
+/// file on the host; a host without it opens nothing (`platform_domains_unknown`).
+pub const PLATFORM_DOMAINS: &str = "/etc/ez2-cloud/platform-domains";
 /// The sites' internal network; a site's address is this plus one last octet.
 const NET: &str = "10.77.0.";
 /// What the code of a new site will be. No generator exists yet: the code is made when the
@@ -99,6 +103,8 @@ pub struct Seen {
     pub entry_config: Option<String>,
     /// The text of [`SITE_ADMINS`].
     pub admins: Option<String>,
+    /// The text of [`PLATFORM_DOMAINS`].
+    pub platform: Option<String>,
     /// The host lock as found, see [`lock_state`].
     pub lock: Value,
     /// The unfinished operations on this domain's target: `Some([])` when there are none.
@@ -335,6 +341,12 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         .cloned()
         .collect();
     let taken = taken_by(domain, &live, seen.entry_config.as_deref());
+    // the platform's own domains: `None` when the list was not read whole
+    let platform = seen
+        .platform
+        .as_deref()
+        .and_then(sitecreate::platform_domains)
+        .map(|ours| sitecreate::is_platform(domain, &ours));
     let next = sitecreate::next(&probes, blank);
     let quota = quota::judge(
         seen.tenant.as_deref(),
@@ -342,8 +354,12 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         seen.creating.as_deref(),
     );
     // a stop of this command comes before the order's own answer
-    let own_stop: Option<&'static str> = if taken.is_some() {
+    let own_stop: Option<&'static str> = if taken.is_some() || platform == Some(true) {
+        // the platform's own name is answered like any name in use: the customer is not
+        // told why (33e28 M2)
         Some("domain_taken")
+    } else if platform.is_none() {
+        Some("platform_domains_unknown")
     } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {
         Some("unfinished_operation")
     } else if seen.unfinished.is_none() {
@@ -378,6 +394,7 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "admins": logins.as_ref().ok(),
         "admins_from": SITE_ADMINS,
         "taken_by": taken,
+        "platform_domain": platform,
         "target": target(domain),
         "unfinished": seen.unfinished,
         "lock": seen.lock,
@@ -1463,6 +1480,7 @@ pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
         tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
         admins: fs::read_to_string(SITE_ADMINS).ok(),
+        platform: fs::read_to_string(PLATFORM_DOMAINS).ok(),
         lock: lock_state(Path::new(opstore::LOCK_FILE), proc_root),
         unfinished: unfinished_on(Path::new(opstore::OPS_DIR), domain),
     }
@@ -1669,6 +1687,7 @@ mod tests {
             tenant: Some("acme".to_owned()),
             entry_config: Some("# site:site2\nshop.example.test {\n}\n".to_owned()),
             admins: Some(ADMINS.to_owned()),
+            platform: Some("# the platform's own\nours.example\n".to_owned()),
             lock: json!({ "state": "free" }),
             unfinished: Some(Vec::new()),
         }
@@ -1706,6 +1725,7 @@ mod tests {
         assert_eq!(doc["new_tenant"], true);
         assert_eq!(doc["site_code"], CODE_RULE);
         assert_eq!(doc["taken_by"], Value::Null);
+        assert_eq!(doc["platform_domain"], false);
         let steps = doc["steps"].as_array().unwrap();
         assert_eq!(steps.len(), 9);
         assert!(steps.iter().all(|s| s["now"] == "not_done"));
@@ -2167,6 +2187,27 @@ mod tests {
             plan_doc("other.example.test", false, &unread)["stop"],
             "quota_unknown"
         );
+    }
+
+    /// The platform's own domains (33e28 M2): the domain, its www twin or a name under one
+    /// of them stops at `domain_taken`; a list not read whole stops every plan.
+    #[test]
+    fn the_platform_s_own_domains_are_not_opened() {
+        for name in ["ours.example", "www.ours.example", "shop.ours.example"] {
+            let doc = plan_doc(name, false, &host());
+            assert_eq!(doc["stop"], "domain_taken", "{name}");
+            assert_eq!(doc["next"], "stop");
+            assert_eq!(doc["platform_domain"], true);
+        }
+        for text in [None, Some(""), Some("ours.example\nnot a domain\n")] {
+            let seen = Seen {
+                platform: text.map(str::to_owned),
+                ..host()
+            };
+            let doc = plan_doc("new.example.test", false, &seen);
+            assert_eq!(doc["stop"], "platform_domains_unknown", "{text:?}");
+            assert_eq!(doc["platform_domain"], Value::Null);
+        }
     }
 
     /// E1: a customer's opening is cloned under the code they were given, names them in its

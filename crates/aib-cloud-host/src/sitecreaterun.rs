@@ -22,6 +22,22 @@
 //! [`progress`] (`site <code> status` while the site is not live yet): the step done and
 //! whether it stopped, from the ask and the opening record. Only fixed words go out; why it
 //! stopped stays in the ask on the host.
+//!
+//! What is given only to a plan that runs (33e28 M1, M2): the plan's quota judged and
+//! `fits` (a quota not looked at, or not told, is never taken as room), and a domain that
+//! is not one of the platform's own ([`sitecreatecmd::PLATFORM_DOMAINS`]; a list not read
+//! whole starts nothing). Both are checked here and again by the plan itself.
+//!
+//! Two asks of one domain at once (33e28 N1): both may pass [`opening_of`] before either
+//! is written, and both runs start. The second to take the host lock remakes the plan
+//! under it, finds the first one's opening record and stops before the clone
+//! (`domain_taken`, or a plan that no longer matches): nothing of it is made, and its
+//! customer reads `stopped`. A run whose unit starts after [`START_GRACE_S`] does not take
+//! its ask any more (N2): the ask already reads as stopped and no longer holds the domain.
+//!
+//! The asks are kept, stopped and open ones too (N3): they are what makes a code given once
+//! never given again ([`codes_given`]). They are small; clearing old ones joins the
+//! clean-up of the records' `.bak` files when that is made.
 
 use std::fs;
 use std::io::Write;
@@ -56,6 +72,8 @@ pub struct Places {
     pub opened: PathBuf,
     pub records: PathBuf,
     pub removed: PathBuf,
+    /// The platform's own domains ([`sitecreatecmd::PLATFORM_DOMAINS`]).
+    pub platform: PathBuf,
     /// Only `proc_root` and `boot_id` are read: whether a run is still the process it names.
     pub lock: opstore::LockPaths,
 }
@@ -68,6 +86,7 @@ impl Places {
             opened: PathBuf::from(sitecreatecmd::OPENED),
             records: PathBuf::from(sitecreatecmd::RECORDS),
             removed: PathBuf::from(sitecreatecmd::REMOVED_RECORDS),
+            platform: PathBuf::from(sitecreatecmd::PLATFORM_DOMAINS),
             lock: opstore::LockPaths::host()?,
         })
     }
@@ -273,6 +292,17 @@ pub fn start(
     launch: impl FnOnce(&str) -> Result<(), String>,
     now: u64,
 ) -> Asked {
+    // the platform's own domains first: whether one is opening is nobody's to learn
+    let Some(ours) = fs::read_to_string(&places.platform)
+        .ok()
+        .as_deref()
+        .and_then(aib_cloud::sitecreate::platform_domains)
+    else {
+        return Asked::Unavailable;
+    };
+    if aib_cloud::sitecreate::is_platform(domain, &ours) {
+        return Asked::Refused("domain_taken", None);
+    }
     match opening_of(places, domain, now) {
         Err(()) => return Asked::Unavailable,
         Ok(Some((code, owner))) => {
@@ -296,6 +326,10 @@ pub fn start(
             Some(word) => Asked::Refused(word, None),
             None => Asked::Unavailable,
         };
+    }
+    // only a quota judged and found to have room starts an opening (33e28 M1)
+    if plan["quota"]["verdict"] != "fits" {
+        return Asked::Unavailable;
     }
     let Some(taken) = codes_given(places) else {
         return Asked::Unavailable;
@@ -487,6 +521,16 @@ pub fn run(
         ask_state(places, &ask, now()),
     ) {
         (Some("open"), _) => return Ok("open"),
+        // the unit started after the ask stopped waiting for it: the domain is no longer
+        // held by this ask, so it is not taken up again (33e28 N2)
+        (Some("waiting"), "stopped") => {
+            ask["state"] = json!("stopped");
+            ask["why"] = json!("start_late");
+            ask["at"] = json!(now());
+            rewrite_ask(&places.asked, code, &ask)?;
+            return Err(format!("{code}: the run started after its ask stopped waiting"));
+        }
+        // started and still going: another run has it
         (Some("running"), "opening") => {
             return Err(format!("{code}: another run carries this opening on"))
         }
@@ -633,12 +677,14 @@ mod tests {
             fs::create_dir_all(d.join(sub)).unwrap();
         }
         fs::write(d.join("boot_id"), "0f0e0d0c-0b0a-4908-8706-050403020100\n").unwrap();
+        fs::write(d.join("platform-domains"), "# ours\nours.example\n").unwrap();
         Places {
             asked: d.join("asked"),
             creating: d.join("creating"),
             opened: d.join("opened"),
             records: d.join("records"),
             removed: d.join("removed"),
+            platform: d.join("platform-domains"),
             lock: opstore::LockPaths {
                 lock: d.join("host.lock"),
                 proc_root: d.join("proc"),
@@ -830,6 +876,74 @@ mod tests {
             NOW,
         );
         assert_eq!(got, Asked::Unavailable);
+        assert_eq!(fs::read_dir(&p.asked).unwrap().count(), 0);
+    }
+
+    /// A plan that would run while its quota was not judged, or not told, starts nothing
+    /// (33e28 M1): no code, no ask, no unit.
+    #[test]
+    fn a_quota_not_judged_starts_nothing() {
+        let p = scratch("quota");
+        for quota in [
+            json!({ "tenant_id": T, "verdict": "quota_unknown" }),
+            json!({ "tenant_id": T, "verdict": "not checked yet" }),
+            json!({ "tenant_id": T }),
+            json!({ "tenant_id": T, "verdict": null }),
+        ] {
+            let mut plan = plan_for(T, false);
+            plan["quota"] = quota.clone();
+            let got = start(
+                &p,
+                T,
+                "www.new.example.test",
+                false,
+                || Ok(plan),
+                seq(0),
+                |_| panic!("launched"),
+                NOW,
+            );
+            assert_eq!(got, Asked::Unavailable, "{quota}");
+        }
+        assert_eq!(fs::read_dir(&p.asked).unwrap().count(), 0);
+    }
+
+    /// The platform's own domains are refused like a name in use, before any plan; a
+    /// list that is not there, or not read whole, starts nothing (33e28 M2).
+    #[test]
+    fn the_platform_s_own_domains_are_not_started() {
+        let p = scratch("platform");
+        for name in ["ours.example", "www.ours.example", "shop.ours.example"] {
+            let got = start(
+                &p,
+                T,
+                name,
+                false,
+                || panic!("planned"),
+                seq(0),
+                |_| panic!("launched"),
+                NOW,
+            );
+            assert_eq!(got, Asked::Refused("domain_taken", None), "{name}");
+        }
+        for text in [None, Some("ours.example\nnot a domain\n"), Some("# none\n")] {
+            match text {
+                Some(t) => fs::write(&p.platform, t).unwrap(),
+                None => {
+                    let _ = fs::remove_file(&p.platform);
+                }
+            }
+            let got = start(
+                &p,
+                T,
+                "www.new.example.test",
+                false,
+                || panic!("planned"),
+                seq(0),
+                |_| panic!("launched"),
+                NOW,
+            );
+            assert_eq!(got, Asked::Unavailable, "{text:?}");
+        }
         assert_eq!(fs::read_dir(&p.asked).unwrap().count(), 0);
     }
 
@@ -1089,6 +1203,33 @@ mod tests {
         let seen = progress(&q, T, &code, NOW + 20).unwrap();
         assert_eq!(seen["stopped_at"], "start");
         assert_eq!(seen["step_done"], "firewall");
+    }
+
+    /// A unit that starts after its ask stopped waiting does not take the ask up: the
+    /// domain was let go of when the ask read as stopped (33e28 N2).
+    #[test]
+    fn a_run_started_too_late_does_not_take_its_ask() {
+        let p = scratch("run-late");
+        let code = asked(&p);
+        let mut steps = fake(&p);
+        let got = run(
+            &p,
+            &code,
+            "www.new.example.test",
+            PID,
+            &mut steps,
+            &mut || {},
+            || NOW + START_GRACE_S,
+        );
+        assert!(got.is_err(), "{got:?}");
+        assert!(steps.calls.is_empty());
+        let ask = ask_on(&p, &code);
+        assert_eq!(ask["state"], "stopped");
+        assert_eq!(ask["why"], "start_late");
+        assert_eq!(ask["holder"], Value::Null);
+        // and it stays a stop for a person: running it again does nothing either
+        assert!(ran(&p, &code, &mut steps).is_err());
+        assert!(steps.calls.is_empty());
     }
 
     /// The host lock held by another operation: asked again, then given up as host_busy.
