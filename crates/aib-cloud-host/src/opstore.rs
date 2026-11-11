@@ -740,6 +740,23 @@ pub fn run_op_prepared<P, T>(
     prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
     change: impl FnOnce(&str, P) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
+    let op_id = op_id(now, random4()?);
+    run_op_prepared_as(place, &op_id, command, target, approval, prepare, change)
+}
+
+/// [`run_op_prepared`] under an operation id chosen before: the one a sealed plan carries,
+/// so the journal, the plan the approval was given for and the apply share one id. The id
+/// must be one ([`op::valid_op_id`]); an id whose journal already exists is refused at its
+/// first line (`planned` must open a journal), so one plan is applied at most once.
+pub fn run_op_prepared_as<P, T>(
+    place: &OpPlace,
+    op_id: &str,
+    command: &str,
+    target: &str,
+    approval: &str,
+    prepare: impl FnOnce() -> Result<Option<(Value, P)>, String>,
+    change: impl FnOnce(&str, P) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     // only the two standing approvals exist until one-time approvals come with the remote
     // CLI: anything else — empty, misspelt — is refused, so no string slips past the
     // customer-key allowlist by not looking like the customer key (c477a #635 seg. 2 L3)
@@ -749,7 +766,10 @@ pub fn run_op_prepared<P, T>(
     if approval == BY_CUSTOMER_KEY && !CUSTOMER_COMMANDS.contains(&command) {
         return Err(format!("{command} cannot be approved by a customer key"));
     }
-    let op_id = op_id(now, random4()?);
+    if !op::valid_op_id(op_id) {
+        return Err(format!("{op_id:?} is not an operation id"));
+    }
+    let op_id = op_id.to_owned();
     let pid = std::process::id();
     if let Got::TookOver(h) = acquire(&place.lock, &op_id, pid)? {
         eprintln!(

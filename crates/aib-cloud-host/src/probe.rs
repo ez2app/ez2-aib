@@ -884,7 +884,7 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
 
 // ---------------------------------------------------------------- site suspend / resume / restore (P2)
 
-const EDGE_CT: &str = "101";
+pub(crate) const EDGE_CT: &str = "101";
 const CADDYFILE: &str = "/etc/caddy/Caddyfile";
 const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
 
@@ -967,7 +967,7 @@ pub(crate) fn edge_caddyfile() -> Result<String, String> {
 
 /// Push a new Caddyfile to the Edge: backup → write → `caddy validate` → reload. On a failed
 /// validation the backup is restored and nothing is reloaded.
-fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
+pub(crate) fn edge_apply_caddyfile(text: &str) -> Result<String, String> {
     let stamp = unix_now();
     let backup = format!("{CADDYFILE}.bak-{stamp}");
     let mut cp = Command::new("pct");
