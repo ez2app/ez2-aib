@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-cloud-host site create <domain> [--blank] --plan` — the read-only half of opening a
+//! `aib-cloud-host site create <domain> [--blank] [--tenant <id>] --plan` — the read-only half of opening a
 //! site. It checks the domain, reads every number in use on this host and every removed
 //! site's numbers, looks for a site that already serves the domain, reads who the first
-//! administrators are, the host lock and the unfinished operations, probes the nine steps
+//! administrators are, the host lock and the unfinished operations, probes the ten steps
 //! of [`aib_cloud::sitecreate`] and prints what would be done next, sealed like every other
 //! plan. `--plan` changes nothing.
 //!
@@ -10,6 +10,9 @@
 //! plan again, which must hash the same as the plan given (same host, same version, same
 //! operation id), then runs the clone as that operation and nothing after it. The numbers
 //! are held by a record under [`CREATING`] from before the clone; a failed clone is undone.
+//! The plan carries the customer's quota, so `--apply` must name the same customer
+//! (`--tenant`) as the plan did: without it the plan made again would stop at
+//! `quota_unknown`; a different one is refused as `tenant_mismatch` (c477a, E7 N2).
 //!
 //! `--continue <code>` (B2) carries an opening on from its record: limits and network,
 //! the firewall file, the start — each checked after it is done, the record's `step` and
@@ -18,15 +21,28 @@
 //! B3 carries on with the install and the identity ([`crate::siteidentity`]): the
 //! reviewed installer, the site software's scheduler on a timer, keys and salts anew, the
 //! address and title, the first administrators with passwords kept on the host only.
-//! `--continue` runs up to the identity; the licences and after are the next slices.
+//! B4 adds the licences, the entry and the health; B5 the DNS step between the licences
+//! and the entry ([`crate::cfdns`]): the customer's zone at Cloudflare, proxied records
+//! carrying the site's mark, read back.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
+//!
+//! `--tenant <id>` names the customer the site is opened for: the plan carries it, the
+//! opening record and the full record name it (`tenant_id`), so the customer's key sees the
+//! site. `--run <code>` is the customer's opening carried out in the background
+//! ([`crate::sitecreaterun`]): the plan their `site create` made, applied under the code
+//! they were given, then `--continue` to the end.
 //!
 //! Every judgement is the rule crate's: the order and the next step
 //! ([`sitecreate::next`]), what a failure leaves ([`sitecreate::after_failure`]), the
 //! numbers ([`sitecreate::next_numbers`]), the title and the login names
 //! ([`aib_cloud::sitedefaults`]). This file only reads. Whatever could not be read is
 //! "could not tell" and stops the plan: a list that could not be read is not an empty list.
+//!
+//! The customer's quota (E7, [`aib_cloud::quota`]) is judged for the tenant named by
+//! `--tenant`: the customer's live records and the opening records ([`CREATING`]) against the
+//! plan. A plan that cannot be told stops at `quota_unknown`, a plan with no room for one
+//! more site on the starting tier at `quota_exceeded`.
 //!
 //! The administrators' mail addresses are host configuration ([`SITE_ADMINS`], one address
 //! per line, `#` for comments); they are never written into this repository. The plan
@@ -38,6 +54,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use aib_cloud::edge::valid_domain;
+use aib_cloud::quota::{self, Verdict};
 use aib_cloud::sitecreate::{self, AfterFailure, CreateStep, Next, Probe, STEPS};
 use aib_cloud::sitedefaults::{admin_login, site_title};
 use serde_json::{json, Value};
@@ -45,11 +62,12 @@ use serde_json::{json, Value};
 use crate::opstore;
 use crate::probe::run_capture;
 
-const RECORDS: &str = "/var/lib/ez2-cloud/sites";
-const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
+pub(crate) const RECORDS: &str = "/var/lib/ez2-cloud/sites";
+pub(crate) const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
 /// The records of sites whose opening has begun and not ended: written before the clone,
 /// so the number and the address are taken even while the new container's configuration
 /// does not name the address yet (the network is set by the step after the clone).
+/// They also count against the customer's quota (E7); a missing directory is none.
 pub const CREATING: &str = "/var/lib/ez2-cloud/sites-creating";
 /// The opening records of the sites that opened, kept beside their full records (B4).
 pub const OPENED: &str = "/var/lib/ez2-cloud/sites-opened";
@@ -58,6 +76,10 @@ const LXC_CONFIGS: &str = "/etc/pve/lxc";
 const VM_CONFIGS: &str = "/etc/pve/qemu-server";
 /// The first administrators of every new site: one mail address per line.
 pub const SITE_ADMINS: &str = "/etc/ez2-cloud/site-admins";
+/// The platform's own domains, one per line ([`sitecreate::platform_domains`]): none of
+/// them, and no name under one of them, is opened as a site. The names live only in this
+/// file on the host; a host without it opens nothing (`platform_domains_unknown`).
+pub const PLATFORM_DOMAINS: &str = "/etc/ez2-cloud/platform-domains";
 /// The sites' internal network; a site's address is this plus one last octet.
 const NET: &str = "10.77.0.";
 /// What the code of a new site will be. No generator exists yet: the code is made when the
@@ -78,9 +100,13 @@ pub struct Seen {
     /// The records of sites being opened ([`CREATING`]): their numbers are taken from the
     /// moment the clone is decided, before any guest configuration names the address.
     pub creating: Option<Vec<Value>>,
+    /// The customer the site is opened for (`--tenant`).
+    pub tenant: Option<String>,
     pub entry_config: Option<String>,
     /// The text of [`SITE_ADMINS`].
     pub admins: Option<String>,
+    /// The text of [`PLATFORM_DOMAINS`].
+    pub platform: Option<String>,
     /// The host lock as found, see [`lock_state`].
     pub lock: Value,
     /// The unfinished operations on this domain's target: `Some([])` when there are none.
@@ -192,7 +218,7 @@ pub fn numbers(seen: &Seen) -> Result<(u32, u8), &'static str> {
 }
 
 /// The names that count as the same domain: the name itself and its `www` twin.
-fn same_names(domain: &str) -> [String; 2] {
+pub(crate) fn same_names(domain: &str) -> [String; 2] {
     let bare = domain.strip_prefix("www.").unwrap_or(domain);
     [bare.to_owned(), format!("www.{bare}")]
 }
@@ -277,13 +303,18 @@ pub fn lock_state(lock: &Path, proc_root: &Path) -> Value {
 /// cloned, so every step is "not done" once the host could be read; the clone is "could
 /// not tell" when the numbers could not be read (the new number cannot be shown free),
 /// the entry when its configuration could not be read.
-pub fn probes(seen: &Seen) -> [Probe; 9] {
-    let mut p = [Probe::NotDone; 9];
+pub fn probes(seen: &Seen) -> [Probe; STEPS.len()] {
+    let mut p = [Probe::NotDone; STEPS.len()];
+    let at = |step: CreateStep| STEPS.iter().position(|s| *s == step);
     if numbers(seen).is_err() {
-        p[0] = Probe::Unknown;
+        if let Some(i) = at(CreateStep::Clone) {
+            p[i] = Probe::Unknown;
+        }
     }
     if seen.entry_config.as_deref().is_none_or(str::is_empty) {
-        p[7] = Probe::Unknown;
+        if let Some(i) = at(CreateStep::Edge) {
+            p[i] = Probe::Unknown;
+        }
     }
     p
 }
@@ -317,16 +348,33 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         .cloned()
         .collect();
     let taken = taken_by(domain, &live, seen.entry_config.as_deref());
+    // the platform's own domains: `None` when the list was not read whole
+    let platform = seen
+        .platform
+        .as_deref()
+        .and_then(sitecreate::platform_domains)
+        .map(|ours| sitecreate::is_platform(domain, &ours));
     let next = sitecreate::next(&probes, blank);
+    let quota = quota::judge(
+        seen.tenant.as_deref(),
+        seen.records.as_deref(),
+        seen.creating.as_deref(),
+    );
     // a stop of this command comes before the order's own answer
-    let own_stop: Option<&'static str> = if taken.is_some() {
+    let own_stop: Option<&'static str> = if taken.is_some() || platform == Some(true) {
+        // the platform's own name is answered like any name in use: the customer is not
+        // told why (33e28 M2)
         Some("domain_taken")
+    } else if platform.is_none() {
+        Some("platform_domains_unknown")
     } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {
         Some("unfinished_operation")
     } else if seen.unfinished.is_none() {
         Some("journal_unreadable")
     } else if let Err(w) = &logins {
         Some(*w)
+    } else if let Some(w) = quota.stop() {
+        Some(w)
     } else {
         numbers.err()
     };
@@ -353,10 +401,19 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "admins": logins.as_ref().ok(),
         "admins_from": SITE_ADMINS,
         "taken_by": taken,
+        "platform_domain": platform,
         "target": target(domain),
         "unfinished": seen.unfinished,
         "lock": seen.lock,
-        "quota": "not checked yet",
+        "quota": quota_doc(seen.tenant.as_deref(), &quota),
+        "new_tenant": seen.tenant.as_deref().map(|t| !quota::seen_before(
+            t,
+            &[
+                seen.records.as_deref().unwrap_or_default(),
+                seen.creating.as_deref().unwrap_or_default(),
+                seen.removed.as_deref().unwrap_or_default(),
+            ],
+        )),
         "steps": STEPS.iter().zip(probes).map(|(s, p)| json!({
             "step": s.as_str(),
             "applies": s.applies(blank),
@@ -367,7 +424,49 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
         "next_step": next_step.map(CreateStep::as_str),
         "stop": stop,
         "may_call_off": may_call_off,
-        "not_looked_at": ["the customer's quota of sites (no rule for it yet)", "DNS of the domain", "the licences left at the vendors"],
+        "not_looked_at": ["DNS of the domain (asked at Cloudflare in the dns step, not by the plan)", "the licences left at the vendors"],
+    })
+}
+
+/// The quota as the plan prints it.
+fn quota_doc(tenant: Option<&str>, verdict: &Verdict) -> Value {
+    let plan = quota::plan_of(tenant)
+        .ok()
+        .map(|p| json!({ "cores": p.cores, "memory_mb": p.memory_mb, "disk_gb": p.disk_gb }));
+    let counted = |c: &quota::Count, allowed: u32| {
+        json!({
+            "live": c.live,
+            "opening": c.opening,
+            "allowed": allowed,
+            "held": { "cpu_x100": c.held.cpu_x100, "memory_mb": c.held.memory_mb, "disk_gb": c.held.disk_gb },
+        })
+    };
+    let (word, sites, short, why) = match verdict {
+        Verdict::Fits { count, allowed } => ("fits", counted(count, *allowed), None, None),
+        Verdict::Exceeded {
+            count,
+            allowed,
+            short,
+        } => (
+            "quota_exceeded",
+            counted(count, *allowed),
+            Some(match short {
+                aib_cloud::arc::Resource::Cpu => "cpu",
+                aib_cloud::arc::Resource::Memory => "memory",
+                aib_cloud::arc::Resource::Disk => "disk",
+            }),
+            None,
+        ),
+        Verdict::Unknown(u) => ("quota_unknown", Value::Null, None, Some(u.as_str())),
+    };
+    json!({
+        "tenant_id": tenant,
+        "verdict": word,
+        "plan": plan,
+        "sites": sites,
+        "short_of": short,
+        "unknown": why,
+        "new_site": "Limits::START",
     })
 }
 
@@ -463,7 +562,7 @@ pub fn code_from(random: [u8; 4]) -> String {
 }
 
 /// The codes in use: live, removed and opening sites. A code is never given twice.
-fn codes_in_use(seen: &Seen) -> Vec<String> {
+pub(crate) fn codes_in_use(seen: &Seen) -> Vec<String> {
     [&seen.records, &seen.removed, &seen.creating]
         .into_iter()
         .flatten()
@@ -486,6 +585,19 @@ pub fn new_code(
     Err("code_unavailable: no free site code after several tries".to_owned())
 }
 
+/// The code a customer was already given ([`crate::sitecreaterun`]): taken as it is when it
+/// is a code and still free under the lock, never swapped for another, or the customer would
+/// follow a site that is not theirs.
+pub fn chosen(code: &str) -> impl FnOnce(&[String]) -> Result<String, String> + '_ {
+    move |taken| {
+        if aib_cloud::site::valid_code(code) && !taken.iter().any(|t| t == code) {
+            Ok(code.to_owned())
+        } else {
+            Err(format!("code_taken: {code:?} is not a free site code"))
+        }
+    }
+}
+
 /// What the plan given to `--apply` says, checked before anything is read.
 pub struct Given {
     pub op: String,
@@ -498,6 +610,8 @@ pub struct Given {
     /// The plan as given, whole: every field must be what this host makes again, not only
     /// the hash (an edited field under the old hash is refused too).
     pub plan: Value,
+    /// The customer the plan was made for (`quota.tenant_id`), if it named one.
+    pub tenant: Option<String>,
 }
 
 /// Read the plan given to `--apply` for `domain`.
@@ -523,7 +637,25 @@ pub fn given(plan: &Value, domain: &str) -> Result<Given, String> {
             .ok_or("the plan has no blank")?,
         lock: plan.get("lock").cloned().ok_or("the plan has no lock")?,
         plan: plan.clone(),
+        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),
     })
+}
+
+/// `--apply` names the customer the plan was made for (c477a, E7 N2): the plan is made
+/// again for that customer, so a missing `--tenant` would only end in `plan_changed`, and a
+/// different one must never apply a plan judged for someone else's quota. Fixed words:
+/// `tenant_missing`, `tenant_mismatch`.
+pub fn tenant_matches(g: &Given, tenant: Option<&str>) -> Result<(), String> {
+    match (g.tenant.as_deref(), tenant) {
+        (_, None) => Err(
+            "tenant_missing: --apply needs --tenant, the customer the plan was made for".to_owned(),
+        ),
+        (Some(planned), Some(t)) if planned == t => Ok(()),
+        _ => Err(
+            "tenant_mismatch: --tenant is not the customer the plan was made for; make a new plan"
+                .to_owned(),
+        ),
+    }
 }
 
 /// What the prepare hands the clone.
@@ -532,6 +664,8 @@ pub struct CloneInput {
     pub ct: u32,
     pub ip: u8,
     pub blank: bool,
+    /// The customer named by the plan, written into the opening record.
+    pub tenant: Option<String>,
 }
 
 /// The plan as this host makes it now, under the lock, checked against the plan given:
@@ -542,7 +676,7 @@ pub fn recheck(
     g: &Given,
     seen: &Seen,
     fingerprint: &str,
-    random: impl FnMut() -> Result<[u8; 4], String>,
+    pick: impl FnOnce(&[String]) -> Result<String, String>,
 ) -> Result<(Value, CloneInput), String> {
     let mut doc = plan_doc(domain, g.blank, seen);
     if let Some(obj) = doc.as_object_mut() {
@@ -570,7 +704,12 @@ pub fn recheck(
         .and_then(|a| a.strip_prefix(NET))
         .and_then(|o| o.parse().ok())
         .ok_or("the plan has no address")?;
-    let code = new_code(&codes_in_use(seen), random)?;
+    let tenant = match &g.tenant {
+        None => None,
+        Some(t) if aib_cloud::site::valid_code(t) => Some(t.clone()),
+        Some(_) => return Err("the plan's tenant_id is not a customer code".to_owned()),
+    };
+    let code = pick(&codes_in_use(seen))?;
     Ok((
         opstore::unsealed(&doc),
         CloneInput {
@@ -578,6 +717,7 @@ pub fn recheck(
             ct,
             ip,
             blank: g.blank,
+            tenant,
         },
     ))
 }
@@ -597,7 +737,7 @@ fn argv(parts: &[&str]) -> Vec<String> {
 }
 
 /// Write `doc` to `dir/<code>.json` whole: a temporary file, synced, then renamed.
-fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
+pub(crate) fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("{code}.json"));
     let tmp = dir.join(format!(".{code}.json.tmp"));
@@ -608,7 +748,7 @@ fn write_record(dir: &Path, code: &str, doc: &Value) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The clone, the first of the nine steps (B1). In this order: the number must still be
+/// The clone, the first of the ten steps (B1). In this order: the number must still be
 /// free in both guest lists (a number taken by something else is not ours: nothing is made
 /// and nothing removed); the opening's record is written, so the number and the address
 /// stay taken whatever happens next; `pct clone`; the container must then answer
@@ -647,7 +787,7 @@ pub fn clone_step(
         aib_cloud::site::Limits::START,
     )
     .map_err(|e| format!("{e:?}"))?;
-    let record = json!({
+    let mut record = json!({
         "site": input.code,
         "ct": ct,
         "ip": format!("{NET}{}", input.ip),
@@ -658,6 +798,10 @@ pub fn clone_step(
         "started_at": crate::probe::unix_now(),
         "at": crate::probe::unix_now(),
     });
+    // only a plan that names a customer gives the opening one (an operator's plan may not)
+    if let Some(tenant) = &input.tenant {
+        record["tenant_id"] = json!(tenant);
+    }
     write_record(creating, &input.code, &record)?;
     let clone = aib_cloud::site::plan(&spec)
         .into_iter()
@@ -728,7 +872,33 @@ pub fn apply(
     domain: &str,
     creating: &Path,
     see: impl FnOnce() -> Seen,
-    random: impl FnMut() -> Result<[u8; 4], String>,
+    mut random: impl FnMut() -> Result<[u8; 4], String>,
+    runner: &mut impl Runner,
+) -> Result<Value, String> {
+    apply_by(
+        place,
+        plan,
+        domain,
+        creating,
+        see,
+        |taken| new_code(taken, &mut random),
+        opstore::BY_LOCAL_ROOT,
+        runner,
+    )
+}
+
+/// [`apply`] with the code picked by `pick` (out of the codes in use, under the lock) and
+/// the approval named: a customer's opening is the customer key's, under the code they
+/// were given ([`chosen`]).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_by(
+    place: &opstore::OpPlace,
+    plan: &Value,
+    domain: &str,
+    creating: &Path,
+    see: impl FnOnce() -> Seen,
+    pick: impl FnOnce(&[String]) -> Result<String, String>,
+    approval: &str,
     runner: &mut impl Runner,
 ) -> Result<Value, String> {
     let g = given(plan, domain)?;
@@ -737,10 +907,10 @@ pub fn apply(
         &g.op,
         COMMAND,
         &target(domain),
-        opstore::BY_LOCAL_ROOT,
+        approval,
         || {
             let seen = see();
-            recheck(domain, &g, &seen, &place.fingerprint, random).map(Some)
+            recheck(domain, &g, &seen, &place.fingerprint, pick).map(Some)
         },
         |op, input: CloneInput| clone_step(runner, creating, domain, op, &input),
     )?;
@@ -773,6 +943,12 @@ pub struct HostPaths {
     pub keys: PathBuf,
     /// The opening records of opened sites ([`OPENED`]).
     pub opened: PathBuf,
+    /// The Cloudflare key and the host's own address ([`crate::cfdns::CLOUDFLARE_ENV`]).
+    pub cloudflare: PathBuf,
+    /// The customers' rosters ([`crate::cfdns::ROSTERS`]).
+    pub rosters: PathBuf,
+    /// One line per Cloudflare call ([`crate::cfdns::CF_LEDGER`]).
+    pub cf_ledger: PathBuf,
 }
 
 impl HostPaths {
@@ -788,20 +964,24 @@ impl HostPaths {
             sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
             keys: PathBuf::from(crate::sitelive::KEYS),
             opened: PathBuf::from(OPENED),
+            cloudflare: PathBuf::from(crate::cfdns::CLOUDFLARE_ENV),
+            rosters: PathBuf::from(crate::cfdns::ROSTERS),
+            cf_ledger: PathBuf::from(crate::cfdns::CF_LEDGER),
         }
     }
 }
 
 /// Every step `--continue` runs, in order: B2's three, B3's install and identity — the
-/// last two that are still undone on failure — and B4's licences, entry and health, from
-/// which a failure keeps the site for a person.
-pub const CONTINUE_STEPS: [CreateStep; 8] = [
+/// last two that are still undone on failure — and B4's licences, B5's DNS, B4's entry
+/// and health, from which a failure keeps the site for a person.
+pub const CONTINUE_STEPS: [CreateStep; 9] = [
     CreateStep::Limits,
     CreateStep::Firewall,
     CreateStep::Start,
     CreateStep::Install,
     CreateStep::Identity,
     CreateStep::Licenses,
+    CreateStep::Dns,
     CreateStep::Edge,
     CreateStep::Health,
 ];
@@ -1073,6 +1253,7 @@ pub fn continue_steps(
             CreateStep::Licenses => {
                 crate::sitelive::licences_step(runner, paths, &spec, &mut record)
             }
+            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record),
             CreateStep::Edge => crate::sitelive::edge_step(runner, paths, &spec),
             CreateStep::Health => {
                 // the opening becomes a site: its record moves to the opened ones as it is
@@ -1164,13 +1345,34 @@ pub fn continue_apply(
     runner: &mut impl Runner,
     last: CreateStep,
 ) -> Result<Option<Value>, String> {
+    continue_apply_by(
+        place,
+        domain,
+        code,
+        paths,
+        runner,
+        last,
+        opstore::BY_LOCAL_ROOT,
+    )
+}
+
+/// [`continue_apply`] under the approval named (the customer key's, for their opening).
+pub fn continue_apply_by(
+    place: &opstore::OpPlace,
+    domain: &str,
+    code: &str,
+    paths: &HostPaths,
+    runner: &mut impl Runner,
+    last: CreateStep,
+    approval: &str,
+) -> Result<Option<Value>, String> {
     // the same target as the clone's, so an unfinished clone holds this back
     let on = target(domain);
     opstore::run_op_prepared(
         place,
         COMMAND,
         &on,
-        opstore::BY_LOCAL_ROOT,
+        approval,
         crate::probe::unix_now(),
         || {
             let opening = read_opening(&paths.creating, code, domain)?;
@@ -1284,7 +1486,7 @@ pub fn unfinished_on(ops: &Path, domain: &str) -> Option<Vec<Value>> {
     Some(out)
 }
 
-fn see(domain: &str, records: &str) -> Seen {
+pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
     let proc_root = Path::new("/proc");
     Seen {
         container_list: capture("pct", &["list"], 20),
@@ -1293,8 +1495,10 @@ fn see(domain: &str, records: &str) -> Seen {
         records: read_records(Path::new(records)),
         removed: read_records(Path::new(REMOVED_RECORDS)),
         creating: read_records(Path::new(CREATING)),
+        tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
         admins: fs::read_to_string(SITE_ADMINS).ok(),
+        platform: fs::read_to_string(PLATFORM_DOMAINS).ok(),
         lock: lock_state(Path::new(opstore::LOCK_FILE), proc_root),
         unfinished: unfinished_on(Path::new(opstore::OPS_DIR), domain),
     }
@@ -1311,6 +1515,8 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut blank = false;
     let mut apply_file: Option<String> = None;
     let mut continue_code: Option<String> = None;
+    let mut run_code: Option<String> = None;
+    let mut tenant: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1320,12 +1526,29 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "--continue" => {
                 continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
             }
+            "--run" => run_code = Some(it.next().ok_or("--run needs a site code")?.clone()),
+            "--tenant" => {
+                let t = it.next().ok_or("--tenant needs a customer id")?;
+                if !aib_cloud::site::valid_code(t) {
+                    return Err("--tenant is not a customer id".to_owned());
+                }
+                tenant = Some(t.clone());
+            }
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
     }
+    if let Some(code) = run_code {
+        if plan_only || blank || apply_file.is_some() || continue_code.is_some() || tenant.is_some()
+        {
+            return Err(
+                "--run <code> stands alone: the rest is in what the customer asked".to_owned(),
+            );
+        }
+        return crate::sitecreaterun::run_cmd(&domain, &code);
+    }
     if let Some(code) = continue_code {
-        if plan_only || blank || apply_file.is_some() {
+        if plan_only || blank || apply_file.is_some() || tenant.is_some() {
             return Err("--continue <code> stands alone".to_owned());
         }
         return continue_cmd(&domain, &code);
@@ -1338,7 +1561,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                     "--blank belongs to --plan: the plan given to --apply says it".to_owned(),
                 );
             }
-            return apply_cmd(&domain, &file, &records);
+            return apply_cmd(&domain, &file, &records, tenant);
         }
         (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
         (false, None) => {
@@ -1347,10 +1570,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             )
         }
     }
-    let seen = see(&domain, &records);
-    let mut doc = plan_doc(&domain, blank, &seen);
-    let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
-    seal_plan(&mut doc, &op, Path::new(opstore::MACHINE_ID))?;
+    let doc = sealed_plan(&domain, blank, tenant, &records)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
@@ -1358,19 +1578,45 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     Ok(0)
 }
 
+/// The plan `--plan` prints, made and sealed on this host: read only. The customer's
+/// `site create` makes the same one ([`crate::sitecreaterun`]).
+pub(crate) fn sealed_plan(
+    domain: &str,
+    blank: bool,
+    tenant: Option<String>,
+    records: &str,
+) -> Result<Value, String> {
+    let seen = see(domain, records, tenant);
+    let mut doc = plan_doc(domain, blank, &seen);
+    let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
+    seal_plan(&mut doc, &op, Path::new(opstore::MACHINE_ID))?;
+    Ok(doc)
+}
+
+/// The customer a plan names, as `see` takes it.
+pub(crate) fn plan_tenant(plan: &Value) -> Option<String> {
+    plan["quota"]["tenant_id"].as_str().map(str::to_owned)
+}
+
 /// `--apply <file>` on this host. Writing: run only as a reviewed, approved operation
 /// (see [`opstore::BY_LOCAL_ROOT`]: until the remote CLI's one-time approvals exist, a
 /// write on the host goes through a signed script a person approved).
-fn apply_cmd(domain: &str, file: &str, records: &str) -> Result<u8, String> {
+fn apply_cmd(
+    domain: &str,
+    file: &str,
+    records: &str,
+    tenant: Option<String>,
+) -> Result<u8, String> {
     let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
     let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
+    tenant_matches(&given(&plan, domain)?, tenant.as_deref())?;
     let place = opstore::OpPlace::host()?;
     let record = apply(
         &place,
         &plan,
         domain,
         Path::new(CREATING),
-        || see(domain, records),
+        || see(domain, records, tenant),
         opstore::random4,
         &mut HostRunner,
     )?;
@@ -1456,8 +1702,10 @@ mod tests {
             records: Some(vec![rec("site2", 112, 12, "shop.example.test")]),
             removed: Some(vec![rec("site3", 125, 25, "old.example.test")]),
             creating: Some(Vec::new()),
+            tenant: Some("acme".to_owned()),
             entry_config: Some("# site:site2\nshop.example.test {\n}\n".to_owned()),
             admins: Some(ADMINS.to_owned()),
+            platform: Some("# the platform's own\nours.example\n".to_owned()),
             lock: json!({ "state": "free" }),
             unfinished: Some(Vec::new()),
         }
@@ -1487,11 +1735,17 @@ mod tests {
         assert_eq!(doc["title"], "new");
         assert_eq!(doc["admins"], json!(["ops", "ops2"]));
         assert_eq!(doc["target"], "domain:www.new.example.test");
-        assert_eq!(doc["quota"], "not checked yet");
+        assert_eq!(doc["quota"]["verdict"], "fits");
+        assert_eq!(doc["quota"]["tenant_id"], "acme");
+        assert_eq!(doc["quota"]["sites"]["allowed"], 4);
+        assert_eq!(doc["quota"]["plan"]["memory_mb"], 16_384);
+        // no record names acme: a customer never seen before is marked, not refused
+        assert_eq!(doc["new_tenant"], true);
         assert_eq!(doc["site_code"], CODE_RULE);
         assert_eq!(doc["taken_by"], Value::Null);
+        assert_eq!(doc["platform_domain"], false);
         let steps = doc["steps"].as_array().unwrap();
-        assert_eq!(steps.len(), 9);
+        assert_eq!(steps.len(), 10);
         assert!(steps.iter().all(|s| s["now"] == "not_done"));
         // a failed identity is undone, a failed licence is kept
         assert_eq!(steps[5]["on_failure"], "undo");
@@ -1637,7 +1891,8 @@ mod tests {
         let mut seen = host();
         seen.entry_config = None;
         let doc = plan_doc("new.example.test", false, &seen);
-        assert_eq!(doc["steps"][7]["now"], "unknown");
+        assert_eq!(doc["steps"][8]["step"], "edge");
+        assert_eq!(doc["steps"][8]["now"], "unknown");
         assert_eq!(doc["stop"], "probe_unknown");
         assert_eq!(doc["next_step"], "edge");
         assert_eq!(doc["may_call_off"], false);
@@ -1944,10 +2199,84 @@ mod tests {
             creating: None,
             ..host()
         };
+        // unread openings leave the numbers unknown; with a customer named, the quota
+        // (which counts openings too, E7) is judged first and stops the plan already
+        assert_eq!(numbers(&unread), Err("numbers_unknown"));
         assert_eq!(
             plan_doc("other.example.test", false, &unread)["stop"],
-            "numbers_unknown"
+            "quota_unknown"
         );
+    }
+
+    /// The platform's own domains (33e28 M2): the domain, its www twin or a name under one
+    /// of them stops at `domain_taken`; a list not read whole stops every plan.
+    #[test]
+    fn the_platform_s_own_domains_are_not_opened() {
+        for name in ["ours.example", "www.ours.example", "shop.ours.example"] {
+            let doc = plan_doc(name, false, &host());
+            assert_eq!(doc["stop"], "domain_taken", "{name}");
+            assert_eq!(doc["next"], "stop");
+            assert_eq!(doc["platform_domain"], true);
+        }
+        for text in [None, Some(""), Some("ours.example\nnot a domain\n")] {
+            let seen = Seen {
+                platform: text.map(str::to_owned),
+                ..host()
+            };
+            let doc = plan_doc("new.example.test", false, &seen);
+            assert_eq!(doc["stop"], "platform_domains_unknown", "{text:?}");
+            assert_eq!(doc["platform_domain"], Value::Null);
+        }
+    }
+
+    /// E1: a customer's opening is cloned under the code they were given, names them in its
+    /// record, and is journaled as the customer key's; a code in use is never taken.
+    #[test]
+    fn a_customer_s_opening_is_cloned_under_the_code_they_were_given() {
+        let mine = place("apply-chosen");
+        let creating = mine.ops_dir.with_file_name("creating");
+        let theirs = || Seen {
+            tenant: Some("t-acme1".to_owned()),
+            ..host()
+        };
+        let plan = sealed(&mine, "new.example.test", &theirs());
+        assert_eq!(plan["quota"]["tenant_id"], "t-acme1");
+        let mut runner = fake(healthy);
+        let rec = apply_by(
+            &mine,
+            &plan,
+            "new.example.test",
+            &creating,
+            theirs,
+            chosen("s-mine01"),
+            opstore::BY_CUSTOMER_KEY,
+            &mut runner,
+        )
+        .unwrap();
+        assert_eq!(rec["site"], "s-mine01");
+        assert_eq!(rec["tenant_id"], "t-acme1");
+        assert!(creating.join("s-mine01.json").exists());
+        let path = opstore::journal_path(&mine.ops_dir, OP).unwrap();
+        let lines = opstore::read_journal(&path).unwrap().0;
+        assert_eq!(lines[1].approval, opstore::BY_CUSTOMER_KEY);
+        // the code given is taken by a live site by now: nothing is cloned
+        let taken = place("apply-chosen-taken");
+        let creating = taken.ops_dir.with_file_name("creating");
+        let plan = sealed(&taken, "new.example.test", &theirs());
+        let mut runner = fake(healthy);
+        let err = apply_by(
+            &taken,
+            &plan,
+            "new.example.test",
+            &creating,
+            theirs,
+            chosen("site2"),
+            opstore::BY_CUSTOMER_KEY,
+            &mut runner,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("code_taken"), "{err}");
+        assert!(runner.calls.is_empty());
     }
 
     #[test]
@@ -2218,6 +2547,9 @@ mod tests {
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
             opened: root.join("opened"),
+            cloudflare: root.join("cloudflare.env"),
+            rosters: root.join("rosters"),
+            cf_ledger: root.join("cloudflare.jsonl"),
         };
         for d in [
             &paths.creating,
@@ -2399,10 +2731,25 @@ mod tests {
         assert_eq!(steps_after("identity", CreateStep::Identity).unwrap(), []);
         // past the last step asked for: nothing; a word that is no step: refused
         assert_eq!(steps_after("licenses", CreateStep::Identity).unwrap(), []);
-        assert!(steps_after("dns", CreateStep::Health).is_err());
+        assert!(steps_after("dnz", CreateStep::Health).is_err());
         assert_eq!(
             steps_after("identity", CreateStep::Health).unwrap(),
-            [CreateStep::Licenses, CreateStep::Edge, CreateStep::Health]
+            [
+                CreateStep::Licenses,
+                CreateStep::Dns,
+                CreateStep::Edge,
+                CreateStep::Health
+            ]
+        );
+        // B5: the DNS step comes after the licences and before the entry, and an opening
+        // that stopped at it carries on from it
+        assert_eq!(
+            steps_after("licenses", CreateStep::Health).unwrap(),
+            [CreateStep::Dns, CreateStep::Edge, CreateStep::Health]
+        );
+        assert_eq!(
+            steps_after("dns", CreateStep::Health).unwrap(),
+            [CreateStep::Edge, CreateStep::Health]
         );
         assert_eq!(
             steps_after("firewall", CreateStep::Start).unwrap(),
@@ -2436,6 +2783,26 @@ mod tests {
         .unwrap();
         assert_eq!(rec["kept"]["step"], "licenses");
         assert_eq!(rec["step"], "identity");
+    }
+
+    #[test]
+    fn a_dns_step_that_cannot_ask_keeps_the_site_and_asks_nothing() {
+        let (_place, paths) = opened("b5keep", "licenses");
+        // no Cloudflare key on this host: the step stops before any call
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        let mut runner = fake(|_| Err("the host says no".to_owned()));
+        let e = continue_steps(&mut runner, &paths, opening, &[CreateStep::Dns]).unwrap_err();
+        assert!(
+            e.starts_with("kept_for_a_person: dns failed: cloudflare_key_unset"),
+            "{e}"
+        );
+        assert!(runner.calls.is_empty());
+        let rec: Value = serde_json::from_str(
+            &fs::read_to_string(paths.creating.join(format!("{CODE}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rec["kept"]["step"], "dns");
+        assert_eq!(rec["step"], "licenses");
     }
 
     #[test]
@@ -2719,5 +3086,93 @@ mod tests {
                 .collect();
             assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
         }
+    }
+
+    /// E7: no customer named, or records that could not be read, is "could not tell";
+    /// the plan stops before the clone and says why.
+    #[test]
+    fn a_quota_that_cannot_be_told_stops_at_quota_unknown() {
+        let mut seen = host();
+        seen.tenant = None;
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_unknown");
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["may_call_off"], false);
+        assert_eq!(doc["quota"]["unknown"], "no_tenant");
+        let mut seen = host();
+        seen.creating = None;
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_unknown");
+        assert_eq!(doc["quota"]["unknown"], "records_unreadable");
+    }
+
+    /// E7: a customer whose sites (live and opening) leave no room for one more on the
+    /// starting tier stops at quota_exceeded; removed sites are not counted.
+    #[test]
+    fn a_full_plan_stops_at_quota_exceeded_and_removed_sites_do_not_count() {
+        let mine = |code: &str, ct: u32, ip: u8| {
+            let mut r = rec(code, ct, ip, &format!("{code}.example.test"));
+            r["tenant_id"] = json!("acme");
+            r["limits"] = json!({
+                "cores": 2, "cpulimit_x100": 200, "memory_mb": 1024, "swap_mb": 512, "pids_max": 2048
+            });
+            r
+        };
+        let mut seen = host();
+        seen.records = Some(vec![
+            mine("sa", 113, 13),
+            mine("sb", 114, 14),
+            mine("sc", 115, 15),
+        ]);
+        // a removed site of the customer holds nothing
+        seen.removed = Some(vec![mine("sr", 116, 16)]);
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], Value::Null, "{doc}");
+        assert_eq!(doc["quota"]["sites"]["live"], 3);
+        assert_eq!(doc["new_tenant"], false);
+        // an opening under way holds the last room
+        let opening = json!({
+            "site": "sd", "ct": 117, "ip": "10.77.0.17", "hosts": "sd.example.test", "step": "clone"
+        });
+        seen.creating = Some(vec![opening]);
+        let doc = plan_doc("www.new.example.test", false, &seen);
+        assert_eq!(doc["stop"], "quota_exceeded");
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["quota"]["verdict"], "quota_exceeded");
+        assert_eq!(doc["quota"]["short_of"], "cpu");
+        assert_eq!(doc["quota"]["sites"]["opening"], 1);
+        assert_eq!(doc["quota"]["sites"]["allowed"], 4);
+    }
+
+    #[test]
+    fn tenant_is_an_argument_with_a_value() {
+        let args = ["shop.example.test", "--plan", "--tenant"].map(String::from);
+        assert!(cmd(&args).is_err());
+    }
+
+    /// E7 N2 (c477a): `--apply` must name the customer the plan was made for; none or
+    /// another is refused with a fixed word before anything is read.
+    #[test]
+    fn apply_needs_the_tenant_the_plan_was_made_for() {
+        let mut doc = plan_doc("new.example.test", false, &host());
+        crate::quarantinecmd::seal_with_op(
+            &mut doc,
+            OP,
+            &"f".repeat(64),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
+        let g = given(&doc, "new.example.test").unwrap();
+        assert_eq!(g.tenant.as_deref(), Some("acme"));
+        assert!(tenant_matches(&g, Some("acme")).is_ok());
+        let missing = tenant_matches(&g, None).unwrap_err();
+        assert!(missing.starts_with("tenant_missing"), "{missing}");
+        let other = tenant_matches(&g, Some("other")).unwrap_err();
+        assert!(other.starts_with("tenant_mismatch"), "{other}");
+        // a plan that named nobody is never applied for a customer
+        let mut nobody = g;
+        nobody.tenant = None;
+        let none = tenant_matches(&nobody, Some("acme")).unwrap_err();
+        assert!(none.starts_with("tenant_mismatch"), "{none}");
     }
 }
