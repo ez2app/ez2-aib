@@ -78,12 +78,20 @@ pub fn target(domain: &str) -> String {
     format!("domain:{domain}")
 }
 
-/// The numbers of `pct list` or `qm list`. `None` when it is not that list: the header
-/// must be there before "no guests" is believed, and every other line must start with a
-/// number.
+/// The longest target a journal line holds (`aib_cloud::op`).
+const TARGET_MAX: usize = 80;
+
+/// The numbers of `pct list` or `qm list`. The list is only passed here when the command
+/// ended with 0 ([`run_capture`] gives nothing otherwise). An empty output is no guests:
+/// a host without any virtual machine prints not even the header (`qm list` on the host,
+/// 33e28 11-11 M1). Anything else must open with the header and every other line with a
+/// number, or it is `None`.
 pub fn guest_ids(list: &str) -> Option<Vec<u32>> {
     let mut lines = list.lines().filter(|l| !l.trim().is_empty());
-    if !lines.next()?.trim_start().starts_with("VMID") {
+    let Some(header) = lines.next() else {
+        return Some(Vec::new());
+    };
+    if !header.trim_start().starts_with("VMID") {
         return None;
     }
     lines
@@ -145,9 +153,17 @@ fn same_names(domain: &str) -> [String; 2] {
 /// line above it, or `unmarked` when there is none.
 pub fn taken_by(domain: &str, records: &[Value], entry_config: Option<&str>) -> Option<String> {
     let names = same_names(domain);
+    // an address of the entry may carry a scheme and a port (`https://x`, `x:443`)
+    let bare = |n: &str| {
+        let n = n
+            .strip_prefix("https://")
+            .or_else(|| n.strip_prefix("http://"))
+            .unwrap_or(n);
+        n.split_once(':').map_or(n, |(host, _)| host).to_owned()
+    };
     let named = |list: &str| {
         list.split(|c: char| c == ',' || c.is_whitespace())
-            .any(|n| names.iter().any(|m| m == n))
+            .any(|n| names.iter().any(|m| *m == bare(n)))
     };
     for rec in records {
         if rec.get("hosts").and_then(Value::as_str).is_some_and(named) {
@@ -252,6 +268,9 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
     // a stop of this command comes before the order's own answer
     let own_stop: Option<&'static str> = if taken.is_some() {
         Some("domain_taken")
+    } else if target(domain).len() > TARGET_MAX {
+        // the opening could not be written in the journal (33e28 11-11 N2)
+        Some("domain_too_long_for_journal")
     } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {
         Some("unfinished_operation")
     } else if seen.unfinished.is_none() {
@@ -316,7 +335,10 @@ fn capture(program: &str, args: &[&str], seconds: u64) -> Option<String> {
 }
 
 /// Every `*.json` record under `dir`, parsed. A directory that is not there holds no
-/// record (it is made with the first one); any other failure is `None`.
+/// record (it is made with the first one): unlike everything else here, absent is read as
+/// empty, not as "could not tell". The guest lists still count every number in use, so a
+/// missing records directory cannot hand out a number a container has (33e28 11-11 N1).
+/// Any other failure is `None`.
 pub fn read_records(dir: &Path) -> Option<Vec<Value>> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -349,17 +371,18 @@ pub fn read_guest_ips(dirs: &[&Path]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The unfinished operations on `target` in the journals under `ops`.
-pub fn unfinished_on(ops: &Path, target: &str) -> Option<Vec<Value>> {
+/// The unfinished operations on `domain` and on its `www` twin in the journals under
+/// `ops`: the twin is the same site ([`taken_by`]), so an opening of either holds both.
+pub fn unfinished_on(ops: &Path, domain: &str) -> Option<Vec<Value>> {
     let lasts = opstore::last_entries(ops).ok()?;
     let report = opstore::unfinished_report(&lasts);
-    Some(
-        report
-            .get(target)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    )
+    let mut out = Vec::new();
+    for name in same_names(domain) {
+        if let Some(list) = report.get(target(&name)).and_then(Value::as_array) {
+            out.extend(list.iter().cloned());
+        }
+    }
+    Some(out)
 }
 
 fn see(domain: &str, records: &str) -> Seen {
@@ -373,7 +396,7 @@ fn see(domain: &str, records: &str) -> Seen {
         entry_config: crate::probe::edge_caddyfile().ok(),
         admins: fs::read_to_string(SITE_ADMINS).ok(),
         lock: lock_state(Path::new(opstore::LOCK_FILE), proc_root),
-        unfinished: unfinished_on(Path::new(opstore::OPS_DIR), &target(domain)),
+        unfinished: unfinished_on(Path::new(opstore::OPS_DIR), domain),
     }
 }
 
@@ -518,7 +541,13 @@ mod tests {
         assert_eq!(guest_ids(PCT), Some(vec![101, 112, 900]));
         assert_eq!(guest_ids(QM), Some(vec![130]));
         assert_eq!(guest_ids("VMID Status\n"), Some(Vec::new()));
-        assert_eq!(guest_ids(""), None);
+        // a host without virtual machines: `qm list` prints nothing and ends with 0
+        assert_eq!(guest_ids(""), Some(Vec::new()));
+        assert_eq!(guest_ids("\n"), Some(Vec::new()));
+        let mut seen = host();
+        seen.vm_list = Some(String::new());
+        assert_eq!(numbers(&seen), Ok((126, 41)));
+        assert_eq!(guest_ids("130 runner running\n"), None);
         assert_eq!(guest_ids("VMID Status\nbusy running\n"), None);
         let conf = "net0: name=eth0,bridge=vmbr1,ip=10.77.0.12/24,gw=10.77.0.1,firewall=1\n[snap]\nnet0: name=eth0,ip=10.77.0.9/24\nipconfig0: ip=10.77.0.60/24,gw=10.77.0.1\nnet1: ip=192.0.2.5/24\n";
         assert_eq!(ips_in_config(conf), vec![12, 9, 60]);
@@ -585,6 +614,21 @@ mod tests {
             plan_doc("loose.example.test", false, &seen)["taken_by"],
             "unmarked"
         );
+        // an entry address written with a scheme or a port is the same name
+        let mut seen = host();
+        seen.records = Some(Vec::new());
+        seen.entry_config = Some(
+            "# site:site8\nhttps://www.port.example.test:443 {\n}\n# site:site9\nplain.example.test:8443 {\n}\n"
+                .to_owned(),
+        );
+        assert_eq!(
+            plan_doc("port.example.test", false, &seen)["taken_by"],
+            "site8"
+        );
+        assert_eq!(
+            plan_doc("plain.example.test", false, &seen)["taken_by"],
+            "site9"
+        );
         // a removed site's domain is free again
         assert_eq!(plan_doc("old.example.test", false, &host())["next"], "run");
     }
@@ -598,6 +642,18 @@ mod tests {
         assert_eq!(doc["stop"], "probe_unknown");
         assert_eq!(doc["next_step"], "edge");
         assert_eq!(doc["may_call_off"], false);
+    }
+
+    /// A domain whose journal target would not fit a journal line stops the plan.
+    #[test]
+    fn a_domain_too_long_for_the_journal_stops_the_plan() {
+        let long = format!("{}.example.test", "a".repeat(63));
+        assert!(target(&long).len() > TARGET_MAX);
+        let doc = plan_doc(&long, false, &host());
+        assert_eq!(doc["stop"], "domain_too_long_for_journal");
+        assert_eq!(doc["may_call_off"], false);
+        let fits = format!("{}.example.test", "a".repeat(40));
+        assert_eq!(plan_doc(&fits, false, &host())["next"], "run");
     }
 
     #[test]
@@ -634,8 +690,9 @@ mod tests {
     #[test]
     fn an_unfinished_operation_on_the_domain_stops_the_plan() {
         let d = scratch("ops");
-        let target = target("new.example.test");
-        assert_eq!(unfinished_on(&d, &target), Some(Vec::new()));
+        // the opening was asked for the www twin
+        let target = target("www.new.example.test");
+        assert_eq!(unfinished_on(&d, "new.example.test"), Some(Vec::new()));
         let line = |seq, state, approval: &str| Entry {
             op: "20261111T120000Z-ab12cd34".to_owned(),
             seq,
@@ -650,13 +707,11 @@ mod tests {
         opstore::append_entry(&d, &line(1, State::Planned, "")).unwrap();
         opstore::append_entry(&d, &line(2, State::Approved, "n1")).unwrap();
         opstore::append_entry(&d, &line(3, State::Running, "n1")).unwrap();
-        let found = unfinished_on(&d, &target).unwrap();
+        let found = unfinished_on(&d, "new.example.test").unwrap();
         assert_eq!(found.len(), 1);
+        assert_eq!(unfinished_on(&d, "www.new.example.test").unwrap().len(), 1);
         // another domain is not held by it
-        assert_eq!(
-            unfinished_on(&d, "domain:other.example.test"),
-            Some(Vec::new())
-        );
+        assert_eq!(unfinished_on(&d, "other.example.test"), Some(Vec::new()));
         let mut seen = host();
         seen.unfinished = Some(found);
         let doc = plan_doc("new.example.test", false, &seen);
@@ -668,7 +723,7 @@ mod tests {
             "not a journal line\nnor this\n",
         )
         .unwrap();
-        assert_eq!(unfinished_on(&d, &target), None);
+        assert_eq!(unfinished_on(&d, "new.example.test"), None);
         seen.unfinished = None;
         assert_eq!(
             plan_doc("new.example.test", false, &seen)["stop"],
