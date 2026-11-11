@@ -617,37 +617,53 @@ def stage_program(exe, argv, pin, review, dest, env=None, run=None):
     return out
 
 
-def program_git_state(real, run=None):
-    """共用程式在技能夾 git 裡的狀態(c477a #662 L1):committed(附最後一次 commit 短碼,好對 PR)/ changed(跟最後一次
-    commit 不一樣)/ untracked(沒進 git)/ unknown(讀不到)。這不是根治:同帳號 AI 也能 commit;它讓「剛寫好、還沒進
-    git」的程式在對話框上很顯眼。git 不跑 hook、不讀 fsmonitor(那個資料夾的設定不可信)。"""
+def program_git_state(real, pin, run=None):
+    """共用程式在技能夾 git 裡的狀態(c477a #662 L1):committed(附最後一次 commit 短碼,好對 PR)/ changed / untracked
+    (沒進 git,或不在 git 夾裡)/ unknown(讀不到)。
+
+    committed 只在「最後一次動到這支程式的 commit 裡,git 存的那份內容 sha256 = pin」時才給(c477a #670 M1):git status
+    判乾淨可以不 commit 就偽造(skip-worktree / assume-unchanged / clean filter),那時對話框又叫人對 PR,反而幫騙。
+    只用 rev-parse、log、cat-file blob:這三個不跑 hook、filter、fsmonitor;全域與系統設定不讀,log 不驗簽(驗簽會跑
+    gpg.program)。這不是根治:同帳號 AI 也能 commit;它讓「剛寫好、還沒進 git」或「跟 commit 的不一樣」很顯眼。"""
     run = run or subprocess.run
     p = Path(str(real or ""))
-    if not p.is_absolute() or _has_bad_char(str(p)):
+    if not p.is_absolute() or _has_bad_char(str(p)) or not isinstance(pin, str) or not _PIN_RE.match(pin):
         return {"state": "unknown"}
-    base = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(p.parent)]
-    genv = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C",
-            "HOME": os.environ.get("HOME", "/")}
+    base = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
+            "-C", str(p.parent)]
+    genv = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+            "LC_ALL": "C", "HOME": str(p.parent)}
 
     def git(*args):
         try:
-            r = run(base + list(args), capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
-                    stdin=subprocess.DEVNULL, env=genv)
+            r = run(base + list(args), capture_output=True, timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL, env=genv)
         except (OSError, subprocess.TimeoutExpired):
             return None
-        return r.stdout if r.returncode == 0 else None
+        return r.returncode, r.stdout or b""
 
-    status = git("status", "--porcelain", "--untracked-files=all", "--", p.name)
-    if status is None:
+    r = git("rev-parse", "--is-inside-work-tree")
+    if r is None:
         return {"state": "unknown"}
-    if status.startswith("??"):
-        return {"state": "untracked"}
-    if status.strip():
+    if r[0] != 0 or r[1].strip() != b"true":
+        return {"state": "untracked"}  # 不在 git 夾裡(c477a #670 N1)
+    r = git("log", "-1", "--format=%H", "--", p.name)
+    if r is None:
+        return {"state": "unknown"}
+    if r[0] != 0:
+        head = git("rev-parse", "--verify", "-q", "HEAD")
+        # a repository with no commit yet: nothing in it can have been reviewed
+        return {"state": "untracked" if head is not None and head[0] != 0 else "unknown"}
+    full = r[1].decode("ascii", "replace").strip()
+    if not re.match(r"^[0-9a-f]{40}([0-9a-f]{24})?$", full):
+        return {"state": "untracked"}  # 從沒 commit 過
+    r = git("cat-file", "blob", "%s:./%s" % (full, p.name))
+    if r is None:
+        return {"state": "unknown"}
+    if r[0] != 0:
+        return {"state": "untracked"}  # 最後一次動到它的 commit 把它刪了:現在這份不在 git 裡
+    if hashlib.sha256(r[1]).hexdigest() != pin:
         return {"state": "changed"}
-    short = (git("log", "-1", "--format=%h", "--", p.name) or "").strip()
-    if not _SHORT_RE.match(short):
-        return {"state": "untracked"}  # 沒改動也沒 commit 過 = 不在 git 管的範圍(例如被 .gitignore 擋掉)
-    return {"state": "committed", "commit": short}
+    return {"state": "committed", "commit": full[:10]}
 
 
 _GIT_LINES = {
@@ -832,7 +848,7 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
             why = st.get("why") or "stage_refused"
             return ("failed" if _stage_failed(why) else "not_allowed"), \
                 {"why": why, "line": st.get("line")}, None, None
-        st["git"] = program_git_state(st["program"].get("real"))
+        st["git"] = program_git_state(st["program"].get("real"), st["program"]["sha256"])
         view["program"] = st
         staged = {"program_copy": st["program"]["copy"], "program_sha": st["program"]["sha256"],
                   "params_copy": st["params"]["copy"], "params_sha": st["params"]["sha256"]}

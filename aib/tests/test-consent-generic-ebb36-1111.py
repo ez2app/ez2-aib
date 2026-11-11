@@ -16,10 +16,11 @@ G5 execute:共用程式 ⇒ supervise 帶 --program-copy/--program-sha/--params-
    沒有 aib-consent-run ⇒ failed consent_run_missing(不退回不看雜湊、不給參數的舊路徑)
 G6 CLI:--program / --params 要一起、不能再帶 `--` 後的指令
 G7(有 AIB_CONSENT_RUN_TEST_BIN 才跑)真的 aib-consent-run:ask → decide → execute,程式拿到參數、改過的參數檔跑不到
-G8 git 狀態(c477a #662 L1):沒進 git ⇒ untracked;commit 過 ⇒ committed + 短碼;改了 ⇒ changed;不是 git 夾 / 相對路徑 ⇒
-   unknown;那個夾的 core.fsmonitor 不會被執行;對話框四種狀態各一行
+G8 git 狀態(c477a #662 L1、#670 M1/N1):最後一次 commit 存的內容 sha256 = pin 才 committed(+ 短碼);不同 ⇒ changed
+   (skip-worktree / assume-unchanged 藏起來的改動也是);沒 commit 過 / 被刪 / 不是 git 夾 ⇒ untracked;相對路徑 / pin
+   不對 ⇒ unknown;那個夾的 clean filter 與 fsmonitor 不會被執行;對話框四種狀態各一行
 刀(複本 + run_guarded):KG1 decide 不看 stage 結果 ⇒ G4 紅;KG2 supervise 不帶參數複本旗標 ⇒ G5 紅;
-  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅;KG4 改過當成 committed ⇒ G8 紅;KG5 不關 fsmonitor ⇒ G8 紅
+  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅;KG4 不比 pin 就給 committed ⇒ G8 紅;KG5 非 git 夾判 unknown ⇒ G8 紅
 """
 import json
 import os
@@ -339,29 +340,64 @@ class G8Git(unittest.TestCase):
                                "-C", str(self.d)] + list(args), check=True, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL).stdout
 
+    def sha(self, text):
+        import hashlib
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def state(self, pin):
+        return C.program_git_state(str(self.p), pin)
+
     def test_g8_states(self):
-        self.assertEqual(C.program_git_state(str(self.p)), {"state": "untracked"})
+        v1, v2 = "echo 1\n", "echo 2\n"
+        self.assertEqual(self.state(self.sha(v1)), {"state": "untracked"})
         self.g("add", self.p.name)
         self.g("commit", "-q", "-m", "x")
-        short = self.g("log", "-1", "--format=%h").strip()
-        self.assertEqual(C.program_git_state(str(self.p)), {"state": "committed", "commit": short})
-        self.p.write_text("echo 2\n")
-        self.assertEqual(C.program_git_state(str(self.p)), {"state": "changed"})
+        full = self.g("log", "-1", "--format=%H").strip()
+        self.assertEqual(self.state(self.sha(v1)), {"state": "committed", "commit": full[:10]})
+        # the pinned bytes are not what the last commit holds
+        self.p.write_text(v2)
+        self.assertEqual(self.state(self.sha(v2)), {"state": "changed"})
+        # deleted in its last commit: what runs is not in git
+        self.g("rm", "-q", "-f", self.p.name)
+        self.g("commit", "-q", "-m", "rm")
+        self.p.write_text(v1)
+        self.assertEqual(self.state(self.sha(v1)), {"state": "untracked"})
+        # not a git folder at all (c477a #670 N1)
         out = Path(tempfile.mkdtemp(prefix="aib-consent-nogit-")).resolve()
         self.addCleanup(shutil.rmtree, str(out), True)
-        (out / "x.sh").write_text("echo\n")
+        (out / "x.sh").write_text(v1)
         if subprocess.run(["git", "-C", str(out), "rev-parse"], capture_output=True).returncode != 0:
-            self.assertEqual(C.program_git_state(str(out / "x.sh")), {"state": "unknown"})
-        self.assertEqual(C.program_git_state("site-remove.sh"), {"state": "unknown"})
+            self.assertEqual(C.program_git_state(str(out / "x.sh"), self.sha(v1)), {"state": "untracked"})
+        self.assertEqual(C.program_git_state("site-remove.sh", self.sha(v1)), {"state": "unknown"})
+        self.assertEqual(C.program_git_state(str(self.p), "AB" * 32), {"state": "unknown"})
+
+    # c477a #670 M1: what `git status` shows can be made clean without a commit
+    def test_g8_a_clean_status_without_a_commit_is_not_committed(self):
+        v1, v2 = "echo 1\n", "echo 2\n"
+        self.g("add", self.p.name)
+        self.g("commit", "-q", "-m", "x")
+        self.p.write_text(v2)
+        self.g("update-index", "--skip-worktree", self.p.name)
+        self.assertEqual(self.g("status", "--porcelain"), "", "skip-worktree did not hide the change")
+        self.assertEqual(self.state(self.sha(v2)), {"state": "changed"})
+        self.g("update-index", "--no-skip-worktree", self.p.name)
+        self.g("update-index", "--assume-unchanged", self.p.name)
+        self.assertEqual(self.state(self.sha(v2)), {"state": "changed"})
 
     def test_g8_folder_settings_do_not_run(self):
         mark = self.d / "PWNED"
-        hook = self.d / "fsm.sh"
-        hook.write_text("#!/bin/sh\ntouch '%s'\nexit 1\n" % mark)
+        hook = self.d / "hook.sh"
+        hook.write_text("#!/bin/sh\ntouch '%s'\ncat\n" % mark)
         os.chmod(str(hook), 0o755)
+        self.g("add", self.p.name)
+        self.g("commit", "-q", "-m", "x")
+        # a clean filter that would make any change look committed, and an fsmonitor
+        self.g("config", "filter.same.clean", str(hook))
         self.g("config", "core.fsmonitor", str(hook))
-        C.program_git_state(str(self.p))
-        self.assertFalse(mark.exists(), "the folder's core.fsmonitor ran")
+        (self.d / ".gitattributes").write_text("*.sh filter=same\n")
+        self.p.write_text("echo 2\n")
+        self.assertEqual(self.state(self.sha("echo 2\n")), {"state": "changed"})
+        self.assertFalse(mark.exists(), "a command from the folder's git settings ran")
 
     def test_g8_dialog_lines(self):
         lines = {st: C._git_line({"state": st, "commit": "abc1234"}) for st in ("committed", "changed", "untracked",
@@ -382,12 +418,12 @@ class Knives(unittest.TestCase):
         self.assertIsNone(r.tripped)
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
-    def test_kg4_changed_reads_as_committed(self):
-        self._knife("    if status.strip():\n        return {\"state\": \"changed\"}",
-                    "    if False:\n        return {\"state\": \"changed\"}", "G8Git")
+    def test_kg4_committed_without_comparing_to_the_pin(self):
+        self._knife("    if hashlib.sha256(r[1]).hexdigest() != pin:", "    if False:", "G8Git")
 
-    def test_kg5_folder_fsmonitor_runs(self):
-        self._knife('"-c", "core.fsmonitor=false", ', "", "G8Git")
+    def test_kg5_outside_git_reads_as_unknown(self):
+        self._knife("        return {\"state\": \"untracked\"}  # 不在 git 夾裡",
+                    "        return {\"state\": \"unknown\"}  # 不在 git 夾裡", "G8Git")
 
     def test_kg1_decide_ignores_stage(self):
         self._knife("        if not st.get(\"ok\"):\n            shutil.rmtree(td, ignore_errors=True)\n            why = st",
