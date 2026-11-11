@@ -33,6 +33,12 @@
 //!   so that comes first.
 //! * A record is read only from its own site's file: one whose `site` is another site's
 //!   (a copy a person made by hand) is an error, so it is never written over the other.
+//! * Before a restore starts, the download gate ([`aib_cloud::restoregate`]) is asked:
+//!   who shared the backup, whether its name is this site's, its size against the room
+//!   on the host, and whether the site's database has been up long enough. The plan
+//!   carries the backup's name and size; the verify step checks the downloaded file
+//!   against them and writes its SHA-256 into the record (B3 slice 3). Reading the share
+//!   itself is not wired yet: until it is, every plan here stops at `source_unknown`.
 //! * The command is `site restore-wpress`, not `site restore`: that one brings a whole
 //!   container back from the host's own archive, a different thing.
 
@@ -41,6 +47,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use aib_cloud::restoregate::{self, Facts, Sharer};
 use aib_cloud::restoresteps::{
     self, AfterFailure, Close, Next, Other, RestoreStep, Standing, STEPS,
 };
@@ -61,6 +68,15 @@ pub const CLOSE_COMMAND: &str = "site.restore-wpress-close";
 pub const NOT_WIRED: &str =
     "not_wired: the restore steps are not wired on this host yet (B3 slices 3 and 4); nothing was done";
 
+/// The backup a restore downloads: its name and size as the share said, and the
+/// SHA-256 of what was downloaded once it was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backup {
+    pub name: String,
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+
 /// One site's last restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -77,6 +93,8 @@ pub struct Record {
     pub cleaned_up: bool,
     /// How a person closed it and the operation that did, when one did.
     pub closed: Option<(Close, String)>,
+    /// The backup, when the plan named one.
+    pub backup: Option<Backup>,
 }
 
 impl Record {
@@ -90,6 +108,7 @@ impl Record {
             "failed": self.failed.as_ref().map(|(s, why)| json!({ "step": s.as_str(), "why": why })),
             "cleaned_up": self.cleaned_up,
             "closed": self.closed.as_ref().map(|(how, op)| json!({ "how": how.as_str(), "op": op })),
+            "backup": self.backup.as_ref().map(|b| json!({ "name": b.name, "size": b.size, "sha256": b.sha256 })),
         })
     }
 
@@ -135,6 +154,10 @@ impl Record {
                     .to_owned(),
             )),
         };
+        let backup = match v.get("backup") {
+            None | Some(Value::Null) => None,
+            Some(b) => Some(backup_from(b).ok_or("step record: a backup without name or size")?),
+        };
         Ok(Record {
             site: text("site")?,
             domain: text("domain")?,
@@ -147,6 +170,7 @@ impl Record {
                 .and_then(Value::as_bool)
                 .ok_or("step record: no cleaned_up")?,
             closed,
+            backup,
         })
     }
 
@@ -166,6 +190,31 @@ impl Record {
     }
 }
 
+/// A backup's name and size from a plan or a record; the SHA-256 when there is one.
+fn backup_from(v: &Value) -> Option<Backup> {
+    Some(Backup {
+        name: v.get("name")?.as_str()?.to_owned(),
+        size: v.get("size")?.as_u64()?,
+        sha256: v.get("sha256").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
+/// What the share says of a backup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub name: String,
+    pub size: Option<u64>,
+    pub sharer: Sharer,
+}
+
+/// What was downloaded: its length, its first bytes and its SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub size: u64,
+    pub head: Vec<u8>,
+    pub sha256: String,
+}
+
 /// What a restore needs from the host. The real host is [`HostRestorer`]; tests use a
 /// made-up one.
 pub trait RestoreHost {
@@ -180,6 +229,15 @@ pub trait RestoreHost {
     fn others(&mut self, site: &str) -> Result<Vec<Record>, String>;
     /// Whether the target site is up.
     fn site_up(&mut self) -> Probe;
+    /// What the share says of the backup, with the share gate's verdict on who shared
+    /// it; `None` when the share could not be read.
+    fn source(&mut self, source: &str) -> Result<Option<Source>, String>;
+    /// Free bytes where downloads go.
+    fn free_bytes(&mut self) -> Option<u64>;
+    /// How long the target's database has been up.
+    fn db_up_secs(&mut self) -> Option<u64>;
+    /// What the download step left.
+    fn downloaded(&mut self, rec: &Record) -> Result<Fetched, String>;
     fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String>;
     /// Throw away what was downloaded, and the restore point's archive if one was begun:
     /// a failed restore point leaves a half-made archive behind.
@@ -222,6 +280,7 @@ pub fn plan_doc(
         "next": "stop",
         "from": Value::Null,
         "stop": Value::Null,
+        "backup": Value::Null,
     });
     let stop = |doc: &mut Value, why: &str| doc["stop"] = json!(why);
     if let Err(why) = restoresteps::ready_to_go_on(host.site_up()) {
@@ -230,10 +289,14 @@ pub fn plan_doc(
     }
     match restoresteps::next(standing) {
         Next::Start => match restoresteps::admit(&spec.code, &domain, &other_list) {
-            Ok(()) => {
-                doc["next"] = json!("start");
-                doc["from"] = json!(RestoreStep::Download.as_str());
-            }
+            Ok(()) => match download_gate(source, &domain, host)? {
+                Ok(backup) => {
+                    doc["backup"] = backup;
+                    doc["next"] = json!("start");
+                    doc["from"] = json!(RestoreStep::Download.as_str());
+                }
+                Err(refused) => stop(&mut doc, refused),
+            },
             Err(why) => stop(&mut doc, why),
         },
         Next::GoOn(step) => match &last {
@@ -246,6 +309,44 @@ pub fn plan_doc(
         Next::Stop(why) => stop(&mut doc, why),
     }
     Ok(doc)
+}
+
+/// The download gate, from what the host says now: the backup's name and size for the
+/// plan, or the gate's fixed word.
+fn download_gate(
+    source: &str,
+    domain: &str,
+    host: &mut impl RestoreHost,
+) -> Result<Result<Value, &'static str>, String> {
+    let Some(src) = host.source(source)? else {
+        return Ok(Err("source_unknown"));
+    };
+    let facts = Facts {
+        sharer: src.sharer,
+        name: &src.name,
+        domain,
+        size: src.size,
+        free: host.free_bytes(),
+        db_up_secs: host.db_up_secs(),
+    };
+    Ok(restoregate::admit_download(&facts).map(|()| json!({ "name": src.name, "size": src.size })))
+}
+
+/// The verify step: what was downloaded must be what the plan named; its SHA-256 goes
+/// into the record.
+fn verify_download(host: &mut impl RestoreHost, rec: &mut Record) -> Result<(), String> {
+    let planned = rec
+        .backup
+        .as_ref()
+        .map(|b| b.size)
+        .ok_or("the step record names no backup")?;
+    let got = host.downloaded(rec)?;
+    restoregate::check_download(planned, got.size, &got.head, &got.sha256)
+        .map_err(str::to_owned)?;
+    if let Some(b) = rec.backup.as_mut() {
+        b.sha256 = Some(got.sha256);
+    }
+    Ok(())
 }
 
 fn standing_word(s: Standing) -> String {
@@ -337,7 +438,11 @@ pub fn carry_out(
     rec.cleaned_up = false;
     host.write_record(&rec)?;
     for &step in &STEPS[start..] {
-        if let Err(e) = host.run_step(step, &rec) {
+        let ran = match step {
+            RestoreStep::Verify => verify_download(host, &mut rec),
+            _ => host.run_step(step, &rec),
+        };
+        if let Err(e) = ran {
             rec.failed = Some((step, e.clone()));
             host.write_record(&rec)?;
             let after = restoresteps::after_failure(step);
@@ -428,6 +533,7 @@ pub fn apply(
                     failed: None,
                     cleaned_up: false,
                     closed: None,
+                    backup: plan.get("backup").and_then(backup_from),
                 },
             };
             Ok(Some((opstore::unsealed(plan), (rec, from))))
@@ -565,6 +671,29 @@ pub fn apply_close(
     done.ok_or_else(|| "nothing to do".to_owned())
 }
 
+/// The file system downloads go to.
+const DOWNLOADS_ON: &str = "/var/lib/ez2-cloud";
+
+/// The free bytes `df -Pk` says: the fourth column of its one data line, in KiB.
+fn df_avail_bytes(out: &str) -> Option<u64> {
+    let mut lines = out.lines().filter(|l| !l.trim().is_empty());
+    if !lines.next()?.starts_with("Filesystem") {
+        return None;
+    }
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let kib: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The seconds `mysqladmin status` says the server has been up.
+fn db_uptime(out: &str) -> Option<u64> {
+    let rest = out.trim_start().strip_prefix("Uptime:")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 /// The real host. Its steps are not wired yet: [`RestoreHost::wired`] is false.
 pub struct HostRestorer {
     pub records: PathBuf,
@@ -673,6 +802,27 @@ impl RestoreHost for HostRestorer {
             Ok(out) if out.trim() == "status: stopped" => Probe::NotDone,
             _ => Probe::Unknown,
         }
+    }
+    fn source(&mut self, _source: &str) -> Result<Option<Source>, String> {
+        // reading the share (and asking the share gate) is wired with the download
+        Ok(None)
+    }
+    fn free_bytes(&mut self) -> Option<u64> {
+        let mut cmd = Command::new("df");
+        cmd.args(["-Pk", DOWNLOADS_ON]);
+        crate::probe::run_capture(&mut cmd, Duration::from_secs(20))
+            .ok()
+            .and_then(|out| df_avail_bytes(&out))
+    }
+    fn db_up_secs(&mut self) -> Option<u64> {
+        let mut cmd = Command::new("pct");
+        cmd.args(["exec", &self.ct.to_string(), "--", "mysqladmin", "status"]);
+        crate::probe::run_capture(&mut cmd, Duration::from_secs(30))
+            .ok()
+            .and_then(|out| db_uptime(&out))
+    }
+    fn downloaded(&mut self, _rec: &Record) -> Result<Fetched, String> {
+        Err(NOT_WIRED.to_owned())
     }
     fn run_step(&mut self, _step: RestoreStep, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
@@ -872,6 +1022,23 @@ mod tests {
         seen_done: Vec<usize>,
         /// Records moved aside.
         aside: Vec<Record>,
+        source: Option<Source>,
+        free: Option<u64>,
+        db_up: Option<u64>,
+        /// What is wrong with the download, when something is: "size" or "head".
+        bad_download: Option<&'static str>,
+    }
+
+    const NAME: &str = "example-com-20261101-101010-ab12cd.wpress";
+    const SIZE: u64 = 2 * 1024 * 1024 * 1024;
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn wpress_head() -> Vec<u8> {
+        let mut h = vec![0u8; restoregate::HEADER_LEN];
+        h[..12].copy_from_slice(b"package.json");
+        h[255..258].copy_from_slice(b"512");
+        h[269..279].copy_from_slice(b"1730000000");
+        h
     }
 
     fn fake() -> Fake {
@@ -885,6 +1052,14 @@ mod tests {
             calls: Vec::new(),
             seen_done: Vec::new(),
             aside: Vec::new(),
+            source: Some(Source {
+                name: NAME.to_owned(),
+                size: Some(SIZE),
+                sharer: Sharer::Allowed,
+            }),
+            free: Some(4 * SIZE + restoregate::SPARE_BYTES),
+            db_up: Some(3600),
+            bad_download: None,
         }
     }
 
@@ -944,6 +1119,37 @@ mod tests {
             self.aside.push(rec.clone());
             Ok(())
         }
+        fn source(&mut self, _source: &str) -> Result<Option<Source>, String> {
+            Ok(self.source.clone())
+        }
+        fn free_bytes(&mut self) -> Option<u64> {
+            self.free
+        }
+        fn db_up_secs(&mut self) -> Option<u64> {
+            self.db_up
+        }
+        fn downloaded(&mut self, rec: &Record) -> Result<Fetched, String> {
+            self.calls.push("verify".to_owned());
+            let stored = self
+                .records
+                .get(&rec.site)
+                .map_or(usize::MAX, |r| r.done.len());
+            self.seen_done.push(stored);
+            if self.fail_at == Some(RestoreStep::Verify) {
+                return Err("made-up failure".to_owned());
+            }
+            let mut got = Fetched {
+                size: SIZE,
+                head: wpress_head(),
+                sha256: SHA.to_owned(),
+            };
+            match self.bad_download {
+                Some("size") => got.size -= 1,
+                Some("head") => got.head[..4].copy_from_slice(b"PK\x03\x04"),
+                _ => {}
+            }
+            Ok(got)
+        }
     }
 
     fn sealed(place: &opstore::OpPlace, host: &mut Fake) -> Value {
@@ -981,6 +1187,7 @@ mod tests {
             failed: failed.map(|s| (s, "earlier".to_owned())),
             cleaned_up,
             closed: None,
+            backup: None,
         }
     }
 
@@ -1440,5 +1647,112 @@ mod tests {
         assert_eq!(mine(&h).closed, None);
         assert!(h.aside.is_empty());
         assert!(states(&p).is_empty());
+    }
+
+    #[test]
+    fn the_download_gate_stops_the_plan() {
+        let mut h = fake();
+        let doc = plan_doc(&spec(), SOURCE, &mut h).unwrap();
+        assert_eq!(doc["next"], "start");
+        assert_eq!(doc["backup"], json!({ "name": NAME, "size": SIZE }));
+        h.source = None;
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "source_unknown"
+        );
+        h.source = Some(Source {
+            name: NAME.to_owned(),
+            size: Some(SIZE),
+            sharer: Sharer::Refused("share_address_not_on_roster"),
+        });
+        let doc = plan_doc(&spec(), SOURCE, &mut h).unwrap();
+        assert_eq!(
+            (
+                doc["next"].as_str(),
+                doc["stop"].as_str(),
+                doc["backup"].is_null()
+            ),
+            (Some("stop"), Some("share_address_not_on_roster"), true)
+        );
+        h = fake();
+        h.free = Some(1);
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "disk_too_small"
+        );
+        h = fake();
+        h.db_up = Some(10);
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "database_restarted_lately"
+        );
+    }
+
+    #[test]
+    fn a_backup_changed_at_the_share_after_the_plan_is_refused() {
+        let p = place("sharechanged");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        h.source.as_mut().unwrap().size = Some(SIZE + 1);
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(err.contains("plan_changed"), "{err}");
+        assert!(h.calls.is_empty());
+    }
+
+    #[test]
+    fn the_downloads_hash_is_written_down() {
+        let p = place("hash");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap();
+        assert_eq!(
+            mine(&h).backup,
+            Some(Backup {
+                name: NAME.to_owned(),
+                size: SIZE,
+                sha256: Some(SHA.to_owned()),
+            })
+        );
+        let r = mine(&h).clone();
+        assert_eq!(Record::from_json(&r.to_json()), Ok(r));
+    }
+
+    #[test]
+    fn a_download_that_is_not_what_the_share_said_is_thrown_away() {
+        for (bad, word) in [("size", "download_size_differs"), ("head", "not_a_wpress")] {
+            let p = place(&format!("bad{bad}"));
+            let mut h = fake();
+            h.bad_download = Some(bad);
+            let plan = sealed(&p, &mut h);
+            let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+            assert!(err.contains(word), "{err}");
+            assert_eq!(h.calls, ["download", "verify", "discard"], "{bad}");
+            assert_eq!(mine(&h).standing(), Ok(Standing::Discarded));
+            assert_eq!(mine(&h).backup.as_ref().unwrap().sha256, None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_hosts_free_room_and_database_uptime_are_read() {
+        let df = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/md2        937276536 109847516 779745496      13% /\n";
+        assert_eq!(df_avail_bytes(df), Some(779_745_496 * 1024));
+        assert_eq!(
+            df_avail_bytes("Filesystem 1024-blocks Used Available\n"),
+            None
+        );
+        assert_eq!(df_avail_bytes(&format!("{df}/dev/md3 1 1 1 1% /x\n")), None);
+        assert_eq!(
+            df_avail_bytes("/dev/md2 937276536 109847516 779745496 13% /\n"),
+            None
+        );
+        assert_eq!(
+            db_uptime("Uptime: 86412  Threads: 1  Questions: 25  Slow queries: 0\n"),
+            Some(86412)
+        );
+        assert_eq!(
+            db_uptime("mysqladmin: connect to server at 'localhost' failed\n"),
+            None
+        );
+        assert_eq!(db_uptime("Uptime: soon"), None);
     }
 }

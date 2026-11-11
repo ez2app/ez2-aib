@@ -50,6 +50,7 @@ pub mod provision;
 pub mod quarantine;
 pub mod quota;
 pub mod r2token;
+pub mod restoregate;
 pub mod restoresteps;
 pub mod robot;
 pub mod roster;
