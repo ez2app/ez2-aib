@@ -416,6 +416,15 @@ jobs:
           # backup before an update: a malformed time stamp is read as a dump
           ck fresh.rs '    if !stamp_ok {' '    if !stamp_ok && stamp.is_empty() { // knife' \
              only_finished_dumps_of_the_ct_are_named
+          # backup before an update: a dump left by an earlier site on the same CT number counts (ebb36 L1)
+          ck fresh.rs '        if mtime < created {' '        if mtime < created && created == 0 { // knife' \
+             a_dump_older_than_the_site_was_left_by_an_earlier_one
+          # backup before an update: a site whose creation time cannot be read reads as "no backup"
+          ck fresh.rs '        return Fresh::Unknown("site_created_unreadable");' '        return Fresh::NoBackup; // knife' \
+             a_dump_older_than_the_site_was_left_by_an_earlier_one
+          # backup before an update: an hour 24 or a minute 60 in the creation time is read
+          ck fresh.rs '    if h > 23 || m > 59 || sec > 59 {' '    if h > 24 || m > 60 || sec > 60 { // knife' \
+             the_creation_time_is_read_as_the_shell_writes_it
           # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
           ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
              '        Some(_) if true => {} // knife' \
@@ -930,6 +939,12 @@ jobs:
           # backup fresh: a site code that is not one (a path) is read as a record name
           hk backupcmd.rs '            other if code.is_none() && valid_code(other) => code = Some(other),' \
              "            other if code.is_none() && (valid_code(other) || other.contains('/')) => code = Some(other), // knife" \
+             backup_fresh_answers_from_the_record_and_the_dump_folder
+          # backup fresh: an entry whose details cannot be read is skipped (ebb36 N1)
+          hk backupcmd.rs '        return (name, true, None, None);' '        return (name, false, None, None); // knife' \
+             an_entry_that_cannot_be_read_spoils_the_answer
+          # backup fresh: the record's creation time is not read (ebb36 L1)
+          hk backupcmd.rs '        .and_then(fresh::created_secs);' '        .and_then(|_| Some(0)); // knife' \
              backup_fresh_answers_from_the_record_and_the_dump_folder
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \

@@ -256,7 +256,10 @@ mod tests {
             NOW - MAX,
             900,
         )];
-        assert_eq!(judge(112, Some(CREATED), Some(&edge), NOW, MAX), Fresh::Fresh { age: MAX });
+        assert_eq!(
+            judge(112, Some(CREATED), Some(&edge), NOW, MAX),
+            Fresh::Fresh { age: MAX }
+        );
     }
 
     #[test]
@@ -265,7 +268,10 @@ mod tests {
             f("vzdump-lxc-113-2026_11_11-18_30_05.tar.zst", NOW - 60, 900),
             f("vzdump-lxc-1120-2026_11_11-18_30_05.tar.zst", NOW - 60, 900),
         ];
-        assert_eq!(judge(112, Some(CREATED), Some(&files), NOW, MAX), Fresh::NoBackup);
+        assert_eq!(
+            judge(112, Some(CREATED), Some(&files), NOW, MAX),
+            Fresh::NoBackup
+        );
         assert!(!update_allowed(Fresh::NoBackup));
     }
 
@@ -274,15 +280,14 @@ mod tests {
         let mut dir = f("vzdump-lxc-112-2026_11_11-18_30_05.tar.zst", NOW - 60, 900);
         dir.is_file = false;
         let files = [
-            f(
-                "vzdump-lxc-112-2026_11_11-18_30_05.tar.dat",
-                NOW - 60,
-                900,
-            ),
+            f("vzdump-lxc-112-2026_11_11-18_30_05.tar.dat", NOW - 60, 900),
             f("vzdump-lxc-112-2026_11_11-18_31_05.tar.zst", NOW - 30, 0),
             dir,
         ];
-        assert_eq!(judge(112, Some(CREATED), Some(&files), NOW, MAX), Fresh::NoBackup);
+        assert_eq!(
+            judge(112, Some(CREATED), Some(&files), NOW, MAX),
+            Fresh::NoBackup
+        );
     }
 
     #[test]
@@ -321,7 +326,10 @@ mod tests {
             NOW + CLOCK_SKEW_SECS,
             900,
         )];
-        assert_eq!(judge(112, Some(CREATED), Some(&skew), NOW, MAX), Fresh::Fresh { age: 0 });
+        assert_eq!(
+            judge(112, Some(CREATED), Some(&skew), NOW, MAX),
+            Fresh::Fresh { age: 0 }
+        );
         let ahead = [f(
             "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst",
             NOW + CLOCK_SKEW_SECS + 1,
@@ -337,8 +345,15 @@ mod tests {
     fn a_dump_older_than_the_site_was_left_by_an_earlier_one() {
         // CT 112 was removed and handed to a new site ten minutes ago; the old site's
         // dump from twenty minutes ago is still in the folder
-        let files = [f("vzdump-lxc-112-2026_11_11-18_10_05.tar.zst", NOW - 1200, 900)];
-        assert_eq!(judge(112, Some(NOW - 600), Some(&files), NOW, MAX), Fresh::NoBackup);
+        let files = [f(
+            "vzdump-lxc-112-2026_11_11-18_10_05.tar.zst",
+            NOW - 1200,
+            900,
+        )];
+        assert_eq!(
+            judge(112, Some(NOW - 600), Some(&files), NOW, MAX),
+            Fresh::NoBackup
+        );
         assert_eq!(
             judge(112, Some(NOW - 1200), Some(&files), NOW, MAX),
             Fresh::Fresh { age: 1200 }

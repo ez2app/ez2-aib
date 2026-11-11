@@ -698,6 +698,9 @@ mod tests {
             Fresh::Unknown("dump_unreadable")
         );
         assert_eq!(stamp(1_794_195_191), "2026-11-09T03:33:11Z");
-        assert_eq!(fresh::created_secs(&stamp(1_794_195_191)), Some(1_794_195_191));
+        assert_eq!(
+            fresh::created_secs(&stamp(1_794_195_191)),
+            Some(1_794_195_191)
+        );
     }
 }
