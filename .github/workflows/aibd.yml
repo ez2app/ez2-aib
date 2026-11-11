@@ -627,9 +627,13 @@ jobs:
              '            Some(0) => License::Inactive, // knife' \
              a_status_vendor_is_read_by_its_own_words
           # licences: activated without the vendor having this site's record
-          ck sitedefaults.rs '    if activation_found == Some(true) {' \
-             '    if activation_found != Some(false) { // knife' \
+          ck sitedefaults.rs '            Some(true) => return License::Active,' \
+             '            Some(true) | Some(false) => return License::Active, // knife' \
              an_activation_vendor_needs_its_own_record_of_this_site
+          # licences: a number the vendor was not asked about is activated again, one more activation used up (c477a, #659 M1)
+          ck sitedefaults.rs '            None => return License::Unknown,' \
+             '            None => {} // knife' \
+             a_number_the_vendor_was_not_asked_about_is_unknown_not_inactive
           # licences: an activation is sent when the state is not known
           ck sitedefaults.rs '        License::Inactive => LicenseStep::Activate,' \
              '        License::Inactive | License::Unknown => LicenseStep::Activate, // knife' \
@@ -659,8 +663,8 @@ jobs:
              '        if *step == RemoveStep::Licenses { // knife' \
              a_vendor_that_cannot_be_reached_stops_the_removal_unless_the_person_says_so
           # removing a site: called off after things were closed or destroyed
-          ck siteremove.rs '    next_step <= RemoveStep::Licenses' \
-             '    next_step <= RemoveStep::Destroy // knife' \
+          ck siteremove.rs '    next_step < RemoveStep::Licenses' \
+             '    next_step <= RemoveStep::Licenses // knife' \
              a_removal_can_be_called_off_only_while_nothing_is_lost
           # removing a site: any text counts as a container list
           ck siteremove.rs '    if !lines.next()?.starts_with("VMID") {' \
@@ -670,6 +674,14 @@ jobs:
           ck siteremove.rs '        None | Some("") => Probe::Unknown,' \
              '        None | Some("") => Probe::Done, // knife' \
              the_entry_is_read_by_the_sites_own_marker_line
+          # removing a site: white space after the marker reads as taken off the entry (c477a, #659 L1)
+          ck siteremove.rs '            if text.lines().any(|l| l.trim_end() == marker) {' \
+             '            if text.lines().any(|l| l == marker) { // knife' \
+             the_entry_is_read_by_the_sites_own_marker_line
+          # numbers: an address outside the sites range ends or jumps the range (c477a, #659 L2)
+          ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
+             '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
+             a_new_site_gets_the_next_numbers_up
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -893,6 +905,10 @@ jobs:
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
           # ---- site remove --plan (4542e 11-11)
+          # the record could not be looked for and counts as moved aside (c477a, #659 L4)
+          hk siteremovecmd.rs '        known(seen.record_in_place, false),' \
+             '        known(seen.record_in_place.or(Some(false)), false), // knife' \
+             what_could_not_be_read_is_unknown_not_absent
           # site remove --plan: an archive nobody looked at counts as there
           hk siteremovecmd.rs '        seen.archive.unwrap_or(Probe::Unknown),' \
              '        seen.archive.unwrap_or(Probe::Done), // knife' \

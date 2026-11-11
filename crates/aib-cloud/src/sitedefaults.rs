@@ -108,8 +108,15 @@ pub fn license_by_status(status: Option<&str>, left: Option<u64>) -> License {
             _ => License::Inactive,
         },
         Some(
-            "expired" | "disabled" | "revoked" | "invalid" | "missing" | "item_name_mismatch"
-            | "invalid_item_id",
+            "expired"
+            | "disabled"
+            | "revoked"
+            | "invalid"
+            | "missing"
+            | "item_name_mismatch"
+            | "invalid_item_id"
+            | "key_mismatch"
+            | "license_not_activable",
         ) => License::NotValid,
         Some("no_activations_left") => License::Quota,
         _ => License::Unknown,
@@ -117,12 +124,17 @@ pub fn license_by_status(status: Option<&str>, left: Option<u64>) -> License {
 }
 
 /// A vendor that keeps one activation record per site. `license_status` is its word for
-/// the key (`active` is the good one), `activation_found` whether it has the record this
-/// site holds the number of (`None`: the site holds no number, or the vendor was not
-/// asked), `count` and `limit` its activations used and allowed (`limit` `None`: no
-/// limit).
+/// the key (`active` is the good one). `site_holds_number` is whether the site holds the
+/// number of an activation record; `activation_found` is the vendor's answer about that
+/// record (`None`: the vendor was not asked, or did not answer). `count` and `limit` are
+/// its activations used and allowed (`limit` `None`: no limit).
+///
+/// A site that holds a number the vendor was not asked about is "unknown": activating
+/// again on that would open a second record and use up one more activation. Only a site
+/// with no number, or one whose number the vendor says it does not have, is "inactive".
 pub fn license_by_activation(
     license_status: Option<&str>,
+    site_holds_number: bool,
     activation_found: Option<bool>,
     count: Option<u64>,
     limit: Option<u64>,
@@ -132,8 +144,12 @@ pub fn license_by_activation(
         Some("revoked" | "inactive" | "expired") => return License::NotValid,
         _ => return License::Unknown,
     }
-    if activation_found == Some(true) {
-        return License::Active;
+    if site_holds_number {
+        match activation_found {
+            Some(true) => return License::Active,
+            Some(false) => {}
+            None => return License::Unknown,
+        }
     }
     match (count, limit) {
         (Some(c), Some(l)) if c >= l => License::Quota,
@@ -284,11 +300,11 @@ mod tests {
             License::Unknown
         );
         assert_eq!(
-            license_by_activation(None, Some(true), Some(1), None),
+            license_by_activation(None, true, Some(true), Some(1), None),
             License::Unknown
         );
         assert_eq!(
-            license_by_activation(Some("something_new"), Some(true), None, None),
+            license_by_activation(Some("something_new"), true, Some(true), None, None),
             License::Unknown
         );
     }
@@ -297,22 +313,59 @@ mod tests {
     fn an_activation_vendor_needs_its_own_record_of_this_site() {
         let a = license_by_activation;
         assert_eq!(
-            a(Some("active"), Some(true), Some(28), None),
+            a(Some("active"), true, Some(true), Some(28), None),
             License::Active
         );
         // the site holds a number the vendor does not have: not activated
         assert_eq!(
-            a(Some("active"), Some(false), Some(27), None),
+            a(Some("active"), true, Some(false), Some(27), None),
             License::Inactive
         );
-        assert_eq!(a(Some("active"), None, Some(27), None), License::Inactive);
-        assert_eq!(a(Some("active"), None, Some(3), Some(3)), License::Quota);
-        assert_eq!(a(Some("active"), None, Some(2), Some(3)), License::Inactive);
-        assert_eq!(a(Some("active"), None, None, Some(3)), License::Unknown);
+        // the site holds no number at all: not activated, whatever was or was not asked
         assert_eq!(
-            a(Some("revoked"), Some(true), Some(1), None),
+            a(Some("active"), false, None, Some(27), None),
+            License::Inactive
+        );
+        assert_eq!(
+            a(Some("active"), false, Some(true), Some(27), None),
+            License::Inactive
+        );
+        assert_eq!(
+            a(Some("active"), false, None, Some(3), Some(3)),
+            License::Quota
+        );
+        assert_eq!(
+            a(Some("active"), true, Some(false), Some(3), Some(3)),
+            License::Quota
+        );
+        assert_eq!(
+            a(Some("active"), false, None, Some(2), Some(3)),
+            License::Inactive
+        );
+        assert_eq!(
+            a(Some("active"), false, None, None, Some(3)),
+            License::Unknown
+        );
+        assert_eq!(
+            a(Some("revoked"), true, Some(true), Some(1), None),
             License::NotValid
         );
+    }
+
+    #[test]
+    fn a_number_the_vendor_was_not_asked_about_is_unknown_not_inactive() {
+        // the site holds an activation number and the vendor did not answer about it:
+        // activating again would open a second record and use up one more activation
+        let got = license_by_activation(Some("active"), true, None, Some(28), None);
+        assert_eq!(got, License::Unknown);
+        assert_eq!(license_before(got), LicenseStep::Stop("license_unknown"));
+        // with room left, with none left, with or without a count: still unknown
+        for (count, limit) in [(Some(2), Some(3)), (Some(3), Some(3)), (None, None)] {
+            assert_eq!(
+                license_by_activation(Some("active"), true, None, count, limit),
+                License::Unknown
+            );
+        }
     }
 
     #[test]

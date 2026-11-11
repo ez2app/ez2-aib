@@ -188,7 +188,8 @@ pub const SITE_IP_LAST: u8 = 249;
 /// left a rule, a backup target, a monitor or a line on the entry behind, and a new
 /// customer on the same number would walk straight into it. So the numbers of removed
 /// sites count exactly like those in use. `live_*` are the numbers in use on the host
-/// (every container, not only sites), `removed_*` those in the records of removed sites.
+/// (every container, not only sites; numbers outside the sites' own ranges are passed
+/// over), `removed_*` those in the records of removed sites.
 /// The caller reads all four completely or does not call: a list that could not be read
 /// is not an empty list.
 pub fn next_numbers(
@@ -208,10 +209,13 @@ pub fn next_numbers(
     if ct >= SITE_CT_END {
         return Err("numbers_exhausted");
     }
+    // only addresses in the sites' own range count: the entry and the template have
+    // addresses outside it, and one of those must neither end the range nor make it jump
     let top_ip = live_ips
         .iter()
         .chain(removed_ips)
         .copied()
+        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))
         .max()
         .unwrap_or(0);
     let ip = top_ip.max(SITE_IP_FIRST - 1);
@@ -362,6 +366,15 @@ mod tests {
         );
         // the entry (101) and the template (900) are containers, not a reason to start elsewhere
         assert_eq!(next_numbers(&[101, 900], &[], &[2], &[]), Ok((110, 10)));
+        // nor are their addresses: one below the sites' range, one above it
+        assert_eq!(
+            next_numbers(&[101, 110, 114, 900], &[], &[2, 10, 14, 250], &[]),
+            Ok((115, 15))
+        );
+        assert_eq!(
+            next_numbers(&[101, 900], &[], &[2, 250, 254], &[9]),
+            Ok((110, 10))
+        );
         assert_eq!(
             next_numbers(&[101, 110, 114, 900], &[], &[2, 10, 14], &[]),
             Ok((115, 15))

@@ -50,7 +50,7 @@ pub struct Seen {
     pub firewall_file: Option<bool>,
     pub export_list: Option<String>,
     /// Whether the record is still in the records directory.
-    pub record_in_place: bool,
+    pub record_in_place: Option<bool>,
 }
 
 fn known(answer: Option<bool>, done_when: bool) -> Probe {
@@ -85,7 +85,7 @@ pub fn probes(spec: &SiteSpec, seen: &Seen, licences_wired: Option<Probe>) -> [P
         _ => Probe::Unknown,
     };
     [
-        siteremove::unserve_probe(seen.entry_config.as_deref(), &spec.code),
+        siteremove::unserve_probe(seen.entry_config.as_deref(), &spec.code, spec.primary()),
         seen.archive.unwrap_or(Probe::Unknown),
         licences_wired.unwrap_or(Probe::Unknown),
         access,
@@ -93,11 +93,7 @@ pub fn probes(spec: &SiteSpec, seen: &Seen, licences_wired: Option<Probe>) -> [P
         destroyed,
         known(seen.firewall_file, false),
         siteremove::lists_probe(seen.export_list.as_deref(), &spec.code),
-        if seen.record_in_place {
-            Probe::NotDone
-        } else {
-            Probe::Done
-        },
+        known(seen.record_in_place, false),
     ]
 }
 
@@ -135,7 +131,7 @@ pub fn plan_doc(spec: &SiteSpec, probes: &[Probe; 9], licences_left_at_vendor: b
         "may_call_off": next_step.is_some_and(siteremove::may_call_off),
         "archives": ARCHIVES,
         "on_failure": "stop where it failed; every step is safe to do again; after the licence step the only way is forward",
-        "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses"],
+        "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses", "the id ranges given to the container"],
     })
 }
 
@@ -236,7 +232,7 @@ fn see(spec: &SiteSpec, records: &str) -> Seen {
         network_file: read_text(NETWORK_FILE),
         firewall_file: exists(&format!("/etc/pve/firewall/{ct}.fw")),
         export_list: read_text(EXPORT_LIST),
-        record_in_place: exists(&format!("{records}/{}.json", spec.code)) != Some(false),
+        record_in_place: exists(&format!("{records}/{}.json", spec.code)),
     }
 }
 
@@ -278,7 +274,8 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     {
         println!(
             "{}",
-            json!({ "plan": "site-remove", "site": code, "already_removed": true })
+            // the record was moved aside: said as found, and said that nothing was probed
+            json!({ "plan": "site-remove", "site": code, "already_removed": true, "probed": false })
         );
         return Ok(0);
     }
@@ -335,7 +332,7 @@ mod tests {
             network_file: Some("iface x\n".to_owned()),
             firewall_file: Some(true),
             export_list: Some("site9 119 /var/www/site9\n".to_owned()),
-            record_in_place: true,
+            record_in_place: Some(true),
         }
     }
 
@@ -350,7 +347,7 @@ mod tests {
             network_file: Some("iface x\n".to_owned()),
             firewall_file: Some(false),
             export_list: Some("other 101 /var/www/other\n".to_owned()),
-            record_in_place: false,
+            record_in_place: Some(false),
         }
     }
 
@@ -409,6 +406,12 @@ mod tests {
         seen.firewall_file = None;
         assert_eq!(
             probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Firewall)],
+            Probe::Unknown
+        );
+        let mut seen = gone();
+        seen.record_in_place = None;
+        assert_eq!(
+            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Record)],
             Probe::Unknown
         );
         let mut seen = gone();

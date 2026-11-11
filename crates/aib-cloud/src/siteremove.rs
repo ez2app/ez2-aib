@@ -12,8 +12,8 @@
 //! * Every step is probed before anything is done; "could not tell" stops the work. Each
 //!   step is safe to do twice, so a removal found half way goes on from the first step
 //!   that is known not to be done.
-//! * Up to the archive a removal can be called off and the site put back as it was.
-//!   After it the only way is forward: a site that is half removed is finished, not
+//! * Until the archive is made and checked a removal can be called off and the site put
+//!   back as it was. From the licence step on the only way is forward: a site that is half removed is finished, not
 //!   revived. Bringing a site back is a restore from the archive, which is its own
 //!   operation.
 //! * What the site holds at vendors (one activation of each paid plugin) is given back
@@ -43,7 +43,8 @@ pub enum RemoveStep {
     Destroy,
     /// The container's firewall file is removed.
     Firewall,
-    /// The site is taken off the host's lists (exports, id ranges).
+    /// The site is taken off the host's export list. (The id ranges given to its
+    /// container are not looked at here; they are not given out again either way.)
     Lists,
     /// The site's record is moved aside, marked removed.
     Record,
@@ -132,8 +133,10 @@ pub fn next(probes: &[Probe], licenses_left_at_vendor: bool) -> Next {
 
 /// Whether a removal that stands before `next_step` can still be called off with the
 /// site put back as it was: only while nothing was given back, closed or destroyed.
+/// The licence step itself is past that line: its vendors are asked one after another,
+/// and a removal found before that step may already have given one activation back.
 pub fn may_call_off(next_step: RemoveStep) -> bool {
-    next_step <= RemoveStep::Licenses
+    next_step < RemoveStep::Licenses
 }
 
 /// Whether doing `step` may lose something for good, so that the archive must be known
@@ -143,15 +146,28 @@ pub fn needs_archive(step: RemoveStep) -> bool {
 }
 
 /// The first step from what the host's entry is configured with: `None` when the
-/// configuration could not be read.
-pub fn unserve_probe(entry_config: Option<&str>, code: &str) -> Probe {
+/// configuration could not be read. The marker line is compared the way the code that
+/// swaps a site's block compares it (trailing white space does not count). A
+/// configuration without the marker in which a block still opens with the site's main
+/// address is not "taken off": it is "could not tell".
+pub fn unserve_probe(entry_config: Option<&str>, code: &str, main_address: &str) -> Probe {
     match entry_config {
         // an empty answer is not a configuration without this site
         None | Some("") => Probe::Unknown,
         Some(text) => {
             let marker = crate::site::caddy_marker(code);
-            if text.lines().any(|l| l == marker) {
-                Probe::NotDone
+            if text.lines().any(|l| l.trim_end() == marker) {
+                return Probe::NotDone;
+            }
+            let opens_with_address = text.lines().any(|l| {
+                l.trim_end().strip_suffix('{').is_some_and(|names| {
+                    names
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .any(|n| !main_address.is_empty() && n == main_address)
+                })
+            });
+            if opens_with_address {
+                Probe::Unknown
             } else {
                 Probe::Done
             }
@@ -367,25 +383,48 @@ mod tests {
     #[test]
     fn a_removal_can_be_called_off_only_while_nothing_is_lost() {
         for step in STEPS {
-            let want = matches!(
-                step,
-                RemoveStep::Unserve | RemoveStep::Archive | RemoveStep::Licenses
-            );
+            let want = matches!(step, RemoveStep::Unserve | RemoveStep::Archive);
             assert_eq!(may_call_off(step), want, "{step:?}");
         }
     }
     #[test]
     fn the_entry_is_read_by_the_sites_own_marker_line() {
         let with = "# site:site9\nwww.example.com {\n}\n# site:site90\nother.example.com {\n}\n";
-        assert_eq!(unserve_probe(Some(with), "site9"), Probe::NotDone);
-        assert_eq!(unserve_probe(Some(with), "site90"), Probe::NotDone);
+        let p = |text: Option<&str>, code: &str| unserve_probe(text, code, "www.example.com");
+        assert_eq!(p(Some(with), "site9"), Probe::NotDone);
+        assert_eq!(
+            unserve_probe(Some(with), "site90", "other.example.com"),
+            Probe::NotDone
+        );
         // a longer code that merely starts the same is another site
         assert_eq!(
-            unserve_probe(Some("# site:site90\nx.example.com {\n}\n"), "site9"),
+            p(Some("# site:site90\nx.example.com {\n}\n"), "site9"),
             Probe::Done
         );
-        assert_eq!(unserve_probe(None, "site9"), Probe::Unknown);
-        assert_eq!(unserve_probe(Some(""), "site9"), Probe::Unknown);
+        assert_eq!(p(None, "site9"), Probe::Unknown);
+        assert_eq!(p(Some(""), "site9"), Probe::Unknown);
+        // white space or a carriage return after the marker: the block is still there
+        for tail in [" ", "\t", "\r", "  \r"] {
+            let text = alloc::format!("# site:site9{tail}\nwww.example.com {{\n}}\n");
+            assert_eq!(p(Some(&text), "site9"), Probe::NotDone, "{tail:?}");
+        }
+        // the marker is gone but a block still opens with the site's address: not "taken off"
+        for text in [
+            "www.example.com {\n}\n",
+            "other.example.com, www.example.com {\n}\n",
+            "www.example.com other.example.com {\n}\n",
+        ] {
+            assert_eq!(p(Some(text), "site9"), Probe::Unknown, "{text}");
+        }
+        // an address that only contains it, or a mention inside a block, is not a block of its own
+        assert_eq!(p(Some("xwww.example.com {\n}\n"), "site9"), Probe::Done);
+        assert_eq!(
+            p(
+                Some("other.example.com {\n\tredir https://www.example.com\n}\n"),
+                "site9"
+            ),
+            Probe::Done
+        );
     }
 
     #[test]
