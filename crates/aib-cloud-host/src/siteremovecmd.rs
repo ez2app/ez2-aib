@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site remove <code> --address <main address> --plan` — the read-only
 //! half of removing a site. It reads the site's record, checks that the code and the main
-//! address typed are the record's, probes each of the nine steps of
+//! address typed are the record's, probes each of the ten steps of
 //! [`aib_cloud::siteremove`] on this host and prints what would be done next, sealed like
 //! every other plan. **Nothing is changed**: without `--plan` the command refuses.
 //!
@@ -9,6 +9,10 @@
 //! plugins are still activated at their vendors is answered inside the site, and that is
 //! not wired here. The licence step is therefore "could not tell" unless the person
 //! passes `--licences-left-at-vendor`, which is written into the plan.
+//!
+//! The DNS step is not probed on this host either: the key that manages DNS zones is not
+//! kept here, so the step is "could not tell" and the plan says why. It is never asked
+//! from here; the part that deletes records runs where that key is.
 //!
 //! The archive of a site is looked for under [`ARCHIVES`]. That directory is outside the
 //! one the daily backup rotates, and the archive tool must be able to enter it as the
@@ -22,7 +26,7 @@ use std::time::Duration;
 
 use aib_cloud::site::{customer_ssh_port, SiteSpec};
 use aib_cloud::sitecreate::Probe;
-use aib_cloud::siteremove::{self, Next, RemoveStep, STEPS};
+use aib_cloud::siteremove::{self, DnsProbe, Next, RemoveStep, STEPS};
 use serde_json::{json, Value};
 
 use crate::opstore;
@@ -34,6 +38,9 @@ const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
 pub const ARCHIVES: &str = "/var/lib/vz/ez2-removed";
 const EXPORT_LIST: &str = "/etc/ez2-cloud/sites.list";
 const NETWORK_FILE: &str = "/etc/network/interfaces";
+/// Why the DNS step is not probed by this command.
+pub const DNS_NOT_HERE: &str =
+    "not available on this host: the key that manages DNS zones is not kept here";
 
 /// What was read from the host for one site. `None` is "could not be read".
 #[derive(Default)]
@@ -63,7 +70,12 @@ fn known(answer: Option<bool>, done_when: bool) -> Probe {
 
 /// One probe per step, in [`STEPS`] order. Separate from [`cmd`] so it can be tested
 /// without a host.
-pub fn probes(spec: &SiteSpec, seen: &Seen, licences_wired: Option<Probe>) -> [Probe; 9] {
+pub fn probes(
+    spec: &SiteSpec,
+    seen: &Seen,
+    licences_wired: Option<Probe>,
+    dns: Option<DnsProbe>,
+) -> [Probe; 10] {
     let listed = siteremove::container_listed(seen.container_list.as_deref(), spec.ct);
     let access = match customer_ssh_port(spec.ct) {
         Some(port) => siteremove::access_probe(
@@ -93,6 +105,7 @@ pub fn probes(spec: &SiteSpec, seen: &Seen, licences_wired: Option<Probe>) -> [P
         destroyed,
         known(seen.firewall_file, false),
         siteremove::lists_probe(seen.export_list.as_deref(), &spec.code),
+        dns.unwrap_or(DnsProbe::Unknown).probe(),
         known(seen.record_in_place, false),
     ]
 }
@@ -106,7 +119,12 @@ fn probe_word(p: Probe) -> &'static str {
 }
 
 /// The plan document. Separate from [`cmd`] so it can be tested without a host.
-pub fn plan_doc(spec: &SiteSpec, probes: &[Probe; 9], licences_left_at_vendor: bool) -> Value {
+pub fn plan_doc(
+    spec: &SiteSpec,
+    probes: &[Probe; 10],
+    licences_left_at_vendor: bool,
+    dns: Option<DnsProbe>,
+) -> Value {
     let next = siteremove::next(probes, licences_left_at_vendor);
     let (next_word, next_step, stop) = match next {
         Next::Run(s) => ("run", Some(s), None),
@@ -129,9 +147,11 @@ pub fn plan_doc(spec: &SiteSpec, probes: &[Probe; 9], licences_left_at_vendor: b
         "next_step": next_step.map(RemoveStep::as_str),
         "stop": stop,
         "may_call_off": siteremove::may_call_off_now(next),
+        "dns": dns.unwrap_or(DnsProbe::Unknown).as_str(),
+        "dns_note": if dns.is_some() { Value::Null } else { Value::from(DNS_NOT_HERE) },
         "archives": ARCHIVES,
         "on_failure": "stop where it failed; every step is safe to do again; after the licence step the only way is forward",
-        "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses", "the id ranges given to the container"],
+        "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses (the key is not on this host)", "the id ranges given to the container"],
     })
 }
 
@@ -287,8 +307,8 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         );
     }
     let seen = see(&spec, &records);
-    let p = probes(&spec, &seen, None);
-    let mut doc = plan_doc(&spec, &p, left);
+    let p = probes(&spec, &seen, None, None);
+    let mut doc = plan_doc(&spec, &p, left, None);
     let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
     let fingerprint = opstore::host_fingerprint(Path::new(opstore::MACHINE_ID))?;
     crate::quarantinecmd::seal_with_op(&mut doc, &op, &fingerprint, env!("CARGO_PKG_VERSION"))?;
@@ -353,9 +373,14 @@ mod tests {
 
     #[test]
     fn an_untouched_site_has_nothing_done_and_starts_at_the_entry() {
-        let p = probes(&spec(), &untouched(), Some(Probe::NotDone));
+        let p = probes(
+            &spec(),
+            &untouched(),
+            Some(Probe::NotDone),
+            Some(DnsProbe::NotDone),
+        );
         assert!(p.iter().all(|x| *x == Probe::NotDone), "{p:?}");
-        let doc = plan_doc(&spec(), &p, false);
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::NotDone));
         assert_eq!(doc["next"], "run");
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], true);
@@ -367,16 +392,21 @@ mod tests {
         // the entry could not be read while the container is already gone
         let mut seen = gone();
         seen.entry_config = None;
-        let p = probes(&spec(), &seen, Some(Probe::Done));
-        let doc = plan_doc(&spec(), &p, false);
+        let p = probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done));
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::Done));
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], false);
         // steps out of order: nothing is archived and the way in is already closed
         let mut seen = untouched();
         seen.live_rules = gone().live_rules;
-        let p = probes(&spec(), &seen, Some(Probe::NotDone));
-        let doc = plan_doc(&spec(), &p, false);
+        let p = probes(
+            &spec(),
+            &seen,
+            Some(Probe::NotDone),
+            Some(DnsProbe::NotDone),
+        );
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::NotDone));
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["stop"], "steps_out_of_order");
         assert_eq!(doc["may_call_off"], false);
@@ -384,9 +414,12 @@ mod tests {
 
     #[test]
     fn a_removed_site_has_everything_done() {
-        let p = probes(&spec(), &gone(), Some(Probe::Done));
+        let p = probes(&spec(), &gone(), Some(Probe::Done), Some(DnsProbe::Done));
         assert!(p.iter().all(|x| *x == Probe::Done), "{p:?}");
-        assert_eq!(plan_doc(&spec(), &p, false)["next"], "finished");
+        assert_eq!(
+            plan_doc(&spec(), &p, false, Some(DnsProbe::Done))["next"],
+            "finished"
+        );
     }
 
     #[test]
@@ -395,13 +428,13 @@ mod tests {
         let mut seen = untouched();
         seen.entry_config = gone().entry_config;
         seen.archive = Some(Probe::Done);
-        let p = probes(&spec(), &seen, None);
-        let doc = plan_doc(&spec(), &p, false);
+        let p = probes(&spec(), &seen, None, Some(DnsProbe::NotDone));
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::NotDone));
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "licenses");
         assert_eq!(doc["stop"], "probe_unknown");
         // the person's explicit word passes it over, and the plan says so
-        let doc = plan_doc(&spec(), &p, true);
+        let doc = plan_doc(&spec(), &p, true, Some(DnsProbe::NotDone));
         assert_eq!(doc["next"], "run");
         assert_eq!(doc["next_step"], "access");
         assert_eq!(doc["licences_left_at_vendor"], true);
@@ -413,45 +446,49 @@ mod tests {
         let at = |s: RemoveStep| STEPS.iter().position(|x| *x == s).unwrap();
         let mut seen = gone();
         seen.container_list = None;
-        let p = probes(&spec(), &seen, Some(Probe::Done));
+        let p = probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done));
         assert_eq!(p[at(RemoveStep::Stop)], Probe::Unknown);
         assert_eq!(p[at(RemoveStep::Destroy)], Probe::Unknown);
         let mut seen = gone();
         seen.disk = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Destroy)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))
+                [at(RemoveStep::Destroy)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.firewall_file = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Firewall)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))
+                [at(RemoveStep::Firewall)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.record_in_place = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Record)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))[at(RemoveStep::Record)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.archive = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Archive)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))
+                [at(RemoveStep::Archive)],
             Probe::Unknown
         );
         // a listed container whose state was not answered
         let mut seen = untouched();
         seen.running = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Stop)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))[at(RemoveStep::Stop)],
             Probe::Unknown
         );
         // the container is gone and its disk is still there: not destroyed
         let mut seen = gone();
         seen.disk = Some(true);
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done))[at(RemoveStep::Destroy)],
+            probes(&spec(), &seen, Some(Probe::Done), Some(DnsProbe::Done))
+                [at(RemoveStep::Destroy)],
             Probe::NotDone
         );
     }
@@ -495,5 +532,41 @@ mod tests {
             .map(|s| (*s).to_owned())
             .collect();
         assert!(cmd(&args).unwrap_err().contains("--address"));
+    }
+
+    #[test]
+    fn the_dns_step_is_not_asked_on_this_host_and_the_plan_says_why() {
+        let at = |s: RemoveStep| STEPS.iter().position(|x| *x == s).unwrap();
+        // what the command itself passes: nothing for the DNS step
+        let p = probes(&spec(), &gone(), Some(Probe::Done), None);
+        assert_eq!(p[at(RemoveStep::Dns)], Probe::Unknown);
+        let doc = plan_doc(&spec(), &p, false, None);
+        assert_eq!(doc["next"], "stop");
+        assert_eq!(doc["next_step"], "dns");
+        assert_eq!(doc["dns"], "unknown");
+        assert_eq!(doc["dns_note"], DNS_NOT_HERE);
+        // a zone that is not ours is passed over and said
+        let p = probes(&spec(), &gone(), Some(Probe::Done), Some(DnsProbe::Skipped));
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::Skipped));
+        assert_eq!(doc["next"], "finished");
+        assert_eq!(doc["dns"], "skipped_zone_not_ours");
+        assert!(doc["dns_note"].is_null());
+        // an untouched site in a zone that is not ours starts at the entry, as always
+        let p = probes(
+            &spec(),
+            &untouched(),
+            Some(Probe::NotDone),
+            Some(DnsProbe::Skipped),
+        );
+        let doc = plan_doc(&spec(), &p, false, Some(DnsProbe::Skipped));
+        assert_eq!(doc["next_step"], "unserve");
+        assert_eq!(doc["may_call_off"], true);
+        // a record of ours is left once everything before it is done
+        let p = probes(&spec(), &gone(), Some(Probe::Done), Some(DnsProbe::NotDone));
+        let mut p2 = p;
+        p2[at(RemoveStep::Record)] = Probe::NotDone;
+        let doc = plan_doc(&spec(), &p2, false, Some(DnsProbe::NotDone));
+        assert_eq!(doc["next_step"], "dns");
+        assert_eq!(doc["may_call_off"], false);
     }
 }
