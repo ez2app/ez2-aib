@@ -1513,8 +1513,8 @@ jobs:
              '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
              a_long_domain_is_planned_under_its_hashed_target
           # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
-          hk sitecreatecmd.rs '    if differ.is_empty() {' \
-             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+          hk sitecreatecmd.rs '    if keys.is_empty() {' \
+             '    if keys.is_empty() || !keys.is_empty() { // knife' \
              limits_that_did_not_take_are_undone
           # site create --continue: the firewall file is never written (the clone's stays)
           hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
@@ -1525,7 +1525,7 @@ jobs:
              '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
              a_container_that_does_not_run_is_undone
           # site create --continue: the record does not move on (op status would show the wrong step)
-          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            step_done(&mut record, step);' \
              $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
              an_opening_is_carried_on_through_limits_firewall_and_start
           # site create --continue: a running container is destroyed without being stopped
