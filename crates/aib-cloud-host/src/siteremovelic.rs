@@ -116,9 +116,7 @@ pub fn freemius_answer(out: &str) -> VendorAnswer {
 }
 
 fn eval(runner: &mut impl Runner, spec: &SiteSpec, code: &str) -> String {
-    runner
-        .run(&wp(spec, &["eval", code]))
-        .unwrap_or_default()
+    runner.run(&wp(spec, &["eval", code])).unwrap_or_default()
 }
 
 /// SEOPress, asked only when the key in the site is the template's (`template` is that
@@ -207,7 +205,10 @@ mod tests {
     #[test]
     fn each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed() {
         assert_eq!(fluent_answer("FFV status=valid\n"), VendorAnswer::Active);
-        assert_eq!(fluent_answer("FFV status=expired\n"), VendorAnswer::NotActive);
+        assert_eq!(
+            fluent_answer("FFV status=expired\n"),
+            VendorAnswer::NotActive
+        );
         assert_eq!(fluent_answer("FFV status=\n"), VendorAnswer::Unknown);
         assert_eq!(fluent_answer("FFV absent\n"), VendorAnswer::NoData);
         assert_eq!(fluent_answer("FFV nokey\n"), VendorAnswer::NoData);
@@ -320,7 +321,10 @@ mod tests {
         };
         let got = ask_all(&mut site, &spec(), Some("OTHER")).unwrap();
         assert_eq!(got[0], ("seopress", VendorAnswer::KeyNotTemplate));
-        assert!(!site.calls.iter().any(|c| c.contains("check_license\",\"license\"")));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains("check_license\",\"license\"")));
         let got = ask_all(&mut site, &spec(), None).unwrap();
         assert_eq!(got[0], ("seopress", VendorAnswer::KeyNotTemplate));
         // the site does not answer at all: unreadable, nothing else asked
@@ -332,7 +336,11 @@ mod tests {
         assert_eq!(down.calls.len(), 1);
         // the table and this file name the same plugins
         for p in PAID_PLUGINS {
-            assert!(ask_one(&mut site, &spec(), p.name, None).is_some(), "{}", p.name);
+            assert!(
+                ask_one(&mut site, &spec(), p.name, None).is_some(),
+                "{}",
+                p.name
+            );
         }
         assert_eq!(ask_one(&mut site, &spec(), "someother", None), None);
     }
@@ -345,7 +353,12 @@ mod tests {
         };
         for p in PAID_PLUGINS {
             let (ok, _) = give_back(&mut site, &spec(), p.name, Some("TEMPLATEKEY"));
-            assert_eq!(ok, give_back_of(p.name) == Some(GiveBack::InSite), "{}", p.name);
+            assert_eq!(
+                ok,
+                give_back_of(p.name) == Some(GiveBack::InSite),
+                "{}",
+                p.name
+            );
         }
         let (ok, now) = give_back(&mut site, &spec(), "fluentformpro", None);
         assert_eq!((ok, now), (true, VendorAnswer::NotActive));

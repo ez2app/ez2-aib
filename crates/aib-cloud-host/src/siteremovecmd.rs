@@ -1100,7 +1100,14 @@ pub fn apply(
         },
         |_op, base: Vec<(String, Option<u16>)>| {
             let mut h = host.borrow_mut();
-            carry_out(&mut **h, spec, g.left, g.dns_ledger.as_deref(), &base, removed_at)
+            carry_out(
+                &mut **h,
+                spec,
+                g.left,
+                g.dns_ledger.as_deref(),
+                &base,
+                removed_at,
+            )
         },
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
@@ -1544,7 +1551,11 @@ mod tests {
         ]
     }
 
-    fn answer(mut a: Vec<(&'static str, VendorAnswer)>, plugin: &str, now: VendorAnswer) -> Vec<(&'static str, VendorAnswer)> {
+    fn answer(
+        mut a: Vec<(&'static str, VendorAnswer)>,
+        plugin: &str,
+        now: VendorAnswer,
+    ) -> Vec<(&'static str, VendorAnswer)> {
         for x in &mut a {
             if x.0 == plugin {
                 x.1 = now;
@@ -2061,7 +2072,10 @@ mod tests {
             if let Some(a) = self.licences.take() {
                 self.licences = Some(answer(a, plugin, self.after_give_back.unwrap_or(now)));
             }
-            (true, self.after_give_back.unwrap_or(VendorAnswer::NotActive))
+            (
+                true,
+                self.after_give_back.unwrap_or(VendorAnswer::NotActive),
+            )
         }
         fn others(&mut self) -> Vec<(String, Option<u16>)> {
             self.others_asked += 1;
@@ -2498,8 +2512,8 @@ mod tests {
         assert_eq!(
             out["applied"],
             json!([
-                "unserve", "archive", "licenses", "access", "stop", "destroy", "firewall",
-                "lists", "record"
+                "unserve", "archive", "licenses", "access", "stop", "destroy", "firewall", "lists",
+                "record"
             ])
         );
         assert_eq!(
@@ -2607,7 +2621,10 @@ mod tests {
         let e = dns_here(&spec(), Some("removed")).unwrap_err();
         assert!(e.starts_with("dns_ledger_bad_format"), "{e}");
         assert_eq!(dns_here(&spec(), None), Ok(DnsProbe::NotAskedHere));
-        assert_eq!(dns_here(&spec(), Some(LEDGER)), Ok(DnsProbe::RemovedElsewhere));
+        assert_eq!(
+            dns_here(&spec(), Some(LEDGER)),
+            Ok(DnsProbe::RemovedElsewhere)
+        );
         // the line belongs to --plan: --apply refuses it before reading anything
         let args: Vec<String> = [
             "site9",

@@ -126,8 +126,7 @@ pub enum Next {
 ///   activated, a blank site, or only activations no program can give back) has nothing
 ///   to do at that step.
 pub fn may_be_done_early(step: RemoveStep) -> bool {
-    matches!(step, RemoveStep::Access | RemoveStep::Dns)
-        || step == RemoveStep::Licenses
+    matches!(step, RemoveStep::Access | RemoveStep::Dns) || step == RemoveStep::Licenses
 }
 
 /// The next thing to do, from one probe per step in [`STEPS`] order.
@@ -461,9 +460,7 @@ pub fn seat_of(plugin: &str, answer: VendorAnswer) -> (Seat, Option<&'static str
         (GiveBack::RecordOnly, VendorAnswer::Unknown) => {
             (Seat::NoAutomaticReturn, Some(LEFT_NOT_ASKED))
         }
-        (_, VendorAnswer::KeyNotTemplate) => {
-            (Seat::NoAutomaticReturn, Some(LEFT_KEY_NOT_TEMPLATE))
-        }
+        (_, VendorAnswer::KeyNotTemplate) => (Seat::NoAutomaticReturn, Some(LEFT_KEY_NOT_TEMPLATE)),
         (_, VendorAnswer::NotValid) => (Seat::NoAutomaticReturn, Some(LEFT_NOT_VALID)),
     }
 }
@@ -1464,7 +1461,11 @@ mod tests {
         PAID_PLUGINS.iter().map(|p| (p.name, answer)).collect()
     }
 
-    fn with(mut a: Vec<(&'static str, VendorAnswer)>, plugin: &str, answer: VendorAnswer) -> Vec<(&'static str, VendorAnswer)> {
+    fn with(
+        mut a: Vec<(&'static str, VendorAnswer)>,
+        plugin: &str,
+        answer: VendorAnswer,
+    ) -> Vec<(&'static str, VendorAnswer)> {
         for x in &mut a {
             if x.0 == plugin {
                 x.1 = answer;
@@ -1485,8 +1486,14 @@ mod tests {
             assert_eq!(give_back_of(p), Some(GiveBack::RecordOnly), "{p}");
         }
         assert_eq!(give_back_of("someother"), None);
-        assert_eq!(seat_of("someother", VendorAnswer::Active), (Seat::Unknown, None));
-        assert_eq!(seat_of("someother", VendorAnswer::NotActive), (Seat::Unknown, None));
+        assert_eq!(
+            seat_of("someother", VendorAnswer::Active),
+            (Seat::Unknown, None)
+        );
+        assert_eq!(
+            seat_of("someother", VendorAnswer::NotActive),
+            (Seat::Unknown, None)
+        );
     }
 
     #[test]
@@ -1534,7 +1541,10 @@ mod tests {
             ]
         );
         // a plugin only recorded with nothing in the site: nothing left
-        assert_eq!(seat_of("flyingpress", VendorAnswer::NoData), (Seat::NotHeld, None));
+        assert_eq!(
+            seat_of("flyingpress", VendorAnswer::NoData),
+            (Seat::NotHeld, None)
+        );
     }
 
     #[test]
@@ -1542,7 +1552,11 @@ mod tests {
         let look = licences_look(true, None);
         assert_eq!(look.probe, Probe::Done);
         assert_eq!(look.left.len(), PAID_PLUGINS.len());
-        assert!(look.left.iter().all(|l| l.ends_with(":site_unreadable")), "{:?}", look.left);
+        assert!(
+            look.left.iter().all(|l| l.ends_with(":site_unreadable")),
+            "{:?}",
+            look.left
+        );
         assert!(look.to_give_back.is_empty());
         // a blank site has no paid plugins at all
         let look = licences_look(false, None);
@@ -1580,7 +1594,11 @@ mod tests {
             VendorAnswer::NotValid,
             VendorAnswer::KeyNotTemplate,
         ] {
-            assert_eq!(give_back_after(true, now), Err(LICENCE_NOT_CONFIRMED), "{now:?}");
+            assert_eq!(
+                give_back_after(true, now),
+                Err(LICENCE_NOT_CONFIRMED),
+                "{now:?}"
+            );
         }
     }
 
@@ -1622,7 +1640,10 @@ mod tests {
             dns_ledger_check(&site90, "site9", &names),
             Err(DNS_LEDGER_WRONG_SITE)
         );
-        assert_eq!(dns_ledger_check(LEDGER, "", &names), Err(DNS_LEDGER_WRONG_SITE));
+        assert_eq!(
+            dns_ledger_check(LEDGER, "", &names),
+            Err(DNS_LEDGER_WRONG_SITE)
+        );
         // one name short, one name more, one name twice
         assert_eq!(
             dns_ledger_check(LEDGER, "site9", &names[..1]),
