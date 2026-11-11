@@ -45,8 +45,8 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 45: the Windows cell also runs the Job tests 5x and 7 knives
-    timeout-minutes: 45
+    # 75: the macOS cell now runs the cloud (aib-cloud / aib-cloud-host) knives too and hit 45 on main (11-12); Windows still runs the Job tests 5x and 7 knives
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
