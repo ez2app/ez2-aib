@@ -107,8 +107,10 @@ pub fn license_by_status(status: Option<&str>, left: Option<u64>) -> License {
             Some(0) => License::Quota,
             _ => License::Inactive,
         },
-        Some("expired" | "disabled" | "revoked" | "invalid" | "missing" | "item_name_mismatch"
-        | "invalid_item_id") => License::NotValid,
+        Some(
+            "expired" | "disabled" | "revoked" | "invalid" | "missing" | "item_name_mismatch"
+            | "invalid_item_id",
+        ) => License::NotValid,
         Some("no_activations_left") => License::Quota,
         _ => License::Unknown,
     }
@@ -188,15 +190,30 @@ mod tests {
 
     #[test]
     fn the_login_name_is_the_mail_prefix() {
-        assert_eq!(admin_login("first@example.com", &[]).as_deref(), Some("first"));
-        assert_eq!(admin_login("First.Last@example.com", &[]).as_deref(), Some("first.last"));
-        assert_eq!(admin_login("a+tag@example.com", &[]).as_deref(), Some("atag"));
-        assert_eq!(admin_login("-._x_.-@example.com", &[]).as_deref(), Some("x"));
+        assert_eq!(
+            admin_login("first@example.com", &[]).as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            admin_login("First.Last@example.com", &[]).as_deref(),
+            Some("first.last")
+        );
+        assert_eq!(
+            admin_login("a+tag@example.com", &[]).as_deref(),
+            Some("atag")
+        );
+        assert_eq!(
+            admin_login("-._x_.-@example.com", &[]).as_deref(),
+            Some("x")
+        );
     }
 
     #[test]
     fn a_taken_login_name_gets_a_number() {
-        assert_eq!(admin_login("first@example.com", &["first"]).as_deref(), Some("first2"));
+        assert_eq!(
+            admin_login("first@example.com", &["first"]).as_deref(),
+            Some("first2")
+        );
         assert_eq!(
             admin_login("first@example.com", &["First", "first2"]).as_deref(),
             Some("first3")
@@ -210,7 +227,15 @@ mod tests {
 
     #[test]
     fn an_address_with_nothing_usable_gives_no_login_name() {
-        for bad in ["", "first", "@example.com", "first@", "a@b@c", "+++@example.com", "...@example.com"] {
+        for bad in [
+            "",
+            "first",
+            "@example.com",
+            "first@",
+            "a@b@c",
+            "+++@example.com",
+            "...@example.com",
+        ] {
             assert_eq!(admin_login(bad, &[]), None, "{bad}");
         }
     }
@@ -227,11 +252,26 @@ mod tests {
     #[test]
     fn a_status_vendor_is_read_by_its_own_words() {
         assert_eq!(license_by_status(Some("valid"), Some(5)), License::Active);
-        assert_eq!(license_by_status(Some("site_inactive"), Some(9917)), License::Inactive);
-        assert_eq!(license_by_status(Some("site_inactive"), None), License::Inactive);
-        assert_eq!(license_by_status(Some("site_inactive"), Some(0)), License::Quota);
-        assert_eq!(license_by_status(Some("no_activations_left"), None), License::Quota);
-        assert_eq!(license_by_status(Some("expired"), Some(3)), License::NotValid);
+        assert_eq!(
+            license_by_status(Some("site_inactive"), Some(9917)),
+            License::Inactive
+        );
+        assert_eq!(
+            license_by_status(Some("site_inactive"), None),
+            License::Inactive
+        );
+        assert_eq!(
+            license_by_status(Some("site_inactive"), Some(0)),
+            License::Quota
+        );
+        assert_eq!(
+            license_by_status(Some("no_activations_left"), None),
+            License::Quota
+        );
+        assert_eq!(
+            license_by_status(Some("expired"), Some(3)),
+            License::NotValid
+        );
     }
 
     #[test]
@@ -239,8 +279,14 @@ mod tests {
         assert_eq!(license_by_status(None, Some(5)), License::Unknown);
         assert_eq!(license_by_status(Some(""), None), License::Unknown);
         assert_eq!(license_by_status(Some("VALID"), None), License::Unknown);
-        assert_eq!(license_by_status(Some("something_new"), None), License::Unknown);
-        assert_eq!(license_by_activation(None, Some(true), Some(1), None), License::Unknown);
+        assert_eq!(
+            license_by_status(Some("something_new"), None),
+            License::Unknown
+        );
+        assert_eq!(
+            license_by_activation(None, Some(true), Some(1), None),
+            License::Unknown
+        );
         assert_eq!(
             license_by_activation(Some("something_new"), Some(true), None, None),
             License::Unknown
@@ -250,31 +296,58 @@ mod tests {
     #[test]
     fn an_activation_vendor_needs_its_own_record_of_this_site() {
         let a = license_by_activation;
-        assert_eq!(a(Some("active"), Some(true), Some(28), None), License::Active);
+        assert_eq!(
+            a(Some("active"), Some(true), Some(28), None),
+            License::Active
+        );
         // the site holds a number the vendor does not have: not activated
-        assert_eq!(a(Some("active"), Some(false), Some(27), None), License::Inactive);
+        assert_eq!(
+            a(Some("active"), Some(false), Some(27), None),
+            License::Inactive
+        );
         assert_eq!(a(Some("active"), None, Some(27), None), License::Inactive);
         assert_eq!(a(Some("active"), None, Some(3), Some(3)), License::Quota);
         assert_eq!(a(Some("active"), None, Some(2), Some(3)), License::Inactive);
         assert_eq!(a(Some("active"), None, None, Some(3)), License::Unknown);
-        assert_eq!(a(Some("revoked"), Some(true), Some(1), None), License::NotValid);
+        assert_eq!(
+            a(Some("revoked"), Some(true), Some(1), None),
+            License::NotValid
+        );
     }
 
     #[test]
     fn only_a_known_inactive_license_is_activated() {
         assert_eq!(license_before(License::Active), LicenseStep::Done);
         assert_eq!(license_before(License::Inactive), LicenseStep::Activate);
-        assert_eq!(license_before(License::Quota), LicenseStep::Stop("license_quota"));
-        assert_eq!(license_before(License::NotValid), LicenseStep::Stop("license_not_valid"));
-        assert_eq!(license_before(License::Unknown), LicenseStep::Stop("license_unknown"));
+        assert_eq!(
+            license_before(License::Quota),
+            LicenseStep::Stop("license_quota")
+        );
+        assert_eq!(
+            license_before(License::NotValid),
+            LicenseStep::Stop("license_not_valid")
+        );
+        assert_eq!(
+            license_before(License::Unknown),
+            LicenseStep::Stop("license_unknown")
+        );
     }
 
     #[test]
     fn activated_means_the_call_and_the_vendor_both_say_so() {
         assert_eq!(license_after(true, License::Active), Ok(()));
-        assert_eq!(license_after(false, License::Active), Err("license_activation_failed"));
-        assert_eq!(license_after(true, License::Inactive), Err("license_inactive"));
-        assert_eq!(license_after(true, License::Unknown), Err("license_unknown"));
+        assert_eq!(
+            license_after(false, License::Active),
+            Err("license_activation_failed")
+        );
+        assert_eq!(
+            license_after(true, License::Inactive),
+            Err("license_inactive")
+        );
+        assert_eq!(
+            license_after(true, License::Unknown),
+            Err("license_unknown")
+        );
         assert_eq!(license_after(true, License::Quota), Err("license_quota"));
     }
 }
