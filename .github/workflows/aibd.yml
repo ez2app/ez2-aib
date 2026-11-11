@@ -1877,6 +1877,10 @@ jobs:
           hk sitecreatecmd.rs '    } else if platform.is_none() {' \
              '    } else if platform.is_none() && false {' \
              the_platform_s_own_domains_are_not_opened
+          # E1 audit #5: an opening a person carried on to the end (--continue) still reads as stopped
+          hk sitecreaterun.rs '    if opened {' \
+             '    if opened && false { // knife' \
+             a_stop_carried_on_by_a_person_reads_as_open
           # E1 (33e28 N2): a unit started after its ask stopped waiting takes the ask up
           hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
              '        (Some("waiting"), "never") => { // knife' \
