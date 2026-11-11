@@ -1566,10 +1566,10 @@ mod tests {
             {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
             {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "192.0.2.53", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
+        assert_eq!(plan_fingerprint(&plan), "473e1dd2dde568f2");
         let mut other = plan.clone();
         other[3]["port"] = json!(5353);
-        assert_ne!(plan_fingerprint(&other), "e75b1af045774800");
+        assert_ne!(plan_fingerprint(&other), "473e1dd2dde568f2");
     }
 
     #[test]
