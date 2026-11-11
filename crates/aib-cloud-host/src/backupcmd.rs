@@ -259,9 +259,12 @@ fn run(args: &[String]) -> Result<u8, String> {
     Ok(exit)
 }
 
-/// The local dump folder as (name, plain file, modification time, size); `None` when the
-/// folder cannot be listed. Links are not followed: a link is not a plain file.
-fn list_dumps(dir: &str) -> Option<Vec<(String, bool, Option<u64>, Option<u64>)>> {
+/// One entry of the local dump folder: name, plain file, modification time, size.
+type DumpEntry = (String, bool, Option<u64>, Option<u64>);
+
+/// The local dump folder; `None` when it cannot be listed. Links are not followed: a link
+/// is not a plain file.
+fn list_dumps(dir: &str) -> Option<Vec<DumpEntry>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).ok()? {
         let entry = entry.ok()?;
