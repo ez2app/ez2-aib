@@ -978,9 +978,14 @@ mod tests {
         let start = s
             .find("nohup bash \"$d.runner\" </dev/null >\"$d.log\" 2>&1 &")
             .unwrap();
-        let mark = s.find("echo \"AIB_LEASE_DETACHED 00ff $rp $d.log\"").unwrap();
+        let mark = s
+            .find("echo \"AIB_LEASE_DETACHED 00ff $rp $d.log\"")
+            .unwrap();
         assert!(unpack < start && start < mark, "{s}");
-        assert!(!s.contains("lease acquire"), "the lease is the runner's: {s}");
+        assert!(
+            !s.contains("lease acquire"),
+            "the lease is the runner's: {s}"
+        );
         assert!(
             s.contains("echo \"AIB_LEASE_BEAT 00ff\" 2>/dev/null || exit 141"),
             "a dropped connection ends the follower (2240e L2): {s}"

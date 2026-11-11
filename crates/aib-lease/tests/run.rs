@@ -56,9 +56,9 @@ fn world() -> World {
          while [ \"$1\" != \"--\" ]; do shift; done; shift\n\
          echo \"host=$1\" >> \"$FAKE_LOG\"; shift\n\
          if [ -n \"${FAKE_SSH_DROP:-}\" ]; then\n\
-           # the connection drops after a few lines: the reader goes away, the remote\n\
-           # side keeps running with a closed stdout (no tty, so no HUP)\n\
-           /bin/sh -c \"$1\" | head -n \"$FAKE_SSH_DROP\" >/dev/null\n\
+           # the first lines arrive, then the connection drops: the reader goes away,\n\
+           # the remote side keeps running with a closed stdout (no tty, so no HUP)\n\
+           /bin/sh -c \"$1\" | head -n \"$FAKE_SSH_DROP\"\n\
            echo 'client_loop: send disconnect: Broken pipe' >&2; exit 255\n\
          fi\n\
          exec /bin/sh -c \"$1\"\n",
