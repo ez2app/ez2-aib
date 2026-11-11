@@ -55,6 +55,7 @@ pub mod share;
 pub mod site;
 pub mod sitecreate;
 pub mod sitedefaults;
+pub mod sitedns;
 pub mod siteremove;
 pub mod svc;
 pub mod usage;

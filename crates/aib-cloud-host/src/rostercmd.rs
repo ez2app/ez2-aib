@@ -51,7 +51,7 @@ const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 /// The codes of every site this host has a record for. A record that cannot be read is an
 /// error: a tenant id must not slip past the "is not a site code" rule because one record
 /// was unreadable.
-fn site_codes(records: &str) -> Result<Vec<String>, String> {
+pub(crate) fn site_codes(records: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for entry in fs::read_dir(records).map_err(|e| format!("{records}: {e}"))? {
         let path = entry.map_err(|e| e.to_string())?.path();
