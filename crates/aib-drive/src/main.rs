@@ -5,7 +5,7 @@
 //! 4 paused; 5 another observe holds the lock, or a state file failed.
 
 use aib_drive::decide::{Roles, Seat, Sha, Snapshot};
-use aib_drive::observe::{self, Paths, RealClock, Record, BASE};
+use aib_drive::observe::{self, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
 use aib_drive::source::AibQueue;
 use std::collections::BTreeMap;
@@ -64,15 +64,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         .unwrap_or_default();
     let interval = match m.remove("--interval") {
         None => BASE,
-        Some(v) => {
-            let secs: u64 = v
-                .parse()
-                .map_err(|_| format!("--interval {v:?}: seconds"))?;
-            if secs == 0 {
-                return Err("--interval must be at least 1".into());
-            }
-            Duration::from_secs(secs)
-        }
+        Some(v) => observe::interval(&v)?,
     };
     if !watch && interval != BASE {
         return Err("--interval goes with --watch".into());
@@ -99,6 +91,7 @@ fn main() {
     };
     let root = match observe::state_root(
         std::env::var("EZ2_AIB_STATE_ROOT").ok().as_deref(),
+        std::env::var("EZ2_AIB_HOME").ok().as_deref(),
         std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from)
@@ -156,11 +149,11 @@ fn main() {
             show(&r);
             std::process::exit(if r.unknown.is_some() { 3 } else { 0 });
         }
-        Err(e) if e.starts_with("暫停中") => {
+        Err(Refused::Paused(e)) => {
             eprintln!("aib-drive: {e}");
             std::process::exit(4);
         }
-        Err(e) => {
+        Err(Refused::State(e)) => {
             eprintln!("aib-drive: {e}");
             std::process::exit(5);
         }

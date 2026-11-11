@@ -2059,7 +2059,7 @@ jobs:
           ok() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test observe "$3"; }
           # once while paused runs anyway
-          ok '        return Err(format!("暫停中:{}", paths.pause.display()));' \
+          ok '        return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));' \
              '        let _ = paths; // knife' \
              a_round_while_paused_is_refused_and_writes_nothing
           # --watch ignores the pause file
@@ -2071,8 +2071,12 @@ jobs:
              '        .write(true).truncate(true) // knife' \
              two_rounds_append_two_lines_and_decide_the_same
           # EZ2_AIB_STATE_ROOT is ignored
-          ok '    match env_root.filter(|r| !r.is_empty()) {' \
-             '    match env_root.filter(|r| r.is_empty() && !r.is_empty()) { // knife' \
+          ok '    if let Some(r) = env_root.filter(|r| !r.is_empty()) {' \
+             '    if let Some(r) = env_root.filter(|r| r.is_empty() && !r.is_empty()) { // knife' \
+             the_state_root_is_the_env_root_or_the_home_default
+          # EZ2_AIB_HOME is ignored (two roots, two locks)
+          ok '    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {' \
+             '    if let Some(h) = aib_home.filter(|h| h.is_empty() && !h.is_empty()) { // knife' \
              the_state_root_is_the_env_root_or_the_home_default
           # a held lock is taken over
           ok '    match f.try_lock() {' \
@@ -2091,9 +2095,21 @@ jobs:
              '        Err(e) => (Some(clean(&e, 0)), prev.clone(), Vec::new()), // knife' \
              a_failed_snapshot_is_recorded_with_its_reason
           # outside text keeps its control characters
-          ok '        .map(|c| if c.is_control() { '"'"'?'"'"' } else { c })' \
-             '        .map(|c| c) // knife' \
+          ok '            if c.is_control() || is_format(c) {' \
+             '            if is_format(c) { // knife' \
              outside_text_is_cleaned_and_cut
+          # a right-to-left override is kept
+          ok '            | '"'"'\u{202a}'"'"'..='"'"'\u{202e}'"'"'' \
+             '            | '"'"'\u{202a}'"'"'..='"'"'\u{202d}'"'"' // knife' \
+             format_characters_are_cleaned_too
+          # --interval has no floor
+          ok '    if d < MIN_INTERVAL {' \
+             '    if d < Duration::ZERO { // knife' \
+             an_interval_under_30_seconds_is_refused
+          # a last line longer than the first read is never found
+          ok '        if want >= len {' \
+             '        if true { // knife' \
+             the_last_heads_are_read_from_the_end_of_a_long_journal
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

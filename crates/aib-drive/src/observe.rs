@@ -5,7 +5,9 @@
 //! in aib-drive. The only files written are under `<state root>/drive/`:
 //! the journal (append only) and the lock.
 //!
-//! - State root: `EZ2_AIB_STATE_ROOT`, or `~/.ez2-aib/state`.
+//! - State root: the same order as the rest of aib (`aib_init.py`):
+//!   `EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`, then `~/.ez2-aib`. One root
+//!   means one lock and one journal, wherever observe is started from.
 //! - Pause: while `drive/pause` exists no round runs. `--once` refuses;
 //!   `--watch` writes one `paused` line, and a `resumed` line when the file is
 //!   gone. Removing the file is enough to resume in this dry-run version;
@@ -16,7 +18,11 @@
 //!   slow one is never taken over.
 //! - Pace: a round every 60 s; touching `drive/event` starts one early. When
 //!   the snapshot fails the wait doubles each time, up to 600 s, and goes
-//!   back to 60 s after a good round. No conditional requests yet.
+//!   back to 60 s after a good round. `--interval` is at least 30 s (every
+//!   round reads GitHub with the shared token). No conditional requests yet.
+//! - Platforms: on Windows `try_lock` is a mandatory lock, so the refusal
+//!   cannot read the holder's pid and says `pid ?`. [`RealClock`] wakes once
+//!   a second to look at the event file (no process is started).
 
 use crate::decide::{decide, Intent, Sha, Snapshot};
 use serde::{Deserialize, Serialize};
@@ -30,15 +36,41 @@ pub const BASE: Duration = Duration::from_secs(60);
 pub const CAP: Duration = Duration::from_secs(600);
 /// Longest text from outside (a source's error) kept in a record.
 pub const MAX_REASON: usize = 300;
+/// The shortest `--interval`.
+pub const MIN_INTERVAL: Duration = Duration::from_secs(30);
+/// How much of the journal's end is read for the last heads at first.
+const TAIL: u64 = 64 * 1024;
 
-/// `EZ2_AIB_STATE_ROOT` when set and not empty, otherwise `~/.ez2-aib/state`.
-pub fn state_root(env_root: Option<&str>, home: Option<&Path>) -> Result<PathBuf, String> {
-    match env_root.filter(|r| !r.is_empty()) {
-        Some(r) => Ok(PathBuf::from(r)),
-        None => home
-            .map(|h| h.join(".ez2-aib").join("state"))
-            .ok_or_else(|| "no EZ2_AIB_STATE_ROOT and no home folder".to_owned()),
+/// `--interval SECS`, at least [`MIN_INTERVAL`].
+pub fn interval(v: &str) -> Result<Duration, String> {
+    let secs: u64 = v
+        .parse()
+        .map_err(|_| format!("--interval {:?}: seconds", clean(v, 20)))?;
+    let d = Duration::from_secs(secs);
+    if d < MIN_INTERVAL {
+        return Err(format!(
+            "--interval {secs}: at least {} s (each round reads GitHub)",
+            MIN_INTERVAL.as_secs()
+        ));
     }
+    Ok(d)
+}
+
+/// The aib state root, in `aib_init.py`'s order: `EZ2_AIB_STATE_ROOT`,
+/// then `EZ2_AIB_HOME`, then `~/.ez2-aib` (an empty value counts as unset).
+pub fn state_root(
+    env_root: Option<&str>,
+    aib_home: Option<&str>,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if let Some(r) = env_root.filter(|r| !r.is_empty()) {
+        return Ok(PathBuf::from(r));
+    }
+    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {
+        return Ok(PathBuf::from(h));
+    }
+    home.map(|h| h.join(".ez2-aib"))
+        .ok_or_else(|| "no EZ2_AIB_STATE_ROOT, no EZ2_AIB_HOME and no home folder".to_owned())
 }
 
 /// The files of one state root.
@@ -88,13 +120,35 @@ pub struct Record {
     pub would: Vec<Intent>,
 }
 
-/// Text from outside, made safe for one line: control characters become
-/// `?`, and it is cut to `max` characters.
+/// Invisible format characters that can reorder or hide text on a terminal
+/// (bidi overrides and isolates, zero-width characters, BOM, …).
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{61c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+    )
+}
+
+/// Text from outside, made safe for one line: control and format characters
+/// become `?`, and it is cut to `max` characters.
 pub fn clean(s: &str, max: usize) -> String {
     let mut out: String = s
         .chars()
         .take(max)
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| {
+            if c.is_control() || is_format(c) {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect();
     if s.chars().count() > max {
         out.push('…');
@@ -200,15 +254,42 @@ pub fn append(journal: &Path, r: &Record) -> Result<(), String> {
 }
 
 /// The heads of the last readable journal line; none if there is none.
+/// Reads only the end of the journal: 64 KB, doubled until a whole readable
+/// line is found or the whole file was read.
 pub fn prev_heads(journal: &Path) -> BTreeMap<u64, Sha> {
-    let Ok(text) = std::fs::read_to_string(journal) else {
+    let Ok(mut f) = File::open(journal) else {
         return BTreeMap::new();
     };
-    text.lines()
-        .rev()
-        .find_map(|l| serde_json::from_str::<Record>(l).ok())
-        .map(|r| r.heads)
-        .unwrap_or_default()
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return BTreeMap::new();
+    };
+    let mut want = TAIL;
+    loop {
+        let from = len.saturating_sub(want);
+        let mut buf = Vec::new();
+        if f.seek(SeekFrom::Start(from)).is_err() || f.read_to_end(&mut buf).is_err() {
+            return BTreeMap::new();
+        }
+        let text = String::from_utf8_lossy(&buf);
+        // Unless the read starts at the top, its first line may be cut.
+        let whole = if from == 0 {
+            &text[..]
+        } else {
+            text.split_once('\n').map_or("", |(_, rest)| rest)
+        };
+        if let Some(r) = whole
+            .lines()
+            .rev()
+            .find_map(|l| serde_json::from_str::<Record>(l).ok())
+        {
+            return r.heads;
+        }
+        if want >= len {
+            // the whole file was read
+            return BTreeMap::new();
+        }
+        want = want.saturating_mul(2);
+    }
 }
 
 /// The wait after `failures` failed rounds in a row: 60, 120, 240, 480, 600…
@@ -339,21 +420,39 @@ impl Clock for RealClock {
     }
 }
 
+/// Why `--once` did not run a round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// The pause file exists.
+    Paused(String),
+    /// Another observe holds the lock, or a state file failed.
+    State(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Paused(m) | Self::State(m) => f.write_str(m),
+        }
+    }
+}
+
 /// One round for `--once`. Refused while paused or while another observe
-/// holds the lock.
+/// holds the lock. The pause file is looked at after the lock is taken, so
+/// a pause made while waiting for it still counts.
 pub fn once(
     paths: &Paths,
     repo: &str,
     now: u64,
     round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
-) -> Result<Record, String> {
+) -> Result<Record, Refused> {
+    let _lock = lock(&paths.lock).map_err(Refused::State)?;
     if paths.pause.exists() {
-        return Err(format!("暫停中:{}", paths.pause.display()));
+        return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));
     }
-    let _lock = lock(&paths.lock)?;
     let prev = prev_heads(&paths.journal);
     let r = record_of(now, repo, &prev, round(&prev));
-    append(&paths.journal, &r)?;
+    append(&paths.journal, &r).map_err(Refused::State)?;
     Ok(r)
 }
 

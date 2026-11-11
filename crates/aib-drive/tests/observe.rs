@@ -6,10 +6,11 @@
 
 use aib_drive::decide::{Known, Roles, Sha, Snapshot};
 use aib_drive::observe::{
-    backoff, clean, lock, once, record_of, state_root, summary, watch, Clock, Kind, Paths, Record,
-    Wake, BASE, CAP, MAX_REASON,
+    append, backoff, clean, interval, lock, once, prev_heads, record_of, state_root, summary,
+    watch, Clock, Kind, Paths, Record, Refused, Wake, BASE, CAP, MAX_REASON,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -104,7 +105,10 @@ fn a_round_while_paused_is_refused_and_writes_nothing() {
         Ok(snap())
     };
     let e = once(&p, REPO, 1, &mut r).unwrap_err();
-    assert!(e.contains("暫停中") && e.contains("pause"), "{e}");
+    assert!(
+        matches!(&e, Refused::Paused(m) if m.contains("暫停中") && m.contains("pause")),
+        "{e}"
+    );
     assert!(!called, "no snapshot while paused");
     assert!(!p.journal.exists());
 }
@@ -176,28 +180,36 @@ fn a_second_observe_is_refused_with_the_holders_pid() {
     let e = lock(&p.lock).unwrap_err();
     assert!(e.contains(&std::process::id().to_string()), "{e}");
     let mut r = |_: &BTreeMap<u64, Sha>| Ok(snap());
-    assert!(once(&p, REPO, 1, &mut r).is_err());
+    assert!(matches!(once(&p, REPO, 1, &mut r), Err(Refused::State(_))));
     drop(held);
     assert!(lock(&p.lock).is_ok());
 }
 
-/// K6: the state root comes from EZ2_AIB_STATE_ROOT when set.
+/// K6: the state root in aib_init.py's order: EZ2_AIB_STATE_ROOT, then
+/// EZ2_AIB_HOME, then ~/.ez2-aib (one root, so one lock and one journal).
 #[test]
 fn the_state_root_is_the_env_root_or_the_home_default() {
     let home = Path::new("/home/x");
+    let aib = home.join(".ez2-aib");
     assert_eq!(
-        state_root(Some("/tmp/s"), Some(home)).unwrap(),
+        state_root(Some("/tmp/s"), Some("/tmp/h"), Some(home)).unwrap(),
         PathBuf::from("/tmp/s")
     );
     assert_eq!(
-        state_root(Some(""), Some(home)).unwrap(),
-        home.join(".ez2-aib").join("state")
+        state_root(Some(""), Some("/tmp/h"), Some(home)).unwrap(),
+        PathBuf::from("/tmp/h")
     );
     assert_eq!(
-        state_root(None, Some(home)).unwrap(),
-        home.join(".ez2-aib").join("state")
+        state_root(None, Some("/tmp/h"), Some(home)).unwrap(),
+        PathBuf::from("/tmp/h")
     );
-    assert!(state_root(None, None).is_err());
+    assert_eq!(state_root(None, Some(""), Some(home)).unwrap(), aib);
+    assert_eq!(state_root(None, None, Some(home)).unwrap(), aib);
+    assert_eq!(
+        Paths::under(&state_root(None, None, Some(home)).unwrap()).journal,
+        aib.join("drive").join("dryrun.jsonl")
+    );
+    assert!(state_root(None, None, None).is_err());
     assert_eq!(
         Paths::under(Path::new("/tmp/s")).journal,
         Path::new("/tmp/s").join("drive").join("dryrun.jsonl")
@@ -216,4 +228,55 @@ fn outside_text_is_cleaned_and_cut() {
     assert!(!line.contains('\u{1b}') && !line.contains('\n'));
     assert!(!summary(&r).chars().any(char::is_control));
     assert_eq!(clean("a\tb", 10), "a?b");
+}
+
+/// L2: invisible format characters (right-to-left override, zero width, BOM)
+/// cannot reorder or hide the printed line.
+#[test]
+fn format_characters_are_cleaned_too() {
+    assert_eq!(clean("ok\u{202e}gnp.exe", 20), "ok?gnp.exe");
+    assert_eq!(clean("a\u{200b}b\u{2066}c\u{feff}", 20), "a?b?c?");
+    assert_eq!(clean("繁中 é", 20), "繁中 é");
+}
+
+/// L3: --interval is at least 30 s; every round reads GitHub.
+#[test]
+fn an_interval_under_30_seconds_is_refused() {
+    assert!(interval("1").is_err());
+    assert!(interval("29").is_err());
+    assert!(interval("x").is_err());
+    assert_eq!(interval("30").unwrap(), Duration::from_secs(30));
+    assert_eq!(interval("600").unwrap(), Duration::from_secs(600));
+}
+
+fn heads(n: u64, sha: &str) -> BTreeMap<u64, Sha> {
+    BTreeMap::from([(n, sha.repeat(40))])
+}
+
+/// L1: the last heads come from the journal's end, even when the last line
+/// is longer than the first read (64 KB), and a cut line is never taken.
+#[test]
+fn the_last_heads_are_read_from_the_end_of_a_long_journal() {
+    let p = Paths::under(&root("tail"));
+    assert!(prev_heads(&p.journal).is_empty());
+    let mut r = record_of(1, REPO, &heads(1, "a"), Err("x".into()));
+    for _ in 0..2000 {
+        append(&p.journal, &r).unwrap();
+    }
+    r.heads = heads(2, "b");
+    append(&p.journal, &r).unwrap();
+    assert_eq!(prev_heads(&p.journal), heads(2, "b"));
+    // A last line of 200 KB: more than one doubling of the first read.
+    let mut big = record_of(2, REPO, &heads(3, "c"), Err("x".into()));
+    big.repo = "r".repeat(200 * 1024);
+    append(&p.journal, &big).unwrap();
+    assert_eq!(prev_heads(&p.journal), heads(3, "c"));
+    // A half-written last line is skipped; the one before it counts.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&p.journal)
+        .unwrap()
+        .write_all(b"{\"at\":9,\"kind\":\"ro")
+        .unwrap();
+    assert_eq!(prev_heads(&p.journal), heads(3, "c"));
 }
