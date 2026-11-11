@@ -924,7 +924,7 @@ jobs:
              what_could_not_be_read_is_unknown_not_absent
           # site remove --plan: destroyed although the storage could not be asked
           hk siteremovecmd.rs '        (Some(false), Some(false)) => Probe::Done,' \
-             '        (Some(false), _) => Probe::Done, // knife' \
+             '        (Some(false), Some(false)) | (Some(false), None) => Probe::Done, // knife' \
              what_could_not_be_read_is_unknown_not_absent
           # site remove --plan: licences count as given back though nobody asked
           hk siteremovecmd.rs '        licences_wired.unwrap_or(Probe::Unknown),' \
