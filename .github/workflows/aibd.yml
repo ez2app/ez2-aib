@@ -1849,6 +1849,16 @@ jobs:
           hk siteidentity.rs '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", PACKAGE_CLEANUP]));' \
              '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", "true"])); let _ = PACKAGE_CLEANUP; // knife' \
              the_template_package_goes_in_before_the_installer_and_out_after
+          # E1 audit 11-12 #3: health asks again until the certificate is there
+          hk sitelive.rs '    for attempt in 0..HEALTH_TRIES {' \
+             '    for attempt in 0..1 { let _ = HEALTH_TRIES; // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                last = None;' \
+             '                last = Some(String::new()); // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))' \
+             '                .run(&owned(&["true", HEALTH_PAUSE_SECS])) // knife' \
+             health_asks_again_until_the_certificate_is_there
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
