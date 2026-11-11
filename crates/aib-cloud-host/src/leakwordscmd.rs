@@ -93,18 +93,18 @@ const GENERIC_NAMES: &[&str] = &[
 
 /// Public resolvers anyone may use: naming one says nothing about this host.
 const PUBLIC_RESOLVERS: &[&str] = &[
-    "1.1.1.1",         // ip-literal-ok: well-known public resolver, never a host of ours
-    "1.0.0.1",         // ip-literal-ok: well-known public resolver, never a host of ours
-    "8.8.8.8",         // ip-literal-ok: well-known public resolver, never a host of ours
-    "8.8.4.4",         // ip-literal-ok: well-known public resolver, never a host of ours
-    "9.9.9.9",         // ip-literal-ok: well-known public resolver, never a host of ours
-    "149.112.112.112", // ip-literal-ok: well-known public resolver, never a host of ours
-    "2606:4700:4700::1111",
-    "2606:4700:4700::1001",
-    "2001:4860:4860::8888",
-    "2001:4860:4860::8844",
-    "2620:fe::fe",
-    "2620:fe::9",
+    "1.1.1.1",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "1.0.0.1",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "8.8.8.8",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "8.8.4.4",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "9.9.9.9",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "149.112.112.112",      // ip-literal-ok: well-known public resolver, never a host of ours
+    "2606:4700:4700::1111", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2606:4700:4700::1001", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2001:4860:4860::8888", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2001:4860:4860::8844", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2620:fe::fe",          // ip-literal-ok: well-known public resolver, never a host of ours
+    "2620:fe::9",           // ip-literal-ok: well-known public resolver, never a host of ours
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
