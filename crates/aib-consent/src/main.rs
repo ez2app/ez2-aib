@@ -20,25 +20,37 @@
 //!       run). Prints the record as one JSON object.
 //!       Exit 0 when a record was printed (whatever the job did) / 1 a staged copy changed /
 //!       2 usage.
+//!
+//!   Unix only: on other platforms every command prints
+//!   {"ok":false,"result":"failed","why":"unsupported_platform"} and exits 2.
 
+#[cfg(unix)]
 use aib_consent::params::{self, Refused};
+#[cfg(unix)]
 use aib_consent::supervise::{self, Job};
+#[cfg(unix)]
 use serde_json::{json, Value};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 fn usage() -> u8 {
     eprintln!("usage: aib-consent-run stage … | aib-consent-run supervise … -- <argv…> (see the source header)");
     2
 }
 
+#[cfg(unix)]
 fn refused_json(r: &Refused) -> Value {
     json!({"ok": false, "why": r.code, "line": r.line})
 }
 
 /// `--name value` pairs before an optional `--`; repeated names keep every value.
+#[cfg(unix)]
 type Flags = Vec<(String, String)>;
 
+#[cfg(unix)]
 fn flags(argv: &[String]) -> Option<(Flags, Vec<String>)> {
     let mut out = Vec::new();
     let mut it = argv.iter();
@@ -53,6 +65,7 @@ fn flags(argv: &[String]) -> Option<(Flags, Vec<String>)> {
     Some((out, Vec::new()))
 }
 
+#[cfg(unix)]
 fn one<'a>(f: &'a [(String, String)], name: &str) -> Option<&'a str> {
     let mut v = f.iter().filter(|(k, _)| k == name).map(|(_, v)| v.as_str());
     let first = v.next();
@@ -62,10 +75,12 @@ fn one<'a>(f: &'a [(String, String)], name: &str) -> Option<&'a str> {
     first
 }
 
+#[cfg(unix)]
 fn known(f: &[(String, String)], names: &[&str]) -> bool {
     f.iter().all(|(k, _)| names.contains(&k.as_str()))
 }
 
+#[cfg(unix)]
 fn stage(f: &[(String, String)]) -> (Value, u8) {
     let names = ["home", "program", "pin", "params", "review", "dir"];
     if !known(f, &names) {
@@ -149,6 +164,7 @@ fn stage(f: &[(String, String)]) -> (Value, u8) {
     )
 }
 
+#[cfg(unix)]
 fn secs(f: &[(String, String)], name: &str) -> Result<Option<Duration>, ()> {
     match one(f, name) {
         None => Ok(None),
@@ -159,6 +175,7 @@ fn secs(f: &[(String, String)], name: &str) -> Result<Option<Duration>, ()> {
     }
 }
 
+#[cfg(unix)]
 fn supervise_cmd(f: &[(String, String)], argv: Vec<String>) -> (Value, u8) {
     let names = [
         "id",
@@ -275,6 +292,7 @@ fn supervise_cmd(f: &[(String, String)], argv: Vec<String>) -> (Value, u8) {
     (supervise::supervise(&job), 0)
 }
 
+#[cfg(unix)]
 fn run(argv: &[String]) -> u8 {
     let Some(cmd) = argv.first() else {
         return usage();
@@ -291,7 +309,19 @@ fn run(argv: &[String]) -> u8 {
     rc
 }
 
+#[cfg(unix)]
 fn main() -> std::process::ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     std::process::ExitCode::from(run(&argv))
+}
+
+/// `aib consent` runs on macOS (Touch ID, launchd) and Linux only. Elsewhere this binary
+/// runs nothing and answers in the shape its callers read.
+#[cfg(not(unix))]
+fn main() -> std::process::ExitCode {
+    println!(
+        "{}",
+        serde_json::json!({"ok": false, "result": "failed", "why": "unsupported_platform"})
+    );
+    std::process::ExitCode::from(2)
 }

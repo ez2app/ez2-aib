@@ -16,5 +16,10 @@
 //! the same-user threat guide): such an AI can kill a process or edit these files itself.
 //! What it gives is that every run is watched and every stop goes past the person.
 
+//!
+//! Unix only (process groups, signals, `/dev/fd`): on other platforms the library is empty
+//! and `aib-consent-run` answers `unsupported_platform` (#661 broke the Windows build).
+#![cfg(unix)]
+
 pub mod params;
 pub mod supervise;
