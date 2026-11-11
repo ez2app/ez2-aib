@@ -1066,8 +1066,8 @@ jobs:
              '    for name in [domain.to_owned()] { // knife' \
              an_unfinished_operation_on_the_domain_stops_the_plan
           # site create --apply: a plan that no longer matches the host is applied anyway (4542e 11-11, B1)
-          hk sitecreatecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) {' \
-             '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) && false { // knife' \
+          hk sitecreatecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if (doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan) && false { // knife' \
              a_host_that_changed_refuses_the_plan
           # site create --apply: a number something else took since the plan is cloned over
           hk sitecreatecmd.rs '        if ids.contains(&ct) {' \
