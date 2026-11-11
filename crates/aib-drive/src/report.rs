@@ -63,9 +63,13 @@ pub fn is_event(id: &str) -> bool {
                 && sha.len() == 40
                 && sha.chars().all(|c| c.is_ascii_hexdigit())
         }),
-        "dm" | "now" => rest
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/')),
+        // every segment non-empty (043dd wiring N1: no `dm//`)
+        "dm" | "now" => rest.split('/').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        }),
         _ => false,
     }
 }

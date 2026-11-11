@@ -6,6 +6,9 @@
 //! decide, and a completion event (`--event ID` with `--once`, or the id
 //! written into `drive/event` with `--watch`) gets one report.
 //!
+//! A round without a snapshot answers no event: `--watch` keeps the event for
+//! the next round, `--once` exits 3 and the caller sends `--event` again.
+//!
 //! Exit codes: 0 done; 2 usage; 3 a round had no snapshot (`--once`);
 //! 4 paused; 5 another observe holds the lock, or a state file failed.
 

@@ -2185,6 +2185,23 @@ jobs:
           wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
              '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
              one_now_for_the_prs_to_read_and_the_comparison observe
+          # W9 (043dd M1) a round without a snapshot drops its event
+          wk observe.rs '                events.push_front(e);' \
+             '                drop(e); // knife' \
+             an_event_met_by_a_failed_round_is_answered_by_the_next_good_one observe
+          # W10 (043dd M1) an event written while paused is dropped
+          wk observe.rs '                queue_event(&mut events, read_event(&paths.event));' \
+             '                let _ = read_event(&paths.event); // knife' \
+             an_event_written_while_paused_is_answered_after_the_pause observe
+          # W11 (043dd L2) --watch reports the same event again
+          wk observe.rs '                Some(e) if reported(&paths.journal, &e) => continue,' \
+             '                Some(e) if false && reported(&paths.journal, &e) => continue, // knife' \
+             watch_reports_the_same_event_once observe
+          # W12 (043dd L1) aib-expect rows carry an order of their own
+          python3 -I scripts/knife.py crates/aib-expect/src/lib.rs '        "goal_id": g.goal_id,' \
+             '        "goal_id": g.goal_id, "order": 0, // knife' \
+             --expect-fail expect_rows_reach_drive_without_an_order_of_their_own \
+             -- cargo test -p aib-drive --locked --test observe expect_rows_reach_drive_without_an_order_of_their_own
           # W7 (a9136 item 5) without the pub use, drive's own tests no longer build: the old path is real.
           # Keeps the private Read import snapshot.rs uses, so the error is the callers' unresolved GhRead (E0432).
           f=crates/aib-drive/src/snapshot.rs

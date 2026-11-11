@@ -34,7 +34,7 @@ use crate::decide::{decide, decide_weighted, Intent, Sha, Snapshot};
 use crate::report::{self, Report};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -461,6 +461,19 @@ pub fn read_event(path: &Path) -> Option<String> {
     report::is_event(&id).then_some(id)
 }
 
+/// Most completion events `--watch` keeps waiting for an answer; past it the
+/// newest is not kept (the journal still has every round).
+pub const EVENTS_MAX: usize = 64;
+
+/// Adds an event to the ones waiting, once.
+fn queue_event(events: &mut VecDeque<String>, e: Option<String>) {
+    if let Some(e) = e {
+        if events.len() < EVENTS_MAX && !events.contains(&e) {
+            events.push_back(e);
+        }
+    }
+}
+
 /// The wait after `failures` failed rounds in a row: 60, 120, 240, 480, 600…
 pub fn backoff(base: Duration, cap: Duration, failures: u32) -> Duration {
     let mut d = base;
@@ -673,7 +686,8 @@ pub fn watch_with(
     let mut failures: u32 = 0;
     let mut paused = false;
     let mut rounds: u32 = 0;
-    let mut event: Option<String> = None;
+    // completion events not answered yet, oldest first (043dd wiring M1)
+    let mut events: VecDeque<String> = VecDeque::new();
     loop {
         let prev = prev_heads(&paths.journal);
         if paths.pause.exists() {
@@ -683,8 +697,13 @@ pub fn watch_with(
                 print(&r);
                 paused = true;
             }
-            if clock.wait(base, &paths.event) == Wake::Stop {
+            let wake = clock.wait(base, &paths.event);
+            if wake == Wake::Stop {
                 return Ok(());
+            }
+            // an event while paused is answered after the pause (043dd wiring M1)
+            if wake == Wake::Event {
+                queue_event(&mut events, read_event(&paths.event));
             }
             continue;
         }
@@ -694,10 +713,22 @@ pub fn watch_with(
             print(&r);
             paused = false;
         }
-        let ev = event.take().filter(|e| !reported(&paths.journal, e));
+        let ev = loop {
+            match events.pop_front() {
+                Some(e) if reported(&paths.journal, &e) => continue,
+                other => break other,
+            }
+        };
         let r = record_with(clock.now(), repo, &prev, round(&prev), ev.as_deref());
         append(&paths.journal, &r)?;
         print(&r);
+        // a round without a snapshot answers nothing: its event waits for the
+        // next round instead of being lost (043dd wiring M1)
+        if r.unknown.is_some() {
+            if let Some(e) = ev {
+                events.push_front(e);
+            }
+        }
         failures = if r.unknown.is_some() {
             failures.saturating_add(1)
         } else {
@@ -709,7 +740,7 @@ pub fn watch_with(
         }
         match clock.wait(backoff(base, CAP, failures), &paths.event) {
             Wake::Stop => return Ok(()),
-            Wake::Event => event = read_event(&paths.event),
+            Wake::Event => queue_event(&mut events, read_event(&paths.event)),
             Wake::Timeout => {}
         }
     }

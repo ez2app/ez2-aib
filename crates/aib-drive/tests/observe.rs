@@ -348,6 +348,9 @@ fn only_a_completion_event_gets_a_report() {
         "pr/x@766fa8f663847a5ae78111f6005a1b4a8f41bd7a",
         "dm/a b",
         "now/",
+        "dm//",
+        "now///",
+        "now/2240e/",
     ] {
         assert!(!is_event(bad), "{bad:?}");
         let r = record_with(
@@ -461,4 +464,134 @@ fn goals_or_evidence_that_cannot_be_read_give_an_unknown_side_and_no_reads() {
         assert_eq!(s.unknown.as_deref(), Some(bad().code()));
     }
     assert!(gh.0.borrow().is_empty());
+}
+
+/// A clock that wakes as scripted (then stops), writing `event` into the
+/// event file before each `Wake::Event`, and lifting the pause at the first wait.
+struct ScriptClock {
+    t: u64,
+    script: Vec<Wake>,
+    event: String,
+    unpause: Option<PathBuf>,
+}
+
+impl Clock for ScriptClock {
+    fn now(&mut self) -> u64 {
+        self.t += 1;
+        self.t
+    }
+    fn wait(&mut self, _d: Duration, event: &Path) -> Wake {
+        if let Some(p) = self.unpause.take() {
+            std::fs::remove_file(p).unwrap();
+        }
+        if self.script.is_empty() {
+            return Wake::Stop;
+        }
+        let w = self.script.remove(0);
+        if w == Wake::Event {
+            std::fs::write(event, &self.event).unwrap();
+        }
+        w
+    }
+}
+
+fn reports(p: &Path) -> Vec<(u64, String)> {
+    lines(p)
+        .into_iter()
+        .filter_map(|r| r.report.map(|x| (r.at, x.event)))
+        .collect()
+}
+
+#[test]
+fn an_event_met_by_a_failed_round_is_answered_by_the_next_good_one() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-retry");
+    let p = Paths::under(&d);
+    let mut n = 0;
+    let mut r = |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built {
+        n += 1;
+        if n == 2 {
+            Err("gh api rate_limit: timed out".into())
+        } else {
+            Ok((snap(), Some(wired())))
+        }
+    };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event, Wake::Timeout],
+        event: EV.into(),
+        unpause: None,
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(3)).unwrap();
+    // round 1 had no event, round 2 failed, round 3 answers it
+    assert_eq!(reports(&p.journal), vec![(3, EV.to_owned())]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_event_written_while_paused_is_answered_after_the_pause() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-pause");
+    let p = Paths::under(&d);
+    std::fs::create_dir_all(p.pause.parent().unwrap()).unwrap();
+    std::fs::write(&p.pause, "").unwrap();
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event],
+        event: EV.into(),
+        unpause: Some(p.pause.clone()),
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(1)).unwrap();
+    assert_eq!(reports(&p.journal).len(), 1, "{:?}", lines(&p.journal));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn watch_reports_the_same_event_once() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-watch-twice");
+    let p = Paths::under(&d);
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event, Wake::Event],
+        event: EV.into(),
+        unpause: None,
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(3)).unwrap();
+    assert_eq!(reports(&p.journal), vec![(2, EV.to_owned())]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn expect_rows_reach_drive_without_an_order_of_their_own() {
+    // 043dd wiring L1: aib-expect gives gaps, never a rank or a next list
+    use aib_drive::observe::expect_side;
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goals = vec![
+        aib_expect::Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        },
+        aib_expect::Goal {
+            id: "A2".into(),
+            text: "b".into(),
+        },
+    ];
+    let side = expect_side(&gh, REPO, Ok(goals), Ok(Default::default()), &snap(), 1);
+    assert_eq!(side.table.len(), 2);
+    for row in &side.table {
+        for k in row.as_object().unwrap().keys() {
+            assert!(
+                !k.contains("order") && !k.contains("next") && !k.contains("rank"),
+                "{k}"
+            );
+        }
+    }
 }
