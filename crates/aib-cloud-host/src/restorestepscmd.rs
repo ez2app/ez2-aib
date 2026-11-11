@@ -1029,7 +1029,7 @@ mod tests {
         bad_download: Option<&'static str>,
     }
 
-    const NAME: &str = "example.com-20261101-101010-ab12cd.wpress";
+    const NAME: &str = "example-com-20261101-101010-ab12cd.wpress";
     const SIZE: u64 = 2 * 1024 * 1024 * 1024;
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

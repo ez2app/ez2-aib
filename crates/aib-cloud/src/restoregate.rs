@@ -8,8 +8,11 @@
 //!    (the hard condition; the roster check itself is the share gate, this only reads its
 //!    verdict). A check that could not be made is a refusal, not a pass.
 //! 2. The file's name must be this site's: All-in-One WP Migration names a backup
-//!    `<domain>-<date>-<time>-<random>.wpress`. A second line, after the sharer: a backup
-//!    of another of the customer's sites is the likely mistake.
+//!    `<host with dots as dashes>-<YYYYMMDD>-<HHMMSS>-<random>.wpress`. The rule is the
+//!    EU01 restore line's (decided 2026-07-03, levels 1 and 2): what comes before the
+//!    stamp is the domain (with or without `www-`), or holds the domain's first label,
+//!    of four letters or more, as a whole word. A second, coarse line after the sharer:
+//!    a name without the stamp, or of a plainly other site, is refused.
 //! 3. Its size must be known and not 0, and the host must have room for twice it plus
 //!    [`SPARE_BYTES`] (the file, what it unpacks to, and room left for the other sites).
 //! 4. The target site's database must have been up for [`MIN_DB_UP_SECS`]: one that just
@@ -87,15 +90,6 @@ pub fn room_for(size: u64, free: u64) -> bool {
         .is_some_and(|need| free >= need)
 }
 
-fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    let (head, rest) = (s.get(..prefix.len())?, s.get(prefix.len()..)?);
-    if head.eq_ignore_ascii_case(prefix) {
-        Some(rest)
-    } else {
-        None
-    }
-}
-
 fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
     let cut = s.len().checked_sub(suffix.len())?;
     let (stem, tail) = (s.get(..cut)?, s.get(cut..)?);
@@ -106,22 +100,46 @@ fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
     }
 }
 
-fn strip_www(s: &str) -> &str {
-    strip_prefix_ignore_case(s, "www.").unwrap_or(s)
+/// Whether `b` starts with All-in-One WP Migration's stamp: `-YYYYMMDD-HHMMSS`, then the
+/// end or another `-`.
+fn is_stamp(b: &[u8]) -> bool {
+    b.len() >= 16
+        && b[0] == b'-'
+        && b[1..9].iter().all(u8::is_ascii_digit)
+        && b[9] == b'-'
+        && b[10..16].iter().all(u8::is_ascii_digit)
+        && (b.len() == 16 || b[16] == b'-')
 }
 
-/// Whether a backup's file name is this domain's: `<domain>-….wpress`, case and a leading
-/// `www.` on either side not counted.
+/// The part of a backup's name before its first stamp; `None` when it has no stamp or
+/// nothing before it.
+pub fn backup_slug(name: &str) -> Option<&str> {
+    let stem = strip_suffix_ignore_case(name, ".wpress")?;
+    let at = (0..stem.len()).find(|&i| is_stamp(&stem.as_bytes()[i..]))?;
+    stem.get(..at).filter(|slug| !slug.is_empty())
+}
+
+/// Whether a backup's file name is this domain's (module note, point 2). Case, dots or
+/// dashes, a final dot and a leading `www` are not counted.
 pub fn name_fits_domain(name: &str, domain: &str) -> bool {
-    let Some(stem) = strip_suffix_ignore_case(name, ".wpress") else {
+    let Some(slug) = backup_slug(name) else {
         return false;
     };
-    let domain = domain.strip_suffix('.').unwrap_or(domain);
-    let domain = strip_www(domain);
+    let slug = slug.to_ascii_lowercase().replace('.', "-");
+    let slug = slug.strip_prefix("www-").unwrap_or(&slug);
+    let domain = domain
+        .strip_suffix('.')
+        .unwrap_or(domain)
+        .to_ascii_lowercase();
+    let domain = domain.strip_prefix("www.").unwrap_or(&domain);
     if domain.is_empty() {
         return false;
     }
-    strip_prefix_ignore_case(strip_www(stem), domain).is_some_and(|rest| rest.starts_with('-'))
+    if slug == domain.replace('.', "-") {
+        return true;
+    }
+    let label = domain.split('.').next().unwrap_or_default();
+    label.len() >= 4 && slug.split('-').any(|word| word == label)
 }
 
 fn field_is_digits(field: &[u8]) -> bool {
@@ -183,7 +201,7 @@ mod tests {
     fn facts() -> Facts<'static> {
         Facts {
             sharer: Sharer::Allowed,
-            name: "example.com-20261101-101010-ab12cd.wpress",
+            name: "example-com-20261101-101010-ab12cd.wpress",
             domain: "www.example.com",
             size: Some(2 * GIB),
             free: Some(14 * GIB),
@@ -208,7 +226,7 @@ mod tests {
     fn the_sharer_is_asked_first_and_an_unknown_one_refuses() {
         let mut f = facts();
         f.sharer = Sharer::Unknown;
-        f.name = "other.example-1.wpress";
+        f.name = "other-example-20261101-101010-ab12cd.wpress";
         assert_eq!(admit_download(&f), Err("share_unknown"));
         f.sharer = Sharer::Refused("share_address_not_on_roster");
         assert_eq!(admit_download(&f), Err("share_address_not_on_roster"));
@@ -217,21 +235,36 @@ mod tests {
     #[test]
     fn a_backup_named_for_another_site_is_refused() {
         for (name, ok) in [
+            ("example-com-20261101-101010-ab12cd.wpress", true),
+            ("www-example-com-20261101-101010-ab12cd.wpress", true),
+            ("Example-COM-20261101-101010-AB12CD.WPRESS", true),
             ("example.com-20261101-101010-ab12cd.wpress", true),
-            ("WWW.Example.COM-20261101-101010-ab12cd.WPRESS", true),
-            ("www.example.com-1.wpress", true),
-            ("shop.example.com-20261101-101010-ab12cd.wpress", false),
-            ("example.community-20261101-101010-ab12cd.wpress", false),
-            ("example.com.wpress", false),
-            ("example.com-20261101-101010-ab12cd.zip", false),
-            ("example.com-1.wpress.zip", false),
+            ("example-com-20261101-101010.wpress", true),
+            ("example-shop-20261101-101010-ab12cd.wpress", true),
+            ("examples-com-20261101-101010-ab12cd.wpress", false),
+            ("other-site-20261101-101010-ab12cd.wpress", false),
+            ("example-com.wpress", false),
+            ("example-com-2026110-101010-ab12cd.wpress", false),
+            ("example-com-20261101-10101x-ab12cd.wpress", false),
+            ("example-com-20261101-1010101-ab12cd.wpress", false),
+            ("example-com-20261101-101010-ab12cd.zip", false),
+            ("-20261101-101010-ab12cd.wpress", false),
             ("", false),
         ] {
             assert_eq!(name_fits_domain(name, "www.example.com."), ok, "{name}");
         }
-        assert!(!name_fits_domain("-1.wpress", ""));
+        // a first label under four letters only counts as the whole domain
+        for (name, ok) in [
+            ("abc-io-20261101-101010-ab12cd.wpress", true),
+            ("www-abc-io-20261101-101010-ab12cd.wpress", true),
+            ("abc-shop-20261101-101010-ab12cd.wpress", false),
+        ] {
+            assert_eq!(name_fits_domain(name, "abc.io"), ok, "{name}");
+        }
+        assert!(!name_fits_domain("x-20261101-101010-ab12cd.wpress", ""));
+        assert_eq!(backup_slug("a-b-20261101-101010-c.wpress"), Some("a-b"));
         let mut f = facts();
-        f.name = "other.example-20261101-101010-ab12cd.wpress";
+        f.name = "other-example-20261101-101010-ab12cd.wpress";
         assert_eq!(admit_download(&f), Err("backup_name_not_this_site"));
     }
 

@@ -845,9 +845,29 @@ jobs:
           ck restoregate.rs '    if !name_fits_domain(f.name, f.domain) {' \
              '    if !name_fits_domain(f.name, f.domain) && false { // knife' \
              a_backup_named_for_another_site_is_refused
-          # restore gate: a domain that only starts the name fits it (B3 slice 3)
-          ck restoregate.rs "    strip_prefix_ignore_case(strip_www(stem), domain).is_some_and(|rest| rest.starts_with('-'))" \
-             '    strip_prefix_ignore_case(strip_www(stem), domain).is_some() // knife' \
+          # restore gate: a word that only starts with the first label fits the name (B3 slice 3)
+          ck restoregate.rs "    label.len() >= 4 && slug.split('-').any(|word| word == label)" \
+             "    label.len() >= 4 && slug.split('-').any(|word| word.starts_with(label)) // knife" \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: a short first label fits the name as a word (B3 slice 3)
+          ck restoregate.rs "    label.len() >= 4 && slug.split('-').any(|word| word == label)" \
+             "    label.len() >= 3 && slug.split('-').any(|word| word == label) // knife" \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: the whole domain is not compared (B3 slice 3)
+          ck restoregate.rs "    if slug == domain.replace('.', \"-\") {" \
+             "    if slug == domain.replace('.', \"-\") && false { // knife" \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: a leading www- is counted (B3 slice 3)
+          ck restoregate.rs '    let slug = slug.strip_prefix("www-").unwrap_or(&slug);' \
+             '    let slug = slug.strip_prefix("www-").map(|_| "").unwrap_or(&slug); // knife' \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: a stamp with a letter in its time is a stamp (B3 slice 3)
+          ck restoregate.rs '        && b[10..16].iter().all(u8::is_ascii_digit)' \
+             '        && b[10..16].iter().all(u8::is_ascii_alphanumeric) // knife' \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: a longer time is a stamp (B3 slice 3)
+          ck restoregate.rs "        && (b.len() == 16 || b[16] == b'-')" \
+             '        && b.len() >= 16 // knife' \
              a_backup_named_for_another_site_is_refused
           # restore gate: an empty backup is downloaded (B3 slice 3)
           ck restoregate.rs '    if size == 0 {' \
