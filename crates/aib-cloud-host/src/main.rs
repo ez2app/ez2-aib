@@ -15,6 +15,7 @@
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>…   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
+//! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
 //! aib-cloud-host spec lint <file> | spec plan <file> [--from <step>] [--json]   (provisioning spec; reads one file)
 //! aib-cloud-host self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d]
@@ -36,6 +37,8 @@ mod backupcmd;
 mod customercmd;
 #[cfg(unix)]
 mod edgecmd;
+#[cfg(unix)]
+mod leakwordscmd;
 #[cfg(unix)]
 mod opstore;
 #[cfg(unix)]

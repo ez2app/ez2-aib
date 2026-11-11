@@ -785,6 +785,46 @@ jobs:
           hk rostercmd.rs '                    && record_tenant(&rec) == Some(tenant)' \
              '                    && (record_tenant(&rec) == Some(tenant) || true) // knife' \
              lines_only_for_the_rosters_own_sites
+          # leak-words: the container's own bridge network goes into the list (hits everywhere, says nothing)
+          hk leakwordscmd.rs '            Class::Private | Class::Other => {}' \
+             '            Class::Private | Class::Other => out.net(ip.to_string(), "host address"), // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a value holding the list's comment mark is written
+          hk leakwordscmd.rs "        && !v.contains('#')" "        && (!v.contains('#') || true) // knife" \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a public resolver anyone uses is listed as ours
+          hk leakwordscmd.rs '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) {' \
+             '        if PUBLIC_RESOLVERS.contains(&ip.to_string().as_str()) && false { // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: names of other machines in /etc/hosts are taken as the host's
+          hk leakwordscmd.rs '            .any(|(a, _)| *a == ip && class(ip) != Class::Private)' \
+             '            .any(|_| true) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: a bridge's MAC is taken as a network card's
+          hk leakwordscmd.rs '        if root.join(format!("sys/class/net/{nic}/device")).exists() {' \
+             '        if root.join(format!("sys/class/net/{nic}/device")).exists() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: a source that could not be read still exits 0
+          hk leakwordscmd.rs '    if f.unread.is_empty() {' '    if f.unread.is_empty() || true { // knife' \
+             collect_reads_a_host_tree_and_names_what_it_could_not_read
+          # leak-words: the printed summary names the values
+          hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}")).collect();' \
+             '.map(|(why, n)| format!("{why}: {n} {found:?}")).collect(); // knife' \
+             the_printed_summary_never_names_a_value
+          # leak-words: values left out are not counted (the summary looks complete; 33e28 #656 L2)
+          hk leakwordscmd.rs '            *self.skipped.entry(why).or_default() += 1;' \
+             '            *self.skipped.entry(why).or_default() += 0; // knife' \
+             the_printed_summary_never_names_a_value
+          # leak-words: the file may be written inside a git work tree (33e28 #656 L1)
+          hk leakwordscmd.rs '    if inside_git_tree(Path::new(out)) {' '    if inside_git_tree(Path::new(out)) && false { // knife' \
+             a_file_inside_a_git_work_tree_is_refused
+          # leak-words: a name every network uses (home, local, …) becomes a rule (33e28 #656 r2 L3)
+          hk leakwordscmd.rs '        || GENERIC_NAMES.contains(&n.as_str())' \
+             '        || (GENERIC_NAMES.contains(&n.as_str()) && false) // knife' \
+             what_hits_everywhere_or_says_nothing_is_left_out
+          # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
+          hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
+             the_host_part_names_what_this_host_is
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
