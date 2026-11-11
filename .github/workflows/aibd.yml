@@ -749,6 +749,90 @@ jobs:
           ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
              '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
              a_new_site_gets_the_next_numbers_up
+          # restore: a failed import is thrown away instead of taken back (B3 slice 2)
+          ck restoresteps.rs '    if step < RestoreStep::Import {' \
+             '    if step <= RestoreStep::Import { // knife' \
+             a_failed_import_is_rolled_back
+          # restore: a failed import is kept instead of taken back (B3 slice 2)
+          ck restoresteps.rs '    } else if step == RestoreStep::Import {' \
+             '    } else if step == RestoreStep::Tidy { // knife' \
+             a_failed_import_is_rolled_back
+          # restore: a failure before the import reaches the restore point (B3 slice 2)
+          ck restoresteps.rs '    if step < RestoreStep::Import {' \
+             '    if step < RestoreStep::RestorePoint { // knife' \
+             a_failure_before_the_import_leaves_the_site_as_it_was
+          # restore: every step is safe to do twice (B3 slice 2)
+          ck restoresteps.rs '    step >= RestoreStep::Tidy' \
+             '    step >= RestoreStep::Download // knife' \
+             an_interruption_before_the_tidying_is_not_gone_on_with
+          # restore: a record with steps out of order is read as the first ones (B3 slice 2)
+          ck restoresteps.rs '    if done.len() > STEPS.len() || done.iter().zip(STEPS.iter()).any(|(d, s)| d != s) {' \
+             '    if done.len() > STEPS.len() { // knife' \
+             a_record_out_of_order_stops
+          # restore: a failed step that is not the next one is believed (B3 slice 2)
+          ck restoresteps.rs '        (Some(f), Some(step)) if f != step => Err("record_out_of_order"),' \
+             '        (Some(f), Some(step)) if f != step && false => Err("record_out_of_order"), // knife' \
+             a_standing_is_read_from_the_record
+          # restore: a failure not cleaned up after reads as cleaned up (B3 slice 2)
+          ck restoresteps.rs '            _ if !cleaned_up => Standing::Interrupted(f),' \
+             '            _ if !cleaned_up && false => Standing::Interrupted(f), // knife' \
+             a_failure_not_cleaned_up_after_is_an_interruption
+          # restore: an interruption before the tidying is gone on with (B3 slice 2)
+          ck restoresteps.rs '        Some(Standing::Interrupted(step)) if safe_twice(step) => Next::GoOn(step),' \
+             '        Some(Standing::Interrupted(step)) if safe_twice(step) || true => Next::GoOn(step), // knife' \
+             an_interruption_before_the_tidying_is_not_gone_on_with
+          # restore: a kept restore starts anew (B3 slice 2)
+          ck restoresteps.rs '        Some(Standing::Kept(step)) => Next::GoOn(step),' \
+             '        Some(Standing::Kept(_)) => Next::Start, // knife' \
+             a_kept_restore_goes_on_from_the_failed_step
+          # restore: a second restore of the same site is let in (B3 slice 2)
+          ck restoresteps.rs '        if o.site == site {' \
+             '        if o.site == site && false { // knife' \
+             a_site_with_an_unfinished_restore_takes_no_other
+          # restore: a kept restore does not count as unfinished (B3 slice 2)
+          ck restoresteps.rs '    matches!(s, Standing::Kept(_) | Standing::Interrupted(_))' \
+             '    matches!(s, Standing::Interrupted(_)) // knife' \
+             a_site_with_an_unfinished_restore_takes_no_other
+          # restore: a second restore of the same domain is let in (B3 slice 2)
+          ck restoresteps.rs '        if same_domain(o.domain, domain) {' \
+             '        if same_domain(o.domain, domain) && false { // knife' \
+             a_domain_with_a_restore_under_way_takes_no_other
+          # restore: a restore interrupted before its tidying does not hold the host (B3 slice 2)
+          ck restoresteps.rs '        if holds_the_host(o.standing) {' \
+             '        if holds_the_host(o.standing) && false { // knife' \
+             a_restore_interrupted_before_its_tidying_holds_the_host
+          # restore: www. makes another domain (B3 slice 2)
+          ck restoresteps.rs '            (Some(w), Some(rest)) if w.eq_ignore_ascii_case("www.") => rest,' \
+             '            (Some(w), Some(rest)) if w.eq_ignore_ascii_case("www.") && false => rest, // knife' \
+             the_same_domain_is_the_same_whatever_its_spelling
+          # restore: a final dot makes another domain (B3 slice 2)
+          ck restoresteps.rs "        let d = d.strip_suffix('.').unwrap_or(d);" \
+             "        let d = d.strip_suffix('#').unwrap_or(d); // knife" \
+             the_same_domain_is_the_same_whatever_its_spelling
+          # restore: a target that could not be looked at takes a restore (B3 slice 2)
+          ck restoresteps.rs '        Probe::Unknown => Err("target_site_unknown"),' \
+             '        Probe::Unknown => Ok(()), // knife' \
+             a_target_that_is_not_up_does_not_take_a_restore
+          # restore: a source id may hold any character but a blank (B3 slice 2)
+          ck restoresteps.rs "            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')" \
+             "            .all(|b| b != b' ') // knife" \
+             a_source_id_is_only_what_a_shared_file_id_holds
+          # restore: a restore a person closed still reads as not over (B3 slice 2, L1)
+          ck restoresteps.rs '        (true, true) => Ok(Standing::Resolved),' \
+             '        (true, true) => Ok(s), // knife' \
+             a_restore_a_person_resolved_is_over
+          # restore: a finished restore reads as closed by a person (B3 slice 2, L1)
+          ck restoresteps.rs '        (true, false) => Err("record_out_of_order"),' \
+             '        (true, false) => Ok(Standing::Resolved), // knife' \
+             a_restore_a_person_resolved_is_over
+          # restore: a restore that is over may be closed again (B3 slice 2, L1)
+          ck restoresteps.rs '        Some(s) if unfinished(s) => Ok(()),' \
+             '        Some(_) => Ok(()), // knife' \
+             only_a_restore_that_is_not_over_is_closed
+          # restore: a close word reads as another (B3 slice 2, L1)
+          ck restoresteps.rs '            .find(|c| c.as_str() == word)' \
+             '            .find(|c| c.as_str() != word) // knife' \
+             only_a_restore_that_is_not_over_is_closed
           # ---- E7 site quota (4542e 11-11): the pure rule
           # an opening that names no customer is passed over instead of holding room
           ck quota.rs '        None => true,' \
@@ -1292,6 +1376,86 @@ jobs:
           hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
              '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # restore: the step record is not written after a step (B3 slice 2)
+          hk restorestepscmd.rs '        host.write_record(&rec).map_err(|e| {' \
+             '        Ok::<(), String>(()).map_err(|e| { // knife' \
+             every_step_is_written_down_as_it_is_done
+          # restore: a failed import throws the download away instead of taking the site back (B3 slice 2)
+          hk restorestepscmd.rs '            let after = restoresteps::after_failure(step);' \
+             '            let after = if step == RestoreStep::Import { AfterFailure::Discard } else { restoresteps::after_failure(step) }; // knife' \
+             a_failed_import_takes_the_site_back
+          # restore: a failure before the import takes the site back (B3 slice 2)
+          hk restorestepscmd.rs '            let after = restoresteps::after_failure(step);' \
+             '            let after = if step == RestoreStep::Verify { AfterFailure::RollBack } else { restoresteps::after_failure(step) }; // knife' \
+             a_failure_before_the_import_throws_the_download_away
+          # restore: a clean-up is not written down (B3 slice 2)
+          hk restorestepscmd.rs '                        rec.cleaned_up = true;' \
+             '                        rec.cleaned_up = false; // knife' \
+             a_failed_import_takes_the_site_back
+          # restore: going on starts again at the first step (B3 slice 2)
+          hk restorestepscmd.rs '        .position(|s| *s == from)' \
+             '        .position(|s| *s == from || true) // knife' \
+             a_restore_goes_on_from_the_step_that_failed
+          # restore: a plan that no longer matches the host is applied (B3 slice 2)
+          hk restorestepscmd.rs '    if doc != *given {' \
+             '    if doc != *given && false { // knife' \
+             a_plan_that_no_longer_matches_is_refused
+          # restore: --continue takes a plan that starts a restore (B3 slice 2)
+          hk restorestepscmd.rs '    if doc["next"] != mode.next_word() {' \
+             '    if doc["next"] != mode.next_word() && false { // knife' \
+             apply_takes_a_start_plan_and_continue_a_go_on_plan
+          # restore: the steps run before they are wired (B3 slice 2)
+          hk restorestepscmd.rs '    if !host.wired() {' \
+             '    if !host.wired() && false { // knife' \
+             nothing_runs_until_the_steps_are_wired
+          # restore: another site's restore of the domain is not asked (B3 slice 2)
+          hk restorestepscmd.rs '        Next::Start => match restoresteps::admit(&spec.code, &domain, &other_list) {' \
+             '        Next::Start => match restoresteps::admit(&spec.code, &domain, &other_list[..0]) { // knife' \
+             another_sites_restore_of_the_domain_stops_the_plan
+          # restore: a target that is not up takes a plan (B3 slice 2)
+          hk restorestepscmd.rs '    if let Err(why) = restoresteps::ready_to_go_on(host.site_up()) {' \
+             '    if let Err(why) = restoresteps::ready_to_go_on(host.site_up()).or(Ok::<(), &str>(())) { // knife' \
+             a_target_that_is_down_takes_no_restore
+          # restore: a kept restore goes on with another backup (B3 slice 2)
+          hk restorestepscmd.rs '            Some(rec) if rec.source != source => stop(&mut doc, "source_differs"),' \
+             '            Some(rec) if rec.source != source && false => stop(&mut doc, "source_differs"), // knife' \
+             a_kept_restore_goes_on_only_with_its_own_backup
+          # restore: a damaged record of another site is left out (B3 slice 2)
+          hk restorestepscmd.rs '            match read_record_file(&path, expected)? {' \
+             '            match read_record_file(&path, expected).unwrap_or(None) { // knife' \
+             a_damaged_record_of_another_site_refuses_every_restore
+          # restore: --apply takes a plan that goes on with a restore (B3 slice 2, review N5)
+          hk restorestepscmd.rs '    if doc["next"] != mode.next_word() {' \
+             '    if doc["next"] != mode.next_word() && mode == Mode::Continue { // knife' \
+             apply_takes_a_start_plan_and_continue_a_go_on_plan
+          # restore: a record in another site's file is read as that site's (B3 slice 2, L2)
+          hk restorestepscmd.rs '            if rec.site != expected {' \
+             '            if rec.site != expected && false { // knife' \
+             a_record_in_another_sites_file_is_refused
+          # restore: a close plan that no longer matches the record is carried out (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if *given != doc {' \
+             '    if *given != doc && false { // knife' \
+             a_close_plan_that_no_longer_matches_is_refused
+          # restore: --resolved carries out a plan that abandons (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if said != how {' \
+             '    if said != how && false { // knife' \
+             resolved_takes_only_a_plan_that_resolves
+          # restore: a restore that is over gets a close plan (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if let Err(why) = restoresteps::may_close(standing) {' \
+             '    if let Err(why) = restoresteps::may_close(standing).or(Ok::<(), &str>(())) { // knife' \
+             only_a_restore_that_is_not_over_is_closed_on_the_host
+          # restore: a plan that says stop closes the restore (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if doc["next"] != "close" {' \
+             '    if doc["next"] != "close" && false { // knife' \
+             only_a_restore_that_is_not_over_is_closed_on_the_host
+          # restore: a resolved restore is not written down as closed (B3 slice 2, L1)
+          hk restorestepscmd.rs '            rec.closed = Some((how, op.clone()));' \
+             '            rec.closed = None; // knife' \
+             a_kept_restore_a_person_resolved_lets_a_new_one_start
+          # restore: an abandoned record stays in its site's place (B3 slice 2, L1)
+          hk restorestepscmd.rs '                Close::Abandoned => h.move_aside(&rec)?,' \
+             '                Close::Abandoned => h.write_record(&rec)?, // knife' \
+             an_abandoned_restore_no_longer_holds_the_host
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
