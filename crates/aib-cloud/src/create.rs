@@ -110,6 +110,20 @@ pub fn may_take_holder(
     now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at
 }
 
+/// How long a "creating" record may read [`Verdict::Unknown`] before we are told
+/// (c477a liveness review N1). Counted from `created_at`: only a record with a holder
+/// can be Unknown, and a normal creation, licences included, stays well under this.
+pub const UNKNOWN_ALERT_SECS: u64 = 600;
+
+/// Should this read of a record tell us (never the customer) that whether its worker
+/// lives has not been known for too long? Only Unknown counts; [`Verdict::Interrupted`]
+/// has its own message. Counted from `created_at`, not from the first Unknown: Unknown
+/// changes nothing in the record, so there is nowhere to keep that first time. The
+/// caller sends it once per site code and `created_at` (a new attempt is a new alert).
+pub fn unknown_needs_alert(v: Verdict, created_at: u64, now: u64) -> bool {
+    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -338,5 +352,31 @@ mod tests {
         assert!(!may_take_holder(T0, CreateState::Creating, (Some(&h), T0)));
         // a newer attempt replaced the record this worker was started for
         assert!(!may_take_holder(T0, CreateState::Creating, (None, T0 + 1)));
+    }
+
+    // N1: Unknown for too long tells us, once the alert time has passed
+    #[test]
+    fn unknown_for_too_long_tells_us() {
+        let v = Verdict::Unknown;
+        assert!(!unknown_needs_alert(v, T0, T0 + 5));
+        assert!(!unknown_needs_alert(v, T0, T0 + UNKNOWN_ALERT_SECS));
+        assert!(unknown_needs_alert(v, T0, T0 + UNKNOWN_ALERT_SECS + 1));
+        assert!(unknown_needs_alert(v, T0, T0 + 11 * 60));
+        // a clock behind the record is not "too long"
+        assert!(!unknown_needs_alert(v, T0, T0 - 60));
+    }
+
+    // N1: only Unknown alerts; Interrupted has its own message, the rest are fine
+    #[test]
+    fn only_unknown_alerts() {
+        let late = T0 + UNKNOWN_ALERT_SECS * 10;
+        for v in [
+            Verdict::Creating,
+            Verdict::Interrupted,
+            Verdict::Ready,
+            Verdict::Unfinished,
+        ] {
+            assert!(!unknown_needs_alert(v, T0, late), "{v:?}");
+        }
     }
 }
