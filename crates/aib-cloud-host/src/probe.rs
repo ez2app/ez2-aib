@@ -224,7 +224,7 @@ pub fn probe_here(kind: &str, ip: IpAddr, port: u16) -> bool {
 /// (not inside aibd, which owns the timer registry); the only clock it needs is "give the
 /// child at most N seconds". Nothing else in this crate sleeps.
 #[allow(clippy::disallowed_methods)]
-fn wait_with_timeout(
+pub(crate) fn wait_with_timeout(
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> Result<std::process::ExitStatus, String> {
