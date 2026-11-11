@@ -1114,6 +1114,10 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                     json!({ "error": e, "what_to_do": "a journal cannot be read: every target is held until it is fixed or moved aside by hand" })
                 }
             };
+            // sites being opened, with the step each reached: a clone journaled `verified`
+            // leaves a container that is not a site yet (c477a, B1 L1)
+            doc["opening"] =
+                crate::sitecreatecmd::opening_report(Path::new(crate::sitecreatecmd::CREATING));
             if let Some(op) = args.get(1) {
                 let (entries, cut) = read_journal(&journal_path(dir, op)?)?;
                 let last = op::replay(&entries).map_err(|e| e.to_string())?;

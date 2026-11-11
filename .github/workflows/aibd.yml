@@ -283,6 +283,10 @@ jobs:
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
              values_the_lenient_read_would_not_use_are_gaps
+          # site create B2: the limits step is judged on the template's keys too (4542e 11-11)
+          ck site.rs '        if !LIMITS_STEP_KEYS.contains(&k) {' \
+             '        if !LIMITS_STEP_KEYS.contains(&k) || true { // knife' \
+             the_limits_step_is_checked_on_its_own_keys
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
@@ -853,8 +857,9 @@ jobs:
           # customer entry: writes are answered as done
           hk customercmd.rs '            4' '            0 // knife' refused_and_not_yet
           # customer logs: the host reads far more than it was asked for (33e28, #631 seg. 5 M1)
-          hk probe.rs '            let mut limited = p.take(cap);' \
-             '            let mut limited = p.take(cap.saturating_mul(1000)); // knife' \
+          # (anchor runs to the comment after it: run_bounded_input has the same first line, 4542e B3)
+          hk probe.rs $'            let mut limited = p.take(cap);\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
+             $'            let mut limited = p.take(cap.saturating_mul(1000)); // knife\n            let _ = limited.read_to_end(&mut buf);\n            // one byte past' \
              output_that_does_not_end_is_cut_on_the_host
           # site usage: the host offers its reserve too
           hk usagecmd.rs '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB),' '        memory_mb: available_mb.saturating_sub(RESERVE_MEMORY_MB * 0), // knife' \
@@ -1146,6 +1151,214 @@ jobs:
           hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
              '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
+          hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
+             '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
+             an_unreadable_number_stops_the_plan
+          # site create --plan: a domain another site serves is opened again
+          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() {" \
+             "    let own_stop: Option<&'static str> = if taken.is_some() && false { // knife" \
+             an_existing_domain_stops_the_plan
+          # site create --plan: an upper-case domain is folded instead of refused
+          hk sitecreatecmd.rs '    if !valid_domain(name) {' \
+             '    if !valid_domain(&name.to_ascii_lowercase()) { // knife' \
+             an_uppercase_domain_is_refused
+          # site create --plan: a host without a machine id gets a sealed plan anyway
+          hk sitecreatecmd.rs '    let fingerprint = opstore::host_fingerprint(machine_id)?;' \
+             '    let fingerprint = opstore::host_fingerprint(machine_id).unwrap_or_default(); // knife' \
+             a_plan_without_machine_id_is_not_sealed
+          # site create --plan: an unfinished operation on the domain does not hold it
+          hk sitecreatecmd.rs '    } else if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) {' \
+             '    } else if seen.unfinished.as_ref().is_some_and(|u| u.is_empty() && false) { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
+          # site create --plan: a record without its numbers is passed over
+          hk sitecreatecmd.rs '        let (ct, ip) = record_numbers(rec).ok_or("numbers_unknown")?;' \
+             '        let Some((ct, ip)) = record_numbers(rec) else { continue }; // knife' \
+             an_unreadable_number_stops_the_plan
+          # site create --plan: a host without virtual machines (empty `qm list`) can never plan (33e28 11-11 M1)
+          hk sitecreatecmd.rs '        return Some(Vec::new());' \
+             '        return None; // knife' \
+             numbers_come_from_lists_and_configurations
+          # site create --plan: an unfinished opening of the www twin does not hold the domain (33e28 11-11 L1)
+          hk sitecreatecmd.rs '    for name in same_names(domain) {' \
+             '    for name in [domain.to_owned()] { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
+          # site create --apply: a plan that no longer matches the host is applied anyway (4542e 11-11, B1)
+          hk sitecreatecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if (doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan) && false { // knife' \
+             a_host_that_changed_refuses_the_plan
+          # site create --apply: a number something else took since the plan is cloned over
+          hk sitecreatecmd.rs '        if ids.contains(&ct) {' \
+             '        if ids.contains(&ct) && false { // knife' \
+             a_number_taken_since_makes_and_removes_nothing
+          # site create --apply: a container whose existence could not be told counts as gone
+          hk sitecreatecmd.rs '        Err(e) if e.contains("does not exist") => Some(false),' \
+             '        Err(e) if e.contains("does not exist") || true => Some(false), // knife' \
+             an_undo_that_cannot_tell_leaves_everything_for_a_person
+          # site create --apply: the numbers are not held by a record before the clone
+          hk sitecreatecmd.rs '    write_record(creating, &input.code, &record)?;' \
+             '    if false { write_record(creating, &input.code, &record)?; } // knife' \
+             an_approved_plan_clones_once
+          # site create --apply: the journal target is not the domain's
+          hk sitecreatecmd.rs '        &target(domain),' \
+             '        &target("x.example.test"), // knife' \
+             an_approved_plan_clones_once
+          # site create: a domain too long for a journal line keeps its plain target (one rule for plan and apply, 33e28 11-11 N2)
+          hk sitecreatecmd.rs '    if plain.len() <= TARGET_MAX {' \
+             '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
+             a_long_domain_is_planned_under_its_hashed_target
+          # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
+          hk sitecreatecmd.rs '    if differ.is_empty() {' \
+             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: the firewall file is never written (the clone's stays)
+          hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
+             '    let _ = &want; // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a container that does not run counts as started
+          hk sitecreatecmd.rs '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") => Ok(()),' \
+             '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
+             a_container_that_does_not_run_is_undone
+          # site create --continue: the record does not move on (op status would show the wrong step)
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+             $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
+             an_opening_is_carried_on_through_limits_firewall_and_start
+          # site create --continue: a running container is destroyed without being stopped
+          hk sitecreatecmd.rs '            let _ = runner.run(&argv(&["pct", "stop", &n]));' \
+             '            // knife: no stop' \
+             limits_that_did_not_take_are_undone
+          # site create --continue: a code typed for another domain's opening is carried on
+          hk sitecreatecmd.rs "    if hosts.split(',').next().map(str::trim) != Some(domain) {" \
+             "    if hosts.split(',').next().map(str::trim) != Some(domain) && false { // knife" \
+             an_opening_of_another_domain_is_not_carried_on
+          # site create --continue: the step the record reached is done again
+          hk sitecreatecmd.rs '        Some(i) => Ok(upto.into_iter().skip(i + 1).collect()),' \
+             '        Some(i) => Ok(upto.into_iter().skip(i).collect()), // knife' \
+             an_opening_carries_on_from_the_step_it_reached
+          # site create --continue: the template's pids line stays beside ours
+          hk sitecreatecmd.rs '        } else if !line.starts_with("lxc.cgroup2.pids.max:") {' \
+             '        } else if !line.starts_with("lxc.cgroup2.pids.max:") || true { // knife' \
+             the_pids_line_is_one_and_in_the_main_section
+          # site create --continue: a container on the platform's hardware address is started (c477a B2 L2)
+          hk sitecreatecmd.rs '        Some(mac) if mac_is_local(&mac) => Ok(()),' \
+             '        Some(mac) if mac_is_local(&mac) || true => Ok(()), // knife' \
+             a_platform_hardware_address_holds_the_start
+          # site create --continue (B3): an undone opening keeps its administrators' passwords on the host (4542e 11-11)
+          hk sitecreatecmd.rs '            let failure = match crate::siteidentity::drop_admin_secrets(&paths.secrets, &spec.code)' \
+             '            let failure = match Ok::<(), String>(()) // knife' \
+             an_undone_opening_drops_its_passwords
+          # B3 install: the scheduler's timer is written but never started
+          hk siteidentity.rs '        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))' \
+             '        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload", &timer])) // knife' \
+             the_install_runs_the_installer_and_puts_the_scheduler_on_a_timer
+          # B3 install: the installer stays in the container after it failed
+          hk siteidentity.rs '    let removed = runner.run(&in_ct(spec.ct, &["rm", "-f", SETUP_IN_CT]));' \
+             '    let removed: Result<String, String> = Ok(String::new()); // knife' \
+             an_installer_that_fails_is_still_taken_out_of_the_container
+          # B3 install: a blank site keeps the template package
+          hk siteidentity.rs '    if !spec.wp {' \
+             '    if !spec.wp && false { // knife' \
+             a_blank_install_drops_the_template_package_first
+          # B3 identity: a password goes into an argument list
+          hk siteidentity.rs '            .run_input(&wp(spec, &["eval", &program]), password.as_bytes())' \
+             '            .run_input(&wp(spec, &["eval", &program, &password]), password.as_bytes()) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the password file is readable by others
+          hk siteidentity.rs '    f.set_permissions(fs::Permissions::from_mode(0o600))' \
+             '    f.set_permissions(fs::Permissions::from_mode(0o644)) // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the installer's administrator stays beside the site's own
+          hk siteidentity.rs '    if !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() {' \
+             '    if false && !logins.iter().any(|l| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: the template's notice address stays
+          hk siteidentity.rs '    for key in ["admin_email", "new_admin_email"] {' \
+             '    for key in ["new_admin_email"] { // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity: an undone site's password files are left behind
+          hk siteidentity.rs '        if name.starts_with(&mine) || name.starts_with(&tmp) {' \
+             '        if false && (name.starts_with(&mine) || name.starts_with(&tmp)) { // knife' \
+             an_undone_site_keeps_no_password
+          # B3 identity: bytes past the even cut are folded onto the first letters
+          hk siteidentity.rs '        .filter(|b| usize::from(**b) < even)' \
+             '        .filter(|b| usize::from(**b) < even || true) // knife' \
+             passwords_are_even_and_long_enough
+          # B3 install (33e28 L1): the installer's output goes to its log, not to the answer
+          hk siteidentity.rs '\"$@\" >\"$log\" 2>&1; rc=$?;' \
+             '\"$@\"; rc=$?; : knife;' \
+             the_installer_output_stays_in_its_log
+          # B3 install (33e28 L1): the installer's exit code is the answer's
+          hk siteidentity.rs 'exit $rc";' \
+             'exit 0"; // knife' \
+             the_installer_output_stays_in_its_log
+          # B3 identity (33e28 L2): the password is checked against what is stored before "set"
+          hk siteidentity.rs 'if (!$v || !wp_check_password($p, $v->user_pass, $v->ID)) {{ exit(5); }} ' \
+             '/* knife */ ' \
+             the_password_is_read_back_before_it_is_called_set
+          # B3 identity (33e28 L4): what the installer leaves in the container is listed for a person
+          hk siteidentity.rs '    pending.extend(left_in_container(&spec.code));' \
+             '    pending.extend(left_in_container(&spec.code).into_iter().take(0)); // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity (33e28 N2): a title reads back escaped as the site software stores it
+          hk siteidentity.rs '"&amp;")' \
+             '"&") /* knife */' \
+             a_title_is_compared_as_the_site_software_stores_it
+          # B4 licences: a site holding another key is activated anyway
+          hk sitelive.rs '    if !same_key(site.trim(), &template) {' \
+             '    if false && !same_key(site.trim(), &template) { // knife' \
+             another_key_in_the_site_is_left_for_a_person_and_nothing_is_activated
+          # B4 entry: a chain that does not jump to the site's group counts as live (c477a B2 L1)
+          hk sitelive.rs '            .ends_with(&jump)' \
+             '            .ends_with(&jump) || !l.is_empty() // knife' \
+             a_firewall_is_live_only_when_its_chain_jumps_to_the_group
+          # B4 entry: the entry is changed before the firewall is live
+          hk sitelive.rs '    if !firewall_compiled(&rules, &spec.fw_group) {' \
+             '    if false && !firewall_compiled(&rules, &spec.fw_group) { // knife' \
+             the_entry_is_changed_only_when_the_firewall_is_live
+          # B4 entry: another block under the site's marker is written over
+          hk sitelive.rs '    if caddyfile.lines().any(|l| l.trim_end() == marker) {' \
+             '    if false && caddyfile.lines().any(|l| l.trim_end() == marker) { // knife' \
+             a_marker_or_a_name_already_on_the_entry_is_refused
+          # B4 entry: a site that cannot be asked counts as answering the same
+          hk sitelive.rs '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none()) {' \
+             '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
+             other_sites_must_answer_as_before_and_no_answer_is_never_the_same
+          # B4 entry: the other sites are not asked again after the change
+          hk sitelive.rs '    let Err(changed) = same_answers(&before, &others(runner, &paths.records, &spec.code)) else {' \
+             '    let Err(changed) = same_answers(&before, &before) else { // knife' \
+             another_site_that_answers_differently_after_is_a_failure
+          # B4 entry: a failed reload leaves the new configuration in place
+          hk sitelive.rs '    let back = runner.run(&edge(&["cp", "-a", backup, CADDYFILE]));' \
+             '    let back = runner.run(&edge(&["true", backup])); // knife' \
+             a_failed_reload_puts_the_old_configuration_back
+          # B4 health: a 200 without the site's own mark is taken as healthy
+          hk sitelive.rs '    if marked {' \
+             '    if marked || true { // knife' \
+             health_needs_200_and_the_site_s_own_mark
+          # B4 health: a record already there for the code is written over
+          hk sitelive.rs '        Ok(there) if there == text => {}' \
+             '        Ok(there) if there == text || true => {} // knife' \
+             a_record_for_the_code_that_is_not_this_one_is_refused
+          # B4 health: another line for the code on the export list is accepted
+          hk sitelive.rs '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line {' \
+             '            return if l.split_whitespace().collect::<Vec<_>>().join(" ") == line || true { // knife' \
+             the_export_list_gets_one_line_and_keeps_its_comments
+          # B4: a failure from the licences on is undone instead of kept for a person
+          hk sitecreatecmd.rs '        if sitecreate::after_failure(step) == AfterFailure::Keep {' \
+             '        if sitecreate::after_failure(step) == AfterFailure::Keep && false { // knife' \
+             a_failure_from_the_licences_on_keeps_the_site_and_removes_nothing
+          # B4 entry (33e28 M1): a block that changed another site stays on the entry
+          hk sitelive.rs '    if !edge_put_back(runner, &backup) {' \
+             '    if false && !edge_put_back(runner, &backup) { // knife' \
+             a_block_that_changes_another_site_is_taken_off_the_entry_again
+          # B4 health (33e28 M2): the opening record goes with what only it carries
+          hk sitelive.rs '    write_new(&kept, &opened, 0o600)?;' \
+             '    let _ = (&kept, &opened); // knife' \
+             a_healthy_site_becomes_a_full_record_on_the_list_and_its_opening_goes
+          # B4 (33e28 M2): a licence left for a person is not in what is still to do
+          hk sitelive.rs '                .filter(|(_, w)| *w != "done")' \
+             '                .filter(|(_, w)| *w != "done" && false) // knife' \
+             what_a_person_still_has_to_do_comes_from_the_record
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
