@@ -664,7 +664,7 @@ def sent_author(root, msgid):
 
 def mark_unconfirmed(root, now=None, after=86400):
     """10-18:交出(relayed)或對方只回到 queued、超過 after 還沒 delivered / read / 拒收 ⇒ 補一張 unconfirmed 回條
-    (寄件人與艦長室看得到「可能沒收到」;Mac Pro 13 換艙後寄到舊席的信就是這樣一直排著)。回補了幾張。"""
+    (寄件人與艦長室看得到「可能沒收到」;Mac B 換艙後寄到舊席的信就是這樣一直排著)。回補了幾張。"""
     now = time.time() if now is None else now
     done = 0
     for p in sorted((Path(root) / "sent").glob("*.json"))[-2000:]:
@@ -853,7 +853,7 @@ def peer_accepted_at(root, owner):
 
 def _with_peer(root, rec, res, now):
     """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。
-    10-25 Mac Pro 13:對方其實是「還不是好友、拒收」,這邊卻補成「對方離線」,人就跑去查轉接程式。
+    10-25 Mac B:對方其實是「還不是好友、拒收」,這邊卻補成「對方離線」,人就跑去查轉接程式。
     ⇒ 交上中繼站(relayed)了、但從沒收過對方收下的回條 ⇒ 不推斷睡 / 離線,改放 hint「可能還不是好友」
     (#357 r1:detail 是契約、原值不動;人話放 hint、走 i18n;peer.why = not_confirmed 只在程式內用)。"""
     owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")

@@ -11,6 +11,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
+    aib web [--no-open]         pair a browser page with the running aibd (prints a code, opens the page, asks y/N)
     aib ledger add|move|show|list|verify   cabin work ledger: who owns what, in which state, accepted only with receipts
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib update auto on|off|status   update automatically when a new version is released (default on)
@@ -21,6 +22,8 @@ only the affected tests rerun, and nothing ships while something new is red.
 """
 import os
 import runpy
+import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 = 原本倉根的版面(tools/、src/、i18n/)
@@ -128,10 +131,27 @@ def _lease(args):
     tool = os.path.join(HERE, "tools", "governance", "host_lease.py")
     if args:
         os.execv(sys.executable, [sys.executable, tool] + list(args))
-    import subprocess
     rc = subprocess.run([sys.executable, tool, "status"], stdin=subprocess.DEVNULL).returncode
     subprocess.run([sys.executable, tool, "queue", "list"], stdin=subprocess.DEVNULL)
     return rc
+
+
+def _web(args):
+    """`aib web` = `aibd ctl web` (ADR 0006 §7 W1, PLAN A5): one implementation, in aibd's own client, which reads
+    the token from aibd's run folder and never puts it in a URL. aibd comes from AIBD_BIN or PATH."""
+    aibd = os.environ.get("AIBD_BIN") or shutil.which("aibd")
+    if not aibd:
+        sys.stderr.write("aib web: aibd not found (set AIBD_BIN, or build it: cargo build -p aibd --features web)\n")
+        return 3
+    argv = [aibd, "ctl", "web"] + list(args)
+    if os.name == "nt":
+        # Windows' execv does not replace this process: cmd / PowerShell get their prompt back at once and read
+        # the console together with aibd, right at its y/N question. Wait for aibd instead (a9136 A5 L1).
+        try:
+            return subprocess.run(argv).returncode
+        except KeyboardInterrupt:  # Ctrl-C reaches aibd too; answer like a shell would, no traceback (ebb36 N1)
+            return 130
+    os.execv(aibd, argv)
 
 
 def _ui_mod():
@@ -175,6 +195,8 @@ def main():
         return _update(sys.argv[2:])
     if sys.argv[1] == "lease":
         return _lease(sys.argv[2:])
+    if sys.argv[1] == "web":
+        return _web(sys.argv[2:])
     if sys.argv[1] == "license":
         # 授權(10-08):status / device-id / activate / deactivate —— entitlement 是套件(相對 import),用 run_module
         sys.path.insert(0, os.path.join(HERE, "src"))
@@ -196,7 +218,7 @@ def main():
         import aib_plugins
         script, plugin, why = aib_plugins.find_command(sys.argv[1])
         if script is not None:
-            # 10-20 Pro 13:git 原始碼裝的 aib 不是 import 得到的套件,外掛(例 captain-room room.py)找不到核心 ⇒
+            # 10-20 Mac B:git 原始碼裝的 aib 不是 import 得到的套件,外掛(例 captain-room room.py)找不到核心 ⇒
             # 由跑它的這個 aib 告訴它核心在哪;直接蓋掉,不沿用環境裡別艙 / 別版留下的值
             os.environ["AIB_CORE_DIR"] = HERE
             os.environ["EZ2_AIB_ROOT"] = HERE   # 外掛再叫的 seat-info.py 靠這個找駕駛艙模組;艙外(ssh / launchd)起的沒有 ⇒ 一席都列不出來

@@ -409,7 +409,7 @@ def kick_session(session, dry_run=False):
 
 
 def storm_tick(run, *, path=None, window_s=STORM_CHECK_S, now=None):
-    """全機一輪風暴偵測只跑一次:每艙一條守衛,各跑一支 log show 會疊出好幾支,每支約 28% CPU(11-03 andymini)。
+    """全機一輪風暴偵測只跑一次:每艙一條守衛,各跑一支 log show 會疊出好幾支,每支約 28% CPU(11-03 mac-c)。
     storm_once 本來就是踢全機的艙,一席跑就夠。拿不到鎖或別席剛跑過 ⇒ ("shared", 0)。
     鎖 / 記號檔開不了 ⇒ 照跑:寧可多一支 log show,不能丟掉偵測。
     已知界線:跑的那席剛好關掉時,接手的席可能晚最多 13 秒,那段只查一次最近 15 秒,會有一小段沒查到;

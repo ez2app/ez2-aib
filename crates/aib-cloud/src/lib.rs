@@ -38,11 +38,23 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
+pub mod arc;
+pub mod backup;
+pub mod client;
+pub mod customer;
+pub mod edge;
 pub mod isolation;
 pub mod op;
 pub mod provision;
 pub mod quarantine;
 pub mod r2token;
 pub mod robot;
+pub mod roster;
 pub mod site;
+pub mod sitecreate;
+pub mod sitedefaults;
+pub mod siteremove;
+pub mod svc;
+pub mod usage;
 pub mod verify;
+pub mod wording;

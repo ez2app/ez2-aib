@@ -77,12 +77,28 @@ pub async fn run(
     });
     platform::write_private_file(&run_info_path, info.to_string().as_bytes())?;
 
-    let guard_cfg = Arc::new(GuardConfig::new(
-        addr.port(),
-        addr.is_ipv6(),
-        cfg.allowed_origins.clone(),
-        token,
-    ));
+    // pairing (ADR 0006 §7) is opt-in: the terminal confirmation is not an independent
+    // channel against a same-account AI (see crate::pairing)
+    let channel = crate::pairing::ConfirmChannel::from_env_value(
+        std::env::var("AIBD_PAIRING").ok().as_deref(),
+    );
+    if channel != crate::pairing::ConfirmChannel::Off {
+        tracing::warn!(
+            channel = channel.as_str(),
+            "pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
+        );
+    }
+    let guard_cfg = Arc::new(
+        GuardConfig::new(
+            addr.port(),
+            addr.is_ipv6(),
+            cfg.allowed_origins.clone(),
+            token,
+        )
+        .with_pairing(Arc::new(
+            crate::pairing::Pairing::default().with_channel(channel),
+        )),
+    );
     // M1 self-check once, off the async threads (it starts one child).
     let lineage = Arc::new(
         tokio::task::spawn_blocking(crate::lineage::Lineage::detect)
@@ -102,6 +118,8 @@ pub async fn run(
     let session_policy = Arc::new(cfg.session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
+    // no instance id, no start (#646): checked before the thermal guard reads anything
+    api::process_ready()?;
     // R1 thermal guard, dry run (ADR 0005 §1): before the router takes requests,
     // so it hears the first 0 → 1. Its start-up T1 check reads sensors once.
     let thermal = {

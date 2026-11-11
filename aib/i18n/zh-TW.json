@@ -5709,6 +5709,7 @@
   "aib.consent.no": "取消",
   "aib.consent.touchid_reason": "AIB 同意 · 自稱 {who} 要跑:{cmd}",
   "aib.consent.sign_extra": "腳本 sha256 {sha}(同意後原檔被改就不跑);前幾行:\n{head}",
+  "aib.consent.sign_lint": "可丟環境:{env}  收據:{receipt}\n作者放行的 aib-signlint 規則(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 通知 · 跑完 {cmd}(rc {rc})",
   "aib.consent.help.usage": "用法:aib consent ask [--strong] --summary <一句話> [--seat 席碼] [--wait 秒] [--json] -- <指令…>\n      aib consent status <id> [--json]\n      aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "散熱元件(aib {aib})",
@@ -5987,6 +5988,6 @@
   "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
   "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
-  "aib.cloud_robot.touchid_apply": "aib:對 Hetzner 主機 {server} 執行 {action}(可重灌整台);救援金鑰 {fp}",
-  "aib.approve_gate.cat.host_rescue": "主機救援(Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib:對主機 {server} 執行 {action}(可重灌整台);救援金鑰 {fp}",
+  "aib.approve_gate.cat.host_rescue": "主機救援(供應商後台 rescue / reset)"
 }
