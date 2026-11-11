@@ -303,6 +303,26 @@ jobs:
           # customer side: a log line is shown as the host sent it (ebb36, #648 L2)
           ck wording.rs '                    .map(crate::svc::plain)' '                    .map(String::from) // knife' \
              every_answer_has_its_sentence
+          # site drift: any path on the mask's hook key passes (33e28: only the wrapper's)
+          ck site.rs '        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {' \
+             '        if k == "lxc.hook.mount" && (mask_hook_ok(v) || true) && mask_hooks == 1 { // knife' \
+             s6_each_drift_is_named
+          # site verify S10: the hook's verdict is not read (a CT whose covers failed is green)
+          ck verify.rs '        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) => Outcome::Green,' \
+             '        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) || true => Outcome::Green, // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
+          # site verify S10: any hook on that key counts as the mask
+          ck verify.rs '        ([one], _) if !crate::site::mask_hook_ok(one) => Outcome::Red("no_mask_hook"),' \
+             '        ([one], _) if !crate::site::mask_hook_ok(one) && false => Outcome::Red("no_mask_hook"), // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
+          # site verify S11: a CT without a search domain passes (it would carry the host's)
+          ck verify.rs '    } else if get(&cfg, "searchdomain") != Some(SEARCH_DOMAIN) {' \
+             '    } else if get(&cfg, "searchdomain").is_some_and(|d| d != SEARCH_DOMAIN) { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
+          # site verify S13: an IPv6 address on the CT is not seen
+          ck verify.rs '    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {' \
+             '    } else if net0(&cfg, "ip6").is_some() && net0(&cfg, "gw6").is_some() { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
           # site verify: cpulimit 0 is an ordinary number again (c477a, seg. 3 M1)
           ck verify.rs '        .filter(|v| *v != Some(0));' \
              '        .filter(|v| v.is_some()); // knife' \
@@ -471,6 +491,66 @@ jobs:
           ck client.rs '        && edge(b.first())' \
              '        && b.first().is_some() // knife' \
              nothing_can_be_read_as_an_option
+          # mask: a cpuinfo field nobody named reaches the container
+          ck mask.rs '        _ => None,' \
+             '        _ => Some(value.into()), // knife' \
+             a_field_nobody_named_is_not_passed_on
+          # mask: the real model name reaches the container
+          ck mask.rs '        "model name" => Some(CPU_MODEL.into()),' \
+             '        "model name" => Some(value.into()), // knife' \
+             the_machine_is_not_named_in_cpuinfo
+          # mask: under /sys something nobody named is left readable
+          ck mask.rs '            step.cover.push(path);' \
+             '            step.descend.push(path); // knife' \
+             under_sys_only_what_is_named_stays
+          # mask: a multicast address passes as a site's own (Andy 11-11)
+          ck mask.rs '    shaped && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x03 == 0x02)' \
+             '    shaped && u8::from_str_radix(parts[0], 16).is_ok_and(|b| b & 0x02 == 0x02) // knife' \
+             a_site_hwaddr_is_local_and_unicast
+          # mask: a drawn address keeps the multicast bit it was drawn with
+          ck mask.rs '    let first = (raw[0] & 0xFC) | 0x02;' \
+             '    let first = raw[0] | 0x02; // knife' \
+             a_site_hwaddr_is_local_and_unicast
+          # mask plan: a second hook next to the wrapper is left in place
+          ck mask.rs '    let hook_ok = matches!(hooks.as_slice(), [one] if crate::site::mask_hook_ok(one));' \
+             '    let hook_ok = matches!(hooks.as_slice(), [one, ..] if crate::site::mask_hook_ok(one)); // knife' \
+             a_second_hook_or_a_foreign_one_is_not_the_mask
+          # mask plan: an IPv6 gateway alone stays on the CT
+          ck mask.rs '        if f.starts_with("ip6=") || f.starts_with("gw6=") {' \
+             '        if f.starts_with("ip6=") && f.starts_with("gw6=") { // knife' \
+             ipv6_alone_or_no_hwaddr_changes_net0
+          # mask plan: a CT without an address of its own keeps the one the platform draws
+          ck mask.rs '    if !had_hwaddr {' \
+             '    if !had_hwaddr && false { // knife' \
+             ipv6_alone_or_no_hwaddr_changes_net0
+          # mask plan: a search domain that names our network is kept
+          ck mask.rs '    if get("searchdomain") != Some(crate::verify::SEARCH_DOMAIN) {' \
+             '    if get("searchdomain").is_none() { // knife' \
+             what_an_unmasked_ct_needs_is_each_named
+          # mask plan: the tailnet's own resolver passes as a public one (c477a, ct-mask2 N1)
+          ck mask.rs '        let shared = a == 100 && (64..128).contains(&b);' \
+             '        let shared = a == 100 && (64..128).contains(&b) && false; // knife' \
+             a_resolver_of_ours_or_the_hosts_is_not_neutral
+          # mask plan: a reserved or benchmarking address passes as a public resolver (c477a, ct-mask2 N4)
+          ck mask.rs '        let special = a >= 240 || (a == 198 && (b & 0xFE) == 18);' \
+             '        let special = (a >= 240 || (a == 198 && (b & 0xFE) == 18)) && false; // knife' \
+             a_resolver_that_is_no_public_host_is_not_neutral
+          # mask plan: a second network interface goes unnamed (c477a, ct-mask2 N2)
+          ck mask.rs '                .is_some_and(|n| !n.is_empty() && n != "0" && n.bytes().all(|c| c.is_ascii_digit()))' \
+             '                .is_some_and(|n| !n.is_empty() && n != "0" && n.bytes().all(|c| c.is_ascii_digit()) && false) // knife' \
+             another_nic_is_named_for_a_person
+          # mask: a limit above zero reads as closed (c477a, ct-mask2 L2)
+          ck mask.rs '    proc_value?.trim().parse::<u64>().ok().map(|n| n == 0)' \
+             '    proc_value?.trim().parse::<u64>().ok().map(|n| n < 100_000) // knife' \
+             the_user_namespace_limit_is_read_back
+          # site verify S11: any resolver passes, our network's too (c477a, ct-mask2 N1)
+          ck verify.rs '    let outcome = if !get(&cfg, "nameserver").is_some_and(crate::mask::resolver_is_neutral) {' \
+             '    let outcome = if get(&cfg, "nameserver").is_none() { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
+          # site verify S12: any address of the right length passes
+          ck verify.rs '    let outcome = if crate::mask::hwaddr_is_local(mac) {' \
+             '    let outcome = if mac.len() == 17 { // knife' \
+             s10_to_s13_and_h15_the_site_is_masked
           # customer wording: a row or a code the table does not know is shown all the same
           ck wording.rs '        if let (Some(name), Some(sentence)) = (name, sentence) {' \
              '        if let (Some(name), Some(sentence)) = (name.or(Some("?")), sentence.or(Some("?"))) { // knife' \
@@ -1240,6 +1320,9 @@ jobs:
           # customer entry: through sudo any records directory is taken (33e28, #642 L2)
           hk customercmd.rs '    !under_sudo || records == RECORDS' '    !under_sudo || !records.is_empty() // knife' \
              through_sudo_the_records_directory_is_ours_only
+          # ct mask: the wrapper leaves the last start's verdict in place (c477a, #642 seg. 1 M1)
+          hk ../../aib-cloud/src/mask.rs '*) rm -f ' '*) : ' \
+             a_start_whose_hook_cannot_run_leaves_no_old_verdict
           # customer key: a site list that is not one is taken as it is
           hk customercmd.rs '    ok.then_some(codes)' '    (ok || true).then_some(codes) // knife' \
              the_site_list_of_an_entry_is_codes_or_an_error
@@ -1250,6 +1333,41 @@ jobs:
           hk customercmd.rs '    roles.iter().any(|r| r.may(request.operation()))' \
              '    roles.iter().any(|r| r.may(request.operation()) || true) // knife' \
              a_tenant_key_reaches_its_own_sites_only
+          # ct mask: a cover is mounted through a link that leads out of the container
+          hk maskcmd.rs '    (real == path).then(|| {' '    (real == path || true).then(|| { // knife' \
+             nothing_is_mounted_on_the_host_or_through_a_link
+          # ct mask: the hook goes on inside the host own mount namespace
+          hk maskcmd.rs '        (Some(ours), Some(hosts)) if ours != hosts => Ok(()),' \
+             '        (Some(ours), Some(hosts)) if ours != hosts || true => Ok(()), // knife' \
+             nothing_is_mounted_on_the_host_or_through_a_link
+          # site mask: the hook's verdict is not read
+          hk sitemaskcmd.rs '        (Some(true), Some(v)) if mask::result_is_masked(v.as_deref()) => "masked",' \
+             '        (Some(true), Some(v)) if mask::result_is_masked(v.as_deref()) || true => "masked", // knife' \
+             a_running_site_without_its_covers_is_not_done
+          # site mask: what could not be read passes
+          hk sitemaskcmd.rs '    let rc = if !unread.is_empty() {' \
+             '    let rc = if unread.len() > 99 { // knife' \
+             what_could_not_be_read_is_said_and_is_not_a_pass
+          # site mask: a missing or older wrapper on the host is not owed
+          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || !others.is_empty() {' \
+             '    } else if to_change || verdict == "not_masked" || !others.is_empty() { // knife' \
+             a_wrapper_missing_or_older_is_owed_on_the_host
+          # site mask: a stopped CT is told to restart
+          hk sitemaskcmd.rs '        "restart_needed": to_change && seen.running == Some(true),' \
+             '        "restart_needed": to_change, // knife' \
+             fixes_on_a_running_site_need_a_restart_and_name_their_step
+          # site mask: without --plan it goes on
+          hk sitemaskcmd.rs '    if !plan_only {' \
+             '    if !plan_only && false { // knife' \
+             without_plan_nothing_is_done
+          # site mask: a verdict file that cannot be read is not said (c477a, ct-mask2 L1)
+          hk sitemaskcmd.rs '    } else if verdict == "unread" {' \
+             '    } else if verdict == "unread" && false { // knife' \
+             a_verdict_that_cannot_be_read_is_not_a_finding_of_not_masked
+          # site mask: a second network interface passes (c477a, ct-mask2 N2)
+          hk sitemaskcmd.rs '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || !others.is_empty() {' \
+             '    } else if to_change || verdict == "not_masked" || wrapper != "in_place" || others.len() > 99 { // knife' \
+             another_nic_needs_a_person_and_the_sysctl_is_read_back
           # customer logs: a quarantined CT is entered all the same (33e28, #631 seg. 5 L2; Andy 11-10)
           hk customercmd.rs '        Some(fw) if aib_cloud::quarantine::is_quarantined(fw) => LogsGate::Quarantined,' \
              '        Some(fw) if fw.is_empty() => LogsGate::Quarantined, // knife' \

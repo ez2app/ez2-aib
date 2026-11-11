@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H14; per site S00–S06), hands what it saw to `aib_cloud::verify`, prints the
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S13), hands what it saw to `aib_cloud::verify`, prints the
 //! verdicts. Nothing here writes, enters a CT or opens a connection; `--active` checks are
 //! a later slice.
 //!
@@ -202,6 +202,11 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
                 .unwrap_or(0),
         ),
         verify::h07_reboot_required(fs::exists(REBOOT_REQUIRED).ok()),
+        verify::h15_dmesg_restrict(
+            fs::read_to_string("/proc/sys/kernel/dmesg_restrict")
+                .ok()
+                .as_deref(),
+        ),
         verify::h10_fail2ban(observe("fail2ban-client", &["status", "sshd"], 5).as_deref()),
         verify::h12_time_sync(
             observe(
@@ -272,6 +277,22 @@ pub(crate) fn site_checks(
         verify::s04_firewall_group(&spec, state, quarantine::GROUP, ct_fw.as_deref()),
         verify::s05_limits(&spec, config.as_deref()),
         verify::s06_drift(drifted),
+        // the mask (4.5 section 7): the hook line, what the hook said when the CT started,
+        // and what else of the CT's configuration would name the platform
+        verify::s10_masked(
+            config.as_deref(),
+            match status.as_deref().map(str::trim) {
+                Some("status: running") => Some(true),
+                Some("status: stopped") => Some(false),
+                _ => None,
+            },
+            fs::read_to_string(format!("{}/{ct}/result", crate::maskcmd::STATE))
+                .ok()
+                .as_deref(),
+        ),
+        verify::s11_resolver(config.as_deref()),
+        verify::s12_hwaddr(config.as_deref()),
+        verify::s13_no_ipv6(config.as_deref()),
     ];
     (name, Some(spec.ct), results)
 }
@@ -471,7 +492,7 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        assert_eq!(r.len(), 6);
+        assert_eq!(r.len(), 10);
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");

@@ -44,6 +44,7 @@ pub mod client;
 pub mod customer;
 pub mod edge;
 pub mod isolation;
+pub mod mask;
 pub mod op;
 pub mod provision;
 pub mod quarantine;

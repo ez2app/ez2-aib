@@ -265,7 +265,10 @@ fn own_group(cmd: &mut Command) -> &mut Command {
     }
 }
 
-fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+pub(crate) fn run_quiet(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
     let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1392,6 +1395,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("usage") => crate::usagecmd::cmd(&args[2..]),
             Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
+            Some("mask") => crate::sitemaskcmd::cmd(&args[2..]),
             Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
             Some("login-link") => crate::loginlink::cmd(&args[2..]),
             Some("quarantine") => {
@@ -1412,6 +1416,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         Some("customer") => crate::customercmd::cmd(&args[1..]),
         Some("roster") => crate::rostercmd::cmd(&args[1..]),
         Some("leak-words") => crate::leakwordscmd::cmd(&args[1..]),
+        Some("ct") => crate::maskcmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
             Some("check") => crate::backupcmd::cmd(&args[2..]),

@@ -357,6 +357,12 @@ pub fn rootfs_is_own(value: &str, ct: u32) -> bool {
     })
 }
 
+/// Whether `value` is the path [`crate::mask::HOOK_LINE`] names — the only hook a site CT
+/// may carry. The line is one constant for installing, checking and restoring.
+pub fn mask_hook_ok(value: &str) -> bool {
+    crate::mask::HOOK_LINE.strip_prefix("lxc.hook.mount: ") == Some(value)
+}
+
 /// Keys a site CT's `pct config` may carry without being drift: what `desired()` declares,
 /// the identity keys PVE writes itself, and `lxc.idmap` (per-CT uid range, DECISION
 /// ct-idmap 11-10). Everything else — `lxc.hook.*`, `hookscript`, `lxc.cgroup2.devices.allow`,
@@ -771,6 +777,7 @@ pub fn drift(
             got: idmaps.join(" | "),
         });
     }
+    let mask_hooks = obs.iter().filter(|(k, _)| k == "lxc.hook.mount").count();
     for (k, v) in &obs {
         // rootfs must be this CT's own volume (c477a #585 L3: another CT's volume = two sites on one disk)
         if k == "rootfs" && !rootfs_is_own(v, spec.ct) {
@@ -783,6 +790,11 @@ pub fn drift(
                 ),
                 got: v.clone(),
             });
+            continue;
+        }
+        // the mask's own hook and no other: this key with exactly the wrapper's path, once
+        // (33e28). Any other hook, another path, or a second line stays drift below.
+        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {
             continue;
         }
         if !config_key_allowed(k) {
@@ -1445,6 +1457,26 @@ mod tests {
         ] {
             let d = keys(drift(&site2(), &alloc::format!("{CT112}{extra}"), Some(&fw)).unwrap());
             assert_eq!(d, [extra.split(':').next().unwrap()], "{extra}");
+        }
+        // the mask's hook is the one hook that is not drift: that key, that path, once (33e28)
+        let hook = crate::mask::HOOK_LINE;
+        assert_eq!(
+            drift(&site2(), &alloc::format!("{CT112}{hook}\n"), Some(&fw)).unwrap(),
+            Vec::<Drift>::new()
+        );
+        for other in [
+            alloc::format!("{hook}x\n"),
+            alloc::format!("{hook} --more\n"),
+            alloc::format!("{hook}\n{hook}\n"),
+            alloc::format!("{hook}\nlxc.hook.mount: /x\n"),
+            hook.replace("lxc.hook.mount", "lxc.hook.pre-start") + "\n",
+            hook.replace("lxc.hook.mount", "lxc.hook.start-host") + "\n",
+        ] {
+            let d = keys(drift(&site2(), &alloc::format!("{CT112}{other}"), Some(&fw)).unwrap());
+            assert!(
+                !d.is_empty() && d.iter().all(|k| k.starts_with("lxc.hook.")),
+                "{other}"
+            );
         }
         // …while PVE's own identity keys and the declared idmap are not
         let benign = alloc::format!(
