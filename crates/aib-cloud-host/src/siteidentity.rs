@@ -472,7 +472,12 @@ pub fn identity_step(
         let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);
         let flag = format!("--user_email={parked}");
         runner
-            .run(&wp(spec, &["user", "update", SETUP_ADMIN, &flag]))
+            // --skip-email: the site software would otherwise mail "Email Changed" to the
+            // address let go of, the first administrator's (c477a M1; no mail on opening)
+            .run(&wp(
+                spec,
+                &["user", "update", SETUP_ADMIN, &flag, "--skip-email"],
+            ))
             .map_err(|e| format!("identity_failed: {SETUP_ADMIN} address: {e}"))?;
         let back = runner
             .run(&wp(
@@ -621,6 +626,10 @@ mod tests {
         /// each user's address; the installer's administrator has the install's notice
         /// address, as ez2-site-setup gives it
         emails: std::collections::BTreeMap<String, String>,
+        /// the options after the address of the last `user update`
+        updated: Vec<String>,
+        /// a `user update` that says it worked but keeps the old address
+        sticky_email: bool,
         cron: Option<String>,
         enabled: bool,
         /// a command (joined argv contains it) that fails
@@ -635,6 +644,8 @@ mod tests {
                 options: Default::default(),
                 users: vec![SETUP_ADMIN.to_owned()],
                 emails: [(SETUP_ADMIN.to_owned(), "ops@example.test".to_owned())].into(),
+                updated: Vec::new(),
+                sticky_email: false,
                 cron: None,
                 enabled: false,
                 broken: None,
@@ -701,9 +712,12 @@ mod tests {
                     self.emails.insert((*login).to_owned(), (*email).to_owned());
                     Ok(format!("{}\n", self.users.len()))
                 }
-                ["user", "update", login, flag] => {
+                ["user", "update", login, flag, rest @ ..] => {
                     let email = flag.strip_prefix("--user_email=").ok_or("flag")?;
-                    self.emails.insert((*login).to_owned(), email.to_owned());
+                    self.updated = rest.iter().map(|r| (*r).to_owned()).collect();
+                    if !self.sticky_email {
+                        self.emails.insert((*login).to_owned(), email.to_owned());
+                    }
                     Ok(String::new())
                 }
                 ["user", "get", login, "--field=user_email"] => self
@@ -836,6 +850,20 @@ mod tests {
         );
         assert_eq!(site.users, ["ops", "ops2"]);
         assert_eq!(site.emails["ops"], "ops@example.test");
+        assert_eq!(
+            site.updated,
+            ["--skip-email"],
+            "no Email Changed mail (c477a M1)"
+        );
+        // an address that is not taken stops the step before any user is created (c477a N1)
+        let mut site = Site::new();
+        site.sticky_email = true;
+        let err = identity_step(&mut site, &paths, &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_not_set: ez2admin address"),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains("user create")));
         // an address that does not read back stops the step before any user is created
         let mut site = Site::new();
         site.broken = Some("--field=user_email");

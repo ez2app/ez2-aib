@@ -1827,6 +1827,12 @@ jobs:
           hk siteidentity.rs '            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;' \
              '            .unwrap_or_default(); // knife' \
              the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '                &["user", "update", SETUP_ADMIN, &flag, "--skip-email"],' \
+             '                &["user", "update", SETUP_ADMIN, &flag], // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        if back.trim() != parked {' \
+             '        if back.trim() != parked && false { // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
