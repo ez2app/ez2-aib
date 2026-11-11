@@ -1103,8 +1103,8 @@ jobs:
              '        let left_on_host: Vec<String> = leftover_places(spec)?.iter().map(|_| String::new()).collect(); // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
           # step 10: the removal never cleans what the site left on the host
-          hk siteremovecmd.rs '        let removed = clean_leftovers(host, spec).map_err(|e| {' \
-             '        let removed = Ok::<Vec<String>, String>(Vec::new()).map_err(|e| { // knife' \
+          hk siteremovecmd.rs '        let removed = clean_leftovers(host, spec)' \
+             '        let removed = Ok::<Vec<String>, String>(Vec::new()) // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
           # step 10: a name in a place is taken without its site's prefix (site99, ct 1190 go too)
           hk siteremovecmd.rs '                    if !name.starts_with(prefix.as_str()) {' \

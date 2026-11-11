@@ -756,13 +756,15 @@ pub fn leftovers_found(
                     if !name.starts_with(prefix.as_str()) {
                         continue;
                     }
-                    out.push(under(dir, &name).ok_or_else(|| {
-                        format!("{dir}: {name:?} is not one plain name")
-                    })?);
+                    out.push(
+                        under(dir, &name)
+                            .ok_or_else(|| format!("{dir}: {name:?} is not one plain name"))?,
+                    );
                 }
             }
             Leftover::Exact { dir, name } => {
-                let path = under(dir, name).ok_or_else(|| format!("{name:?} is not one plain name"))?;
+                let path =
+                    under(dir, name).ok_or_else(|| format!("{name:?} is not one plain name"))?;
                 if host.exists(&path)? {
                     out.push(path);
                 }
@@ -862,9 +864,8 @@ pub fn carry_out(
             }
         };
         // the record is moved (finished, or only the DNS step is left): step 10
-        let removed = clean_leftovers(host, spec).map_err(|e| {
-            format!("leftovers: {e}; done so far: {:?}", words(&applied))
-        })?;
+        let removed = clean_leftovers(host, spec)
+            .map_err(|e| format!("leftovers: {e}; done so far: {:?}", words(&applied)))?;
         let left_on_host = leftovers_found(host, &leftover_places(spec)?)?;
         return Ok(json!({
             "applied": words(&applied),
@@ -1917,7 +1918,12 @@ mod tests {
     #[test]
     fn step_ten_has_no_place_for_a_bad_code_or_a_container_that_is_not_a_sites() {
         assert_eq!(leftover_places(&spec()).map(|p| p.len()), Ok(4));
-        for ct in [aib_cloud::site::EDGE_CT, aib_cloud::site::TEMPLATE_CT, 99, 0] {
+        for ct in [
+            aib_cloud::site::EDGE_CT,
+            aib_cloud::site::TEMPLATE_CT,
+            99,
+            0,
+        ] {
             let mut s = spec();
             s.ct = ct;
             assert!(leftover_places(&s).is_err(), "ct {ct}");
@@ -1931,7 +1937,10 @@ mod tests {
 
     #[test]
     fn step_ten_only_joins_one_plain_name_to_its_place() {
-        assert_eq!(under("/root/ez2-restore", "site9").as_deref(), Some("/root/ez2-restore/site9"));
+        assert_eq!(
+            under("/root/ez2-restore", "site9").as_deref(),
+            Some("/root/ez2-restore/site9")
+        );
         for bad in ["", ".", "..", "a/b", "../x"] {
             assert_eq!(under("/root/ez2-restore", bad), None, "{bad:?}");
         }
@@ -1948,9 +1957,19 @@ mod tests {
         let mut h = fake();
         h.sticky = Some("/root/ez2-restore/site9");
         let plan = sealed(&pl, &mut h, true);
-        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "20261111T120000Z")
-            .unwrap_err();
-        assert!(e.contains("leftovers") && e.contains("/root/ez2-restore/site9"), "{e}");
+        let e = apply(
+            &pl,
+            &plan,
+            &spec(),
+            "www.example.com",
+            &mut h,
+            "20261111T120000Z",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("leftovers") && e.contains("/root/ez2-restore/site9"),
+            "{e}"
+        );
     }
 
     #[test]
