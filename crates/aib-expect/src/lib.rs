@@ -17,7 +17,11 @@
 //!   written by seats. A row's status comes from the latest evidence line for
 //!   that goal: no line, an expired line, a line for a head the PR no longer
 //!   has, or a PR head that cannot be read are all **unverified**, never a
-//!   pass and never an older value.
+//!   pass and never an older value. A line binds to the goal's exact wording
+//!   (`goal_sha`, see [`goal_sha`]); a line for other wording, or a line that
+//!   cannot be read after the latest readable one, is unverified too.
+//! - Every local file is read with a byte limit; over it is an error, never a
+//!   silent cut.
 //! - **Events** (seat start, PR merged, ...) are each evaluated and recorded
 //!   in `<state>/projects/<uid>/expect-evals.jsonl`. Nothing is dropped by
 //!   throttling; only the display of two events from one seat within 60
@@ -29,7 +33,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read as _, Seek as _, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// One expectation, as approved. `id` is the leading `A4b`-style token of the
@@ -151,8 +155,51 @@ fn strings(v: Option<&Value>, what: &str) -> Result<Vec<String>, GoalsError> {
     }
 }
 
+/// Largest card / approved snapshot read (bytes).
+pub const MAX_CARD_BYTES: u64 = 1 << 20;
+/// Largest `evidence.jsonl` read (bytes).
+pub const MAX_EVIDENCE_BYTES: u64 = 16 << 20;
+/// How much of the end of `expect-evals.jsonl` the display throttle reads.
+pub const EVALS_TAIL_BYTES: u64 = 256 << 10;
+
+/// The whole file, or an error when it is larger than `max` bytes (never a
+/// silent cut: a cut file could drop the newest evidence).
+fn read_capped(p: &Path, max: u64) -> std::io::Result<String> {
+    let f = fs::File::open(p)?;
+    let mut t = String::new();
+    f.take(max + 1).read_to_string(&mut t)?;
+    if t.len() as u64 > max {
+        return Err(std::io::Error::other(format!("larger than {max} bytes")));
+    }
+    Ok(t)
+}
+
+/// The last `n` bytes, from the first whole line in them ("" when unreadable).
+fn read_tail(p: &Path, n: u64) -> String {
+    let Ok(mut f) = fs::File::open(p) else {
+        return String::new();
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let from = len.saturating_sub(n);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return String::new();
+    }
+    let mut b = Vec::new();
+    if f.take(n).read_to_end(&mut b).is_err() {
+        return String::new();
+    }
+    let t = String::from_utf8_lossy(&b).into_owned();
+    if from == 0 {
+        t
+    } else {
+        t.split_once('\n')
+            .map(|(_, rest)| rest.to_owned())
+            .unwrap_or_default()
+    }
+}
+
 fn read_json(p: &Path) -> Result<Value, String> {
-    let t = fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let t = read_capped(p, MAX_CARD_BYTES).map_err(|e| format!("{}: {e}", p.display()))?;
     serde_json::from_str(&t).map_err(|e| format!("{}: {e}", p.display()))
 }
 
@@ -228,6 +275,10 @@ pub struct Evidence {
     pub valid_until: Option<u64>,
     /// `kind: "inferred"`: a reasoned guess, shown as such, never a pass.
     pub inferred: bool,
+    /// [`goal_sha`] of the wording this line checked.
+    pub goal_sha: Option<String>,
+    /// 0-based line number in the file.
+    pub pos: usize,
 }
 
 /// Evidence lines, and how many lines could not be read (shown, not hidden).
@@ -235,48 +286,91 @@ pub struct Evidence {
 pub struct EvidenceLog {
     pub lines: Vec<Evidence>,
     pub unreadable: usize,
+    /// Each unreadable line: its line number and the goal it names, when
+    /// that much can be read (`None`: it could be about any goal).
+    pub bad: Vec<(usize, Option<String>)>,
 }
 
-fn evidence_line(v: &Value) -> Option<Evidence> {
-    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
-    let inferred = v.get("kind").and_then(Value::as_str) == Some("inferred");
-    let head = s("head");
+/// The first 16 hex digits of sha256 of a goal's text. An evidence line
+/// carries it as `goal_sha`, so evidence for an earlier wording of the same
+/// goal id (or for a goal whose `G<n>` position moved) does not count.
+pub fn goal_sha(text: &str) -> String {
+    let d = Sha256::digest(text.as_bytes());
+    d.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// One line, or the goal id it names when it cannot be used. A field of the
+/// wrong type is an unreadable line, not a missing field; `pr` and `head`
+/// come together or not at all (a pr without a head could never go stale).
+fn evidence_line(v: &Value, pos: usize) -> Result<Evidence, Option<String>> {
+    let goal = v
+        .get("goal_id")
+        .and_then(Value::as_str)
+        .filter(|g| !g.is_empty())
+        .map(str::to_owned);
+    let text = |k: &str| match v.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(t)) => Ok(Some(t.clone())),
+        Some(_) => Err(goal.clone()),
+    };
+    let num = |k: &str| match v.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => x.as_u64().map(Some).ok_or_else(|| goal.clone()),
+    };
+    if !v.is_object() {
+        return Err(None);
+    }
+    let kind = text("kind")?;
+    let inferred = kind.as_deref() == Some("inferred");
+    let head = text("head")?;
     if head
         .as_deref()
         .is_some_and(|h| h.len() != 40 || !h.chars().all(|c| c.is_ascii_hexdigit()))
     {
-        return None;
+        return Err(goal.clone());
     }
-    Some(Evidence {
-        goal: s("goal_id").filter(|g| !g.is_empty())?,
-        at: v.get("at").and_then(Value::as_u64)?,
-        seat: s("seat").unwrap_or_default(),
-        pr: v.get("pr").and_then(Value::as_u64),
+    let pr = num("pr")?;
+    if pr.is_some() != head.is_some() {
+        return Err(goal.clone());
+    }
+    let rc = match v.get("rc") {
+        None | Some(Value::Null) if inferred => 0,
+        // a check line must have an rc
+        None | Some(Value::Null) => return Err(goal.clone()),
+        Some(x) => x.as_i64().ok_or_else(|| goal.clone())?,
+    };
+    Ok(Evidence {
+        goal: goal.clone().ok_or(None)?,
+        at: num("at")?.ok_or_else(|| goal.clone())?,
+        seat: text("seat")?.unwrap_or_default(),
+        pr,
         head,
-        check: s("check_id").unwrap_or_default(),
-        // an inferred line has no rc; a check line must have one
-        rc: match v.get("rc").and_then(Value::as_i64) {
-            Some(rc) => rc,
-            None if inferred => 0,
-            None => return None,
-        },
-        summary: s("summary").unwrap_or_default(),
-        valid_until: v.get("valid_until").and_then(Value::as_u64),
+        check: text("check_id")?.unwrap_or_default(),
+        rc,
+        summary: text("summary")?.unwrap_or_default(),
+        valid_until: num("valid_until")?,
         inferred,
+        goal_sha: text("goal_sha")?,
+        pos,
     })
 }
 
 /// Parse `evidence.jsonl` text.
 pub fn parse_evidence(text: &str) -> EvidenceLog {
     let mut log = EvidenceLog::default();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        match serde_json::from_str::<Value>(line)
-            .ok()
-            .as_ref()
-            .and_then(evidence_line)
-        {
-            Some(e) => log.lines.push(e),
-            None => log.unreadable += 1,
+    for (pos, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed = serde_json::from_str::<Value>(line)
+            .map_err(|_| None)
+            .and_then(|v| evidence_line(&v, pos));
+        match parsed {
+            Ok(e) => log.lines.push(e),
+            Err(goal) => {
+                log.unreadable += 1;
+                log.bad.push((pos, goal));
+            }
         }
     }
     log
@@ -285,7 +379,7 @@ pub fn parse_evidence(text: &str) -> EvidenceLog {
 /// Read `<project>/evidence.jsonl`; a missing file is no evidence.
 pub fn load_evidence(root: &Path, uid: &str) -> Result<EvidenceLog, GoalsError> {
     let p = project_dir(root, uid)?.join("evidence.jsonl");
-    match fs::read_to_string(&p) {
+    match read_capped(&p, MAX_EVIDENCE_BYTES) {
         Ok(t) => Ok(parse_evidence(&t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(EvidenceLog::default()),
         Err(e) => Err(GoalsError::Unreadable(format!("{}: {e}", p.display()))),
@@ -310,6 +404,11 @@ pub enum Why {
     StaleHead { pr: u64, was: String, now: String },
     /// The PR's current head could not be read (the source said Err).
     SourceUnknown { pr: u64 },
+    /// The line is for other wording of this goal, or names none.
+    GoalChanged,
+    /// A line after the latest readable one for this goal cannot be read
+    /// (it names this goal, or no goal at all).
+    EvidenceUnreadable,
 }
 
 impl Why {
@@ -319,6 +418,8 @@ impl Why {
             Why::Expired => "evidence_expired",
             Why::StaleHead { .. } => "evidence_stale_head",
             Why::SourceUnknown { .. } => "source_unknown",
+            Why::GoalChanged => "evidence_goal_changed",
+            Why::EvidenceUnreadable => "evidence_unreadable",
         }
     }
 
@@ -332,6 +433,8 @@ impl Why {
                 now.get(..12).unwrap_or(now)
             ),
             Why::SourceUnknown { pr } => format!("#{pr} 頭碼讀不到"),
+            Why::GoalChanged => "證據不是對這版期望(goal_sha 不符或沒帶)".to_owned(),
+            Why::EvidenceUnreadable => "最新的證據行讀不懂".to_owned(),
         }
     }
 }
@@ -389,10 +492,13 @@ impl Report {
     }
 }
 
-fn status_of(e: Option<&Evidence>, snap: &Snapshot, now: u64) -> Status {
+fn status_of(goal: &Goal, e: Option<&Evidence>, snap: &Snapshot, now: u64) -> Status {
     let Some(e) = e else {
         return Status::Unverified(Why::NoEvidence);
     };
+    if e.goal_sha.as_deref() != Some(goal_sha(&goal.text).as_str()) {
+        return Status::Unverified(Why::GoalChanged);
+    }
     if e.valid_until.is_some_and(|t| t < now) {
         return Status::Unverified(Why::Expired);
     }
@@ -468,8 +574,23 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
                 .filter(|(_, e)| e.goal == g.id)
                 .max_by_key(|(i, e)| (e.at, *i))
                 .map(|(_, e)| e.clone());
+            // a line that cannot be read, after the last readable one for
+            // this goal, could be its newest result: never fall back
+            let last = evidence
+                .lines
+                .iter()
+                .filter(|e| e.goal == g.id)
+                .map(|e| e.pos)
+                .max();
+            let bad_after = evidence.bad.iter().any(|(pos, goal)| {
+                goal.as_ref().is_none_or(|x| *x == g.id) && last.is_none_or(|l| *pos > l)
+            });
             Row {
-                status: status_of(latest.as_ref(), snap, now),
+                status: if bad_after {
+                    Status::Unverified(Why::EvidenceUnreadable)
+                } else {
+                    status_of(g, latest.as_ref(), snap, now)
+                },
                 goal: g.clone(),
                 evidence: latest,
             }
@@ -630,6 +751,7 @@ pub fn to_json(report: &Report) -> Value {
         "next": report.next,
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
+            "goal_sha": goal_sha(&r.goal.text),
             "status": r.status.code(),
             "why": match &r.status { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
             "evidence_at": r.evidence.as_ref().map(|e| e.at),
@@ -687,8 +809,7 @@ pub fn record_event(
     }
     let dir = project_dir(root, uid).map_err(|e| e.to_string())?;
     let log = dir.join("expect-evals.jsonl");
-    let merged_display = fs::read_to_string(&log)
-        .unwrap_or_default()
+    let merged_display = read_tail(&log, EVALS_TAIL_BYTES)
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| v.get("seat").and_then(Value::as_str) == Some(ev.seat.as_str()))

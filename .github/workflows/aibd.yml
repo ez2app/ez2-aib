@@ -2099,6 +2099,22 @@ jobs:
           ek '    let dir = project_dir(root, uid).map_err(|e| e.to_string())?;' \
              '    let dir = project_dir(root, uid).map_err(|e| e.to_string())?; let _ = fs::write(dir.join("merge.intent"), b"approved"); // knife' \
              text_that_claims_approval_changes_nothing
+          # KE11 (Codex #693 M3) evidence for other wording of the goal still counts
+          ek '    if e.goal_sha.as_deref() != Some(goal_sha(&goal.text).as_str()) {' \
+             '    if e.goal_sha.as_deref() != Some(goal_sha(&goal.text).as_str()) && false { // knife' \
+             evidence_for_other_wording_does_not_count
+          # KE12 (Codex #693 M1) a newer unreadable line falls back to the older pass
+          ek '                status: if bad_after {' \
+             '                status: if bad_after && false { // knife' \
+             a_newer_unreadable_line_hides_an_older_pass
+          # KE13 (Codex #693 M2) a pr without a head is read, so it can never go stale
+          ek '    if pr.is_some() != head.is_some() {' \
+             '    if pr.is_some() != head.is_some() && false { // knife' \
+             fields_of_the_wrong_type_or_a_pr_without_a_head_are_unreadable
+          # KE14 (Codex #693 M4) a file over its limit is read anyway
+          ek '    if t.len() as u64 > max {' \
+             '    if t.len() as u64 > max && false { // knife' \
+             local_files_over_their_limit_are_errors
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

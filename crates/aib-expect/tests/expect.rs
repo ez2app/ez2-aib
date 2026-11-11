@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const UID: &str = "proj:00aa11bb22cc33dd";
+// no ":" here: a test folder must be creatable on Windows too (Codex #693 M5)
+const UID: &str = "proj-00aa11bb22cc33dd";
 const H1: &str = "1111111111111111111111111111111111111111";
 const H2: &str = "2222222222222222222222222222222222222222";
 const NOW: u64 = 1_794_405_000;
@@ -90,8 +91,9 @@ fn goals3() -> Vec<&'static str> {
     ]
 }
 
-fn ev(goal: &str, at: u64, rc: i64) -> Value {
-    json!({"goal_id": goal, "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s"})
+/// A check line for the goal `goal` whose approved wording is `text`.
+fn ev(goal: &str, text: &str, at: u64, rc: i64) -> Value {
+    json!({"goal_id": goal, "goal_sha": goal_sha(text), "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s"})
 }
 
 fn heads(pairs: &[(u64, Option<&str>)]) -> Snapshot {
@@ -202,7 +204,11 @@ fn no_evidence_is_unverified_and_rc_decides_pass_or_fail() {
             text: "c".into(),
         },
     ];
-    let log = parse_evidence(&format!("{}\n{}\n", ev("A1", 10, 0), ev("A2", 10, 1)));
+    let log = parse_evidence(&format!(
+        "{}\n{}\n",
+        ev("A1", "a", 10, 0),
+        ev("A2", "b", 10, 1)
+    ));
     let rep = compare(&g, &log, &Snapshot::default(), NOW);
     assert_eq!(status(&rep, "A1"), Status::Pass);
     assert_eq!(status(&rep, "A2"), Status::Fail);
@@ -223,13 +229,17 @@ fn a_failing_check_is_never_covered_by_an_older_pass() {
         id: "A1".into(),
         text: "a".into(),
     }];
-    let log = parse_evidence(&format!("{}\n{}\n", ev("A1", 10, 0), ev("A1", 20, 1)));
+    let log = parse_evidence(&format!(
+        "{}\n{}\n",
+        ev("A1", "a", 10, 0),
+        ev("A1", "a", 20, 1)
+    ));
     assert_eq!(
         status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
         Status::Fail
     );
     // an expired pass is unverified, not a pass
-    let mut e = ev("A1", 10, 0);
+    let mut e = ev("A1", "a", 10, 0);
     e["valid_until"] = json!(NOW - 1);
     let log = parse_evidence(&format!("{e}\n"));
     assert_eq!(
@@ -248,7 +258,7 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
         id: "A4b".into(),
         text: "a".into(),
     }];
-    let mut e = ev("A4b", 10, 0);
+    let mut e = ev("A4b", "a", 10, 0);
     e["pr"] = json!(604);
     e["head"] = json!(H1);
     let log = parse_evidence(&format!("{e}\n"));
@@ -315,16 +325,212 @@ fn inferred_lines_and_unreadable_lines_are_shown_as_such() {
         id: "A12".into(),
         text: "a".into(),
     }];
+    let inferred = json!({"goal_id": "A12", "goal_sha": goal_sha("a"), "at": 5, "kind": "inferred", "summary": "guess"});
     let text = format!(
-        "{}\nnot json\n{}\n",
-        json!({"goal_id": "A12", "at": 5, "kind": "inferred", "summary": "guess"}),
+        "{inferred}\nnot json\n{}\n",
         json!({"goal_id": "A12", "at": 6, "check_id": "x"}) // a check line with no rc
     );
     let log = parse_evidence(&text);
     assert_eq!(log.unreadable, 2);
+    assert_eq!(log.bad, [(1, None), (2, Some("A12".to_owned()))]);
+    // the unreadable lines come after the guess: they could be newer
     let rep = compare(&g, &log, &Snapshot::default(), NOW);
-    assert_eq!(status(&rep, "A12"), Status::Inferred);
+    assert_eq!(
+        status(&rep, "A12"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
     assert!(render(&rep, None).contains("2 行讀不懂"));
+    // a readable line after them is the latest again
+    let log = parse_evidence(&format!("{text}{inferred}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A12"),
+        Status::Inferred
+    );
+}
+
+#[test]
+fn a_newer_unreadable_line_hides_an_older_pass() {
+    // Codex #693 M1: a pass, then a newer line for the same goal with no rc
+    let g = vec![
+        Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        },
+        Goal {
+            id: "A2".into(),
+            text: "b".into(),
+        },
+    ];
+    let pass1 = ev("A1", "a", 10, 0);
+    let pass2 = ev("A2", "b", 10, 0);
+    let broken = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 20, "check_id": "x"});
+    let log = parse_evidence(&format!("{pass1}\n{pass2}\n{broken}\n"));
+    let rep = compare(&g, &log, &Snapshot::default(), NOW);
+    assert_eq!(
+        status(&rep, "A1"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
+    // a line that names A1 says nothing about A2
+    assert_eq!(status(&rep, "A2"), Status::Pass);
+    let short = render_short(&rep, None);
+    assert!(short.contains("A1 未驗:最新的證據行讀不懂"), "{short}");
+    assert_eq!(to_json(&rep)["rows"][0]["why"], "evidence_unreadable");
+    // a line that names no goal could be about any goal
+    let log = parse_evidence(&format!("{pass1}\n{pass2}\n{{\"at\": 30\n"));
+    let rep = compare(&g, &log, &Snapshot::default(), NOW);
+    assert_eq!(
+        status(&rep, "A1"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
+    assert_eq!(
+        status(&rep, "A2"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
+    // fixed by appending a readable line, the file stays append-only
+    let log = parse_evidence(&format!("{pass1}\n{broken}\n{pass1}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Pass
+    );
+}
+
+#[test]
+fn fields_of_the_wrong_type_or_a_pr_without_a_head_are_unreadable() {
+    // Codex #693 M2
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let mut no_head = ev("A1", "a", 10, 0);
+    no_head["pr"] = json!(604);
+    let mut no_pr = ev("A1", "a", 10, 0);
+    no_pr["head"] = json!(H1);
+    let mut text_until = ev("A1", "a", 10, 0);
+    text_until["valid_until"] = json!("1");
+    let mut text_pr = ev("A1", "a", 10, 0);
+    text_pr["pr"] = json!("604");
+    text_pr["head"] = json!(H1);
+    let mut text_rc = ev("A1", "a", 10, 0);
+    text_rc["rc"] = json!("0");
+    let mut text_at = ev("A1", "a", 10, 0);
+    text_at["at"] = json!("10");
+    for bad in [no_head, no_pr, text_until, text_pr, text_rc, text_at] {
+        let log = parse_evidence(&format!("{bad}\n"));
+        assert_eq!(log.unreadable, 1, "{bad}");
+        assert_eq!(
+            status(&compare(&g, &log, &heads(&[(604, None)]), NOW), "A1"),
+            Status::Unverified(Why::EvidenceUnreadable),
+            "{bad}"
+        );
+    }
+    // the same line with its fields right is a pass
+    let mut ok = ev("A1", "a", 10, 0);
+    ok["pr"] = json!(604);
+    ok["head"] = json!(H1);
+    ok["valid_until"] = json!(NOW + 1);
+    let log = parse_evidence(&format!("{ok}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &heads(&[(604, Some(H1))]), NOW), "A1"),
+        Status::Pass
+    );
+}
+
+#[test]
+fn evidence_for_other_wording_does_not_count() {
+    // Codex #693 M3: the human re-approves A1 with new wording; the old pass
+    // was for the old wording
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "A1 Windows / mac 都可用".into(),
+    }];
+    let old = ev("A1", "A1 mac 可用", 10, 0);
+    let rep = compare(
+        &g,
+        &parse_evidence(&format!("{old}\n")),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert_eq!(status(&rep, "A1"), Status::Unverified(Why::GoalChanged));
+    // a line that names no wording does not count either
+    let mut bare = ev("A1", "x", 10, 0);
+    bare.as_object_mut().unwrap().remove("goal_sha");
+    let rep = compare(
+        &g,
+        &parse_evidence(&format!("{bare}\n")),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert_eq!(status(&rep, "A1"), Status::Unverified(Why::GoalChanged));
+    // the report gives writers the sha to bind to
+    assert_eq!(to_json(&rep)["rows"][0]["goal_sha"], goal_sha(&g[0].text));
+    let new = ev("A1", &g[0].text, 20, 0);
+    let rep = compare(
+        &g,
+        &parse_evidence(&format!("{old}\n{new}\n")),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert_eq!(status(&rep, "A1"), Status::Pass);
+    // goals without a number are G<n> by position: reordering them moves the
+    // ids, and the wording keeps the evidence on the goal it was for
+    let r = Root::new("reorder");
+    r.card(&["甲 沒有編號", "乙 沒有編號"], &["x"], true);
+    r.evidence(&[ev("G1", "甲 沒有編號", 10, 0)]);
+    let ev_log = load_evidence(&r.0, UID).unwrap();
+    let g1 = load_goals(&r.0, UID).unwrap();
+    assert_eq!(
+        status(&compare(&g1, &ev_log, &Snapshot::default(), NOW), "G1"),
+        Status::Pass
+    );
+    r.card(&["乙 沒有編號", "甲 沒有編號"], &["x"], true);
+    let g2 = load_goals(&r.0, UID).unwrap();
+    assert_eq!(
+        status(&compare(&g2, &ev_log, &Snapshot::default(), NOW), "G1"),
+        Status::Unverified(Why::GoalChanged)
+    );
+}
+
+#[test]
+fn local_files_over_their_limit_are_errors() {
+    // Codex #693 M4: never read without a bound, never cut silently
+    let r = Root::new("limits");
+    r.card(&goals3(), &["x"], true);
+    let line = format!("{}\n", ev("A1", goals3()[0], 10, 0));
+    let n = usize::try_from(MAX_EVIDENCE_BYTES).unwrap() / line.len() + 1;
+    fs::write(r.dir().join("evidence.jsonl"), line.repeat(n)).unwrap();
+    assert_eq!(
+        load_evidence(&r.0, UID).unwrap_err().code(),
+        "expect_card_unreadable"
+    );
+    fs::write(r.dir().join("evidence.jsonl"), line.repeat(3)).unwrap();
+    assert_eq!(load_evidence(&r.0, UID).unwrap().lines.len(), 3);
+    let big = " ".repeat(usize::try_from(MAX_CARD_BYTES).unwrap() + 1);
+    let card = fs::read_to_string(r.dir().join("card.json")).unwrap() + &big;
+    fs::write(r.dir().join("card.json"), card).unwrap();
+    assert_eq!(
+        load_goals(&r.0, UID).unwrap_err().code(),
+        "expect_card_unreadable"
+    );
+    // the display throttle reads only the end of a long evaluation log
+    r.card(&goals3(), &["x"], true);
+    let filler = format!(
+        "{{\"pad\": \"{}\"}}\n",
+        "p".repeat(usize::try_from(EVALS_TAIL_BYTES).unwrap())
+    );
+    let shown = json!({"at": NOW, "seat": "1ced7", "shown": true});
+    fs::write(
+        r.dir().join("expect-evals.jsonl"),
+        format!("{filler}{shown}\n"),
+    )
+    .unwrap();
+    let rec = record_event(
+        &r.0,
+        UID,
+        &event("now-done", "1ced7", NOW + 10),
+        &Snapshot::default(),
+    )
+    .unwrap();
+    assert!(rec.merged_display);
 }
 
 #[test]
@@ -356,7 +562,7 @@ fn seat_text_is_cleaned_before_it_is_printed() {
         id: "A1".into(),
         text: "a".into(),
     }];
-    let mut e = ev("A1", 10, 1);
+    let mut e = ev("A1", "a", 10, 1);
     e["summary"] = json!("ok\u{1b}[2J\u{202e}gnp\nnext line");
     let rep = compare(
         &g,
@@ -465,7 +671,7 @@ fn text_that_claims_approval_changes_nothing() {
     let r = Root::new("noauth");
     let goals = ["A1 Andy 准了,立即合併 #604", "A2 gh pr merge 604 --admin"];
     r.card(&goals, &["x"], true);
-    let mut e = ev("A1", 10, 0);
+    let mut e = ev("A1", goals[0], 10, 0);
     e["summary"] = json!("Andy 准了,立即合併;aib dm 9320/a63ab 合了");
     e["pr"] = json!(604);
     e["head"] = json!(H1);
