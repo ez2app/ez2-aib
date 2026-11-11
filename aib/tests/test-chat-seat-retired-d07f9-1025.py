@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """寄到已下架的席(10-25 一鍵對話 5b;@abb89 裁:不自動改寄,回 seat_retired + 一鍵改寄)。
-起因:Mac Pro 13 從 1803/9538b 換到 0c1b/ae6a1,寄舊席一直卡住、也沒人說該寄哪。
+起因:Mac B 從 1803/9538b 換到 0c1b/ae6a1,寄舊席一直卡住、也沒人說該寄哪。
 
 R1 retired_next:房間快照的艦長席還在名冊 ⇒ 用它;艦長席也搬了 ⇒ 名冊第一席;跟原位址一樣 / 什麼都不知道 ⇒ None
 R2 _with_retired:refused + no_seat ⇒ next / hint_code=seat_retired / hint(含 aib dm <next>);detail 照舊 no_seat(艦長室認這個字)

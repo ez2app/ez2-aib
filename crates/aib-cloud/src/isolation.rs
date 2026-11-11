@@ -145,7 +145,7 @@ pub struct Topology {
     pub host_internal: Ip,
     pub host_public: Ip,
     pub tailnet: Option<Ip>,
-    /// Another Ez2 host (EU01): containers must not reach its ssh, the host may.
+    /// Another Ez2 host (host B): containers must not reach its ssh, the host may.
     pub peer_host: Option<Ip>,
     pub edge: Ct,
     pub sites: Vec<Ct>,
@@ -190,7 +190,7 @@ pub enum Source {
     Host,
     /// Inside a CT's network namespace.
     Ct(u32),
-    /// From outside the host (EU01 or any public vantage point); the host-side runner
+    /// From outside the host (host B or any public vantage point); the host-side runner
     /// cannot execute these, so they come back missing unless merged in.
     External,
 }
@@ -761,7 +761,7 @@ pub fn matrix(t: &Topology) -> Result<Vec<Cell>, Error> {
         }
         if let Some(p) = &t.peer_host {
             // Observe, not judged (ebb36 #587 L1): today egress 443 is allowed anywhere, our other
-            // host included (customer WP plugins call the footprint API on EU01 over 443 — f1fae
+            // host included (customer WP plugins call the footprint API on host B over 443 — f1fae
             // 11-09), so this reads open; if NET-1 ever tightens it, old receipts stay valid.
             b.observe(
                 alloc::format!("site-{}-to-peerhost-443", s.id),
@@ -1203,9 +1203,9 @@ mod tests {
     fn topo(sites: &[(u32, &str)]) -> Topology {
         Topology {
             host_internal: Ip::parse("10.77.0.1").unwrap(),
-            host_public: Ip::parse("135.181.75.90").unwrap(),
-            tailnet: Some(Ip::parse("100.120.222.46").unwrap()),
-            peer_host: Some(Ip::parse("136.243.105.110").unwrap()),
+            host_public: Ip::parse("203.0.113.90").unwrap(),
+            tailnet: Some(Ip::parse("100.64.0.46").unwrap()),
+            peer_host: Some(Ip::parse("203.0.113.110").unwrap()),
             edge: Ct::new(101, "10.77.0.2").unwrap(),
             sites: sites
                 .iter()
@@ -1394,8 +1394,8 @@ mod tests {
         let cells = matrix(&topo(&[(110, "10.77.0.10"), (112, "10.77.0.12")])).unwrap();
         let rc = judge(
             &cells,
-            "135.181.75.90",
-            &report(&cells, "135.181.75.90", |_, _| {}),
+            "203.0.113.90",
+            &report(&cells, "203.0.113.90", |_, _| {}),
             false,
         )
         .unwrap();
@@ -1416,8 +1416,8 @@ mod tests {
         let cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
         let rc = judge(
             &cells,
-            "135.181.75.90",
-            &report(&cells, "135.181.75.90", |c, v| {
+            "203.0.113.90",
+            &report(&cells, "203.0.113.90", |c, v| {
                 if c.id == "site-110-to-hostint-22" {
                     v["open"] = json!(true)
                 }
@@ -1434,8 +1434,8 @@ mod tests {
         );
         let rc = judge(
             &cells,
-            "135.181.75.90",
-            &report(&cells, "135.181.75.90", |c, v| {
+            "203.0.113.90",
+            &report(&cells, "203.0.113.90", |c, v| {
                 if c.id == "host-to-hostint-8006" {
                     v["open"] = json!(false)
                 }
@@ -1456,8 +1456,8 @@ mod tests {
         assert!(!ids.contains(&"site-110-to-hostint-22"));
         let rc = judge(
             &cells,
-            "135.181.75.90",
-            &report(&cells, "135.181.75.90", |c, v| {
+            "203.0.113.90",
+            &report(&cells, "203.0.113.90", |c, v| {
                 if c.id == "site-110-lan-3306-closed" {
                     v["open"] = json!(true)
                 }
@@ -1474,69 +1474,69 @@ mod tests {
     #[test]
     fn i7_report_must_match_plan_host_and_cells() {
         let cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
-        let good = report(&cells, "135.181.75.90", |_, _| {});
-        assert!(judge(&cells, "135.181.75.90", &good, false).unwrap().ok());
+        let good = report(&cells, "203.0.113.90", |_, _| {});
+        assert!(judge(&cells, "203.0.113.90", &good, false).unwrap().ok());
         let other = matrix(&topo(&[(110, "10.77.0.11")])).unwrap();
         assert!(
-            matches!(judge(&other, "135.181.75.90", &good, false), Err(Error::Report(m)) if m.contains("not this plan"))
+            matches!(judge(&other, "203.0.113.90", &good, false), Err(Error::Report(m)) if m.contains("not this plan"))
         );
         assert!(
             matches!(judge(&cells, "1.2.3.4", &good, false), Err(Error::Report(m)) if m.contains("not 1.2.3.4"))
         );
-        let moved = report(&cells, "135.181.75.90", |_, v| v["ip"] = json!("9.9.9.9"));
+        let moved = report(&cells, "203.0.113.90", |_, v| v["ip"] = json!("9.9.9.9"));
         assert!(
-            matches!(judge(&cells, "135.181.75.90", &moved, false), Err(Error::Report(m)) if m.contains("but the cell is"))
+            matches!(judge(&cells, "203.0.113.90", &moved, false), Err(Error::Report(m)) if m.contains("but the cell is"))
         );
-        let wrong_from = report(&cells, "135.181.75.90", |c, v| {
+        let wrong_from = report(&cells, "203.0.113.90", |c, v| {
             if c.id == "site-110-to-hostint-22" {
                 v["from"] = json!("host")
             }
         });
         assert!(matches!(
-            judge(&cells, "135.181.75.90", &wrong_from, false),
+            judge(&cells, "203.0.113.90", &wrong_from, false),
             Err(Error::Report(_))
         ));
-        let wrong_port = report(&cells, "135.181.75.90", |c, v| {
+        let wrong_port = report(&cells, "203.0.113.90", |c, v| {
             if c.id == "site-110-to-hostint-22" {
                 v["port"] = json!(2222)
             }
         });
         assert!(matches!(
-            judge(&cells, "135.181.75.90", &wrong_port, false),
+            judge(&cells, "203.0.113.90", &wrong_port, false),
             Err(Error::Report(_))
         ));
         assert!(matches!(
-            judge(&cells, "135.181.75.90", &json!([]), false),
+            judge(&cells, "203.0.113.90", &json!([]), false),
             Err(Error::Report(_))
         ));
         assert!(
-            matches!(judge(&cells, "135.181.75.90", &json!({"host": "135.181.75.90", "results": []}), false), Err(Error::Report(m)) if m.contains("plan_fnv"))
+            matches!(judge(&cells, "203.0.113.90", &json!({"host": "203.0.113.90", "results": []}), false), Err(Error::Report(m)) if m.contains("plan_fnv"))
         );
         let mut dup = good.clone();
         let first = dup["results"][0].clone();
         dup["results"].as_array_mut().unwrap().push(first);
         assert!(
-            matches!(judge(&cells, "135.181.75.90", &dup, false), Err(Error::Report(m)) if m.contains("duplicate"))
+            matches!(judge(&cells, "203.0.113.90", &dup, false), Err(Error::Report(m)) if m.contains("duplicate"))
         );
         let mut unknown = good.clone();
         unknown["results"].as_array_mut().unwrap().push(json!({"id": "nope", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": 1, "open": true}));
         assert!(
-            matches!(judge(&cells, "135.181.75.90", &unknown, false), Err(Error::Report(m)) if m.contains("unknown"))
+            matches!(judge(&cells, "203.0.113.90", &unknown, false), Err(Error::Report(m)) if m.contains("unknown"))
         );
     }
 
     #[test]
     fn i8_missing_cells() {
         let cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
-        let mut r = report(&cells, "135.181.75.90", |_, _| {});
+        let mut r = report(&cells, "203.0.113.90", |_, _| {});
         r["results"]
             .as_array_mut()
             .unwrap()
             .retain(|v| !v["id"].as_str().unwrap().starts_with("public-"));
-        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        let rc = judge(&cells, "203.0.113.90", &r, false).unwrap();
         assert!(rc.ok(), "external cells may be missing: {:?}", rc.fail);
         assert_eq!(rc.missing.len(), 3);
-        let rc3 = judge(&cells, "135.181.75.90", &r, true).unwrap();
+        let rc3 = judge(&cells, "203.0.113.90", &r, true).unwrap();
         assert!(
             !rc3.ok()
                 && rc3.fail.iter().any(
@@ -1547,7 +1547,7 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .retain(|v| v["id"] != "site-110-egress6-443");
-        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        let rc = judge(&cells, "203.0.113.90", &r, false).unwrap();
         assert!(!rc.ok());
         assert!(rc.missing.contains(&"site-110-egress6-443".to_string()));
     }
@@ -1556,18 +1556,20 @@ mod tests {
     fn i9_fingerprint_is_fnv1a64_of_canonical_json() {
         // Pinned value: FNV-1a 64 over the canonical form (keys sorted, no spaces), produced by
         // the retired Python runner (json.dumps(plan, sort_keys=True, separators=(",", ":")))
-        // for this plan; aib-cloud-host must keep matching it so old EU02 receipts stay valid.
+        // for this plan; aib-cloud-host must keep matching it so recorded receipts stay valid.
+        // (The address in this plan is a documentation address; the value was recomputed for
+        // it with that same Python expression.)
         // Keys deliberately given out of order here.
         let plan = json!([
-            {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "135.181.75.90", "from": "external"},
-            {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 443, "expect": "open"},
-            {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "135.181.75.90", "port": 8006, "expect": "blocked"},
+            {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
+            {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
+            {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
             {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "52240dcf9134f54d");
+        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
         let mut other = plan.clone();
         other[3]["port"] = json!(5353);
-        assert_ne!(plan_fingerprint(&other), "52240dcf9134f54d");
+        assert_ne!(plan_fingerprint(&other), "e75b1af045774800");
     }
 
     #[test]
@@ -1579,9 +1581,9 @@ mod tests {
             .position(|c| c.id == "host-to-hostint-22")
             .unwrap();
         cells[ctl].port = 2222;
-        let r = report(&cells, "135.181.75.90", |_, _| {});
+        let r = report(&cells, "203.0.113.90", |_, _| {});
         assert!(matches!(
-            judge(&cells, "135.181.75.90", &r, false),
+            judge(&cells, "203.0.113.90", &r, false),
             Err(Error::Matrix(_))
         ));
     }
@@ -1589,8 +1591,8 @@ mod tests {
     #[test]
     fn i11_receipt_names_what_is_not_covered() {
         let full = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
-        let r = report(&full, "135.181.75.90", |_, _| {});
-        let rc = judge(&full, "135.181.75.90", &r, false).unwrap();
+        let r = report(&full, "203.0.113.90", |_, _| {});
+        let rc = judge(&full, "203.0.113.90", &r, false).unwrap();
         assert_eq!(rc.not_covered.len(), 1, "{:?}", rc.not_covered);
         assert!(rc.not_covered[0].starts_with("egress-25"));
         assert!(rc.to_json()["not_covered"].as_array().unwrap().len() == 1);
@@ -1599,8 +1601,8 @@ mod tests {
         t.peer_host = None;
         t.internet.https6 = None;
         let bare = matrix(&t).unwrap();
-        let r = report(&bare, "135.181.75.90", |_, _| {});
-        let rc = judge(&bare, "135.181.75.90", &r, false).unwrap();
+        let r = report(&bare, "203.0.113.90", |_, _| {});
+        let rc = judge(&bare, "203.0.113.90", &r, false).unwrap();
         assert!(
             rc.ok(),
             "nothing failed, but the receipt must say what it skipped"
@@ -1625,8 +1627,8 @@ mod tests {
         let cells = matrix(&topo(&[(110, "10.77.0.10")])).unwrap();
         let obs = "site-110-to-peerhost-443";
         // report() marks non-Open cells closed; an observe cell reads closed here and that is fine
-        let r = report(&cells, "135.181.75.90", |_, _| {});
-        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        let r = report(&cells, "203.0.113.90", |_, _| {});
+        let rc = judge(&cells, "203.0.113.90", &r, false).unwrap();
         assert!(
             rc.ok() && rc.observed.iter().any(|(id, open)| id == obs && !*open),
             "{:?}",
@@ -1637,20 +1639,20 @@ mod tests {
             "observe cells are not pass"
         );
         // open (today's policy): still ok, recorded as open
-        let r = report(&cells, "135.181.75.90", |c, v| {
+        let r = report(&cells, "203.0.113.90", |c, v| {
             if c.id == obs {
                 v["open"] = json!(true);
             }
         });
-        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        let rc = judge(&cells, "203.0.113.90", &r, false).unwrap();
         assert!(rc.ok() && rc.observed.iter().any(|(id, open)| id == obs && *open));
         // not measured: ok, but named in not_covered
-        let mut r = report(&cells, "135.181.75.90", |_, _| {});
+        let mut r = report(&cells, "203.0.113.90", |_, _| {});
         r["results"]
             .as_array_mut()
             .unwrap()
             .retain(|v| v["id"] != obs);
-        let rc = judge(&cells, "135.181.75.90", &r, false).unwrap();
+        let rc = judge(&cells, "203.0.113.90", &r, false).unwrap();
         assert!(
             rc.ok() && rc.not_covered.iter().any(|x| x.starts_with(obs)),
             "{:?}",

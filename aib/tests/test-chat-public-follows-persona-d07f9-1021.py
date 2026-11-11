@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """重開艙後公開席自動接回(第二波 #6 之 NOTE #23;10-21 @abb89 裁「公開跟人格走、名冊格式不改」)。
 
-10-20 Pro 13 實測:重開艙席碼全換(session_uuid 末五碼),金鑰跟人格走所以 npub 不變,但 profile.public 存的是舊席碼
+10-20 Mac B 實測:重開艙席碼全換(session_uuid 末五碼),金鑰跟人格走所以 npub 不變,但 profile.public 存的是舊席碼
 ⇒ 名冊不列新席、好友看到舊席「睡著」、寄到舊位址沒人收,要人手動 aib chat publish。
 做法:nostr_keys.sync_seats 回 ("moved", 人格, 新席, 舊席)⇒ chat_roster.swap_public(舊, 新);名冊照既有雜湊重發。
 

@@ -274,7 +274,7 @@ acceptance list (port the cases, keep the knives). Owner = who writes the Rust v
 
 ### R1 — cooldown reap authority
 
-Why: 2026-11-03 on andymini a single sensor reading ≥ 90°C killed every running test.
+Why: 2026-11-03 on mac-c a single sensor reading ≥ 90°C killed every running test.
 
 - A spike is not reaped (A1); sustained heat is, with the reason logged first (A2, A10);
   short or broken streaks restart the count (A3, A4).
