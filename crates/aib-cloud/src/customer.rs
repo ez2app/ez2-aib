@@ -239,8 +239,9 @@ impl OwnerRequest<'_> {
         match self {
             OwnerRequest::Sites | OwnerRequest::Usage => true,
             OwnerRequest::Site { request, .. } => request.offered(),
-            // the host cannot do these yet (PLAN-customer-site-create, PR B / C)
-            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,
+            // the host opens a site in the background (E1); binding a domain is PR C
+            OwnerRequest::Create { .. } => true, // E1
+            OwnerRequest::Domain { .. } => false,
         }
     }
 }
@@ -451,6 +452,17 @@ pub fn parse_roles(word: &str) -> Option<alloc::vec::Vec<Role>> {
         roles.push(role);
     }
     Some(roles)
+}
+
+/// Whether the host's answer to `site <code> status` is how far the opening of a site got
+/// (the site has no record yet), not the site's checks: `state` and `step_done` are there
+/// (`aib-cloud-host`, `sitecreaterun::progress`). Its words are fixed: shown as they are.
+pub fn is_opening(reply: &str) -> bool {
+    serde_json::from_str::<Value>(reply.trim())
+        .ok()
+        .is_some_and(|v| {
+            v.get("step_done").is_some() && v.get("state").is_some_and(Value::is_string)
+        })
 }
 
 /// What a customer is shown of their site's checks (c477a 11-10,
@@ -747,7 +759,9 @@ mod tests {
         let add = parse_owner_request("site site2 domain add example.org").unwrap();
         assert!(!check.writes() && add.writes());
         assert!(!OwnerRequest::Sites.writes() && OwnerRequest::Sites.offered());
-        for hidden in [create, check, add] {
+        // E1: opening a site is offered; a domain is not yet
+        assert!(create.offered());
+        for hidden in [check, add] {
             assert!(!hidden.offered(), "{hidden:?}");
         }
         // opening a site is the owner's alone; a domain is the publisher's too
@@ -758,6 +772,17 @@ mod tests {
         for role in [Role::Editor, Role::Publisher, Role::Analyst, Role::Viewer] {
             assert!(!role.may(Operation::Create), "{role:?}");
         }
+    }
+
+    /// E1: the progress of an opening is told from the site's checks.
+    #[test]
+    fn an_opening_is_told_from_the_site_s_checks() {
+        assert!(is_opening(
+            "{\"site\":\"s-abc123\",\"state\":\"opening\",\"step_done\":null,\"stopped_at\":null}\n"
+        ));
+        assert!(!is_opening("{\"exit\":0,\"checks\":[]}"));
+        assert!(!is_opening("{\"state\":\"opening\"}"));
+        assert!(!is_opening("not json"));
     }
 
     /// Andy 11-11: names and policy are Ez2.PAGE's.
