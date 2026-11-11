@@ -16,7 +16,10 @@ use aib_plan::{
 };
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseButton, MouseEventKind,
+    },
     execute, queue,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, ClearType},
@@ -120,6 +123,65 @@ struct App {
     typing: Option<String>,
     dm: DmMap,
     dm_at: Option<Instant>,
+    /// 上一次畫面的點擊對照(滑鼠用);frame() 寫入
+    hits: std::cell::RefCell<Hits>,
+}
+
+/// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
+#[derive(Default, Clone)]
+struct Hits {
+    toolbar_y: Option<usize>,
+    toolbar: String,
+    tree_top: usize,
+    tree_rows: Vec<usize>,
+    tree_x_end: usize,
+}
+
+/// 工具列上的字 → 對應的鍵
+const TOOLBAR_KEYS: [(&str, char); 11] = [
+    ("樹", '['),
+    ("為什麼", ']'),
+    ("o 沒做完", 'o'),
+    ("x 延伸", 'x'),
+    ("n 沒人負責", 'n'),
+    ("席:", 's'),
+    ("/搜尋", '/'),
+    ("e 全開", 'e'),
+    ("c 全收", 'c'),
+    ("r 清除", 'r'),
+    ("q 離開", 'q'),
+];
+
+/// 滑鼠點擊：工具列的字 = 按那個鍵;樹上的列 = 選取並展開 / 收合。回傳 false = 要離開。
+fn on_click(app: &mut App, x: usize, y: usize) -> bool {
+    let h = app.hits.borrow().clone();
+    if h.toolbar_y == Some(y) {
+        for (tok, key) in TOOLBAR_KEYS {
+            if let Some(pos) = h.toolbar.find(tok) {
+                let start = str_width(&h.toolbar[..pos]);
+                let end = start + str_width(tok);
+                // ●/○ 開關圖示也算在那一顆裡
+                if x + 1 >= start && x < end {
+                    return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+                }
+            }
+        }
+        return true;
+    }
+    if y >= h.tree_top && x < h.tree_x_end {
+        if let Some(&idx) = h.tree_rows.get(y - h.tree_top) {
+            app.sel = idx;
+            let ix = index(&app.plan);
+            if ix.kids.get(idx).is_some_and(|k| !k.is_empty()) {
+                if let Some(id) = app.plan.nodes.get(idx).map(|n| n.id.clone()) {
+                    if !app.open.remove(&id) {
+                        app.open.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 impl App {
@@ -310,6 +372,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         false,
         false,
     )]);
+    let mut hits = Hits {
+        toolbar_y: Some(out.len() - 1),
+        toolbar: out[out.len() - 1][0].0.clone(),
+        ..Hits::default()
+    };
     out.push(vec![seg("─".repeat(w))]);
 
     let rows = flatten(p, &ix, &app.open, f);
@@ -334,6 +401,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             tree_lines.push(vec![seg("沒有符合篩選的項目。")]);
         }
         for r in rows.iter().skip(start).take(room) {
+            hits.tree_rows.push(r.idx);
             let n = &p.nodes[r.idx];
             let t = tally(p, &ix, r.idx);
             let leaf = ix.kids[r.idx].is_empty();
@@ -472,6 +540,15 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         }
     }
 
+    hits.tree_top = out.len();
+    hits.tree_x_end = if side_by_side { tree_w } else { w };
+    if rows.is_empty() {
+        hits.tree_rows.clear();
+    }
+    if !app.show_tree {
+        hits.tree_rows.clear();
+    }
+    *app.hits.borrow_mut() = hits;
     if side_by_side {
         for i in 0..body_h {
             let mut line = tree_lines.get(i).cloned().unwrap_or_default();
@@ -649,6 +726,7 @@ fn main() {
         typing: None,
         dm: DmMap::new(),
         dm_at: None,
+        hits: Default::default(),
     };
     app.load(&args.data);
     if let Some(i) = index(&app.plan).by.get("SC") {
@@ -683,7 +761,12 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         // 只有主執行緒 panic 才會結束畫面;計數執行緒 panic 不動終端機
         if std::thread::current().name() == Some("main") {
-            let _ = execute!(io::stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+            let _ = execute!(
+                io::stdout(),
+                DisableMouseCapture,
+                cursor::Show,
+                terminal::LeaveAlternateScreen
+            );
             let _ = terminal::disable_raw_mode();
         }
         prev(info);
@@ -693,7 +776,7 @@ fn main() {
         eprintln!("no_tty: 用 --once 印一次");
         std::process::exit(2);
     }
-    let _ = execute!(o, terminal::EnterAlternateScreen, cursor::Hide);
+    let _ = execute!(o, terminal::EnterAlternateScreen, cursor::Hide, EnableMouseCapture);
     let mut last_check = Instant::now();
     let mut last_age_draw = Instant::now();
     let mut dirty = true;
@@ -706,6 +789,19 @@ fn main() {
             match event::read() {
                 Ok(Event::Key(k)) if k.kind == event::KeyEventKind::Press => {
                     if !on_key(&mut app, k) {
+                        break;
+                    }
+                    dirty = true;
+                }
+                Ok(Event::Mouse(m)) => {
+                    let (x, y) = (m.column as usize, m.row as usize);
+                    let go = match m.kind {
+                        MouseEventKind::Down(MouseButton::Left) => on_click(&mut app, x, y),
+                        MouseEventKind::ScrollUp => on_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+                        MouseEventKind::ScrollDown => on_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                        _ => true,
+                    };
+                    if !go {
                         break;
                     }
                     dirty = true;
@@ -756,7 +852,7 @@ fn main() {
             last_age_draw = Instant::now();
         }
     }
-    let _ = execute!(o, cursor::Show, terminal::LeaveAlternateScreen);
+    let _ = execute!(o, DisableMouseCapture, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 }
 
@@ -777,6 +873,7 @@ mod tests {
             typing: None,
             dm: DmMap::new(),
             dm_at: None,
+            hits: Default::default(),
         }
     }
 
@@ -826,5 +923,39 @@ mod tests {
         for w in 0..12 {
             let _ = frame(&app, w, 20);
         }
+    }
+
+    /// 點樹上的列 = 選取 + 展開 / 收合;點工具列「e 全開」= 全部展開;點空白不出錯
+    #[test]
+    fn mouse_click_toggles_rows_and_toolbar() {
+        let p = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+            {"id":"G","parent":"V","kind":"group","title":"群組"},
+            {"id":"T1","parent":"G","kind":"task","title":"任務","status":"未驗","owner":"a63ab"}]}"#,
+        )
+        .expect("sample parses");
+        let mut app = empty_app();
+        app.plan = p;
+        app.err = None;
+        app.open.insert("V".into());
+        let _ = frame(&app, 80, 30);
+        let h = app.hits.borrow().clone();
+        let gy = h.tree_top + h.tree_rows.iter().position(|&i| app.plan.nodes[i].id == "G").expect("G shown");
+        assert!(on_click(&mut app, 2, gy));
+        assert!(app.open.contains("G"), "click opens G");
+        assert_eq!(app.plan.nodes[app.sel].id, "G");
+        let _ = frame(&app, 80, 30);
+        let h = app.hits.borrow().clone();
+        let gy = h.tree_top + h.tree_rows.iter().position(|&i| app.plan.nodes[i].id == "G").expect("G shown");
+        assert!(on_click(&mut app, 2, gy));
+        assert!(!app.open.contains("G"), "second click closes G");
+        let ty = h.toolbar_y.expect("toolbar");
+        let x = str_width(&h.toolbar[..h.toolbar.find("e 全開").expect("e")]);
+        assert!(on_click(&mut app, x + 1, ty));
+        assert!(app.open.contains("G"), "toolbar e opens all");
+        let qx = str_width(&h.toolbar[..h.toolbar.find("q 離開").expect("q")]);
+        assert!(!on_click(&mut app, qx, ty), "toolbar q quits");
+        assert!(on_click(&mut app, 79, 29));
+        assert!(on_click(&mut app, 0, 0));
     }
 }
