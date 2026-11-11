@@ -117,10 +117,21 @@ pub fn project_dir(root: &Path, uid: &str) -> Result<PathBuf, GoalsError> {
         && uid
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'));
-    if !ok {
+    // one plain path component: on Windows `C:foo` is a drive-relative path
+    // whose join would replace the base (a9136 / Codex #693)
+    let plain = {
+        let mut cs = Path::new(uid).components();
+        matches!(
+            (cs.next(), cs.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
+    };
+    let base = root.join("projects");
+    let dir = base.join(uid);
+    if !ok || !plain || dir.parent() != Some(base.as_path()) {
         return Err(GoalsError::BadProject(uid.to_owned()));
     }
-    Ok(root.join("projects").join(uid))
+    Ok(dir)
 }
 
 /// The canonical hash of goals + red lines, byte-for-byte the one
@@ -528,9 +539,23 @@ fn status_of(goal: &Goal, e: Option<&Evidence>, snap: &Snapshot, now: u64) -> St
 /// Most PRs one report reads heads for; the rest stay unknown.
 pub const MAX_PRS: usize = 30;
 
-/// The PRs the evidence names.
+/// The PRs whose heads decide a row: those of each goal's latest line (the
+/// same pick [`compare`] makes), not every PR the history ever named, so old
+/// PRs never push a new one past [`MAX_PRS`] (a9136 #693).
 pub fn prs_of(evidence: &EvidenceLog) -> std::collections::BTreeSet<u64> {
-    evidence.lines.iter().filter_map(|e| e.pr).collect()
+    let mut latest: BTreeMap<&str, (u64, usize, Option<u64>)> = BTreeMap::new();
+    for (i, e) in evidence.lines.iter().enumerate() {
+        let key = (e.at, i, e.pr);
+        latest
+            .entry(e.goal.as_str())
+            .and_modify(|k| {
+                if (key.0, key.1) > (k.0, k.1) {
+                    *k = key;
+                }
+            })
+            .or_insert(key);
+    }
+    latest.values().filter_map(|k| k.2).collect()
 }
 
 /// Each PR's current head through aib-drive's GET-only reader (the same one
@@ -561,6 +586,10 @@ pub fn read_heads(
     Snapshot { pr_heads }
 }
 
+/// An `at` further than this past `now` is unreadable: a line dated in the
+/// future would otherwise win over every later one.
+pub const FUTURE_SECS: u64 = 300;
+
 /// The comparison. Pure: same input, same report.
 pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64) -> Report {
     let rows: Vec<Row> = goals
@@ -571,7 +600,7 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
                 .lines
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| e.goal == g.id)
+                .filter(|(_, e)| e.goal == g.id && e.at <= now.saturating_add(FUTURE_SECS))
                 .max_by_key(|(i, e)| (e.at, *i))
                 .map(|(_, e)| e.clone());
             // a line that cannot be read, after the last readable one for
@@ -579,12 +608,22 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
             let last = evidence
                 .lines
                 .iter()
-                .filter(|e| e.goal == g.id)
+                .filter(|e| e.goal == g.id && e.at <= now.saturating_add(FUTURE_SECS))
                 .map(|e| e.pos)
                 .max();
-            let bad_after = evidence.bad.iter().any(|(pos, goal)| {
-                goal.as_ref().is_none_or(|x| *x == g.id) && last.is_none_or(|l| *pos > l)
-            });
+            let future = evidence
+                .lines
+                .iter()
+                .filter(|e| e.goal == g.id && e.at > now.saturating_add(FUTURE_SECS))
+                .map(|e| (e.pos, None));
+            let bad_after = evidence
+                .bad
+                .iter()
+                .cloned()
+                .chain(future)
+                .any(|(pos, goal)| {
+                    goal.as_ref().is_none_or(|x| *x == g.id) && last.is_none_or(|l| pos > l)
+                });
             Row {
                 status: if bad_after {
                     Status::Unverified(Why::EvidenceUnreadable)
@@ -840,12 +879,29 @@ pub fn record_event(
     if !dir.is_dir() {
         return Err(format!("expect_no_card: {} is not a folder", dir.display()));
     }
+    // the log is written only where it is: never through a link
+    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) {
+        return Err(format!("expect_evals_not_a_file: {}", log.display()));
+    }
     let mut f = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(&log)
         .map_err(|e| format!("{}: {e}", log.display()))?;
-    f.write_all(format!("{line}\n").as_bytes())
+    // an earlier write cut short left half a line: end it, so this line is
+    // not glued to it
+    let mut last = [0u8; 1];
+    let half = f.metadata().is_ok_and(|m| m.len() > 0)
+        && f.seek(SeekFrom::End(-1)).is_ok()
+        && f.read_exact(&mut last).is_ok()
+        && last[0] != b'\n';
+    let text = if half {
+        format!("\n{line}\n")
+    } else {
+        format!("{line}\n")
+    };
+    f.write_all(text.as_bytes())
         .and_then(|()| f.sync_all())
         .map_err(|e| format!("{}: {e}", log.display()))?;
     Ok(Recorded {

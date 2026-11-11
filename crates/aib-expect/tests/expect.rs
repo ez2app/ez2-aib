@@ -534,6 +534,134 @@ fn local_files_over_their_limit_are_errors() {
 }
 
 #[test]
+fn old_prs_never_push_the_latest_one_out() {
+    // a9136 #693: history names 31 PRs, the newest line is for #900
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let mut t = String::new();
+    for n in 1..=31u64 {
+        let mut e = ev("A1", "a", n, 0);
+        e["pr"] = json!(n);
+        e["head"] = json!(H2);
+        t.push_str(&format!("{e}\n"));
+    }
+    let mut new = ev("A1", "a", 100, 0);
+    new["pr"] = json!(900);
+    new["head"] = json!(H1);
+    t.push_str(&format!("{new}\n"));
+    let log = parse_evidence(&t);
+    assert_eq!(prs_of(&log), BTreeSet::from([900]));
+    let gh = FakeGh(
+        [(
+            "repos/o/r/pulls/900".to_owned(),
+            Ok(json!({"head": {"sha": H1}})),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let snap = read_heads(&gh, "o/r", &prs_of(&log));
+    assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
+}
+
+#[test]
+fn a_line_dated_in_the_future_is_unreadable() {
+    // a9136 #693 L: a line far in the future would win over every later one
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let pass = ev("A1", "a", NOW - 10, 0);
+    let far = ev("A1", "a", NOW + FUTURE_SECS + 1, 1);
+    let log = parse_evidence(&format!("{pass}\n{far}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
+    // a little clock skew is fine
+    let near = ev("A1", "a", NOW + FUTURE_SECS, 1);
+    let log = parse_evidence(&format!("{pass}\n{near}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Fail
+    );
+    // once the clock reaches it, the line counts like any other
+    let log = parse_evidence(&format!("{pass}\n{far}\n{pass}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), u64::MAX), "A1"),
+        Status::Fail
+    );
+}
+
+#[test]
+fn project_ids_stay_inside_the_projects_folder() {
+    let root = Path::new("state");
+    for bad in ["", ".", "..", "a/b", "a\\b", "../x"] {
+        assert_eq!(
+            project_dir(root, bad).unwrap_err().code(),
+            "expect_bad_project",
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        project_dir(root, UID).unwrap(),
+        root.join("projects").join(UID)
+    );
+    // a9136 / Codex #693: on Windows `C:foo` is a drive-relative path
+    #[cfg(windows)]
+    for bad in ["C:foo", "C:..", "c:x"] {
+        assert_eq!(
+            project_dir(root, bad).unwrap_err().code(),
+            "expect_bad_project",
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_half_line_left_by_a_cut_write_is_not_glued_to_the_next() {
+    // a9136 #693 L
+    let r = Root::new("half");
+    r.card(&goals3(), &["x"], true);
+    let log = r.dir().join("expect-evals.jsonl");
+    fs::write(&log, "{\"at\": 1").unwrap();
+    record_event(
+        &r.0,
+        UID,
+        &event("now-done", "1ced7", NOW),
+        &Snapshot::default(),
+    )
+    .unwrap();
+    let t = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = t.lines().collect();
+    assert_eq!(lines.len(), 2, "{t}");
+    assert_eq!(lines[0], "{\"at\": 1");
+    let v: Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(v["kind"], "now-done");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_evaluation_log_is_never_written_through_a_link() {
+    // a9136 #693 L
+    let r = Root::new("link");
+    r.card(&goals3(), &["x"], true);
+    let elsewhere = r.0.join("elsewhere.jsonl");
+    fs::write(&elsewhere, "").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, r.dir().join("expect-evals.jsonl")).unwrap();
+    let e = record_event(
+        &r.0,
+        UID,
+        &event("now-done", "1ced7", NOW),
+        &Snapshot::default(),
+    )
+    .unwrap_err();
+    assert!(e.starts_with("expect_evals_not_a_file"), "{e}");
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "");
+}
+
+#[test]
 fn an_ai_order_needs_a_reason_and_known_goals() {
     let g = vec![
         Goal {

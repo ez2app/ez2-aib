@@ -2115,6 +2115,22 @@ jobs:
           ek '    if t.len() as u64 > max {' \
              '    if t.len() as u64 > max && false { // knife' \
              local_files_over_their_limit_are_errors
+          # KE15 (a9136 #693) every PR the history names is read, so old PRs push the newest past MAX_PRS
+          ek '    latest.values().filter_map(|k| k.2).collect()' \
+             '    let _ = &latest; evidence.lines.iter().filter_map(|e| e.pr).collect() // knife' \
+             old_prs_never_push_the_latest_one_out
+          # KE16 (a9136 #693 L) a line dated in the future is dropped silently, the older pass shows
+          ek '                .chain(future)' \
+             '                .chain(future.filter(|_| false)) // knife' \
+             a_line_dated_in_the_future_is_unreadable
+          # KE17 (a9136 #693 L) a half line left by a cut write is glued to the next one
+          ek '        && f.read_exact(&mut last).is_ok()' \
+             '        && f.read_exact(&mut last).is_ok() && false // knife' \
+             a_half_line_left_by_a_cut_write_is_not_glued_to_the_next
+          # KE18 (a9136 #693 L) the evaluation log is written through a symlink
+          ek '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) {' \
+             '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) && false { // knife' \
+             the_evaluation_log_is_never_written_through_a_link
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
