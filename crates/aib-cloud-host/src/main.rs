@@ -10,6 +10,7 @@
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
+//! aib-cloud-host site restore-wpress <code> --plan --from <backup id> | --apply <plan.json> | --continue <plan.json>   (a customer's WordPress backup into one of their sites, step by step; the steps are not wired yet: B3 slices 3–4)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
@@ -46,6 +47,8 @@ mod opstore;
 mod probe;
 #[cfg(unix)]
 mod quarantinecmd;
+#[cfg(unix)]
+mod restorestepscmd;
 #[cfg(unix)]
 mod rostercmd;
 #[cfg(unix)]

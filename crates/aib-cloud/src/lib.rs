@@ -48,6 +48,7 @@ pub mod op;
 pub mod provision;
 pub mod quarantine;
 pub mod r2token;
+pub mod restoresteps;
 pub mod robot;
 pub mod roster;
 pub mod site;
