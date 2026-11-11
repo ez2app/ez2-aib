@@ -1219,12 +1219,12 @@ jobs:
              '        Ok::<(), String>(()).map_err(|e| { // knife' \
              every_step_is_written_down_as_it_is_done
           # restore: a failed import throws the download away instead of taking the site back (B3 slice 2)
-          hk restorestepscmd.rs '                    .roll_back(&rec)' \
-             '                    .discard(&rec) // knife' \
+          hk restorestepscmd.rs '            let after = restoresteps::after_failure(step);' \
+             '            let after = if step == RestoreStep::Import { AfterFailure::Discard } else { restoresteps::after_failure(step) }; // knife' \
              a_failed_import_takes_the_site_back
           # restore: a failure before the import takes the site back (B3 slice 2)
-          hk restorestepscmd.rs '                    host.discard(&rec).map(|()| "the download was thrown away")' \
-             '                    host.roll_back(&rec).map(|()| "the download was thrown away") // knife' \
+          hk restorestepscmd.rs '            let after = restoresteps::after_failure(step);' \
+             '            let after = if step == RestoreStep::Verify { AfterFailure::RollBack } else { restoresteps::after_failure(step) }; // knife' \
              a_failure_before_the_import_throws_the_download_away
           # restore: a clean-up is not written down (B3 slice 2)
           hk restorestepscmd.rs '                        rec.cleaned_up = true;' \
