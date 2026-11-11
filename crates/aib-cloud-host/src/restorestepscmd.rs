@@ -255,6 +255,9 @@ pub trait RestoreHost {
     fn place_backup(&mut self, rec: &Record) -> Result<String, String>;
     /// Run the plugin's restore of the backup; what it printed.
     fn import(&mut self, rec: &Record) -> Result<String, String>;
+    /// The domains of the customer's other sites on this host; none when the site's
+    /// record names no customer. A site record that cannot be read is an error.
+    fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String>;
     fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String>;
     /// Throw away what was downloaded, and the restore point's archive if one was begun:
     /// a failed restore point leaves a half-made archive behind.
@@ -306,7 +309,7 @@ pub fn plan_doc(
     }
     match restoresteps::next(standing) {
         Next::Start => match restoresteps::admit(&spec.code, &domain, &other_list) {
-            Ok(()) => match download_gate(source, &domain, host)? {
+            Ok(()) => match download_gate(&spec.code, source, &domain, host)? {
                 Ok(backup) => {
                     doc["backup"] = backup;
                     doc["next"] = json!("start");
@@ -331,6 +334,7 @@ pub fn plan_doc(
 /// The download gate, from what the host says now: the backup's name and size for the
 /// plan, or the gate's fixed word.
 fn download_gate(
+    site: &str,
     source: &str,
     domain: &str,
     host: &mut impl RestoreHost,
@@ -348,6 +352,13 @@ fn download_gate(
     };
     if let Err(refused) = restoregate::admit_download(&facts) {
         return Ok(Err(refused));
+    }
+    // c477a (slice 3 r2 N1): the name's second level lets a backup of the customer's other
+    // site through; one whose name is exactly that other site is refused here
+    let siblings = host.sibling_domains(site)?;
+    let siblings: Vec<&str> = siblings.iter().map(String::as_str).collect();
+    if restoregate::names_another_site(&src.name, &siblings) {
+        return Ok(Err("backup_of_another_site"));
     }
     let size = src.size.unwrap_or_default();
     Ok(
@@ -776,6 +787,8 @@ fn db_uptime(out: &str) -> Option<u64> {
 /// The real host. Its steps are not wired yet: [`RestoreHost::wired`] is false.
 pub struct HostRestorer {
     pub records: PathBuf,
+    /// The site records: `<site code>.json` each.
+    pub sites: PathBuf,
     pub ct: u32,
 }
 
@@ -936,6 +949,37 @@ impl RestoreHost for HostRestorer {
     fn import(&mut self, _rec: &Record) -> Result<String, String> {
         Err(NOT_WIRED.to_owned())
     }
+    fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String> {
+        let read = |path: &Path| -> Result<Value, String> {
+            let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        let own = read(&self.sites.join(format!("{site}.json")))?;
+        let Some(tenant) = aib_cloud::site::record_tenant(&own) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        let entries =
+            fs::read_dir(&self.sites).map_err(|e| format!("{}: {e}", self.sites.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.starts_with('.') || !name.ends_with(".json") || name == format!("{site}.json") {
+                continue;
+            }
+            let rec = read(&path)?;
+            if aib_cloud::site::record_tenant(&rec) == Some(tenant) {
+                let spec = aib_cloud::site::spec_from_record(&rec)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                out.extend(spec.hosts);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
     fn run_step(&mut self, _step: RestoreStep, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
     }
@@ -1023,6 +1067,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let spec = crate::quarantinecmd::load_spec(&code, SITE_RECORDS)?;
     let mut host = HostRestorer {
         records: PathBuf::from(RECORDS),
+        sites: PathBuf::from(SITE_RECORDS),
         ct: spec.ct,
     };
     match (plan_only, file) {
@@ -1146,6 +1191,9 @@ mod tests {
         listing: Option<String>,
         /// What the restore prints.
         said: String,
+        /// The site's disk once the download is done, when it changed meanwhile.
+        room_later: Option<SiteRoom>,
+        siblings: Vec<String>,
     }
 
     const NAME: &str = "example-com-20261101-101010-ab12cd.wpress";
@@ -1186,6 +1234,8 @@ mod tests {
             active: restoreimport::IMPORT_PLUGINS.join("\n"),
             listing: None,
             said: format!("Restoring\n{}\n", restoreimport::RESTORE_COMPLETE),
+            room_later: None,
+            siblings: Vec::new(),
         }
     }
 
@@ -1256,6 +1306,9 @@ mod tests {
         }
         fn downloaded(&mut self, rec: &Record) -> Result<Fetched, String> {
             self.calls.push("verify".to_owned());
+            if let Some(later) = self.room_later.take() {
+                self.room = Some(later);
+            }
             let stored = self
                 .records
                 .get(&rec.site)
@@ -1291,6 +1344,9 @@ mod tests {
                     rec.backup.as_ref().map_or("", |b| b.name.as_str())
                 )
             }))
+        }
+        fn sibling_domains(&mut self, _site: &str) -> Result<Vec<String>, String> {
+            Ok(self.siblings.clone())
         }
         fn import(&mut self, rec: &Record) -> Result<String, String> {
             self.calls.push("import".to_owned());
@@ -1394,6 +1450,7 @@ mod tests {
         let d = scratch("record");
         let mut host = HostRestorer {
             records: d.join("restores"),
+            sites: d.join("sites"),
             ct: 119,
         };
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
@@ -1597,7 +1654,11 @@ mod tests {
         let records = d.join("restores");
         fs::create_dir_all(&records).unwrap();
         fs::write(records.join("site8.json"), "{not json").unwrap();
-        let mut host = HostRestorer { records, ct: 119 };
+        let mut host = HostRestorer {
+            records,
+            sites: PathBuf::new(),
+            ct: 119,
+        };
         assert!(host.others("site9").is_err());
     }
 
@@ -1647,7 +1708,11 @@ mod tests {
         fs::create_dir_all(&records).unwrap();
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
         fs::write(records.join("site8.json"), r.to_json().to_string()).unwrap();
-        let mut host = HostRestorer { records, ct: 119 };
+        let mut host = HostRestorer {
+            records,
+            sites: PathBuf::new(),
+            ct: 119,
+        };
         let err = host.read_record("site8").unwrap_err();
         assert!(err.contains("is of site9, not of site8"), "{err}");
         assert!(host.others("site7").is_err());
@@ -1730,6 +1795,7 @@ mod tests {
         let d = scratch("aside");
         let mut host = HostRestorer {
             records: d.join("restores"),
+            sites: d.join("sites"),
             ct: 119,
         };
         let mut r = interrupted();
@@ -1934,7 +2000,7 @@ mod tests {
         let mut h = fake();
         let plan = sealed(&p, &mut h);
         // the site grew while the backup was downloading
-        h.room = Some(SiteRoom {
+        h.room_later = Some(SiteRoom {
             free: 3 * SIZE,
             used: SIZE,
         });
@@ -2020,5 +2086,60 @@ mod tests {
             df_room("Dateisystem 1K-Blöcke Benutzt Verfügbar\n/dev/x 1 2 3 1% /\n"),
             None
         );
+    }
+
+    #[test]
+    fn a_backup_of_another_site_of_the_customer_is_refused() {
+        let mut h = fake();
+        h.source.as_mut().unwrap().name = "example-shop-20261101-101010-ab12cd.wpress".to_owned();
+        // the second level lets it through for www.example.com ...
+        assert_eq!(plan_doc(&spec(), SOURCE, &mut h).unwrap()["next"], "start");
+        // ... unless it is the name of the customer's other site
+        h.siblings = vec!["www.example.shop".to_owned()];
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "backup_of_another_site"
+        );
+    }
+
+    #[test]
+    fn the_customers_other_sites_are_read_from_the_site_records() {
+        let d = scratch("siblings");
+        let sites = d.join("sites");
+        fs::create_dir_all(&sites).unwrap();
+        let rec = |code: &str, ct: u32, hosts: &str, tenant: Option<&str>| {
+            let mut v = json!({
+                "site": code, "ct": ct, "ip": format!("10.77.0.{}", ct - 100), "hosts": hosts,
+                "wp": 1, "locale": "en_US", "created": "2026-01-01T00:00:00Z", "template": 900,
+                "limits": { "cores": 2, "cpulimit_x100": 200, "memory_mb": 1024, "swap_mb": 512, "pids_max": 512 }
+            });
+            if let Some(t) = tenant {
+                v["tenant_id"] = json!(t);
+            }
+            fs::write(sites.join(format!("{code}.json")), v.to_string()).unwrap();
+        };
+        rec("site9", 119, "www.example.com", Some("t1"));
+        rec("site8", 118, "example.shop,shop.example.net", Some("t1"));
+        rec("site7", 117, "other.shop", Some("t2"));
+        rec("site6", 116, "nobody.shop", None);
+        let mut host = HostRestorer {
+            records: d.join("restores"),
+            sites: sites.clone(),
+            ct: 119,
+        };
+        assert_eq!(
+            host.sibling_domains("site9"),
+            Ok(vec![
+                "example.shop".to_owned(),
+                "shop.example.net".to_owned()
+            ])
+        );
+        assert_eq!(
+            host.sibling_domains("site6"),
+            Ok(Vec::new()),
+            "no customer, no siblings"
+        );
+        fs::write(sites.join("site5.json"), "{not json").unwrap();
+        assert!(host.sibling_domains("site9").is_err());
     }
 }

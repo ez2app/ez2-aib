@@ -941,6 +941,14 @@ jobs:
           ck restoreimport.rs '    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {' \
              '    if output.lines().any(|l| l.contains("Restore complete")) { // knife' \
              only_the_plugins_own_complete_line_counts
+          # restore gate: a name that only starts with another site's is told as that site's (B3 slice 4, c477a slice 3 r2 N1)
+          ck restoregate.rs "    !d.is_empty() && slug == d.replace('.', \"-\")" \
+             "    !d.is_empty() && slug.starts_with(&d.replace('.', \"-\")) // knife" \
+             a_backup_named_for_another_of_the_customers_sites_is_told
+          # restore gate: a leading www- hides another site's name (B3 slice 4, c477a slice 3 r2 N1)
+          ck restoregate.rs '    let slug = slug.strip_prefix("www-").map_or(slug.as_str(), |rest| rest);' \
+             '    let slug = slug.as_str(); // knife' \
+             a_backup_named_for_another_of_the_customers_sites_is_told
           # ---- E7 site quota (4542e 11-11): the pure rule
           # an opening that names no customer is passed over instead of holding room
           ck quota.rs '        None => true,' \
@@ -1524,6 +1532,18 @@ jobs:
           hk restorestepscmd.rs '    let mut columns = line.split_whitespace().skip(2);' \
              '    let mut columns = line.split_whitespace().skip(1); // knife' \
              the_sites_disk_is_read_from_df_in_its_container
+          # restore: a backup of the customer's other site goes to this one (B3 slice 4, c477a slice 3 r2 N1)
+          hk restorestepscmd.rs '    if restoregate::names_another_site(&src.name, &siblings) {' \
+             '    if restoregate::names_another_site(&src.name, &siblings) && false { // knife' \
+             a_backup_of_another_site_of_the_customer_is_refused
+          # restore: every customer's sites count as this customer's (B3 slice 4)
+          hk restorestepscmd.rs '            if aib_cloud::site::record_tenant(&rec) == Some(tenant) {' \
+             '            if aib_cloud::site::record_tenant(&rec) == Some(tenant) || true { // knife' \
+             the_customers_other_sites_are_read_from_the_site_records
+          # restore: the site counts as its own sibling (B3 slice 4)
+          hk restorestepscmd.rs '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") || name == format!("{site}.json") {' \
+             '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") { // knife' \
+             the_customers_other_sites_are_read_from_the_site_records
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
