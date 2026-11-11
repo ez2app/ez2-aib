@@ -898,6 +898,22 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # brand check (E9 step 4, host): the site's own answer line is unique, a failed read is
+          # never clean, the record is the site's, a site without software is not entered, the
+          # plugin headers are their own place, a dirty site exits 1
+          hk brandcheckcmd.rs '    if lines.next().is_some() {' '    if false && lines.next().is_some() { // knife' \
+             a_second_answer_line_makes_the_read_unreadable
+          hk brandcheckcmd.rs '    let empty = if why.is_some() { None } else { Some("") };' \
+             '    let empty = Some(""); // knife' \
+             a_failed_read_makes_every_place_unread_never_clean
+          hk brandcheckcmd.rs '    if spec.code != code {' '    if false { // knife' \
+             a_record_for_another_site_is_not_checked
+          hk brandcheckcmd.rs '    if !spec.wp {' '    if false { // knife' \
+             a_bad_record_or_a_site_without_software_is_not_checked
+          hk brandcheckcmd.rs '                Place::PluginHeader,' '                Place::InternalName, // knife' \
+             each_place_read_is_scanned
+          hk brandcheckcmd.rs '        Scan::Dirty { hits } => (1,' '        Scan::Dirty { hits } => (0,' \
+             the_report_names_places_and_words_never_what_was_read
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
