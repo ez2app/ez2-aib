@@ -19,7 +19,14 @@
 //! * What the site holds at vendors (one activation of each paid plugin) is given back
 //!   while the site still runs. When a vendor cannot be reached the removal stops there;
 //!   it goes on only when the person removing says in so many words that the
-//!   activations are left at the vendor, and that is written down.
+//!   activations are left at the vendor, and that is written down. An activation that no
+//!   program can give back (the vendor has no way to do it from the site, or the site no
+//!   longer holds what identifies it) does not stop the removal: it is listed as left at
+//!   the vendor and the removal goes on ([`licences_probe`], [`left_at_vendor`]).
+//! * When the site's address is in a DNS zone we manage, the address records we made for
+//!   the site are deleted near the end ([`RemoveStep::Dns`]). Only records carrying the
+//!   site's own marker ([`dns_marker`]) are ours; mail, text and any record without the
+//!   marker are left alone and reported. A zone we do not manage is passed over and said.
 //! * The record of the site is not deleted. It is moved aside with the time and the
 //!   archive's name, so a removed site can be told from one that never was.
 
@@ -46,12 +53,15 @@ pub enum RemoveStep {
     /// The site is taken off the host's export list. (The id ranges given to its
     /// container are not looked at here; they are not given out again either way.)
     Lists,
+    /// The address records made for the site are deleted from its DNS zone, when that
+    /// zone is one we manage. Nothing is lost for good: the zone is snapshotted first.
+    Dns,
     /// The site's record is moved aside, marked removed.
     Record,
 }
 
 /// Every step, first to last.
-pub const STEPS: [RemoveStep; 9] = [
+pub const STEPS: [RemoveStep; 10] = [
     RemoveStep::Unserve,
     RemoveStep::Archive,
     RemoveStep::Licenses,
@@ -60,6 +70,7 @@ pub const STEPS: [RemoveStep; 9] = [
     RemoveStep::Destroy,
     RemoveStep::Firewall,
     RemoveStep::Lists,
+    RemoveStep::Dns,
     RemoveStep::Record,
 ];
 
@@ -75,6 +86,7 @@ impl RemoveStep {
             RemoveStep::Destroy => "destroy",
             RemoveStep::Firewall => "firewall",
             RemoveStep::Lists => "lists",
+            RemoveStep::Dns => "dns",
             RemoveStep::Record => "record",
         }
     }
@@ -105,6 +117,15 @@ pub enum Next {
     Stop(&'static str, RemoveStep),
 }
 
+/// Whether a step may already be done before the steps ahead of it, without that being
+/// a sign that something went wrong. Both are "done" from the start for many sites, and
+/// neither loses anything that cannot be put back:
+/// * the shell way in: a site whose port was never forwarded has nothing to close;
+/// * the DNS step: the zone is not ours, or the site never had a record of ours.
+pub fn may_be_done_early(step: RemoveStep) -> bool {
+    matches!(step, RemoveStep::Access | RemoveStep::Dns)
+}
+
 /// The next thing to do, from one probe per step in [`STEPS`] order.
 /// `licenses_left_at_vendor` is the person's explicit word that the activations stay at
 /// the vendors: the licence step is then passed over whatever its probe says. Fewer or
@@ -120,7 +141,9 @@ pub fn next(probes: &[Probe], licenses_left_at_vendor: bool) -> Next {
         }
         match (probe, first_open) {
             (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),
-            (Probe::Done, Some(_)) => return Next::Stop("steps_out_of_order", *step),
+            (Probe::Done, Some(_)) if !may_be_done_early(*step) => {
+                return Next::Stop("steps_out_of_order", *step)
+            }
             (Probe::NotDone, None) => first_open = Some(*step),
             _ => {}
         }
@@ -145,8 +168,29 @@ pub fn may_call_off(next_step: RemoveStep) -> bool {
 /// about the steps behind it (the container may already be gone while the entry merely
 /// could not be asked), so it is never "can be put back as it was". Both the plan and
 /// the part that carries a removal out ask this, not [`may_call_off`] on a bare step.
+///
+/// The steps that may be done early ([`may_be_done_early`]) loosen that promise: behind a
+/// "do this step" they may already be done (the shell way in closed, our DNS records
+/// gone), whoever did it. Calling off then leaves them as they were found; it does not
+/// open the way in or put records back. Nothing is lost for good either way. The plan
+/// lists them ([`done_early`]) so a person sees it.
 pub fn may_call_off_now(next: Next) -> bool {
     matches!(next, Next::Run(step) if may_call_off(step))
+}
+
+/// The steps behind the next one that are already done although the next one is not:
+/// only steps that [`may_be_done_early`] can be in it (any other stops the work). Empty
+/// unless the next move is "do this step".
+pub fn done_early(probes: &[Probe], next: Next) -> alloc::vec::Vec<RemoveStep> {
+    let Next::Run(at) = next else {
+        return alloc::vec::Vec::new();
+    };
+    STEPS
+        .iter()
+        .zip(probes)
+        .filter(|(step, probe)| **step > at && **probe == Probe::Done)
+        .map(|(step, _)| *step)
+        .collect()
 }
 
 /// Whether doing `step` may lose something for good, so that the archive must be known
@@ -253,6 +297,221 @@ pub fn lists_probe(export_list: Option<&str>, code: &str) -> Probe {
     }
 }
 
+/// One paid plugin's activation, as the site and its vendor answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seat {
+    /// The vendor holds an activation for this site and it can be given back from here.
+    Held,
+    /// The vendor holds none for this site (never activated, or already given back).
+    NotHeld,
+    /// An activation may be held, but no program can give it back: the vendor has no
+    /// way to do it from the site, or the site no longer holds what identifies it.
+    NoAutomaticReturn,
+    /// The site or the vendor could not be asked.
+    Unknown,
+}
+
+/// One plugin and what was answered for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatSeen<'a> {
+    pub plugin: &'a str,
+    pub seat: Seat,
+}
+
+/// The licence step from every paid plugin's answer. `None`: the site could not be
+/// asked at all. One "could not ask" is "could not tell"; one activation that can still
+/// be given back is "not done"; activations that no program can give back do not hold
+/// the removal up (they go into [`left_at_vendor`]).
+pub fn licences_probe(seats: Option<&[SeatSeen]>) -> Probe {
+    let Some(seats) = seats else {
+        return Probe::Unknown;
+    };
+    if seats.iter().any(|s| s.seat == Seat::Unknown) {
+        Probe::Unknown
+    } else if seats.iter().any(|s| s.seat == Seat::Held) {
+        Probe::NotDone
+    } else {
+        Probe::Done
+    }
+}
+
+/// The plugins whose activations are left at the vendor because no program can give
+/// them back; written into the record of the removed site.
+pub fn left_at_vendor<'a>(seats: &[SeatSeen<'a>]) -> alloc::vec::Vec<&'a str> {
+    seats
+        .iter()
+        .filter(|s| s.seat == Seat::NoAutomaticReturn)
+        .map(|s| s.plugin)
+        .collect()
+}
+
+/// The start of the comment every DNS record made for a site carries.
+pub const DNS_MARKER_PREFIX: &str = "ez2:site:";
+
+/// The comment a DNS record made for site `code` carries.
+pub fn dns_marker(code: &str) -> alloc::string::String {
+    alloc::format!("{DNS_MARKER_PREFIX}{code}")
+}
+
+/// The record types that point an address somewhere. Only these can be ours.
+pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "CNAME"];
+
+/// One record of a DNS zone, as listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DnsRecord<'a> {
+    /// The record type (`A`, `MX`, …).
+    pub kind: &'a str,
+    pub name: &'a str,
+    /// The record's comment; empty when it has none.
+    pub comment: &'a str,
+}
+
+/// Which records under the site's address are to be deleted and which are left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsPick {
+    /// The zone's listing was not complete or could not be read.
+    Unknown,
+    /// `ours`: address records carrying the site's marker (indexes into the listing).
+    /// `foreign`: address records under the same name without it; never deleted, said.
+    Picked {
+        ours: alloc::vec::Vec<usize>,
+        foreign: alloc::vec::Vec<usize>,
+    },
+}
+
+fn same_name(a: &str, b: &str) -> bool {
+    let a = a.strip_suffix('.').unwrap_or(a);
+    let b = b.strip_suffix('.').unwrap_or(b);
+    !a.is_empty() && a.eq_ignore_ascii_case(b)
+}
+
+/// The records to delete for site `code`, whose addresses are `names` (every address of
+/// the site's record, not only the main one). `records` is the zone's whole listing,
+/// `None` when it was not complete. Records of other types under those names (mail, text,
+/// …) are not looked at; address records under them without the site's marker are
+/// foreign. The marker binds a record to this site's code, so a record of ours is found
+/// under any of the site's names; a name that is not the site's is never looked at.
+pub fn dns_to_remove(records: Option<&[DnsRecord]>, names: &[&str], code: &str) -> DnsPick {
+    let Some(records) = records else {
+        return DnsPick::Unknown;
+    };
+    let marker = dns_marker(code);
+    let mut ours = alloc::vec::Vec::new();
+    let mut foreign = alloc::vec::Vec::new();
+    for (i, r) in records.iter().enumerate() {
+        if !names.iter().any(|n| same_name(r.name, n))
+            || !DNS_ADDRESS_TYPES
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(r.kind))
+        {
+            continue;
+        }
+        if r.comment == marker {
+            ours.push(i);
+        } else {
+            foreign.push(i);
+        }
+    }
+    DnsPick::Picked { ours, foreign }
+}
+
+/// Whether the zone of the site's address is one we manage.
+///
+/// `NotOurs` only when the zones under our account were listed completely and the
+/// address is in none of them. A key that does not work, a refused or failed call, or a
+/// listing that is not complete is `Unknown`, never `NotOurs`: passing the step over on
+/// such an answer would leave the records without saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsRights {
+    Ours,
+    NotOurs,
+    Unknown,
+}
+
+/// What the DNS step found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsProbe {
+    /// The zone is not one we manage: nothing to do here, and that is said.
+    Skipped,
+    /// No record of ours is left.
+    Done,
+    /// No record of ours is left, but address records under the site's names without our
+    /// marker are (made by hand, or before the marker was used). They are not deleted;
+    /// this is said in the plan and in the record of the removed site, never as plain done.
+    DoneForeignLeft,
+    /// A record of ours is still there.
+    NotDone,
+    /// The zone or its listing could not be read.
+    Unknown,
+    /// This part of the work cannot ask DNS at all (the key is kept elsewhere). The steps
+    /// before it go on; the work stops when the DNS step is the next one ([`next_with_dns`]).
+    NotAskedHere,
+}
+
+impl DnsProbe {
+    /// As a step's probe: a zone we do not manage does not hold the removal up.
+    pub fn probe(self) -> Probe {
+        match self {
+            DnsProbe::Skipped | DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done,
+            DnsProbe::NotDone | DnsProbe::NotAskedHere => Probe::NotDone,
+            DnsProbe::Unknown => Probe::Unknown,
+        }
+    }
+
+    /// The fixed word for the plan and the record.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DnsProbe::Skipped => "skipped_zone_not_ours",
+            DnsProbe::Done => "done",
+            DnsProbe::DoneForeignLeft => "done_records_without_our_marker_left",
+            DnsProbe::NotDone => "not_done",
+            DnsProbe::Unknown => "unknown",
+            DnsProbe::NotAskedHere => "not_asked_here",
+        }
+    }
+}
+
+/// The DNS step from whether the zone is ours and what was picked in it.
+pub fn dns_probe(rights: DnsRights, pick: &DnsPick) -> DnsProbe {
+    match (rights, pick) {
+        (DnsRights::NotOurs, _) => DnsProbe::Skipped,
+        (DnsRights::Unknown, _) | (DnsRights::Ours, DnsPick::Unknown) => DnsProbe::Unknown,
+        (DnsRights::Ours, DnsPick::Picked { ours, foreign }) if ours.is_empty() => {
+            if foreign.is_empty() {
+                DnsProbe::Done
+            } else {
+                DnsProbe::DoneForeignLeft
+            }
+        }
+        (DnsRights::Ours, DnsPick::Picked { .. }) => DnsProbe::NotDone,
+    }
+}
+
+/// Where [`next_with_dns`] stops when the DNS step is the one left and this part of the
+/// work cannot ask DNS.
+pub const DNS_NOT_ASKED_HERE: Next = Next::Stop("dns_not_asked_here", RemoveStep::Dns);
+
+/// [`next`] for a removal whose DNS step was found as `dns`. When this part of the work
+/// cannot ask DNS ([`DnsProbe::NotAskedHere`]) the DNS step is not held against the steps
+/// around it: the steps before it go on as usual, and once DNS is the only step left (also
+/// for a site already removed apart from DNS, whose record step is done) the work stops
+/// with its own word, never as "steps out of order".
+pub fn next_with_dns(probes: &[Probe], licenses_left_at_vendor: bool, dns: DnsProbe) -> Next {
+    let at = STEPS.iter().position(|s| *s == RemoveStep::Dns);
+    let held = dns == DnsProbe::NotAskedHere;
+    let at = match at {
+        Some(at) if held && probes.get(at) == Some(&Probe::NotDone) => at,
+        _ => return next(probes, licenses_left_at_vendor),
+    };
+    let mut p = probes.to_vec();
+    p[at] = Probe::Done; // not held against the steps around it
+    match next(&p, licenses_left_at_vendor) {
+        Next::Run(step) if step < RemoveStep::Dns => Next::Run(step),
+        Next::Run(_) | Next::Finished => DNS_NOT_ASKED_HERE,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +586,9 @@ mod tests {
     fn nothing_is_destroyed_before_the_archive_is_known_good() {
         // the archive is not done (or not known) and a later step already is: stop
         for later in 2..STEPS.len() {
+            if may_be_done_early(STEPS[later]) {
+                continue;
+            }
             let mut p = probes(1);
             p[later] = Probe::Done;
             assert_eq!(
@@ -534,5 +796,382 @@ mod tests {
         assert_eq!(lists_probe(Some(list), "site90"), Probe::NotDone);
         assert_eq!(lists_probe(Some(""), "site9"), Probe::Done);
         assert_eq!(lists_probe(None, "site9"), Probe::Unknown);
+    }
+
+    #[test]
+    fn dns_comes_after_the_licences_and_before_the_record() {
+        assert!(RemoveStep::Licenses < RemoveStep::Dns);
+        assert!(RemoveStep::Lists < RemoveStep::Dns);
+        assert!(RemoveStep::Dns < RemoveStep::Record);
+        assert!(!may_call_off(RemoveStep::Dns));
+        assert!(needs_archive(RemoveStep::Dns));
+    }
+
+    #[test]
+    fn a_dns_step_done_from_the_start_does_not_stop_the_work() {
+        let at = STEPS.iter().position(|s| *s == RemoveStep::Dns).unwrap();
+        // untouched site whose zone is not ours (or never had a record of ours)
+        let mut p = probes(0);
+        p[at] = DnsProbe::Skipped.probe();
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Unserve));
+        assert!(may_call_off_now(next(&p, false)));
+        // every step before it done: the next one is the record
+        let mut p = probes(at);
+        p[at] = DnsProbe::Done.probe();
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Record));
+        // only the DNS step may be early: the record moved aside before the DNS is not
+        let mut p = probes(at);
+        p[at + 1] = Probe::Done;
+        assert_eq!(
+            next(&p, false),
+            Next::Stop("steps_out_of_order", RemoveStep::Record)
+        );
+        for step in STEPS {
+            assert_eq!(
+                may_be_done_early(step),
+                step == RemoveStep::Access || step == RemoveStep::Dns,
+                "{step:?}"
+            );
+        }
+        // a record of ours still there is the next thing to do once the lists are done
+        let mut p = probes(at);
+        p[at] = DnsProbe::NotDone.probe();
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Dns));
+        // could not tell: stop, also when it is the only open question
+        let mut p = probes(STEPS.len());
+        p[at] = DnsProbe::Unknown.probe();
+        assert_eq!(
+            next(&p, false),
+            Next::Stop("probe_unknown", RemoveStep::Dns)
+        );
+    }
+
+    #[test]
+    fn only_address_records_with_the_sites_marker_are_ours() {
+        let marker = dns_marker("s-abc123");
+        assert_eq!(marker, "ez2:site:s-abc123");
+        assert!(marker.starts_with(DNS_MARKER_PREFIX));
+        let recs = [
+            DnsRecord {
+                kind: "A",
+                name: "example.test",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "MX",
+                name: "example.test",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "TXT",
+                name: "example.test",
+                comment: "",
+            },
+            DnsRecord {
+                kind: "CNAME",
+                name: "www.example.test",
+                comment: "",
+            },
+            DnsRecord {
+                kind: "AAAA",
+                name: "Example.Test.",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "A",
+                name: "example.test",
+                comment: "made by hand",
+            },
+            DnsRecord {
+                kind: "A",
+                name: "example.test",
+                comment: "ez2:site:s-abc1234",
+            },
+            DnsRecord {
+                kind: "A",
+                name: "other.example.test",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "cname",
+                name: "example.test",
+                comment: &marker,
+            },
+        ];
+        assert_eq!(
+            dns_to_remove(Some(&recs), &["example.test"], "s-abc123"),
+            DnsPick::Picked {
+                ours: alloc::vec![0, 4, 8],
+                foreign: alloc::vec![5, 6],
+            }
+        );
+        // nothing under the name: nothing to delete, nothing foreign
+        assert_eq!(
+            dns_to_remove(Some(&recs), &["none.example.test"], "s-abc123"),
+            DnsPick::Picked {
+                ours: Vec::new(),
+                foreign: Vec::new()
+            }
+        );
+        // an empty name never matches
+        assert_eq!(
+            dns_to_remove(
+                Some(&[DnsRecord {
+                    kind: "A",
+                    name: "",
+                    comment: &marker
+                }]),
+                &[""],
+                "s-abc123"
+            ),
+            DnsPick::Picked {
+                ours: Vec::new(),
+                foreign: Vec::new()
+            }
+        );
+        // a listing that was not complete
+        assert_eq!(
+            dns_to_remove(None, &["example.test"], "s-abc123"),
+            DnsPick::Unknown
+        );
+    }
+
+    #[test]
+    fn the_dns_step_is_passed_over_only_when_the_zone_is_not_ours() {
+        let ours = DnsPick::Picked {
+            ours: alloc::vec![0],
+            foreign: Vec::new(),
+        };
+        let none = DnsPick::Picked {
+            ours: Vec::new(),
+            foreign: Vec::new(),
+        };
+        let foreign_only = DnsPick::Picked {
+            ours: Vec::new(),
+            foreign: alloc::vec![1],
+        };
+        let both = DnsPick::Picked {
+            ours: alloc::vec![0],
+            foreign: alloc::vec![1],
+        };
+        assert_eq!(dns_probe(DnsRights::NotOurs, &ours), DnsProbe::Skipped);
+        assert_eq!(
+            dns_probe(DnsRights::NotOurs, &DnsPick::Unknown),
+            DnsProbe::Skipped
+        );
+        assert_eq!(dns_probe(DnsRights::Ours, &ours), DnsProbe::NotDone);
+        assert_eq!(dns_probe(DnsRights::Ours, &none), DnsProbe::Done);
+        // a record under the site's name without our marker is left and said, never plain done
+        assert_eq!(
+            dns_probe(DnsRights::Ours, &foreign_only),
+            DnsProbe::DoneForeignLeft
+        );
+        assert_eq!(dns_probe(DnsRights::Ours, &both), DnsProbe::NotDone);
+        assert_eq!(DnsProbe::DoneForeignLeft.probe(), Probe::Done);
+        assert_ne!(DnsProbe::DoneForeignLeft.as_str(), DnsProbe::Done.as_str());
+        assert_eq!(DnsProbe::NotAskedHere.probe(), Probe::NotDone);
+        assert_eq!(
+            dns_probe(DnsRights::Ours, &DnsPick::Unknown),
+            DnsProbe::Unknown
+        );
+        assert_eq!(dns_probe(DnsRights::Unknown, &none), DnsProbe::Unknown);
+        assert_eq!(DnsProbe::Skipped.probe(), Probe::Done);
+        assert_eq!(DnsProbe::Done.probe(), Probe::Done);
+        assert_eq!(DnsProbe::NotDone.probe(), Probe::NotDone);
+        assert_eq!(DnsProbe::Unknown.probe(), Probe::Unknown);
+        let mut words: Vec<&str> = [
+            DnsProbe::Skipped,
+            DnsProbe::Done,
+            DnsProbe::NotDone,
+            DnsProbe::Unknown,
+            DnsProbe::DoneForeignLeft,
+            DnsProbe::NotAskedHere,
+        ]
+        .iter()
+        .map(|d| d.as_str())
+        .collect();
+        words.sort_unstable();
+        words.dedup();
+        assert_eq!(words.len(), 6);
+    }
+
+    #[test]
+    fn activations_no_program_can_give_back_do_not_hold_the_removal_up() {
+        let s = |plugin, seat| SeatSeen { plugin, seat };
+        let left_only = [
+            s("seo", Seat::NotHeld),
+            s("blocks", Seat::NoAutomaticReturn),
+            s("theme", Seat::NoAutomaticReturn),
+        ];
+        assert_eq!(licences_probe(Some(&left_only)), Probe::Done);
+        assert_eq!(left_at_vendor(&left_only), alloc::vec!["blocks", "theme"]);
+        // and the removal goes on past the licence step without the person's word
+        let at = STEPS
+            .iter()
+            .position(|x| *x == RemoveStep::Licenses)
+            .unwrap();
+        let mut p = probes(at);
+        p[at] = licences_probe(Some(&left_only));
+        assert_eq!(next(&p, false), Next::Run(STEPS[at + 1]));
+        // one that can still be given back: not done
+        let held = [s("seo", Seat::Held), s("blocks", Seat::NoAutomaticReturn)];
+        assert_eq!(licences_probe(Some(&held)), Probe::NotDone);
+        // one vendor that could not be asked: could not tell (the person's word is still needed)
+        let unknown = [
+            s("seo", Seat::Unknown),
+            s("blocks", Seat::NoAutomaticReturn),
+        ];
+        assert_eq!(licences_probe(Some(&unknown)), Probe::Unknown);
+        assert_eq!(licences_probe(None), Probe::Unknown);
+        // no paid plugin at all
+        assert_eq!(licences_probe(Some(&[])), Probe::Done);
+        assert!(left_at_vendor(&[s("seo", Seat::Held)]).is_empty());
+    }
+
+    #[test]
+    fn a_site_whose_way_in_was_never_opened_does_not_stop_the_work() {
+        let at = STEPS.iter().position(|s| *s == RemoveStep::Access).unwrap();
+        // untouched site without a forwarded port: the entry is still first
+        let mut p = probes(0);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Unserve));
+        assert!(may_call_off_now(next(&p, false)));
+        // half way: the archive is made, the licences are next
+        let mut p = probes(2);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Licenses));
+        // past the licences the next one is the stop, not the access step
+        let mut p = probes(at);
+        p[at] = Probe::Done;
+        assert_eq!(next(&p, false), Next::Run(RemoveStep::Stop));
+        // the steps that destroy are still never early
+        let mut p = probes(1);
+        p[at + 2] = Probe::Done;
+        assert_eq!(
+            next(&p, false),
+            Next::Stop("steps_out_of_order", RemoveStep::Destroy)
+        );
+    }
+
+    #[test]
+    fn every_address_of_the_site_is_looked_at() {
+        let marker = dns_marker("s-abc123");
+        let recs = [
+            DnsRecord {
+                kind: "A",
+                name: "example.test",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "CNAME",
+                name: "www.example.test",
+                comment: &marker,
+            },
+            DnsRecord {
+                kind: "A",
+                name: "shop.example.test",
+                comment: "",
+            },
+            DnsRecord {
+                kind: "A",
+                name: "not-the-sites.example.test",
+                comment: &marker,
+            },
+        ];
+        let names = ["example.test", "www.example.test", "shop.example.test"];
+        assert_eq!(
+            dns_to_remove(Some(&recs), &names, "s-abc123"),
+            DnsPick::Picked {
+                ours: alloc::vec![0, 1],
+                foreign: alloc::vec![2],
+            }
+        );
+        // only the main address given: the record under the second name is missed
+        assert_eq!(
+            dns_to_remove(Some(&recs), &names[..1], "s-abc123"),
+            DnsPick::Picked {
+                ours: alloc::vec![0],
+                foreign: Vec::new(),
+            }
+        );
+        assert_eq!(
+            dns_to_remove(Some(&recs), &[], "s-abc123"),
+            DnsPick::Picked {
+                ours: Vec::new(),
+                foreign: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on() {
+        let at = STEPS.iter().position(|s| *s == RemoveStep::Dns).unwrap();
+        let mut p = probes(0);
+        p[at] = DnsProbe::NotAskedHere.probe();
+        let n = next_with_dns(&p, true, DnsProbe::NotAskedHere);
+        assert_eq!(n, Next::Run(RemoveStep::Unserve));
+        assert!(may_call_off_now(n));
+        // everything before it done: stop at the DNS step with its own word
+        let mut p = probes(at);
+        p[at] = DnsProbe::NotAskedHere.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotAskedHere),
+            Next::Stop("dns_not_asked_here", RemoveStep::Dns)
+        );
+        // a site already removed apart from DNS (record step done): its own word, not
+        // "steps out of order" (33e28 r2 L1)
+        let mut p = probes(STEPS.len());
+        p[at] = DnsProbe::NotAskedHere.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
+        );
+        assert_eq!(
+            next_with_dns(&p, true, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
+        );
+        // a step after DNS not done yet while DNS cannot be asked: still DNS's word
+        let mut p = probes(at);
+        p[at] = DnsProbe::NotAskedHere.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotAskedHere),
+            DNS_NOT_ASKED_HERE
+        );
+        // asked and a record of ours is there: do the step
+        let mut p = probes(at);
+        p[at] = DnsProbe::NotDone.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::NotDone),
+            Next::Run(RemoveStep::Dns)
+        );
+        // an answer that could not be read still stops wherever it is
+        let mut p = probes(0);
+        p[at] = DnsProbe::Unknown.probe();
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::Unknown),
+            Next::Stop("probe_unknown", RemoveStep::Dns)
+        );
+    }
+
+    #[test]
+    fn steps_done_early_are_listed_behind_a_step_that_can_be_called_off() {
+        let access = STEPS.iter().position(|s| *s == RemoveStep::Access).unwrap();
+        let dns = STEPS.iter().position(|s| *s == RemoveStep::Dns).unwrap();
+        let mut p = probes(0);
+        p[access] = Probe::Done;
+        p[dns] = Probe::Done;
+        let n = next(&p, false);
+        assert!(may_call_off_now(n));
+        assert_eq!(
+            done_early(&p, n),
+            alloc::vec![RemoveStep::Access, RemoveStep::Dns]
+        );
+        // nothing early: nothing listed; a stop or finished: nothing listed
+        assert!(done_early(&probes(0), next(&probes(0), false)).is_empty());
+        let all = probes(STEPS.len());
+        assert!(done_early(&all, next(&all, false)).is_empty());
+        let mut p = probes(0);
+        p[0] = Probe::Unknown;
+        assert!(done_early(&p, next(&p, false)).is_empty());
     }
 }
