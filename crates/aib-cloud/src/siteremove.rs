@@ -118,12 +118,16 @@ pub enum Next {
 }
 
 /// Whether a step may already be done before the steps ahead of it, without that being
-/// a sign that something went wrong. Both are "done" from the start for many sites, and
-/// neither loses anything that cannot be put back:
+/// a sign that something went wrong. Each is "done" from the start for many sites, and
+/// none loses anything that cannot be put back:
 /// * the shell way in: a site whose port was never forwarded has nothing to close;
-/// * the DNS step: the zone is not ours, or the site never had a record of ours.
+/// * the DNS step: the zone is not ours, or the site never had a record of ours;
+/// * the licences: a site whose paid plugins hold nothing that can be given back (never
+///   activated, a blank site, or only activations no program can give back) has nothing
+///   to do at that step.
 pub fn may_be_done_early(step: RemoveStep) -> bool {
     matches!(step, RemoveStep::Access | RemoveStep::Dns)
+        || step == RemoveStep::Licenses
 }
 
 /// The next thing to do, from one probe per step in [`STEPS`] order.
@@ -345,6 +349,204 @@ pub fn left_at_vendor<'a>(seats: &[SeatSeen<'a>]) -> alloc::vec::Vec<&'a str> {
         .collect()
 }
 
+/// How a paid plugin's activation is given back when its site is removed. Fixed per
+/// plugin in [`PAID_PLUGINS`] from what was done by hand (the reviewed `site-remove.sh`
+/// step 3 of the ez2-cloud-site-manual skill), never guessed for a plugin not listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiveBack {
+    /// The plugin gives the activation back from inside the site, and the vendor can be
+    /// asked again afterwards whether this site still holds one.
+    InSite,
+    /// No program gives it back (Andy 11-11: "if it cannot be done automatically, leave
+    /// it for now"): an activation found is written into the removed site's record as
+    /// left at the vendor. It never holds the removal up and is not chased.
+    RecordOnly,
+}
+
+/// One paid plugin of the template and how its activation is given back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaidPlugin {
+    /// The fixed word for the plan and the record.
+    pub name: &'static str,
+    pub give_back: GiveBack,
+}
+
+/// Every paid plugin of the template, and whether its activation can be given back by a
+/// program. The host asks the site about each of these and only these.
+/// * SEOPress Pro: the vendor's own deactivate call, sent from inside the site with the
+///   site's key (only when it is the template's key); the vendor is asked again after.
+/// * Fluent Forms Pro: the plugin's own licensing client deactivates; the vendor is asked
+///   again in the same call (deactivating clears the key the site keeps).
+/// * FlyingPress: no deactivation was ever tried by hand, and a failed licence call clears
+///   the key the plugin keeps; recorded only.
+/// * Stackable and Blocksy: activated through Freemius, which has no reliable command-line
+///   deactivation (DEV 4.6 §15.2 item 5); recorded only.
+pub const PAID_PLUGINS: [PaidPlugin; 5] = [
+    PaidPlugin {
+        name: "seopress",
+        give_back: GiveBack::InSite,
+    },
+    PaidPlugin {
+        name: "fluentformpro",
+        give_back: GiveBack::InSite,
+    },
+    PaidPlugin {
+        name: "flyingpress",
+        give_back: GiveBack::RecordOnly,
+    },
+    PaidPlugin {
+        name: "stackable",
+        give_back: GiveBack::RecordOnly,
+    },
+    PaidPlugin {
+        name: "blocksy",
+        give_back: GiveBack::RecordOnly,
+    },
+];
+
+/// How `plugin`'s activation is given back; `None` for a plugin that is not in
+/// [`PAID_PLUGINS`].
+pub fn give_back_of(plugin: &str) -> Option<GiveBack> {
+    PAID_PLUGINS
+        .iter()
+        .find(|p| p.name == plugin)
+        .map(|p| p.give_back)
+}
+
+/// What the site (and through it the vendor) answered for one paid plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VendorAnswer {
+    /// This site holds an activation (for a plugin given back in the site: the vendor's
+    /// own answer; for one only recorded: the site's record of its activation).
+    Active,
+    /// This site holds none.
+    NotActive,
+    /// The site holds nothing that identifies an activation (no key, the plugin is not
+    /// there); one may still be held at the vendor for this address.
+    NoData,
+    /// The key in the site is not shown to be the template's (another key, or the
+    /// template's could not be read): not ours to give back.
+    KeyNotTemplate,
+    /// The vendor says the key itself is not good (expired, revoked).
+    NotValid,
+    /// The site or the vendor did not answer, or answered something not understood.
+    Unknown,
+}
+
+/// Why a plugin is listed as left at its vendor: fixed words, after `<plugin>:`.
+pub const LEFT_ACTIVATION: &str = "activation";
+pub const LEFT_NOT_ASKED: &str = "not_asked";
+pub const LEFT_NO_DATA: &str = "no_data_in_site";
+pub const LEFT_KEY_NOT_TEMPLATE: &str = "key_not_template";
+pub const LEFT_NOT_VALID: &str = "key_not_valid";
+/// The site could not be read at all (its container is gone or stopped, or the site
+/// software did not answer): every paid plugin is listed with this word and the removal
+/// goes on (Andy 11-11).
+pub const SITE_UNREADABLE: &str = "site_unreadable";
+
+/// One plugin's seat from what was answered, and why it is left at the vendor when it is.
+pub fn seat_of(plugin: &str, answer: VendorAnswer) -> (Seat, Option<&'static str>) {
+    let Some(how) = give_back_of(plugin) else {
+        return (Seat::Unknown, None);
+    };
+    match (how, answer) {
+        (GiveBack::InSite, VendorAnswer::Active) => (Seat::Held, None),
+        (_, VendorAnswer::NotActive) => (Seat::NotHeld, None),
+        (GiveBack::InSite, VendorAnswer::Unknown) => (Seat::Unknown, None),
+        (GiveBack::InSite, VendorAnswer::NoData) => (Seat::NoAutomaticReturn, Some(LEFT_NO_DATA)),
+        (GiveBack::RecordOnly, VendorAnswer::NoData) => (Seat::NotHeld, None),
+        (GiveBack::RecordOnly, VendorAnswer::Active) => {
+            (Seat::NoAutomaticReturn, Some(LEFT_ACTIVATION))
+        }
+        (GiveBack::RecordOnly, VendorAnswer::Unknown) => {
+            (Seat::NoAutomaticReturn, Some(LEFT_NOT_ASKED))
+        }
+        (_, VendorAnswer::KeyNotTemplate) => {
+            (Seat::NoAutomaticReturn, Some(LEFT_KEY_NOT_TEMPLATE))
+        }
+        (_, VendorAnswer::NotValid) => (Seat::NoAutomaticReturn, Some(LEFT_NOT_VALID)),
+    }
+}
+
+/// The licence step as looked at: its probe, what is left at the vendors
+/// (`<plugin>:<why>`), and the plugins to give back now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicenceLook {
+    pub probe: Probe,
+    pub left: alloc::vec::Vec<alloc::string::String>,
+    pub to_give_back: alloc::vec::Vec<&'static str>,
+}
+
+/// The licence step from what the site answered. `wp_site` false: a blank site, which has
+/// no paid plugins. `answers` `None`: the site could not be read, so every paid plugin is
+/// left at its vendor as [`SITE_UNREADABLE`] and the step does not hold the removal up.
+/// Otherwise every plugin of [`PAID_PLUGINS`] must be answered exactly once and nothing
+/// else; anything short of that is "could not tell".
+pub fn licences_look(wp_site: bool, answers: Option<&[(&str, VendorAnswer)]>) -> LicenceLook {
+    let mut look = LicenceLook {
+        probe: Probe::Done,
+        left: alloc::vec::Vec::new(),
+        to_give_back: alloc::vec::Vec::new(),
+    };
+    if !wp_site {
+        return look;
+    }
+    let Some(answers) = answers else {
+        look.left = PAID_PLUGINS
+            .iter()
+            .map(|p| alloc::format!("{}:{SITE_UNREADABLE}", p.name))
+            .collect();
+        return look;
+    };
+    let complete = answers.len() == PAID_PLUGINS.len()
+        && PAID_PLUGINS
+            .iter()
+            .all(|p| answers.iter().filter(|(n, _)| *n == p.name).count() == 1);
+    if !complete {
+        look.probe = Probe::Unknown;
+        return look;
+    }
+    let mut seats = alloc::vec::Vec::new();
+    for p in PAID_PLUGINS {
+        let Some((_, answer)) = answers.iter().find(|(n, _)| *n == p.name) else {
+            look.probe = Probe::Unknown;
+            return look;
+        };
+        let (seat, why) = seat_of(p.name, *answer);
+        if seat == Seat::Held {
+            look.to_give_back.push(p.name);
+        }
+        if let Some(why) = why {
+            look.left.push(alloc::format!("{}:{why}", p.name));
+        }
+        seats.push(SeatSeen {
+            plugin: p.name,
+            seat,
+        });
+    }
+    look.probe = licences_probe(Some(&seats));
+    look
+}
+
+/// The call that gives one activation back did not succeed.
+pub const LICENCE_DEACTIVATE_FAILED: &str = "licence_deactivate_failed";
+/// The vendor still has the site as activated after the call.
+pub const LICENCE_STILL_ACTIVE: &str = "licence_still_active";
+/// The vendor's answer after the call is not "not activated".
+pub const LICENCE_NOT_CONFIRMED: &str = "licence_not_confirmed";
+
+/// After giving one activation back: `call_ok` whether the call succeeded, `now` the
+/// vendor's answer to a fresh question. Only a call that succeeded and a vendor that now
+/// says "not activated" count; anything else is a fixed word and the work stops.
+pub fn give_back_after(call_ok: bool, now: VendorAnswer) -> Result<(), &'static str> {
+    match (call_ok, now) {
+        (false, _) => Err(LICENCE_DEACTIVATE_FAILED),
+        (true, VendorAnswer::NotActive) => Ok(()),
+        (true, VendorAnswer::Active) => Err(LICENCE_STILL_ACTIVE),
+        (true, _) => Err(LICENCE_NOT_CONFIRMED),
+    }
+}
+
 /// The start of the comment every DNS record made for a site carries.
 pub const DNS_MARKER_PREFIX: &str = "ez2:site:";
 
@@ -446,6 +648,9 @@ pub enum DnsProbe {
     /// This part of the work cannot ask DNS at all (the key is kept elsewhere). The steps
     /// before it go on; the work stops when the DNS step is the next one ([`next_with_dns`]).
     NotAskedHere,
+    /// The records were deleted where the key is kept, and that work's ledger line was
+    /// handed in and checked ([`dns_ledger_check`]): done, and said as done elsewhere.
+    RemovedElsewhere,
 }
 
 impl DnsProbe {
@@ -455,6 +660,7 @@ impl DnsProbe {
             DnsProbe::Skipped | DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done,
             DnsProbe::NotDone | DnsProbe::NotAskedHere => Probe::NotDone,
             DnsProbe::Unknown => Probe::Unknown,
+            DnsProbe::RemovedElsewhere => Probe::Done,
         }
     }
 
@@ -467,6 +673,7 @@ impl DnsProbe {
             DnsProbe::NotDone => "not_done",
             DnsProbe::Unknown => "unknown",
             DnsProbe::NotAskedHere => "not_asked_here",
+            DnsProbe::RemovedElsewhere => "removed_elsewhere",
         }
     }
 }
@@ -510,6 +717,81 @@ pub fn next_with_dns(probes: &[Probe], licenses_left_at_vendor: bool, dns: DnsPr
         Next::Run(_) | Next::Finished => DNS_NOT_ASKED_HERE,
         other => other,
     }
+}
+
+/// The first word of a DNS ledger line.
+pub const DNS_LEDGER_WORD: &str = "ez2-dns-removed";
+/// The longest ledger line taken.
+pub const DNS_LEDGER_MAX: usize = 512;
+/// The line is not a ledger line of the form [`dns_ledger_check`] takes.
+pub const DNS_LEDGER_BAD_FORMAT: &str = "dns_ledger_bad_format";
+/// The line's marker is not this site's (`ez2:site:<code>`).
+pub const DNS_LEDGER_WRONG_SITE: &str = "dns_ledger_wrong_site";
+/// The line's names are not exactly the site's addresses.
+pub const DNS_LEDGER_NAMES_DIFFER: &str = "dns_ledger_names_differ";
+
+/// Whether `line`, the ledger line of a DNS removal done where the DNS key is kept, says
+/// that the records of site `code`, whose addresses are `names`, were deleted. The line is
+/// exactly
+///
+/// `ez2-dns-removed marker=ez2:site:<code> names=<name>,<name>… at=<YYYYMMDDTHHMMSSZ> ref=<evidence>`
+///
+/// one space between the parts, in that order, nothing else; printable ASCII only, at most
+/// [`DNS_LEDGER_MAX`] bytes. The marker must be this site's own ([`dns_marker`]) and the
+/// names exactly the site's addresses (each once, in any order, case and a final dot
+/// aside). `ref` says where the removal's own output is kept. Anything else is refused with
+/// a fixed word; nothing is guessed.
+pub fn dns_ledger_check(line: &str, code: &str, names: &[&str]) -> Result<(), &'static str> {
+    if line.is_empty()
+        || line.len() > DNS_LEDGER_MAX
+        || !line.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+    {
+        return Err(DNS_LEDGER_BAD_FORMAT);
+    }
+    let parts: alloc::vec::Vec<&str> = line.split(' ').collect();
+    let [word, marker, listed, at, evidence] = parts.as_slice() else {
+        return Err(DNS_LEDGER_BAD_FORMAT);
+    };
+    fn field<'a>(part: &'a str, key: &str) -> Option<&'a str> {
+        part.strip_prefix(key)?
+            .strip_prefix('=')
+            .filter(|v| !v.is_empty())
+    }
+    let (Some(marker), Some(listed), Some(at), Some(_)) = (
+        field(marker, "marker"),
+        field(listed, "names"),
+        field(at, "at"),
+        field(evidence, "ref"),
+    ) else {
+        return Err(DNS_LEDGER_BAD_FORMAT);
+    };
+    let stamp = at.as_bytes();
+    let stamp_ok = stamp.len() == 16
+        && stamp[8] == b'T'
+        && stamp[15] == b'Z'
+        && stamp
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 8 || i == 15 || b.is_ascii_digit());
+    if *word != DNS_LEDGER_WORD || !marker.starts_with(DNS_MARKER_PREFIX) || !stamp_ok {
+        return Err(DNS_LEDGER_BAD_FORMAT);
+    }
+    if code.is_empty() || marker != dns_marker(code) {
+        return Err(DNS_LEDGER_WRONG_SITE);
+    }
+    let listed: alloc::vec::Vec<&str> = listed.split(',').collect();
+    if listed.iter().any(|n| n.is_empty()) {
+        return Err(DNS_LEDGER_BAD_FORMAT);
+    }
+    let once = |n: &str, all: &[&str]| all.iter().filter(|m| same_name(n, m)).count() == 1;
+    let same = !names.is_empty()
+        && listed.len() == names.len()
+        && listed.iter().all(|n| once(n, names))
+        && names.iter().all(|n| once(n, listed.as_slice()));
+    if !same {
+        return Err(DNS_LEDGER_NAMES_DIFFER);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -986,13 +1268,14 @@ mod tests {
             DnsProbe::Unknown,
             DnsProbe::DoneForeignLeft,
             DnsProbe::NotAskedHere,
+            DnsProbe::RemovedElsewhere,
         ]
         .iter()
         .map(|d| d.as_str())
         .collect();
         words.sort_unstable();
         words.dedup();
-        assert_eq!(words.len(), 6);
+        assert_eq!(words.len(), 7);
     }
 
     #[test]
@@ -1173,5 +1456,225 @@ mod tests {
         let mut p = probes(0);
         p[0] = Probe::Unknown;
         assert!(done_early(&p, next(&p, false)).is_empty());
+    }
+
+    // ------------------------------------------------------------------ licences, by vendor
+
+    fn every(answer: VendorAnswer) -> Vec<(&'static str, VendorAnswer)> {
+        PAID_PLUGINS.iter().map(|p| (p.name, answer)).collect()
+    }
+
+    fn with(mut a: Vec<(&'static str, VendorAnswer)>, plugin: &str, answer: VendorAnswer) -> Vec<(&'static str, VendorAnswer)> {
+        for x in &mut a {
+            if x.0 == plugin {
+                x.1 = answer;
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn the_vendor_table_says_which_plugins_are_given_back_and_guesses_no_other() {
+        let mut names: Vec<&str> = PAID_PLUGINS.iter().map(|p| p.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), PAID_PLUGINS.len());
+        assert_eq!(give_back_of("seopress"), Some(GiveBack::InSite));
+        assert_eq!(give_back_of("fluentformpro"), Some(GiveBack::InSite));
+        for p in ["flyingpress", "stackable", "blocksy"] {
+            assert_eq!(give_back_of(p), Some(GiveBack::RecordOnly), "{p}");
+        }
+        assert_eq!(give_back_of("someother"), None);
+        assert_eq!(seat_of("someother", VendorAnswer::Active), (Seat::Unknown, None));
+        assert_eq!(seat_of("someother", VendorAnswer::NotActive), (Seat::Unknown, None));
+    }
+
+    #[test]
+    fn an_activation_given_back_in_the_site_is_held_until_the_vendor_says_otherwise() {
+        let none = every(VendorAnswer::NotActive);
+        let look = licences_look(true, Some(&none));
+        assert_eq!(look.probe, Probe::Done);
+        assert!(look.left.is_empty() && look.to_give_back.is_empty());
+        // SEOPress held: given back here
+        let held = with(none.clone(), "seopress", VendorAnswer::Active);
+        let look = licences_look(true, Some(&held));
+        assert_eq!(look.probe, Probe::NotDone);
+        assert_eq!(look.to_give_back, ["seopress"]);
+        // the vendor of a plugin given back here did not answer: could not tell
+        let unknown = with(none.clone(), "fluentformpro", VendorAnswer::Unknown);
+        assert_eq!(licences_look(true, Some(&unknown)).probe, Probe::Unknown);
+        // only recorded: an activation, or a site that did not say, is left and does not hold up
+        let rec = with(
+            with(none.clone(), "flyingpress", VendorAnswer::Active),
+            "blocksy",
+            VendorAnswer::Unknown,
+        );
+        let look = licences_look(true, Some(&rec));
+        assert_eq!(look.probe, Probe::Done);
+        assert_eq!(look.left, ["flyingpress:activation", "blocksy:not_asked"]);
+        assert!(look.to_give_back.is_empty());
+        // a key that is not the template's, an expired key, no data: left, said why
+        let odd = with(
+            with(
+                with(none, "seopress", VendorAnswer::KeyNotTemplate),
+                "fluentformpro",
+                VendorAnswer::NoData,
+            ),
+            "stackable",
+            VendorAnswer::NotValid,
+        );
+        let look = licences_look(true, Some(&odd));
+        assert_eq!(look.probe, Probe::Done);
+        assert_eq!(
+            look.left,
+            [
+                "seopress:key_not_template",
+                "fluentformpro:no_data_in_site",
+                "stackable:key_not_valid"
+            ]
+        );
+        // a plugin only recorded with nothing in the site: nothing left
+        assert_eq!(seat_of("flyingpress", VendorAnswer::NoData), (Seat::NotHeld, None));
+    }
+
+    #[test]
+    fn a_site_that_cannot_be_read_is_recorded_and_does_not_hold_the_removal_up() {
+        let look = licences_look(true, None);
+        assert_eq!(look.probe, Probe::Done);
+        assert_eq!(look.left.len(), PAID_PLUGINS.len());
+        assert!(look.left.iter().all(|l| l.ends_with(":site_unreadable")), "{:?}", look.left);
+        assert!(look.to_give_back.is_empty());
+        // a blank site has no paid plugins at all
+        let look = licences_look(false, None);
+        assert_eq!(look.probe, Probe::Done);
+        assert!(look.left.is_empty());
+    }
+
+    #[test]
+    fn an_answer_that_does_not_cover_every_paid_plugin_once_is_could_not_tell() {
+        let all = every(VendorAnswer::NotActive);
+        assert_eq!(licences_look(true, Some(&all[1..])).probe, Probe::Unknown);
+        let mut extra = all.clone();
+        extra.push(("someother", VendorAnswer::NotActive));
+        assert_eq!(licences_look(true, Some(&extra)).probe, Probe::Unknown);
+        let mut twice = all.clone();
+        twice[1] = twice[0];
+        assert_eq!(licences_look(true, Some(&twice)).probe, Probe::Unknown);
+        assert_eq!(licences_look(true, Some(&[])).probe, Probe::Unknown);
+    }
+
+    #[test]
+    fn given_back_only_when_the_call_succeeded_and_the_vendor_now_says_not_activated() {
+        assert_eq!(give_back_after(true, VendorAnswer::NotActive), Ok(()));
+        assert_eq!(
+            give_back_after(false, VendorAnswer::NotActive),
+            Err(LICENCE_DEACTIVATE_FAILED)
+        );
+        assert_eq!(
+            give_back_after(true, VendorAnswer::Active),
+            Err(LICENCE_STILL_ACTIVE)
+        );
+        for now in [
+            VendorAnswer::Unknown,
+            VendorAnswer::NoData,
+            VendorAnswer::NotValid,
+            VendorAnswer::KeyNotTemplate,
+        ] {
+            assert_eq!(give_back_after(true, now), Err(LICENCE_NOT_CONFIRMED), "{now:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_to_give_back_at_the_start_does_not_stop_the_work() {
+        let at = STEPS
+            .iter()
+            .position(|s| *s == RemoveStep::Licenses)
+            .unwrap();
+        let mut p = probes(0);
+        p[at] = Probe::Done;
+        let n = next(&p, false);
+        assert_eq!(n, Next::Run(RemoveStep::Unserve));
+        assert!(may_call_off_now(n));
+        assert_eq!(done_early(&p, n), [RemoveStep::Licenses]);
+    }
+
+    // ------------------------------------------------------------------ DNS done elsewhere
+
+    const LEDGER: &str = "ez2-dns-removed marker=ez2:site:site9 names=www.example.com,shop.example.com at=20261111T150000Z ref=dns-rm-site9-20261111T150000Z.log";
+
+    #[test]
+    fn a_dns_ledger_line_is_taken_only_for_this_site_and_its_own_names() {
+        let names = ["www.example.com", "shop.example.com"];
+        assert_eq!(dns_ledger_check(LEDGER, "site9", &names), Ok(()));
+        // names in another order, upper case, a final dot: the same names
+        let other_order = LEDGER.replace(
+            "www.example.com,shop.example.com",
+            "SHOP.example.com.,www.example.com",
+        );
+        assert_eq!(dns_ledger_check(&other_order, "site9", &names), Ok(()));
+        // another site's marker, or a site whose code merely starts the same
+        assert_eq!(
+            dns_ledger_check(LEDGER, "site90", &names),
+            Err(DNS_LEDGER_WRONG_SITE)
+        );
+        let site90 = LEDGER.replace("ez2:site:site9 ", "ez2:site:site90 ");
+        assert_eq!(
+            dns_ledger_check(&site90, "site9", &names),
+            Err(DNS_LEDGER_WRONG_SITE)
+        );
+        assert_eq!(dns_ledger_check(LEDGER, "", &names), Err(DNS_LEDGER_WRONG_SITE));
+        // one name short, one name more, one name twice
+        assert_eq!(
+            dns_ledger_check(LEDGER, "site9", &names[..1]),
+            Err(DNS_LEDGER_NAMES_DIFFER)
+        );
+        let short = LEDGER.replace(",shop.example.com", "");
+        assert_eq!(
+            dns_ledger_check(&short, "site9", &names),
+            Err(DNS_LEDGER_NAMES_DIFFER)
+        );
+        let twice = LEDGER.replace("shop.example.com", "www.example.com");
+        assert_eq!(
+            dns_ledger_check(&twice, "site9", &names),
+            Err(DNS_LEDGER_NAMES_DIFFER)
+        );
+        assert_eq!(
+            dns_ledger_check(LEDGER, "site9", &[]),
+            Err(DNS_LEDGER_NAMES_DIFFER)
+        );
+        // not the form: every one refused with the same word
+        for bad in [
+            alloc::string::String::new(),
+            LEDGER.replace("ez2-dns-removed", "ez2-dns-added"),
+            LEDGER.replace("marker=ez2:site:", "marker=ez3:site:"),
+            LEDGER.replace(" at=", "  at="),
+            LEDGER.replace("at=20261111T150000Z", "at=2026-11-11"),
+            LEDGER.replace("at=20261111T150000Z", "at=20261111X150000Z"),
+            LEDGER.replace(" ref=dns-rm-site9-20261111T150000Z.log", ""),
+            LEDGER.replace("ref=dns-rm-site9-20261111T150000Z.log", "ref="),
+            alloc::format!("{LEDGER} extra=1"),
+            alloc::format!("{LEDGER}\n"),
+            LEDGER.replace("names=", "hosts="),
+            LEDGER.replace(",shop.example.com", ","),
+            LEDGER.replace("ref=dns", "ref=\u{7f}dns"),
+            alloc::format!("{LEDGER}{}", "x".repeat(DNS_LEDGER_MAX)),
+        ] {
+            assert_eq!(
+                dns_ledger_check(&bad, "site9", &names),
+                Err(DNS_LEDGER_BAD_FORMAT),
+                "{bad:?}"
+            );
+        }
+        // the DNS step done elsewhere is done, said as its own word
+        assert_eq!(DnsProbe::RemovedElsewhere.probe(), Probe::Done);
+        assert_eq!(DnsProbe::RemovedElsewhere.as_str(), "removed_elsewhere");
+        let mut p = probes(STEPS.len());
+        let dns = STEPS.iter().position(|s| *s == RemoveStep::Dns).unwrap();
+        p[dns] = DnsProbe::RemovedElsewhere.probe();
+        p[dns + 1] = Probe::NotDone;
+        assert_eq!(
+            next_with_dns(&p, false, DnsProbe::RemovedElsewhere),
+            Next::Run(RemoveStep::Record)
+        );
     }
 }

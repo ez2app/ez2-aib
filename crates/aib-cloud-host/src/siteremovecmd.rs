@@ -13,16 +13,24 @@
 //! it did at the start. It is written to agree with the reviewed hand-run program
 //! `tools/generic/site-remove.sh` of the ez2-cloud-site-manual skill.
 //!
-//! What it does not look at yet is said in the plan, not guessed: whether the site's paid
-//! plugins are still activated at their vendors is answered inside the site, and that is
-//! not wired here. The licence step is therefore "could not tell" unless the person
-//! passes `--licences-left-at-vendor`, which is written into the plan.
+//! The licence step asks each paid plugin of the fixed table
+//! [`aib_cloud::siteremove::PAID_PLUGINS`] from inside the site ([`crate::siteremovelic`]).
+//! The activations a program can give back (SEOPress, Fluent Forms Pro) are given back in
+//! the site and the vendor is asked again: anything but "not activated" stops with a fixed
+//! word. The others (FlyingPress, the two Freemius plugins), and every plugin of a site
+//! that cannot be read (container gone or stopped, site software not answering:
+//! `site_unreadable`), are written into the removed record's `left_at_vendor` and do not
+//! hold the removal up (Andy 11-11). `--licences-left-at-vendor` still passes the step
+//! over on the person's word; the plain flow no longer needs it.
 //!
-//! The DNS step is not probed on this host either: the key that manages DNS zones is not
-//! kept here. The step is "not asked here": the steps before it are planned as usual and
-//! the plan stops only when the DNS step would be next, saying why. It is never asked
-//! from here; the part that deletes records runs where that key is, over every address
-//! of the site's record (listed in the plan).
+//! The DNS step is not probed on this host: the key that manages DNS zones is not kept
+//! here. The step is "not asked here": the steps before it are planned as usual and the
+//! plan stops only when the DNS step would be next, saying why. It is never asked from
+//! here; the part that deletes records runs where that key is, over every address of the
+//! site's record (listed in the plan). When that part has run, its ledger line is handed
+//! in with `--dns-removed-elsewhere <line>`: checked against this site's marker and names
+//! ([`siteremove::dns_ledger_check`]), written into the plan and the removed record, and
+//! the DNS step is then done (`removed_elsewhere`).
 //!
 //! The archive of a site is looked for under [`ARCHIVES`]. That directory is outside the
 //! one the daily backup rotates, and the archive tool must be able to enter it as the
@@ -44,7 +52,7 @@ use std::time::{Duration, SystemTime};
 
 use aib_cloud::site::{customer_ssh_port, SiteSpec};
 use aib_cloud::sitecreate::Probe;
-use aib_cloud::siteremove::{self, DnsProbe, Next, RemoveStep, STEPS};
+use aib_cloud::siteremove::{self, DnsProbe, Next, RemoveStep, VendorAnswer, STEPS};
 use serde_json::{json, Value};
 
 use crate::opstore;
@@ -80,6 +88,8 @@ pub struct Seen {
     pub export_list: Option<String>,
     /// Whether the record is still in the records directory.
     pub record_in_place: Option<bool>,
+    /// What the site answered for each paid plugin; `None`: the site could not be read.
+    pub licences: Option<Vec<(&'static str, VendorAnswer)>>,
 }
 
 fn known(answer: Option<bool>, done_when: bool) -> Probe {
@@ -92,12 +102,7 @@ fn known(answer: Option<bool>, done_when: bool) -> Probe {
 
 /// One probe per step, in [`STEPS`] order. Separate from [`cmd`] so it can be tested
 /// without a host.
-pub fn probes(
-    spec: &SiteSpec,
-    seen: &Seen,
-    licences_wired: Option<Probe>,
-    dns: DnsProbe,
-) -> [Probe; 10] {
+pub fn probes(spec: &SiteSpec, seen: &Seen, dns: DnsProbe) -> [Probe; 10] {
     let listed = siteremove::container_listed(seen.container_list.as_deref(), spec.ct);
     let access = match customer_ssh_port(spec.ct) {
         Some(port) => siteremove::access_probe(
@@ -121,7 +126,7 @@ pub fn probes(
     [
         siteremove::unserve_probe(seen.entry_config.as_deref(), &spec.code, spec.primary()),
         seen.archive.unwrap_or(Probe::Unknown),
-        licences_wired.unwrap_or(Probe::Unknown),
+        siteremove::licences_look(spec.wp, seen.licences.as_deref()).probe,
         access,
         stopped,
         destroyed,
@@ -176,8 +181,41 @@ pub fn plan_doc(
         "dns_names": spec.hosts,
         "archives": ARCHIVES,
         "on_failure": "stop where it failed; every step is safe to do again; after the licence step the only way is forward",
-        "not_looked_at": ["licences at the vendors (answered inside the site; not wired to this command yet)", "DNS records of the site's addresses (the key is not on this host)", "the id ranges given to the container"],
+        "not_looked_at": ["DNS records of the site's addresses (the key is not on this host; a removal done there is handed in with --dns-removed-elsewhere)", "the id ranges given to the container"],
     })
+}
+
+/// The DNS step on this host: "not asked here", or done elsewhere when a ledger line is
+/// handed in and it is this site's ([`siteremove::dns_ledger_check`]: the marker
+/// `ez2:site:<code>` and exactly the site's names). A line that is not is refused with
+/// its fixed word.
+pub fn dns_here(spec: &SiteSpec, ledger: Option<&str>) -> Result<DnsProbe, String> {
+    let Some(line) = ledger else {
+        return Ok(DnsProbe::NotAskedHere);
+    };
+    let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
+    siteremove::dns_ledger_check(line, &spec.code, &names)
+        .map(|()| DnsProbe::RemovedElsewhere)
+        .map_err(|code| format!("{code}: the DNS ledger line is not this site's removal"))
+}
+
+/// The whole plan from what was seen: the steps, what the licence step found (left at the
+/// vendors, to give back now) and the DNS ledger line handed in. `--plan` prints it sealed
+/// and `--apply` makes it again under the lock.
+pub fn plan_from(
+    spec: &SiteSpec,
+    seen: &Seen,
+    left: bool,
+    ledger: Option<&str>,
+) -> Result<Value, String> {
+    let dns = dns_here(spec, ledger)?;
+    let p = probes(spec, seen, dns);
+    let mut doc = plan_doc(spec, &p, left, dns);
+    let look = siteremove::licences_look(spec.wp, seen.licences.as_deref());
+    doc["licences_left"] = json!(look.left);
+    doc["licences_to_give_back"] = json!(look.to_give_back);
+    doc["dns_ledger"] = json!(ledger);
+    Ok(doc)
 }
 
 fn capture(program: &str, args: &[&str], seconds: u64) -> Option<String> {
@@ -293,6 +331,17 @@ fn see(spec: &SiteSpec, records: &str) -> Seen {
         listed != Some(false),
         SystemTime::now(),
     );
+    // only a running container's site is asked; any other is unreadable
+    let licences = if spec.wp && running == Some(true) {
+        let template = template_key();
+        crate::siteremovelic::ask_all(
+            &mut crate::sitecreatecmd::HostRunner,
+            spec,
+            template.as_deref(),
+        )
+    } else {
+        None
+    };
     Seen {
         entry_config: crate::probe::edge_caddyfile().ok(),
         container_list,
@@ -305,19 +354,29 @@ fn see(spec: &SiteSpec, records: &str) -> Seen {
         firewall_file: exists(&format!("/etc/pve/firewall/{ct}.fw")),
         export_list: read_text(EXPORT_LIST),
         record_in_place: exists(&format!("{records}/{}.json", spec.code)),
+        licences,
     }
+}
+
+/// The template's SEOPress key from the host's key file, kept in memory only.
+fn template_key() -> Option<String> {
+    let text = fs::read_to_string(crate::sitelive::KEYS).ok()?;
+    crate::sitelive::env_value(&text, crate::sitelive::SEOPRESS_KEY)
 }
 
 /// The record of a removed site: the site's record as it was, with the time of the
 /// removal, the archive's name (or none), the plugins whose activations are left at their
-/// vendors because no program can give them back, and what the DNS step found. The
+/// vendors because no program gave them back (`<plugin>:<why>`), those given back by this
+/// removal, what the DNS step found and the DNS ledger line handed in (or none). The
 /// record step of `--apply` writes this.
 pub fn removed_record(
     record: &Value,
     removed_at: &str,
     archive: Option<&str>,
     left_at_vendor: &[&str],
+    given_back: &[&str],
     dns: DnsProbe,
+    dns_ledger: Option<&str>,
 ) -> Result<Value, String> {
     let mut out = record.clone();
     let obj = out
@@ -326,7 +385,9 @@ pub fn removed_record(
     obj.insert("removed".to_owned(), json!(removed_at));
     obj.insert("archive".to_owned(), json!(archive));
     obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));
+    obj.insert("licences_given_back".to_owned(), json!(given_back));
     obj.insert("dns".to_owned(), json!(dns.as_str()));
+    obj.insert("dns_ledger".to_owned(), json!(dns_ledger));
     Ok(out)
 }
 
@@ -386,6 +447,9 @@ pub trait RemoveHost {
         rules: &[Vec<String>],
         network_file: Option<&str>,
     ) -> Result<(), String>;
+    /// One activation given back from inside the site: whether the call went through,
+    /// and the vendor's answer asked right after it.
+    fn give_back(&mut self, plugin: &'static str) -> (bool, VendorAnswer);
     fn stop(&mut self) -> Result<(), String>;
     fn destroy(&mut self) -> Result<(), String>;
     /// The host's backup schedules as text ([`schedule_text`] of [`BACKUP_SCHEDULES`]):
@@ -536,6 +600,8 @@ pub struct Given {
     pub op: String,
     pub sha: String,
     pub left: bool,
+    /// The DNS ledger line the plan carries, when the DNS step was done elsewhere.
+    pub dns_ledger: Option<String>,
     /// The plan as given, whole: every field must be what this host makes again.
     pub plan: Value,
 }
@@ -563,6 +629,11 @@ pub fn given(plan: &Value, code: &str, address: &str) -> Result<Given, String> {
             .get("licences_left_at_vendor")
             .and_then(Value::as_bool)
             .ok_or("the plan has no licences_left_at_vendor")?,
+        dns_ledger: match plan.get("dns_ledger") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(line)) => Some(line.clone()),
+            Some(_) => return Err("the plan's dns_ledger is not one line of text".to_owned()),
+        },
         plan: plan.clone(),
     })
 }
@@ -576,8 +647,7 @@ pub fn recheck(
     seen: &Seen,
     fingerprint: &str,
 ) -> Result<Value, String> {
-    let p = probes(spec, seen, None, DnsProbe::NotAskedHere);
-    let mut doc = plan_doc(spec, &p, g.left, DnsProbe::NotAskedHere);
+    let mut doc = plan_from(spec, seen, g.left, g.dns_ledger.as_deref())?;
     crate::quarantinecmd::seal_with_op(&mut doc, &g.op, fingerprint, env!("CARGO_PKG_VERSION"))?;
     if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {
         return Err(
@@ -594,14 +664,49 @@ pub fn recheck(
     Ok(opstore::unsealed(&doc))
 }
 
+/// What the work carries from one step to the next.
+#[derive(Default)]
+struct Carried {
+    archive_name: Option<String>,
+    /// What is left at the vendors (`<plugin>:<why>`), as last looked at while the site
+    /// could be read; as unreadable only when it never could be in this run.
+    licences_left: Option<Vec<String>>,
+    /// The activations given back by this run.
+    given_back: Vec<&'static str>,
+}
+
+impl Carried {
+    /// What the removed record lists as left at the vendors: on the person's word, that
+    /// word; otherwise what was looked at, without what this run gave back (a plugin
+    /// given back may no longer keep what identifies it, and then reads as left).
+    fn left_list(&self, left: bool) -> Vec<String> {
+        if left {
+            return vec![LEFT_ON_WORD.to_owned()];
+        }
+        self.licences_left
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| {
+                !self
+                    .given_back
+                    .iter()
+                    .any(|g| l.split(':').next() == Some(*g))
+            })
+            .collect()
+    }
+}
+
 /// Do one step on the host from what was just seen.
+#[allow(clippy::too_many_arguments)]
 fn do_step(
     host: &mut impl RemoveHost,
     spec: &SiteSpec,
     step: RemoveStep,
     seen: &Seen,
     left: bool,
-    archive_name: Option<&str>,
+    (dns, dns_ledger): (DnsProbe, Option<&str>),
+    carried: &mut Carried,
     removed_at: &str,
 ) -> Result<(), String> {
     match step {
@@ -650,24 +755,36 @@ fn do_step(
                 .ok_or("the export list could not be read")?,
             &spec.code,
         )),
+        // only what can be given back in the site is; the vendor's answer after the call
+        // must be "not activated", or the work stops with the fixed word
+        RemoveStep::Licenses => {
+            let look = siteremove::licences_look(spec.wp, seen.licences.as_deref());
+            for plugin in look.to_give_back {
+                let (call_ok, now) = host.give_back(plugin);
+                siteremove::give_back_after(call_ok, now)
+                    .map_err(|code| format!("{code}: {plugin}"))?;
+                carried.given_back.push(plugin);
+            }
+            Ok(())
+        }
         RemoveStep::Record => {
             let record = host.read_record()?;
-            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };
+            let left_list = carried.left_list(left);
+            let left_refs: Vec<&str> = left_list.iter().map(String::as_str).collect();
             let removed = removed_record(
                 &record,
                 removed_at,
-                archive_name,
-                left_list,
-                DnsProbe::NotAskedHere,
+                carried.archive_name.as_deref(),
+                &left_refs,
+                &carried.given_back,
+                dns,
+                dns_ledger,
             )?;
             host.move_record(&removed)
         }
-        // the licences are answered inside the site and the DNS key is not on this host:
-        // the plan passes the first over only on the person's word and stops before the
-        // second, so neither is ever run from here
-        RemoveStep::Licenses | RemoveStep::Dns => {
-            Err(format!("{} is not done from this host", step.as_str()))
-        }
+        // the DNS key is not on this host: the plan stops before the DNS step, or it was
+        // done elsewhere and handed in, so it is never run from here
+        RemoveStep::Dns => Err(format!("{} is not done from this host", step.as_str())),
     }
 }
 
@@ -859,19 +976,25 @@ pub fn carry_out(
     host: &mut impl RemoveHost,
     spec: &SiteSpec,
     left: bool,
+    dns_ledger: Option<&str>,
     base: &[(String, Option<u16>)],
     removed_at: &str,
 ) -> Result<Value, String> {
+    let dns = dns_here(spec, dns_ledger)?;
     let mut applied: Vec<RemoveStep> = Vec::new();
-    let mut archive_name: Option<String> = None;
+    let mut carried = Carried::default();
     let words = |a: &[RemoveStep]| a.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     for _ in 0..=STEPS.len() {
         let seen = host.see();
         if seen.archive_name.is_some() {
-            archive_name.clone_from(&seen.archive_name);
+            carried.archive_name.clone_from(&seen.archive_name);
         }
-        let p = probes(spec, &seen, None, DnsProbe::NotAskedHere);
-        let next = next_here(&p, left, DnsProbe::NotAskedHere);
+        if seen.licences.is_some() || carried.licences_left.is_none() {
+            carried.licences_left =
+                Some(siteremove::licences_look(spec.wp, seen.licences.as_deref()).left);
+        }
+        let p = probes(spec, &seen, dns);
+        let next = next_here(&p, left, dns);
         let (state, why) = match next {
             Next::Run(step) => {
                 if applied.contains(&step) {
@@ -887,7 +1010,8 @@ pub fn carry_out(
                     step,
                     &seen,
                     left,
-                    archive_name.as_deref(),
+                    (dns, dns_ledger),
+                    &mut carried,
                     removed_at,
                 )
                 .map_err(|e| {
@@ -929,7 +1053,11 @@ pub fn carry_out(
             "applied": words(&applied),
             "state": state,
             "stop": why,
-            "archive": archive_name,
+            "archive": carried.archive_name,
+            "licences_given_back": carried.given_back,
+            "licences_left": carried.left_list(left),
+            "dns": dns.as_str(),
+            "dns_ledger": dns_ledger,
             "dns_names": spec.hosts,
             "dns_note": if why.is_some() { Value::from(DNS_NOT_HERE) } else { Value::Null },
             "removed_from_host": removed,
@@ -972,7 +1100,7 @@ pub fn apply(
         },
         |_op, base: Vec<(String, Option<u16>)>| {
             let mut h = host.borrow_mut();
-            carry_out(&mut **h, spec, g.left, &base, removed_at)
+            carry_out(&mut **h, spec, g.left, g.dns_ledger.as_deref(), &base, removed_at)
         },
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
@@ -1145,6 +1273,16 @@ impl RemoveHost for HostRemover {
         Ok(())
     }
 
+    fn give_back(&mut self, plugin: &'static str) -> (bool, VendorAnswer) {
+        let template = template_key();
+        crate::siteremovelic::give_back(
+            &mut crate::sitecreatecmd::HostRunner,
+            &self.spec,
+            plugin,
+            template.as_deref(),
+        )
+    }
+
     fn stop(&mut self) -> Result<(), String> {
         run("pct", &["stop", &self.spec.ct.to_string()], 180).map(|_| ())
     }
@@ -1283,12 +1421,20 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut plan_only = false;
     let mut apply_file: Option<String> = None;
     let mut left = false;
+    let mut dns_ledger: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--plan" => plan_only = true,
             "--apply" => apply_file = Some(it.next().ok_or("--apply needs a plan file")?.clone()),
             "--licences-left-at-vendor" => left = true,
+            "--dns-removed-elsewhere" => {
+                dns_ledger = Some(
+                    it.next()
+                        .ok_or("--dns-removed-elsewhere needs the DNS removal's ledger line")?
+                        .clone(),
+                );
+            }
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             "--address" => {
                 address = Some(
@@ -1311,9 +1457,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     }
     let address = address.ok_or("removing a site needs --address <its main address>")?;
     if let Some(file) = apply_file {
-        if left {
+        if left || dns_ledger.is_some() {
             return Err(
-                "--licences-left-at-vendor belongs to --plan: the plan given to --apply says it"
+                "--licences-left-at-vendor and --dns-removed-elsewhere belong to --plan: the plan given to --apply says them"
                     .to_owned(),
             );
         }
@@ -1322,6 +1468,13 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     if exists(&format!("{records}/{code}.json")) == Some(false)
         && exists(&format!("{REMOVED_RECORDS}/{code}.json")) == Some(true)
     {
+        if dns_ledger.is_some() {
+            // the record already says the DNS step was not asked here; it is not rewritten
+            return Err(
+                "dns_ledger_site_already_removed: the record of this site was already moved aside"
+                    .to_owned(),
+            );
+        }
         // the record was moved aside: said as found, nothing probed but what step 10 removes
         let spec = crate::quarantinecmd::load_spec(&code, REMOVED_RECORDS);
         let doc = removed_doc(&code, &address, spec, |s| {
@@ -1342,9 +1495,10 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "the site code and the main address given are not those of one site".to_owned(),
         );
     }
+    // a ledger line that is not this site's is refused before anything is read
+    dns_here(&spec, dns_ledger.as_deref())?;
     let seen = see(&spec, &records);
-    let p = probes(&spec, &seen, None, DnsProbe::NotAskedHere);
-    let mut doc = plan_doc(&spec, &p, left, DnsProbe::NotAskedHere);
+    let mut doc = plan_from(&spec, &seen, left, dns_ledger.as_deref())?;
     let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
     let fingerprint = opstore::host_fingerprint(Path::new(opstore::MACHINE_ID))?;
     crate::quarantinecmd::seal_with_op(&mut doc, &op, &fingerprint, env!("CARGO_PKG_VERSION"))?;
@@ -1377,6 +1531,31 @@ mod tests {
     const RULES_WITH: &str = "-P PREROUTING ACCEPT\n-A PREROUTING -i eth9 -p tcp -m tcp --dport 2119 -j DNAT --to-destination 10.77.0.19:22\n";
     const RULES_WITHOUT: &str = "-P PREROUTING ACCEPT\n";
 
+    /// What an untouched site answers for its paid plugins: SEOPress held (given back in
+    /// the site), Fluent Forms Pro not, FlyingPress and Stackable activated (recorded
+    /// only), Blocksy not there.
+    fn answers() -> Vec<(&'static str, VendorAnswer)> {
+        vec![
+            ("seopress", VendorAnswer::Active),
+            ("fluentformpro", VendorAnswer::NotActive),
+            ("flyingpress", VendorAnswer::Active),
+            ("stackable", VendorAnswer::Active),
+            ("blocksy", VendorAnswer::NoData),
+        ]
+    }
+
+    fn answer(mut a: Vec<(&'static str, VendorAnswer)>, plugin: &str, now: VendorAnswer) -> Vec<(&'static str, VendorAnswer)> {
+        for x in &mut a {
+            if x.0 == plugin {
+                x.1 = now;
+            }
+        }
+        a
+    }
+
+    /// A DNS ledger line of this site (site9, www.example.com).
+    const LEDGER: &str = "ez2-dns-removed marker=ez2:site:site9 names=www.example.com at=20261111T150000Z ref=dns-rm-site9.log";
+
     fn untouched() -> Seen {
         Seen {
             entry_config: Some("# site:site9\nwww.example.com {\n}\n".to_owned()),
@@ -1390,6 +1569,7 @@ mod tests {
             firewall_file: Some(true),
             export_list: Some("site9 119 /var/www/site9\n".to_owned()),
             record_in_place: Some(true),
+            licences: Some(answers()),
         }
     }
 
@@ -1406,17 +1586,13 @@ mod tests {
             firewall_file: Some(false),
             export_list: Some("other 101 /var/www/other\n".to_owned()),
             record_in_place: Some(false),
+            licences: None,
         }
     }
 
     #[test]
     fn an_untouched_site_has_nothing_done_and_starts_at_the_entry() {
-        let p = probes(
-            &spec(),
-            &untouched(),
-            Some(Probe::NotDone),
-            DnsProbe::NotDone,
-        );
+        let p = probes(&spec(), &untouched(), DnsProbe::NotDone);
         assert!(p.iter().all(|x| *x == Probe::NotDone), "{p:?}");
         let doc = plan_doc(&spec(), &p, false, DnsProbe::NotDone);
         assert_eq!(doc["next"], "run");
@@ -1430,7 +1606,7 @@ mod tests {
         // the entry could not be read while the container is already gone
         let mut seen = gone();
         seen.entry_config = None;
-        let p = probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done);
+        let p = probes(&spec(), &seen, DnsProbe::Done);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::Done);
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "unserve");
@@ -1438,7 +1614,7 @@ mod tests {
         // steps out of order: nothing is archived and the firewall file is already gone
         let mut seen = untouched();
         seen.firewall_file = Some(false);
-        let p = probes(&spec(), &seen, Some(Probe::NotDone), DnsProbe::NotDone);
+        let p = probes(&spec(), &seen, DnsProbe::NotDone);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::NotDone);
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["stop"], "steps_out_of_order");
@@ -1449,7 +1625,7 @@ mod tests {
     fn a_site_whose_port_was_never_forwarded_starts_at_the_entry() {
         let mut seen = untouched();
         seen.live_rules = gone().live_rules;
-        let p = probes(&spec(), &seen, Some(Probe::NotDone), DnsProbe::NotDone);
+        let p = probes(&spec(), &seen, DnsProbe::NotDone);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::NotDone);
         assert_eq!(doc["next"], "run");
         assert_eq!(doc["next_step"], "unserve");
@@ -1458,7 +1634,7 @@ mod tests {
 
     #[test]
     fn a_removed_site_has_everything_done() {
-        let p = probes(&spec(), &gone(), Some(Probe::Done), DnsProbe::Done);
+        let p = probes(&spec(), &gone(), DnsProbe::Done);
         assert!(p.iter().all(|x| *x == Probe::Done), "{p:?}");
         assert_eq!(
             plan_doc(&spec(), &p, false, DnsProbe::Done)["next"],
@@ -1467,23 +1643,42 @@ mod tests {
     }
 
     #[test]
-    fn the_licences_are_not_guessed() {
-        // not wired: unknown, and the plan stops there once the archive is done
+    fn the_licences_are_asked_in_the_site_and_not_guessed() {
         let mut seen = untouched();
         seen.entry_config = gone().entry_config;
         seen.archive = Some(Probe::Done);
         // (the DNS step as the command passes it: not asked here)
-        let p = probes(&spec(), &seen, None, DnsProbe::NotAskedHere);
+        let p = probes(&spec(), &seen, DnsProbe::NotAskedHere);
+        let doc = plan_doc(&spec(), &p, false, DnsProbe::NotAskedHere);
+        // SEOPress is held: given back here, no word of the person needed
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["next_step"], "licenses");
+        let doc = plan_from(&spec(), &seen, false, None).unwrap();
+        assert_eq!(doc["licences_to_give_back"], json!(["seopress"]));
+        assert_eq!(
+            doc["licences_left"],
+            json!(["flyingpress:activation", "stackable:activation"])
+        );
+        // a vendor of a plugin given back here that could not be asked: stop there
+        seen.licences = Some(answer(answers(), "fluentformpro", VendorAnswer::Unknown));
+        let p = probes(&spec(), &seen, DnsProbe::NotAskedHere);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::NotAskedHere);
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "licenses");
         assert_eq!(doc["stop"], "probe_unknown");
-        // the person's explicit word passes it over, and the plan says so
+        // the person's explicit word still passes it over, and the plan says so
         let doc = plan_doc(&spec(), &p, true, DnsProbe::NotAskedHere);
         assert_eq!(doc["next"], "run");
         assert_eq!(doc["next_step"], "access");
         assert_eq!(doc["licences_left_at_vendor"], true);
         assert_eq!(doc["may_call_off"], false);
+        // a site that cannot be read is recorded, not held up
+        seen.licences = None;
+        let p = probes(&spec(), &seen, DnsProbe::NotAskedHere);
+        assert_eq!(p[2], Probe::Done);
+        let doc = plan_from(&spec(), &seen, false, None).unwrap();
+        assert_eq!(doc["next_step"], "access");
+        assert_eq!(doc["licences_left"].as_array().unwrap().len(), 5);
     }
 
     #[test]
@@ -1491,45 +1686,45 @@ mod tests {
         let at = |s: RemoveStep| STEPS.iter().position(|x| *x == s).unwrap();
         let mut seen = gone();
         seen.container_list = None;
-        let p = probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done);
+        let p = probes(&spec(), &seen, DnsProbe::Done);
         assert_eq!(p[at(RemoveStep::Stop)], Probe::Unknown);
         assert_eq!(p[at(RemoveStep::Destroy)], Probe::Unknown);
         let mut seen = gone();
         seen.disk = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Destroy)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Destroy)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.firewall_file = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Firewall)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Firewall)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.record_in_place = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Record)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Record)],
             Probe::Unknown
         );
         let mut seen = gone();
         seen.archive = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Archive)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Archive)],
             Probe::Unknown
         );
         // a listed container whose state was not answered
         let mut seen = untouched();
         seen.running = None;
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Stop)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Stop)],
             Probe::Unknown
         );
         // the container is gone and its disk is still there: not destroyed
         let mut seen = gone();
         seen.disk = Some(true);
         assert_eq!(
-            probes(&spec(), &seen, Some(Probe::Done), DnsProbe::Done)[at(RemoveStep::Destroy)],
+            probes(&spec(), &seen, DnsProbe::Done)[at(RemoveStep::Destroy)],
             Probe::NotDone
         );
     }
@@ -1609,7 +1804,7 @@ mod tests {
     fn the_dns_step_is_not_asked_on_this_host_and_the_plan_says_why() {
         let at = |s: RemoveStep| STEPS.iter().position(|x| *x == s).unwrap();
         // what the command itself passes: not asked here
-        let p = probes(&spec(), &gone(), Some(Probe::Done), DnsProbe::NotAskedHere);
+        let p = probes(&spec(), &gone(), DnsProbe::NotAskedHere);
         assert_eq!(p[at(RemoveStep::Dns)], Probe::NotDone);
         // everything else done, the record moved: the plan stops at DNS and says why
         let doc = plan_doc(&spec(), &p, false, DnsProbe::NotAskedHere);
@@ -1626,23 +1821,18 @@ mod tests {
         assert_eq!(doc["dns_note"], DNS_NOT_HERE);
         assert_eq!(doc["dns_names"], json!(["www.example.com"]));
         // a zone that is not ours is passed over and said
-        let p = probes(&spec(), &gone(), Some(Probe::Done), DnsProbe::Skipped);
+        let p = probes(&spec(), &gone(), DnsProbe::Skipped);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::Skipped);
         assert_eq!(doc["next"], "finished");
         assert_eq!(doc["dns"], "skipped_zone_not_ours");
         assert!(doc["dns_note"].is_null());
         // an untouched site in a zone that is not ours starts at the entry, as always
-        let p = probes(
-            &spec(),
-            &untouched(),
-            Some(Probe::NotDone),
-            DnsProbe::Skipped,
-        );
+        let p = probes(&spec(), &untouched(), DnsProbe::Skipped);
         let doc = plan_doc(&spec(), &p, false, DnsProbe::Skipped);
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], true);
         // a record of ours is left once everything before it is done
-        let p = probes(&spec(), &gone(), Some(Probe::Done), DnsProbe::NotDone);
+        let p = probes(&spec(), &gone(), DnsProbe::NotDone);
         let mut p2 = p;
         p2[at(RemoveStep::Record)] = Probe::NotDone;
         let doc = plan_doc(&spec(), &p2, false, DnsProbe::NotDone);
@@ -1653,7 +1843,7 @@ mod tests {
     #[test]
     fn what_the_command_passes_lets_an_untouched_site_start_at_the_entry() {
         // exactly what `cmd` passes: licences not wired, DNS not asked here
-        let p = probes(&spec(), &untouched(), None, DnsProbe::NotAskedHere);
+        let p = probes(&spec(), &untouched(), DnsProbe::NotAskedHere);
         let doc = plan_doc(&spec(), &p, true, DnsProbe::NotAskedHere);
         assert_eq!(doc["next"], "run");
         assert_eq!(doc["next_step"], "unserve");
@@ -1663,7 +1853,7 @@ mod tests {
         // a site whose port was never forwarded: still the entry, and the plan says what is early
         let mut seen = untouched();
         seen.live_rules = gone().live_rules;
-        let p = probes(&spec(), &seen, None, DnsProbe::NotAskedHere);
+        let p = probes(&spec(), &seen, DnsProbe::NotAskedHere);
         let doc = plan_doc(&spec(), &p, true, DnsProbe::NotAskedHere);
         assert_eq!(doc["next_step"], "unserve");
         assert_eq!(doc["may_call_off"], true);
@@ -1678,19 +1868,33 @@ mod tests {
             "20260101T000000Z",
             None,
             &["blocks", "theme"],
+            &["seopress"],
             DnsProbe::DoneForeignLeft,
+            None,
         )
         .unwrap();
+        assert_eq!(out["licences_given_back"], json!(["seopress"]));
+        assert!(out["dns_ledger"].is_null());
         assert_eq!(out["site"], "site9");
         assert_eq!(out["removed"], "20260101T000000Z");
         assert!(out["archive"].is_null());
         assert_eq!(out["left_at_vendor"], json!(["blocks", "theme"]));
         assert_eq!(out["dns"], "done_records_without_our_marker_left");
-        let out = removed_record(&rec, "t", Some("a.tar.zst"), &[], DnsProbe::Skipped).unwrap();
+        let out = removed_record(
+            &rec,
+            "t",
+            Some("a.tar.zst"),
+            &[],
+            &[],
+            DnsProbe::RemovedElsewhere,
+            Some(LEDGER),
+        )
+        .unwrap();
+        assert_eq!(out["dns"], "removed_elsewhere");
+        assert_eq!(out["dns_ledger"], LEDGER);
         assert_eq!(out["archive"], "a.tar.zst");
         assert_eq!(out["left_at_vendor"], json!([]));
-        assert_eq!(out["dns"], "skipped_zone_not_ours");
-        assert!(removed_record(&json!([]), "t", None, &[], DnsProbe::Done).is_err());
+        assert!(removed_record(&json!([]), "t", None, &[], &[], DnsProbe::Done, None).is_err());
     }
 
     // ------------------------------------------------------------------ apply
@@ -1764,6 +1968,12 @@ mod tests {
         sticky: Option<&'static str>,
         /// A path that `remove_path` refuses.
         refused: Option<&'static str>,
+        /// What the site answers for its paid plugins while it runs; `None`: the site
+        /// software does not answer.
+        licences: Option<Vec<(&'static str, VendorAnswer)>>,
+        /// The vendor's answer right after an activation is given back, in place of the
+        /// one the made-up site then has.
+        after_give_back: Option<VendorAnswer>,
         calls: Vec<String>,
     }
 
@@ -1789,6 +1999,8 @@ mod tests {
             files: FILES.iter().map(|f| (*f).to_owned()).collect(),
             sticky: None,
             refused: None,
+            licences: Some(answers()),
+            after_give_back: None,
             calls: Vec::new(),
         }
     }
@@ -1831,7 +2043,25 @@ mod tests {
                 firewall_file: Some(self.fw),
                 export_list: Some(self.export.clone()),
                 record_in_place: Some(self.record_in_place),
+                licences: if self.listed && self.running {
+                    self.licences.clone()
+                } else {
+                    None
+                },
             }
+        }
+        fn give_back(&mut self, plugin: &'static str) -> (bool, VendorAnswer) {
+            self.calls.push(format!("give_back {plugin}"));
+            // Fluent Forms Pro clears the key the site keeps when it gives its seat back
+            let now = if plugin == "fluentformpro" {
+                VendorAnswer::NoData
+            } else {
+                VendorAnswer::NotActive
+            };
+            if let Some(a) = self.licences.take() {
+                self.licences = Some(answer(a, plugin, self.after_give_back.unwrap_or(now)));
+            }
+            (true, self.after_give_back.unwrap_or(VendorAnswer::NotActive))
         }
         fn others(&mut self) -> Vec<(String, Option<u16>)> {
             self.others_asked += 1;
@@ -1943,9 +2173,18 @@ mod tests {
 
     /// The plan `--plan` would print for `host`, sealed for `place`.
     fn sealed(place: &opstore::OpPlace, host: &mut FakeHost, left: bool) -> Value {
+        sealed_with(place, host, left, None)
+    }
+
+    /// The same, with a DNS ledger line handed in.
+    fn sealed_with(
+        place: &opstore::OpPlace,
+        host: &mut FakeHost,
+        left: bool,
+        ledger: Option<&str>,
+    ) -> Value {
         let seen = host.see();
-        let p = probes(&spec(), &seen, None, DnsProbe::NotAskedHere);
-        let mut doc = plan_doc(&spec(), &p, left, DnsProbe::NotAskedHere);
+        let mut doc = plan_from(&spec(), &seen, left, ledger).unwrap();
         crate::quarantinecmd::seal_with_op(
             &mut doc,
             OP,
@@ -1966,9 +2205,10 @@ mod tests {
             .collect()
     }
 
-    const WRITES: [&str; 8] = [
+    const WRITES: [&str; 9] = [
         "write_entry",
         "archive",
+        "give_back",
         "close_access",
         "stop",
         "destroy",
@@ -2231,14 +2471,157 @@ mod tests {
     }
 
     #[test]
-    fn without_the_persons_word_on_the_licences_nothing_runs_from_this_host() {
+    fn a_vendor_that_cannot_be_asked_stops_the_plan_and_nothing_runs() {
         let pl = place("noword");
         let mut h = fake();
+        h.licences = Some(answer(answers(), "seopress", VendorAnswer::Unknown));
         let plan = sealed(&pl, &mut h, false);
         assert_eq!(plan["next"], "stop");
+        assert_eq!(plan["stop"], "probe_unknown");
         let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
         assert!(e.contains("nothing to run"), "{e}");
         assert!(writes(&h).is_empty());
+    }
+
+    #[test]
+    fn without_the_persons_word_what_can_be_given_back_is_and_the_rest_is_recorded() {
+        let pl = place("licences");
+        let mut h = fake();
+        h.licences = Some(answer(answers(), "fluentformpro", VendorAnswer::Active));
+        let plan = sealed(&pl, &mut h, false);
+        assert_eq!(plan["next_step"], "unserve");
+        assert_eq!(
+            plan["licences_to_give_back"],
+            json!(["seopress", "fluentformpro"])
+        );
+        let out = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(
+            out["applied"],
+            json!([
+                "unserve", "archive", "licenses", "access", "stop", "destroy", "firewall",
+                "lists", "record"
+            ])
+        );
+        assert_eq!(
+            writes(&h)[..5],
+            [
+                "write_entry",
+                "archive",
+                "give_back seopress",
+                "give_back fluentformpro",
+                "close_access 1 true"
+            ]
+        );
+        let rec = h.moved.clone().unwrap();
+        // what was given back is not listed as left, although Fluent no longer keeps its key;
+        // what could only be recorded is, as seen while the site still ran
+        assert_eq!(
+            rec["left_at_vendor"],
+            json!(["flyingpress:activation", "stackable:activation"])
+        );
+        assert_eq!(
+            rec["licences_given_back"],
+            json!(["seopress", "fluentformpro"])
+        );
+        assert_eq!(out["licences_given_back"], rec["licences_given_back"]);
+    }
+
+    #[test]
+    fn a_vendor_still_saying_activated_after_the_call_stops_the_work_there() {
+        let pl = place("stillheld");
+        let mut h = fake();
+        h.after_give_back = Some(VendorAnswer::Active);
+        let plan = sealed(&pl, &mut h, false);
+        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        assert!(
+            e.contains("licenses failed: licence_still_active: seopress"),
+            "{e}"
+        );
+        assert!(!writes(&h).iter().any(|c| c.starts_with("close_access")));
+        assert_eq!(states(&pl).last(), Some(&State::Failed));
+        // an answer after the call that is not "not activated" stops it too
+        let pl = place("notconfirmed");
+        let mut h = fake();
+        h.after_give_back = Some(VendorAnswer::Unknown);
+        let plan = sealed(&pl, &mut h, false);
+        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        assert!(e.contains("licence_not_confirmed: seopress"), "{e}");
+    }
+
+    #[test]
+    fn a_site_that_cannot_be_read_is_recorded_as_unreadable_and_the_removal_goes_on() {
+        let pl = place("unreadable");
+        let mut h = fake();
+        h.licences = None;
+        let plan = sealed(&pl, &mut h, false);
+        assert_eq!(plan["next_step"], "unserve");
+        let out = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(out["state"], "dns_left");
+        assert!(!h.calls.iter().any(|c| c.starts_with("give_back")));
+        let rec = h.moved.clone().unwrap();
+        assert_eq!(
+            rec["left_at_vendor"],
+            json!([
+                "seopress:site_unreadable",
+                "fluentformpro:site_unreadable",
+                "flyingpress:site_unreadable",
+                "stackable:site_unreadable",
+                "blocksy:site_unreadable"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_dns_removal_done_elsewhere_lets_the_removal_finish_on_this_host() {
+        let pl = place("dnselsewhere");
+        let mut h = fake();
+        let plan = sealed_with(&pl, &mut h, false, Some(LEDGER));
+        assert_eq!(plan["dns"], "removed_elsewhere");
+        assert_eq!(plan["dns_ledger"], LEDGER);
+        let out = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(out["state"], "finished");
+        assert!(out["stop"].is_null());
+        assert_eq!(out["dns"], "removed_elsewhere");
+        let rec = h.moved.clone().unwrap();
+        assert_eq!(rec["dns"], "removed_elsewhere");
+        assert_eq!(rec["dns_ledger"], LEDGER);
+        assert_eq!(out["left_on_host"], json!([]));
+        // a plan whose ledger line was edited after it was made is refused
+        let pl = place("dnsedited");
+        let mut h = fake();
+        let mut plan = sealed_with(&pl, &mut h, false, Some(LEDGER));
+        plan["dns_ledger"] = json!(LEDGER.replace("20261111T150000Z", "20261111T150001Z"));
+        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        assert!(e.contains("plan_changed"), "{e}");
+        assert!(writes(&h).is_empty());
+    }
+
+    #[test]
+    fn a_dns_ledger_line_that_is_not_this_sites_is_refused_with_its_word() {
+        let wrong = LEDGER.replace("ez2:site:site9 ", "ez2:site:site90 ");
+        let e = plan_from(&spec(), &untouched(), false, Some(wrong.as_str())).unwrap_err();
+        assert!(e.starts_with("dns_ledger_wrong_site"), "{e}");
+        let names = LEDGER.replace("names=www.example.com", "names=shop.example.com");
+        let e = dns_here(&spec(), Some(names.as_str())).unwrap_err();
+        assert!(e.starts_with("dns_ledger_names_differ"), "{e}");
+        let e = dns_here(&spec(), Some("removed")).unwrap_err();
+        assert!(e.starts_with("dns_ledger_bad_format"), "{e}");
+        assert_eq!(dns_here(&spec(), None), Ok(DnsProbe::NotAskedHere));
+        assert_eq!(dns_here(&spec(), Some(LEDGER)), Ok(DnsProbe::RemovedElsewhere));
+        // the line belongs to --plan: --apply refuses it before reading anything
+        let args: Vec<String> = [
+            "site9",
+            "--address",
+            "www.example.com",
+            "--apply",
+            "/nonexistent/plan.json",
+            "--dns-removed-elsewhere",
+            LEDGER,
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        assert!(cmd(&args).unwrap_err().contains("belong to --plan"));
     }
 
     #[test]
