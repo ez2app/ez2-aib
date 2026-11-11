@@ -44,7 +44,9 @@ pub enum CreateStep {
     Identity,
     /// Each paid plugin of the template is activated at its vendor.
     Licenses,
-    /// The entry of the host is told about the site.
+    /// The entry of the host is told about the site. Before it, the container's firewall
+    /// rules must be read back as compiled and in force (`pve-firewall compile` /
+    /// `status`), not only the file written in [`CreateStep::Firewall`] (c477a B2 L1).
     Edge,
     /// The site answers from outside with its own mark.
     Health,
