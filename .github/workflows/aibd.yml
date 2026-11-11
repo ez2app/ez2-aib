@@ -813,6 +813,22 @@ jobs:
           ck restoresteps.rs "            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')" \
              "            .all(|b| b != b' ') // knife" \
              a_source_id_is_only_what_a_shared_file_id_holds
+          # restore: a restore a person closed still reads as not over (B3 slice 2, L1)
+          ck restoresteps.rs '        (true, true) => Ok(Standing::Resolved),' \
+             '        (true, true) => Ok(s), // knife' \
+             a_restore_a_person_resolved_is_over
+          # restore: a finished restore reads as closed by a person (B3 slice 2, L1)
+          ck restoresteps.rs '        (true, false) => Err("record_out_of_order"),' \
+             '        (true, false) => Ok(Standing::Resolved), // knife' \
+             a_restore_a_person_resolved_is_over
+          # restore: a restore that is over may be closed again (B3 slice 2, L1)
+          ck restoresteps.rs '        Some(s) if unfinished(s) => Ok(()),' \
+             '        Some(_) => Ok(()), // knife' \
+             only_a_restore_that_is_not_over_is_closed
+          # restore: a close word reads as another (B3 slice 2, L1)
+          ck restoresteps.rs '            .find(|c| c.as_str() == word)' \
+             '            .find(|c| c.as_str() != word) // knife' \
+             only_a_restore_that_is_not_over_is_closed
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1259,9 +1275,41 @@ jobs:
              '            Some(rec) if rec.source != source && false => stop(&mut doc, "source_differs"), // knife' \
              a_kept_restore_goes_on_only_with_its_own_backup
           # restore: a damaged record of another site is left out (B3 slice 2)
-          hk restorestepscmd.rs '            match read_record_file(&path)? {' \
-             '            match read_record_file(&path).unwrap_or(None) { // knife' \
+          hk restorestepscmd.rs '            match read_record_file(&path, expected)? {' \
+             '            match read_record_file(&path, expected).unwrap_or(None) { // knife' \
              a_damaged_record_of_another_site_refuses_every_restore
+          # restore: --apply takes a plan that goes on with a restore (B3 slice 2, review N5)
+          hk restorestepscmd.rs '    if doc["next"] != mode.next_word() {' \
+             '    if doc["next"] != mode.next_word() && mode == Mode::Continue { // knife' \
+             apply_takes_a_start_plan_and_continue_a_go_on_plan
+          # restore: a record in another site's file is read as that site's (B3 slice 2, L2)
+          hk restorestepscmd.rs '            if rec.site != expected {' \
+             '            if rec.site != expected && false { // knife' \
+             a_record_in_another_sites_file_is_refused
+          # restore: a close plan that no longer matches the record is carried out (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if *given != doc {' \
+             '    if *given != doc && false { // knife' \
+             a_close_plan_that_no_longer_matches_is_refused
+          # restore: --resolved carries out a plan that abandons (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if said != how {' \
+             '    if said != how && false { // knife' \
+             resolved_takes_only_a_plan_that_resolves
+          # restore: a restore that is over gets a close plan (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if let Err(why) = restoresteps::may_close(standing) {' \
+             '    if let Err(why) = restoresteps::may_close(standing).or(Ok::<(), &str>(())) { // knife' \
+             only_a_restore_that_is_not_over_is_closed_on_the_host
+          # restore: a plan that says stop closes the restore (B3 slice 2, L1)
+          hk restorestepscmd.rs '    if doc["next"] != "close" {' \
+             '    if doc["next"] != "close" && false { // knife' \
+             only_a_restore_that_is_not_over_is_closed_on_the_host
+          # restore: a resolved restore is not written down as closed (B3 slice 2, L1)
+          hk restorestepscmd.rs '            rec.closed = Some((how, op.clone()));' \
+             '            rec.closed = None; // knife' \
+             a_kept_restore_a_person_resolved_lets_a_new_one_start
+          # restore: an abandoned record stays in its site's place (B3 slice 2, L1)
+          hk restorestepscmd.rs '                Close::Abandoned => h.move_aside(&rec)?,' \
+             '                Close::Abandoned => h.write_record(&rec)?, // knife' \
+             an_abandoned_restore_no_longer_holds_the_host
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

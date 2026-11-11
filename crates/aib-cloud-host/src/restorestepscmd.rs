@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-cloud-host site restore-wpress <code> --from <backup id> --plan | --apply <plan.json>
-//! | --continue <plan.json>` — restoring a customer's own WordPress backup into one of
+//! `aib-cloud-host site restore-wpress <code> --plan --from <backup id> | --plan --close
+//! resolved|abandoned | --apply | --continue | --resolved | --abandon <plan.json>` — restoring a customer's own WordPress backup into one of
 //! their sites, step by step (E3, B3 slice 2). The order, what a failure leaves and when a
 //! restore is refused are [`aib_cloud::restoresteps`]'s; this module keeps the step record
 //! and runs the steps as one operation of the journal.
@@ -23,6 +23,16 @@
 //!   importing and tidying are slices 3 and 4. On this host every `--apply` and
 //!   `--continue` is refused before the lock is taken, so nothing is journaled; the
 //!   order, the record and the failure handling are tested with a made-up host.
+//! * A restore that this code can neither finish nor go on with — one interrupted before
+//!   its tidying (it holds every site of the host), or one kept for a person whose
+//!   customer wants another backup — is closed by a person: `--plan --close resolved`
+//!   (the site is fine as it is; the record stays and reads as over) or `--plan --close
+//!   abandoned` (the record is moved under `closed/`), then `--resolved <plan.json>` or
+//!   `--abandon <plan.json>`, made again under the host lock like every other plan. The
+//!   failed operation that left the restore so blocks the site until `op recovered`,
+//!   so that comes first.
+//! * A record is read only from its own site's file: one whose `site` is another site's
+//!   (a copy a person made by hand) is an error, so it is never written over the other.
 //! * The command is `site restore-wpress`, not `site restore`: that one brings a whole
 //!   container back from the host's own archive, a different thing.
 
@@ -31,7 +41,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use aib_cloud::restoresteps::{self, AfterFailure, Next, Other, RestoreStep, Standing, STEPS};
+use aib_cloud::restoresteps::{
+    self, AfterFailure, Close, Next, Other, RestoreStep, Standing, STEPS,
+};
 use aib_cloud::site::SiteSpec;
 use aib_cloud::sitecreate::Probe;
 use serde_json::{json, Value};
@@ -43,6 +55,8 @@ pub const RECORDS: &str = "/var/lib/ez2-cloud/restores";
 const SITE_RECORDS: &str = "/var/lib/ez2-cloud/sites";
 /// The journal's name for this command.
 pub const COMMAND: &str = "site.restore-wpress";
+/// The journal's name for closing a restore.
+pub const CLOSE_COMMAND: &str = "site.restore-wpress-close";
 /// Why nothing runs on this host yet.
 pub const NOT_WIRED: &str =
     "not_wired: the restore steps are not wired on this host yet (B3 slices 3 and 4); nothing was done";
@@ -61,6 +75,8 @@ pub struct Record {
     pub failed: Option<(RestoreStep, String)>,
     /// Whether what [`restoresteps::after_failure`] asked for was done.
     pub cleaned_up: bool,
+    /// How a person closed it and the operation that did, when one did.
+    pub closed: Option<(Close, String)>,
 }
 
 impl Record {
@@ -73,6 +89,7 @@ impl Record {
             "done": self.done.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             "failed": self.failed.as_ref().map(|(s, why)| json!({ "step": s.as_str(), "why": why })),
             "cleaned_up": self.cleaned_up,
+            "closed": self.closed.as_ref().map(|(how, op)| json!({ "how": how.as_str(), "op": op })),
         })
     }
 
@@ -105,6 +122,19 @@ impl Record {
                     .to_owned(),
             )),
         };
+        let closed = match v.get("closed") {
+            None | Some(Value::Null) => None,
+            Some(c) => Some((
+                c.get("how")
+                    .and_then(Value::as_str)
+                    .and_then(Close::parse)
+                    .ok_or("step record: closed, but not how")?,
+                c.get("op")
+                    .and_then(Value::as_str)
+                    .ok_or("step record: closed, but by no operation")?
+                    .to_owned(),
+            )),
+        };
         Ok(Record {
             site: text("site")?,
             domain: text("domain")?,
@@ -116,6 +146,7 @@ impl Record {
                 .get("cleaned_up")
                 .and_then(Value::as_bool)
                 .ok_or("step record: no cleaned_up")?,
+            closed,
         })
     }
 
@@ -124,6 +155,7 @@ impl Record {
             &self.done,
             self.failed.as_ref().map(|(s, _)| *s),
             self.cleaned_up,
+            self.closed.is_some(),
         )
         .map_err(|w| {
             format!(
@@ -149,10 +181,14 @@ pub trait RestoreHost {
     /// Whether the target site is up.
     fn site_up(&mut self) -> Probe;
     fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String>;
-    /// Throw away what was downloaded.
+    /// Throw away what was downloaded, and the restore point's archive if one was begun:
+    /// a failed restore point leaves a half-made archive behind.
     fn discard(&mut self, rec: &Record) -> Result<(), String>;
     /// Bring the site back from the restore point.
     fn roll_back(&mut self, rec: &Record) -> Result<(), String>;
+    /// Move a record a person abandoned out of the site's place, kept where it can still
+    /// be read; the site may then start a new restore.
+    fn move_aside(&mut self, rec: &Record) -> Result<(), String>;
 }
 
 /// The plan: what is done next with the site's restore, from what the host holds now.
@@ -219,6 +255,7 @@ fn standing_word(s: Standing) -> String {
         Standing::RolledBack => "rolled_back".to_owned(),
         Standing::Kept(step) => format!("kept:{}", step.as_str()),
         Standing::Interrupted(step) => format!("interrupted:{}", step.as_str()),
+        Standing::Resolved => "resolved".to_owned(),
     }
 }
 
@@ -268,8 +305,8 @@ pub fn recheck(
     if doc["next"] != mode.next_word() {
         return Err(format!(
             "this plan says {} {}: {} takes a plan that says {}",
-            doc["next"],
-            doc["stop"],
+            doc["next"].as_str().unwrap_or_default(),
+            doc["stop"].as_str().unwrap_or_default(),
             if mode == Mode::Apply {
                 "--apply"
             } else {
@@ -390,6 +427,7 @@ pub fn apply(
                     done: Vec::new(),
                     failed: None,
                     cleaned_up: false,
+                    closed: None,
                 },
             };
             Ok(Some((opstore::unsealed(plan), (rec, from))))
@@ -397,6 +435,131 @@ pub fn apply(
         |_op, (rec, from): (Record, RestoreStep)| {
             let mut h = host.borrow_mut();
             carry_out(&mut **h, rec, from)
+        },
+    )?;
+    done.ok_or_else(|| "nothing to do".to_owned())
+}
+
+/// The plan to close the site's last restore as `how`: what the record says now, and
+/// whether it may be closed at all.
+pub fn close_doc(
+    spec: &SiteSpec,
+    how: Close,
+    host: &mut impl RestoreHost,
+) -> Result<Value, String> {
+    let last = host.read_record(&spec.code)?;
+    let standing = last.as_ref().map(Record::standing).transpose()?;
+    let mut doc = json!({
+        "plan": "site-restore-wpress-close",
+        "site": spec.code,
+        "domain": spec.primary(),
+        "close": how.as_str(),
+        "last": standing.map(standing_word),
+        "source": last.as_ref().map(|r| r.source.clone()),
+        "record_op": last.as_ref().map(|r| r.op.clone()),
+        "next": "close",
+        "stop": Value::Null,
+    });
+    if let Err(why) = restoresteps::may_close(standing) {
+        doc["next"] = json!("stop");
+        doc["stop"] = json!(why);
+    }
+    Ok(doc)
+}
+
+/// The close plan as this host makes it now, under the lock, checked against the plan
+/// given, and against what the person asked for: `--resolved` takes only a plan that
+/// closes as resolved, `--abandon` only one that abandons. Returns the plan's operation.
+pub fn recheck_close(
+    spec: &SiteSpec,
+    given: &Value,
+    how: Close,
+    fingerprint: &str,
+    host: &mut impl RestoreHost,
+) -> Result<String, String> {
+    let op = given
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or("the plan has no op")?
+        .to_owned();
+    let said = given
+        .get("close")
+        .and_then(Value::as_str)
+        .and_then(Close::parse)
+        .ok_or("the plan does not say how to close")?;
+    let mut doc = close_doc(spec, said, host)?;
+    crate::quarantinecmd::seal_with_op(&mut doc, &op, fingerprint, env!("CARGO_PKG_VERSION"))?;
+    if *given != doc {
+        return Err(
+            "plan_changed: the restore is not as the plan saw it (or the plan was edited); make a new plan"
+                .to_owned(),
+        );
+    }
+    if said != how {
+        return Err(format!(
+            "this plan closes as {}: {} takes a plan that closes as {}",
+            said.as_str(),
+            close_flag(how),
+            how.as_str()
+        ));
+    }
+    if doc["next"] != "close" {
+        return Err(format!(
+            "this plan says stop {}: there is nothing to close",
+            doc["stop"].as_str().unwrap_or_default()
+        ));
+    }
+    Ok(op)
+}
+
+fn close_flag(how: Close) -> &'static str {
+    match how {
+        Close::Resolved => "--resolved",
+        Close::Abandoned => "--abandon",
+    }
+}
+
+/// `--resolved` / `--abandon`: under the host lock the close plan is made again and must
+/// be the plan given, then the record is marked closed (resolved) or moved aside
+/// (abandoned).
+pub fn apply_close(
+    place: &opstore::OpPlace,
+    plan: &Value,
+    spec: &SiteSpec,
+    how: Close,
+    host: &mut impl RestoreHost,
+) -> Result<Value, String> {
+    if plan.get("plan").and_then(Value::as_str) != Some("site-restore-wpress-close")
+        || plan.get("site").and_then(Value::as_str) != Some(spec.code.as_str())
+    {
+        return Err("not a site-restore-wpress close plan for this site".to_owned());
+    }
+    let op = plan
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or("the plan has no op")?
+        .to_owned();
+    let host = std::cell::RefCell::new(host);
+    let done = opstore::run_op_prepared_as(
+        place,
+        &op,
+        CLOSE_COMMAND,
+        &format!("site:{}", spec.code),
+        opstore::BY_LOCAL_ROOT,
+        || {
+            let mut h = host.borrow_mut();
+            let op = recheck_close(spec, plan, how, &place.fingerprint, &mut **h)?;
+            let rec = h.read_record(&spec.code)?.ok_or("no restore to close")?;
+            Ok(Some((opstore::unsealed(plan), (rec, op))))
+        },
+        |_op, (mut rec, op): (Record, String)| {
+            let mut h = host.borrow_mut();
+            rec.closed = Some((how, op.clone()));
+            match how {
+                Close::Resolved => h.write_record(&rec)?,
+                Close::Abandoned => h.move_aside(&rec)?,
+            }
+            Ok(json!({ "site": rec.site, "closed": how.as_str(), "op": op }))
         },
     )?;
     done.ok_or_else(|| "nothing to do".to_owned())
@@ -436,12 +599,22 @@ fn write_whole(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_record_file(path: &Path) -> Result<Option<Record>, String> {
+/// The record in `path`, which is `expected`'s file: a record of another site there is an
+/// error, or going on with it would write over that site's record.
+fn read_record_file(path: &Path, expected: &str) -> Result<Option<Record>, String> {
     match fs::read_to_string(path) {
         Ok(text) => {
             let v: Value =
                 serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-            Record::from_json(&v).map(Some)
+            let rec = Record::from_json(&v)?;
+            if rec.site != expected {
+                return Err(format!(
+                    "{}: the record is of {}, not of {expected}; a person looks",
+                    path.display(),
+                    rec.site
+                ));
+            }
+            Ok(Some(rec))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
@@ -453,7 +626,7 @@ impl RestoreHost for HostRestorer {
         false
     }
     fn read_record(&mut self, site: &str) -> Result<Option<Record>, String> {
-        read_record_file(&self.records.join(format!("{site}.json")))
+        read_record_file(&self.records.join(format!("{site}.json")), site)
     }
     fn write_record(&mut self, rec: &Record) -> Result<(), String> {
         fs::create_dir_all(&self.records)
@@ -478,10 +651,13 @@ impl RestoreHost for HostRestorer {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if name.starts_with('.') || !name.ends_with(".json") || name == own {
+            let Some(expected) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if name.starts_with('.') || name == own {
                 continue;
             }
-            match read_record_file(&path)? {
+            match read_record_file(&path, expected)? {
                 Some(rec) => out.push(rec),
                 // listed, then removed by a person before it was read: nothing to hold
                 None => continue,
@@ -507,6 +683,39 @@ impl RestoreHost for HostRestorer {
     fn roll_back(&mut self, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
     }
+    fn move_aside(&mut self, rec: &Record) -> Result<(), String> {
+        let (_, op) = rec
+            .closed
+            .as_ref()
+            .ok_or("only a closed record is moved aside")?;
+        let aside = self.records.join("closed");
+        fs::create_dir_all(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+        let text = serde_json::to_string_pretty(&rec.to_json()).map_err(|e| e.to_string())?;
+        write_whole(
+            &aside.join(format!("{}-{op}.json", rec.site)),
+            &(text + "\n"),
+        )?;
+        let active = self.records.join(format!("{}.json", rec.site));
+        fs::remove_file(&active).map_err(|e| format!("{}: {e}", active.display()))?;
+        fs::File::open(&self.records)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| format!("{}: {e}", self.records.display()))
+    }
+}
+
+/// What a plan file given to the command is taken for.
+#[derive(Debug, Clone, Copy)]
+enum Given {
+    Steps(Mode),
+    Close(Close),
+}
+
+fn print(v: &Value) -> Result<u8, String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(v).map_err(|e| e.to_string())?
+    );
+    Ok(0)
 }
 
 pub fn cmd(args: &[String]) -> Result<u8, String> {
@@ -516,30 +725,38 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         .ok_or("needs <site code>")?
         .clone();
     let mut source: Option<String> = None;
+    let mut close: Option<Close> = None;
     let mut plan_only = false;
-    let mut file: Option<(Mode, String)> = None;
+    let mut file: Option<(Given, String)> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--plan" => plan_only = true,
-            "--from" => source = Some(it.next().ok_or("--from needs the backup's id")?.clone()),
-            "--apply" | "--continue" if file.is_some() => {
-                return Err("one of --apply or --continue".to_owned())
+        let given = match a.as_str() {
+            "--plan" => {
+                plan_only = true;
+                continue;
             }
-            "--apply" => {
-                file = Some((
-                    Mode::Apply,
-                    it.next().ok_or("--apply needs a plan file")?.clone(),
-                ))
+            "--from" => {
+                source = Some(it.next().ok_or("--from needs the backup's id")?.clone());
+                continue;
             }
-            "--continue" => {
-                file = Some((
-                    Mode::Continue,
-                    it.next().ok_or("--continue needs a plan file")?.clone(),
-                ));
+            "--close" => {
+                let w = it.next().ok_or("--close needs resolved or abandoned")?;
+                close = Some(Close::parse(w).ok_or("--close is resolved or abandoned")?);
+                continue;
             }
+            "--apply" => Given::Steps(Mode::Apply),
+            "--continue" => Given::Steps(Mode::Continue),
+            "--resolved" => Given::Close(Close::Resolved),
+            "--abandon" => Given::Close(Close::Abandoned),
             other => return Err(format!("unknown argument {other}")),
+        };
+        if file.is_some() {
+            return Err("one of --apply, --continue, --resolved or --abandon".to_owned());
         }
+        file = Some((
+            given,
+            it.next().ok_or(format!("{a} needs a plan file"))?.clone(),
+        ));
     }
     let spec = crate::quarantinecmd::load_spec(&code, SITE_RECORDS)?;
     let mut host = HostRestorer {
@@ -548,11 +765,16 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     };
     match (plan_only, file) {
         (true, None) => {
-            let source = source.ok_or("--plan needs --from <the backup's id>")?;
-            if !restoresteps::valid_source_id(&source) {
-                return Err("--from is not a shared file's id".to_owned());
-            }
-            let mut doc = plan_doc(&spec, &source, &mut host)?;
+            let mut doc = match (source, close) {
+                (Some(source), None) => {
+                    if !restoresteps::valid_source_id(&source) {
+                        return Err("--from is not a shared file's id".to_owned());
+                    }
+                    plan_doc(&spec, &source, &mut host)?
+                }
+                (None, Some(how)) => close_doc(&spec, how, &mut host)?,
+                _ => return Err("--plan needs --from <the backup's id> or --close resolved|abandoned".to_owned()),
+            };
             let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
             let fingerprint = opstore::host_fingerprint(Path::new(opstore::MACHINE_ID))?;
             crate::quarantinecmd::seal_with_op(
@@ -561,29 +783,24 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 &fingerprint,
                 env!("CARGO_PKG_VERSION"),
             )?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
-            );
-            Ok(0)
+            print(&doc)
         }
-        (false, Some((mode, path))) => {
-            if source.is_some() {
-                return Err("--from belongs to --plan: the plan given says it".to_owned());
+        (false, Some((given, path))) => {
+            if source.is_some() || close.is_some() {
+                return Err("--from and --close belong to --plan: the plan given says them".to_owned());
             }
             let text = fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
             let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
             let place = opstore::OpPlace::host()?;
-            let done = apply(&place, &plan, &spec, mode, &mut host)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&done).map_err(|e| e.to_string())?
-            );
-            Ok(0)
+            print(&match given {
+                Given::Steps(mode) => apply(&place, &plan, &spec, mode, &mut host)?,
+                Given::Close(how) => apply_close(&place, &plan, &spec, how, &mut host)?,
+            })
         }
-        (true, Some(_)) => Err("--plan, or --apply / --continue <plan.json>, not both".to_owned()),
+        (true, Some(_)) => Err("--plan, or a plan file to carry out, not both".to_owned()),
         (false, None) => Err(
-            "needs --plan --from <id>, --apply <plan.json> or --continue <plan.json>".to_owned(),
+            "needs --plan --from <id>, --plan --close resolved|abandoned, --apply, --continue, --resolved or --abandon <plan.json>"
+                .to_owned(),
         ),
     }
 }
@@ -653,6 +870,8 @@ mod tests {
         calls: Vec<String>,
         /// How many steps the stored record said were done when each step began.
         seen_done: Vec<usize>,
+        /// Records moved aside.
+        aside: Vec<Record>,
     }
 
     fn fake() -> Fake {
@@ -665,6 +884,7 @@ mod tests {
             broken_other: false,
             calls: Vec::new(),
             seen_done: Vec::new(),
+            aside: Vec::new(),
         }
     }
 
@@ -719,6 +939,11 @@ mod tests {
             }
             Ok(())
         }
+        fn move_aside(&mut self, rec: &Record) -> Result<(), String> {
+            self.records.remove(&rec.site);
+            self.aside.push(rec.clone());
+            Ok(())
+        }
     }
 
     fn sealed(place: &opstore::OpPlace, host: &mut Fake) -> Value {
@@ -755,7 +980,40 @@ mod tests {
             done: done.to_vec(),
             failed: failed.map(|s| (s, "earlier".to_owned())),
             cleaned_up,
+            closed: None,
         }
+    }
+
+    fn sealed_close(place: &opstore::OpPlace, how: Close, host: &mut Fake) -> Value {
+        let mut doc = close_doc(&spec(), how, host).unwrap();
+        crate::quarantinecmd::seal_with_op(
+            &mut doc,
+            OP,
+            &place.fingerprint,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
+        doc
+    }
+
+    fn kept() -> Record {
+        record(
+            "site9",
+            "www.example.com",
+            &STEPS[..5],
+            Some(RestoreStep::Accept),
+            false,
+        )
+    }
+
+    fn interrupted() -> Record {
+        record(
+            "site9",
+            "www.example.com",
+            &STEPS[..3],
+            Some(RestoreStep::Import),
+            false,
+        )
     }
 
     fn mine(h: &Fake) -> &Record {
@@ -1019,5 +1277,168 @@ mod tests {
         h.records.insert("site9".to_owned(), r);
         let doc = plan_doc(&spec(), SOURCE, &mut h).unwrap();
         assert_eq!(doc["stop"], "source_differs");
+    }
+
+    #[test]
+    fn a_record_in_another_sites_file_is_refused() {
+        let d = scratch("misfiled");
+        let records = d.join("restores");
+        fs::create_dir_all(&records).unwrap();
+        let r = record("site9", "www.example.com", &STEPS[..2], None, false);
+        fs::write(records.join("site8.json"), r.to_json().to_string()).unwrap();
+        let mut host = HostRestorer { records, ct: 119 };
+        let err = host.read_record("site8").unwrap_err();
+        assert!(err.contains("is of site9, not of site8"), "{err}");
+        assert!(host.others("site7").is_err());
+    }
+
+    #[test]
+    fn a_kept_restore_a_person_resolved_lets_a_new_one_start() {
+        let p = place("resolve");
+        let mut h = fake();
+        h.records.insert("site9".to_owned(), kept());
+        assert_eq!(
+            plan_doc(&spec(), "1ZzZzZzZzZzZzZzZzZzZz", &mut h).unwrap()["stop"],
+            "source_differs"
+        );
+        let plan = sealed_close(&p, Close::Resolved, &mut h);
+        assert_eq!(
+            (plan["next"].as_str(), plan["last"].as_str()),
+            (Some("close"), Some("kept:accept"))
+        );
+        let done = apply_close(&p, &plan, &spec(), Close::Resolved, &mut h).unwrap();
+        assert_eq!(done["closed"], "resolved");
+        assert_eq!(mine(&h).closed, Some((Close::Resolved, OP.to_owned())));
+        assert_eq!(mine(&h).standing(), Ok(Standing::Resolved));
+        let doc = plan_doc(&spec(), "1ZzZzZzZzZzZzZzZzZzZz", &mut h).unwrap();
+        assert_eq!(doc["next"], "start");
+        assert_eq!(states(&p).last(), Some(&State::Verified));
+        assert!(h.calls.is_empty(), "nothing is run on the site");
+    }
+
+    #[test]
+    fn an_abandoned_restore_no_longer_holds_the_host() {
+        let p = place("abandon");
+        let mut h = fake();
+        h.records.insert("site9".to_owned(), interrupted());
+        let mut other = interrupted();
+        other.site = "site8".to_owned();
+        other.domain = "other.example".to_owned();
+        assert!(
+            restoresteps::admit(
+                "site8",
+                "other.example",
+                &[Other {
+                    site: "site9",
+                    domain: "www.example.com",
+                    standing: interrupted().standing().unwrap(),
+                }]
+            )
+            .is_err(),
+            "before: the interruption holds the host"
+        );
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "interrupted_before_tidy"
+        );
+        let plan = sealed_close(&p, Close::Abandoned, &mut h);
+        apply_close(&p, &plan, &spec(), Close::Abandoned, &mut h).unwrap();
+        assert!(
+            h.read_record("site9").unwrap().is_none(),
+            "the record left its place"
+        );
+        assert_eq!(
+            h.aside.iter().map(|r| r.closed.clone()).collect::<Vec<_>>(),
+            [Some((Close::Abandoned, OP.to_owned()))]
+        );
+        h.records.insert("site8".to_owned(), other);
+        assert!(
+            h.others("site8").unwrap().is_empty(),
+            "nothing holds the host now"
+        );
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "restore_unfinished_on_host"
+        );
+        h.records.remove("site8");
+        assert_eq!(plan_doc(&spec(), SOURCE, &mut h).unwrap()["next"], "start");
+    }
+
+    #[test]
+    fn an_abandoned_record_is_kept_aside_on_the_host() {
+        let d = scratch("aside");
+        let mut host = HostRestorer {
+            records: d.join("restores"),
+            ct: 119,
+        };
+        let mut r = interrupted();
+        host.write_record(&r).unwrap();
+        r.closed = Some((Close::Abandoned, OP.to_owned()));
+        host.move_aside(&r).unwrap();
+        assert_eq!(host.read_record("site9"), Ok(None));
+        let kept = d
+            .join("restores")
+            .join("closed")
+            .join(format!("site9-{OP}.json"));
+        let back: Value = serde_json::from_str(&fs::read_to_string(kept).unwrap()).unwrap();
+        assert_eq!(Record::from_json(&back), Ok(r));
+        assert_eq!(
+            host.others("site8"),
+            Ok(Vec::new()),
+            "the closed folder is no record"
+        );
+    }
+
+    #[test]
+    fn only_a_restore_that_is_not_over_is_closed_on_the_host() {
+        let p = place("nothing");
+        let mut h = fake();
+        let none = sealed_close(&p, Close::Resolved, &mut h);
+        assert_eq!(
+            (none["next"].as_str(), none["stop"].as_str()),
+            (Some("stop"), Some("nothing_to_close"))
+        );
+        h.records.insert(
+            "site9".to_owned(),
+            record("site9", "www.example.com", &STEPS, None, false),
+        );
+        let plan = sealed_close(&p, Close::Resolved, &mut h);
+        assert_eq!(plan["stop"], "nothing_to_close");
+        let err = apply_close(&p, &plan, &spec(), Close::Resolved, &mut h).unwrap_err();
+        assert!(err.contains("nothing to close"), "{err}");
+        assert_eq!(mine(&h).closed, None);
+        assert!(states(&p).is_empty(), "nothing journaled");
+    }
+
+    #[test]
+    fn a_close_plan_that_no_longer_matches_is_refused() {
+        let p = place("closechanged");
+        let mut h = fake();
+        h.records.insert("site9".to_owned(), kept());
+        let plan = sealed_close(&p, Close::Resolved, &mut h);
+        // the restore went on (and stopped again) after the plan was made
+        let mut later = kept();
+        later.op = "20261111T120000Z-11111111".to_owned();
+        h.records.insert("site9".to_owned(), later);
+        let err = apply_close(&p, &plan, &spec(), Close::Resolved, &mut h).unwrap_err();
+        assert!(err.contains("plan_changed"), "{err}");
+        assert_eq!(mine(&h).closed, None);
+        assert!(states(&p).is_empty());
+    }
+
+    #[test]
+    fn resolved_takes_only_a_plan_that_resolves() {
+        let p = place("closehow");
+        let mut h = fake();
+        h.records.insert("site9".to_owned(), kept());
+        let abandon = sealed_close(&p, Close::Abandoned, &mut h);
+        let err = apply_close(&p, &abandon, &spec(), Close::Resolved, &mut h).unwrap_err();
+        assert!(err.contains("--resolved takes"), "{err}");
+        let resolve = sealed_close(&p, Close::Resolved, &mut h);
+        let err = apply_close(&p, &resolve, &spec(), Close::Abandoned, &mut h).unwrap_err();
+        assert!(err.contains("--abandon takes"), "{err}");
+        assert_eq!(mine(&h).closed, None);
+        assert!(h.aside.is_empty());
+        assert!(states(&p).is_empty());
     }
 }

@@ -131,11 +131,29 @@ pub enum Standing {
     /// It stopped at this step without a failure being written, or its failure could not
     /// be cleaned up after.
     Interrupted(RestoreStep),
+    /// It was kept or interrupted and a person closed it as resolved: the site is fine as
+    /// it is ([`Close::Resolved`]).
+    Resolved,
 }
 
 /// A site's standing from its step record: the steps done, the step that failed (if one
-/// did) and whether what [`after_failure`] asked for was done.
+/// did), whether what [`after_failure`] asked for was done and whether a person closed it
+/// as resolved. Only a restore that was not finished can have been closed.
 pub fn standing(
+    done: &[RestoreStep],
+    failed: Option<RestoreStep>,
+    cleaned_up: bool,
+    resolved: bool,
+) -> Result<Standing, &'static str> {
+    let s = from_steps(done, failed, cleaned_up)?;
+    match (resolved, unfinished(s)) {
+        (false, _) => Ok(s),
+        (true, true) => Ok(Standing::Resolved),
+        (true, false) => Err("record_out_of_order"),
+    }
+}
+
+fn from_steps(
     done: &[RestoreStep],
     failed: Option<RestoreStep>,
     cleaned_up: bool,
@@ -180,10 +198,48 @@ pub enum Next {
 /// Whether the last restore of a site may be gone on with, or a new one started.
 pub fn next(s: Option<Standing>) -> Next {
     match s {
-        None | Some(Standing::Finished | Standing::Discarded | Standing::RolledBack) => Next::Start,
+        None
+        | Some(
+            Standing::Finished | Standing::Discarded | Standing::RolledBack | Standing::Resolved,
+        ) => Next::Start,
         Some(Standing::Kept(step)) => Next::GoOn(step),
         Some(Standing::Interrupted(step)) if safe_twice(step) => Next::GoOn(step),
         Some(Standing::Interrupted(_)) => Next::Stop("interrupted_before_tidy"),
+    }
+}
+
+/// How a person closes a restore that this code can neither finish nor go on with: one
+/// interrupted before its tidying (it holds the whole host), or one kept for a person
+/// whose customer wants another backup instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Close {
+    /// The person looked and the site is fine as it is: the record stays, read as over.
+    Resolved,
+    /// This restore is given up: the record is moved out of the way, the site may start
+    /// a new one.
+    Abandoned,
+}
+
+impl Close {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Close::Resolved => "resolved",
+            Close::Abandoned => "abandoned",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        [Close::Resolved, Close::Abandoned]
+            .into_iter()
+            .find(|c| c.as_str() == word)
+    }
+}
+
+/// Whether a site's last restore may be closed: only one that is not over.
+pub fn may_close(s: Option<Standing>) -> Result<(), &'static str> {
+    match s {
+        Some(s) if unfinished(s) => Ok(()),
+        _ => Err("nothing_to_close"),
     }
 }
 
@@ -307,42 +363,83 @@ mod tests {
 
     #[test]
     fn a_standing_is_read_from_the_record() {
-        assert_eq!(standing(&STEPS, None, false), Ok(Standing::Finished));
+        assert_eq!(standing(&STEPS, None, false, false), Ok(Standing::Finished));
         assert_eq!(
-            standing(&[Download], None, false),
+            standing(&[Download], None, false, false),
             Ok(Standing::Interrupted(Verify))
         );
         assert_eq!(
-            standing(&[Download], Some(Verify), true),
+            standing(&[Download], Some(Verify), true, false),
             Ok(Standing::Discarded)
         );
         assert_eq!(
-            standing(&STEPS[..3], Some(Import), true),
+            standing(&STEPS[..3], Some(Import), true, false),
             Ok(Standing::RolledBack)
         );
         assert_eq!(
-            standing(&STEPS[..4], Some(Tidy), false),
+            standing(&STEPS[..4], Some(Tidy), false, false),
             Ok(Standing::Kept(Tidy))
         );
         // the failed step must be the one after the steps done
         assert_eq!(
-            standing(&[Download], Some(Import), true),
+            standing(&[Download], Some(Import), true, false),
             Err("record_out_of_order")
         );
         assert_eq!(
-            standing(&STEPS, Some(Accept), true),
+            standing(&STEPS, Some(Accept), true, false),
             Err("record_out_of_order")
         );
     }
 
     #[test]
+    fn a_restore_a_person_resolved_is_over() {
+        assert_eq!(
+            standing(&STEPS[..3], None, false, true),
+            Ok(Standing::Resolved)
+        );
+        assert_eq!(
+            standing(&STEPS[..4], Some(Tidy), false, true),
+            Ok(Standing::Resolved)
+        );
+        assert!(!unfinished(Standing::Resolved));
+        assert!(!holds_the_host(Standing::Resolved));
+        assert_eq!(next(Some(Standing::Resolved)), Next::Start);
+        let o = [other("s-bbb222", "b.example", Standing::Resolved)];
+        assert_eq!(admit("s-aaa111", "a.example", &o), Ok(()));
+        // only a restore that was not over can have been closed
+        assert_eq!(
+            standing(&STEPS, None, false, true),
+            Err("record_out_of_order")
+        );
+    }
+
+    #[test]
+    fn only_a_restore_that_is_not_over_is_closed() {
+        assert_eq!(may_close(Some(Standing::Kept(Accept))), Ok(()));
+        assert_eq!(may_close(Some(Standing::Interrupted(Import))), Ok(()));
+        for s in [
+            None,
+            Some(Standing::Finished),
+            Some(Standing::Discarded),
+            Some(Standing::RolledBack),
+            Some(Standing::Resolved),
+        ] {
+            assert_eq!(may_close(s), Err("nothing_to_close"), "{s:?}");
+        }
+        for c in [Close::Resolved, Close::Abandoned] {
+            assert_eq!(Close::parse(c.as_str()), Some(c));
+        }
+        assert_eq!(Close::parse("done"), None);
+    }
+
+    #[test]
     fn a_failure_not_cleaned_up_after_is_an_interruption() {
         assert_eq!(
-            standing(&[Download], Some(Verify), false),
+            standing(&[Download], Some(Verify), false, false),
             Ok(Standing::Interrupted(Verify))
         );
         assert_eq!(
-            standing(&STEPS[..3], Some(Import), false),
+            standing(&STEPS[..3], Some(Import), false, false),
             Ok(Standing::Interrupted(Import))
         );
         assert_eq!(
