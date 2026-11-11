@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-consent-run supervise` as the Python half calls it, with a staged program.
 #![allow(clippy::disallowed_methods)] // the test changes the copy after a short sleep (ADR 0005 named exception)
+#![cfg(unix)]
 
 use aib_consent::params::sha256_hex;
 use serde_json::Value;
