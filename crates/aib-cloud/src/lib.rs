@@ -52,6 +52,7 @@ pub mod r2token;
 pub mod restoresteps;
 pub mod robot;
 pub mod roster;
+pub mod share;
 pub mod site;
 pub mod sitecreate;
 pub mod sitedefaults;
