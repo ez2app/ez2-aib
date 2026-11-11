@@ -447,9 +447,9 @@ jobs:
           ck customer.rs '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin),' \
              '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin | Publisher), // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
-          # customer side: opening a site is sent before the host can do it
-          ck customer.rs '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,' \
-             '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => true, // knife' \
+          # customer side: binding a domain is sent before the host can do it
+          ck customer.rs '            OwnerRequest::Domain { .. } => false,' \
+             '            OwnerRequest::Domain { .. } => true, // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # ARC: a raise goes past what the plan allows (4.4.1 23)
           ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
@@ -778,6 +778,118 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # E1 customer site create: opening a site is not offered to the customer's side
+          ck customer.rs '            OwnerRequest::Create { .. } => true, // E1' \
+             '            OwnerRequest::Create { .. } => false, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # E1: anything with a state is read as an opening, a site's checks among them
+          ck customer.rs '            v.get("step_done").is_some() && v.get("state").is_some_and(Value::is_string)' \
+             '            v.get("state").is_some_and(Value::is_string) // knife' \
+             an_opening_is_told_from_the_site_s_checks
+          # E1 (33e28 M2): a name under one of the platform's own domains is a customer's
+          ck sitecreate.rs "        name == ours || head.is_some_and(|h| h.ends_with('.'))" \
+             "        name == ours || head.is_some_and(|h| h.ends_with('.') && false) // knife" \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): the bare name of a listed www name is a customer's
+          ck sitecreate.rs '        .any(|ours| under(bare, ours) || ours.strip_prefix("www.") == Some(bare))' \
+             '        .any(|ours| under(bare, ours)) // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): a line that is not a domain still makes a list
+          ck sitecreate.rs '        if !crate::edge::valid_domain(line) {' \
+             '        if !crate::edge::valid_domain(line) && false { // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1 (33e28 M2): an empty list is a list
+          ck sitecreate.rs '    (!list.is_empty()).then_some(list)' \
+             '    Some(list) // knife' \
+             the_platform_s_own_domains_are_never_a_customer_s
+          # E1: the progress of an opening is worded as a site's checks
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        ) if aib_cloud::customer::is_opening(out) => shown(out),' \
+            '        ) if aib_cloud::customer::is_opening(out) && false => shown(out), // knife' \
+            --expect-fail an_opening_is_shown_in_the_host_s_words \
+            -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
+          # B5 DNS (4542e): only a zone of an account the roster names is used
+          ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
+             '                same_name(&z.name, &name) && z.status == "active" && (accounts.contains(&z.account) || true) // knife' \
+             only_an_active_zone_of_the_customers_account_is_used
+          # B5 DNS: a zone that is not active is used
+          ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
+             '                same_name(&z.name, &name) && (z.status == "active" || true) && accounts.contains(&z.account) // knife' \
+             of_two_zones_with_one_name_only_the_active_one_counts
+          # B5 DNS: of two active zones with one name the first is taken
+          ck sitedns.rs '            _ => return Err(ZONE_AMBIGUOUS),' \
+             '            _ => return Ok((*found[0]).clone()), // knife' \
+             of_two_zones_with_one_name_only_the_active_one_counts
+          # B5 DNS: a roster without accounts reads as "any account"
+          ck sitedns.rs '    let accounts = accounts.filter(|a| !a.is_empty()).ok_or(OWNER_UNKNOWN)?;' \
+             '    let accounts = accounts.unwrap_or(&[]); // knife' \
+             a_roster_without_accounts_cannot_tell
+          # B5 DNS: a call off the list of four is let through
+          ck sitedns.rs '        _ => false,' '        _ => true, // knife' \
+             only_the_four_calls_are_allowed
+          # B5 DNS (ebb36 L1): a delete of any record by its id goes back on the list
+          ck sitedns.rs '        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),' \
+             $'        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),\n        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r), // knife' \
+             only_the_four_calls_are_allowed
+          # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
+          ck sitedns.rs '        && m["type"] == "A"' \
+             '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS (ebb36 L1): an add to anything but a public address is let through
+          ck sitedns.rs '        && m["content"].as_str().is_some_and(valid_origin)' \
+             '        && m["content"].is_string() // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS (ebb36 L2): a name outside the zone is added under it
+          ck sitedns.rs '    if !names.iter().all(|n| in_zone(n, zone)) {' \
+             '    if !names.iter().all(|n| in_zone(n, zone)) && false { // knife' \
+             a_name_outside_the_zone_adds_nothing
+          # B5 DNS: an add without a site's mark is let through
+          ck sitedns.rs '            .is_some_and(crate::site::valid_code)' \
+             '            .is_some_and(|_| true) // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS: an add that is not proxied is let through
+          ck sitedns.rs '        && m["proxied"] == Value::Bool(true)' \
+             '        && (m["proxied"] == Value::Bool(true) || true) // knife' \
+             an_add_must_carry_a_sites_mark_and_be_proxied
+          # B5 DNS: a name answered by a record without this site's mark is written over
+          ck sitedns.rs '        if here.iter().any(|r| r.comment != mark) {' \
+             '        if here.iter().any(|r| r.comment != mark) && false { // knife' \
+             a_name_answered_elsewhere_is_left_alone
+          # B5 DNS: a record with the mark counts as done whatever it points at
+          ck sitedns.rs '            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,' \
+             '            [ours] if ours.comment == mark => continue, // knife' \
+             this_sites_record_is_the_step_done
+          # B5 DNS: a wildcard that answers for the name today is passed over
+          ck sitedns.rs '            .any(|r| wildcard_covers(&r.name, name))' \
+             '            .any(|r| wildcard_covers(&r.name, name) && false) // knife' \
+             a_wildcard_that_answers_today_stops
+          # B5 DNS: mail and text records count as address records
+          ck sitedns.rs '    let address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());' \
+             '    let address = |r: &&Record| !r.kind.is_empty() || DNS_ADDRESS_TYPES.is_empty(); // knife' \
+             mail_and_text_records_are_not_looked_at
+          # B5 DNS: a listing short of its count reads as whole
+          ck sitedns.rs '    (all.len() == usize::try_from(first.total_count).ok()?).then_some(all)' \
+             '    let _ = first.total_count; Some(all) // knife' \
+             a_listing_is_whole_only_when_its_pages_and_count_agree
+          # B5 DNS: a flexible SSL mode is taken
+          ck sitedns.rs '        Some("off" | "flexible") => Err(SSL_MODE_NOT_FULL),' \
+             '        Some("off" | "flexible") => Ok(()), // knife' \
+             the_ssl_mode_must_reach_the_host_over_https
+          # B5 DNS: a private address is taken for the host's own
+          ck sitedns.rs '    !private && o[3] != 0' '    let _ = private; o[3] != 0 // knife' \
+             an_unreadable_listing_or_no_origin_adds_nothing
+          # B5 DNS: a refusal on an account's listing is not told as access taken away
+          ck sitedns.rs '        403 if listing_an_account => ACCESS_REVOKED,' \
+             '        403 if listing_an_account && false => ACCESS_REVOKED, // knife' \
+             a_refusal_is_told_apart_only_where_it_means_something
+          # B5 roster: cloudflare_accounts read leniently
+          ck roster.rs '        Some(v) => Some(cloudflare_accounts(v).ok_or(Bad::CloudflareAccounts)?),' \
+             '        Some(v) => cloudflare_accounts(v), // knife' \
+             the_customers_cloudflare_accounts_are_read_strictly
+          # B5 roster: an account id twice is accepted
+          ck roster.rs '        if out.iter().any(|x| x == id) {' \
+             '        if out.iter().any(|x| x == id) && false { // knife' \
+             the_customers_cloudflare_accounts_are_read_strictly
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1185,8 +1297,8 @@ jobs:
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
              an_unreadable_number_stops_the_plan
           # site create --plan: a domain another site serves is opened again
-          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() {" \
-             "    let own_stop: Option<&'static str> = if taken.is_some() && false { // knife" \
+          hk sitecreatecmd.rs "    let own_stop: Option<&'static str> = if taken.is_some() || platform" \
+             "    let own_stop: Option<&'static str> = if (taken.is_some() && false) || platform" \
              an_existing_domain_stops_the_plan
           # site create --plan: an upper-case domain is folded instead of refused
           hk sitecreatecmd.rs '    if !valid_domain(name) {' \
@@ -1407,6 +1519,121 @@ jobs:
           hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
              '        tenant: None, // knife' \
              apply_needs_the_tenant_the_plan_was_made_for
+          # E1 customer site create: an opening is shown for a request other than status
+          hk customercmd.rs '            if request == Request::Status && in_scope {' \
+             '            if in_scope { // knife' \
+             a_site_still_opening_answers_how_far_it_got
+          # E1: a key for some of the sites sees an opening outside them
+          hk customercmd.rs '            let in_scope = scope.is_none_or(|list| list.contains(&site));' \
+             '            let in_scope = scope.is_none_or(|_| true); // knife' \
+             a_site_still_opening_answers_how_far_it_got
+          # E1: someone else's opening of the domain hands its code to whoever asks
+          hk sitecreaterun.rs '            let own = (owner.as_deref() == Some(tenant)).then_some(code);' \
+             '            let own = (owner.as_deref() == Some(tenant) || true).then_some(code); // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: an ask whose run never wrote itself down holds the domain for ever
+          hk sitecreaterun.rs '            if now.saturating_sub(at) < START_GRACE_S {' \
+             '            if now.saturating_sub(at) < START_GRACE_S || true { // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: an opening record of the domain does not hold it
+          hk sitecreaterun.rs '        .find(|r| named(first_host(r)))' \
+             '        .find(|r| named(first_host(r)) && false) // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: a full plan is told as our trouble, not as the customer's quota
+          hk sitecreaterun.rs '        "quota_exceeded" => Some("quota_exceeded"),' \
+             '        "quota_exceeded" => None, // knife' \
+             a_plan_that_stops_is_answered_with_a_fixed_word
+          # E1: a plan made for another customer is run
+          hk sitecreaterun.rs '    if plan["quota"]["tenant_id"].as_str() != Some(tenant)' \
+             '    if plan["quota"]["tenant_id"].as_str() != Some(tenant) && false // knife' \
+             a_plan_that_stops_is_answered_with_a_fixed_word
+          # E1: another customer follows an opening by its code
+          hk sitecreaterun.rs '        || aib_cloud::site::record_tenant(&ask) != Some(tenant)' \
+             '        || (aib_cloud::site::record_tenant(&ask) != Some(tenant) && false) // knife' \
+             progress_is_the_customer_s_own_only
+          # E1: an opening that stopped on a failure is run again by itself
+          hk sitecreaterun.rs '        (Some("waiting" | "running"), _) => {}' \
+             '        (Some(_), _) => {} // knife' \
+             a_failure_stops_where_it_was_and_only_the_step_is_shown
+          # E1: a run still going is run a second time
+          hk sitecreaterun.rs '        (Some("running"), "opening") => {' \
+             '        (Some("running"), "never") => { // knife' \
+             a_run_still_going_is_not_run_twice
+          # E1: a run cut off after the clone clones again
+          hk sitecreaterun.rs '    if !opening_path.exists() && !opened_path.exists() {' \
+             '    if !opened_path.exists() { // knife' \
+             a_run_cut_off_resumes_from_the_opening_record
+          # E1: a host lock held by another operation stops the opening at once
+          hk sitecreaterun.rs '            Err(e) if e.starts_with("host is locked by operation") => {' \
+             '            Err(e) if e.starts_with("host is locked by operation") && false => { // knife' \
+             a_busy_host_lock_is_waited_for_then_given_up
+          # E1: the code a customer was given is swapped for a taken one
+          hk sitecreatecmd.rs '        if aib_cloud::site::valid_code(code) && !taken.iter().any(|t| t == code) {' \
+             '        if aib_cloud::site::valid_code(code) && (!taken.iter().any(|t| t == code) || true) { // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1: the opening record does not name the customer
+          hk sitecreatecmd.rs '    if let Some(tenant) = &input.tenant {' \
+             '    if let Some(tenant) = input.tenant.as_ref().filter(|_| false) { // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1: the site's record does not name the customer, so their key never sees it
+          hk sitelive.rs '    if let Some(tenant) = aib_cloud::site::record_tenant(opening) {' \
+             '    if let Some(tenant) = aib_cloud::site::record_tenant(opening).filter(|_| false) { // knife' \
+             the_customer_of_the_opening_owns_the_site
+          # E1: a customer key may not approve the opening it asked for
+          hk opstore.rs 'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];' \
+             'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"]; // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1 (33e28 M1): a plan whose quota was not judged to fit starts an opening
+          hk sitecreaterun.rs '    if plan["quota"]["verdict"] != "fits" {' \
+             '    if plan["quota"]["verdict"] != "fits" && false { // knife' \
+             a_quota_not_judged_starts_nothing
+          # E1 (33e28 M2): the customer's ask for one of the platform's own domains is planned
+          hk sitecreaterun.rs '    if aib_cloud::sitecreate::is_platform(domain, &ours) {' \
+             '    if aib_cloud::sitecreate::is_platform(domain, &ours) && false { // knife' \
+             the_platform_s_own_domains_are_not_started
+          # E1 (33e28 M2): a list not read whole is read as no platform domains at all
+          hk sitecreaterun.rs '        .and_then(aib_cloud::sitecreate::platform_domains)' \
+             '        .and_then(|t| aib_cloud::sitecreate::platform_domains(t).or(Some(Vec::new()))) // knife' \
+             the_platform_s_own_domains_are_not_started
+          # site create --plan (33e28 M2): one of the platform's own domains is planned
+          hk sitecreatecmd.rs '= if taken.is_some() || platform == Some(true) {' \
+             '= if taken.is_some() { // knife' \
+             the_platform_s_own_domains_are_not_opened
+          # site create --plan (33e28 M2): a list not read whole stops nothing
+          hk sitecreatecmd.rs '    } else if platform.is_none() {' \
+             '    } else if platform.is_none() && false {' \
+             the_platform_s_own_domains_are_not_opened
+          # E1 (33e28 N2): a unit started after its ask stopped waiting takes the ask up
+          hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
+             '        (Some("waiting"), "never") => { // knife' \
+             a_run_started_too_late_does_not_take_its_ask
+          # B5 DNS (4542e): a call off the list of five goes out
+          hk cfdns.rs '        if !sitedns::allowed(call.method(), &call.path(), body) {' \
+             '        if !sitedns::allowed(call.method(), &call.path(), body) && false { // knife' \
+             a_call_off_the_list_is_refused_and_written_down
+          # B5 DNS: a call made leaves no ledger line
+          hk cfdns.rs '        self.ledger_line(&mut file, call, json!(http))?;' \
+             '        let _ = (&mut file, http); // knife' \
+             a_free_name_gets_one_proxied_marked_record_read_back
+          # B5 DNS: the opening record does not say what is being added before the add
+          hk cfdns.rs '        crate::sitecreatecmd::write_record(&paths.creating, &spec.code, record)?;' \
+             '        let _ = &paths.creating; // knife' \
+             an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # B5 DNS: an add that does not read back counts as done
+          hk cfdns.rs '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done' \
+             '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false // knife' \
+             an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # B5 DNS: a roster file that is another customer's is used
+          hk cfdns.rs '    if roster.tenant_id != tenant {' '    if roster.tenant_id != tenant && false { // knife' \
+             a_customer_without_accounts_cannot_be_told
+          # B5: --continue passes over the DNS step
+          hk sitecreatecmd.rs '            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record),' \
+             '            CreateStep::Dns => crate::cfdns::dns_step(runner, paths, &spec, &mut record).or(Ok(())), // knife' \
+             a_dns_step_that_cannot_ask_keeps_the_site_and_asks_nothing
+          # B5: the plan marks the wrong step unknown when the entry cannot be read
+          hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
+             '        if let Some(i) = at(CreateStep::Health) { // knife' \
+             an_unreadable_entry_stops_at_the_entry_step
           # site login-link (Andy 11-11 23:1x: a one-time link logs straight in, not a password reset)
           # LL1 the token's letters are folded onto the first ones past the even cut
           hk loginlink.rs '        .filter(|b| usize::from(**b) < even)' \
@@ -1532,6 +1759,30 @@ jobs:
             '    let mut m = BTreeMap::new(); let _ = start_unknown; // knife' \
             --expect-fail a_listed_child_with_no_start_time_counts_and_adoption_wins \
             -- cargo test -p aib-forkcount --locked --bin aib-forkcount
+          # KF1 goal-2 fixture (a9136 #629 M1): the caller's environment is inherited into the sandbox
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '    c.env_clear().envs(sandbox_env_vars(std::env::vars(), cfg));' \
+            '    c.envs(sandbox_env_vars(std::env::vars(), cfg)); // knife' \
+            --expect-fail a_sandbox_child_sees_no_variable_outside_the_allow_list \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF2 goal-2 fixture shim: a second socket selector is taken instead of refused
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '                    return refused("more than one tmux socket selector");' \
+            '                    let _ = 0; // knife' \
+            --expect-fail only_sandbox_sockets_pass_s_and_no_second_selector \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF3 goal-2 fixture shim: a -S outside the sandbox is let through
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '                        None => return refused("-S is not a socket of this sandbox"),' \
+            '                        None => value.clone(), // knife' \
+            --expect-fail only_sandbox_sockets_pass_s_and_no_second_selector \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
+          # KF4 goal-2 fixture sweep: a pid reused by another process is signalled
+          python3 -I scripts/knife.py crates/aib-forkcount/src/bin/aib-goal2-fixture.rs \
+            '        .filter(|(p, st)| st.is_some() && found.iter().any(|(q, s0)| q == p && s0 == st))' \
+            '        .filter(|(p, st)| st.is_some() && found.iter().any(|(q, _)| q == p)) // knife' \
+            --expect-fail the_sweep_skips_reused_and_unreadable_pids \
+            -- cargo test -p aib-forkcount --locked --bin aib-goal2-fixture
           # K7 aib-sys size-query stage (unit; procwatch cannot reach it): a failed size query ignored
           python3 -I scripts/knife.py crates/aib-sys/src/macos.rs \
             '    if need < 0 || (need == 0 && errno() != 0) {' \
