@@ -1406,11 +1406,11 @@ jobs:
              the_download_gate_stops_the_plan
           # restore: the host's free room is not asked (B3 slice 3)
           hk restorestepscmd.rs '        free: host.free_bytes(),' \
-             '        free: Some(u64::MAX), // knife' \
+             '        free: host.free_bytes().map(|_| u64::MAX), // knife' \
              the_download_gate_stops_the_plan
           # restore: the database's uptime is not asked (B3 slice 3)
           hk restorestepscmd.rs '        db_up_secs: host.db_up_secs(),' \
-             '        db_up_secs: Some(u64::MAX), // knife' \
+             '        db_up_secs: host.db_up_secs().map(|_| u64::MAX), // knife' \
              the_download_gate_stops_the_plan
           # restore: the verify step is run like any other step (B3 slice 3)
           hk restorestepscmd.rs '            RestoreStep::Verify => verify_download(host, &mut rec),' \
