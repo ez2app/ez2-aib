@@ -1282,6 +1282,26 @@ jobs:
           hk siteidentity.rs '        .filter(|b| usize::from(**b) < even)' \
              '        .filter(|b| usize::from(**b) < even || true) // knife' \
              passwords_are_even_and_long_enough
+          # B3 install (33e28 L1): the installer's output goes to its log, not to the answer
+          hk siteidentity.rs '\"$@\" >\"$log\" 2>&1; rc=$?;' \
+             '\"$@\"; rc=$?; : knife;' \
+             the_installer_output_stays_in_its_log
+          # B3 install (33e28 L1): the installer's exit code is the answer's
+          hk siteidentity.rs 'exit $rc";' \
+             'exit 0"; // knife' \
+             the_installer_output_stays_in_its_log
+          # B3 identity (33e28 L2): the password is checked against what is stored before "set"
+          hk siteidentity.rs 'if (!$v || !wp_check_password($p, $v->user_pass, $v->ID)) {{ exit(5); }} ' \
+             '/* knife */ ' \
+             the_password_is_read_back_before_it_is_called_set
+          # B3 identity (33e28 L4): what the installer leaves in the container is listed for a person
+          hk siteidentity.rs '    pending.extend(left_in_container(&spec.code));' \
+             '    pending.extend(left_in_container(&spec.code).into_iter().take(0)); // knife' \
+             the_identity_makes_the_site_its_own
+          # B3 identity (33e28 N2): a title reads back escaped as the site software stores it
+          hk siteidentity.rs '"&amp;")' \
+             '"&") /* knife */' \
+             a_title_is_compared_as_the_site_software_stores_it
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

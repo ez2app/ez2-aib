@@ -22,6 +22,14 @@
 //! administrator is removed. The site's notice address is the customer's when the opening
 //! record carries one, else the first administrator's (the template's is ours).
 //!
+//! The installer's own output goes to a log in the container and only its exit code and
+//! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
+//! (33e28 B3 N1): the site's own user must be able to write `wp-config.php` (the installer
+//! leaves it 660, owner the site user) for `config set` and `shuffle-salts`; and `pct exec`
+//! must pass standard input through to `sudo … wp eval` for the passwords. A title is read
+//! back as the site software stores it ([`stored_as`], N2): today's titles are the domain
+//! and need nothing, a title of the customer's own with `&` or quotes would.
+//!
 //! Not done here, interfaces only (see [`fp_site_key`], [`mask_files`]): the footprint key
 //! of the site (33e28's design asks F1 for it, and F1 is not open) and the files of the
 //! host-information mask inside the container (branch ct-mask2, not in main yet).
@@ -46,6 +54,19 @@ pub const SECRETS: &str = "/etc/ez2-cloud/sites";
 pub const SETUP_ON_HOST: &str = "/usr/local/sbin/ez2-site-setup";
 /// Where the installer is put inside the container for the install, and removed after.
 pub const SETUP_IN_CT: &str = "/root/ez2-site-setup";
+/// What the installer is given as its fifth argument. On the host's `ez2-site-setup` that
+/// argument is `wp:1|0`, and `0` means no site software at all (a static page, the
+/// installer stops before the database). A blank opening still has the site software and
+/// only goes without the template package (removed before the installer runs), so the
+/// install always passes `1`; following `spec.wp` here would make a blank site no site.
+const SETUP_WITH_WP: &str = "1";
+/// How the installer is run: its own output goes to a log file in the container (made
+/// root only before the installer starts; the installer's own umask is left alone), the command answers with the log's last line, cut short, and the installer's
+/// exit code. A whole install prints far more than [`crate::sitecreatecmd::CT_OUT_MAX`],
+/// and only the exit code and `wp core is-installed` decide (33e28 B3 L1).
+/// `$1` is the log, the rest is the installer and its arguments.
+pub const SETUP_WRAP: &str =
+    "log=$1; shift; (umask 077; : >\"$log\") && chmod 600 \"$log\" || exit 1; \"$@\" >\"$log\" 2>&1; rc=$?; tail -n 1 \"$log\" | cut -c1-200; exit $rc";
 /// The administrator the installer makes; the identity step replaces it with the site's own.
 pub const SETUP_ADMIN: &str = "ez2admin";
 /// The template package list inside the container: a blank site has none.
@@ -76,6 +97,11 @@ fn wp(spec: &SiteSpec, rest: &[&str]) -> Vec<String> {
     v.extend(rest.iter().map(|s| (*s).to_owned()));
     let parts: Vec<&str> = v.iter().map(String::as_str).collect();
     in_ct(spec.ct, &parts)
+}
+
+/// The installer's log inside the container.
+pub fn setup_log(code: &str) -> String {
+    format!("/root/{code}-setup.log")
 }
 
 /// The site's first name: its address and its title come from it.
@@ -248,15 +274,21 @@ pub fn install_step(
         ]))
         .map_err(|e| format!("install_failed: push the installer: {e}"))?;
     let hosts = spec.hosts.join(",");
+    let log = setup_log(&spec.code);
     let ran = runner.run(&in_ct(
         spec.ct,
         &[
+            "sh",
+            "-c",
+            SETUP_WRAP,
+            "sh",
+            &log,
             SETUP_IN_CT,
             &spec.code,
             &host,
             &hosts,
             &spec.locale,
-            "1",
+            SETUP_WITH_WP,
             site_title(&host),
             &notice,
         ],
@@ -286,7 +318,9 @@ pub fn password_from(bytes: &[u8]) -> Option<String> {
     (s.len() == PASSWORD_LEN).then_some(s)
 }
 
-/// The program that sets a password read from its standard input. The login is put in
+/// The program that sets a password read from its standard input and reads it back:
+/// the user is fetched again and the password checked against what is stored, so "set"
+/// is said only for a password that now logs in (33e28 B3 L2). The login is put in
 /// the program text, so it must be one the login rule makes (letters, digits, `.`, `_`,
 /// `-`): anything else is refused before a program is made.
 pub fn set_password_program(login: &str) -> Option<String> {
@@ -296,7 +330,7 @@ pub fn set_password_program(login: &str) -> Option<String> {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b));
     plain.then(|| {
         format!(
-            "$u = get_user_by('login', '{login}'); if (!$u) {{ exit(3); }} $p = rtrim(stream_get_contents(STDIN), \"\\n\"); if (strlen($p) < 20) {{ exit(4); }} wp_set_password($p, $u->ID); echo \"set\\n\";"
+            "$u = get_user_by('login', '{login}'); if (!$u) {{ exit(3); }} $p = rtrim(stream_get_contents(STDIN), \"\\n\"); if (strlen($p) < 20) {{ exit(4); }} wp_set_password($p, $u->ID); $v = get_user_by('id', $u->ID); if (!$v || !wp_check_password($p, $v->user_pass, $v->ID)) {{ exit(5); }} echo \"set\\n\";"
         )
     })
 }
@@ -356,6 +390,17 @@ pub enum Pending {
     Later(&'static str),
 }
 
+/// TODO(33e28 B3 L4): files the installer leaves in the container, root only, that are not
+/// cleared yet: its credentials file (the removed installer administrator's password and
+/// the database password that wp-config already holds) and its log. The container is the
+/// customer's, so they are listed for a person until a later step clears them.
+pub fn left_in_container(code: &str) -> [String; 2] {
+    [
+        format!("setup_credentials: /root/{code}-credentials stays in the container"),
+        format!("setup_log: {} stays in the container", setup_log(code)),
+    ]
+}
+
 /// TODO(F1): the site's own footprint key (33e28, DESIGN-fp-site-key-per-site-33e28-1111):
 /// ask F1 for the site's key, write the loader whole, read it back. F1 is not open, so the
 /// template's key stays until then.
@@ -367,6 +412,21 @@ pub fn fp_site_key(_spec: &SiteSpec) -> Pending {
 /// (aib_cloud::mask), written here once that branch is in main.
 pub fn mask_files(_spec: &SiteSpec) -> Pending {
     Pending::Later("mask_files: ct-mask2 is not in main")
+}
+
+/// What an option reads back as once the site software has stored it. The title is
+/// escaped as HTML on the way in (`&` reads back as `&amp;`, 33e28 B3 N2); the
+/// addresses are kept as given.
+pub fn stored_as(key: &str, value: &str) -> String {
+    if key != "blogname" {
+        return value.to_owned();
+    }
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#039;")
 }
 
 fn user_id(runner: &mut impl Runner, spec: &SiteSpec, login: &str) -> Option<String> {
@@ -398,7 +458,7 @@ pub fn identity_step(
         let back = runner
             .run(&wp(spec, &["option", "get", key]))
             .map_err(|e| format!("identity_unchecked: {key}: {e}"))?;
-        if back.trim() != value.as_str() {
+        if back.trim() != stored_as(key, value) {
             return Err(format!("identity_not_set: {key} reads {:?}", back.trim()));
         }
     }
@@ -473,10 +533,11 @@ pub fn identity_step(
     if back.trim() != notice {
         return Err("identity_not_set: admin_email reads otherwise".to_owned());
     }
-    let pending: Vec<&str> = [fp_site_key(spec), mask_files(spec)]
+    let mut pending: Vec<String> = [fp_site_key(spec), mask_files(spec)]
         .into_iter()
-        .map(|Pending::Later(w)| w)
+        .map(|Pending::Later(w)| w.to_owned())
         .collect();
+    pending.extend(left_in_container(&spec.code));
     record["admins"] = json!(logins);
     record["admin_email_from"] = json!(from);
     record["later"] = json!(pending);
@@ -634,7 +695,7 @@ mod tests {
         let record = json!({ "blank": false });
         install_step(&mut site, &paths, &spec(true), &record).unwrap();
         let setup = format!(
-            "pct exec 131 -- {SETUP_IN_CT} s-b3test new.example.test new.example.test zh_TW 1 new ops@example.test"
+            "pct exec 131 -- sh -c {SETUP_WRAP} sh /root/s-b3test-setup.log {SETUP_IN_CT} s-b3test new.example.test new.example.test zh_TW 1 new ops@example.test"
         );
         assert!(site.calls.contains(&setup), "{:#?}", site.calls);
         assert!(site
@@ -730,7 +791,11 @@ mod tests {
             ["ops", "ops2"],
             "the installer's administrator is gone"
         );
-        assert_eq!(record["later"].as_array().unwrap().len(), 2);
+        let later = record["later"].as_array().unwrap();
+        assert_eq!(later.len(), 4, "{later:?}");
+        assert!(later.contains(&json!(
+            "setup_credentials: /root/s-b3test-credentials stays in the container"
+        )));
         // a password per administrator, on the host only, root only, never in an argument
         for login in ["ops", "ops2"] {
             let f = paths.secrets.join(format!("s-b3test.admin.{login}"));
@@ -828,5 +893,67 @@ mod tests {
             .collect();
         assert_eq!(left, ["s-other.admin.ops"]);
         assert!(drop_admin_secrets(&paths.secrets.join("none"), "s-b3test").is_ok());
+    }
+
+    /// The installer's own output stays in its log: the command answers with the last line
+    /// only, whatever the installer printed, and with the installer's exit code (33e28 B3
+    /// L1). Run with this machine's `sh`, not on a host.
+    #[test]
+    fn the_installer_output_stays_in_its_log() {
+        let paths = scratch("setuplog");
+        let log = paths.secrets.join("setup.log");
+        let log_s = log.to_string_lossy().into_owned();
+        let loud = "i=0; while [ $i -lt 3000 ]; do echo line-$i-of-a-long-install-xxxxxxxxxxxxxxxx; i=$((i+1)); done; echo last line; exit $0";
+        let wrapped = |rc: &str| {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", SETUP_WRAP, "sh", &log_s, "sh", "-c", loud, rc]);
+            crate::probe::run_bounded_input(
+                &mut cmd,
+                std::time::Duration::from_secs(30),
+                crate::sitecreatecmd::CT_OUT_MAX,
+                b"",
+            )
+        };
+        assert_eq!(wrapped("0").unwrap(), "last line\n");
+        let kept = fs::metadata(&log).unwrap();
+        assert!(
+            kept.len() > u64::try_from(crate::sitecreatecmd::CT_OUT_MAX).unwrap(),
+            "{}",
+            kept.len()
+        );
+        assert_eq!(
+            kept.permissions().mode() & 0o077,
+            0,
+            "the log is the owner's only"
+        );
+        let failed = wrapped("7").unwrap_err();
+        assert!(failed.contains("exited"), "{failed}");
+    }
+
+    /// "set" is said only after the stored password is checked against the one given.
+    #[test]
+    fn the_password_is_read_back_before_it_is_called_set() {
+        let program = set_password_program("ops").unwrap();
+        let set = program.find("wp_set_password($p").unwrap();
+        let check = program
+            .find("wp_check_password($p, $v->user_pass, $v->ID)")
+            .unwrap();
+        let said = program.find("echo \"set").unwrap();
+        assert!(set < check && check < said, "{program}");
+        assert!(program.contains("get_user_by('id', $u->ID)"));
+    }
+
+    /// A title reads back escaped as the site software stores it; addresses as given.
+    #[test]
+    fn a_title_is_compared_as_the_site_software_stores_it() {
+        assert_eq!(stored_as("blogname", "new"), "new");
+        assert_eq!(
+            stored_as("blogname", "A & B <\"x\"> 'y'"),
+            "A &amp; B &lt;&quot;x&quot;&gt; &#039;y&#039;"
+        );
+        assert_eq!(
+            stored_as("home", "https://a.test/?x&y"),
+            "https://a.test/?x&y"
+        );
     }
 }
