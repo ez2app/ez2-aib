@@ -58,6 +58,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-drive"
+version = "0.2.0-preview.4"
+dependencies = [
+ "aib-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-fixture-tree"
 version = "0.2.0-preview.4"
 dependencies = [
@@ -78,6 +87,7 @@ name = "aib-forkcount"
 version = "0.2.0-preview.4"
 dependencies = [
  "aib-procwatch",
+ "nix",
  "serde_json",
 ]
 
