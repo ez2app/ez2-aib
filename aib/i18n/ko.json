@@ -5709,6 +5709,7 @@
   "aib.consent.no": "취소",
   "aib.consent.touchid_reason": "AIB 동의 · {who}(이)라고 밝힌 좌석의 실행 요청: {cmd}",
   "aib.consent.sign_extra": "스크립트 sha256 {sha}(승인 후 파일이 바뀌면 실행하지 않음); 첫 몇 줄:\n{head}",
+  "aib.consent.sign_lint": "일회용 환경: {env}  영수증: {receipt}\n작성자가 통과시킨 aib-signlint 규칙(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 알림 · {cmd} 실행 완료(rc {rc})",
   "aib.consent.help.usage": "사용법: aib consent ask [--strong] --summary <한 줄> [--seat 좌석] [--wait 초] [--json] -- <명령…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall",
   "aib.heat.stack.header": "냉각 구성 요소(aib {aib})",
