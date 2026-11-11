@@ -745,6 +745,48 @@ jobs:
           ck siteremove.rs '    if seats.iter().any(|s| s.seat == Seat::Unknown) {' \
              '    if seats.iter().any(|s| s.seat == Seat::Unknown || s.seat == Seat::NoAutomaticReturn) { // knife' \
              activations_no_program_can_give_back_do_not_hold_the_removal_up
+          # ---- site remove, licences by vendor (4542e 11-11, E4; Andy 11-11: what cannot be done automatically is recorded, not chased)
+          # nothing to give back at the start reads as steps out of order
+          ck siteremove.rs '|| step == RemoveStep::Licenses' \
+             '|| (step == RemoveStep::Licenses && false) // knife' \
+             nothing_to_give_back_at_the_start_does_not_stop_the_work
+          # an activation SEOPress / Fluent can give back is only recorded
+          ck siteremove.rs '        (GiveBack::InSite, VendorAnswer::Active) => (Seat::Held, None),' \
+             '        (GiveBack::InSite, VendorAnswer::Active) => (Seat::NoAutomaticReturn, Some(LEFT_ACTIVATION)), // knife' \
+             an_activation_given_back_in_the_site_is_held_until_the_vendor_says_otherwise
+          # a vendor of a plugin given back in the site that did not answer is passed over
+          ck siteremove.rs '        (GiveBack::InSite, VendorAnswer::Unknown) => (Seat::Unknown, None),' \
+             '        (GiveBack::InSite, VendorAnswer::Unknown) => (Seat::NoAutomaticReturn, Some(LEFT_NOT_ASKED)), // knife' \
+             an_activation_given_back_in_the_site_is_held_until_the_vendor_says_otherwise
+          # FlyingPress is taken for a plugin that gives its seat back in the site
+          ck siteremove.rs $'        name: "flyingpress",\n        give_back: GiveBack::RecordOnly,' \
+             $'        name: "flyingpress",\n        give_back: GiveBack::InSite, // knife' \
+             the_vendor_table_says_which_plugins_are_given_back_and_guesses_no_other
+          # a site that cannot be read holds the removal up instead of being recorded
+          ck siteremove.rs '    let Some(answers) = answers else {' \
+             '    let Some(answers) = answers else { look.probe = Probe::Unknown; // knife' \
+             a_site_that_cannot_be_read_is_recorded_and_does_not_hold_the_removal_up
+          # an answer naming a plugin the table does not have is taken
+          ck siteremove.rs '    let complete = answers.len() == PAID_PLUGINS.len()' \
+             '    let complete = answers.len() >= PAID_PLUGINS.len() // knife' \
+             an_answer_that_does_not_cover_every_paid_plugin_once_is_could_not_tell
+          # a vendor that did not answer after the call counts as given back
+          ck siteremove.rs '        (true, VendorAnswer::NotActive) => Ok(()),' \
+             '        (true, VendorAnswer::NotActive | VendorAnswer::Unknown) => Ok(()), // knife' \
+             given_back_only_when_the_call_succeeded_and_the_vendor_now_says_not_activated
+          # ---- site remove, DNS removed elsewhere (4542e 11-11, f1fae: the host could not be told)
+          # a ledger line with another site's marker is taken
+          ck siteremove.rs '    if code.is_empty() || marker != dns_marker(code) {' \
+             '    if code.is_empty() || !marker.starts_with(DNS_MARKER_PREFIX) { // knife' \
+             a_dns_ledger_line_is_taken_only_for_this_site_and_its_own_names
+          # a ledger line with other names is taken
+          ck siteremove.rs '    if !same {' \
+             '    if !same && false { // knife' \
+             a_dns_ledger_line_is_taken_only_for_this_site_and_its_own_names
+          # DNS removed elsewhere still reads as not done
+          ck siteremove.rs '            DnsProbe::RemovedElsewhere => Probe::Done,' \
+             '            DnsProbe::RemovedElsewhere => Probe::NotDone, // knife' \
+             a_dns_ledger_line_is_taken_only_for_this_site_and_its_own_names
           # numbers: an address outside the sites range ends or jumps the range (c477a, #659 L2)
           ck sitecreate.rs '        .filter(|ip| (SITE_IP_FIRST..=SITE_IP_LAST).contains(ip))' \
              '        .filter(|ip| (SITE_IP_FIRST..=u8::MAX).contains(ip)) // knife' \
@@ -1168,9 +1210,9 @@ jobs:
              '        (Some(false), Some(false)) | (Some(false), None) => Probe::Done, // knife' \
              what_could_not_be_read_is_unknown_not_absent
           # site remove --plan: licences count as given back though nobody asked
-          hk siteremovecmd.rs '        licences_wired.unwrap_or(Probe::Unknown),' \
-             '        licences_wired.unwrap_or(Probe::Done), // knife' \
-             the_licences_are_not_guessed
+          hk siteremovecmd.rs '        siteremove::licences_look(spec.wp, seen.licences.as_deref()).probe,' \
+             '        { let _ = &seen.licences; Probe::Done }, // knife' \
+             the_licences_are_asked_in_the_site_and_not_guessed
           # site remove --plan: the DNS step reads as done on a host that cannot ask (Andy 11-11 rule)
           hk siteremovecmd.rs '        dns.probe(),' \
              '        { let _ = dns; DnsProbe::Unknown.probe() }, // knife' \
@@ -1179,6 +1221,43 @@ jobs:
           hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
              '    let _ = left_at_vendor; // knife' \
              the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
+          # ---- site remove, licences by vendor and DNS removed elsewhere (4542e 11-11, E4)
+          # the vendor's answer after giving a seat back is not looked at
+          hk siteremovecmd.rs '                siteremove::give_back_after(call_ok, now)' \
+             '                { let _ = (call_ok, now); Ok::<(), &str>(()) } // knife' \
+             a_vendor_still_saying_activated_after_the_call_stops_the_work_there
+          # what was seen while the site ran is replaced by "unreadable" once it is stopped
+          hk siteremovecmd.rs '        if seen.licences.is_some() || carried.licences_left.is_none() {' \
+             '        if true { // knife' \
+             without_the_persons_word_what_can_be_given_back_is_and_the_rest_is_recorded
+          # a seat given back is listed as left because the plugin cleared its key
+          hk siteremovecmd.rs "                    .any(|g| l.split(':').next() == Some(*g))" \
+             "                    .any(|g| false && l.split(':').next() == Some(*g)) // knife" \
+             without_the_persons_word_what_can_be_given_back_is_and_the_rest_is_recorded
+          # a ledger line handed in still leaves the DNS step not asked here
+          hk siteremovecmd.rs '        .map(|()| DnsProbe::RemovedElsewhere)' \
+             '        .map(|()| DnsProbe::NotAskedHere) // knife' \
+             a_dns_removal_done_elsewhere_lets_the_removal_finish_on_this_host
+          # the removed record loses the ledger line
+          hk siteremovecmd.rs '    obj.insert("dns_ledger".to_owned(), json!(dns_ledger));' \
+             '    let _ = dns_ledger; // knife' \
+             a_dns_removal_done_elsewhere_lets_the_removal_finish_on_this_host
+          # a ledger line of another site is not checked on this host
+          hk siteremovecmd.rs '    siteremove::dns_ledger_check(line, &spec.code, &names)' \
+             '    siteremove::dns_ledger_check(line, &spec.code, &names).or(Ok::<(), &str>(())) // knife' \
+             a_dns_ledger_line_that_is_not_this_sites_is_refused_with_its_word
+          # SEOPress is asked about with a key that is not the template's
+          hk siteremovelic.rs '        Some(t) if crate::sitelive::same_key(site, t) => {}' \
+             '        Some(_) => {} // knife' \
+             every_paid_plugin_is_asked_and_a_site_that_does_not_answer_is_unreadable
+          # a site whose software does not answer is asked plugin by plugin (and stops as unknown)
+          hk siteremovelic.rs '    runner.run(&wp(spec, &["option", "get", "siteurl"])).ok()?;' \
+             '    let _ = runner.run(&wp(spec, &["option", "get", "siteurl"])); // knife' \
+             every_paid_plugin_is_asked_and_a_site_that_does_not_answer_is_unreadable
+          # an empty Fluent status reads as not activated
+          hk siteremovelic.rs '            Some(w) if !w.is_empty() => VendorAnswer::NotActive,' \
+             '            Some(_) => VendorAnswer::NotActive, // knife' \
+             each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed
           # ---- site remove --apply (4542e 11-11)
           # an archive two days old is reused while the container is still there (site-remove.sh L1)
           hk siteremovecmd.rs '                Ok(age) if age.as_secs() < FRESH_SECS => {}' \
@@ -1211,7 +1290,7 @@ jobs:
           # a plan that stops is applied all the same
           hk siteremovecmd.rs '    if doc["next"] != "run" {' \
              '    if doc["next"] != "run" && false { // knife' \
-             without_the_persons_word_on_the_licences_nothing_runs_from_this_host
+             a_vendor_that_cannot_be_asked_stops_the_plan_and_nothing_runs
           # the entry's block is cut although it opens with another address
           hk siteremovecmd.rs '    if !opens {' \
              '    if !opens && false { // knife' \
@@ -1289,8 +1368,8 @@ jobs:
              '            Ok(_) => (Value::from(Vec::<String>::new()), Value::Null), // knife' \
              the_plan_of_a_removed_site_lists_what_it_left_only_for_its_code_and_address
           # the removed record says nothing was left at the vendors
-          hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
-             '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
+          hk siteremovecmd.rs '            return vec![LEFT_ON_WORD.to_owned()];' \
+             '            return Vec::new(); // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
