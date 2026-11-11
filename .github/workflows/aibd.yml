@@ -830,7 +830,7 @@ jobs:
              a_skip_count_that_does_not_match_the_warnings_is_unknown
           ck scan.rs '    if without > 0 {' '    if without > 0 && false { // knife' \
              a_paid_plugin_without_checksums_is_unknown_never_ok
-          ck scan.rs '        names.pop();' '        let _ = names.last(); // knife' \
+          ck scan.rs '        names.pop();' '        names.truncate(names.len()); // knife' \
              uploads_findings_and_their_limits
           ck scan.rs '            _ => strange = true,' '            _ => strange = rel.is_empty(), // knife' \
              uploads_findings_and_their_limits
