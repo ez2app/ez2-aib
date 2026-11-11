@@ -6,8 +6,9 @@
 
 use aib_drive::decide::{Known, Roles, Sha, Snapshot};
 use aib_drive::observe::{
-    append, backoff, clean, interval, lock, once, prev_heads, record_of, state_root, summary,
-    watch, Clock, Kind, Paths, Record, Refused, Wake, BASE, CAP, MAX_REASON,
+    append, backoff, clean, interval, lock, once, prev_heads, quota_gate, quota_left, record_of,
+    state_root, summary, watch, Clock, Kind, Paths, Record, Refused, Wake, BASE, CAP, MAX_REASON,
+    QUOTA_FLOOR,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -150,10 +151,16 @@ fn a_failed_snapshot_is_recorded_with_its_reason() {
     assert_eq!(lines(&p.journal)[1].unknown.as_deref(), Some(why.as_str()));
 }
 
-/// V7: failures double the wait up to 600 s; a good round goes back to 60 s.
+/// V7: failures double the wait up to the cap; a good round goes back to
+/// the interval. Defaults: 300 s, capped at 1800 s (1ced7 PR-C M2).
 #[test]
-fn failed_rounds_back_off_to_600_and_a_good_one_goes_back_to_60() {
-    let got: Vec<u64> = (0..7).map(|f| backoff(BASE, CAP, f).as_secs()).collect();
+fn failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back() {
+    let got: Vec<u64> = (0..6).map(|f| backoff(BASE, CAP, f).as_secs()).collect();
+    assert_eq!(got, vec![300, 600, 1200, 1800, 1800, 1800]);
+    let sixty = Duration::from_secs(60);
+    let got: Vec<u64> = (0..7)
+        .map(|f| backoff(sixty, Duration::from_secs(600), f).as_secs())
+        .collect();
     assert_eq!(got, vec![60, 120, 240, 480, 600, 600, 600]);
     let p = Paths::under(&root("backoff"));
     let mut n = 0;
@@ -167,8 +174,8 @@ fn failed_rounds_back_off_to_600_and_a_good_one_goes_back_to_60() {
     };
     let mut c = clock();
     let mut print = |_: &Record| {};
-    watch(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(7)).unwrap();
-    assert_eq!(c.waits, vec![120, 240, 480, 600, 600, 60]);
+    watch(&p, REPO, sixty, &mut c, &mut r, &mut print, Some(7)).unwrap();
+    assert_eq!(c.waits, vec![120, 240, 480, 960, 1800, 60]);
 }
 
 /// V6: one watcher. A live holder is never taken over and is named; once
@@ -176,13 +183,16 @@ fn failed_rounds_back_off_to_600_and_a_good_one_goes_back_to_60() {
 #[test]
 fn a_second_observe_is_refused_with_the_holders_pid() {
     let p = Paths::under(&root("lock"));
-    let held = lock(&p.lock).unwrap();
-    let e = lock(&p.lock).unwrap_err();
+    let held = lock(&p.lock, &p.pid).unwrap();
+    // the pid is read from its own file, never from the locked one (on
+    // Windows the locked file cannot be read: 1ced7 PR-C M1)
+    assert_eq!(std::fs::read_to_string(&p.lock).unwrap(), "");
+    let e = lock(&p.lock, &p.pid).unwrap_err();
     assert!(e.contains(&std::process::id().to_string()), "{e}");
     let mut r = |_: &BTreeMap<u64, Sha>| Ok(snap());
     assert!(matches!(once(&p, REPO, 1, &mut r), Err(Refused::State(_))));
     drop(held);
-    assert!(lock(&p.lock).is_ok());
+    assert!(lock(&p.lock, &p.pid).is_ok());
 }
 
 /// K6: the state root in aib_init.py's order: EZ2_AIB_STATE_ROOT, then
@@ -239,13 +249,13 @@ fn format_characters_are_cleaned_too() {
     assert_eq!(clean("繁中 é", 20), "繁中 é");
 }
 
-/// L3: --interval is at least 30 s; every round reads GitHub.
+/// L3: --interval is at least 60 s; every round reads GitHub.
 #[test]
-fn an_interval_under_30_seconds_is_refused() {
+fn an_interval_under_60_seconds_is_refused() {
     assert!(interval("1").is_err());
-    assert!(interval("29").is_err());
+    assert!(interval("59").is_err());
     assert!(interval("x").is_err());
-    assert_eq!(interval("30").unwrap(), Duration::from_secs(30));
+    assert_eq!(interval("60").unwrap(), Duration::from_secs(60));
     assert_eq!(interval("600").unwrap(), Duration::from_secs(600));
 }
 
@@ -279,4 +289,97 @@ fn the_last_heads_are_read_from_the_end_of_a_long_journal() {
         .write_all(b"{\"at\":9,\"kind\":\"ro")
         .unwrap();
     assert_eq!(prev_heads(&p.journal), heads(3, "c"));
+}
+
+/// 1ced7 PR-C M2: no round below the quota floor, and none when the quota
+/// cannot be read.
+#[test]
+fn a_round_needs_the_quota_floor_left() {
+    let v = |n: u64| serde_json::json!({"resources": {"core": {"remaining": n}}});
+    assert_eq!(quota_left(&v(4321)).unwrap(), 4321);
+    assert!(quota_left(&serde_json::json!({"resources": {}})).is_err());
+    assert!(quota_gate(Ok(QUOTA_FLOOR), QUOTA_FLOOR).is_ok());
+    assert!(quota_gate(Ok(5000), QUOTA_FLOOR).is_ok());
+    let e = quota_gate(Ok(QUOTA_FLOOR - 1), QUOTA_FLOOR).unwrap_err();
+    assert!(e.contains("配額保留"), "{e}");
+    assert!(quota_gate(Err("timed out".into()), QUOTA_FLOOR).is_err());
+}
+
+/// V1 / V2 end to end (1ced7 PR-C L1): the real program with fake `gh` and
+/// `aib` first on PATH, each logging its argv. Only reads are run: `gh api
+/// rate_limit`, `gh api repos/<repo>/…` and `aib dm-queue list`. Also
+/// covers K1 / K4: there is no other program and no write verb.
+#[cfg(unix)]
+#[test]
+fn the_program_runs_only_reads_and_prints_one_line_and_json() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = root("bin");
+    let bin = d.join("bin");
+    let pending = d.join("pending");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&pending).unwrap();
+    let log = d.join("argv.log");
+    let fake = |name: &str, body: &str| {
+        let p = bin.join(name);
+        let script = format!(
+            "#!/bin/sh\nprintf '%s' '{name}' >> '{log}'\nfor a in \"$@\"; do printf ' %s' \"$a\" >> '{log}'; done\necho >> '{log}'\n{body}\n",
+            log = log.display()
+        );
+        std::fs::write(&p, script).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    fake(
+        "gh",
+        r#"if [ "$2" = rate_limit ]; then echo "{\"resources\":{\"core\":{\"remaining\":$QUOTA}}}"; else echo '[]'; fi"#,
+    );
+    fake("aib", "echo '[]'");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run = |quota: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+            .args(["observe", "--repo", REPO, "--pending"])
+            .arg(&pending)
+            .args([
+                "--captain",
+                "f1fae",
+                "--collector",
+                "f1fae",
+                "--seats",
+                "2240e",
+                "--once",
+            ])
+            .env("PATH", &path)
+            .env("QUOTA", quota)
+            .env("EZ2_AIB_STATE_ROOT", d.join("state"))
+            .output()
+            .unwrap()
+    };
+    let out = run("5000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut it = text.lines();
+    assert!(it.next().unwrap().contains("dry-run"), "{text}");
+    let r: Record = serde_json::from_str(it.next().unwrap()).unwrap();
+    assert!(r.dry_run && r.unknown.is_none());
+    let argv = std::fs::read_to_string(&log).unwrap();
+    let calls: Vec<&str> = argv.lines().collect();
+    assert_eq!(calls.first(), Some(&"gh api rate_limit"), "{argv}");
+    for c in &calls {
+        let read = *c == "gh api rate_limit"
+            || c.starts_with(&format!("gh api repos/{REPO}/"))
+            || c.starts_with("aib dm-queue list ");
+        assert!(read && !c.contains(" -X") && !c.contains(" -f"), "{c}");
+    }
+    // below the floor: no round of GitHub reads, rc 3 with the reason
+    std::fs::remove_file(&log).unwrap();
+    let out = run("10");
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("配額保留"));
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "gh api rate_limit\n"
+    );
 }

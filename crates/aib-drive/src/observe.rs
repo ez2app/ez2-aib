@@ -16,28 +16,37 @@
 //!   run. A second `observe` is refused and told the holder's pid. A killed
 //!   holder's lock is released by the OS, so the next one can start; a live,
 //!   slow one is never taken over.
-//! - Pace: a round every 60 s; touching `drive/event` starts one early. When
-//!   the snapshot fails the wait doubles each time, up to 600 s, and goes
-//!   back to 60 s after a good round. `--interval` is at least 30 s (every
-//!   round reads GitHub with the shared token). No conditional requests yet.
-//! - Platforms: on Windows `try_lock` is a mandatory lock, so the refusal
-//!   cannot read the holder's pid and says `pid ?`. [`RealClock`] wakes once
-//!   a second to look at the event file (no process is started).
+//! - Pace: a round every 300 s; touching `drive/event` starts one early.
+//!   When the snapshot fails the wait doubles each time, up to 1800 s, and
+//!   goes back to the interval after a good round. `--interval` is at least
+//!   60 s. A round reads GitHub about 2 + 3–4 × (open PRs) times with the
+//!   token every seat shares (5000 an hour), so each round first reads
+//!   `gh api rate_limit` (free) and does not run below [`QUOTA_FLOOR`]
+//!   calls left (1ced7 PR-C M2). No conditional requests yet.
+//! - The holder's pid is kept in `drive/lock.pid`, not in the locked file:
+//!   on Windows the lock is mandatory and the locked file cannot be read.
+//! - Stopping: `--watch` ends by signal (Ctrl-C, SIGTERM). Every journal
+//!   line is one append write, so a line is whole or absent. [`RealClock`]
+//!   wakes once a second to look at the event file (no process is started);
+//!   two touches within the file system's mtime resolution count once.
 
 use crate::decide::{decide, Intent, Sha, Snapshot};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const BASE: Duration = Duration::from_secs(60);
-pub const CAP: Duration = Duration::from_secs(600);
+pub const BASE: Duration = Duration::from_secs(300);
+pub const CAP: Duration = Duration::from_secs(1800);
+/// Fewest GitHub calls left for a round to run.
+pub const QUOTA_FLOOR: u64 = 1500;
 /// Longest text from outside (a source's error) kept in a record.
 pub const MAX_REASON: usize = 300;
 /// The shortest `--interval`.
-pub const MIN_INTERVAL: Duration = Duration::from_secs(30);
+pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// How much of the journal's end is read for the last heads at first.
 const TAIL: u64 = 64 * 1024;
 
@@ -54,6 +63,31 @@ pub fn interval(v: &str) -> Result<Duration, String> {
         ));
     }
     Ok(d)
+}
+
+/// The quota read: `gh api rate_limit` (a GET that does not count against
+/// the quota).
+pub fn quota_args() -> Vec<String> {
+    vec!["api".to_owned(), "rate_limit".to_owned()]
+}
+
+/// Calls left this hour, from the `rate_limit` answer.
+pub fn quota_left(v: &Value) -> Result<u64, String> {
+    v.get("resources")
+        .and_then(|r| r.get("core"))
+        .and_then(|c| c.get("remaining"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "rate_limit: no resources.core.remaining".to_owned())
+}
+
+/// A round runs only with at least `floor` calls left. An unreadable quota
+/// is no round either: a guess could spend what other seats need.
+pub fn quota_gate(left: Result<u64, String>, floor: u64) -> Result<(), String> {
+    match left {
+        Ok(n) if n >= floor => Ok(()),
+        Ok(n) => Err(format!("配額保留:GitHub 剩 {n} 次,低於 {floor},這輪不讀")),
+        Err(e) => Err(format!("配額讀不到,這輪不讀:{e}")),
+    }
 }
 
 /// The aib state root, in `aib_init.py`'s order: `EZ2_AIB_STATE_ROOT`,
@@ -80,6 +114,8 @@ pub struct Paths {
     pub journal: PathBuf,
     pub pause: PathBuf,
     pub lock: PathBuf,
+    /// The lock holder's pid (shown to a refused second observe).
+    pub pid: PathBuf,
     pub event: PathBuf,
 }
 
@@ -90,6 +126,7 @@ impl Paths {
             journal: dir.join("dryrun.jsonl"),
             pause: dir.join("pause"),
             lock: dir.join("lock"),
+            pid: dir.join("lock.pid"),
             event: dir.join("event"),
             dir,
         }
@@ -308,24 +345,23 @@ pub fn backoff(base: Duration, cap: Duration, failures: u32) -> Duration {
 #[derive(Debug)]
 pub struct Lock(#[allow(dead_code)] File);
 
-/// Takes `path` with an OS lock and writes this pid into it. If another
-/// process holds it, says which pid (when it can be read).
-pub fn lock(path: &Path) -> Result<Lock, String> {
+/// Takes `path` with an OS lock, then writes this pid into `pid`. If
+/// another process holds the lock, says which pid (from `pid`, when it can
+/// be read). The locked file itself is never read: on Windows it cannot be.
+pub fn lock(path: &Path, pid: &Path) -> Result<Lock, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let mut f = OpenOptions::new()
+    let f = OpenOptions::new()
         .create(true)
         .truncate(false)
-        .read(true)
         .write(true)
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     match f.try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
-            let mut who = String::new();
-            let _ = f.read_to_string(&mut who);
+            let who = std::fs::read_to_string(pid).unwrap_or_default();
             let who = clean(who.trim(), 40);
             return Err(format!(
                 "另一個 aib-drive observe 在跑(pid {}):{}",
@@ -335,10 +371,8 @@ pub fn lock(path: &Path) -> Result<Lock, String> {
         }
         Err(TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
     }
-    f.set_len(0)
-        .and_then(|()| f.seek(SeekFrom::Start(0)).map(|_| ()))
-        .and_then(|()| write!(f, "{}", std::process::id()))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(pid, std::process::id().to_string())
+        .map_err(|e| format!("{}: {e}", pid.display()))?;
     Ok(Lock(f))
 }
 
@@ -446,7 +480,7 @@ pub fn once(
     now: u64,
     round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
 ) -> Result<Record, Refused> {
-    let _lock = lock(&paths.lock).map_err(Refused::State)?;
+    let _lock = lock(&paths.lock, &paths.pid).map_err(Refused::State)?;
     if paths.pause.exists() {
         return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));
     }
@@ -467,7 +501,7 @@ pub fn watch(
     print: &mut dyn FnMut(&Record),
     max_rounds: Option<u32>,
 ) -> Result<(), String> {
-    let _lock = lock(&paths.lock)?;
+    let _lock = lock(&paths.lock, &paths.pid)?;
     let mut failures: u32 = 0;
     let mut paused = false;
     let mut rounds: u32 = 0;
