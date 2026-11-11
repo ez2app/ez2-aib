@@ -471,7 +471,7 @@ impl Status {
             Status::Inferred => "推測",
         }
     }
-    fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Status::Pass => "pass",
             Status::Fail => "fail",
@@ -588,22 +588,42 @@ pub fn read_heads(
     repo: &str,
     prs: &std::collections::BTreeSet<u64>,
 ) -> Snapshot {
-    let pr_heads = prs
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let head = (i < MAX_PRS)
-                .then(|| gh.get(&format!("repos/{repo}/pulls/{n}")).ok())
-                .flatten()
+    read_heads_known(gh, repo, prs, &BTreeMap::new())
+}
+
+/// [`read_heads`] inside one aib-drive round: the open PRs' heads come from
+/// drive's snapshot (`known`, read this round already) and are not read
+/// again; only the PRs the evidence names that are not open (mostly merged)
+/// are read, at most [`MAX_PRS`] calls, the rest unknown (DESIGN-drive-expect-
+/// wiring, 2240e × 1ced7: one reader, at most 30 more calls a round).
+pub fn read_heads_known(
+    gh: &dyn aib_drive::snapshot::Read,
+    repo: &str,
+    prs: &std::collections::BTreeSet<u64>,
+    known: &BTreeMap<u64, String>,
+) -> Snapshot {
+    let mut calls = 0;
+    let mut pr_heads = BTreeMap::new();
+    for n in prs {
+        if let Some(h) = known.get(n) {
+            pr_heads.insert(*n, Some(h.clone()));
+            continue;
+        }
+        let head = if calls < MAX_PRS {
+            calls += 1;
+            gh.get(&format!("repos/{repo}/pulls/{n}"))
+                .ok()
                 .and_then(|v| {
                     v.pointer("/head/sha")
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                 })
-                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()));
-            (*n, head)
-        })
-        .collect();
+                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        } else {
+            None
+        };
+        pr_heads.insert(*n, head);
+    }
     Snapshot { pr_heads }
 }
 
@@ -635,36 +655,123 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
     }
 }
 
-/// One goal that is not passing, handed to aib-drive's decide as a weight.
-/// Gaps carry no order: what comes next is decided once, by decide, from the
-/// same snapshot (DECISION-expect-check, "併入 aib-drive"). `pr` is the PR
-/// the latest evidence names, so decide can tie the gap to its work.
+/// Longest `missing` text a row carries.
+pub const MISSING_MAX: usize = 300;
+
+/// One expectation row as aib-drive's report carries it (DESIGN-drive-expect-
+/// wiring, agreed 2240e × 1ced7 11-11 23:3x). No order: what comes next is
+/// decided once, by drive's decide, from the same snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gap {
-    pub goal: String,
-    /// `fail`, `unverified` or `inferred`.
-    pub status: &'static str,
-    /// The reason code of an unverified row.
-    pub why: Option<&'static str>,
+    pub goal_id: String,
+    /// Pass / Fail / Unverified(reason code) / Inferred.
+    pub state: Status,
+    /// What is missing: the reason of an unverified row, else the latest
+    /// evidence's summary. Cleaned, at most [`MISSING_MAX`] characters.
+    pub missing: String,
+    /// The PR the latest evidence names.
     pub pr: Option<u64>,
+    /// `check_id@head8`, or `check_id` when the evidence has no head.
+    pub evidence: Option<String>,
 }
 
-/// The rows that are not passing, in goal order (not ranked).
-pub fn gaps(report: &Report) -> Vec<Gap> {
+/// Every row (passing ones too), in goal order: the board's full table.
+pub fn table(report: &Report) -> Vec<Gap> {
     report
         .rows
         .iter()
-        .filter(|r| r.status != Status::Pass)
         .map(|r| Gap {
-            goal: r.goal.id.clone(),
-            status: r.status.code(),
-            why: match &r.status {
-                Status::Unverified(w) => Some(w.code()),
-                _ => None,
-            },
+            goal_id: r.goal.id.clone(),
+            state: r.status.clone(),
+            missing: clean(
+                &match &r.status {
+                    Status::Unverified(w) => w.text(),
+                    _ => r
+                        .evidence
+                        .as_ref()
+                        .map(|e| e.summary.clone())
+                        .unwrap_or_default(),
+                },
+                MISSING_MAX,
+            ),
             pr: r.evidence.as_ref().and_then(|e| e.pr),
+            evidence: r
+                .evidence
+                .as_ref()
+                .filter(|e| !e.check.is_empty())
+                .map(|e| match &e.head {
+                    Some(h) => format!("{}@{}", e.check, h.get(..8).unwrap_or(h.as_str())),
+                    None => e.check.clone(),
+                }),
         })
         .collect()
+}
+
+/// What aib-expect hands to aib-drive for one event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectReport {
+    /// Set only when the goals cannot be used (the [`GoalsError`] code); the
+    /// table is then empty and drive decides as usual and says why. A PR
+    /// whose head cannot be read makes only its own rows `source_unknown`.
+    pub source_unknown: Option<String>,
+    pub table: Vec<Gap>,
+    pub unreadable_evidence: usize,
+}
+
+impl ExpectReport {
+    /// The rows that are not passing (decide's weights), in goal order.
+    pub fn gaps(&self) -> Vec<&Gap> {
+        self.table
+            .iter()
+            .filter(|g| g.state != Status::Pass)
+            .collect()
+    }
+}
+
+/// The report for one event: the goals (or why they cannot be used), the
+/// evidence, and the heads drive and expect read with one reader.
+pub fn expect_report(
+    goals: Result<&[Goal], &GoalsError>,
+    evidence: &EvidenceLog,
+    snap: &Snapshot,
+    now: u64,
+) -> ExpectReport {
+    match goals {
+        Err(e) => ExpectReport {
+            source_unknown: Some(e.code().to_owned()),
+            table: Vec::new(),
+            unreadable_evidence: evidence.unreadable,
+        },
+        Ok(g) => {
+            let r = compare(g, evidence, snap, now);
+            ExpectReport {
+                source_unknown: None,
+                table: table(&r),
+                unreadable_evidence: r.unreadable_evidence,
+            }
+        }
+    }
+}
+
+/// One row as JSON.
+pub fn gap_json(g: &Gap) -> Value {
+    json!({
+        "goal_id": g.goal_id,
+        "state": g.state.code(),
+        "why": match &g.state { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
+        "missing": g.missing,
+        "pr": g.pr,
+        "evidence": g.evidence,
+    })
+}
+
+/// [`ExpectReport`] as JSON (what drive's journal line carries).
+pub fn expect_json(r: &ExpectReport) -> Value {
+    json!({
+        "source_unknown": r.source_unknown,
+        "unreadable_evidence": r.unreadable_evidence,
+        "table": r.table.iter().map(gap_json).collect::<Vec<_>>(),
+    })
 }
 
 /// Text that came from a seat, made safe to print: no control characters,
@@ -779,12 +886,7 @@ pub fn to_json(report: &Report) -> Value {
         "unverified": report.count("unverified"),
         "inferred": report.count("inferred"),
         "unreadable_evidence": report.unreadable_evidence,
-        "gaps": gaps(report).iter().map(|g| json!({
-            "id": g.goal,
-            "status": g.status,
-            "why": g.why,
-            "pr": g.pr,
-        })).collect::<Vec<_>>(),
+        "gaps": table(report).iter().filter(|g| g.state != Status::Pass).map(gap_json).collect::<Vec<_>>(),
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
             "goal_sha": goal_sha(&r.goal.text),

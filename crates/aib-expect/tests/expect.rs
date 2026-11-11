@@ -720,18 +720,18 @@ fn the_report_has_no_order_of_its_own_and_hands_gaps_to_decide() {
     a3["head"] = json!(H1);
     let log = parse_evidence(&format!("{}\n{a3}\n", ev("A2", 10, 0)));
     let rep = compare(&g, &log, &heads(&[(685, Some(H1))]), NOW);
-    let gp = gaps(&rep);
-    let got: Vec<(&str, &str, Option<&str>, Option<u64>)> = gp
+    let er = expect_report(Ok(g.as_slice()), &log, &heads(&[(685, Some(H1))]), NOW);
+    assert_eq!(er.table.len(), 3, "the full table keeps passing rows");
+    let got: Vec<(&str, &str, Option<u64>)> = er
+        .gaps()
         .iter()
-        .map(|x| (x.goal.as_str(), x.status, x.why, x.pr))
+        .map(|x| (x.goal_id.as_str(), x.state.code(), x.pr))
         .collect();
     assert_eq!(
         got,
-        vec![
-            ("A1", "unverified", Some("no_evidence"), None),
-            ("A3", "fail", None, Some(685)),
-        ]
+        vec![("A1", "unverified", None), ("A3", "fail", Some(685))]
     );
+    assert_eq!(er.gaps()[0].state, Status::Unverified(Why::NoEvidence));
     // no ordering field anywhere in the JSON, and no "next" line unless decide gave one
     let j = to_json(&rep);
     let keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
@@ -741,7 +741,8 @@ fn the_report_has_no_order_of_its_own_and_hands_gaps_to_decide() {
             .any(|k| k.contains("next") || k.contains("order")),
         "{keys:?}"
     );
-    assert_eq!(j["gaps"][1]["id"], "A3");
+    assert_eq!(j["gaps"][1]["goal_id"], "A3");
+    assert_eq!(j["gaps"][0]["why"], "no_evidence");
     let t = render(&rep, None) + &render_short(&rep, None);
     assert!(!t.contains("接下來"), "{t}");
     // decide's list is printed as given (its order), at most three, cleaned
@@ -904,4 +905,106 @@ fn text_that_claims_approval_changes_nothing() {
         keys,
         BTreeSet::from(["at", "kind", "seat", "pr", "shown", "ok", "report"])
     );
+}
+
+/// The agreed row fields: evidence is `check_id@head8`, `missing` is cleaned
+/// and at most 300 characters (DESIGN-drive-expect-wiring point 1).
+#[test]
+fn a_row_carries_goal_state_missing_pr_and_evidence() {
+    let g = vec![Goal {
+        id: "A3".into(),
+        text: "c".into(),
+    }];
+    let mut a3 = ev("A3", 10, 1);
+    a3["pr"] = json!(685);
+    a3["head"] = json!(H1);
+    a3["check_id"] = json!("knife-SL3");
+    a3["summary"] = json!(format!("red\u{1b}[2J {}", "x".repeat(400)));
+    let log = parse_evidence(&format!("{a3}\n"));
+    let er = expect_report(Ok(g.as_slice()), &log, &heads(&[(685, Some(H1))]), NOW);
+    let row = &er.table[0];
+    assert_eq!(row.state, Status::Fail);
+    assert_eq!(row.evidence.as_deref(), Some("knife-SL3@11111111"));
+    assert_eq!(row.pr, Some(685));
+    assert!(
+        row.missing.chars().count() <= MISSING_MAX,
+        "{}",
+        row.missing.len()
+    );
+    assert!(!row.missing.contains('\u{1b}'));
+    assert_eq!(gap_json(row)["state"], "fail");
+}
+
+/// A PR that cannot be read makes only the rows pointing at it unverified
+/// (`source_unknown` per row); the report itself is not unknown.
+#[test]
+fn an_unreadable_pr_only_affects_its_own_rows() {
+    let g = vec![
+        Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        },
+        Goal {
+            id: "A2".into(),
+            text: "b".into(),
+        },
+    ];
+    let mut a1 = ev("A1", 10, 0);
+    a1["pr"] = json!(1);
+    a1["head"] = json!(H1);
+    let mut a2 = ev("A2", 10, 0);
+    a2["pr"] = json!(2);
+    a2["head"] = json!(H2);
+    let log = parse_evidence(&format!("{a1}\n{a2}\n"));
+    let er = expect_report(
+        Ok(g.as_slice()),
+        &log,
+        &heads(&[(1, None), (2, Some(H2))]),
+        NOW,
+    );
+    assert_eq!(er.source_unknown, None);
+    assert_eq!(
+        er.table[0].state,
+        Status::Unverified(Why::SourceUnknown { pr: 1 })
+    );
+    assert_eq!(er.table[1].state, Status::Pass);
+}
+
+/// Goals that cannot be used: the whole report says why, with no rows.
+#[test]
+fn goals_that_cannot_be_used_leave_an_empty_table_and_say_why() {
+    let er = expect_report(
+        Err(&GoalsError::NotApproved),
+        &EvidenceLog::default(),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert_eq!(er.source_unknown.as_deref(), Some("expect_not_approved"));
+    assert!(er.table.is_empty() && er.gaps().is_empty());
+    assert_eq!(expect_json(&er)["source_unknown"], "expect_not_approved");
+}
+
+struct CountGh(std::cell::RefCell<Vec<String>>);
+
+impl aib_drive::snapshot::Read for CountGh {
+    fn get(&self, path: &str) -> Result<Value, String> {
+        self.0.borrow_mut().push(path.to_owned());
+        Ok(json!({"head": {"sha": H2}}))
+    }
+}
+
+/// Inside a drive round: open PRs' heads come from drive's snapshot and are
+/// not read again; only the others are read, at most MAX_PRS calls.
+#[test]
+fn heads_drive_already_read_are_not_read_again() {
+    let gh = CountGh(std::cell::RefCell::new(Vec::new()));
+    let known = BTreeMap::from([(685, H1.to_owned())]);
+    let prs: BTreeSet<u64> = (1..=40).chain([685]).collect();
+    let s = read_heads_known(&gh, "o/r", &prs, &known);
+    assert_eq!(s.pr_heads[&685].as_deref(), Some(H1));
+    let calls = gh.0.borrow();
+    assert_eq!(calls.len(), MAX_PRS);
+    assert!(!calls.iter().any(|c| c.ends_with("/685")));
+    assert_eq!(s.pr_heads[&30].as_deref(), Some(H2));
+    assert_eq!(s.pr_heads[&31], None, "past the cap: unknown");
 }
