@@ -24,6 +24,7 @@
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
+//! aib-cloud-host op stop <op id> --plan | op stop <op id> --apply <plan.json>   (E11: a stuck operation's own processes, by pid and start time; --apply only from an approved sign sheet: SIGTERM, then SIGKILL, then `failed stopped_at_<step>`)
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
 //! aib-cloud-host ct mask                         (lxc.hook.mount of a site CT: covers what it would read of the machine underneath)
@@ -57,6 +58,8 @@ mod leakwordscmd;
 mod loginlink;
 #[cfg(unix)]
 mod maskcmd;
+#[cfg(unix)]
+mod opstop;
 #[cfg(unix)]
 mod opstore;
 #[cfg(unix)]

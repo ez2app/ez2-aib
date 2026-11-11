@@ -233,6 +233,7 @@ pub(crate) fn wait_with_timeout(
         if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
             return Ok(st);
         }
+        crate::opstop::tick(); // E11: run_capture / run_quiet
         if t0.elapsed() > timeout {
             // c477a #584 L1': the child was spawned as its own process group, so grandchildren
             // (pct exec → lxc-attach, pct restore → tar / zstd) that inherited our pipes die
@@ -364,6 +365,8 @@ pub(crate) fn run_capture_bounded(
     });
     let t0 = Instant::now();
     while !reader.is_finished() && t0.elapsed() <= timeout {
+        // E11: a long step (an install, an import) still says it is alive
+        crate::opstop::tick(); // E11: run_capture_bounded
         std::thread::sleep(Duration::from_millis(20));
     }
     let finished = reader.is_finished();
@@ -441,6 +444,8 @@ pub(crate) fn run_bounded_input(
     });
     let t0 = Instant::now();
     while !reader.is_finished() && t0.elapsed() <= timeout {
+        // E11: a long step (an install, an import) still says it is alive
+        crate::opstop::tick(); // E11: run_bounded_input
         std::thread::sleep(Duration::from_millis(20));
     }
     let finished = reader.is_finished();
@@ -1314,6 +1319,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 if step.id == "verify" {
                     break;
                 }
+                crate::opstop::step(step.id);
                 let mut cmd = Command::new(&step.argv[0]);
                 cmd.args(&step.argv[1..]);
                 eprintln!("→ {}", step.argv.join(" "));
@@ -1332,6 +1338,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 .iter()
                 .find(|s| s.id == "verify")
                 .ok_or("no verify step")?;
+            crate::opstop::step("verify");
             let mut code_seen = String::new();
             for _ in 0..30 {
                 let mut cmd = Command::new(&verify.argv[0]);
