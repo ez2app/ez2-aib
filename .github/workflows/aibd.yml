@@ -2121,12 +2121,14 @@ jobs:
              '        Ok(n) if n >= floor.min(1) => Ok(()), // knife' \
              a_round_needs_the_quota_floor_left
           # the quota read becomes another call
-          ok '    vec!["api".to_owned(), "rate_limit".to_owned()]' \
+          ob() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          ob '    vec!["api".to_owned(), "rate_limit".to_owned()]' \
              '    vec!["api".to_owned(), "graphql".to_owned()] // knife' \
              the_program_runs_only_reads_and_prints_one_line_and_json
           # the program skips the quota gate
           om() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
-                   -- cargo test -p aib-drive --locked --test observe "$3"; }
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
           om '        observe::quota_gate(left, observe::QUOTA_FLOOR)?;' \
              '        let _ = (left, observe::QUOTA_FLOOR); // knife' \
              the_program_runs_only_reads_and_prints_one_line_and_json
