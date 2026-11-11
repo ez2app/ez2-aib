@@ -1170,6 +1170,14 @@ jobs:
           hk sitecreatecmd.rs '        let (ct, ip) = record_numbers(rec).ok_or("numbers_unknown")?;' \
              '        let Some((ct, ip)) = record_numbers(rec) else { continue }; // knife' \
              an_unreadable_number_stops_the_plan
+          # site create --plan: a host without virtual machines (empty `qm list`) can never plan (33e28 11-11 M1)
+          hk sitecreatecmd.rs '        return Some(Vec::new());' \
+             '        return None; // knife' \
+             numbers_come_from_lists_and_configurations
+          # site create --plan: an unfinished opening of the www twin does not hold the domain (33e28 11-11 L1)
+          hk sitecreatecmd.rs '    for name in same_names(domain) {' \
+             '    for name in [domain.to_owned()] { // knife' \
+             an_unfinished_operation_on_the_domain_stops_the_plan
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
