@@ -884,7 +884,7 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
 
 // ---------------------------------------------------------------- site suspend / resume / restore (P2)
 
-const EDGE_CT: &str = "101";
+pub(crate) const EDGE_CT: &str = "101";
 const CADDYFILE: &str = "/etc/caddy/Caddyfile";
 const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
 

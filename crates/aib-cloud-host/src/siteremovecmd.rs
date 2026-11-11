@@ -139,7 +139,7 @@ pub fn plan_doc(
     licences_left_at_vendor: bool,
     dns: DnsProbe,
 ) -> Value {
-    let next = siteremove::next_with_dns(probes, licences_left_at_vendor, dns);
+    let next = next_here(probes, licences_left_at_vendor, dns);
     let (next_word, next_step, stop) = match next {
         Next::Run(s) => ("run", Some(s), None),
         Next::Finished => ("finished", None, None),
@@ -329,6 +329,30 @@ pub const COMMAND: &str = "site.remove";
 /// What the removed record lists as left at the vendors when the licence step was passed
 /// over on the person's word: no vendor was asked from this host.
 pub const LEFT_ON_WORD: &str = "all:not-asked(licences-left-at-vendor)";
+/// The files where Proxmox keeps backup schedules: `jobs.cfg` since PVE 7.1, `vzdump.cron`
+/// before. `pct destroy --purge` takes the container out of them, so destroying must
+/// leave both as they were. Our own daily backup is not scheduled in either (33e28
+/// looked on the first host, 11-11: no `jobs.cfg`, a `vzdump.cron` with no backup line):
+/// this guards against a schedule someone adds in Proxmox, not ours.
+pub const BACKUP_SCHEDULES: [&str; 2] = ["/etc/pve/jobs.cfg", "/etc/pve/vzdump.cron"];
+
+/// The backup schedules as one text: each file's path and content, or that it is not
+/// there. A file that is not there is an answer (the host has no such schedule); a file
+/// that is there and cannot be read is not: `None`.
+pub fn schedule_text(paths: &[&Path]) -> Option<String> {
+    let mut out = String::new();
+    for p in paths {
+        match fs::read_to_string(p) {
+            Ok(t) => out.push_str(&format!("== {}\n{t}\n", p.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                out.push_str(&format!("== {} absent\n", p.display()));
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(out)
+}
+
 /// Where copies of the host files this command rewrites are kept.
 const KEEP: &str = "/root/ez2-removed";
 
@@ -356,7 +380,8 @@ pub trait RemoveHost {
     ) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;
     fn destroy(&mut self) -> Result<(), String>;
-    /// The host's backup schedule as text: destroying must not change it.
+    /// The host's backup schedules as text ([`schedule_text`] of [`BACKUP_SCHEDULES`]):
+    /// destroying must not change them. `None`: one could not be read.
     fn backup_schedule(&mut self) -> Option<String>;
     fn remove_firewall(&mut self) -> Result<(), String>;
     fn write_export_list(&mut self, text: &str) -> Result<(), String>;
@@ -420,7 +445,10 @@ fn forwards_to(line: &str, port: u16, ip: &str) -> bool {
 }
 
 /// The `iptables -t nat` arguments that delete each live rule forwarding the site's
-/// port to it: the listed `-A` line with `-D` in its place.
+/// port to it: the listed `-A` line with `-D` in its place. The line is split on white
+/// space: a rule carrying a quoted comment with spaces would be split wrong, `-D` would
+/// then fail and the step stop (nothing wrong is deleted). Our forwards carry no comment
+/// (33e28 N2).
 pub fn rules_to_delete(live_rules: &str, port: u16, ip: &str) -> Vec<Vec<String>> {
     live_rules
         .lines()
@@ -463,7 +491,9 @@ pub fn export_list_without(text: &str, code: &str) -> String {
 }
 
 /// Every other site answers now as it did before the start. A site that could not be
-/// asked, then or now, is not "the same": it stops the work.
+/// asked, then or now, is not "the same": it stops the work. Codes are compared one for
+/// one, so a site whose answer moves between 200, 302 and 503 stops a removal half way;
+/// the removal then goes on from where it stopped with a new plan (33e28 N4).
 pub fn same_as_base(
     base: &[(String, Option<u16>)],
     now: &[(String, Option<u16>)],
@@ -637,8 +667,37 @@ fn record_is_last_here(probes: &[Probe; 10], left: bool) -> bool {
     siteremove::next(&q, left) == Next::Run(RemoveStep::Record)
 }
 
-/// Carry the removal out from where the host is: look, ask [`siteremove::next_with_dns`]
-/// what is next (the same rule as the plan), do that step, check every other site still
+/// What is next on this host: [`siteremove::next_with_dns`], except that once only the
+/// record and the DNS step are left while DNS is not asked here, the record is next. The
+/// record step comes after DNS in the order, but on this host the record is moved aside
+/// all the same, saying the DNS step was not asked here (as the hand-run program does: its
+/// record step comes before DNS, which is a program of its own); the names for the DNS
+/// step stay in the moved record. `--plan` and `--apply` both ask this, so a host found
+/// with only those two left (an apply cut off after the export list, say) gets a plan
+/// that `--apply` takes (33e28 M1).
+pub fn next_here(probes: &[Probe; 10], left: bool, dns: DnsProbe) -> Next {
+    let next = siteremove::next_with_dns(probes, left, dns);
+    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) {
+        return Next::Run(RemoveStep::Record);
+    }
+    next
+}
+
+/// What this command does not remove yet and stays on the host after it (step 10 of the
+/// hand-run program, a later slice): the site's own files under `/etc/ez2-cloud/sites`,
+/// the local copies of the daily backup of its container and what restores left behind.
+/// Said in every answer so a person sees the host is not clean (33e28 L3).
+pub fn left_on_host(spec: &SiteSpec) -> Vec<String> {
+    vec![
+        format!("/etc/ez2-cloud/sites/{}.*", spec.code),
+        format!("/var/lib/vz/dump/vzdump-lxc-{}-*", spec.ct),
+        format!("/root/ez2-restore/{}", spec.code),
+        format!("/var/lib/vz/ez2-prerestore/{}", spec.code),
+    ]
+}
+
+/// Carry the removal out from where the host is: look, ask [`next_here`] what is next
+/// (the same rule as the plan), do that step, check every other site still
 /// answers as in `base`, and look again. A step that is still not done when looked at
 /// again stops the work; so does any stop of the rule, except the DNS step, which is done
 /// where the DNS key is (the answer then says so, with the names).
@@ -658,7 +717,7 @@ pub fn carry_out(
             archive_name.clone_from(&seen.archive_name);
         }
         let p = probes(spec, &seen, None, DnsProbe::NotAskedHere);
-        let next = siteremove::next_with_dns(&p, left, DnsProbe::NotAskedHere);
+        let next = next_here(&p, left, DnsProbe::NotAskedHere);
         let (state, why) = match next {
             Next::Run(step) => {
                 if applied.contains(&step) {
@@ -695,32 +754,8 @@ pub fn carry_out(
                 continue;
             }
             Next::Finished => ("finished", None),
-            // the DNS step is done where the key is. The record step comes after it in the
-            // order, but the record is moved aside here all the same once every other step
-            // is done, saying the DNS step was not asked here (as the hand-run program
-            // does: its record step comes before DNS, which is a program of its own); the
-            // names for the DNS step stay in the moved record.
+            // the DNS step is done where the key is: everything else is done here
             Next::Stop(why, RemoveStep::Dns) if next == siteremove::DNS_NOT_ASKED_HERE => {
-                if record_is_last_here(&p, left) && !applied.contains(&RemoveStep::Record) {
-                    do_step(
-                        host,
-                        spec,
-                        RemoveStep::Record,
-                        &seen,
-                        left,
-                        archive_name.as_deref(),
-                        removed_at,
-                    )
-                    .map_err(|e| {
-                        format!("record failed: {e}; done so far: {:?}", words(&applied))
-                    })?;
-                    applied.push(RemoveStep::Record);
-                    let now = host.others();
-                    same_as_base(base, &now).map_err(|e| {
-                        format!("after record: {e}; done so far: {:?}", words(&applied))
-                    })?;
-                    continue;
-                }
                 ("dns_left", Some(why))
             }
             Next::Stop(why, step) => {
@@ -738,6 +773,7 @@ pub fn carry_out(
             "archive": archive_name,
             "dns_names": spec.hosts,
             "dns_note": if why.is_some() { Value::from(DNS_NOT_HERE) } else { Value::Null },
+            "left_on_host": left_on_host(spec),
         }));
     }
     Err(format!(
@@ -864,7 +900,7 @@ impl RemoveHost for HostRemover {
                     "pct",
                     &[
                         "exec",
-                        "101",
+                        crate::probe::EDGE_CT,
                         "--",
                         "curl",
                         "-s",
@@ -916,6 +952,10 @@ impl RemoveHost for HostRemover {
         .map(|_| ())
     }
 
+    // The live rules go first, then the file; a file that does not parse is put back, the
+    // live rules stay deleted (towards closed). The new file was made from the text read
+    // when the step began: a change made to it by hand in between is overwritten (the
+    // host lock holds back only our own tools; 33e28 N3).
     fn close_access(
         &mut self,
         rules: &[Vec<String>],
@@ -967,7 +1007,7 @@ impl RemoveHost for HostRemover {
     }
 
     fn backup_schedule(&mut self) -> Option<String> {
-        read_text("/etc/pve/vzdump.cron")
+        schedule_text(&BACKUP_SCHEDULES.map(Path::new))
     }
 
     fn remove_firewall(&mut self) -> Result<(), String> {
@@ -1368,13 +1408,18 @@ mod tests {
         // what the command itself passes: not asked here
         let p = probes(&spec(), &gone(), Some(Probe::Done), DnsProbe::NotAskedHere);
         assert_eq!(p[at(RemoveStep::Dns)], Probe::NotDone);
-        let mut p2 = p;
-        p2[at(RemoveStep::Record)] = Probe::NotDone;
-        let doc = plan_doc(&spec(), &p2, false, DnsProbe::NotAskedHere);
+        // everything else done, the record moved: the plan stops at DNS and says why
+        let doc = plan_doc(&spec(), &p, false, DnsProbe::NotAskedHere);
         assert_eq!(doc["next"], "stop");
         assert_eq!(doc["next_step"], "dns");
         assert_eq!(doc["stop"], "dns_not_asked_here");
         assert_eq!(doc["dns"], "not_asked_here");
+        // only the record and DNS left: on this host the record is next (33e28 M1)
+        let mut p2 = p;
+        p2[at(RemoveStep::Record)] = Probe::NotDone;
+        let doc = plan_doc(&spec(), &p2, false, DnsProbe::NotAskedHere);
+        assert_eq!(doc["next"], "run");
+        assert_eq!(doc["next_step"], "record");
         assert_eq!(doc["dns_note"], DNS_NOT_HERE);
         assert_eq!(doc["dns_names"], json!(["www.example.com"]));
         // a zone that is not ours is passed over and said
@@ -1742,6 +1787,9 @@ mod tests {
         assert_eq!(rec["archive"], ARCH);
         assert_eq!(rec["left_at_vendor"], json!([LEFT_ON_WORD]));
         assert_eq!(rec["dns"], "not_asked_here");
+        assert_eq!(out["left_on_host"][0], "/etc/ez2-cloud/sites/site9.*");
+        assert_eq!(out["left_on_host"][1], "/var/lib/vz/dump/vzdump-lxc-119-*");
+        assert_eq!(out["left_on_host"].as_array().map(Vec::len), Some(4));
         assert_eq!(
             states(&pl),
             [
@@ -1929,5 +1977,66 @@ mod tests {
         assert!(same_as_base(&a(None), &a(None)).is_err());
         assert!(same_as_base(&a(Some(200)), &a(None)).is_err());
         assert!(same_as_base(&[], &[]).is_ok());
+    }
+
+    #[test]
+    fn a_host_with_only_the_record_and_dns_left_moves_the_record_and_nothing_else() {
+        let pl = place("recordonly");
+        let mut h = fake();
+        h.entry = "# site:other\nother.example.com {\n}\n".to_owned();
+        h.archive = Some(ARCH.to_owned());
+        h.rules = RULES_WITHOUT.to_owned();
+        h.netfile = "iface vmbr0 inet static\n".to_owned();
+        h.listed = false;
+        h.running = false;
+        h.disk = false;
+        h.fw = false;
+        h.export = "other 120 /var/www/other\n".to_owned();
+        let plan = sealed(&pl, &mut h, true);
+        assert_eq!(plan["next"], "run");
+        assert_eq!(plan["next_step"], "record");
+        let out = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(out["applied"], json!(["record"]));
+        assert_eq!(out["state"], "dns_left");
+        assert_eq!(writes(&h), ["move_record"]);
+    }
+
+    #[test]
+    fn a_record_that_is_still_in_place_after_its_step_stops_the_work() {
+        let pl = place("recordstays");
+        let mut h = fake();
+        h.no_effect = Some("move_record");
+        let plan = sealed(&pl, &mut h, true);
+        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        assert!(
+            e.contains("record: done, but not done when looked at again"),
+            "{e}"
+        );
+        assert_eq!(states(&pl).last(), Some(&State::Failed));
+    }
+
+    #[test]
+    fn a_schedule_file_that_is_not_there_is_an_answer_one_that_cannot_be_read_is_not() {
+        let d = scratch("schedule-files");
+        let there = d.join("vzdump.cron");
+        fs::write(&there, "# cluster wide vzdump cron schedule\n").unwrap();
+        let absent = d.join("jobs.cfg");
+        let a = schedule_text(&[absent.as_path(), there.as_path()]).unwrap();
+        assert!(
+            a.contains("jobs.cfg absent") && a.contains("cluster wide"),
+            "{a}"
+        );
+        // the same files, the same answer; a schedule added, another answer
+        assert_eq!(
+            schedule_text(&[absent.as_path(), there.as_path()]),
+            Some(a.clone())
+        );
+        fs::write(&absent, "vzdump: backup-1\n\tschedule 02:00\n").unwrap();
+        assert_ne!(schedule_text(&[absent.as_path(), there.as_path()]), Some(a));
+        // a directory where the file should be: could not be read
+        let dir = d.join("dir");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(schedule_text(&[dir.as_path()]), None);
+        fs::remove_dir_all(&d).unwrap();
     }
 }

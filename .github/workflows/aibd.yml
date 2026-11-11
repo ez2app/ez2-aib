@@ -1043,8 +1043,24 @@ jobs:
              '        if comment || !l.starts_with(code) { // knife' \
              the_export_list_loses_only_this_sites_line
           # the record is not moved aside on this host once only DNS is left (as site-remove.sh step 9 does)
-          hk siteremovecmd.rs '                if record_is_last_here(&p, left) && !applied.contains(&RemoveStep::Record) {' \
-             '                if record_is_last_here(&p, left) && !applied.contains(&RemoveStep::Record) && false { // knife' \
+          hk siteremovecmd.rs '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) {' \
+             '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) && false { // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # a host with only the record and DNS left gets a plan --apply refuses (33e28 M1)
+          hk siteremovecmd.rs '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) {' \
+             '    if next == siteremove::DNS_NOT_ASKED_HERE && record_is_last_here(probes, left) && false { // knife' \
+             a_host_with_only_the_record_and_dns_left_moves_the_record_and_nothing_else
+          # a record still in place after its step is reported as done (33e28 L1)
+          hk siteremovecmd.rs '                if applied.contains(&step) {' \
+             '                if applied.contains(&step) && false { // knife' \
+             a_record_that_is_still_in_place_after_its_step_stops_the_work
+          # a schedule file that is not there counts as one that cannot be read (33e28 L2)
+          hk siteremovecmd.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {' \
+             '            Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => { // knife' \
+             a_schedule_file_that_is_not_there_is_an_answer_one_that_cannot_be_read_is_not
+          # the answer no longer says what stays on the host (33e28 L3)
+          hk siteremovecmd.rs '            "left_on_host": left_on_host(spec),' \
+             '            "left_on_host": left_on_host(spec).get(..0), // knife' \
              a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
           # the removed record says nothing was left at the vendors
           hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
