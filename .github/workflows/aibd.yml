@@ -1833,6 +1833,22 @@ jobs:
           hk siteidentity.rs '        if back.trim() != parked {' \
              '        if back.trim() != parked && false { // knife' \
              the_installer_s_address_is_let_go_before_the_first_administrator
+          # E1 audit 11-12 #1/#9: the template package goes in before the installer, out after
+          hk siteidentity.rs '            .run(&in_ct(spec.ct, &["truncate", "-s", "0", PACKAGE_LIST]))' \
+             '            .run(&in_ct(spec.ct, &["rm", "-f", PACKAGE_LIST])) // knife' \
+             a_blank_install_drops_the_template_package_first
+          hk siteidentity.rs '    if !paths.package.join("plugins").is_dir() || !paths.package_conf.is_file() {' \
+             '    if (!paths.package.join("plugins").is_dir() || !paths.package_conf.is_file()) && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    if paths.keys.is_file() {' \
+             '    if paths.keys.is_file() && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let dropped = runner.run(&owned(&["rm", "-f", &archive]));' \
+             '    let dropped = runner.run(&owned(&["true", &archive])); // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", PACKAGE_CLEANUP]));' \
+             '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", "true"])); let _ = PACKAGE_CLEANUP; // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

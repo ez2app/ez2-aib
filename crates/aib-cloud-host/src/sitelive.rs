@@ -677,6 +677,8 @@ mod tests {
             secrets: d.join("secrets"),
             site_admins: d.join("site-admins"),
             setup: PathBuf::from("/usr/local/sbin/ez2-site-setup"),
+            package: d.join("wp-package"),
+            package_conf: d.join("wp-package.conf"),
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),

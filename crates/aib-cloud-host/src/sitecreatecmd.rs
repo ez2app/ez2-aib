@@ -934,6 +934,11 @@ pub struct HostPaths {
     pub site_admins: PathBuf,
     /// The reviewed site installer on the host, pushed into the container for the install.
     pub setup: PathBuf,
+    /// The template package on the host ([`crate::siteidentity::PACKAGE_DIR`]): pushed
+    /// into a template opening's container for the install, with its list.
+    pub package: PathBuf,
+    /// The template package's list ([`crate::siteidentity::PACKAGE_CONF`]).
+    pub package_conf: PathBuf,
     /// The site records (`/var/lib/ez2-cloud/sites`): B4 writes the new site's there, and
     /// asks every other site in them through the entry.
     pub records: PathBuf,
@@ -960,6 +965,8 @@ impl HostPaths {
             secrets: PathBuf::from(crate::siteidentity::SECRETS),
             site_admins: PathBuf::from(SITE_ADMINS),
             setup: PathBuf::from(crate::siteidentity::SETUP_ON_HOST),
+            package: PathBuf::from(crate::siteidentity::PACKAGE_DIR),
+            package_conf: PathBuf::from(crate::siteidentity::PACKAGE_CONF),
             records: PathBuf::from(RECORDS),
             sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
             keys: PathBuf::from(crate::sitelive::KEYS),
@@ -2615,6 +2622,8 @@ mod tests {
             secrets: root.join("secrets"),
             site_admins: root.join("site-admins"),
             setup: root.join("ez2-site-setup"),
+            package: root.join("wp-package"),
+            package_conf: root.join("wp-package.conf"),
             records: root.join("records"),
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
@@ -2645,6 +2654,9 @@ mod tests {
             "arch: amd64\nhostname: s-b2test\nlxc.cgroup2.pids.max: 99\nmemory: 512\n\n[snap1]\nmemory: 512\n",
         )
         .unwrap();
+        // the template package the install pushes in
+        fs::create_dir_all(paths.package.join("plugins")).unwrap();
+        fs::write(&paths.package_conf, "plugin|wp-seopress|pkg|activate|-\n").unwrap();
         (place, paths)
     }
 
