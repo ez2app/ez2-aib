@@ -8,7 +8,7 @@
 # 一開始問一次管理員密碼(sudo),之後自動裝:Apple 開發者工具、Homebrew、tmux、勾選的 AI 工具、aib。可重跑;已有的跳過。
 # bash 照已排定的第 3 步升級,這裡不動。必須本人在終端機執行(要輸入密碼)。
 # 整支包在 main 裡,下載不完整不會跑半截。
-# 10-04 FishMac a seat(外網使用者裝不起來時沒有人會連進去幫忙):每一種失敗都要印白話原因與「怎麼辦」,
+# 10-04 Mac B a seat(外網使用者裝不起來時沒有人會連進去幫忙):每一種失敗都要印白話原因與「怎麼辦」,
 #   全程寫紀錄檔(只有本人讀得到),失敗時另存一份遮掉個資的「給客服」版本並告訴使用者檔在哪。
 # 10-04 a seat 審查 P1/P2 已改:紀錄檔等 tee 寫完才遮蔽、遮蔽失敗不產生可寄送檔、中斷統一清理、
 #   第三方 AI 安裝先下載再跑並檢查結束碼/逾時/版本、無桌面不白等、AIB_AI 白名單、macOS/磁碟門檻依實際支援範圍。
@@ -193,7 +193,7 @@ install_main() {
   fi
   # 10-09 a seat(the maintainer「開源版要一行可以直接更新」):公開版預設裝到 ~/ez2-aib —— 不碰 ~/ez2-aib(開發機上的私有正本)。
   #   管理者走 --source 舊路徑時預設仍是 ~/ez2-aib;--dir / AIB_DIR 照舊優先。
-  # 10-11(the maintainer FishMac 實裝):提示裡的「重跑這行」要是一定連得到的網址 ⇒ 公開來源(不是 ssh)指 GitHub 上的 install.sh;
+  # 10-11(the maintainer Mac B 實裝):提示裡的「重跑這行」要是一定連得到的網址 ⇒ 公開來源(不是 ssh)指 GitHub 上的 install.sh;
   #   私有倉 / 簽章套件照舊用網站。
   local SELF_URL="https://aib.ez2.app/install.sh"
   case "$SOURCE" in ""|ssh://*|git@*) ;; *) SELF_URL="https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh" ;; esac
@@ -233,7 +233,7 @@ install_main() {
     UPDATE=1
   }
   have_tty() { ( : < /dev/tty ) 2>/dev/null; }
-  # 10-17 fishmac:.zprofile 已經有別的安裝程式把 ~/.local/bin 放進 PATH(沒註解掉的那行)⇒ 不再加(那台疊了 3 行)
+  # 10-17 mac-b:.zprofile 已經有別的安裝程式把 ~/.local/bin 放進 PATH(沒註解掉的那行)⇒ 不再加(那台疊了 3 行)
   has_local_bin() { grep -Eq '^[[:space:]]*export[[:space:]]+PATH=.*(\$HOME|\$\{HOME\}|~|'"$HOME"')/\.local/bin' "$1" 2>/dev/null; }   # 真的打得開才算(-r 只看權限,沒有終端機時也會是真)
   # 長步驟的心跳:每 60 秒印一行,讓人知道沒當掉
   tick_start() { local t0; t0=$(date +%s); set -m
@@ -494,7 +494,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   if ! xcode-select -p >/dev/null 2>&1; then clt_new=1
     say "… [Apple 官方] 裝開發者工具(最快約 1 分半,隨網速變化;這段不會有進度條,畫面停住是正常的)"
     if [ "$DRY" = 0 ]; then
-      # 10-03 FishMac a seat:標記檔要**留到 softwareupdate -i 跑完**才刪(Homebrew 官方 install.sh 同順序)。
+      # 10-03 Mac B a seat:標記檔要**留到 softwareupdate -i 跑完**才刪(Homebrew 官方 install.sh 同順序)。
       #   先刪再裝 ⇒ 系統不把開發者工具當可裝項目,逐字回「No such update」而 -i 仍回 0(the maintainer-a CI machine 實撞兩次)。
       #   10-04 a seat P1-3:標記若原本就在(別的安裝程式在用),這次不建也不刪。
       local clt_mark=/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
@@ -554,8 +554,8 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     if run brew install tmux </dev/null; then say "✓ tmux(花了 $(took "$t_step"))"; else miss+=("tmux 沒裝上(可以稍後重跑同一行指令再試)"); fi
   else miss+=("tmux:Homebrew 沒裝起來")
   fi
-  # 10-04 Mac mini 實機開席:macOS 沒有 flock,AIB 組裝座艙要它(flock -w / -n),缺了就開不了任何一席(rc=5)。
-  #   FishMac/the maintainer MacBook 早就裝過所以一直沒人發現;總綱也記過「flock 是未宣告的 Homebrew 相依」。
+  # 10-04 Mac C 實機開席:macOS 沒有 flock,AIB 組裝座艙要它(flock -w / -n),缺了就開不了任何一席(rc=5)。
+  #   Mac B/Mac A 早就裝過所以一直沒人發現;總綱也記過「flock 是未宣告的 Homebrew 相依」。
   brew_dep() {   # brew_dep <套件> <白話名稱> <缺了會怎樣>
     if command -v "$1" >/dev/null 2>&1; then say "✓ $2(已裝)"; return 0; fi
     command -v brew >/dev/null 2>&1 || { miss+=("$2:Homebrew 沒裝起來,$3"); return 0; }
@@ -666,7 +666,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   # 3b. 公開 git(預設 https://github.com/ez2app/ez2-aib.git)或管理者指定的 --source
   case "$SOURCE" in
     ssh://*|git@*)
-      # 10-04 FishMac a seat:新機第一次連來源會停在英文的「Are you sure you want to continue connecting (yes/no)?」等人回答
+      # 10-04 Mac B a seat:新機第一次連來源會停在英文的「Are you sure you want to continue connecting (yes/no)?」等人回答
       #   (乾淨虛擬機實撞)⇒ 第一次自動接受主機指紋(之後指紋若被換掉仍會擋),而且絕不停下來問。
       export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15 -o ForwardAgent=no -o ClearAllForwardings=yes"   # 10-11 ssh 加固(舊載體搬回 A3)
       if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
@@ -710,7 +710,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     fi
     if [ -n "$tag" ]; then printf '%s' "$tag"; else printf '%s' "origin/main"; fi
   }
-  # 10-17 fishmac(Andy「有舊版先全備份,再用乾淨的環境裝」):舊版落後太多(同大版號差 AIB_CLEAN_GAP 個小版以上,預設 5;
+  # 10-17 mac-b(Andy「有舊版先全備份,再用乾淨的環境裝」):舊版落後太多(同大版號差 AIB_CLEAN_GAP 個小版以上,預設 5;
   #   或大 / 中版號不同)⇒ 不原地快轉:整份資料夾搬進 ~/aib-backup-<時間>/(連同 ~/.claude/settings.json 與還原說明),再重新下載乾淨的。
   _ver_num() { printf '%s' "$1" | awk -F. '{ if (NF < 3) { print -1; exit } printf "%d %d %d", $1, $2, $3 }'; }
   clean_if_far() {
@@ -787,7 +787,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   run mkdir -p "$HOME/.ez2-aib"
 
   # 5. 放進路徑、裝技能
-  # 10-03 FishMac a seat:要帶 --launcher,aib 這支包裝檔才會寫進 ~/.local/bin(不帶只裝周邊指令,新機會沒有 aib)
+  # 10-03 Mac B a seat:要帶 --launcher,aib 這支包裝檔才會寫進 ~/.local/bin(不帶只裝周邊指令,新機會沒有 aib)
   local PUB=0
   if [ ! -e "$DIR/tools/aib-install-path" ] && { [ -f "$DIR/bin/aib" ] || [ "$DRY" = 1 ]; }; then
     # 10-09 a seat 公開版(github.com/ez2app/ez2-aib 只有 aib 核心套件,沒有 aib-install-path):
@@ -797,7 +797,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     local link="$HOME/.local/bin/aib" cur="" KEEP=0
     [ -L "$link" ] && cur="$(readlink "$link")"
     if [ -e "$link" ] || [ -L "$link" ]; then
-      # 10-11 the maintainer FishMac 實裝:那裡是正在用的 aib ⇒ 不蓋,也不叫人自己蓋(蓋了就換掉正在用的駕駛艙);不算「缺」。
+      # 10-11 the maintainer Mac B 實裝:那裡是正在用的 aib ⇒ 不蓋,也不叫人自己蓋(蓋了就換掉正在用的駕駛艙);不算「缺」。
       if [ "$cur" != "$DIR/bin/aib" ]; then
         KEEP=1
         note+=("這台已經有另一個 aib($link),沒有動它:你原本的 aib 照常可用" \
@@ -824,7 +824,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
 
   # 6. 自檢
   if [ "$DRY" = 0 ]; then
-    # 10-03 FishMac a seat:自檢要走**路徑上**的 aib(開新視窗後使用者打的就是它);直跑倉庫那支,aib 沒進路徑也會過。
+    # 10-03 Mac B a seat:自檢要走**路徑上**的 aib(開新視窗後使用者打的就是它);直跑倉庫那支,aib 沒進路徑也會過。
     #   直接執行 ~/.local/bin/aib(不靠 PATH 順序,免得別處另一支 aib 冒充);結束碼與輸出分開看(不經管線,rc 不被吃掉)。
     local abin="$HOME/.local/bin/aib" vout vrc v=""
     [ "${KEEP:-0}" = 1 ] && abin="$DIR/bin/aib"   # 路徑上那支是別的 aib ⇒ 驗這份公開版本身
@@ -891,7 +891,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
             say "✓ 線上對話已備好(要開通:aib chat on --name \"<名稱>\" --country TW)"
           else note+=("線上對話的 nostr-sdk 沒裝成(多半是網路):之後跑 aib chat prepare 再補"); fi
         fi
-        # 10-25(@ae6a1 fishmac 實跑建議;Andy「安裝或更新 aib 時一併優化」):AI 符號字型 —— 沒有就裝 JetBrainsMono Nerd Font
+        # 10-25(@ae6a1 mac-b 實跑建議;Andy「安裝或更新 aib 時一併優化」):AI 符號字型 —— 沒有就裝 JetBrainsMono Nerd Font
         #   (只放使用者字型檔,不問);Apple 終端機設定檔字型畫不出 ⇒ 有終端機才問一次要不要改(回答過會記住),沒得問只印一行。
         #   aib update 也是重跑這支。非 Mac 什麼都不做;AIB_FONT_AUTO=0 略過;失敗不擋安裝。
         #   #361 r1 M2:下載那段包 5 分鐘時限(程式內另有 120 秒總時限);問人那段要讀終端機,不能丟背景,分開叫且不再下載。
@@ -907,7 +907,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   fi
   say "== 完成(全部花了 $(took "$T_ALL"))。缺的:${#miss[@]} 項"
   for m in "${miss[@]+"${miss[@]}"}"; do say "  ✗ $m"; done
-  # 10-17 fishmac:Codex 新掛點要人在 Codex 裡同意一次,那句夾在中間很容易漏看 ⇒ 結尾再列一次
+  # 10-17 mac-b:Codex 新掛點要人在 Codex 裡同意一次,那句夾在中間很容易漏看 ⇒ 結尾再列一次
   if [ "$DRY" = 0 ] && [ "$LINUX" != 1 ] && command -v codex >/dev/null 2>&1 && [ -f "$HOME/.codex/hooks.json" ]; then
     note+=("Codex 新加的掛點要你同意一次:開 Codex 打 /hooks(沒同意之前 Codex 那邊的自動整理不會跑,不影響 Claude)")
   fi
@@ -922,7 +922,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   else
     say "  · 之後要加裝 AI 工具:curl -fsSL $SELF_URL | bash -s -- --tools"
   fi
-  if [ "$LINUX" != 1 ]; then   # 10-17 fishmac:新用戶看不懂 <provider> <role> ⇒ 給一行能直接複製的
+  if [ "$LINUX" != 1 ]; then   # 10-17 mac-b:新用戶看不懂 <provider> <role> ⇒ 給一行能直接複製的
     local first_ai="claude" w
     for w in claude codex grok copilot agy; do command -v "$w" >/dev/null 2>&1 && { first_ai="$w"; break; }; done
     say "  · 開第一席(登入那家 AI 之後):aib $first_ai safe root   ← 安全模式的艦長席;想用別家把 $first_ai 換成 claude / codex / grok / copilot / agy"

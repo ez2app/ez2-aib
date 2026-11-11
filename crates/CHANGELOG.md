@@ -5,6 +5,12 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- `ErrorCode::ALL` can no longer drift from the enum unnoticed (a63ab 11-10; a merge once
+  turned two edits to `25` into a 26-entry array). New `ErrorCode::ordinal()` is an exhaustive
+  match, so a new code does not build until it is numbered; build-time checks fail when a
+  number points outside `ALL` or an `ALL` entry is not at its own number (missing or
+  repeated codes, wrong order). A test pins the wire order. `ALL` stays a public array.
+  Knives: `scripts/knives-errorcode.sh` (build-time knives use `scripts/knife-build.py`).
 - `aib-cloud-host build-info` prints one fixed line, `aib-build-info version=<v> commit=<40 hex>
   dirty=<0|1>;`, which `build.rs` takes from git only (dirty = changes in `crates/`, `Cargo.toml`,
   `Cargo.lock`, `rust-toolchain.toml` or `.cargo/`, untracked files included) (no environment variable can set it; no git
