@@ -279,6 +279,31 @@ jobs:
           set -eu
           ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # restore expectation: a REPLACE's rows are skipped and the counts come out short (ebb36 L2)
+          ck wpress.rs '        } else if starts_ci(h, b"REPLACE") {' '        } else if starts_ci(h, b"REPLACE-KNIFE") {' \
+             a_broken_dump_is_unknown
+          # restore expectation: a path longer than its field is cut short (ebb36 N1)
+          ck wpress.rs '    if block[PATH_END..].iter().any(|b| *b != 0) {' \
+             '    if block[PATH_END..].iter().any(|b| *b != 0) && false { // knife' \
+             a_cut_header_is_refused
+          # restore verify: a scheduled post the restored site published is a difference (ebb36 L1)
+          ck wpress.rs '        if SETTLING_STATUSES.contains(&k.1.as_str()) {' \
+             '        if false && SETTLING_STATUSES.contains(&k.1.as_str()) { // knife' \
+             a_scheduled_post_published_by_the_restored_site_is_not_a_difference
+          # restore verify: a scheduled post lost is not a difference
+          ck wpress.rs '    for (kind, (e, a)) in settling {' \
+             '    for (kind, (e, a)) in settling.into_iter().filter(|_| false) { // knife' \
+             a_scheduled_post_published_by_the_restored_site_is_not_a_difference
+          # restore verify: the site's counts are taken without their END line (a cut answer)
+          ck wpress.rs '    if !ended {' '    if false && !ended { // knife' \
+             what_the_site_printed_wrong_is_unknown
+          # restore verify: one post type and status printed twice is taken
+          ck wpress.rs '                    .insert(((*t).to_string(), (*s).to_string()), n)' \
+             '                    .insert(((*t).to_string(), (*s).to_string()), n).filter(|_| false) // knife' \
+             what_the_site_printed_wrong_is_unknown
+          # restore verify: the index.php placeholder in plugins/ is named as a plugin
+          ck wpress.rs '        None if e.name == "index.php" => None,' '        None if e.name == "index.knife" => None,' \
+             plugins_and_themes_are_named_like_wp_names_them
           # restore expectation (.wpress): revisions / auto-drafts / trash are judged (LIFF line lesson, 4542e 11-11)
           ck wpress.rs '        let only_listed = policy.advisory_types.contains(&k.0.as_str())' \
              '        let only_listed = false && policy.advisory_types.contains(&k.0.as_str()) // knife' \
@@ -294,10 +319,10 @@ jobs:
              row_separators_inside_strings_are_text
           # restore expectation: an INSERT's own column list is ignored for CREATE's order
           ck wpress.rs '        let cols = listed.as_ref().or_else(|| self.columns.get(&table));' \
-             '        let cols = self.columns.get(&table); // knife' \
+             '        let cols = listed.as_ref().filter(|_| false).or_else(|| self.columns.get(&table)); // knife' \
              an_inserts_own_column_list_decides_where_type_and_status_are
           # restore expectation: with two posts-like tables the first one is taken as the prefix
-          ck wpress.rs '            [one] => (*one).clone(),' '            [one, ..] => (*one).clone(), // knife' \
+          ck wpress.rs '            [one] => (*one).clone(),' '            [one, ..] if true => (*one).clone(), // knife' \
              two_posts_tables_leave_the_prefix_unknown
           # restore expectation: any number of extra users passes
           ck wpress.rs '    if users < expect.users || users > expect.users.saturating_add(policy.users_added) {' \
@@ -778,12 +803,19 @@ jobs:
           set -eu
           hk() { python3 -I scripts/knife.py "crates/aib-cloud-host/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud-host --locked "$4"; }
+          # restore verify: the administrators the restore added are not allowed for (4542e 11-11)
+          hk restorecmd.rs '                    wpress::compare(expect, &actual, &Policy::standard(users_extra))' \
+             '                    wpress::compare(expect, &actual, &Policy::standard(0)) // knife' \
+             verify_differs_when_posts_or_users_are_missing
+          # restore verify: the backup's plugins are counted as themes
+          hk restorecmd.rs '                out.plugins.insert(n);' '                out.themes.insert(n); // knife' \
+             verify_matches_when_the_site_holds_what_the_backup_said
           # restore expect: an archive cut before its end block is reliable (4542e 11-11)
           hk restorecmd.rs '    if !ended {' '    if !ended && false { // knife' \
              an_archive_without_its_end_block_is_not_reliable
           # restore expect: a plugin's own database.sql is counted as the site's
           hk restorecmd.rs '        let res = if root && entry.name == "database.sql" {' \
-             '        let res = if entry.name == "database.sql" { // knife' \
+             '        let res = if (root || true) && entry.name == "database.sql" { // knife' \
              only_the_root_database_counts
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \

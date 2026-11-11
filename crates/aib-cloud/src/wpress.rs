@@ -12,7 +12,8 @@
 //!
 //! Layout of a `.wpress` archive: one 4377-byte header before every file — name (255 bytes),
 //! size (14, decimal), modification time (12, decimal), path prefix (4088), then a tail field
-//! (8) that is not part of the path — followed by the file's bytes; the archive ends with a
+//! (8) that is not part of the path and must be all NUL (read either way — a 4096-byte path
+//! or 4088 + 8 — a longer path is refused, never cut short) — followed by the file's bytes; the archive ends with a
 //! header of zeros. The site's database is `database.sql` at the root (path prefix empty or
 //! `.`); a plugin may carry its own `.sql`, so only the root one counts. The table prefix is
 //! written as a placeholder in the dump; it is found from the `posts` table (the only one
@@ -26,7 +27,7 @@
 //!
 //! No I/O: the caller reads the archive and feeds this module headers and chunks.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -87,6 +88,9 @@ pub fn parse_header(block: &[u8]) -> Result<Header, String> {
     let size = field(&block[NAME_END..SIZE_END], "size")?;
     let mtime = field(&block[SIZE_END..MTIME_END], "time")?;
     let folder = field(&block[MTIME_END..PATH_END], "path")?;
+    if block[PATH_END..].iter().any(|b| *b != 0) {
+        return Err("a header's path runs into its tail".to_string());
+    }
     if size.is_empty() || !size.bytes().all(|b| b.is_ascii_digit()) {
         return Err("a header's size is not a number".to_string());
     }
@@ -517,6 +521,9 @@ impl SqlScan {
             }
         } else if starts_ci(h, b"INSERT") {
             self.fail("an INSERT without VALUES rows".to_string());
+        } else if starts_ci(h, b"REPLACE") {
+            // rows written another way than AI1WM writes them: not counted, so not judged
+            self.fail("a REPLACE statement, whose rows are not counted".to_string());
         }
     }
 
@@ -659,7 +666,13 @@ pub const ADVISORY_TYPES: &[&str] = &[
     "auto-draft",
     "customize_changeset",
     "oembed_cache",
+    // Action Scheduler's own queue (older versions): runs, and changes, once the site is up
+    "scheduled-action",
 ];
+/// Post statuses a restored site moves between by itself: a scheduled post whose time passed
+/// between the backup and the restore is published by the first cron run. Judged by their sum
+/// per post type; each one's own difference is listed.
+pub const SETTLING_STATUSES: &[&str] = &["future", "publish"];
 /// Post statuses listed but never judged.
 pub const ADVISORY_STATUSES: &[&str] = &["auto-draft", "trash"];
 
@@ -714,6 +727,7 @@ pub fn compare(expect: &Expect, actual: &Actual, policy: &Policy<'_>) -> Verdict
     let mut strict = Vec::new();
     let mut advisory = Vec::new();
     let mut judged = 0u64;
+    let mut settling: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut keys: Vec<&(String, String)> = expect.posts.keys().chain(actual.posts.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -735,8 +749,27 @@ pub fn compare(expect: &Expect, actual: &Actual, policy: &Policy<'_>) -> Verdict
             continue;
         }
         judged += e;
+        if SETTLING_STATUSES.contains(&k.1.as_str()) {
+            let sum = settling.entry(k.0.clone()).or_insert((0, 0));
+            sum.0 += e;
+            sum.1 += a;
+            if e != a {
+                advisory.push(d);
+            }
+            continue;
+        }
         if e != a {
             strict.push(d);
+        }
+    }
+    for (kind, (e, a)) in settling {
+        if e != a {
+            strict.push(Diff {
+                kind,
+                status: SETTLING_STATUSES.join("+"),
+                expected: e,
+                actual: a,
+            });
         }
     }
     if judged == 0 {
@@ -757,6 +790,138 @@ pub fn compare(expect: &Expect, actual: &Actual, policy: &Policy<'_>) -> Verdict
         Verdict::Match { advisory }
     } else {
         Verdict::Differ { strict, advisory }
+    }
+}
+
+/// Reads what the site's own WordPress printed for its counts: lines `P\t<type>\t<status>\t<n>`,
+/// one line `U\t<n>`, then `END`. Anything else — an error line, a warning printed into the
+/// output, a missing or extra field, a number that is not one, a cell twice, no `END` — makes
+/// the counts unknown; nothing is skipped.
+pub fn actual_from_wp(out: &str) -> Result<Actual, String> {
+    let mut posts: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut users: Option<u64> = None;
+    let mut ended = false;
+    for line in out.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if ended {
+            if line.trim().is_empty() {
+                continue;
+            }
+            return Err("the site printed more after its counts".to_string());
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f.as_slice() {
+            ["P", t, s, n] => {
+                let n = count(n)?;
+                if t.is_empty()
+                    || t.chars().any(char::is_control)
+                    || s.chars().any(char::is_control)
+                {
+                    return Err(
+                        "the site printed a post type or status that is not plain".to_string()
+                    );
+                }
+                if posts
+                    .insert(((*t).to_string(), (*s).to_string()), n)
+                    .is_some()
+                {
+                    return Err("the site printed one post type and status twice".to_string());
+                }
+            }
+            ["U", n] => {
+                if users.replace(count(n)?).is_some() {
+                    return Err("the site printed its users twice".to_string());
+                }
+            }
+            ["END"] => ended = true,
+            _ => return Err("the site printed something that is not a count".to_string()),
+        }
+    }
+    if !ended {
+        return Err("the site's counts did not finish".to_string());
+    }
+    let Some(users) = users else {
+        return Err("the site printed no user count".to_string());
+    };
+    Ok(Actual {
+        posts,
+        users: Some(users),
+    })
+}
+
+fn count(n: &str) -> Result<u64, String> {
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("the site printed a count that is not a number".to_string());
+    }
+    n.parse()
+        .map_err(|_| "the site printed a count out of range".to_string())
+}
+
+/// Plugin or theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Part {
+    /// Under `plugins/`.
+    Plugin,
+    /// Under `themes/`.
+    Theme,
+}
+
+/// Which plugin or theme an archive entry belongs to, named the way `wp plugin list` /
+/// `wp theme list` name it (the folder; a single-file plugin by its file name without
+/// `.php`). The `index.php` placeholders belong to none.
+pub fn part_of(e: &Entry) -> Option<(Part, String)> {
+    let mut seg = e.folder.split('/');
+    let part = match seg.next() {
+        Some("plugins") => Part::Plugin,
+        Some("themes") => Part::Theme,
+        _ => return None,
+    };
+    match seg.next() {
+        Some(dir) => Some((part, dir.to_string())),
+        None if e.name == "index.php" => None,
+        None => Some((
+            part,
+            e.name.strip_suffix(".php").unwrap_or(&e.name).to_string(),
+        )),
+    }
+}
+
+/// Names one per line as `wp plugin list --field=name` prints them. No output, or a name
+/// with spaces or control characters, is unknown.
+pub fn names(out: &str) -> Result<BTreeSet<String>, String> {
+    let mut set = BTreeSet::new();
+    for line in out.lines() {
+        let n = line.strip_suffix('\r').unwrap_or(line);
+        if n.is_empty() {
+            continue;
+        }
+        if n.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err("the list holds a name that is not plain".to_string());
+        }
+        set.insert(n.to_string());
+    }
+    if set.is_empty() {
+        return Err("the list is empty".to_string());
+    }
+    Ok(set)
+}
+
+/// What the backup had that the site lacks, and what the site has that the backup did not.
+/// Listed for a person, never judged: a restore installs its own tools, and a plugin can be
+/// on disk under a name `wp` spells differently.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SetDiff {
+    /// In the backup, not on the site.
+    pub missing_from_site: Vec<String>,
+    /// On the site, not in the backup.
+    pub unexpected_on_site: Vec<String>,
+}
+
+/// The two differences of a backup's set and a site's set.
+pub fn set_diff(backup: &BTreeSet<String>, site: &BTreeSet<String>) -> SetDiff {
+    SetDiff {
+        missing_from_site: backup.difference(site).cloned().collect(),
+        unexpected_on_site: site.difference(backup).cloned().collect(),
     }
 }
 
@@ -848,6 +1013,10 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
         let h = header("database.sql", "1234", "");
         assert!(parse_header(&h[..HEADER_LEN - 1]).is_err());
         assert!(parse_header(&[]).is_err());
+        // a path longer than its field runs into the tail: refused, not cut short
+        let mut t = header("a.php", "1", "plugins/x");
+        t[HEADER_LEN - 1] = b'x';
+        assert!(parse_header(&t).unwrap_err().contains("tail"));
     }
 
     #[test]
@@ -955,6 +1124,15 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
         assert!(scan(&early, 64).unwrap_err().contains("before its columns"));
         let no_values = format!("{DUMP}INSERT INTO `t` SELECT 1;\n");
         assert!(scan(&no_values, 64).is_err());
+        for verb in ["REPLACE", "replace"] {
+            let replace = format!(
+                "{DUMP}{verb} INTO `SERVMASK_PREFIX_posts` VALUES (9,'x','','publish',0,'post');\n"
+            );
+            assert!(
+                scan(&replace, 64).unwrap_err().contains("REPLACE"),
+                "{verb}"
+            );
+        }
     }
 
     #[test]
@@ -997,6 +1175,43 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
             Verdict::Match { advisory } => assert_eq!(advisory.len(), 3),
             v => panic!("{v:?}"),
         }
+    }
+
+    #[test]
+    fn a_scheduled_post_published_by_the_restored_site_is_not_a_difference() {
+        let e = expect();
+        let mut a = actual_like(&e);
+        let mut e2 = e.clone();
+        e2.posts.insert(k("post", "future"), 1);
+        a.posts
+            .insert(k("post", "publish"), a.posts[&k("post", "publish")] + 1);
+        match compare(&e2, &a, &Policy::standard(0)) {
+            Verdict::Match { advisory } => {
+                assert!(advisory
+                    .iter()
+                    .any(|d| d.status == "future" && d.actual == 0));
+                assert!(advisory.iter().any(|d| d.status == "publish"));
+            }
+            v => panic!("{v:?}"),
+        }
+        // one scheduled post lost is still a difference
+        a.posts
+            .insert(k("post", "publish"), a.posts[&k("post", "publish")] - 1);
+        match compare(&e2, &a, &Policy::standard(0)) {
+            Verdict::Differ { strict, .. } => {
+                assert_eq!(strict.len(), 1);
+                assert_eq!(strict[0].status, "future+publish");
+            }
+            v => panic!("{v:?}"),
+        }
+        // Action Scheduler's queue is listed, never judged
+        a.posts
+            .insert(k("post", "publish"), a.posts[&k("post", "publish")] + 1);
+        a.posts.insert(k("scheduled-action", "pending"), 7);
+        assert!(matches!(
+            compare(&e2, &a, &Policy::standard(0)),
+            Verdict::Match { .. }
+        ));
     }
 
     #[test]
@@ -1053,5 +1268,76 @@ CREATE TABLE `SERVMASK_PREFIX_maspik_options` (
             compare(&e, &a, &Policy::standard(0)),
             Verdict::Unknown(_)
         ));
+    }
+    #[test]
+    fn the_sites_counts_are_read() {
+        let a = actual_from_wp("P\tpost\tpublish\t3\nP\tpage\tdraft\t1\r\nU\t2\nEND\n").unwrap();
+        assert_eq!(a.posts.get(&k("post", "publish")), Some(&3));
+        assert_eq!(a.posts.get(&k("page", "draft")), Some(&1));
+        assert_eq!(a.users, Some(2));
+        // a site with no posts at all is a count (zero), not unknown
+        assert_eq!(actual_from_wp("U\t1\nEND\n").unwrap().posts.len(), 0);
+    }
+
+    #[test]
+    fn what_the_site_printed_wrong_is_unknown() {
+        for out in [
+            "",
+            "\n",
+            "P\tpost\tpublish\t3\nU\t2\n",
+            "P\tpost\tpublish\nU\t2\nEND",
+            "P\tpost\tpublish\t3\textra\nU\t2\nEND",
+            "P\tpost\tpublish\tx3\nU\t2\nEND",
+            "P\tpost\tpublish\t-1\nU\t2\nEND",
+            "P\tpost\tpublish\t3\nU\t\nEND",
+            "P\tpost\tpublish\t3\nEND",
+            "ERR\n",
+            "Warning: something\nP\tpost\tpublish\t3\nU\t2\nEND",
+            "P\tpost\tpublish\t3\nP\tpost\tpublish\t3\nU\t2\nEND",
+            "P\tpost\tpublish\t3\nU\t2\nU\t2\nEND",
+            "P\tpost\tpublish\t3\nU\t2\nEND\nP\tpage\tdraft\t1",
+            "P\t\tpublish\t3\nU\t2\nEND",
+            "P\tpost\tpublish\t99999999999999999999999\nU\t2\nEND",
+        ] {
+            assert!(actual_from_wp(out).is_err(), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn plugins_and_themes_are_named_like_wp_names_them() {
+        let e = |name: &str, folder: &str| Entry {
+            name: name.into(),
+            folder: folder.into(),
+            size: 1,
+        };
+        assert_eq!(
+            part_of(&e("a.php", "plugins/akismet")),
+            Some((Part::Plugin, "akismet".into()))
+        );
+        assert_eq!(
+            part_of(&e("hello.php", "plugins")),
+            Some((Part::Plugin, "hello".into()))
+        );
+        assert_eq!(part_of(&e("index.php", "plugins")), None);
+        assert_eq!(
+            part_of(&e("style.css", "themes/blocksy")),
+            Some((Part::Theme, "blocksy".into()))
+        );
+        assert_eq!(part_of(&e("x.jpg", "uploads/2026")), None);
+        assert_eq!(part_of(&e("database.sql", "")), None);
+    }
+
+    #[test]
+    fn a_list_of_names_is_read_and_compared() {
+        let site = names("akismet\nredis-cache\r\n\n").unwrap();
+        assert_eq!(site.len(), 2);
+        assert!(names("").is_err());
+        assert!(names("a b\n").is_err());
+        let backup: BTreeSet<S> = ["akismet".to_string(), "gone".to_string()]
+            .into_iter()
+            .collect();
+        let d = set_diff(&backup, &site);
+        assert_eq!(d.missing_from_site, vec!["gone".to_string()]);
+        assert_eq!(d.unexpected_on_site, vec!["redis-cache".to_string()]);
     }
 }

@@ -2,16 +2,27 @@
 //! `aib-cloud-host restore expect <file.wpress>` — what a customer's All-in-One WP Migration
 //! backup says the restored site must hold, read **before** the import (the counts taken
 //! after it would be compared with themselves). Read-only: one file is read, nothing is
-//! written, no network, no site is touched. The rules live in `aib_cloud::wpress`; this is
-//! the reading half.
+//! written, no network, no site is touched. Exit status: 0 the expectation is reliable, 3 it
+//! is not (the reasons say why; the caller must stop, not guess), 2 usage.
 //!
-//! Prints one JSON document. Exit status: 0 the expectation is reliable, 3 it is not (the
-//! reasons say why; the caller must stop, not guess), 2 usage.
+//! `aib-cloud-host restore verify <code> <file.wpress> [--users-extra N] [--records dir]` —
+//! after the import, the same counts taken from the restored site's database by its own
+//! WordPress (`wp eval` of one fixed piece of PHP, plugins and themes not loaded, run as the
+//! site's user inside its container; the site code is checked and taken from the site's
+//! record, nothing typed reaches the command or the SQL), compared by
+//! `aib_cloud::wpress::compare`. `--users-extra` is how many administrators the restore
+//! added on purpose. Plugins and themes in the backup and on the site are listed side by side
+//! and never judged. Read-only. Exit status: 0 match, 1 differ, 3 cannot tell, 2 usage.
+//!
+//! Prints one JSON document. The rules live in `aib_cloud::wpress`; this is the reading half.
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::process::Command;
+use std::time::Duration;
 
-use aib_cloud::wpress::{self, Header, SqlScan, HEADER_LEN};
+use aib_cloud::wpress::{self, Header, Part, Policy, SqlScan, Verdict, HEADER_LEN};
 use serde_json::{json, Map, Value};
 
 /// Largest root `package.json` read.
@@ -30,6 +41,10 @@ pub struct Read1 {
     pub expect: Option<Result<wpress::Expect, String>>,
     /// Why the archive itself cannot be trusted.
     pub reasons: Vec<String>,
+    /// Plugins in the archive, named as `wp plugin list` names them.
+    pub plugins: BTreeSet<String>,
+    /// Themes in the archive.
+    pub themes: BTreeSet<String>,
 }
 
 /// Reads an archive from any seekable source.
@@ -61,6 +76,15 @@ pub fn read_archive<R: Read + Seek>(mut r: R) -> Read1 {
             }
         };
         out.entries += 1;
+        match wpress::part_of(&entry) {
+            Some((Part::Plugin, n)) => {
+                out.plugins.insert(n);
+            }
+            Some((Part::Theme, n)) => {
+                out.themes.insert(n);
+            }
+            None => {}
+        }
         let root = entry.at_root();
         let res = if root && entry.name == "database.sql" {
             if out.database_bytes.is_some() {
@@ -203,27 +227,207 @@ pub fn document(read: &Read1) -> (Value, bool) {
     (Value::Object(doc), reliable)
 }
 
-/// `restore expect <file>`.
-pub fn cmd(args: &[String]) -> Result<u8, String> {
-    let [sub, path] = args else {
-        return Err("restore needs expect <file.wpress>".to_owned());
+/// The PHP the restored site's own WordPress runs to count itself. Fixed: nothing from
+/// outside is put into it. The tables are named by WordPress (`$wpdb`), so the prefix is
+/// whatever the site's configuration says.
+pub const COUNT_PHP: &str = r#"global $wpdb;
+$r = $wpdb->get_results("SELECT post_type, post_status, COUNT(*) FROM {$wpdb->posts} GROUP BY post_type, post_status", ARRAY_N);
+if ($wpdb->last_error !== "" || !is_array($r)) { echo "ERR\n"; return; }
+foreach ($r as $x) { echo "P\t" . $x[0] . "\t" . $x[1] . "\t" . $x[2] . "\n"; }
+$u = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->users}");
+if ($u === null || $wpdb->last_error !== "") { echo "ERR\n"; return; }
+echo "U\t" . $u . "\n";
+echo "END\n";"#;
+
+/// What was read from the restored site; `None` is "the command did not answer".
+#[derive(Debug, Default)]
+pub struct SiteOut {
+    /// Output of [`COUNT_PHP`].
+    pub counts: Option<String>,
+    /// `wp plugin list --field=name`.
+    pub plugins: Option<String>,
+    /// `wp theme list --field=name`.
+    pub themes: Option<String>,
+}
+
+fn diffs(list: &[wpress::Diff]) -> Value {
+    json!(list
+        .iter()
+        .map(|d| json!({ "kind": d.kind, "status": d.status, "expected": d.expected, "actual": d.actual }))
+        .collect::<Vec<_>>())
+}
+
+fn listed(backup: &BTreeSet<String>, site: Option<&str>) -> Value {
+    let Some(out) = site else {
+        return json!({ "unknown": "the site's list could not be read" });
     };
-    if sub != "expect" {
-        return Err("restore needs expect <file.wpress>".to_owned());
+    match wpress::names(out) {
+        Ok(set) => {
+            let d = wpress::set_diff(backup, &set);
+            json!({
+                "in_backup": backup.len(),
+                "on_site": set.len(),
+                "missing_from_site": d.missing_from_site,
+                "unexpected_on_site": d.unexpected_on_site,
+                "judged": false,
+            })
+        }
+        Err(e) => json!({ "unknown": e }),
     }
-    let read = match File::open(path) {
+}
+
+/// The document `restore verify` prints, and its exit status.
+pub fn verify_doc(code: &str, read: &Read1, site: &SiteOut, users_extra: u64) -> (Value, u8) {
+    let (expect_doc, reliable) = document(read);
+    let mut doc = Map::new();
+    doc.insert("site".into(), json!(code));
+    doc.insert("users_extra_allowed".into(), json!(users_extra));
+    doc.insert("expect".into(), expect_doc);
+    let verdict = match (&read.expect, reliable) {
+        (Some(Ok(expect)), true) => match site.counts.as_deref() {
+            None => Verdict::Unknown("the site's counts could not be read".to_owned()),
+            Some(out) => match wpress::actual_from_wp(out) {
+                Ok(actual) => {
+                    let mut posts: Map<String, Value> = Map::new();
+                    for ((t, st), n) in &actual.posts {
+                        let slot = posts.entry(t.clone()).or_insert_with(|| json!({}));
+                        if let Some(o) = slot.as_object_mut() {
+                            o.insert(st.clone(), json!(n));
+                        }
+                    }
+                    doc.insert(
+                        "actual".into(),
+                        json!({ "posts_by_type_status": posts, "users": actual.users }),
+                    );
+                    wpress::compare(expect, &actual, &Policy::standard(users_extra))
+                }
+                Err(e) => Verdict::Unknown(e),
+            },
+        },
+        _ => Verdict::Unknown("the backup's expectation is not reliable".to_owned()),
+    };
+    let rc = match &verdict {
+        Verdict::Match { advisory } => {
+            doc.insert("verdict".into(), json!("match"));
+            doc.insert("advisory".into(), diffs(advisory));
+            0
+        }
+        Verdict::Differ { strict, advisory } => {
+            doc.insert("verdict".into(), json!("differ"));
+            doc.insert("strict".into(), diffs(strict));
+            doc.insert("advisory".into(), diffs(advisory));
+            1
+        }
+        Verdict::Unknown(why) => {
+            doc.insert("verdict".into(), json!("unknown"));
+            doc.insert("reason".into(), json!(why));
+            3
+        }
+    };
+    doc.insert(
+        "plugins".into(),
+        listed(&read.plugins, site.plugins.as_deref()),
+    );
+    doc.insert(
+        "themes".into(),
+        listed(&read.themes, site.themes.as_deref()),
+    );
+    (Value::Object(doc), rc)
+}
+
+fn open_archive(path: &str) -> Read1 {
+    match File::open(path) {
         Ok(f) => read_archive(BufReader::new(f)),
         Err(e) => Read1 {
             reasons: vec![format!("the backup could not be opened: {e}")],
             ..Read1::default()
         },
+    }
+}
+
+/// Runs `wp` as the site's user inside its container; `None` when it does not answer cleanly.
+fn wp(ct: u32, code: &str, args: &[&str]) -> Option<String> {
+    let ct = ct.to_string();
+    let path = format!("--path=/var/www/{code}");
+    let mut cmd = Command::new("pct");
+    cmd.args([
+        "exec",
+        &ct,
+        "--",
+        "sudo",
+        "-u",
+        code,
+        "wp",
+        &path,
+        "--skip-plugins",
+        "--skip-themes",
+    ])
+    .args(args);
+    crate::probe::run_capture(&mut cmd, Duration::from_secs(120)).ok()
+}
+
+fn cmd_verify(args: &[String]) -> Result<u8, String> {
+    const USAGE: &str =
+        "restore verify needs <site code> <file.wpress> [--users-extra N] [--records dir]";
+    let (Some(code), Some(path)) = (args.first(), args.get(1)) else {
+        return Err(USAGE.to_owned());
     };
-    let (doc, reliable) = document(&read);
+    if code.starts_with("--") || path.starts_with("--") {
+        return Err(USAGE.to_owned());
+    }
+    let mut users_extra = 0u64;
+    let mut records = "/var/lib/ez2-cloud/sites".to_owned();
+    let mut it = args[2..].iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--users-extra" => {
+                users_extra = it
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .ok_or("--users-extra needs a number")?;
+            }
+            "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    // checks the code's form and reads the container number from the site's own record
+    let spec = crate::quarantinecmd::load_spec(code, &records)?;
+    let read = open_archive(path);
+    let site = if document(&read).1 {
+        SiteOut {
+            counts: wp(spec.ct, &spec.code, &["eval", COUNT_PHP]),
+            plugins: wp(spec.ct, &spec.code, &["plugin", "list", "--field=name"]),
+            themes: wp(spec.ct, &spec.code, &["theme", "list", "--field=name"]),
+        }
+    } else {
+        // the backup cannot be trusted: the site is not asked anything
+        SiteOut::default()
+    };
+    let (doc, rc) = verify_doc(&spec.code, &read, &site, users_extra);
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
-    Ok(if reliable { 0 } else { 3 })
+    Ok(rc)
+}
+
+/// `restore expect <file>` | `restore verify <code> <file> …`.
+pub fn cmd(args: &[String]) -> Result<u8, String> {
+    match args.first().map(String::as_str) {
+        Some("verify") => cmd_verify(&args[1..]),
+        Some("expect") => {
+            let [_, path] = args else {
+                return Err("restore expect needs <file.wpress>".to_owned());
+            };
+            let (doc, reliable) = document(&open_archive(path));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+            );
+            Ok(if reliable { 0 } else { 3 })
+        }
+        _ => Err("restore needs expect <file.wpress> | verify <site code> <file.wpress> [--users-extra N]".to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -363,5 +567,113 @@ mod tests {
         assert!(cmd(&["check".into(), "x".into()]).is_err());
         assert!(cmd(&["expect".into()]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn site(counts: &str) -> SiteOut {
+        SiteOut {
+            counts: Some(counts.to_owned()),
+            plugins: Some("x\nakismet\n".to_owned()),
+            themes: Some("twentytwentyfive\n".to_owned()),
+        }
+    }
+
+    const SAME: &str = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nU\t1\nEND\n";
+
+    #[test]
+    fn verify_matches_when_the_site_holds_what_the_backup_said() {
+        let r = read_archive(Cursor::new(good()));
+        let (doc, rc) = verify_doc("s1", &r, &site(SAME), 0);
+        assert_eq!(rc, 0, "{doc}");
+        assert_eq!(doc["verdict"], "match");
+        assert_eq!(doc["actual"]["users"], 1);
+        assert_eq!(doc["plugins"]["judged"], false);
+        assert_eq!(doc["plugins"]["in_backup"], 1);
+        assert_eq!(doc["themes"]["in_backup"], 0);
+        assert_eq!(doc["plugins"]["unexpected_on_site"][0], "akismet");
+        assert_eq!(doc["themes"]["unexpected_on_site"][0], "twentytwentyfive");
+        assert_eq!(
+            doc["plugins"]["missing_from_site"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        // revisions are listed, not judged
+        let more = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nP\trevision\tinherit\t4\nU\t1\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &site(more), 0);
+        assert_eq!(rc, 0, "{doc}");
+        assert_eq!(doc["advisory"][0]["kind"], "revision");
+    }
+
+    #[test]
+    fn verify_differs_when_posts_or_users_are_missing() {
+        let r = read_archive(Cursor::new(good()));
+        let fewer = "P\tpost\tpublish\t1\nU\t1\nEND\n";
+        let (doc, rc) = verify_doc("s1", &r, &site(fewer), 0);
+        assert_eq!(rc, 1, "{doc}");
+        assert_eq!(doc["verdict"], "differ");
+        assert_eq!(doc["strict"][0]["kind"], "page");
+        // an administrator the restore added on purpose
+        let two = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nU\t2\nEND\n";
+        assert_eq!(verify_doc("s1", &r, &site(two), 0).1, 1);
+        assert_eq!(verify_doc("s1", &r, &site(two), 1).1, 0);
+    }
+
+    #[test]
+    fn verify_cannot_tell_from_a_bad_backup_or_a_silent_site() {
+        let r = read_archive(Cursor::new(good()));
+        let (doc, rc) = verify_doc("s1", &r, &SiteOut::default(), 0);
+        assert_eq!(rc, 3, "{doc}");
+        assert_eq!(doc["verdict"], "unknown");
+        assert!(doc["plugins"]["unknown"].is_string());
+        for bad in [
+            "",
+            "ERR\n",
+            "P\tpost\tpublish\t1\nU\t1\n",
+            "P\tpost\tpublish\tmany\nU\t1\nEND\n",
+        ] {
+            assert_eq!(verify_doc("s1", &r, &site(bad), 0).1, 3, "{bad:?}");
+        }
+        let mut cut = good();
+        cut.truncate(cut.len() - HEADER_LEN);
+        let r = read_archive(Cursor::new(cut));
+        let (doc, rc) = verify_doc("s1", &r, &site(SAME), 0);
+        assert_eq!(rc, 3);
+        assert!(doc["reason"].to_string().contains("not reliable"));
+    }
+
+    #[test]
+    fn verify_is_refused_before_anything_runs_when_the_words_are_wrong() {
+        let a = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        assert!(cmd(&a(&["verify"])).is_err());
+        assert!(cmd(&a(&["verify", "s1"])).is_err());
+        assert!(cmd(&a(&["verify", "--users-extra", "1"])).is_err());
+        assert!(cmd(&a(&["verify", "s1", "b.wpress", "--users-extra", "x"])).is_err());
+        assert!(cmd(&a(&["verify", "s1", "b.wpress", "--other"])).is_err());
+        let e = cmd(&a(&[
+            "verify",
+            "../x",
+            "b.wpress",
+            "--records",
+            "/nonexistent-aib",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("not valid"), "{e}");
+        assert!(cmd(&a(&[
+            "verify",
+            "s1",
+            "b.wpress",
+            "--records",
+            "/nonexistent-aib"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn the_counting_php_names_no_table_itself() {
+        assert!(COUNT_PHP.contains("{$wpdb->posts}"));
+        assert!(COUNT_PHP.contains("{$wpdb->users}"));
+        assert!(!COUNT_PHP.contains("wp_"));
+        assert!(COUNT_PHP.trim_end().ends_with("echo \"END\\n\";"));
     }
 }
