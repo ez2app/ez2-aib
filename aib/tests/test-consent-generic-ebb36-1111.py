@@ -20,7 +20,7 @@ G8 git 狀態(c477a #662 L1、#670 M1/N1):最後一次 commit 存的內容 sha25
    (skip-worktree / assume-unchanged 藏起來的改動也是);沒 commit 過 / 被刪 / 不是 git 夾 ⇒ untracked;相對路徑 / pin
    不對 ⇒ unknown;那個夾的 clean filter 與 fsmonitor 不會被執行;對話框四種狀態各一行
 刀(複本 + run_guarded):KG1 decide 不看 stage 結果 ⇒ G4 紅;KG2 supervise 不帶參數複本旗標 ⇒ G5 紅;
-  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅;KG4 不比 pin 就給 committed ⇒ G8 紅;KG5 非 git 夾判 unknown ⇒ G8 紅
+  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅;KG4 不比 pin 就給 committed ⇒ G8 紅;KG5 非 git 夾判 unknown ⇒ G8 紅;KG6 拿掉 GIT_NO_REPLACE_OBJECTS ⇒ G8 紅
 """
 import json
 import os
@@ -384,6 +384,20 @@ class G8Git(unittest.TestCase):
         self.g("update-index", "--assume-unchanged", self.p.name)
         self.assertEqual(self.state(self.sha(v2)), {"state": "changed"})
 
+    # c477a #670 r2 L1: a replace ref makes cat-file give other bytes while log still prints the reviewed commit
+    def test_g8_a_replaced_blob_is_not_committed(self):
+        v1, v2 = "echo 1\n", "echo 2\n"
+        self.g("add", self.p.name)
+        self.g("commit", "-q", "-m", "x")
+        full = self.g("log", "-1", "--format=%H").strip()
+        old = self.g("rev-parse", "%s:%s" % (full, self.p.name)).strip()
+        self.p.write_text(v2)
+        new = self.g("hash-object", "-w", self.p.name).strip()
+        self.g("replace", old, new)
+        self.assertEqual(self.g("cat-file", "blob", "%s:%s" % (full, self.p.name)), v2, "replace did not take")
+        self.assertEqual(self.g("log", "-1", "--format=%H").strip(), full)
+        self.assertEqual(self.state(self.sha(v2)), {"state": "changed"})
+
     def test_g8_folder_settings_do_not_run(self):
         mark = self.d / "PWNED"
         hook = self.d / "hook.sh"
@@ -420,6 +434,9 @@ class Knives(unittest.TestCase):
 
     def test_kg4_committed_without_comparing_to_the_pin(self):
         self._knife("    if hashlib.sha256(r[1]).hexdigest() != pin:", "    if False:", "G8Git")
+
+    def test_kg6_replace_refs_are_used(self):
+        self._knife("            \"GIT_NO_REPLACE_OBJECTS\": \"1\", ", "            ", "G8Git")
 
     def test_kg5_outside_git_reads_as_unknown(self):
         self._knife("        return {\"state\": \"untracked\"}  # 不在 git 夾裡",

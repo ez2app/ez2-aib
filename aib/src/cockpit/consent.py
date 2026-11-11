@@ -624,15 +624,19 @@ def program_git_state(real, pin, run=None):
     committed 只在「最後一次動到這支程式的 commit 裡,git 存的那份內容 sha256 = pin」時才給(c477a #670 M1):git status
     判乾淨可以不 commit 就偽造(skip-worktree / assume-unchanged / clean filter),那時對話框又叫人對 PR,反而幫騙。
     只用 rev-parse、log、cat-file blob:這三個不跑 hook、filter、fsmonitor;全域與系統設定不讀,log 不驗簽(驗簽會跑
-    gpg.program)。這不是根治:同帳號 AI 也能 commit;它讓「剛寫好、還沒進 git」或「跟 commit 的不一樣」很顯眼。"""
+    gpg.program),也不吃 refs/replace。這不是根治:同帳號 AI 也能 commit,也能直接改 .git/objects 下的物件檔
+    (git 讀鬆散物件不重算雜湊)或用 objects/info/alternates 指到別處(c477a #670 r2 N2);它讓「剛寫好、還沒進 git」
+    或「跟 commit 的不一樣」很顯眼。真正的對照是人在 GitHub 上看那個 commit 碼,所以對話框照樣叫人「請對 PR」。"""
     run = run or subprocess.run
     p = Path(str(real or ""))
     if not p.is_absolute() or _has_bad_char(str(p)) or not isinstance(pin, str) or not _PIN_RE.match(pin):
         return {"state": "unknown"}
     base = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
             "-C", str(p.parent)]
+    # GIT_NO_REPLACE_OBJECTS:refs/replace 能讓 cat-file 吐另一份內容、log 卻印原本的 commit 碼(c477a #670 r2 L1)。
+    # HOME 指一個空的、寫不進的夾(r2 N1)。
     genv = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
-            "LC_ALL": "C", "HOME": str(p.parent)}
+            "GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C", "HOME": "/var/empty"}
 
     def git(*args):
         try:
