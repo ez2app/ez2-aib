@@ -492,10 +492,10 @@ fn offline_file_source_reads_only_what_was_recorded() {
     std::fs::write(d.join("index.json"), r#"{"repos/x/commits/y":"a"}"#).unwrap();
     let f = FileSource::open(&d).unwrap();
     assert_eq!(f.get("repos/x/commits/y").unwrap(), "{\"ok\":1}");
-    assert!(f
-        .get("repos/x/commits/z")
-        .unwrap_err()
-        .contains("not recorded"));
+    let e = f.get("repos/x/commits/z").unwrap_err();
+    assert!(e.contains("not recorded"), "{e}");
+    // aib-flaky depends on this prefix (ebb36 #666 N1)
+    assert!(e.starts_with(aib_cireuse::gh::OFFLINE_PREFIX), "{e}");
     std::fs::write(d.join("index.json"), r#"{"p":"../etc/passwd"}"#).unwrap();
     assert!(
         FileSource::open(&d).is_err(),

@@ -239,8 +239,9 @@ fn head_rust(src: &dyn Source, repo: &str, head: &str) -> Option<RustMap> {
     rust_map(&files, &|p| read_file(src, repo, head, p)).ok()
 }
 
-/// How aib-cireuse's FileSource (--offline DIR) starts every error it returns.
-const OFFLINE: &str = "offline";
+/// How aib-cireuse's FileSource (--offline DIR) starts every error it returns (its own
+/// constant, so a change of wording there cannot silently turn this check off; ebb36 #666 N1).
+const OFFLINE: &str = aib_cireuse::gh::OFFLINE_PREFIX;
 
 /// GitHub lists at most this many commits of a PR.
 const PR_COMMITS_CAP: usize = 250;

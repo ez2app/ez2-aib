@@ -1331,6 +1331,35 @@ fn a_crate_from_the_panic_uses_that_crates_closure() {
     );
 }
 
+// knife: a panic in a crate's root file names that crate, but the test may live in a crate
+// that uses it (ebb36 #666 M1): an integration test of store panics inside core's lib.rs
+#[test]
+fn a_crate_from_the_panic_counts_the_crates_that_use_it() {
+    let fp = "rs:@crates/core::lock";
+    let p = prior("other", fp);
+    let log = no_running(
+        "lock",
+        "thread 'lock' (1) panicked at crates/core/src/lib.rs:40:9:",
+    );
+    for (path, overlap) in [
+        // store depends on core: the test may be store's
+        ("crates/store/src/lib.rs", true),
+        ("crates/store/tests/store.rs", true),
+        ("crates/core/src/lib.rs", true),
+        // nothing depends on other, and other is not core's dependency
+        ("crates/other/src/lib.rs", false),
+    ] {
+        let mut f = rust_facts(&[path], Some(rust_map_fixture()));
+        f.attempts[0].log = Some(log.clone());
+        let (v, r) = one(&f, &p);
+        if overlap {
+            assert_eq!(r, format!("impact_overlap: {fp}"), "{path}");
+        } else {
+            assert_eq!(v, "suspected_flaky", "{path}: {r}");
+        }
+    }
+}
+
 // ---------- offline: a log that was not recorded is said, not swallowed ----------
 
 /// FileSource (--offline DIR) prefixes every error with "offline".

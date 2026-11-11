@@ -293,6 +293,10 @@ jobs:
           lk "        let crates = match bin.strip_prefix('@') {" \
              '        let crates = match None::<&str> {' \
              a_crate_from_the_panic_uses_that_crates_closure
+          # a crate from the panic is judged alone, not with the crates that use it (ebb36 #666 M1)
+          lk '                        if uses {' \
+             '                        if uses && false {' \
+             a_crate_from_the_panic_counts_the_crates_that_use_it
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

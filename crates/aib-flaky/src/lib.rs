@@ -215,6 +215,12 @@ fn panic_at(line: &str) -> Option<(String, String)> {
 ///   `@<crate>`: the crate is known, its binary name is not.
 ///
 /// None = cannot tell (a panic in another file, outside the repo, or in the root crate).
+///
+/// `@<crate>` can name the wrong crate: a panic in a crate's root file (`src/lib.rs`,
+/// `src/main.rs`) matches any test, and a module of the same name can sit in two crates — the
+/// test may only have called into that crate. So [`impact_overlap`] never judges `@<crate>`
+/// by that crate alone: it adds every crate that depends on it, where the test may live
+/// (ebb36 #666 M1, L1). A wrong crate can only make the answer more cautious.
 fn bin_from_panic(test: &str, path: &str) -> Option<String> {
     let segs: Vec<&str> = path.split('/').collect();
     if path.contains(':') || segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
@@ -402,9 +408,31 @@ fn impact_overlap(fp: &str, f: &Facts) -> Result<bool, String> {
         }
         let map = f.rust.as_ref().ok_or("head tree not readable")?;
         let crates = match bin.strip_prefix('@') {
-            // the crate the test's own panic location is in
-            // (a dir that is not a crate at head fails below: "Cargo.toml not read")
-            Some(dir) => BTreeSet::from([dir.to_string()]),
+            // the crate the test's own panic location is in, and every crate that depends on
+            // it (directly or not): the test may live in any of them (ebb36 #666 M1)
+            Some(dir) => {
+                if !map.deps.contains_key(dir) {
+                    return Err(format!("{dir}: Cargo.toml not read"));
+                }
+                let mut users = BTreeSet::from([dir.to_string()]);
+                loop {
+                    let before = users.len();
+                    for (c, deps) in &map.deps {
+                        // a crate whose dependencies were not understood may use it
+                        let deps = deps
+                            .as_ref()
+                            .ok_or_else(|| format!("{c}: a dependency entry was not understood"))?;
+                        let uses = deps.iter().any(|d| users.contains(d));
+                        if uses {
+                            users.insert(c.clone());
+                        }
+                    }
+                    if users.len() == before {
+                        break;
+                    }
+                }
+                users
+            }
             None => {
                 let crates = map.bins.get(bin).ok_or("binary matches no crate")?;
                 if crates.len() != 1 {
