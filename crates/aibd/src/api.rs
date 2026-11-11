@@ -36,22 +36,38 @@ struct Process {
     instance_id: String,
 }
 
-static PROCESS: std::sync::LazyLock<Process> = std::sync::LazyLock::new(|| {
+static PROCESS: std::sync::LazyLock<Result<Process, String>> =
+    std::sync::LazyLock::new(|| new_process(getrandom::fill));
+
+/// A failed random read is an error, not an id of zeros: zeros repeat on every restart,
+/// which is what `instance_id` exists to tell apart (a63ab / 043dd A5 L2).
+fn new_process(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
+) -> Result<Process, String> {
     let mut b = [0u8; 8];
-    let _ = getrandom::fill(&mut b);
-    Process {
+    fill(&mut b).map_err(|e| format!("instance id: {e}"))?;
+    Ok(Process {
         started_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
         instance_id: b.iter().map(|x| format!("{x:02x}")).collect(),
-    }
-});
+    })
+}
+
+/// aibd calls this before it serves: no instance id, no start (same rule as the token).
+pub fn process_ready() -> std::io::Result<()> {
+    PROCESS
+        .as_ref()
+        .map(|_| ())
+        .map_err(|e| std::io::Error::other(e.clone()))
+}
 
 pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
-    std::sync::LazyLock::force(&PROCESS); // started_at = when the router was built
-                                          // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
-                                          // the list is tested to sit under `/api/` (a9136 A3 L1)
+    // started_at = when the router was built
+    std::sync::LazyLock::force(&PROCESS);
+    // only `guard::ROUTES` is mounted: a route cannot be added without that list, and
+    // the list is tested to sit under `/api/` (a9136 A3 L1)
     let mut r = Router::new();
     for path in guard::ROUTES {
         if let Some(h) = handlers(path) {
@@ -101,12 +117,15 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
 }
 
 async fn health() -> Json<serde_json::Value> {
+    // aibd does not start without it (`process_ready`); a router built without that check
+    // answers null, never a made-up id
+    let p = PROCESS.as_ref().ok();
     Json(serde_json::json!({
         "status": "ok",
         "api_version": API_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
-        "started_at": PROCESS.started_at,
-        "instance_id": PROCESS.instance_id,
+        "started_at": p.map(|p| p.started_at),
+        "instance_id": p.map(|p| p.instance_id.as_str()),
     }))
 }
 
@@ -170,5 +189,22 @@ async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Res
             tracing::error!("events read failed");
             error_response(ErrorCode::Internal, "internal error", &guard::request_id())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_process;
+
+    #[test]
+    fn instance_id_needs_randomness() {
+        // a failed read is an error (zeros would repeat on every restart)
+        assert!(new_process(|_| Err(getrandom::Error::UNSUPPORTED)).is_err());
+        let p = new_process(|b| {
+            b.fill(0xab);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(p.instance_id, "abababababababab");
     }
 }

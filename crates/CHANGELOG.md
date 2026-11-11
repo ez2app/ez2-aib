@@ -5,6 +5,21 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.3 — unreleased
 
+- `aib-cloud-host build-info` prints one fixed line, `aib-build-info version=<v> commit=<40 hex>
+  dirty=<0|1>;`, which `build.rs` takes from git only (dirty = changes in `crates/`, `Cargo.toml`,
+  `Cargo.lock`, `rust-toolchain.toml` or `.cargo/`, untracked files included) (no environment variable can set it; no git
+  ⇒ `commit=unknown dirty=1`). The same line is in the file, so it can be read on a Mac from a
+  Linux build. `--version` is unchanged.
+- `aib-release host-build`: before a build goes onto a host, checks it against
+  `refs/remotes/origin/main` (fixed, not a flag; fetch first) and the build the host runs (`--current-bin` / `--current-info`, or `--current-unknown`). A build
+  not on main is refused with no way round it (`not_on_main`); a build without commit or built
+  dirty is refused; one that does not contain the host's build (`not_a_descendant`) or a host
+  without build info (`current_unknown`) passes only with `--allow-downgrade WHY` /
+  `--allow-unknown-current WHY`, and the reason is in the JSON answer the approval is made from
+  (`allowed`; a reason given but not needed is in `unused_allow`). With `--candidate-bin` the
+  answer carries the file's `candidate_sha256`, so the file installed can be the file checked. Every `GIT_*` variable is
+  dropped before git is asked.
+  Exit 0 ok, 2 refused, 3 git could not answer (fetch first), 64 usage.
 - `aibd ctl web [--no-open]` (also `aib web`, which hands over to it; aibd from `AIBD_BIN` or
   `PATH`): checks aibd answers, asks for a pairing code, prints it with the page address (the
   address carries nothing) and opens the browser, waits until the page has redeemed the code,
@@ -12,7 +27,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   Pairing off ⇒ says how to turn it on. Needs `AIBD_PAIRING=terminal-unverified` (ADR 0006 §7:
   the y/N answer does not stop an AI running as the same account).
 - `GET /api/v1/health` adds `version`, `started_at` (Unix seconds) and `instance_id` (random
-  per start), so a restarted aibd can be told apart; still no path in it (043dd S3).
+  per start), so a restarted aibd can be told apart; still no path in it (043dd S3). If the
+  random read fails, aibd does not start (it used to report an id of zeros, the same on every
+  restart).
+- `aib web` on Windows waits for `aibd ctl web` and returns its exit code. Windows `execv` gave
+  the shell its prompt back while aibd was still asking y/N.
 - Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
   default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
   aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding

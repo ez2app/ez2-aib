@@ -372,13 +372,26 @@ pub fn stat_start_time(stat: &str) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// Field 3 of `/proc/<pid>/stat`, the state letter (`Z` = zombie), counted from the last
+/// `)` like [`stat_start_time`].
+pub fn stat_state(stat: &str) -> Option<char> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .next()?
+        .chars()
+        .next()
+}
+
 /// Whether the process a lock names is still the one that took it. No such pid ⇒ gone; a
-/// pid now started at another time ⇒ gone (reused); anything that cannot be read ⇒
-/// unknown, which keeps the lock.
+/// pid now started at another time ⇒ gone (reused); the same process as a zombie ⇒ gone
+/// (it has exited and holds nothing, only its parent has not reaped it); anything that
+/// cannot be read ⇒ unknown, which keeps the lock.
 pub fn liveness(proc_root: &Path, holder: &Holder) -> Liveness {
     let path = proc_root.join(holder.pid.to_string()).join("stat");
     match fs::read_to_string(path) {
         Ok(t) => match stat_start_time(&t) {
+            Some(st) if st == holder.start_time && stat_state(&t) == Some('Z') => Liveness::Gone,
             Some(st) if st == holder.start_time => Liveness::Alive,
             Some(_) => Liveness::Gone,
             None => Liveness::Unknown,
@@ -1357,6 +1370,9 @@ mod tests {
         assert_eq!(stat_start_time(&stat_line(42, "x 1 2 3", 779)), Some(779));
         assert_eq!(stat_start_time("42 (sh) S 1"), None);
         assert_eq!(stat_start_time(""), None);
+        assert_eq!(stat_state(&stat_line(42, "a) Z (c", 778)), Some('3'));
+        assert_eq!(stat_state("42 (sh) Z 1"), Some('Z'));
+        assert_eq!(stat_state("42 (sh)"), None);
     }
 
     #[test]
@@ -1383,6 +1399,11 @@ mod tests {
         fs::create_dir_all(root.join("103")).unwrap();
         fs::write(root.join("103").join("stat"), "garbage").unwrap();
         assert_eq!(liveness(&root, &h(103, 5000)), Liveness::Unknown);
+        // a zombie: pid and start time still read, but it has exited and holds nothing
+        fs::create_dir_all(root.join("104")).unwrap();
+        let zombie = stat_line(104, "aib-cloud-host", 5000).replacen(") 3 ", ") Z ", 1);
+        fs::write(root.join("104").join("stat"), zombie).unwrap();
+        assert_eq!(liveness(&root, &h(104, 5000)), Liveness::Gone, "zombie");
     }
 
     #[test]

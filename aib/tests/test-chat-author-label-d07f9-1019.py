@@ -98,7 +98,7 @@ class Pipeline(unittest.TestCase):
         td = tempfile.TemporaryDirectory(prefix="aib-al-")
         self.addCleanup(td.cleanup)
         self.td = Path(td.name)
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.114.152.121",
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "AIB_DM_ADDR": "100.64.0.121",
                     "EZ2_AIB_LOCALE": "zh-TW"}
         self.root = self.td / "bridge"
         GF.ensure_dirs(self.root)

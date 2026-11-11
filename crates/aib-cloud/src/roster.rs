@@ -36,8 +36,14 @@ use serde_json::{Map, Value};
 use crate::customer::{Operation, Role};
 use crate::site::valid_code;
 
-/// The forced command of an entry line, before its arguments.
-pub const ENTRY_COMMAND: &str = "/usr/local/sbin/aib-cloud-host customer";
+/// The forced command of an entry line, before its arguments. The entry account is an
+/// unprivileged one that holds nothing but these lines; the customer command needs root
+/// (it asks the container runtime), so the account is allowed exactly this command
+/// through `sudo -n`, and nothing else. The sudoers rule that goes with it must keep
+/// `SSH_ORIGINAL_COMMAND` and `SSH_CONNECTION` (sudo resets the environment; without them
+/// the command answers "entry is not set up"), and the file these lines are in must be one
+/// the entry account cannot write: every right here rests on each line carrying `command=`.
+pub const ENTRY_COMMAND: &str = "sudo -n /usr/local/sbin/aib-cloud-host customer";
 
 /// Why a roster was refused. A fixed word: nothing from the file is echoed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,9 +421,9 @@ mod tests {
         assert_eq!(
             entry_lines(&r),
             [
-                format!("command=\"/usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner\",restrict {} m-01", key(0)),
-                format!("command=\"/usr/local/sbin/aib-cloud-host customer --tenant t-aaa --sites site3 --roles editor,publisher,analyst\",restrict {} m-02", key(3)),
-                format!("command=\"/usr/local/sbin/aib-cloud-host customer --tenant t-aaa --sites site2,site3 --roles viewer,analyst\",restrict {} m-03", key(5)),
+                format!("command=\"sudo -n /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --roles owner\",restrict {} m-01", key(0)),
+                format!("command=\"sudo -n /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --sites site3 --roles editor,publisher,analyst\",restrict {} m-02", key(3)),
+                format!("command=\"sudo -n /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --sites site2,site3 --roles viewer,analyst\",restrict {} m-03", key(5)),
             ]
         );
         // into a site: who reaches it and may edit; a viewer + analyst has no login

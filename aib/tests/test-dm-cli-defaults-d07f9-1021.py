@@ -38,7 +38,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         td = tempfile.TemporaryDirectory(prefix="aib-dmcli-")
         self.addCleanup(td.cleanup)
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.114.152.121"}
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.64.0.121"}
         self.me = SEAT
         orig = Q.self_seat_code
         Q.self_seat_code = lambda: self.me

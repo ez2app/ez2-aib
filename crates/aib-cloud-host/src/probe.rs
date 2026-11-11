@@ -1329,6 +1329,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
+        Some("roster") => crate::rostercmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
             Some("check") => crate::backupcmd::cmd(&args[2..]),
@@ -1351,7 +1352,11 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::own_version_line());
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | --version".to_owned()),
+        Some("build-info") if args.len() == 1 => {
+            println!("{}", crate::update::BUILD_INFO);
+            Ok(0)
+        }
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | build-info | --version".to_owned()),
     }
 }
 
@@ -1515,8 +1520,17 @@ mod tests {
         // the port we just released: nothing listens now. Only asserted on Linux, where
         // this binary runs: on a shared macOS machine the port was seen answering again
         // straight after the release (c477a, andymini, two runs).
+        // Another test of this binary may bind the port in the instant after the release
+        // (seen twice in a row on CI, #641): a few fresh ports are tried, and one seen
+        // closed is enough — the probe saying "open" for every one of them is the failure.
         if cfg!(target_os = "linux") {
-            assert!(!probe_here("tcp", "127.0.0.1".parse().unwrap(), port));
+            let seen_closed = (0..5).any(|_| {
+                let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = l.local_addr().unwrap().port();
+                drop(l);
+                !probe_here("tcp", "127.0.0.1".parse().unwrap(), port)
+            });
+            assert!(seen_closed || !probe_here("tcp", "127.0.0.1".parse().unwrap(), port));
         }
     }
 
