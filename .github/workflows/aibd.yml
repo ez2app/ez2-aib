@@ -993,6 +993,63 @@ jobs:
           hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
              '    let _ = left_at_vendor; // knife' \
              the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
+          # ---- site remove --apply (4542e 11-11)
+          # an archive two days old is reused while the container is still there (site-remove.sh L1)
+          hk siteremovecmd.rs '                Ok(age) if age.as_secs() < FRESH_SECS => {}' \
+             '                Ok(age) if age.as_secs() < FRESH_SECS || true => {} // knife' \
+             an_archive_older_than_a_day_counts_only_once_the_container_is_gone
+          # a site that could not be asked counts as answering the same (site-remove.sh L5)
+          hk siteremovecmd.rs '    if let Some((h, _)) = base.iter().chain(now).find(|(_, c)| c.is_none()) {' \
+             '    if let Some((h, _)) = base.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
+             other_sites_are_compared_with_how_they_answered_at_the_start
+          # other sites are not asked again after a step
+          hk siteremovecmd.rs '                same_as_base(base, &host.others()).map_err(|e| {' \
+             '                same_as_base(base, base).map_err(|e| { // knife' \
+             another_site_answering_differently_stops_the_work_after_that_step
+          # a site that could not be asked before the start does not refuse the removal
+          hk siteremovecmd.rs '            same_as_base(&base, &base)' \
+             '            same_as_base(&[], &[]) // knife' \
+             another_site_that_could_not_be_asked_at_the_start_refuses_the_removal
+          # a step that did not take is done again instead of stopping the work
+          hk siteremovecmd.rs '                if applied.contains(&step) {' \
+             '                if applied.contains(&step) && false { // knife' \
+             a_step_that_does_not_take_stops_the_work_and_nothing_after_it_runs
+          # destroying may rewrite the backup schedule unnoticed
+          hk siteremovecmd.rs '            if host.backup_schedule().as_deref() != Some(before.as_str()) {' \
+             '            if host.backup_schedule().as_deref() != Some(before.as_str()) && false { // knife' \
+             destroying_must_leave_the_backup_schedule_as_it_was
+          # an edited plan under its old hash is applied
+          hk siteremovecmd.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || (doc != g.plan && false) { // knife' \
+             a_host_that_changed_or_a_plan_that_was_edited_is_refused_before_anything
+          # a plan that stops is applied all the same
+          hk siteremovecmd.rs '    if doc["next"] != "run" {' \
+             '    if doc["next"] != "run" && false { // knife' \
+             without_the_persons_word_on_the_licences_nothing_runs_from_this_host
+          # the entry's block is cut although it opens with another address
+          hk siteremovecmd.rs '    if !opens {' \
+             '    if !opens && false { // knife' \
+             the_entry_loses_only_this_sites_block
+          # the entry still naming the address after the cut is written all the same
+          hk siteremovecmd.rs '    if siteremove::unserve_probe(Some(&text), code, main_address) != Probe::Done {' \
+             '    if siteremove::unserve_probe(Some(&text), code, main_address) != Probe::Done && false { // knife' \
+             the_entry_loses_only_this_sites_block
+          # port 21190 is taken for port 2119
+          hk siteremovecmd.rs '    l.contains(&format!("--dport {port} ")) && (l.ends_with(&to) || l.contains(&format!("{to} ")))' \
+             '    l.contains(&format!("--dport {port}")) && (l.ends_with(&to) || l.contains(&format!("{to} "))) // knife' \
+             only_this_sites_forward_is_closed
+          # site99 goes off the export list with site9
+          hk siteremovecmd.rs '        if comment || l.split_whitespace().next() != Some(code) {' \
+             '        if comment || !l.starts_with(code) { // knife' \
+             the_export_list_loses_only_this_sites_line
+          # the record is not moved aside on this host once only DNS is left (as site-remove.sh step 9 does)
+          hk siteremovecmd.rs '                if record_is_last_here(&p, left) && !applied.contains(&RemoveStep::Record) {' \
+             '                if record_is_last_here(&p, left) && !applied.contains(&RemoveStep::Record) && false { // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
+          # the removed record says nothing was left at the vendors
+          hk siteremovecmd.rs '            let left_list: &[&str] = if left { &[LEFT_ON_WORD] } else { &[] };' \
+             '            let left_list: &[&str] = if left { &[] } else { &[LEFT_ON_WORD] }; // knife' \
+             a_removal_runs_every_host_step_in_order_and_leaves_the_dns_step
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
