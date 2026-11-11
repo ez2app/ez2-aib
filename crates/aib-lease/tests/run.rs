@@ -417,6 +417,12 @@ fn a_dropped_connection_leaves_the_run_going_and_the_lease_held() {
     let a = read_pid(&pa);
     let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
     let runner = read_pid(&pp);
+    // the follower notices the drop at its next write (a beat every 5 s): look only after
+    // it is surely gone, so a follower that takes the runner down with it fails here
+    let dropped = std::time::Instant::now();
+    wait_for("the follower to notice the drop", || {
+        dropped.elapsed() >= std::time::Duration::from_secs(7)
+    });
     assert!(
         alive(&a) && alive(&b) && alive(&runner),
         "the run goes on after the drop"
