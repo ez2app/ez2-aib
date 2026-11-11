@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-hosts`:測試機一台一顆電池，放在 tmux 下欄(Andy 11-12 05:0x:「每台主機顯示成一個動態電池，
-//! 真實的顯示與動態變化」)。
+//! 真實的顯示與動態變化」;05:2x:四台都要、用看得懂的名字、標題下空一行、點電池看排隊與誰在跑)。
 //!
-//! - 每台每 20 秒用 ssh 讀一次 `aib lease status --json` 與 `sysctl -n hw.ncpu vm.loadavg`
-//!   (一次性執行緒，ADR 0005 不用 `thread::sleep`;卡住 60 秒顯示「?」、不重起)。
-//! - 電池 = 這台還能給別人用的量:空機滿格綠色;有人租著 = 租約剩餘時間比例，隨時間往下掉(黃);
-//!   連不上 = 空殼紅色「離線」。佔用中的電池有一格亮點來回跑(動態),負載用最近 30 筆畫小折線。
-//! - 只讀：不拿租約、不寫任何狀態。`--once [--width N]` 印一次就結束(測試用)。
+//! - 每台每 20 秒讀一次 `aib lease status --json` 與 `sysctl -n hw.ncpu vm.loadavg`:別台用 ssh,
+//!   本機(目標寫 `local`)直接跑。一次性執行緒(ADR 0005 不用 `thread::sleep`);卡住 60 秒顯示
+//!   「?」、不重起。
+//! - 電池 = 這台還能給別人用的量:空機滿格綠色;有人租著 = 租約剩餘時間比例，隨時間往下掉(黃，
+//!   低於 20% 紅),有一格亮點來回跑;連不上 = 空殼紅色「離線」。負載用最近 30 筆畫小折線。
+//! - 滑鼠點一台(或按 1–9)展開 / 收起：正在跑的是誰、做什麼、跑多久;排隊的每一位是誰、做什麼、
+//!   等多久、有沒有優先。
+//! - 主機參數 `名字=目標`(例 `"Pro 13=andyimkt@100.116.110.31"`),只寫目標就用目標當名字。
+//! - 只讀：不拿租約、不寫任何狀態。`--once [--width N] [--open]` 印一次就結束(測試用)。
 //! - ssh 一律 `ForwardAgent=no` / `ClearAllForwardings=yes` / `BatchMode=yes`。
 
 use crossterm::{
     cursor, event,
-    event::{Event, KeyCode},
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
     execute, queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal,
@@ -22,10 +26,27 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_HOSTS: &[&str] = &["andymini", "lin-macmini", "andyimkt@100.116.110.31"];
+/// 測試機順序(andymini > Pro 13 > lin-macmini > Pro 16,11-11 定);Pro 16 是這台本機。
+const DEFAULT_HOSTS: &[&str] = &[
+    "andymini=andymini",
+    "Pro 13=andyimkt@100.116.110.31",
+    "lin-macmini=lin-macmini",
+    "Pro 16 本機=local",
+];
 const POLL: Duration = Duration::from_secs(20);
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const NAME_W: usize = 15;
+const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
+                      echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg)";
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Waiter {
+    owner: String,
+    what: String,
+    since: i64,
+    priority: bool,
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Sample {
@@ -35,7 +56,7 @@ struct Sample {
     what: String,
     acquired: i64,
     expiry: i64,
-    queue: usize,
+    queue: Vec<Waiter>,
     ncpu: f64,
     load1: f64,
     err: String,
@@ -43,11 +64,34 @@ struct Sample {
 
 struct Host {
     name: String,
+    target: String,
     last: Option<Sample>,
     at: Option<Instant>,
     loads: Vec<f64>,
     asked: Option<Instant>,
     stuck: bool,
+    open: bool,
+}
+
+impl Host {
+    fn new(arg: &str) -> Host {
+        let (name, target) = match arg.split_once('=') {
+            Some((n, t)) if !n.trim().is_empty() && !t.trim().is_empty() => {
+                (n.trim().to_string(), t.trim().to_string())
+            }
+            _ => (arg.to_string(), arg.to_string()),
+        };
+        Host {
+            name,
+            target,
+            last: None,
+            at: None,
+            loads: Vec::new(),
+            asked: None,
+            stuck: false,
+            open: false,
+        }
+    }
 }
 
 fn now() -> i64 {
@@ -57,7 +101,15 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// ssh 輸出 = lease JSON(多行)+ `AIB_HOSTS_SYS <ncpu> { l1 l5 l15 }`。
+fn owner_of(v: &Value) -> String {
+    v["owner"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('@')
+        .to_string()
+}
+
+/// 輸出 = lease JSON(多行)+ `AIB_HOSTS_SYS <ncpu> { l1 l5 l15 }`。
 fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
     let mut s = Sample {
         err: err.lines().last().unwrap_or("").trim().to_string(),
@@ -81,40 +133,54 @@ fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
         s.online = true;
         s.held = v["state"] == "held";
         let l = &v["lease"];
-        s.owner = l["owner"]
-            .as_str()
-            .unwrap_or("")
-            .trim_start_matches('@')
-            .to_string();
+        s.owner = owner_of(l);
         s.what = l["what"].as_str().unwrap_or("").to_string();
         s.acquired = l["acquired_epoch"].as_i64().unwrap_or(0);
         s.expiry = l["expiry_epoch"].as_i64().unwrap_or(0);
-        s.queue = v["queue"].as_array().map_or(0, |a| a.len());
+        s.queue = v["queue"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|q| Waiter {
+                        owner: owner_of(q),
+                        what: q["what"].as_str().unwrap_or("").to_string(),
+                        since: q["since_epoch"].as_i64().unwrap_or(0),
+                        priority: q["priority"].as_bool().unwrap_or(false),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
     } else {
         s.online = ok && !nums.is_empty();
     }
     s
 }
 
-fn ask(host: String, tx: mpsc::Sender<(String, Sample)>) {
+fn ask(idx: usize, target: String, tx: mpsc::Sender<(usize, Sample)>) {
     std::thread::spawn(move || {
-        let o = Command::new("ssh")
-            .args([
-                "-o",
-                "ForwardAgent=no",
-                "-o",
-                "ClearAllForwardings=yes",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=8",
-                "--",
-                host.as_str(),
-                "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
-                 echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg)",
-            ])
-            .stdin(Stdio::null())
-            .output();
+        let o = if target == "local" {
+            Command::new("/bin/sh")
+                .args(["-c", REMOTE])
+                .stdin(Stdio::null())
+                .output()
+        } else {
+            Command::new("ssh")
+                .args([
+                    "-o",
+                    "ForwardAgent=no",
+                    "-o",
+                    "ClearAllForwardings=yes",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=8",
+                    "--",
+                    target.as_str(),
+                    REMOTE,
+                ])
+                .stdin(Stdio::null())
+                .output()
+        };
         let s = match o {
             Ok(o) => parse_sample(
                 &String::from_utf8_lossy(&o.stdout),
@@ -126,7 +192,7 @@ fn ask(host: String, tx: mpsc::Sender<(String, Sample)>) {
                 ..Sample::default()
             },
         };
-        let _ = tx.send((host, s));
+        let _ = tx.send((idx, s));
     });
 }
 
@@ -185,13 +251,16 @@ fn mins(secs: i64) -> String {
     }
 }
 
-/// 一台三行：名字 + 電池 + 狀態;負載折線;在做什麼。
-fn host_lines(h: &Host, width: usize, tick: u64, t: i64) -> Vec<Line> {
+fn pad() -> (String, Color) {
+    (" ".repeat(NAME_W), Color::White)
+}
+
+/// 一台：名字 + 電池 + 狀態;負載折線;在做什麼;展開時加正在跑與排隊明細。
+fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line> {
     let s = h.last.as_ref();
     let (pct, col) = charge(s, t);
-    let cells = width.saturating_sub(40).clamp(10, 40);
+    let cells = width.saturating_sub(48).clamp(10, 40);
     let filled = (pct as usize * cells).div_ceil(100).min(cells);
-    let mut bar = String::new();
     let busy = s.is_some_and(|s| s.online && s.held);
     // 佔用中：亮點在已充的格子裡來回跑
     let spot = if busy && filled > 1 {
@@ -200,19 +269,16 @@ fn host_lines(h: &Host, width: usize, tick: u64, t: i64) -> Vec<Line> {
     } else {
         None
     };
-    for i in 0..cells {
-        bar.push(if i < filled {
-            if spot == Some(i) {
-                '▓'
-            } else {
-                '█'
-            }
-        } else {
-            '░'
-        });
-    }
-    let name = fit(h.name.rsplit('@').next().unwrap_or(&h.name), 14);
-    let pad = " ".repeat(15usize.saturating_sub(w(&name)));
+    let bar: String = (0..cells)
+        .map(|i| match (i < filled, spot == Some(i)) {
+            (true, true) => '▓',
+            (true, false) => '█',
+            _ => '░',
+        })
+        .collect();
+    let mark = if h.open { '▾' } else { '▸' };
+    let name = fit(&format!("{mark}{} {}", idx + 1, h.name), NAME_W - 1);
+    let name_pad = " ".repeat(NAME_W.saturating_sub(w(&name)));
     let status = match s {
         None => "讀取中…".to_string(),
         Some(s) if !s.online => format!("離線 {}", fit(&s.err, 30)),
@@ -221,73 +287,111 @@ fn host_lines(h: &Host, width: usize, tick: u64, t: i64) -> Vec<Line> {
     };
     let stale = if h.stuck { " ?" } else { "" };
     let mut l1: Line = vec![
-        (format!("{name}{pad}"), Color::White),
+        (format!("{name}{name_pad}"), Color::White),
         (format!("▕{bar}▏"), col),
         ("▌".into(), col),
         (format!(" {pct:>3}% "), col),
         (format!("{status}{stale}"), Color::White),
     ];
-    if let Some(s) = s {
-        if s.queue > 0 {
-            l1.push((format!(" · 排隊 {}", s.queue), Color::Cyan));
-        }
+    if let Some(s) = s.filter(|s| !s.queue.is_empty()) {
+        l1.push((format!(" · 排隊 {}", s.queue.len()), Color::Cyan));
     }
+    let cap = s.map_or(8.0, |s| if s.ncpu > 0.0 { s.ncpu } else { 8.0 });
     let spark: String = h
         .loads
         .iter()
-        .map(|l| {
-            let cap = s.map_or(8.0, |s| if s.ncpu > 0.0 { s.ncpu } else { 8.0 });
-            let i = ((l / cap) * 7.0).round().clamp(0.0, 7.0) as usize;
-            SPARK[i]
-        })
+        .map(|l| SPARK[((l / cap) * 7.0).round().clamp(0.0, 7.0) as usize])
         .collect();
-    let load = s.map_or(String::new(), |s| {
-        if s.online {
-            format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
-        } else {
-            String::new()
-        }
+    let online = s.is_some_and(|s| s.online);
+    let load = s.filter(|s| s.online).map_or(String::new(), |s| {
+        format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
     });
-    let lcol = s.map_or(Color::DarkGrey, |s| {
-        if s.ncpu > 0.0 && s.load1 > s.ncpu {
-            Color::Red
-        } else {
-            Color::Blue
+    let lcol = if s.is_some_and(|s| s.ncpu > 0.0 && s.load1 > s.ncpu) {
+        Color::Red
+    } else {
+        Color::Blue
+    };
+    let mut out = vec![l1];
+    if online {
+        out.push(vec![pad(), (load, Color::DarkGrey), (spark, lcol)]);
+    }
+    let room = width.saturating_sub(NAME_W + 2);
+    if !h.open {
+        if let Some(s) = s.filter(|s| s.held) {
+            out.push(vec![pad(), (fit(&s.what, room), Color::DarkGrey)]);
         }
-    });
-    let l2: Line = vec![
-        (" ".repeat(15), Color::White),
-        (load, Color::DarkGrey),
-        (spark, lcol),
-    ];
-    let what = s
-        .filter(|s| s.held)
-        .map_or(String::new(), |s| fit(&s.what, width.saturating_sub(16)));
-    let l3: Line = vec![(" ".repeat(15), Color::White), (what, Color::DarkGrey)];
-    vec![l1, l2, l3]
+        return out;
+    }
+    // 展開：誰在跑、排隊明細
+    match s {
+        Some(s) if s.held => {
+            out.push(vec![
+                pad(),
+                (
+                    format!("▶ 正在跑 {} · 已 {}", s.owner, mins(t - s.acquired)),
+                    Color::Yellow,
+                ),
+            ]);
+            out.push(vec![
+                pad(),
+                (format!("  {}", fit(&s.what, room)), Color::White),
+            ]);
+        }
+        Some(s) if s.online => out.push(vec![pad(), ("▶ 沒有人在跑".into(), Color::Green)]),
+        _ => {}
+    }
+    match s {
+        Some(s) if !s.queue.is_empty() => {
+            for (i, q) in s.queue.iter().enumerate() {
+                let pri = if q.priority { " · 優先" } else { "" };
+                out.push(vec![
+                    pad(),
+                    (
+                        format!("{}. {} · 等了 {}{pri}", i + 1, q.owner, mins(t - q.since)),
+                        Color::Cyan,
+                    ),
+                ]);
+                out.push(vec![
+                    pad(),
+                    (format!("   {}", fit(&q.what, room)), Color::DarkGrey),
+                ]);
+            }
+        }
+        Some(s) if s.online => out.push(vec![pad(), ("沒有人排隊".into(), Color::DarkGrey)]),
+        _ => {}
+    }
+    out
 }
 
-fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
+/// 整張畫面，和每一行屬於哪一台(點擊用)。
+fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Option<usize>>) {
     let clock = {
         // 台北時間(UTC+8),不依賴本機時區
         let s = (t + 8 * 3600).rem_euclid(86400);
         format!("{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
     };
-    let mut out: Vec<Line> = vec![vec![
-        (format!("測試機 {clock}(台北)"), Color::White),
-        (
-            "  電池 = 還能給別人用的量 · 綠 空機 · 黃 租約剩餘 · 紅 離線 · q 離開".into(),
-            Color::DarkGrey,
-        ),
-    ]];
-    for h in hosts {
-        out.extend(host_lines(h, width, tick, t));
+    let mut lines: Vec<Line> = vec![
+        vec![
+            (format!("測試機 {clock}(台北)"), Color::White),
+            (
+                "  綠 空機 · 黃 租約剩餘 · 紅 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
+                    .into(),
+                Color::DarkGrey,
+            ),
+        ],
+        Vec::new(), // Andy:標題和第一顆電池之間空一行
+    ];
+    let mut owner: Vec<Option<usize>> = vec![None, None];
+    for (i, h) in hosts.iter().enumerate() {
+        for l in host_lines(h, i, width, tick, t) {
+            lines.push(l);
+            owner.push(Some(i));
+        }
     }
-    out
+    (lines, owner)
 }
 
 fn draw(o: &mut impl Write, lines: &[Line], width: usize, height: usize) -> std::io::Result<()> {
-    queue!(o, cursor::MoveTo(0, 0))?;
     for (y, l) in lines.iter().take(height).enumerate() {
         queue!(o, cursor::MoveTo(0, y as u16))?;
         let mut used = 0;
@@ -310,18 +414,33 @@ fn draw(o: &mut impl Write, lines: &[Line], width: usize, height: usize) -> std:
     o.flush()
 }
 
+fn restore() {
+    let _ = terminal::disable_raw_mode();
+    let _ = execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let once = args.iter().any(|a| a == "--once");
+    let mut once = false;
+    let mut open_all = false;
     let mut width = 100usize;
     let mut names: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--once" => {}
+            "--once" => once = true,
+            "--open" => open_all = true,
             "--width" => width = it.next().and_then(|v| v.parse().ok()).unwrap_or(100),
             "-h" | "--help" => {
-                println!("usage: aib-hosts [--once [--width N]] [HOST]...  (預設 andymini lin-macmini Pro 13)");
+                println!(
+                    "usage: aib-hosts [--once [--width N] [--open]] [名字=目標]...  \
+                     (預設 andymini、Pro 13、lin-macmini、Pro 16 本機;目標 local = 本機)"
+                );
                 return;
             }
             h => names.push(h.to_string()),
@@ -330,31 +449,24 @@ fn main() {
     if names.is_empty() {
         names = DEFAULT_HOSTS.iter().map(|s| s.to_string()).collect();
     }
-    let mut hosts: Vec<Host> = names
-        .into_iter()
-        .map(|name| Host {
-            name,
-            last: None,
-            at: None,
-            loads: Vec::new(),
-            asked: None,
-            stuck: false,
-        })
-        .collect();
-    let (tx, rx) = mpsc::channel::<(String, Sample)>();
+    let mut hosts: Vec<Host> = names.iter().map(|n| Host::new(n)).collect();
+    for h in hosts.iter_mut() {
+        h.open = open_all;
+    }
+    let (tx, rx) = mpsc::channel::<(usize, Sample)>();
     if once {
-        for h in &hosts {
-            ask(h.name.clone(), tx.clone());
+        for (i, h) in hosts.iter().enumerate() {
+            ask(i, h.target.clone(), tx.clone());
         }
         drop(tx);
-        for (name, s) in rx.iter() {
-            if let Some(h) = hosts.iter_mut().find(|h| h.name == name) {
+        for (i, s) in rx.iter() {
+            if let Some(h) = hosts.get_mut(i) {
                 h.loads.push(s.load1);
                 h.last = Some(s);
             }
         }
         let mut out = std::io::stdout();
-        for l in frame(&hosts, width, 0, now()) {
+        for l in frame(&hosts, width, 0, now()).0 {
             let s: String = l.iter().map(|(t, _)| t.as_str()).collect();
             if writeln!(out, "{}", fit(&s, width)).is_err() {
                 return;
@@ -364,36 +476,39 @@ fn main() {
     }
     let mut out = std::io::stdout();
     let _ = terminal::enable_raw_mode();
-    let _ = execute!(out, terminal::EnterAlternateScreen, cursor::Hide);
+    let _ = execute!(
+        out,
+        terminal::EnterAlternateScreen,
+        EnableMouseCapture,
+        cursor::Hide
+    );
     std::panic::set_hook(Box::new(|i| {
-        let _ = terminal::disable_raw_mode();
-        let _ = execute!(
-            std::io::stdout(),
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        );
+        restore();
         eprintln!("{i}");
     }));
     let mut tick: u64 = 0;
+    let mut owner: Vec<Option<usize>> = Vec::new();
     loop {
         let t0 = Instant::now();
-        for h in hosts.iter_mut() {
+        for (i, h) in hosts.iter_mut().enumerate() {
             let due = h.at.is_none_or(|a| a.elapsed() >= POLL);
             match h.asked {
                 Some(a) if a.elapsed() >= STUCK => h.stuck = true,
                 Some(_) => {}
                 None if due => {
                     h.asked = Some(Instant::now());
-                    ask(h.name.clone(), tx.clone());
+                    ask(i, h.target.clone(), tx.clone());
                 }
                 None => {}
             }
         }
-        while let Ok((name, s)) = rx.try_recv() {
-            if let Some(h) = hosts.iter_mut().find(|h| h.name == name) {
-                h.loads.push(s.load1);
-                if h.loads.len() > 30 {
-                    h.loads.remove(0);
+        while let Ok((i, s)) = rx.try_recv() {
+            if let Some(h) = hosts.get_mut(i) {
+                if s.online {
+                    h.loads.push(s.load1);
+                    if h.loads.len() > 30 {
+                        h.loads.remove(0);
+                    }
                 }
                 h.last = Some(s);
                 h.at = Some(Instant::now());
@@ -402,37 +517,68 @@ fn main() {
             }
         }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
-        let lines = frame(&hosts, cw as usize, tick, now());
+        let (lines, own) = frame(&hosts, cw as usize, tick, now());
+        owner = own;
         if draw(&mut out, &lines, cw as usize, ch as usize).is_err() {
             break;
         }
         tick = tick.wrapping_add(1);
         // 動畫節奏靠 event::poll(ADR 0005)
         let wait = Duration::from_millis(250).saturating_sub(t0.elapsed());
-        if event::poll(wait).unwrap_or(false) {
-            if let Ok(Event::Key(k)) = event::read() {
-                if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    break;
+        if !event::poll(wait).unwrap_or(false) {
+            continue;
+        }
+        match event::read() {
+            Ok(Event::Key(k)) => match k.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char(c @ '1'..='9') => {
+                    let i = c as usize - '1' as usize;
+                    if let Some(h) = hosts.get_mut(i) {
+                        h.open = !h.open;
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Mouse(m)) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(Some(i)) = owner.get(m.row as usize) {
+                    if let Some(h) = hosts.get_mut(*i) {
+                        h.open = !h.open;
+                    }
                 }
             }
+            _ => {}
         }
     }
-    let _ = terminal::disable_raw_mode();
-    let _ = execute!(out, cursor::Show, terminal::LeaveAlternateScreen);
+    restore();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const HELD: &str = r#"{"state":"held","lease":{"owner":"@4542e","what":"scan","acquired_epoch":1000,"expiry_epoch":2000},"queue":[{},{}]}
+    const HELD: &str = r#"{"state":"held","lease":{"owner":"@4542e","what":"scan","acquired_epoch":1000,"expiry_epoch":2000},"queue":[{"owner":"7b81e","what":"chrome-guard 刀","since_epoch":1200,"priority":false},{"owner":"@33e28","what":"告警","since_epoch":1400,"priority":true}]}
 AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
 
+    fn host(arg: &str, sample: Option<Sample>, open: bool) -> Host {
+        let mut h = Host::new(arg);
+        h.last = sample;
+        h.open = open;
+        h.loads = vec![1.0, 5.0, 12.0];
+        h
+    }
+
+    fn text(l: &Line) -> String {
+        l.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
     #[test]
-    fn a_held_lease_drains_with_time_and_shows_queue_and_load() {
+    fn a_held_lease_drains_with_time_and_keeps_the_queue() {
         let s = parse_sample(HELD, true, "");
         assert!(s.online && s.held);
-        assert_eq!((s.owner.as_str(), s.queue), ("4542e", 2));
+        assert_eq!(s.owner, "4542e");
+        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.queue[1].owner, "33e28");
+        assert!(s.queue[1].priority);
         assert_eq!((s.ncpu, s.load1), (10.0, 5.1));
         assert_eq!(charge(Some(&s), 1000).0, 100);
         assert_eq!(charge(Some(&s), 1500).0, 50);
@@ -460,25 +606,84 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
     }
 
     #[test]
+    fn names_are_labels_and_the_target_stays_behind() {
+        let h = Host::new("Pro 13=andyimkt@100.116.110.31");
+        assert_eq!(
+            (h.name.as_str(), h.target.as_str()),
+            ("Pro 13", "andyimkt@100.116.110.31")
+        );
+        let h = Host::new("andymini");
+        assert_eq!(
+            (h.name.as_str(), h.target.as_str()),
+            ("andymini", "andymini")
+        );
+        assert_eq!(DEFAULT_HOSTS.len(), 4, "Andy:四台都要");
+        let (lines, _) = frame(
+            &[host("Pro 13=andyimkt@100.116.110.31", None, false)],
+            100,
+            0,
+            0,
+        );
+        let all: String = lines.iter().map(text).collect();
+        assert!(all.contains("Pro 13") && !all.contains("100.116"), "{all}");
+    }
+
+    #[test]
+    fn a_blank_line_follows_the_title_and_rows_map_to_hosts() {
+        let hs = [
+            host("a", Some(parse_sample(HELD, true, "")), false),
+            host("b", None, false),
+        ];
+        let (lines, owner) = frame(&hs, 100, 0, 1500);
+        assert!(lines[1].is_empty(), "空一行");
+        assert_eq!(owner[0], None);
+        assert_eq!(owner[1], None);
+        assert_eq!(owner[2], Some(0));
+        assert_eq!(lines.len(), owner.len());
+        assert_eq!(*owner.last().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn opening_a_battery_lists_who_runs_and_who_waits() {
+        let s = parse_sample(HELD, true, "");
+        let closed = host_lines(&host("a", Some(s.clone()), false), 0, 120, 0, 1500);
+        let open = host_lines(&host("a", Some(s), true), 0, 120, 0, 1500);
+        let o: Vec<String> = open.iter().map(text).collect();
+        assert!(open.len() > closed.len());
+        assert!(o.iter().any(|l| l.contains("正在跑 4542e")), "{o:?}");
+        assert!(o.iter().any(|l| l.contains("1. 7b81e · 等了 5分")), "{o:?}");
+        assert!(
+            o.iter()
+                .any(|l| l.contains("2. 33e28") && l.contains("優先")),
+            "{o:?}"
+        );
+        assert!(o.iter().any(|l| l.contains("chrome-guard 刀")), "{o:?}");
+        let free = parse_sample(
+            "{\"state\":\"free\",\"queue\":[]}\nAIB_HOSTS_SYS 8 { 1 1 1 }",
+            true,
+            "",
+        );
+        let f: Vec<String> = host_lines(&host("b", Some(free), true), 1, 120, 0, 0)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(f.iter().any(|l| l.contains("沒有人在跑")), "{f:?}");
+        assert!(f.iter().any(|l| l.contains("沒有人排隊")), "{f:?}");
+    }
+
+    #[test]
     fn every_width_draws_without_panicking_and_the_spot_moves() {
-        let h = Host {
-            name: "andyimkt@100.116.110.31".into(),
-            last: Some(parse_sample(HELD, true, "")),
-            at: None,
-            loads: vec![1.0, 5.0, 12.0],
-            asked: None,
-            stuck: true,
-        };
+        let mut h = host("andymini", Some(parse_sample(HELD, true, "")), true);
+        h.stuck = true;
         for width in [0, 1, 20, 60, 128, 300] {
             for tick in 0..5 {
-                let f = frame(std::slice::from_ref(&h), width, tick, 1500);
-                assert_eq!(f.len(), 4);
+                let (l, o) = frame(std::slice::from_ref(&h), width, tick, 1500);
+                assert_eq!(l.len(), o.len());
             }
         }
-        let a = frame(std::slice::from_ref(&h), 100, 0, 1500);
-        let b = frame(std::slice::from_ref(&h), 100, 3, 1500);
-        assert_ne!(a[1][1].0, b[1][1].0, "the bright cell moves while busy");
-        assert!(a[1][4].0.ends_with(" ?"), "stuck shows ?");
-        assert_eq!(a[1][0].0.trim(), "100.116.110.31");
+        let a = frame(std::slice::from_ref(&h), 100, 0, 1500).0;
+        let b = frame(std::slice::from_ref(&h), 100, 3, 1500).0;
+        assert_ne!(a[2][1].0, b[2][1].0, "the bright cell moves while busy");
+        assert!(a[2][4].0.ends_with(" ?"), "stuck shows ?");
     }
 }
