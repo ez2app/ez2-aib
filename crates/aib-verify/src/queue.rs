@@ -451,7 +451,18 @@ mod tests {
     #[test]
     fn options() {
         let h = "0123456789abcdef0123456789abcdef01234567";
-        let a = |s: String| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        // tokens that start with `/` get a drive on Windows, where `/a` is not absolute
+        let a = |s: String| {
+            s.split_whitespace()
+                .map(|t| {
+                    if cfg!(windows) && t.starts_with('/') {
+                        format!("C:{t}")
+                    } else {
+                        t.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         assert!(Opts::parse(&a(format!("--head {h} --bin /a --fixture /b --out o"))).is_ok());
         assert!(Opts::parse(&a(format!("--head {h} --bin a --fixture /b --out o"))).is_err());
         assert!(Opts::parse(&a(format!("--head {h} --bin /a --fixture /b"))).is_err());

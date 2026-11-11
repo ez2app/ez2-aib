@@ -443,8 +443,27 @@ pub(crate) fn hostname() -> String {
 mod tests {
     use super::*;
 
+    /// An absolute path on this platform: `/a/fx` here, `C:/a/fx` on Windows
+    /// (where a path without a drive is not absolute).
+    fn abs(p: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{p}")
+        } else {
+            p.to_owned()
+        }
+    }
+
+    /// Split an argument line; tokens that start with `/` become [`abs`].
     fn args(s: &str) -> Vec<String> {
-        s.split_whitespace().map(str::to_string).collect()
+        s.split_whitespace()
+            .map(|t| {
+                if t.starts_with('/') {
+                    abs(t)
+                } else {
+                    t.to_owned()
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -487,7 +506,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             policy(&o),
-            json!({"programs": [{"name": "fixture", "path": "/a/fx"}], "env": []})
+            json!({"programs": [{"name": "fixture", "path": abs("/a/fx")}], "env": []})
         );
         let o = Opts::parse(&args(&format!(
             "--head {h} --bin /a/aibd --fixture /a/fx --out o --claude /c/claude"
@@ -495,12 +514,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             policy(&o)["programs"][1],
-            json!({"name": "claude", "path": "/c/claude", "signer": "Q6L2SF6YDW"})
+            json!({"name": "claude", "path": abs("/c/claude"), "signer": "Q6L2SF6YDW"})
         );
         assert_eq!(
             claude_argv(Path::new("/c/claude"))[..3],
             ["/c/claude", "-p", "--setting-sources="]
         );
-        assert_eq!(burst_argv(&o), ["/a/fx", "setuid-ps-burst"]);
+        assert_eq!(burst_argv(&o), [abs("/a/fx"), "setuid-ps-burst".to_owned()]);
     }
 }
