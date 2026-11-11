@@ -833,6 +833,58 @@ jobs:
           ck restoresteps.rs '            .find(|c| c.as_str() == word)' \
              '            .find(|c| c.as_str() != word) // knife' \
              only_a_restore_that_is_not_over_is_closed
+          # restore gate: a sharer the share gate could not check passes (B3 slice 3)
+          ck restoregate.rs '        Sharer::Unknown => return Err("share_unknown"),' \
+             '        Sharer::Unknown => {} // knife' \
+             the_sharer_is_asked_first_and_an_unknown_one_refuses
+          # restore gate: a sharer the share gate refused passes (B3 slice 3)
+          ck restoregate.rs '        Sharer::Refused(why) => return Err(why),' \
+             '        Sharer::Refused(_) => {} // knife' \
+             the_sharer_is_asked_first_and_an_unknown_one_refuses
+          # restore gate: a backup named for another site is downloaded (B3 slice 3)
+          ck restoregate.rs '    if !name_fits_domain(f.name, f.domain) {' \
+             '    if !name_fits_domain(f.name, f.domain) && false { // knife' \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: a domain that only starts the name fits it (B3 slice 3)
+          ck restoregate.rs "    strip_prefix_ignore_case(strip_www(stem), domain).is_some_and(|rest| rest.starts_with('-'))" \
+             '    strip_prefix_ignore_case(strip_www(stem), domain).is_some() // knife' \
+             a_backup_named_for_another_site_is_refused
+          # restore gate: an empty backup is downloaded (B3 slice 3)
+          ck restoregate.rs '    if size == 0 {' \
+             '    if size == 0 && false { // knife' \
+             a_backup_of_unknown_or_no_size_is_refused
+          # restore gate: the host needs room for the backup and half the spare only (B3 slice 3)
+          ck restoregate.rs '        .and_then(|twice| twice.checked_add(SPARE_BYTES))' \
+             '        .and_then(|twice| twice.checked_add(SPARE_BYTES / 2)) // knife' \
+             the_host_needs_room_for_twice_the_backup_and_ten_gib
+          # restore gate: a byte short of the room is room enough (B3 slice 3)
+          ck restoregate.rs '        .is_some_and(|need| free >= need)' \
+             '        .is_some_and(|need| free + 1 >= need) // knife' \
+             the_host_needs_room_for_twice_the_backup_and_ten_gib
+          # restore gate: a database up a second short of the wait takes a restore (B3 slice 3)
+          ck restoregate.rs '    if up < MIN_DB_UP_SECS {' \
+             '    if up + 1 < MIN_DB_UP_SECS { // knife' \
+             a_database_that_just_restarted_takes_no_restore
+          # restore gate: a header name may hold control characters (B3 slice 3)
+          ck restoregate.rs '        && name[..used].iter().all(|b| (0x20..0x7f).contains(b))' \
+             '        && name[..used].iter().all(|b| *b != 0) // knife' \
+             only_a_wpress_header_is_taken
+          # restore gate: digits after a field's padding are taken (B3 slice 3)
+          ck restoregate.rs '        && field[used..].iter().all(|b| *b == 0)' \
+             '        && field[used..].iter().all(|b| *b == 0 || b.is_ascii_digit()) // knife' \
+             only_a_wpress_header_is_taken
+          # restore gate: a short hash is taken (B3 slice 3)
+          ck restoregate.rs '    hex.len() == 64' \
+             '    hex.len() >= 63 // knife' \
+             the_download_must_be_what_the_share_said
+          # restore gate: a download of another length is taken (B3 slice 3)
+          ck restoregate.rs '    if got_size != planned_size {' \
+             '    if got_size != planned_size && false { // knife' \
+             the_download_must_be_what_the_share_said
+          # restore gate: a download that is no .wpress is taken (B3 slice 3)
+          ck restoregate.rs '    if !looks_like_wpress(head) {' \
+             '    if !looks_like_wpress(head) && false { // knife' \
+             the_download_must_be_what_the_share_said
           # ---- E7 site quota (4542e 11-11): the pure rule
           # an opening that names no customer is passed over instead of holding room
           ck quota.rs '        None => true,' \
@@ -1344,6 +1396,46 @@ jobs:
           hk restorestepscmd.rs '                Close::Abandoned => h.move_aside(&rec)?,' \
              '                Close::Abandoned => h.write_record(&rec)?, // knife' \
              an_abandoned_restore_no_longer_holds_the_host
+          # restore: a download the gate refused still starts (B3 slice 3)
+          hk restorestepscmd.rs '                Err(refused) => stop(&mut doc, refused),' \
+             '                Err(_refused) => {} // knife' \
+             the_download_gate_stops_the_plan
+          # restore: the plan does not name the backup (B3 slice 3)
+          hk restorestepscmd.rs '                    doc["backup"] = backup;' \
+             '                    let _ = backup; // knife' \
+             the_download_gate_stops_the_plan
+          # restore: the host's free room is not asked (B3 slice 3)
+          hk restorestepscmd.rs '        free: host.free_bytes(),' \
+             '        free: Some(u64::MAX), // knife' \
+             the_download_gate_stops_the_plan
+          # restore: the database's uptime is not asked (B3 slice 3)
+          hk restorestepscmd.rs '        db_up_secs: host.db_up_secs(),' \
+             '        db_up_secs: Some(u64::MAX), // knife' \
+             the_download_gate_stops_the_plan
+          # restore: the verify step is run like any other step (B3 slice 3)
+          hk restorestepscmd.rs '            RestoreStep::Verify => verify_download(host, &mut rec),' \
+             '            RestoreStep::Verify if false => verify_download(host, &mut rec), // knife' \
+             a_download_that_is_not_what_the_share_said_is_thrown_away
+          # restore: a download that is not what the share said goes on (B3 slice 3)
+          hk restorestepscmd.rs '        .map_err(str::to_owned)?;' \
+             '        .unwrap_or(()); // knife' \
+             a_download_that_is_not_what_the_share_said_is_thrown_away
+          # restore: the download's hash is not written down (B3 slice 3)
+          hk restorestepscmd.rs '        b.sha256 = Some(got.sha256);' \
+             '        b.sha256 = None; // knife' \
+             the_downloads_hash_is_written_down
+          # restore: --apply does not carry the plan's backup into the record (B3 slice 3)
+          hk restorestepscmd.rs '                    backup: plan.get("backup").and_then(backup_from),' \
+             '                    backup: None, // knife' \
+             the_downloads_hash_is_written_down
+          # restore: df's free room is read in KiB as bytes (B3 slice 3)
+          hk restorestepscmd.rs '    kib.checked_mul(1024)' \
+             '    Some(kib) // knife' \
+             the_hosts_free_room_and_database_uptime_are_read
+          # restore: df output of two file systems is read as one (B3 slice 3)
+          hk restorestepscmd.rs '    if lines.next().is_some() {' \
+             '    if lines.next().is_some() && false { // knife' \
+             the_hosts_free_room_and_database_uptime_are_read
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
