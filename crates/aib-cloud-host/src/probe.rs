@@ -962,7 +962,7 @@ fn cmd_site_drift(args: &[String]) -> Result<u8, String> {
 // ---------------------------------------------------------------- site suspend / resume / restore (P2)
 
 pub(crate) const EDGE_CT: &str = "101";
-const CADDYFILE: &str = "/etc/caddy/Caddyfile";
+pub(crate) const CADDYFILE: &str = "/etc/caddy/Caddyfile";
 const SUSPENDED_PAGE: &str = "/srv/errors/suspended.html";
 
 /// Read one site record. The CLI code is validated before it touches a path (c477a #585 L3:

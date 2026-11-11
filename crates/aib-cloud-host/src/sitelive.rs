@@ -28,9 +28,13 @@
 //! **Health.** From the entry, by the site's own name: the answer must be 200 and carry the
 //! site's own mark — the link header the site software sends for its own address
 //! (`<https://<name>/wp-json/>`), which only a site whose address the identity step set
-//! sends. Then the opening becomes a site: the record is written as a full record
+//! sends. The mark comes from the site software's REST address: a site whose REST links
+//! are turned off (a security plugin) or that still uses plain links (`?rest_route=`) answers
+//! 200 without it and is kept for a person; the template has both on. Then the opening
+//! becomes a site: the record is written as a full record
 //! ([`aib_cloud::site::record`]), the site is added to the export list, and the opening
-//! record is removed.
+//! record moves to `sites-opened/<code>.json` (root only): the licences left for a person,
+//! what B3 left for later and the administrators are not in the full record.
 //!
 //! [`Runner`]: crate::sitecreatecmd::Runner
 
@@ -52,9 +56,8 @@ use crate::siteidentity::wp;
 pub const KEYS: &str = "/etc/ez2-cloud/wp-package-keys.env";
 /// The export list: one line per site, `<code> <ct> <site folder>`.
 pub const SITES_LIST: &str = "/etc/ez2-cloud/sites.list";
-/// The entry's container and its configuration.
-const EDGE_CT: &str = "101";
-const CADDYFILE: &str = "/etc/caddy/Caddyfile";
+/// The entry's container and its configuration: the same as the suspend / restore commands'.
+use crate::probe::{CADDYFILE, EDGE_CT};
 /// Where the new configuration is written before it is validated and swapped in.
 const CADDYFILE_NEW: &str = "/etc/caddy/Caddyfile.ez2-new";
 /// The template's SEOPress key, by its name in [`KEYS`].
@@ -336,7 +339,17 @@ fn edge(rest: &[&str]) -> Vec<String> {
 
 /// Write `text` as the entry's configuration: beside the old one, validated, the old one
 /// kept, swapped in, reloaded; a failed reload puts the old one back and reloads that.
-fn edge_write(runner: &mut impl Runner, text: &str) -> Result<(), String> {
+/// Put `backup` back as the entry's configuration and reload it. `true` when both went.
+fn edge_put_back(runner: &mut impl Runner, backup: &str) -> bool {
+    let back = runner.run(&edge(&["cp", "-a", backup, CADDYFILE]));
+    let again = runner.run(&edge(&["systemctl", "reload", "caddy"]));
+    back.is_ok() && again.is_ok()
+}
+
+/// Every `edge_write` keeps the configuration it replaced as `Caddyfile.bak-<time>` in the
+/// entry's container, and nothing here removes them (TODO, with the removal's backups:
+/// keep the newest few, by a reviewed cleaning rule). Returns that backup's path.
+fn edge_write(runner: &mut impl Runner, text: &str) -> Result<String, String> {
     let write_new = format!("umask 022; cat > {CADDYFILE_NEW}");
     runner
         .run_input(&edge(&["sh", "-c", &write_new]), text.as_bytes())
@@ -362,18 +375,17 @@ fn edge_write(runner: &mut impl Runner, text: &str) -> Result<(), String> {
         .run(&edge(&["mv", "-f", CADDYFILE_NEW, CADDYFILE]))
         .map_err(|e| format!("the new entry configuration could not be put in place: {e}"))?;
     if let Err(e) = runner.run(&edge(&["systemctl", "reload", "caddy"])) {
-        let back = runner.run(&edge(&["cp", "-a", &backup, CADDYFILE]));
-        let again = runner.run(&edge(&["systemctl", "reload", "caddy"]));
+        let back = edge_put_back(runner, &backup);
         return Err(format!(
             "the entry did not reload; the old configuration from {backup} {}: {e}",
-            if back.is_ok() && again.is_ok() {
+            if back {
                 "is back"
             } else {
                 "could NOT be put back"
             }
         ));
     }
-    Ok(())
+    Ok(backup)
 }
 
 /// The entry step: the firewall live, the site's block added, every other site the same.
@@ -400,14 +412,30 @@ pub fn edge_step(
     };
     let before = others(runner, &paths.records, &spec.code);
     same_answers(&before, &before)?;
-    edge_write(runner, &text)?;
+    let backup = edge_write(runner, &text)?;
     let after = runner
         .run(&edge(&["cat", CADDYFILE]))
         .map_err(|e| format!("the entry configuration could not be read back: {e}"))?;
     if edge_with_site(&after, spec)?.is_some() {
         return Err("the entry configuration read back has no block for the site".to_owned());
     }
-    same_answers(&before, &others(runner, &paths.records, &spec.code))
+    let Err(changed) = same_answers(&before, &others(runner, &paths.records, &spec.code)) else {
+        return Ok(());
+    };
+    // the new block changed another site: the old configuration goes back at once, and the
+    // other sites are asked again (33e28, B4 M1)
+    if !edge_put_back(runner, &backup) {
+        return Err(format!(
+            "{changed}; the old configuration from {backup} could NOT be put back"
+        ));
+    }
+    let again = match same_answers(&before, &others(runner, &paths.records, &spec.code)) {
+        Ok(()) => "the other sites answer as before again".to_owned(),
+        Err(e) => format!("and still: {e}"),
+    };
+    Err(format!(
+        "{changed}; the old configuration from {backup} is back and the site's block is off the entry, {again}"
+    ))
 }
 
 // ------------------------------------------------------------------ health
@@ -515,14 +543,15 @@ fn write_new(path: &Path, text: &str, mode: u32) -> Result<(), String> {
 }
 
 /// The health step, and the opening made a site: answer with the mark; the full record
-/// written; the export list; the opening record removed. A full record already there for
+/// written; the export list; the opening record moved to the opened ones. A full record already there for
 /// another site is refused.
 pub fn health_step(
     runner: &mut impl Runner,
     paths: &HostPaths,
     spec: &SiteSpec,
-    created_at: u64,
+    opening: &Value,
 ) -> Result<(), String> {
+    let created_at = started_at(opening);
     let host = first_host(spec)?;
     let resolve = format!("{host}:443:127.0.0.1");
     let url = format!("https://{host}/");
@@ -565,12 +594,41 @@ pub fn health_step(
     if new_list != list {
         write_new(&paths.sites_list, &new_list, 0o644)?;
     }
+    // what the full record does not carry (the licences left for a person, what B3 left for
+    // later, the administrators) stays on the host beside it, root only (33e28, B4 M2)
+    fs::create_dir_all(&paths.opened).map_err(|e| format!("{}: {e}", paths.opened.display()))?;
+    let kept = paths.opened.join(format!("{}.json", spec.code));
+    let opened = serde_json::to_string_pretty(opening).map_err(|e| e.to_string())? + "\n";
+    write_new(&kept, &opened, 0o600)?;
     let opening = paths.creating.join(format!("{}.json", spec.code));
     match fs::remove_file(&opening) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("{}: {e}", opening.display())),
     }
+}
+
+/// What a person still has to do for an opened site, from its opening record: what B3 left
+/// for later and every licence not done.
+pub fn pending_of(record: &Value) -> Vec<String> {
+    let mut out: Vec<String> = record
+        .get("later")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    if let Some(licences) = record.get("licences").and_then(Value::as_object) {
+        out.extend(
+            licences
+                .iter()
+                .filter_map(|(name, w)| Some((name, w.as_str()?)))
+                .filter(|(_, w)| *w != "done")
+                .map(|(name, w)| format!("licence {name}: {w}")),
+        );
+    }
+    out
 }
 
 /// The time an opening started, from its record (`started_at`); now when it has none.
@@ -585,6 +643,7 @@ pub fn started_at(record: &Value) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn spec() -> SiteSpec {
@@ -617,6 +676,7 @@ mod tests {
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
+            opened: d.join("opened"),
         }
     }
 
@@ -997,6 +1057,59 @@ mod tests {
         assert!(e.contains("does not answer as before"), "{e}");
     }
 
+    #[test]
+    fn a_block_that_changes_another_site_is_taken_off_the_entry_again() {
+        let paths = scratch("edge-back");
+        with_other_record(&paths);
+        // before 200, with the block 502, with the old configuration back 200
+        let mut h = host(entry(
+            "-A veth131i0-IN -j GROUP-ez2-site-v1-IN\n",
+            true,
+            vec!["200", "502", "200"],
+        ));
+        let e = edge_step_fed(&mut h, &paths).unwrap_err();
+        assert!(e.contains("does not answer as before"), "{e}");
+        assert!(
+            e.contains("is back") && e.contains("answer as before again"),
+            "{e}"
+        );
+        assert!(h
+            .calls
+            .iter()
+            .any(|c| c.contains("cp -a /etc/caddy/Caddyfile.bak-")));
+        assert_eq!(
+            h.calls
+                .iter()
+                .filter(|c| c.contains("systemctl reload"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            h.calls
+                .iter()
+                .filter(|c| c.contains("%{http_code}"))
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn what_a_person_still_has_to_do_comes_from_the_record() {
+        let rec = json!({
+            "later": ["fp_site_key: F1 is not open", "setup_log: x stays in the container"],
+            "licences": {"seopress": "done", "freemius": "freemius:first_back_office_visit"},
+        });
+        assert_eq!(
+            pending_of(&rec),
+            [
+                "fp_site_key: F1 is not open",
+                "setup_log: x stays in the container",
+                "licence freemius: freemius:first_back_office_visit",
+            ]
+        );
+        assert!(pending_of(&json!({})).is_empty());
+    }
+
     /// The fake entry needs what was fed to `cat >`: hand it over before `mv`.
     fn edge_step_fed<F: FnMut(&[String]) -> Result<String, String>>(
         h: &mut Host<F>,
@@ -1087,7 +1200,14 @@ mod tests {
         let mut h = host(|_: &[String]| {
             Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n".to_owned())
         });
-        health_step(&mut h, &paths, &s, 1_794_379_200).unwrap();
+        let opening = json!({
+            "started_at": 1_794_379_200_u64,
+            "step": "health",
+            "admins": ["owner"],
+            "later": ["fp_site_key: F1 is not open"],
+            "licences": {"seopress": "done", "flyingpress": "flyingpress:activate_by_hand"},
+        });
+        health_step(&mut h, &paths, &s, &opening).unwrap();
         let rec: Value =
             serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap())
                 .unwrap();
@@ -1101,9 +1221,17 @@ mod tests {
             .unwrap()
             .ends_with("s-b4test 131 /var/www/s-b4test\n"));
         assert!(!paths.creating.join("s-b4test.json").exists());
+        // what the full record does not carry stays beside it, root only (33e28, B4 M2)
+        let kept = paths.opened.join("s-b4test.json");
+        let back: Value = serde_json::from_str(&fs::read_to_string(&kept).unwrap()).unwrap();
+        assert_eq!(back, opening);
+        assert_eq!(
+            fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         // again: the same record is there, nothing changes
         fs::write(paths.creating.join("s-b4test.json"), "{}").unwrap();
-        health_step(&mut h, &paths, &s, 1_794_379_200).unwrap();
+        health_step(&mut h, &paths, &s, &opening).unwrap();
     }
 
     #[test]
@@ -1112,7 +1240,7 @@ mod tests {
         let s = spec();
         fs::write(paths.creating.join("s-b4test.json"), "{}").unwrap();
         let mut h = host(|_: &[String]| Ok("HTTP/2 502\r\n".to_owned()));
-        assert!(health_step(&mut h, &paths, &s, 1).is_err());
+        assert!(health_step(&mut h, &paths, &s, &json!({"started_at": 1})).is_err());
         assert!(paths.creating.join("s-b4test.json").exists());
         assert!(!paths.records.join("s-b4test.json").exists());
         assert!(!paths.sites_list.exists());
@@ -1130,6 +1258,6 @@ mod tests {
         let mut h = host(|_: &[String]| {
             Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n".to_owned())
         });
-        assert!(health_step(&mut h, &paths, &s, 1).is_err());
+        assert!(health_step(&mut h, &paths, &s, &json!({"started_at": 1})).is_err());
     }
 }

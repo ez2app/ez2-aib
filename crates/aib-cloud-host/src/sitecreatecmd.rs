@@ -51,6 +51,8 @@ const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
 /// so the number and the address are taken even while the new container's configuration
 /// does not name the address yet (the network is set by the step after the clone).
 pub const CREATING: &str = "/var/lib/ez2-cloud/sites-creating";
+/// The opening records of the sites that opened, kept beside their full records (B4).
+pub const OPENED: &str = "/var/lib/ez2-cloud/sites-opened";
 /// The configuration of every container and every virtual machine of this host.
 const LXC_CONFIGS: &str = "/etc/pve/lxc";
 const VM_CONFIGS: &str = "/etc/pve/qemu-server";
@@ -769,6 +771,8 @@ pub struct HostPaths {
     pub sites_list: PathBuf,
     /// The template's paid plugin keys ([`crate::sitelive::KEYS`]), read into memory only.
     pub keys: PathBuf,
+    /// The opening records of opened sites ([`OPENED`]).
+    pub opened: PathBuf,
 }
 
 impl HostPaths {
@@ -783,6 +787,7 @@ impl HostPaths {
             records: PathBuf::from(RECORDS),
             sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
             keys: PathBuf::from(crate::sitelive::KEYS),
+            opened: PathBuf::from(OPENED),
         }
     }
 }
@@ -1070,14 +1075,15 @@ pub fn continue_steps(
             }
             CreateStep::Edge => crate::sitelive::edge_step(runner, paths, &spec),
             CreateStep::Health => {
-                let started = crate::sitelive::started_at(&record);
-                // the opening becomes a site: its record goes, so nothing is written back
-                if let Err(why) = crate::sitelive::health_step(runner, paths, &spec, started) {
+                // the opening becomes a site: its record moves to the opened ones as it is
+                // after this step, and nothing is written back to the openings
+                let mut opened = record.clone();
+                opened["step"] = json!(step.as_str());
+                opened["at"] = json!(crate::probe::unix_now());
+                if let Err(why) = crate::sitelive::health_step(runner, paths, &spec, &opened) {
                     return Err(keep(paths, &spec, &mut record, step, &why));
                 }
-                record["step"] = json!(step.as_str());
-                record["at"] = json!(crate::probe::unix_now());
-                return Ok(record);
+                return Ok(opened);
             }
             other => Err(format!("{} is not a step of --continue", other.as_str())),
         };
@@ -1414,8 +1420,8 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
                 "applied": record.get("step"),
                 "record": record,
                 "open": open,
-                // TODO(fp_site_key, mask_files): the parts B3 left as interfaces
-                "pending": ["fp_site_key: F1 is not open", "mask_files: ct-mask2 is not in main"],
+                // from the record: what B3 left for later and the licences not done
+                "pending": crate::sitelive::pending_of(&record),
             })
         }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
@@ -2211,6 +2217,7 @@ mod tests {
             records: root.join("records"),
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
+            opened: root.join("opened"),
         };
         for d in [
             &paths.creating,

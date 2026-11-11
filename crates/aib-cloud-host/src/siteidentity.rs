@@ -580,6 +580,7 @@ mod tests {
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
+            opened: d.join("opened"),
         }
     }
 

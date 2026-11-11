@@ -1324,12 +1324,12 @@ jobs:
              '    if let Some((h, _)) = before.iter().chain(now).find(|(_, c)| c.is_none() && false) { // knife' \
              other_sites_must_answer_as_before_and_no_answer_is_never_the_same
           # B4 entry: the other sites are not asked again after the change
-          hk sitelive.rs '    same_answers(&before, &others(runner, &paths.records, &spec.code))' \
-             '    same_answers(&before, &before) // knife' \
+          hk sitelive.rs '    let Err(changed) = same_answers(&before, &others(runner, &paths.records, &spec.code)) else {' \
+             '    let Err(changed) = same_answers(&before, &before) else { // knife' \
              another_site_that_answers_differently_after_is_a_failure
           # B4 entry: a failed reload leaves the new configuration in place
-          hk sitelive.rs '        let back = runner.run(&edge(&["cp", "-a", &backup, CADDYFILE]));' \
-             '        let back: Result<String, String> = Ok(String::new()); // knife' \
+          hk sitelive.rs '    let back = runner.run(&edge(&["cp", "-a", backup, CADDYFILE]));' \
+             '    let back = runner.run(&edge(&["true", backup])); // knife' \
              a_failed_reload_puts_the_old_configuration_back
           # B4 health: a 200 without the site's own mark is taken as healthy
           hk sitelive.rs '    if marked {' \
@@ -1347,6 +1347,18 @@ jobs:
           hk sitecreatecmd.rs '        if sitecreate::after_failure(step) == AfterFailure::Keep {' \
              '        if sitecreate::after_failure(step) == AfterFailure::Keep && false { // knife' \
              a_failure_from_the_licences_on_keeps_the_site_and_removes_nothing
+          # B4 entry (33e28 M1): a block that changed another site stays on the entry
+          hk sitelive.rs '    if !edge_put_back(runner, &backup) {' \
+             '    if false && !edge_put_back(runner, &backup) { // knife' \
+             a_block_that_changes_another_site_is_taken_off_the_entry_again
+          # B4 health (33e28 M2): the opening record goes with what only it carries
+          hk sitelive.rs '    write_new(&kept, &opened, 0o600)?;' \
+             '    let _ = (&kept, &opened); // knife' \
+             a_healthy_site_becomes_a_full_record_on_the_list_and_its_opening_goes
+          # B4 (33e28 M2): a licence left for a person is not in what is still to do
+          hk sitelive.rs '                .filter(|(_, w)| *w != "done")' \
+             '                .filter(|(_, w)| *w != "done" && false) // knife' \
+             what_a_person_still_has_to_do_comes_from_the_record
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
