@@ -814,6 +814,14 @@ jobs:
           ck op.rs "            'a'..='z' | '0'..='9' | '_' => out.push(c)," \
              "            'a'..='z' | '0'..='9' | '_' | 'A'..='Z' | ' ' => out.push(c), // knife" \
              a_stop_names_the_step_it_stopped_at
+          # E11 L1 (f1fae 11-11): work still writing its progress is not marked not_stuck
+          ck op.rs '    p == Progress::Running' \
+             '    p == Progress::Stalled // knife' \
+             a_stop_of_work_still_moving_needs_even_if_running
+          # E11 L1: a not_stuck plan is carried out without --even-if-running
+          ck op.rs '    if planned_not_stuck && !even_if_running {' \
+             '    if planned_not_stuck && !even_if_running && false { // knife' \
+             a_stop_of_work_still_moving_needs_even_if_running
           # E1 customer site create: opening a site is not offered to the customer's side
           ck customer.rs '            OwnerRequest::Create { .. } => true, // E1' \
              '            OwnerRequest::Create { .. } => false, // knife' \
@@ -1633,6 +1641,26 @@ jobs:
           hk opstop.rs '                state: op::State::Failed,' \
              '                state: op::State::Verified, // knife' \
              an_approved_stop_ends_the_tree_and_leaves_the_operation_failed
+          # E11 L1 (f1fae 11-11): the plan does not say the work is still moving
+          hk opstop.rs '        "not_stuck": op::not_stuck(verdict),' \
+             '        "not_stuck": op::not_stuck(verdict) && false, // knife' \
+             a_plan_for_work_still_moving_is_marked_and_needs_even_if_running
+          # E11 L1: --apply does not ask for --even-if-running
+          hk opstop.rs '            again["not_stuck"].as_bool().unwrap_or(true),' \
+             '            again["not_stuck"].as_bool().unwrap_or(true) && false, // knife' \
+             a_plan_for_work_still_moving_is_marked_and_needs_even_if_running
+          # E11 L1: what --plan prints beside the seal makes every plan plan_changed
+          hk opstop.rs '        o.remove(NOW_KEY);' \
+             '        let _ = (o, NOW_KEY); // knife' \
+             a_plan_for_work_still_moving_is_marked_and_needs_even_if_running
+          # E11 N1 (33e28): the plan does not say the work may have finished
+          hk opstop.rs '        "then": format!("check the host (the operation may have finished its work just before it was stopped), then `aib-cloud-host op recovered {op_id}`"),' \
+             '        "then": format!("check the host, then `aib-cloud-host op recovered {op_id}`"), // knife' \
+             a_stop_while_the_work_waits_to_write_verified_leaves_it_failed
+          # E11 N3 (33e28): the host lock's start time is taken for another pid
+          hk opstop.rs '            .filter(|h| h.pid == pid)' \
+             '            .filter(|h| h.pid == pid || h.pid != pid) // knife' \
+             a_progress_file_without_start_time_takes_the_locks
           # E1 customer site create: an opening is shown for a request other than status
           hk customercmd.rs '            if request == Request::Status && in_scope {' \
              '            if in_scope { // knife' \

@@ -619,6 +619,9 @@ pub enum StopRefusal {
     PlanChanged,
     /// The host side runs on Linux only.
     NotLinux,
+    /// The plan was made while the operation was still writing its progress (`not_stuck`)
+    /// and `--even-if-running` was not given (f1fae 11-11 23:59).
+    NotStuck,
 }
 
 impl StopRefusal {
@@ -633,6 +636,7 @@ impl StopRefusal {
             StopRefusal::ProcessGone => "process_gone",
             StopRefusal::PlanChanged => "plan_changed",
             StopRefusal::NotLinux => "not_linux",
+            StopRefusal::NotStuck => "not_stuck_needs_even_if_running",
         }
     }
 }
@@ -668,6 +672,24 @@ pub fn may_stop(
 /// Checked again right before each signal, so a pid reused since the plan is left alone.
 pub fn still_the_one(planned_start: u64, seen: ProcSeen) -> bool {
     matches!(seen, ProcSeen::Live(st) if st == planned_start)
+}
+
+/// Whether a stop may be planned as "not stuck": the operation is still writing its
+/// progress. A plan is made all the same — a person may want to stop one that is slow
+/// rather than stuck — but it says so (f1fae 11-11 23:59).
+pub fn not_stuck(p: Progress) -> bool {
+    p == Progress::Running
+}
+
+/// Whether an approved stop plan may be carried out: one made while the operation was
+/// not stuck needs `--even-if-running` as well, so the person has said twice that they
+/// mean to stop work that is still moving.
+pub fn may_apply_stop(planned_not_stuck: bool, even_if_running: bool) -> Result<(), StopRefusal> {
+    if planned_not_stuck && !even_if_running {
+        Err(StopRefusal::NotStuck)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1098,5 +1120,23 @@ mod tests {
             "start_time_unreadable"
         );
         assert_eq!(StopRefusal::PlanChanged.as_str(), "plan_changed");
+    }
+
+    /// f1fae 11-11 L1: a plan for an operation that still writes is made, marked, and
+    /// carried out only with `--even-if-running`.
+    #[test]
+    fn a_stop_of_work_still_moving_needs_even_if_running() {
+        assert!(not_stuck(Progress::Running));
+        for p in [Progress::Stalled, Progress::Gone, Progress::Finished] {
+            assert!(!not_stuck(p), "{p:?}");
+        }
+        assert_eq!(may_apply_stop(true, false), Err(StopRefusal::NotStuck));
+        assert_eq!(may_apply_stop(true, true), Ok(()));
+        assert_eq!(may_apply_stop(false, false), Ok(()));
+        assert_eq!(may_apply_stop(false, true), Ok(()));
+        assert_eq!(
+            StopRefusal::NotStuck.as_str(),
+            "not_stuck_needs_even_if_running"
+        );
     }
 }

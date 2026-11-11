@@ -1165,6 +1165,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                     ops_dir: dir,
                     lock: &paths,
                     fingerprint: "",
+                    stalled_after: op::STALLED_SECS,
                 };
                 doc["op"] = crate::opstop::status(
                     &facts,

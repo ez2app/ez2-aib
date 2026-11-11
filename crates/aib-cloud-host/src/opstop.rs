@@ -20,6 +20,20 @@
 //!   operation's journal. From there the existing rule holds: check the host, then
 //!   `op recovered <op>`. Each pid is checked against its planned start time again right
 //!   before it is signalled: a pid reused since the plan is left alone.
+//! * **Not stuck** (f1fae 11-11 23:59): an operation that still writes its progress gets a
+//!   plan all the same — a person may want to stop work that is slow rather than stuck —
+//!   but the plan says `not_stuck: true`, and `--apply` then also needs
+//!   `--even-if-running`. The plan as printed also carries `now` (verdict, why, seconds
+//!   since the last update, one line for the approval window); `now` is outside the seal
+//!   and is dropped before the plan is compared.
+//!
+//! **What a stop cannot reach** (33e28 N2): only the processes in this operation's tree,
+//! found by each one's parent. A process that left the tree (a daemon that forked twice
+//! and was adopted by init) is not found; neither is anything running **inside a
+//! container** (`pct exec` / `lxc-attach` on the container's side, what `lxc-start`
+//! runs): a person looks at those. Signals go through the `kill` program, so between the
+//! last start-time check and the signal there is a window of milliseconds in which a pid
+//! could be reused; once a libc binding is in, `kill(2)` is called directly.
 
 use std::cell::RefCell;
 use std::fs;
@@ -276,11 +290,21 @@ struct Recorded {
 }
 
 fn recorded(dir: &Path, lock_file: &Path, op_id: &str, running_at: u64) -> Option<Recorded> {
+    let holder = fs::read_to_string(lock_file)
+        .ok()
+        .and_then(|t| opstore::holder_from_text(&t))
+        .filter(|h| h.op == op_id);
     if let Some(p) = read_progress(dir, op_id) {
         let pid = u32::try_from(p["pid"].as_u64()?).ok()?;
+        // 33e28 N3: a progress file that could not read its own start time takes the one
+        // the host lock holds for the same operation and pid
+        let from_lock = holder
+            .as_ref()
+            .filter(|h| h.pid == pid)
+            .map(|h| h.start_time);
         return Some(Recorded {
             pid,
-            start_time: p["start_time"].as_u64(),
+            start_time: p["start_time"].as_u64().or(from_lock),
             pgid: p["pgid"].as_u64().and_then(|g| u32::try_from(g).ok()),
             boot_id: p["boot_id"].as_str().map(str::to_owned),
             step: p["step"].as_str().unwrap_or("running").to_owned(),
@@ -289,8 +313,7 @@ fn recorded(dir: &Path, lock_file: &Path, op_id: &str, running_at: u64) -> Optio
             from: "progress",
         });
     }
-    let h = opstore::holder_from_text(&fs::read_to_string(lock_file).ok()?)?;
-    (h.op == op_id).then(|| Recorded {
+    holder.map(|h| Recorded {
         pid: h.pid,
         start_time: Some(h.start_time),
         pgid: None,
@@ -320,6 +343,8 @@ pub struct Facts<'a> {
     pub ops_dir: &'a Path,
     pub lock: &'a opstore::LockPaths,
     pub fingerprint: &'a str,
+    /// Silence after which an operation is stalled ([`op::STALLED_SECS`] on the host).
+    pub stalled_after: u64,
 }
 
 // ------------------------------------------------------------------ op status <op>
@@ -374,7 +399,22 @@ pub fn status(f: &Facts, op_id: &str, now: u64, stalled_after: u64) -> Result<Va
 /// `op stop <op> --plan`: the processes a stop would signal and the step the operation is
 /// in, sealed. Refused (with the fixed detail first) when the journal is not at running,
 /// nothing was recorded, the boot differs, or the pid is not provably the same process.
-pub fn stop_plan(f: &Facts, op_id: &str) -> Result<Value, String> {
+pub fn stop_plan(f: &Facts, op_id: &str, now: u64) -> Result<Value, String> {
+    plan_and_now(f, op_id, now).map(|(plan, _)| plan)
+}
+
+/// The key of what `--plan` prints beside the sealed plan: the verdict now, for the first
+/// line of the approval window. Not sealed (it changes every second); `--apply` drops it.
+pub const NOW_KEY: &str = "now";
+
+/// The plan `--plan` prints: the sealed plan and, under [`NOW_KEY`], the verdict now.
+pub fn plan_for_window(f: &Facts, op_id: &str, now: u64) -> Result<Value, String> {
+    let (mut plan, summary) = plan_and_now(f, op_id, now)?;
+    plan[NOW_KEY] = summary;
+    Ok(plan)
+}
+
+fn plan_and_now(f: &Facts, op_id: &str, now: u64) -> Result<(Value, Value), String> {
     let (entries, _) = opstore::read_journal(&opstore::journal_path(f.ops_dir, op_id)?)?;
     let last = op::replay(&entries).map_err(|e| e.to_string())?;
     let Some(rec) = recorded(f.ops_dir, &f.lock.lock, op_id, running_at(&entries)) else {
@@ -417,6 +457,27 @@ pub fn stop_plan(f: &Facts, op_id: &str) -> Result<Value, String> {
         }));
     }
     let code = op::stop_code(&rec.step).unwrap_or_else(|| "stopped_at_unnamed".to_owned());
+    // the process was just proven to be the recorded one: only silence is left to judge
+    let verdict = op::progress(
+        last.state,
+        rec.updated_at,
+        now,
+        Liveness::Alive,
+        f.stalled_after,
+    );
+    let since = now.saturating_sub(rec.updated_at);
+    let summary = json!({
+        "verdict": verdict.as_str(),
+        "why": verdict.why(),
+        "seconds_since_update": since,
+        "line": format!(
+            "{} {since}s since the last update, at step {} (operation {op_id}, {} {})",
+            verdict.as_str(),
+            rec.step,
+            last.command,
+            last.target
+        ),
+    });
     let mut doc = json!({
         "command": "op.stop",
         "op": op_id,
@@ -430,13 +491,16 @@ pub fn stop_plan(f: &Facts, op_id: &str) -> Result<Value, String> {
         "pgid": rec.pgid,
         "boot_id": rec.boot_id,
         "processes": processes,
+        "not_stuck": op::not_stuck(verdict),
         "term_wait_seconds": TERM_WAIT_SECS,
         "kill_wait_seconds": KILL_WAIT_SECS,
         "journal_after": { "state": "failed", "code": code },
-        "then": format!("check the host, then `aib-cloud-host op recovered {op_id}`"),
+        // 33e28 N1: a stop that came while the operation waited to write `verified` leaves
+        // finished work journaled as failed
+        "then": format!("check the host (the operation may have finished its work just before it was stopped), then `aib-cloud-host op recovered {op_id}`"),
     });
     opstore::seal(&mut doc, f.fingerprint, env!("CARGO_PKG_VERSION"))?;
-    Ok(doc)
+    Ok((doc, summary))
 }
 
 /// Sends signals and waits. The host's is [`HostSignals`]; tests hand in one that edits a
@@ -501,6 +565,7 @@ fn wait_gone(sig: &mut impl Signals, proc_root: &Path, planned: &[(u32, u64)], l
 pub fn stop_apply(
     f: &Facts,
     plan: &Value,
+    even_if_running: bool,
     sig: &mut impl Signals,
     waits: (Duration, Duration),
     now: u64,
@@ -510,14 +575,29 @@ pub fn stop_apply(
         .filter(|o| op::valid_op_id(o))
         .ok_or_else(|| refused(StopRefusal::PlanChanged, "the plan names no operation"))?
         .to_owned();
+    // what --plan printed beside the seal is not part of the plan
+    let mut given = plan.clone();
+    if let Some(o) = given.as_object_mut() {
+        o.remove(NOW_KEY);
+    }
     opstore::guarded(f.lock, || {
-        let again = stop_plan(f, &op_id)?;
-        if again != *plan {
+        let again = stop_plan(f, &op_id, now)?;
+        if again != given {
             return Err(refused(
                 StopRefusal::PlanChanged,
                 "the operation or its processes are not as the plan saw them (or the plan was edited); make a new plan",
             ));
         }
+        op::may_apply_stop(
+            again["not_stuck"].as_bool().unwrap_or(true),
+            even_if_running,
+        )
+        .map_err(|r| {
+            refused(
+                r,
+                "the plan was made while the operation was still writing its progress; add --even-if-running to stop it anyway",
+            )
+        })?;
         let planned: Vec<(u32, u64)> = again["processes"]
             .as_array()
             .map(|a| {
@@ -579,7 +659,8 @@ pub fn stop_apply(
 
 // ------------------------------------------------------------------ command
 
-const USAGE: &str = "op stop <op id> --plan | op stop <op id> --apply <plan.json>";
+const USAGE: &str =
+    "op stop <op id> --plan | op stop <op id> --apply <plan.json> [--even-if-running]";
 
 /// `op stop …` on this host. `--plan` reads only; `--apply` signals and writes, and runs
 /// only from an approved sign sheet (a person approves the stop in a window).
@@ -592,17 +673,25 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         ops_dir: &ops_dir,
         lock: &lock,
         fingerprint: &fingerprint,
+        stalled_after: op::STALLED_SECS,
     };
-    match rest {
-        [flag] if flag == "--plan" => {
-            let doc = stop_plan(&f, op_id)?;
+    let (apply_args, even_if_running) = match rest {
+        [flag, file, even] if flag == "--apply" && even == "--even-if-running" => {
+            (Some(file), true)
+        }
+        [flag, file] if flag == "--apply" => (Some(file), false),
+        _ => (None, false),
+    };
+    match (rest, apply_args) {
+        ([flag], None) if flag == "--plan" => {
+            let doc = plan_for_window(&f, op_id, crate::probe::unix_now())?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
             );
             Ok(0)
         }
-        [flag, file] if flag == "--apply" => {
+        (_, Some(file)) => {
             let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
             let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
             if plan["op"] != op_id.as_str() {
@@ -614,6 +703,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             let done = stop_apply(
                 &f,
                 &plan,
+                even_if_running,
                 &mut HostSignals,
                 (
                     Duration::from_secs(TERM_WAIT_SECS),
@@ -661,6 +751,8 @@ mod tests {
                 ops_dir: &self.ops,
                 lock: &self.lock,
                 fingerprint: "f1",
+                // the made-up operations last wrote at T; the stops come at T + 50
+                stalled_after: 10,
             }
         }
     }
@@ -943,7 +1035,7 @@ mod tests {
         tree(&p);
         running(&p);
         progress_file(&p, "install", T, Some(500), BOOT);
-        let plan = stop_plan(&p.facts(), OP).unwrap();
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
         let pids: Vec<u64> = plan["processes"]
             .as_array()
             .unwrap()
@@ -960,7 +1052,7 @@ mod tests {
         assert_eq!(plan["host_fingerprint"], "f1");
         assert_eq!(plan["plan_sha256"].as_str().map(str::len), Some(64));
         // the same host gives the same plan
-        assert_eq!(stop_plan(&p.facts(), OP).unwrap(), plan);
+        assert_eq!(stop_plan(&p.facts(), OP, T + 50).unwrap(), plan);
         let _ = fs::remove_dir_all(&p.root);
     }
 
@@ -972,7 +1064,7 @@ mod tests {
         tree(&p);
         running(&p);
         let refusal = |p: &Place| {
-            stop_plan(&p.facts(), OP)
+            stop_plan(&p.facts(), OP, T + 50)
                 .unwrap_err()
                 .split(':')
                 .next()
@@ -1058,9 +1150,9 @@ mod tests {
         tree(&p);
         running(&p);
         progress_file(&p, "install", T, Some(500), BOOT);
-        let plan = stop_plan(&p.facts(), OP).unwrap();
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
         let mut sig = signals(&p);
-        let done = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap();
+        let done = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap();
         assert_eq!(done["detail"], "stopped");
         assert_eq!(done["stopped_at"], "install");
         assert_eq!(
@@ -1098,7 +1190,8 @@ mod tests {
         opstore::mark_recovered(&place, OP, T + 60).unwrap();
         assert!(opstore::refuse_unfinished(&p.ops, "domain:new.example.test", "").is_ok());
         // a second apply of the same plan finds nothing to stop
-        let again = stop_apply(&p.facts(), &plan, &mut signals(&p), WAITS, T + 70).unwrap_err();
+        let again =
+            stop_apply(&p.facts(), &plan, false, &mut signals(&p), WAITS, T + 70).unwrap_err();
         assert!(again.starts_with("op_not_running"), "{again}");
         let _ = fs::remove_dir_all(&p.root);
     }
@@ -1109,10 +1202,10 @@ mod tests {
         tree(&p);
         running(&p);
         progress_file(&p, "install", T, Some(500), BOOT);
-        let plan = stop_plan(&p.facts(), OP).unwrap();
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
         let mut sig = signals(&p);
         sig.stubborn = vec![GRANDCHILD];
-        let done = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap();
+        let done = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap();
         assert_eq!(
             sig.sent,
             [
@@ -1132,11 +1225,11 @@ mod tests {
         tree(&p);
         running(&p);
         progress_file(&p, "install", T, Some(500), BOOT);
-        let plan = stop_plan(&p.facts(), OP).unwrap();
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
         let mut sig = signals(&p);
         sig.stubborn = vec![CHILD];
         sig.reuse_on_term = Some(CHILD);
-        let done = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap();
+        let done = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap();
         assert_eq!(sig.sent.len(), 1, "{:?}", sig.sent);
         assert_eq!(done["survivors"], json!([]));
         assert!(p.lock.proc_root.join(CHILD.to_string()).exists());
@@ -1150,28 +1243,29 @@ mod tests {
         tree(&p);
         running(&p);
         progress_file(&p, "install", T, Some(500), BOOT);
-        let plan = stop_plan(&p.facts(), OP).unwrap();
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
         // a new process under the operation since the plan
         proc_with(&p, 4103, "S", MAIN, MAIN, 530);
         let mut sig = signals(&p);
-        let e = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap_err();
+        let e = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap_err();
         assert!(e.starts_with("plan_changed"), "{e}");
         fs::remove_dir_all(p.lock.proc_root.join("4103")).unwrap();
         // an edited plan
         let mut edited = plan.clone();
         edited["step"] = json!("edge");
-        let e = stop_apply(&p.facts(), &edited, &mut sig, WAITS, T + 50).unwrap_err();
+        let e = stop_apply(&p.facts(), &edited, false, &mut sig, WAITS, T + 50).unwrap_err();
         assert!(e.starts_with("plan_changed"), "{e}");
         // the operation moved to another step
         progress_file(&p, "identity", T, Some(500), BOOT);
-        let e = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap_err();
+        let e = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap_err();
         assert!(e.starts_with("plan_changed"), "{e}");
         // the pid was reused since the plan
         progress_file(&p, "install", T, Some(500), BOOT);
         proc_with(&p, MAIN, "S", SHELL, SHELL, 501);
-        let e = stop_apply(&p.facts(), &plan, &mut sig, WAITS, T + 50).unwrap_err();
+        let e = stop_apply(&p.facts(), &plan, false, &mut sig, WAITS, T + 50).unwrap_err();
         assert!(e.starts_with("pid_reused"), "{e}");
-        let e = stop_apply(&p.facts(), &json!({ "op": "x" }), &mut sig, WAITS, T).unwrap_err();
+        let e =
+            stop_apply(&p.facts(), &json!({ "op": "x" }), false, &mut sig, WAITS, T).unwrap_err();
         assert!(e.starts_with("plan_changed"), "{e}");
         assert!(sig.sent.is_empty(), "{:?}", sig.sent);
         assert_eq!(states(&p).len(), 3, "the journal is as it was");
@@ -1289,6 +1383,136 @@ mod tests {
         .unwrap();
         let seen_while_held = holder.unwrap().join().unwrap();
         assert_eq!(seen_while_held, State::Running);
+        let _ = fs::remove_dir_all(&p.root);
+    }
+
+    /// f1fae 11-11 L1: work that still writes its progress gets a plan marked
+    /// `not_stuck`; it is carried out only with `--even-if-running`. What `--plan` prints
+    /// beside the seal (`now`) is dropped before the plan is compared.
+    #[test]
+    fn a_plan_for_work_still_moving_is_marked_and_needs_even_if_running() {
+        let p = place("moving");
+        tree(&p);
+        running(&p);
+        progress_file(&p, "install", T, Some(500), BOOT);
+        let f = Facts {
+            ops_dir: &p.ops,
+            lock: &p.lock,
+            fingerprint: "f1",
+            stalled_after: 300,
+        };
+        let plan = plan_for_window(&f, OP, T + 50).unwrap();
+        assert_eq!(plan["not_stuck"], true);
+        assert_eq!(plan[NOW_KEY]["verdict"], "running");
+        assert_eq!(plan[NOW_KEY]["why"], "updated_recently");
+        assert_eq!(plan[NOW_KEY]["seconds_since_update"], 50);
+        let line = plan[NOW_KEY]["line"].as_str().unwrap();
+        assert!(
+            line.starts_with("running 50s since the last update, at step install"),
+            "{line}"
+        );
+        // the window part is not sealed: the sealed plan is the same without it
+        let mut sealed = plan.clone();
+        sealed.as_object_mut().unwrap().remove(NOW_KEY);
+        assert_eq!(sealed, stop_plan(&f, OP, T + 50).unwrap());
+        let mut sig = signals(&p);
+        let e = stop_apply(&f, &plan, false, &mut sig, WAITS, T + 50).unwrap_err();
+        assert!(e.starts_with("not_stuck_needs_even_if_running"), "{e}");
+        assert!(sig.sent.is_empty(), "{:?}", sig.sent);
+        assert_eq!(states(&p).len(), 3, "the journal is as it was");
+        let done = stop_apply(&f, &plan, true, &mut sig, WAITS, T + 50).unwrap();
+        assert_eq!(done["detail"], "stopped");
+        assert_eq!(states(&p).last().unwrap().0, State::Failed);
+        // a stalled one needs no second word, and its plan says so
+        let q = place("stalled");
+        tree(&q);
+        running(&q);
+        progress_file(&q, "install", T, Some(500), BOOT);
+        let g = Facts {
+            ops_dir: &q.ops,
+            lock: &q.lock,
+            fingerprint: "f1",
+            stalled_after: 300,
+        };
+        let plan = plan_for_window(&g, OP, T + 400).unwrap();
+        assert_eq!(plan["not_stuck"], false);
+        assert_eq!(plan[NOW_KEY]["verdict"], "stalled");
+        let done = stop_apply(&g, &plan, false, &mut signals(&q), WAITS, T + 400).unwrap();
+        assert_eq!(done["detail"], "stopped");
+        let _ = fs::remove_dir_all(&p.root);
+        let _ = fs::remove_dir_all(&q.root);
+    }
+
+    /// 33e28 N1: the work is done, but a stop approved meanwhile comes before the
+    /// operation writes `verified`. The journal keeps `failed / stopped_at_<step>` (a person
+    /// checks before `op recovered`), the operation's own `verified` is refused, and the
+    /// plan says the work may have finished.
+    #[test]
+    fn a_stop_while_the_work_waits_to_write_verified_leaves_it_failed() {
+        let p = place("n1");
+        let place = op_place(&p);
+        let plan = json!({ "x": 3 });
+        let mut seen = None;
+        let r = opstore::run_op(
+            &place,
+            "site.create",
+            "domain:d.test",
+            &plan,
+            opstore::BY_LOCAL_ROOT,
+            T,
+            |op_id| {
+                step("install");
+                // the work itself is done here
+                let f = p.facts();
+                let now = crate::probe::unix_now() + 3600;
+                let stop = stop_plan(&f, op_id, now).unwrap();
+                let done = stop_apply(&f, &stop, false, &mut signals(&p), WAITS, now).unwrap();
+                seen = Some((op_id.to_owned(), stop, done));
+                Ok(())
+            },
+        );
+        let (op_id, stop, done) = seen.unwrap();
+        assert!(r.is_err(), "verified is not written after a stop");
+        assert_eq!(done["detail"], "stopped");
+        let then = stop["then"].as_str().unwrap();
+        assert!(then.contains("may have finished its work"), "{then}");
+        assert!(then.contains(&format!("op recovered {op_id}")), "{then}");
+        let journal = opstore::read_journal(&opstore::journal_path(&p.ops, &op_id).unwrap())
+            .unwrap()
+            .0;
+        let last = journal.last().unwrap();
+        assert_eq!(
+            (last.state, last.code.as_str()),
+            (State::Failed, "stopped_at_install")
+        );
+        let _ = fs::remove_dir_all(&p.root);
+    }
+
+    /// 33e28 N3: a progress file without its start time takes the one the host lock
+    /// holds for the same operation and pid — never another pid's.
+    #[test]
+    fn a_progress_file_without_start_time_takes_the_locks() {
+        let p = place("n3");
+        tree(&p);
+        running(&p);
+        progress_file(&p, "install", T, None, BOOT);
+        let lock = |pid: u32| {
+            fs::write(
+                &p.lock.lock,
+                json!({ "op": OP, "pid": pid, "start_time": 500, "boot_id": BOOT }).to_string(),
+            )
+            .unwrap();
+        };
+        lock(MAIN);
+        let plan = stop_plan(&p.facts(), OP, T + 50).unwrap();
+        assert_eq!(plan["start_time"], 500);
+        assert_eq!(
+            status(&p.facts(), OP, T + 50, 300).unwrap()["liveness"],
+            "alive"
+        );
+        lock(4999);
+        let e = stop_plan(&p.facts(), OP, T + 50).unwrap_err();
+        assert!(e.starts_with("start_time_unreadable"), "{e}");
         let _ = fs::remove_dir_all(&p.root);
     }
 }
