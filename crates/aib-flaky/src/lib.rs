@@ -182,6 +182,69 @@ fn running_bin(line: &str) -> Option<String> {
     Some(bin.to_string())
 }
 
+/// "thread 'NAME' (32019) panicked at PATH:L:C:" (or without the thread id) -> (NAME, PATH).
+fn panic_at(line: &str) -> Option<(String, String)> {
+    let rest = after_stamp(line).trim_start().strip_prefix("thread '")?;
+    let (name, rest) = rest.split_once('\'')?;
+    let mut rest = rest.trim_start();
+    if let Some(r) = rest.strip_prefix('(') {
+        let (id, r) = r.split_once(')')?;
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        rest = r.trim_start();
+    }
+    let at = rest
+        .strip_prefix("panicked at ")?
+        .trim_end()
+        .strip_suffix(':')?;
+    let (at, col) = at.rsplit_once(':')?;
+    let (path, ln) = at.rsplit_once(':')?;
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    if name.is_empty() || path.is_empty() || !digits(ln) || !digits(col) {
+        return None;
+    }
+    Some((name.to_string(), path.replace('\\', "/")))
+}
+
+/// Where a failing test lives, from the file its own panic points at, for a log without the
+/// "Running ... (target/debug/deps/<bin>-<hash>)" line:
+/// - `<crate>/tests/<stem>.rs` or `<crate>/src/bin/<stem>.rs` -> the test binary `<stem>`
+///   (`-` -> `_`, as in the Running line);
+/// - `<crate>/src/<module>.rs` whose module is the test's own module (or one around it) ->
+///   `@<crate>`: the crate is known, its binary name is not.
+///
+/// None = cannot tell (a panic in another file, outside the repo, or in the root crate).
+fn bin_from_panic(test: &str, path: &str) -> Option<String> {
+    let segs: Vec<&str> = path.split('/').collect();
+    if path.contains(':') || segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return None;
+    }
+    let i = segs.iter().position(|s| *s == "src" || *s == "tests")?;
+    if i == 0 {
+        return None;
+    }
+    let crate_dir = segs[..i].join("/");
+    let norm = |s: &str| s.replace('-', "_");
+    match (segs[i], &segs[i + 1..]) {
+        ("tests", [file]) => file.strip_suffix(".rs").map(norm),
+        ("src", ["bin", file]) => file.strip_suffix(".rs").map(norm),
+        ("src", rest) if !rest.is_empty() => {
+            let mut module: Vec<&str> = rest.to_vec();
+            let last = module.pop()?.strip_suffix(".rs")?;
+            if !(last == "mod" || (module.is_empty() && (last == "lib" || last == "main"))) {
+                module.push(last);
+            }
+            let test_module: Vec<&str> = test.split("::").collect();
+            let test_module = &test_module[..test_module.len() - 1];
+            test_module
+                .starts_with(&module)
+                .then(|| format!("@{crate_dir}"))
+        }
+        _ => None,
+    }
+}
+
 /// "FAIL: test_x (__main__.P0.test_x)" / "ERROR: test_x (mod.P0)" -> "P0.test_x".
 fn unittest_id(line: &str) -> Option<String> {
     let rest = line
@@ -218,10 +281,15 @@ pub struct Parsed {
 /// Failure fingerprints in a job log.
 /// - Python (ci-shard): `py:<file>::<Class.test>` from the unittest FAIL / ERROR lines inside the
 ///   file's `##[group]`; `py:<file>` (coarse) when none was found (e.g. a hang).
-/// - cargo test: `rs:<bin>::<test>` (`rs:?::<test>` when the binary line was not seen).
+/// - cargo test: `rs:<bin>::<test>`. Without the binary line, the test's own panic location
+///   names it (`rs:<bin>::<test>`, or `rs:@<crate dir>::<test>` for a unit test in src/, see
+///   `bin_from_panic`); `rs:?::<test>` when that cannot tell either.
 pub fn parse_log(log: &str) -> Parsed {
     let mut p = Parsed::default();
     let mut bin: Option<String> = None;
+    // failing tests seen before any binary line, and what each test thread's panics point at
+    let mut no_bin: Vec<String> = vec![];
+    let mut panics: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
     // ci-shard group: file name -> unittest ids seen inside its group
     let mut group: Option<String> = None;
     let mut ids: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -270,6 +338,11 @@ pub fn parse_log(log: &str) -> Parsed {
             }
             continue;
         }
+        if let Some((name, path)) = panic_at(line) {
+            let b = bin_from_panic(&name, &path);
+            panics.entry(name).or_default().push(b);
+            continue;
+        }
         let t = l.trim();
         if let (Some(g), Some(id)) = (&group, unittest_id(t)) {
             ids.entry(g.clone()).or_default().insert(id);
@@ -277,10 +350,22 @@ pub fn parse_log(log: &str) -> Parsed {
         }
         if let Some(rest) = t.strip_prefix("test ") {
             if let Some(name) = rest.strip_suffix(" ... FAILED") {
-                let b = bin.as_deref().unwrap_or("?");
-                p.fingerprints.push(format!("rs:{b}::{}", name.trim()));
+                match bin.as_deref() {
+                    Some(b) => p.fingerprints.push(format!("rs:{b}::{}", name.trim())),
+                    None => no_bin.push(name.trim().to_string()),
+                }
             }
         }
+    }
+    // every panic of the test's thread must point at the same place; otherwise unknown
+    for name in no_bin {
+        let b = match panics.get(&name).map(Vec::as_slice) {
+            Some([Some(first), more @ ..]) if more.iter().all(|m| m.as_ref() == Some(first)) => {
+                first.as_str()
+            }
+            _ => "?",
+        };
+        p.fingerprints.push(format!("rs:{b}::{name}"));
     }
     p.fingerprints.sort();
     p.fingerprints.dedup();
@@ -313,13 +398,21 @@ fn impact_overlap(fp: &str, f: &Facts) -> Result<bool, String> {
     if let Some(rest) = fp.strip_prefix("rs:") {
         let (bin, _) = rest.split_once("::").ok_or("bad rust fingerprint")?;
         if bin == "?" {
-            return Err("test binary not seen in the log".into());
+            return Err("test binary not seen in the log, nor where its panic points".into());
         }
         let map = f.rust.as_ref().ok_or("head tree not readable")?;
-        let crates = map.bins.get(bin).ok_or("binary matches no crate")?;
-        if crates.len() != 1 {
-            return Err(format!("binary matches {} crates", crates.len()));
-        }
+        let crates = match bin.strip_prefix('@') {
+            // the crate the test's own panic location is in
+            // (a dir that is not a crate at head fails below: "Cargo.toml not read")
+            Some(dir) => BTreeSet::from([dir.to_string()]),
+            None => {
+                let crates = map.bins.get(bin).ok_or("binary matches no crate")?;
+                if crates.len() != 1 {
+                    return Err(format!("binary matches {} crates", crates.len()));
+                }
+                crates.clone()
+            }
+        };
         let mut closure = BTreeSet::new();
         let mut todo: Vec<String> = crates.iter().cloned().collect();
         while let Some(c) = todo.pop() {

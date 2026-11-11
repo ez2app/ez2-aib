@@ -163,8 +163,13 @@ fn attempts(
                     .map(str::to_string);
                 let is_red = matches!(conclusion.as_deref(), Some("failure") | Some("timed_out"));
                 let log = if is_red {
-                    src.get(&format!("repos/{repo}/actions/jobs/{job_id}/logs"))
-                        .ok()
+                    match src.get(&format!("repos/{repo}/actions/jobs/{job_id}/logs")) {
+                        Ok(l) => Some(l),
+                        // offline: a log that was not recorded (or not readable) is a gap in
+                        // the recording, not a log GitHub could not give: say so, do not judge
+                        Err(e) if e.starts_with(OFFLINE) => return Err(e),
+                        Err(_) => None,
+                    }
                 } else {
                     None
                 };
@@ -233,6 +238,9 @@ fn head_rust(src: &dyn Source, repo: &str, head: &str) -> Option<RustMap> {
         .collect();
     rust_map(&files, &|p| read_file(src, repo, head, p)).ok()
 }
+
+/// How aib-cireuse's FileSource (--offline DIR) starts every error it returns.
+const OFFLINE: &str = "offline";
 
 /// GitHub lists at most this many commits of a PR.
 const PR_COMMITS_CAP: usize = 250;

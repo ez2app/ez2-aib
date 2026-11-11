@@ -270,6 +270,29 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+          # f1fae (#640 / #648 / #650 backfill): offline, a red job's log that was not recorded is swallowed again
+          fk '                        Err(e) if e.starts_with(OFFLINE) => return Err(e),' \
+             '                        Err(e) if e.starts_with(OFFLINE) && false => return Err(e),' \
+             offline_a_log_that_was_not_recorded_is_an_error
+          # f1fae: no Running line -> the test's own panic location names its binary or crate
+          lk() { python3 -I scripts/knife.py crates/aib-flaky/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # a binary from tests/<stem>.rs keeps the "-" the Running line turns into "_"
+          lk '        ("tests", [file]) => file.strip_suffix(".rs").map(norm),' \
+             '        ("tests", [file]) => file.strip_suffix(".rs").map(str::to_string),' \
+             a_panic_in_an_integration_test_file_names_its_binary
+          # a panic in a file that is not the test's own module still names a crate
+          lk '                .starts_with(&module)' \
+             '                .starts_with(&[] as &[&str])' \
+             a_panic_that_cannot_tell_stays_unknown
+          # panics of one test that point at different places are not checked
+          lk '            Some([Some(first), more @ ..]) if more.iter().all(|m| m.as_ref() == Some(first)) => {' \
+             '            Some([Some(first), more @ ..]) if more.len() < usize::MAX => {' \
+             a_test_whose_panics_disagree_stays_unknown
+          # the crate from the panic is not used for the impact
+          lk "        let crates = match bin.strip_prefix('@') {" \
+             '        let crates = match None::<&str> {' \
+             a_crate_from_the_panic_uses_that_crates_closure
       # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

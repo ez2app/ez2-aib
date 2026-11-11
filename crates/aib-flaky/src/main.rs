@@ -12,6 +12,8 @@
 //! suggest prints fingerprints that keep going red (≥3 reds or ≥2 platforms, from ≥2 heads)
 //! for dispatch. Exit: 0 done (whatever the verdicts; there is no "pass"),
 //! 2 usage, 3 a read failed or the register is unreadable. Never writes to GitHub.
+//! With --offline, a red job's log that was not recorded is a read failure (exit 3, the error
+//! names the API path), not a log GitHub could not give (log_unreadable).
 
 use aib_cireuse::gh::{FileSource, GhCli, Source};
 use aib_flaky::gh::gather;
