@@ -1108,7 +1108,10 @@ mod tests {
         for step in STEPS {
             assert_eq!(
                 may_be_done_early(step),
-                step == RemoveStep::Access || step == RemoveStep::Dns,
+                matches!(
+                    step,
+                    RemoveStep::Access | RemoveStep::Dns | RemoveStep::Licenses
+                ),
                 "{step:?}"
             );
         }
