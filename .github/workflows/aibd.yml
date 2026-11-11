@@ -333,6 +333,10 @@ jobs:
           lk "        if b != \"?\" && !b.starts_with('@') {" \
              "        if b != \"?\" && !b.starts_with('@') && false {" \
              a_binary_named_by_its_panic_is_told_apart_too
+          # KB5: the colours on cargo's Running line are kept (macOS: the line is not read)
+          lk '    let plain = strip_ansi(after_stamp(line));' \
+             '    let plain = if line.is_empty() { strip_ansi(line) } else { after_stamp(line).to_string() };' \
+             a_coloured_running_line_is_read
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

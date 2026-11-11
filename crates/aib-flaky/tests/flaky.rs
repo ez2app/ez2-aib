@@ -1685,3 +1685,14 @@ fn a_binary_named_by_its_panic_is_told_apart_too() {
         }
     }
 }
+
+/// macOS: cargo colours the Running line; the binary is still read from it (f1fae #644).
+#[test]
+fn a_coloured_running_line_is_read() {
+    let log = "2026-11-10T20:58:38.0Z \u{1b}[1m\u{1b}[92m     Running\u{1b}[0m tests/store.rs (target/debug/deps/store-0a1b2c3d)\n\
+               2026-11-10T20:58:59.1Z test opens_twice ... FAILED\n";
+    assert_eq!(
+        parse_log(log).fingerprints,
+        vec!["rs:store::opens_twice".to_string()]
+    );
+}

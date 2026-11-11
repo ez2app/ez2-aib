@@ -344,8 +344,29 @@ fn error_text(line: &str) -> Option<&str> {
 }
 
 /// Test binary from "Running unittests src/lib.rs (target/debug/deps/aib_cireuse-0a1b2c)".
+/// The colours cargo adds on a terminal-like runner (macOS: "\x1b[1m\x1b[92m     Running\x1b[0m"):
+/// every ESC [ ... <final byte> taken out (f1fae #644).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' && it.peek() == Some(&'[') {
+            it.next();
+            for d in it.by_ref() {
+                if ('@'..='~').contains(&d) {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn running_bin(line: &str) -> Option<String> {
-    let l = after_stamp(line).trim_start();
+    let plain = strip_ansi(after_stamp(line));
+    let l = plain.trim_start();
     let rest = l.strip_prefix("Running ")?;
     let open = rest.rfind('(')?;
     let inner = rest[open + 1..].strip_suffix(')')?;
