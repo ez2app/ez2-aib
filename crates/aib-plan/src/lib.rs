@@ -138,11 +138,7 @@ pub fn tally(p: &Plan, ix: &Index, at: usize) -> (u32, u32) {
 }
 
 pub fn pct((ok, tot): (u32, u32)) -> u32 {
-    if tot == 0 {
-        0
-    } else {
-        (ok * 100 + tot / 2) / tot
-    }
+    (ok * 100 + tot / 2).checked_div(tot).unwrap_or(0)
 }
 
 fn matches(n: &Node, f: &Filter) -> bool {

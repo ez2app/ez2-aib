@@ -66,7 +66,7 @@ fn count_dm(root: &PathBuf, seats: &[String]) -> DmMap {
     let mut out = DmMap::new();
     let script = root.join("src").join("cockpit").join("dm_queue.py");
     for s in seats {
-        let mut get = |tab: &str| -> Option<u32> {
+        let get = |tab: &str| -> Option<u32> {
             let o = std::process::Command::new("python3")
                 .arg(&script)
                 .args(["list", "--seat", s, "--tab", tab])
@@ -467,9 +467,15 @@ fn main() {
             app.dm = count_dm(root, &app.cabin_seats());
             app.dm_at = Some(Instant::now());
         }
+        // 接 | head 時管線先關：寫失敗就安靜結束，不 panic(rc 101)
+        let mut out = io::stdout().lock();
         for line in frame(&app, args.width, 400) {
-            println!("{}", line.iter().map(|s| s.0.as_str()).collect::<String>());
+            let text: String = line.iter().map(|s| s.0.as_str()).collect();
+            if writeln!(out, "{text}").is_err() {
+                break;
+            }
         }
+        let _ = out.flush();
         std::process::exit(if app.err.is_some() { 1 } else { 0 });
     }
 
