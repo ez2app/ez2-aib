@@ -264,7 +264,7 @@ mod tests {
         assert!(!name_fits_domain("x-20261101-101010-ab12cd.wpress", ""));
         assert_eq!(backup_slug("a-b-20261101-101010-c.wpress"), Some("a-b"));
         let mut f = facts();
-        f.name = "other-example-20261101-101010-ab12cd.wpress";
+        f.name = "other-site-20261101-101010-ab12cd.wpress";
         assert_eq!(admit_download(&f), Err("backup_name_not_this_site"));
     }
 
