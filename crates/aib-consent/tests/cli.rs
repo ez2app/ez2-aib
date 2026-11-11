@@ -56,7 +56,8 @@ fn record(out: &std::process::Output) -> Value {
 fn a_copy_changed_after_the_check_is_not_run() {
     let d = scratch("changed-later");
     let copy = d.join("prog.sh");
-    let body = b"sleep 1\necho first\n";
+    // the job marks that it started (so the copy was checked and is being run), then sleeps
+    let body = b": > started\nsleep 1\necho first\n";
     std::fs::write(&copy, body).expect("copy");
     let sha = sha256_hex(body);
     let copy_s = copy.to_string_lossy().into_owned();
@@ -64,8 +65,15 @@ fn a_copy_changed_after_the_check_is_not_run() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
-    // bash is still in `sleep 1`: add a line to the copy (2240e #661 M2 repro)
-    std::thread::sleep(Duration::from_millis(400));
+    // wait for the mark, not a fixed time: under load a fixed 400 ms could land before the
+    // supervisor's last check, which then refuses the copy (staged_hash_changed) instead
+    // (seen once on the Pro 13, 11-11)
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !d.join("started").exists() {
+        assert!(Instant::now() < deadline, "the job never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // bash is now in `sleep 1`: add a line to the copy (2240e #661 M2 repro)
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&copy)
