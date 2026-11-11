@@ -442,8 +442,11 @@ jobs:
              '    let (hidden, _) = hide.hide(&mask_line(clip_line(line))); // knife' \
              a_host_word_across_the_cut_is_hidden_before_the_cut
           # site logs: the domain of the host's full name is not hidden (33e28 L3)
-          ck svc.rs '        for n in [Some(name), parts.map(|p| p.0), parts.map(|p| p.1)]' \
-             '        for n in [Some(name), parts.map(|p| p.0), None] // knife' \
+          ck svc.rs '        for n in core::iter::once(name).chain(first).chain(tails) {' \
+             '        for n in core::iter::once(name).chain(first).chain(tails.filter(|_| false)) { // knife' \
+             the_hosts_names_are_its_short_and_full_names_and_their_domain
+          # site logs: only the first tail of the host's full name is hidden, not the provider's two labels (33e28 r2 L1)
+          ck svc.rs "            .filter(|t| t.contains('.'));" "            .filter(|t| t.contains('.')).take(1); // knife" \
              the_hosts_names_are_its_short_and_full_names_and_their_domain
           # site logs: "CT-112" is shown (33e28 N1)
           ck svc.rs '            alloc::format!("ct-{ct}"),' '            alloc::format!("ct_{ct}"), // knife' \

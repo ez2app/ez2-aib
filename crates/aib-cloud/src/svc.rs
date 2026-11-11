@@ -285,18 +285,21 @@ pub const HOST_PATHS: &[&str] = &["/var/lib/lxc/", "/etc/pve/", "/var/lib/vz/", 
 pub const HIDE_WORD_MIN: usize = 4;
 
 /// The names the host goes by, to hide: its short name, the full name `hostname -f`
-/// answers when it does, and for each name with a dot its first label and the domain
-/// after it (33e28 L3: on this kind of host `/etc/hostname` is usually the short name and
-/// the domain is where the provider shows). A name that is empty is left out; one shorter
-/// than [`HIDE_WORD_MIN`] is left out by [`HostHide::new`].
+/// answers when it does, and for each name with a dot its first label and **every tail
+/// of two labels or more**: `node7.dc.example.net` gives `dc.example.net` and
+/// `example.net` (33e28 L3 and r2 L1: on this kind of host `/etc/hostname` is usually the
+/// short name, and the provider shows in the last two labels). A one-label tail (`net`)
+/// is not taken; a name that is empty is left out; one shorter than [`HIDE_WORD_MIN`] is
+/// left out by [`HostHide::new`].
 pub fn host_names(short: &str, full: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for name in core::iter::once(short).chain(full).map(str::trim) {
-        let parts = name.split_once('.');
-        for n in [Some(name), parts.map(|p| p.0), parts.map(|p| p.1)]
-            .into_iter()
-            .flatten()
-        {
+        let first = name.split_once('.').map(|p| p.0);
+        let tails = name
+            .match_indices('.')
+            .map(|(i, _)| &name[i + 1..])
+            .filter(|t| t.contains('.'));
+        for n in core::iter::once(name).chain(first).chain(tails) {
             if !n.is_empty() && !out.iter().any(|o| o == n) {
                 out.push(n.to_owned());
             }
@@ -719,7 +722,13 @@ mod tests {
     fn the_hosts_names_are_its_short_and_full_names_and_their_domain() {
         assert_eq!(
             host_names("node7\n", Some("node7.dc.example.net\n")),
-            ["node7", "node7.dc.example.net", "dc.example.net"]
+            ["node7", "node7.dc.example.net", "dc.example.net", "example.net"]
+        );
+        // every tail of two labels or more: the provider is usually the last two
+        let h = HostHide::new(&host_names("node7", Some("node7.dc.example.net")), "", 112);
+        assert_eq!(
+            h.hide("example.net mail.example.net dc.example.net net"),
+            ("[hidden] mail.[hidden] [hidden] net".to_owned(), 3)
         );
         // a dotted /etc/hostname gives its first label as well
         assert_eq!(
