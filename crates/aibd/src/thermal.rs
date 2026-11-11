@@ -454,6 +454,12 @@ mod tests {
     /// A pace the test drives by hand (no real time passes): the sampler's
     /// `tick` waits until the test lets one round go ([`ManualPace::step`]) or
     /// ends the period at its lifetime ([`ManualPace::end_period`]).
+    ///
+    /// A test that drops the guard without [`ManualPace::let_it_leave`] leaves the
+    /// sampler waiting in `tick`; that is fine only because dropping the guard does
+    /// not join the sampler today. If it ever does, that drop would wait forever:
+    /// then end the period when the test's pace goes (a `Drop` that calls
+    /// `end_period`), so such a test fails instead of hanging (33e28 #640 fake-clock N1).
     #[derive(Clone, Default)]
     struct ManualPace(Arc<PaceInner>);
 
