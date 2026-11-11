@@ -299,7 +299,10 @@ mod tests {
 
     #[test]
     fn what_cannot_be_told_is_quota_unknown() {
-        assert_eq!(judge(None, Some(&[]), Some(&[])), Verdict::Unknown(Unknown::NoTenant));
+        assert_eq!(
+            judge(None, Some(&[]), Some(&[])),
+            Verdict::Unknown(Unknown::NoTenant)
+        );
         assert_eq!(
             judge(Some("not a code!"), Some(&[]), Some(&[])),
             Verdict::Unknown(Unknown::NoTenant)
@@ -330,6 +333,9 @@ mod tests {
         let l: Vec<Value> = (0..3)
             .map(|i| live(&alloc::format!("s{i}"), "acme", 16_384, 800))
             .collect();
-        assert_eq!(judge(Some("acme"), Some(&l), Some(&[])).stop(), Some("quota_exceeded"));
+        assert_eq!(
+            judge(Some("acme"), Some(&l), Some(&[])).stop(),
+            Some("quota_exceeded")
+        );
     }
 }

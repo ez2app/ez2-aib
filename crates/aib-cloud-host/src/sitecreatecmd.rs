@@ -343,9 +343,9 @@ pub fn plan_doc(domain: &str, blank: bool, seen: &Seen) -> Value {
 
 /// The quota as the plan prints it.
 fn quota_doc(tenant: Option<&str>, verdict: &Verdict) -> Value {
-    let plan = quota::plan_of(tenant).ok().map(|p| {
-        json!({ "cores": p.cores, "memory_mb": p.memory_mb, "disk_gb": p.disk_gb })
-    });
+    let plan = quota::plan_of(tenant)
+        .ok()
+        .map(|p| json!({ "cores": p.cores, "memory_mb": p.memory_mb, "disk_gb": p.disk_gb }));
     let counted = |c: &quota::Count, allowed: u32| {
         json!({
             "live": c.live,
@@ -880,7 +880,11 @@ mod tests {
             r
         };
         let mut seen = host();
-        seen.records = Some(vec![mine("sa", 113, 13), mine("sb", 114, 14), mine("sc", 115, 15)]);
+        seen.records = Some(vec![
+            mine("sa", 113, 13),
+            mine("sb", 114, 14),
+            mine("sc", 115, 15),
+        ]);
         // a removed site of the customer holds nothing
         seen.removed = Some(vec![mine("sr", 116, 16)]);
         let doc = plan_doc("www.new.example.test", false, &seen);
@@ -902,6 +906,7 @@ mod tests {
 
     #[test]
     fn tenant_is_an_argument_with_a_value() {
-        assert!(cmd(&args(&["shop.example.test", "--plan", "--tenant"])).is_err());
+        let args = ["shop.example.test", "--plan", "--tenant"].map(String::from);
+        assert!(cmd(&args).is_err());
     }
 }
