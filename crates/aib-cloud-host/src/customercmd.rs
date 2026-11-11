@@ -18,8 +18,10 @@
 //!
 //! Available now: `status` (the site's own checks, no host checks; only the checks and
 //! codes `aib_cloud::customer::status_view` names are shown, the rest is one
-//! `provider_check` row), `logs` (bounded, masked) and `login-link` (a one-time link for
-//! the site's first administrator, standard output alone; `loginlink::customer_link`). `php-reload`, `restart` and `backup` parse but answer "not available yet":
+//! `provider_check` row), `logs` (bounded, masked, the host's name, addresses and paths
+//! hidden; `logs wp` is WordPress's own `debug.log`, parsed but not listed yet) and
+//! `login-link` (a one-time link for the site's first administrator, standard output
+//! alone; `loginlink::customer_link`). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
 //!
 //! A customer key (`--tenant`, every site of the customer, owner or admin) may open a site:
@@ -45,12 +47,65 @@ use aib_cloud::svc;
 use aib_cloud::verify;
 use serde_json::{json, Value};
 
-use crate::probe::run_capture_bounded;
+use crate::probe::{run_capture, run_capture_bounded};
 use crate::quarantinecmd::load_spec;
 use crate::sitecreaterun::{Asked, HostOpener, Opener};
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const FIREWALL_DIR: &str = "/etc/pve/firewall";
+/// The host's own list of words a site's log must not carry out (its addresses, the
+/// provider's name): one per line, root's, kept on the host and never in this repository.
+const HIDE_WORDS: &str = "/etc/ez2-cloud/hide-words";
+const HOSTNAME: &str = "/etc/hostname";
+
+/// What of the host is hidden from a site's log (`aib_cloud::svc::HostHide`), from the
+/// host's short name (`/etc/hostname`), its full name (`hostname -f`, when it answers)
+/// and its list as read. `None` — and so no log — when the short name could not be
+/// read, or the list exists but could not be: a log that might name the host is not sent
+/// (E6). Without the full name the short one still does (33e28 L3); a host without a
+/// list only hides its names, the CT's number and its own paths.
+fn host_hide(
+    hostname: Option<&str>,
+    full: Option<&str>,
+    list: Result<Option<&str>, ()>,
+    ct: u32,
+) -> Option<svc::HostHide> {
+    let name = hostname.map(str::trim).filter(|n| !n.is_empty())?;
+    let list = list.ok()?.unwrap_or("");
+    let full = full.map(str::trim).filter(|n| !n.is_empty());
+    Some(svc::HostHide::new(&svc::host_names(name, full), list, ct))
+}
+
+/// The lines of a site's log that are sent: at most `wanted`, each through
+/// `aib_cloud::svc::send_line` (secrets masked, the host hidden, then cut). `None` — no
+/// line at all — when what to hide is not known.
+fn log_view(out: &str, wanted: usize, hide: Option<&svc::HostHide>) -> Option<Vec<String>> {
+    let hide = hide?;
+    Some(
+        out.lines()
+            .take(wanted)
+            .map(|l| svc::send_line(l, hide))
+            .collect(),
+    )
+}
+
+fn read_host_hide(ct: u32) -> Option<svc::HostHide> {
+    let name = std::fs::read_to_string(HOSTNAME).ok();
+    let mut cmd = Command::new("hostname");
+    cmd.arg("-f").env("LC_ALL", "C");
+    let full = run_capture(&mut cmd, Duration::from_secs(5)).ok();
+    let list = match std::fs::read_to_string(HIDE_WORDS) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    };
+    host_hide(
+        name.as_deref(),
+        full.as_deref(),
+        list.as_ref().map(Option::as_deref).map_err(|_| ()),
+        ct,
+    )
+}
 
 /// Whether a customer's `logs` request may enter their CT.
 #[derive(Debug, PartialEq, Eq)]
@@ -134,6 +189,7 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 eprintln!("could not read the site record");
                 return 3;
             };
+            let hide = read_host_hide(spec.ct);
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]).env("LC_ALL", "C");
             // the host counts bytes and lines itself: what prints the log runs in the CT
@@ -141,8 +197,12 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
             match run_capture_bounded(&mut cmd, Duration::from_secs(30), svc::log_bytes_max(lines))
             {
                 Ok((out, more)) => {
-                    for l in out.lines().take(wanted) {
-                        println!("{}", svc::mask_line(svc::clip_line(l)));
+                    let Some(sent) = log_view(&out, wanted, hide.as_ref()) else {
+                        eprintln!("could not read the log");
+                        return 3;
+                    };
+                    for line in sent {
+                        println!("{line}");
                     }
                     if more || out.lines().count() > wanted {
                         eprintln!("output cut at the limit");
@@ -497,6 +557,52 @@ mod tests {
     use super::*;
 
     const ALL: &[Role] = &[Role::Owner];
+
+    /// E6: a log that might name the host is not sent. Without the host's name, or with a
+    /// list that exists but could not be read, there is no log at all; a host without a
+    /// list still hides its name and the CT's number.
+    #[test]
+    fn a_log_is_not_sent_unless_the_host_words_were_read() {
+        assert!(host_hide(None, Some("host7.example.net"), Ok(None), 112).is_none());
+        assert!(host_hide(Some("  \n"), None, Ok(None), 112).is_none());
+        assert!(host_hide(Some("host7"), None, Err(()), 112).is_none());
+        // without the full name the short one still does
+        let h = host_hide(Some("host7\n"), None, Ok(None), 112).unwrap();
+        assert_eq!(
+            h.hide("on host7 ct112"),
+            ("on [hidden] [hidden]".to_owned(), 2)
+        );
+        let h = host_hide(Some("host7"), None, Ok(Some("192.0.2.1\n")), 112).unwrap();
+        assert_eq!(h.hide("from 192.0.2.1"), ("from [hidden]".to_owned(), 1));
+        // the full name and its domain are hidden too
+        let h = host_hide(Some("host7"), Some("host7.dc.example.net\n"), Ok(None), 112).unwrap();
+        assert_eq!(
+            h.hide("via host7.dc.example.net and dc.example.net"),
+            ("via [hidden] and [hidden]".to_owned(), 2)
+        );
+    }
+
+    /// 33e28 L2: what `serve` prints for a log is this list — every line masked and the
+    /// host hidden, the host hidden before the cut, and nothing when what to hide is not
+    /// known.
+    #[test]
+    fn every_line_of_a_log_is_masked_and_hidden_before_it_is_sent() {
+        let hide = host_hide(Some("host7"), Some("host7.example.net"), Ok(None), 112);
+        let mut long = "x".repeat(aib_cloud::svc::LOG_LINE_MAX - 4);
+        long.push_str(" host7.example.net");
+        let out = format!("password=hunter2 from host7\nok line\n{long}\nnot wanted\n");
+        let sent = log_view(&out, 3, hide.as_ref()).unwrap();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0], "password=*** from [hidden]");
+        assert_eq!(sent[1], "ok line");
+        assert!(
+            sent[2].ends_with("x [hi"),
+            "{}",
+            &sent[2][sent[2].len() - 10..]
+        );
+        // no short name: not one line
+        assert!(log_view(&out, 3, host_hide(None, None, Ok(None), 112).as_ref()).is_none());
+    }
 
     /// The tests' host: no opening anywhere, and none may be started.
     struct NoOpening;
