@@ -21,8 +21,15 @@ use serde_json::Value;
 use crate::sitecreate::Probe;
 
 /// Where the loader lives inside the site, relative to the WordPress root. A must-use
-/// plugin, so it runs whatever plugins the customer switches off.
-pub const LOADER_PATH: &str = "wp-content/mu-plugins/ez2-fp-loader.php";
+/// plugin, so it runs whatever plugins the customer switches off. The same file the
+/// template carries (4542e 11-11, read on a clone: 13 lines, one script tag in `wp_head`
+/// with the template's 16-character key written into the string), so writing ours
+/// replaces the template's instead of adding a second loader.
+///
+/// Where it runs (4542e 11-11): inside [`crate::sitecreate::CreateStep::Identity`], with
+/// the site's other secrets made new, before the site is put behind the entry; after a
+/// restore, in the same part as the new passwords and salts.
+pub const LOADER_PATH: &str = "wp-content/mu-plugins/ez2-footprint-loader.php";
 
 /// The first line after `<?php` of every loader file we write; the site's code follows.
 pub const LOADER_MARK: &str = "// ez2:fp-loader site=";
