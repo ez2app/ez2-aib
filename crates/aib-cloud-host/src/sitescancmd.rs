@@ -74,10 +74,13 @@ const FIND_FORBIDDEN: &[&str] = &[
 /// `find` that only prints.
 pub fn read_only(argv: &[String]) -> bool {
     let a: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let [ "pct", "exec", ct, "--", "sh", "-c", wrap, "sh", inner @ ..] = a.as_slice() else {
+    let ["pct", "exec", ct, "--", "sh", "-c", wrap, "sh", inner @ ..] = a.as_slice() else {
         return false;
     };
-    if ct.is_empty() || !ct.bytes().all(|b| b.is_ascii_digit()) || ![WRAP_MERGED, WRAP_QUIET].contains(wrap) {
+    if ct.is_empty()
+        || !ct.bytes().all(|b| b.is_ascii_digit())
+        || ![WRAP_MERGED, WRAP_QUIET].contains(wrap)
+    {
         return false;
     }
     match inner {
@@ -85,7 +88,11 @@ pub fn read_only(argv: &[String]) -> bool {
             rest.last() == Some(&"-print0") && !rest.iter().any(|x| FIND_FORBIDDEN.contains(x))
         }
         ["sudo", "-u", user, "-H", "/usr/local/bin/wp", path, rest @ ..] => {
-            let words: Vec<&str> = rest.iter().copied().filter(|w| !w.starts_with("--")).collect();
+            let words: Vec<&str> = rest
+                .iter()
+                .copied()
+                .filter(|w| !w.starts_with("--"))
+                .collect();
             **path == format!("--path={}", site_root(user))
                 && rest.contains(&"--skip-plugins")
                 && rest.contains(&"--skip-themes")
@@ -308,7 +315,17 @@ mod tests {
         }
         // the site software runs as the site's own user, on its own folder
         let core = &commands(&s)[0];
-        assert_eq!(&core[8..14], ["sudo", "-u", "s-abc123", "-H", "/usr/local/bin/wp", "--path=/var/www/s-abc123"]);
+        assert_eq!(
+            &core[8..14],
+            [
+                "sudo",
+                "-u",
+                "s-abc123",
+                "-H",
+                "/usr/local/bin/wp",
+                "--path=/var/www/s-abc123"
+            ]
+        );
     }
 
     #[test]
@@ -327,7 +344,10 @@ mod tests {
         let mut no_skip_themes = commands(&s)[1].clone();
         no_skip_themes.retain(|w| w != "--skip-themes");
         for argv in [bad, wp_bad, other_user, no_skip_plugins, no_skip_themes] {
-            let mut f = Fake { seen: Vec::new(), answer: clean };
+            let mut f = Fake {
+                seen: Vec::new(),
+                answer: clean,
+            };
             assert!(look(&mut f, &argv).is_err(), "{argv:?}");
             assert!(f.seen.is_empty());
         }
@@ -336,13 +356,19 @@ mod tests {
     #[test]
     fn a_clean_site_is_ok_and_the_report_says_nothing_of_the_host() {
         let s = spec();
-        let mut f = Fake { seen: Vec::new(), answer: clean };
+        let mut f = Fake {
+            seen: Vec::new(),
+            answer: clean,
+        };
         let expected = ["ops".to_owned()];
         let (doc, code) = scan_site(&mut f, &s, "shop.example.test", Some(&expected)).unwrap();
         assert_eq!((doc["result"].as_str(), code), (Some("ok"), 0));
         assert_eq!(f.seen.len(), 5);
         let text = doc.to_string();
-        assert!(!text.contains("112") && !text.contains("10.77.") && !text.contains("/var/www"), "{text}");
+        assert!(
+            !text.contains("112") && !text.contains("10.77.") && !text.contains("/var/www"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -358,7 +384,8 @@ mod tests {
                 }
             },
         };
-        let (doc, code) = scan_site(&mut f, &s, "shop.example.test", Some(&["ops".to_owned()])).unwrap();
+        let (doc, code) =
+            scan_site(&mut f, &s, "shop.example.test", Some(&["ops".to_owned()])).unwrap();
         assert_eq!((doc["result"].as_str(), code), (Some("unknown"), 3));
         assert_eq!(doc["checks"][1]["reason"], "not_run");
         assert!(!doc.to_string().contains("112"));
@@ -370,7 +397,10 @@ mod tests {
         let mut f = Fake {
             seen: Vec::new(),
             answer: |argv: &[String]| {
-                if argv.iter().any(|a| a == "/var/www/s-abc123/wp-content/uploads") {
+                if argv
+                    .iter()
+                    .any(|a| a == "/var/www/s-abc123/wp-content/uploads")
+                {
                     rc0("/var/www/s-abc123/wp-content/uploads/2026/11/x.php\0")
                 } else {
                     clean(argv)
@@ -379,7 +409,10 @@ mod tests {
         };
         let (doc, code) = scan_site(&mut f, &s, "shop.example.test", None).unwrap();
         assert_eq!((doc["result"].as_str(), code), (Some("finding"), 1));
-        assert_eq!(doc["checks"][2]["items"][0]["name"], "wp-content/uploads/2026/11/x.php");
+        assert_eq!(
+            doc["checks"][2]["items"][0]["name"],
+            "wp-content/uploads/2026/11/x.php"
+        );
         // no opening record: the administrators are unknown, the finding still wins
         assert_eq!(doc["checks"][4]["result"], "unknown");
     }
@@ -390,17 +423,31 @@ mod tests {
 
     #[test]
     fn the_site_is_the_one_record_naming_the_domain() {
-        let records = [rec("s-aaa111", 111, "a.example.test,www.a.example.test"), rec("s-bbb222", 112, "b.example.test")];
-        assert_eq!(site_for_domain(&records, "www.a.example.test").unwrap().code, "s-aaa111");
+        let records = [
+            rec("s-aaa111", 111, "a.example.test,www.a.example.test"),
+            rec("s-bbb222", 112, "b.example.test"),
+        ];
+        assert_eq!(
+            site_for_domain(&records, "www.a.example.test")
+                .unwrap()
+                .code,
+            "s-aaa111"
+        );
         assert!(site_for_domain(&records, "example.test").is_err());
     }
 
     #[test]
     fn two_records_naming_one_domain_are_refused() {
-        let records = [rec("s-aaa111", 111, "a.example.test"), rec("s-bbb222", 112, "a.example.test")];
+        let records = [
+            rec("s-aaa111", 111, "a.example.test"),
+            rec("s-bbb222", 112, "a.example.test"),
+        ];
         assert!(site_for_domain(&records, "a.example.test").is_err());
         // a record that names the domain and cannot be read is not passed over
-        let broken = [json!({ "site": "s-aaa111", "hosts": "a.example.test" }), rec("s-bbb222", 112, "a.example.test")];
+        let broken = [
+            json!({ "site": "s-aaa111", "hosts": "a.example.test" }),
+            rec("s-bbb222", 112, "a.example.test"),
+        ];
         assert!(site_for_domain(&broken, "a.example.test").is_err());
     }
 
@@ -410,7 +457,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("s-abc123.json"), r#"{"admins":["ops","ops2"]}"#).unwrap();
         fs::write(dir.join("s-bad000.json"), r#"{"admins":["ops",3]}"#).unwrap();
-        assert_eq!(expected_admins(&dir, "s-abc123"), Some(vec!["ops".to_owned(), "ops2".to_owned()]));
+        assert_eq!(
+            expected_admins(&dir, "s-abc123"),
+            Some(vec!["ops".to_owned(), "ops2".to_owned()])
+        );
         assert_eq!(expected_admins(&dir, "s-bad000"), None);
         assert_eq!(expected_admins(&dir, "s-none00"), None);
         fs::remove_dir_all(&dir).unwrap();

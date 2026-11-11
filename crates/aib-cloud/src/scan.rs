@@ -77,8 +77,8 @@ pub const LIST_MAX: usize = 50;
 pub const OUTSIDE: &str = "(outside the site)";
 /// Extensions a web server may run, or that have no business under uploads.
 pub const EXEC_EXT: &[&str] = &[
-    "php", "php3", "php4", "php5", "php7", "php8", "pht", "phtml", "phar", "phps", "shtml",
-    "cgi", "pl", "py", "sh",
+    "php", "php3", "php4", "php5", "php7", "php8", "pht", "phtml", "phar", "phps", "shtml", "cgi",
+    "pl", "py", "sh",
 ];
 /// Extensions of PHP files.
 pub const PHP_EXT: &[&str] = &[
@@ -238,17 +238,22 @@ fn find_names(args: &mut Vec<String>, exts: &[&str], inner_too: bool) {
 /// The `find` that lists [`upload_kind`] files under the site's uploads, NUL-separated.
 /// Read only: no action but `-print0`.
 pub fn uploads_find_args(root: &str) -> Vec<String> {
-    let mut a: Vec<String> = ["find", &format!("{root}/wp-content/uploads"), "-xdev"]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
+    let mut a: Vec<String> = vec![
+        "find".to_owned(),
+        format!("{root}/wp-content/uploads"),
+        "-xdev".to_owned(),
+    ];
     a.extend(
         ["(", "-type", "f", "-o", "-type", "l", ")"]
             .iter()
             .map(|s| (*s).to_owned()),
     );
     find_names(&mut a, EXEC_EXT, true);
-    a.extend(["-o", "-name", ".*", ")", "-print0"].iter().map(|s| (*s).to_owned()));
+    a.extend(
+        ["-o", "-name", ".*", ")", "-print0"]
+            .iter()
+            .map(|s| (*s).to_owned()),
+    );
     a
 }
 
@@ -369,9 +374,8 @@ pub fn plugin_checksums(root: &str, seen: Option<Seen<'_>>) -> Check {
                     bad = true;
                     continue;
                 };
-                let kind = plugin_message_kind(
-                    row.get("message").and_then(Value::as_str).unwrap_or(""),
-                );
+                let kind =
+                    plugin_message_kind(row.get("message").and_then(Value::as_str).unwrap_or(""));
                 differ += 1;
                 c.push(
                     site_relative(root, &format!("wp-content/plugins/{p}/{f}")),
@@ -532,7 +536,11 @@ pub fn administrators(seen: Option<Seen<'_>>, expected: Option<&[String]>) -> Ch
         return c.with(Outcome::Unknown, "no_opening_record");
     };
     let known = |l: &str| expected.iter().any(|e| e.eq_ignore_ascii_case(l));
-    let extra: Vec<String> = logins.iter().filter(|l| !known(l)).cloned().collect();
+    let extra: Vec<String> = logins
+        .iter()
+        .filter(|l| !known(l.as_str()))
+        .cloned()
+        .collect();
     for l in &extra {
         c.push(l.clone(), "needs_confirmation");
     }
@@ -555,9 +563,7 @@ pub fn overall(checks: &[Check]) -> Outcome {
     if checks.is_empty() {
         return Outcome::Unknown;
     }
-    checks
-        .iter()
-        .fold(Outcome::Ok, |w, c| w.worst(c.outcome))
+    checks.iter().fold(Outcome::Ok, |w, c| w.worst(c.outcome))
 }
 
 /// The printed report. Site code and domain only: nothing about the host.
@@ -596,8 +602,8 @@ mod tests {
         assert_eq!(Outcome::Finding.worst(Outcome::Ok), Outcome::Finding);
         let ok = core_checksums(ROOT, seen(&wrapped(CORE_OK, 0)));
         let unk = core_checksums(ROOT, None);
-        assert_eq!(overall(&[ok.clone(), unk.clone()]), Outcome::Unknown);
         assert_eq!(overall(&[ok.clone()]), Outcome::Ok);
+        assert_eq!(overall(&[ok, unk]), Outcome::Unknown);
         assert_eq!(overall(&[]), Outcome::Unknown);
         assert_eq!(Outcome::Finding.exit_code(), 1);
         assert_eq!(Outcome::Unknown.exit_code(), 3);
@@ -607,7 +613,10 @@ mod tests {
     fn the_exit_code_is_read_from_the_last_marker() {
         assert_eq!(split_rc("a\nb\nez2-scan-rc=0\n"), Some(("a\nb", 0)));
         assert_eq!(split_rc("\nez2-scan-rc=1"), Some(("", 1)));
-        assert_eq!(split_rc("x\nez2-scan-rc=0\ny\nez2-scan-rc=2\n"), Some(("x\nez2-scan-rc=0\ny", 2)));
+        assert_eq!(
+            split_rc("x\nez2-scan-rc=0\ny\nez2-scan-rc=2\n"),
+            Some(("x\nez2-scan-rc=0\ny", 2))
+        );
         assert_eq!(split_rc("no marker"), None);
         assert_eq!(split_rc("\nez2-scan-rc=\n"), None);
         assert_eq!(split_rc("\nez2-scan-rc=0 forged\n"), None);
@@ -619,11 +628,20 @@ mod tests {
 
     #[test]
     fn a_path_outside_the_site_is_not_shown() {
-        assert_eq!(site_relative(ROOT, "/var/www/s-abc123/wp-content/uploads/x.php"), "wp-content/uploads/x.php");
-        assert_eq!(site_relative(ROOT, "wp-includes/version.php"), "wp-includes/version.php");
+        assert_eq!(
+            site_relative(ROOT, "/var/www/s-abc123/wp-content/uploads/x.php"),
+            "wp-content/uploads/x.php"
+        );
+        assert_eq!(
+            site_relative(ROOT, "wp-includes/version.php"),
+            "wp-includes/version.php"
+        );
         assert_eq!(site_relative(ROOT, "/etc/pve/lxc/112.conf"), OUTSIDE);
         assert_eq!(site_relative(ROOT, "/var/www/s-abc1234/x.php"), OUTSIDE);
-        assert_eq!(site_relative(ROOT, "wp-content/../../../etc/passwd"), OUTSIDE);
+        assert_eq!(
+            site_relative(ROOT, "wp-content/../../../etc/passwd"),
+            OUTSIDE
+        );
         assert_eq!(site_relative(ROOT, "/var/www/s-abc123/"), OUTSIDE);
     }
 
@@ -648,14 +666,23 @@ mod tests {
 
     #[test]
     fn a_core_success_needs_exit_zero_and_its_line() {
-        assert_eq!(core_checksums(ROOT, seen(&wrapped(CORE_OK, 0))).outcome, Outcome::Ok);
+        assert_eq!(
+            core_checksums(ROOT, seen(&wrapped(CORE_OK, 0))).outcome,
+            Outcome::Ok
+        );
         let c = core_checksums(ROOT, seen(&wrapped(CORE_OK, 1)));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "exit_code"));
         let c = core_checksums(ROOT, seen(&wrapped("", 0)));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "unrecognized"));
         let c = core_checksums(ROOT, seen(CORE_OK));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_exit_code"));
-        let c = core_checksums(ROOT, Some(Seen { text: &wrapped(CORE_OK, 0), cut: true }));
+        let c = core_checksums(
+            ROOT,
+            Some(Seen {
+                text: &wrapped(CORE_OK, 0),
+                cut: true,
+            }),
+        );
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_exit_code"));
         let c = core_checksums(ROOT, None);
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "not_run"));
@@ -688,10 +715,16 @@ mod tests {
             0,
         );
         let c = plugin_checksums(ROOT, seen(&out));
-        assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_official_checksums"));
+        assert_eq!(
+            (c.outcome, c.reason),
+            (Outcome::Unknown, "no_official_checksums")
+        );
         assert_eq!(
             c.items,
-            [Item { name: "wp-content/plugins/flying-press".to_string(), kind: "no_official_checksums" }]
+            [Item {
+                name: "wp-content/plugins/flying-press".to_string(),
+                kind: "no_official_checksums"
+            }]
         );
     }
 
@@ -702,8 +735,14 @@ mod tests {
             0,
         );
         let c = plugin_checksums(ROOT, seen(&out));
-        assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "skip_count_mismatch"));
-        assert_eq!(skipped_count("Only verified 1 of 4 plugins (1 failed, 12 skipped)."), Some(12));
+        assert_eq!(
+            (c.outcome, c.reason),
+            (Outcome::Unknown, "skip_count_mismatch")
+        );
+        assert_eq!(
+            skipped_count("Only verified 1 of 4 plugins (1 failed, 12 skipped)."),
+            Some(12)
+        );
         assert_eq!(skipped_count("Verified 3 of 3 plugins."), Some(0));
     }
 
@@ -723,9 +762,15 @@ mod tests {
     fn a_plugin_run_without_a_success_line_is_unknown() {
         let c = plugin_checksums(ROOT, seen(&wrapped("", 0)));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "not_verified"));
-        let c = plugin_checksums(ROOT, seen(&wrapped("Success: Verified 3 of 3 plugins.", 255)));
+        let c = plugin_checksums(
+            ROOT,
+            seen(&wrapped("Success: Verified 3 of 3 plugins.", 255)),
+        );
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "exit_code"));
-        let c = plugin_checksums(ROOT, seen(&wrapped("[not json\nSuccess: Verified 3 of 3 plugins.", 0)));
+        let c = plugin_checksums(
+            ROOT,
+            seen(&wrapped("[not json\nSuccess: Verified 3 of 3 plugins.", 0)),
+        );
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "unrecognized"));
         let c = plugin_checksums(ROOT, seen("Success: Verified 3 of 3 plugins."));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_exit_code"));
@@ -733,8 +778,14 @@ mod tests {
 
     #[test]
     fn a_runnable_file_under_uploads_is_listed() {
-        assert_eq!(upload_kind("wp-content/uploads/2026/11/a.php"), Some("executable"));
-        assert_eq!(upload_kind("wp-content/uploads/a.PHTML"), Some("executable"));
+        assert_eq!(
+            upload_kind("wp-content/uploads/2026/11/a.php"),
+            Some("executable")
+        );
+        assert_eq!(
+            upload_kind("wp-content/uploads/a.PHTML"),
+            Some("executable")
+        );
         assert_eq!(upload_kind("wp-content/uploads/a.phar"), Some("executable"));
         assert_eq!(upload_kind("wp-content/uploads/photo.jpg"), None);
         assert_eq!(upload_kind("wp-content/uploads/photo"), None);
@@ -742,13 +793,19 @@ mod tests {
 
     #[test]
     fn an_inner_extension_counts() {
-        assert_eq!(upload_kind("wp-content/uploads/shell.php.jpg"), Some("executable"));
+        assert_eq!(
+            upload_kind("wp-content/uploads/shell.php.jpg"),
+            Some("executable")
+        );
     }
 
     #[test]
     fn a_dot_file_under_uploads_is_listed() {
         assert_eq!(upload_kind("wp-content/uploads/.htaccess"), Some("hidden"));
-        assert_eq!(upload_kind("wp-content/uploads/2026/.x.jpg"), Some("hidden"));
+        assert_eq!(
+            upload_kind("wp-content/uploads/2026/.x.jpg"),
+            Some("hidden")
+        );
     }
 
     #[test]
@@ -758,20 +815,46 @@ mod tests {
             0,
         );
         let c = uploads_files(ROOT, seen(&out));
-        assert_eq!((c.outcome, c.reason, c.total), (Outcome::Finding, "files_found", 2));
-        assert_eq!(c.items[1], Item { name: "wp-content/uploads/.user.ini".to_string(), kind: "hidden" });
-        assert_eq!(uploads_files(ROOT, seen(&wrapped("", 0))).outcome, Outcome::Ok);
+        assert_eq!(
+            (c.outcome, c.reason, c.total),
+            (Outcome::Finding, "files_found", 2)
+        );
+        assert_eq!(
+            c.items[1],
+            Item {
+                name: "wp-content/uploads/.user.ini".to_string(),
+                kind: "hidden"
+            }
+        );
+        assert_eq!(
+            uploads_files(ROOT, seen(&wrapped("", 0))).outcome,
+            Outcome::Ok
+        );
         let c = uploads_files(ROOT, seen(&wrapped("", 1)));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "exit_code"));
         let c = uploads_files(ROOT, seen(""));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_exit_code"));
         // a name outside the site is never printed
         let c = uploads_files(ROOT, seen(&wrapped("/etc/pve/x.php\0", 0)));
-        assert_eq!((c.outcome, c.reason, c.total), (Outcome::Unknown, "unrecognized", 0));
+        assert_eq!(
+            (c.outcome, c.reason, c.total),
+            (Outcome::Unknown, "unrecognized", 0)
+        );
         // cut: the names before the cut count, the cut one does not
-        let many: String = (0..80).map(|n| format!("{ROOT}/wp-content/uploads/{n}.php\0")).collect();
-        let c = uploads_files(ROOT, Some(Seen { text: &format!("{many}{ROOT}/wp-con"), cut: true }));
-        assert_eq!((c.outcome, c.total, c.items.len(), c.cut), (Outcome::Finding, 80, LIST_MAX, true));
+        let many: String = (0..80)
+            .map(|n| format!("{ROOT}/wp-content/uploads/{n}.php\0"))
+            .collect();
+        let c = uploads_files(
+            ROOT,
+            Some(Seen {
+                text: &format!("{many}{ROOT}/wp-con"),
+                cut: true,
+            }),
+        );
+        assert_eq!(
+            (c.outcome, c.total, c.items.len(), c.cut),
+            (Outcome::Finding, 80, LIST_MAX, true)
+        );
     }
 
     #[test]
@@ -802,7 +885,10 @@ mod tests {
     fn a_recent_php_file_is_listed() {
         let out = wrapped(&format!("{ROOT}/wp-content/plugins/x/y.php\0"), 0);
         let c = recent_php(ROOT, seen(&out));
-        assert_eq!((c.outcome, c.items[0].kind), (Outcome::Finding, "changed_recently"));
+        assert_eq!(
+            (c.outcome, c.items[0].kind),
+            (Outcome::Finding, "changed_recently")
+        );
         assert_eq!(php_kind("a.php.jpg"), None);
         assert_eq!(php_kind("a.PHP"), Some("changed_recently"));
     }
@@ -817,12 +903,24 @@ mod tests {
         let expected = ["ops".to_string(), "andy".to_string()];
         let out = admins_out(&["ops", "Andy", "wp_backup"]);
         let c = administrators(seen(&out), Some(&expected));
-        assert_eq!((c.outcome, c.reason), (Outcome::Finding, "unexpected_administrators"));
-        assert_eq!(c.items, [Item { name: "wp_backup".to_string(), kind: "needs_confirmation" }]);
+        assert_eq!(
+            (c.outcome, c.reason),
+            (Outcome::Finding, "unexpected_administrators")
+        );
+        assert_eq!(
+            c.items,
+            [Item {
+                name: "wp_backup".to_string(),
+                kind: "needs_confirmation"
+            }]
+        );
         let c = administrators(seen(&admins_out(&["ops", "andy"])), Some(&expected));
         assert_eq!((c.outcome, c.total), (Outcome::Ok, 0));
         let c = administrators(seen(&admins_out(&["ops"])), Some(&expected));
-        assert_eq!((c.outcome, c.items[0].kind), (Outcome::Ok, "expected_absent"));
+        assert_eq!(
+            (c.outcome, c.items[0].kind),
+            (Outcome::Ok, "expected_absent")
+        );
     }
 
     #[test]
@@ -833,7 +931,13 @@ mod tests {
         assert_eq!(c.items[0].kind, "not_compared");
         let c = administrators(seen(&wrapped("Error: nope", 1)), Some(&[]));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "exit_code"));
-        let c = administrators(Some(Seen { text: &admins_out(&["ops"]), cut: true }), Some(&[]));
+        let c = administrators(
+            Some(Seen {
+                text: &admins_out(&["ops"]),
+                cut: true,
+            }),
+            Some(&[]),
+        );
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "no_exit_code"));
         let c = administrators(seen(&admins_out(&[])), Some(&[]));
         assert_eq!((c.outcome, c.reason), (Outcome::Unknown, "none_listed"));
@@ -841,10 +945,16 @@ mod tests {
 
     #[test]
     fn the_report_carries_the_site_and_nothing_of_the_host() {
-        let out = wrapped(&format!("{ROOT}/wp-content/uploads/a.php\0/srv/host/112/x.php\0"), 0);
+        let out = wrapped(
+            &format!("{ROOT}/wp-content/uploads/a.php\0/srv/host/112/x.php\0"),
+            0,
+        );
         let checks = [uploads_files(ROOT, seen(&out))];
         let text = report("s-abc123", "example.test", &checks).to_string();
         assert!(text.contains("\"result\":\"finding\""), "{text}");
-        assert!(!text.contains("/var/www") && !text.contains("112") && !text.contains("/srv"), "{text}");
+        assert!(
+            !text.contains("/var/www") && !text.contains("112") && !text.contains("/srv"),
+            "{text}"
+        );
     }
 }
