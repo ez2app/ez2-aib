@@ -142,6 +142,91 @@ pub fn needs_archive(step: RemoveStep) -> bool {
     step > RemoveStep::Archive
 }
 
+/// The first step from what the host's entry is configured with: `None` when the
+/// configuration could not be read.
+pub fn unserve_probe(entry_config: Option<&str>, code: &str) -> Probe {
+    match entry_config {
+        // an empty answer is not a configuration without this site
+        None | Some("") => Probe::Unknown,
+        Some(text) => {
+            let marker = crate::site::caddy_marker(code);
+            if text.lines().any(|l| l == marker) {
+                Probe::NotDone
+            } else {
+                Probe::Done
+            }
+        }
+    }
+}
+
+/// Whether container `ct` is in the host's container list (`pct list`). `None` when the
+/// list is missing or is not that list: its header line must be there before "not in it"
+/// is believed.
+pub fn container_listed(container_list: Option<&str>, ct: u32) -> Option<bool> {
+    let text = container_list?;
+    let mut lines = text.lines();
+    if !lines.next()?.starts_with("VMID") {
+        return None;
+    }
+    let id = alloc::format!("{ct}");
+    Some(lines.any(|l| l.split_whitespace().next() == Some(id.as_str())))
+}
+
+/// The customer's way in by shell: closed when neither the live rules nor the host's
+/// network file forward the site's port to it. `live_rules` is the listing of the
+/// forwarding chain, `network_file` the file the rules are loaded from at boot; either
+/// missing, or a listing with no rule line at all, is "could not tell".
+pub fn access_probe(
+    live_rules: Option<&str>,
+    network_file: Option<&str>,
+    port: u16,
+    ip: &str,
+) -> Probe {
+    let (Some(rules), Some(file)) = (live_rules, network_file) else {
+        return Probe::Unknown;
+    };
+    if !rules
+        .lines()
+        .any(|l| l.starts_with("-P ") || l.starts_with("-A "))
+        || file.is_empty()
+    {
+        return Probe::Unknown;
+    }
+    let dport = alloc::format!("--dport {port} ");
+    let to = alloc::format!("--to-destination {ip}:22");
+    let forwards = |text: &str| {
+        text.lines().any(|l| {
+            let l = l.trim_end();
+            l.contains(dport.as_str())
+                && (l.ends_with(to.as_str()) || l.contains(&alloc::format!("{to} ")))
+        })
+    };
+    if forwards(rules) || forwards(file) {
+        Probe::NotDone
+    } else {
+        Probe::Done
+    }
+}
+
+/// Whether the site is off the host's export list (one `<code> <ct> <path>` per line,
+/// `#` lines are comments). `None`: the list could not be read.
+pub fn lists_probe(export_list: Option<&str>, code: &str) -> Probe {
+    match export_list {
+        None => Probe::Unknown,
+        Some(text) => {
+            if text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .any(|l| l.split_whitespace().next() == Some(code))
+            {
+                Probe::NotDone
+            } else {
+                Probe::Done
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +373,89 @@ mod tests {
             );
             assert_eq!(may_call_off(step), want, "{step:?}");
         }
+    }
+    #[test]
+    fn the_entry_is_read_by_the_sites_own_marker_line() {
+        let with = "# site:site9\nwww.example.com {\n}\n# site:site90\nother.example.com {\n}\n";
+        assert_eq!(unserve_probe(Some(with), "site9"), Probe::NotDone);
+        assert_eq!(unserve_probe(Some(with), "site90"), Probe::NotDone);
+        // a longer code that merely starts the same is another site
+        assert_eq!(
+            unserve_probe(Some("# site:site90\nx.example.com {\n}\n"), "site9"),
+            Probe::Done
+        );
+        assert_eq!(unserve_probe(None, "site9"), Probe::Unknown);
+        assert_eq!(unserve_probe(Some(""), "site9"), Probe::Unknown);
+    }
+
+    #[test]
+    fn a_container_is_absent_only_on_a_list_that_answered() {
+        let list = "VMID       Status     Lock         Name\n101        running                 edge\n1120       running                 other\n";
+        assert_eq!(container_listed(Some(list), 101), Some(true));
+        assert_eq!(container_listed(Some(list), 112), Some(false));
+        assert_eq!(container_listed(Some(list), 1120), Some(true));
+        assert_eq!(container_listed(Some(""), 112), None);
+        assert_eq!(container_listed(Some("no such command\n"), 112), None);
+        assert_eq!(container_listed(None, 112), None);
+        // a host with no containers still prints its header
+        assert_eq!(
+            container_listed(Some("VMID       Status     Lock         Name\n"), 112),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn the_way_in_is_closed_only_when_neither_place_forwards_it() {
+        let live = "-P PREROUTING ACCEPT\n-A PREROUTING -i eth9 -p tcp -m tcp --dport 2112 -j DNAT --to-destination 10.77.0.12:22\n";
+        let none = "-P PREROUTING ACCEPT\n-A PREROUTING -i eth9 -p tcp -m multiport --dports 80,443 -j DNAT --to-destination 10.77.0.2\n";
+        let file = "iface x\n    post-up   iptables -t nat -A PREROUTING -i eth9 -p tcp --dport 2112 -j DNAT --to-destination 10.77.0.12:22 2>/dev/null\n";
+        let clean = "iface x\n";
+        assert_eq!(
+            access_probe(Some(live), Some(clean), 2112, "10.77.0.12"),
+            Probe::NotDone
+        );
+        assert_eq!(
+            access_probe(Some(none), Some(file), 2112, "10.77.0.12"),
+            Probe::NotDone
+        );
+        assert_eq!(
+            access_probe(Some(none), Some(clean), 2112, "10.77.0.12"),
+            Probe::Done
+        );
+        // another site's port, and a port that only starts the same
+        assert_eq!(
+            access_probe(Some(live), Some(clean), 2113, "10.77.0.13"),
+            Probe::Done
+        );
+        assert_eq!(
+            access_probe(Some(live), Some(clean), 211, "10.77.0.12"),
+            Probe::Done
+        );
+        // could not tell: a missing listing, a listing with no rule line, an empty file
+        assert_eq!(
+            access_probe(None, Some(clean), 2112, "10.77.0.12"),
+            Probe::Unknown
+        );
+        assert_eq!(
+            access_probe(Some(none), None, 2112, "10.77.0.12"),
+            Probe::Unknown
+        );
+        assert_eq!(
+            access_probe(Some(""), Some(clean), 2112, "10.77.0.12"),
+            Probe::Unknown
+        );
+        assert_eq!(
+            access_probe(Some(none), Some(""), 2112, "10.77.0.12"),
+            Probe::Unknown
+        );
+    }
+
+    #[test]
+    fn the_export_list_is_read_by_its_first_word() {
+        let list = "# site9 is only named in a comment\nsite90 190 /var/www/site90\n";
+        assert_eq!(lists_probe(Some(list), "site9"), Probe::Done);
+        assert_eq!(lists_probe(Some(list), "site90"), Probe::NotDone);
+        assert_eq!(lists_probe(Some(""), "site9"), Probe::Done);
+        assert_eq!(lists_probe(None, "site9"), Probe::Unknown);
     }
 }
