@@ -46,6 +46,7 @@ fn changed(paths: &[(&str, &str)]) -> Vec<Changed> {
         .map(|(p, s)| Changed {
             path: (*p).into(),
             status: (*s).into(),
+            patch: None,
         })
         .collect()
 }
@@ -63,6 +64,7 @@ fn facts(changed: Vec<Changed>, attempts: Vec<JobAttempt>) -> Facts {
             "aib/tests/test-x.py".to_string(),
             Some("import unittest\nfrom aib_knife_copy import knife\n".to_string()),
         )]),
+        aibd_yml: None,
     }
 }
 
@@ -359,6 +361,7 @@ fn rust_facts(paths: &[&str], map: Option<RustMap>) -> Facts {
             .map(|p| Changed {
                 path: (*p).into(),
                 status: "modified".into(),
+                patch: None,
             })
             .collect(),
         a,
@@ -1380,4 +1383,273 @@ fn offline_a_log_that_was_not_recorded_is_an_error() {
     // recorded: the same gather goes through
     let f = gather(&Offline(gh_map(1)), R, Some(7), "").expect("gather");
     assert_eq!(f.attempts[0].log.as_deref(), Some(PY_RED));
+}
+
+// ---------- f1fae #644 (2): a change to knife lines only is not a shared change ----------
+
+/// aibd.yml as these tests see it: a test step, a knives step with a knife function, and a
+/// step that is not a knives step but has the same kind of function.
+const YML: &str = "on: push
+jobs:
+  rust:
+    env:
+      RUN: 'true'
+    steps:
+      - name: test
+        run: cargo test --workspace --locked
+      - name: store knives
+        if: env.RUN == 'true'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py crates/store/src/lib.rs \"$1\" \"$2\" --expect-fail \"$3\" \\
+                   -- cargo test -p store-x --locked \"$3\"; }
+          # one
+          sk 'a' 'b' \\
+             opens_twice
+      - name: test twice
+        shell: bash
+        run: |
+          tw() { python3 -I scripts/knife.py crates/store/src/lib.rs \"$1\" x --expect-fail y -- true; }
+          tw 'q'
+      - name: after
+        run: echo done
+";
+
+/// A zero-context unified diff of `old` -> `new` (one hunk around the lines that differ).
+fn patch_of(old: &str, new: &str) -> String {
+    let (o, n): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let pre = o.iter().zip(&n).take_while(|(a, b)| a == b).count();
+    let post = o[pre..]
+        .iter()
+        .rev()
+        .zip(n[pre..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (om, nm) = (&o[pre..o.len() - post], &n[pre..n.len() - post]);
+    let mut p = format!(
+        "@@ -{},{} +{},{} @@ steps:\n",
+        pre + 1,
+        om.len(),
+        pre + 1,
+        nm.len()
+    );
+    for l in om {
+        p.push_str(&format!("-{l}\n"));
+    }
+    for l in nm {
+        p.push_str(&format!("+{l}\n"));
+    }
+    p
+}
+
+fn edit(from: &str, to: &str) -> String {
+    assert_eq!(YML.matches(from).count(), 1, "{from}");
+    YML.replace(from, to)
+}
+
+fn knife_cases() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "a knife added, with its comment",
+            edit(
+                "             opens_twice\n",
+                "             opens_twice\n          # two\n          sk 'c' 'd' \\\n             opens_twice\n",
+            ),
+        ),
+        ("an anchor edited", edit("sk 'a' 'b'", "sk 'a2' 'b'")),
+        (
+            "a knife removed",
+            edit("          # one\n          sk 'a' 'b' \\\n             opens_twice\n", ""),
+        ),
+        ("a comment edited", edit("# one", "# one, again")),
+    ]
+}
+
+fn not_knife_cases() -> Vec<(&'static str, String)> {
+    vec![
+        ("env", edit("RUN: 'true'", "RUN: 'false'")),
+        ("the test step", edit("--workspace --locked", "--workspace")),
+        (
+            "the knives step's if",
+            edit("        if: env.RUN == 'true'\n", "        if: true\n"),
+        ),
+        (
+            "the knife function",
+            edit("--locked \"$3\"; }", "--locked; }"),
+        ),
+        ("set -eu", edit("          set -eu\n", "          set -u\n")),
+        (
+            "a knife call in a step that is not a knives step",
+            edit("tw 'q'", "tw 'r'"),
+        ),
+        (
+            "a knife beside a here-document",
+            edit("# one", "# one <<EOF"),
+        ),
+        (
+            "a new step",
+            edit(
+                "      - name: after\n",
+                "      - name: more knives\n        run: echo\n      - name: after\n",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn knife_lines_alone_are_not_a_shared_change() {
+    for (what, new) in knife_cases() {
+        assert!(knife_only(&patch_of(YML, &new), YML, &new), "{what}");
+    }
+}
+
+#[test]
+fn a_line_beside_the_knives_is_still_a_shared_change() {
+    for (what, new) in not_knife_cases() {
+        assert!(!knife_only(&patch_of(YML, &new), YML, &new), "{what}");
+    }
+}
+
+#[test]
+fn a_patch_that_does_not_match_the_files_is_a_shared_change() {
+    let new = edit("sk 'a' 'b'", "sk 'a2' 'b'");
+    // the patch says one thing, the head file another
+    let other = edit("sk 'a' 'b'", "sk 'a3' 'b'");
+    assert!(!knife_only(&patch_of(YML, &new), YML, &other));
+    // lines numbered past the file, a broken header, an empty patch
+    assert!(!knife_only("@@ -90,1 +90,1 @@\n-x\n+y\n", YML, &new));
+    assert!(!knife_only("@@ -17 +17 @@\n", YML, &new));
+    assert!(!knife_only("", YML, &new));
+}
+
+/// A Rust red with only aibd.yml changed: `patch` / `texts` as gather would give them.
+fn yml_facts(patch: Option<String>, texts: Option<(Option<String>, Option<String>)>) -> Facts {
+    let mut f = rust_facts(&[], Some(rust_map_fixture()));
+    f.changed = vec![Changed {
+        path: AIBD_YML.into(),
+        status: "modified".into(),
+        patch,
+    }];
+    f.aibd_yml = texts;
+    f
+}
+
+#[test]
+fn a_knife_only_aibd_yml_change_leaves_the_rust_red_flaky() {
+    let fp = "rs:store::opens_twice";
+    let p = prior("other", fp);
+    let both = |n: &str| Some((Some(YML.to_string()), Some(n.to_string())));
+    for (what, new) in knife_cases() {
+        let f = yml_facts(Some(patch_of(YML, &new)), both(&new));
+        assert_eq!(one(&f, &p).0, "suspected_flaky", "{what}");
+    }
+    for (what, new) in not_knife_cases() {
+        let f = yml_facts(Some(patch_of(YML, &new)), both(&new));
+        assert_eq!(one(&f, &p).1, format!("impact_overlap: {fp}"), "{what}");
+    }
+    let new = knife_cases().remove(0).1;
+    // no patch from GitHub, a file that could not be read, nothing read: shared
+    for f in [
+        yml_facts(None, both(&new)),
+        yml_facts(Some(patch_of(YML, &new)), Some((None, Some(new.clone())))),
+        yml_facts(Some(patch_of(YML, &new)), None),
+    ] {
+        assert_eq!(one(&f, &p).1, format!("impact_overlap: {fp}"));
+    }
+}
+
+#[test]
+fn a_red_knives_step_keeps_a_knife_change_shared() {
+    let fp = "rs:store::opens_twice";
+    let new = knife_cases().remove(0).1;
+    let mut f = yml_facts(
+        Some(patch_of(YML, &new)),
+        Some((Some(YML.into()), Some(new.clone()))),
+    );
+    for (a, c) in f.attempts.iter_mut().zip(["failure", "success"]) {
+        a.steps = vec![step("store knives", c)];
+    }
+    assert_eq!(
+        one(&f, &prior("other", fp)).1,
+        format!("impact_overlap: {fp}")
+    );
+}
+
+// ---------- f1fae #644 (1): a binary two crates build, told apart by the test's own panic ----------
+
+fn two_store_crates() -> RustMap {
+    let mut m = rust_map_fixture();
+    m.bins
+        .get_mut("store")
+        .expect("bin")
+        .insert("crates/other".into());
+    m
+}
+
+#[test]
+fn a_binary_two_crates_build_is_told_apart_by_its_panic() {
+    let fp = "rs:store::opens_twice";
+    let p = prior("other", fp);
+    for (panic_in, path, want) in [
+        // the panic is in store's own tests/store.rs: store and what it uses
+        (
+            "crates/store/tests/store.rs",
+            "crates/other/src/lib.rs",
+            "suspected_flaky",
+        ),
+        (
+            "crates/store/tests/store.rs",
+            "crates/core/src/lib.rs",
+            "overlap",
+        ),
+        // the panic is in other's tests/store.rs
+        (
+            "crates/other/tests/store.rs",
+            "crates/store/src/lib.rs",
+            "suspected_flaky",
+        ),
+        (
+            "crates/other/tests/store.rs",
+            "crates/other/src/lib.rs",
+            "overlap",
+        ),
+    ] {
+        let mut f = rust_facts(&[path], Some(two_store_crates()));
+        f.attempts[0].log = Some(format!(
+            "{RS_RED}2026-11-09T02:53:17.3Z thread 'opens_twice' (7) panicked at {panic_in}:9:5:\n"
+        ));
+        let (v, r) = one(&f, &p);
+        if want == "overlap" {
+            assert_eq!(r, format!("impact_overlap: {fp}"), "{panic_in} {path}");
+        } else {
+            assert_eq!(v, want, "{panic_in} {path}: {r}");
+        }
+    }
+}
+
+#[test]
+fn a_panic_outside_the_binarys_own_file_does_not_tell_two_crates_apart() {
+    let fp = "rs:store::opens_twice";
+    for panics in [
+        // in a library file, in a crate that does not build this binary, in two crates
+        vec!["crates/core/src/lib.rs"],
+        vec!["crates/third/tests/store.rs"],
+        vec!["crates/store/tests/store.rs", "crates/other/tests/store.rs"],
+        vec!["crates/store/tests/other.rs"],
+    ] {
+        let mut log = RS_RED.to_string();
+        for at in &panics {
+            log.push_str(&format!(
+                "2026-11-09T02:53:17.3Z thread 'opens_twice' (7) panicked at {at}:9:5:\n"
+            ));
+        }
+        let mut f = rust_facts(&["README.md"], Some(two_store_crates()));
+        f.attempts[0].log = Some(log);
+        assert_eq!(
+            one(&f, &prior("other", fp)).1,
+            format!("impact_unknown: {fp}: binary matches 2 crates"),
+            "{panics:?}"
+        );
+    }
 }

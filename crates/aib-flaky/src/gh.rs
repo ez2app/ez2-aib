@@ -3,7 +3,9 @@
 //! A failed list read or a short page is an error for the whole run; a log or a tree that
 //! cannot be read becomes None, which `judge` turns into `unclassified`.
 
-use crate::{parse_log, rust_map, test_file_of, Changed, Facts, JobAttempt, RustMap, Step};
+use crate::{
+    parse_log, rust_map, test_file_of, Changed, Facts, JobAttempt, RustMap, Step, AIBD_YML,
+};
 use aib_cireuse::gh::{paged, Source};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +42,7 @@ fn pr_files(src: &dyn Source, repo: &str, pr: u64, expected: u64) -> Result<Vec<
             out.push(Changed {
                 path: str_at(f, "/filename")?.to_string(),
                 status: str_at(f, "/status")?.to_string(),
+                patch: f.get("patch").and_then(Value::as_str).map(str::to_string),
             });
         }
         if arr.len() < 100 {
@@ -311,6 +314,7 @@ fn compare_files(
             Ok(Changed {
                 path: str_at(f, "/filename")?.to_string(),
                 status: str_at(f, "/status")?.to_string(),
+                patch: f.get("patch").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()
@@ -382,6 +386,29 @@ pub fn gather(src: &dyn Source, repo: &str, pr: Option<u64>, sha: &str) -> Resul
     } else {
         None
     };
+    // aibd.yml at the merge base and at head, so a change to knife lines only can be told
+    // from one to the steps the tests run (f1fae #644 (2)); not read = shared, as before
+    let aibd_yml = if needs_rust
+        && changed
+            .iter()
+            .any(|c| c.path == AIBD_YML && c.status == "modified" && c.patch.is_some())
+    {
+        json(src, &format!("repos/{repo}/compare/{base}...{head}"))
+            .ok()
+            .and_then(|v| {
+                v.pointer("/merge_base_commit/sha")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .map(|mb| {
+                (
+                    read_file(src, repo, &mb, AIBD_YML),
+                    read_file(src, repo, &head, AIBD_YML),
+                )
+            })
+    } else {
+        None
+    };
     Ok(Facts {
         repo: repo.into(),
         pr,
@@ -391,5 +418,6 @@ pub fn gather(src: &dyn Source, repo: &str, pr: Option<u64>, sha: &str) -> Resul
         attempts,
         rust,
         py_sources,
+        aibd_yml,
     })
 }

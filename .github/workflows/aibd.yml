@@ -297,6 +297,38 @@ jobs:
           lk '                        if uses {' \
              '                        if uses && false {' \
              a_crate_from_the_panic_counts_the_crates_that_use_it
+          # f1fae #644 (2) KL1: a knife call is read as a line beside the knives (knives would count as shared)
+          lk '            None => t.split_whitespace().next().is_some_and(|w| fns.contains(w)),' \
+             '            None => t.split_whitespace().next().is_some_and(|w| fns.contains(w) && false),' \
+             knife_lines_alone_are_not_a_shared_change
+          # KL2: any step is a knives step (a knife-like call elsewhere is excused)
+          lk '                .any(|w| w == "knives");' \
+             '                .any(|w| w == "knives" || !w.is_empty());' \
+             a_line_beside_the_knives_is_still_a_shared_change
+          # KL3: a block with a here-document is read anyway
+          lk '    if block.iter().any(|l| l.contains("<<")) {' \
+             '    if block.iter().any(|l| l.contains("<<")) && false {' \
+             a_line_beside_the_knives_is_still_a_shared_change
+          # KL4: the patch is not checked against the files it names
+          lk '                .is_some_and(|i| all.get(i) == Some(&t.as_str()) && knife[i])' \
+             '                .is_some_and(|i| (all.get(i) == Some(&t.as_str()) || !t.is_empty()) && knife[i])' \
+             a_patch_that_does_not_match_the_files_is_a_shared_change
+          # KL5: a red knives step still excuses a knife change
+          lk '        let knife_red = failed_steps.iter().any(|s| s.contains("knives"));' \
+             '        let knife_red = failed_steps.iter().any(|s| s.contains("knives") && false);' \
+             a_red_knives_step_keeps_a_knife_change_shared
+          # f1fae #644 (1) KB1: the panic's crate is not used for a binary two crates build
+          lk '                } else if let Some(h) = hint.filter(|h| crates.contains(*h)) {' \
+             '                } else if let Some(h) = hint.filter(|h| crates.contains(*h) && false) {' \
+             a_binary_two_crates_build_is_told_apart_by_its_panic
+          # KB2: a panic in any tests/ file names the crate, not only the binary's own file
+          lk "    (file.strip_suffix(\".rs\")?.replace('-', \"_\") == bin).then(|| dir.join(\"/\"))" \
+             "    (file.strip_suffix(\".rs\")?.replace('-', \"_\") == bin || !bin.is_empty()).then(|| dir.join(\"/\"))" \
+             a_panic_outside_the_binarys_own_file_does_not_tell_two_crates_apart
+          # KB3: panics into two crates still name the first
+          lk '            if more.iter().all(|m| m == first) {' \
+             '            if more.iter().all(|m| m == first || !m.is_empty()) {' \
+             a_panic_outside_the_binarys_own_file_does_not_tell_two_crates_apart
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives

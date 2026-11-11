@@ -66,6 +66,177 @@ const RUST_SHARED: &[&str] = &[
     ".github/workflows/aibd.yml",
 ];
 
+/// The workflow file whose knife lines may change without touching what the tests run.
+pub const AIBD_YML: &str = ".github/workflows/aibd.yml";
+
+/// A change to [`AIBD_YML`] that only adds, edits or removes knife calls (and the comment lines
+/// beside them) inside a "... knives" step's `run: |` block changes nothing the test steps run
+/// (f1fae #644 (2)). Not when a red step is itself a knives step: a changed knife may be why.
+fn knife_only_change(ch: &Changed, f: &Facts, knife_red: bool) -> bool {
+    if knife_red || ch.path != AIBD_YML || ch.status != "modified" {
+        return false;
+    }
+    match (ch.patch.as_deref(), f.aibd_yml.as_ref()) {
+        (Some(patch), Some((Some(old), Some(new)))) => knife_only(patch, old, new),
+        _ => false,
+    }
+}
+
+/// Hunk by hunk: every removed line is a knife line of `old` (the merge base) and every added
+/// line a knife line of `new` (head), each reading exactly as the patch says. Anything this
+/// cannot read is not a knife line, so the change counts as shared (wrong on the safe side).
+pub fn knife_only(patch: &str, old: &str, new: &str) -> bool {
+    let Some((removed, added)) = hunk_lines(patch) else {
+        return false;
+    };
+    let all_knife = |text: &str, lines: &[(usize, String)]| {
+        let all: Vec<&str> = text.lines().collect();
+        let knife = knife_lines(&all);
+        lines.iter().all(|(n, t)| {
+            n.checked_sub(1)
+                .is_some_and(|i| all.get(i) == Some(&t.as_str()) && knife[i])
+        })
+    };
+    !(removed.is_empty() && added.is_empty()) && all_knife(old, &removed) && all_knife(new, &added)
+}
+
+/// Lines of a file with their 1-based numbers.
+type NumberedLines = Vec<(usize, String)>;
+
+/// A unified diff -> (removed lines by old line number, added lines by new line number).
+/// None = not a diff this reads: no hunk, a bad header, a line of no kind, counts that do not add up.
+fn hunk_lines(patch: &str) -> Option<(NumberedLines, NumberedLines)> {
+    let range = |r: &str| -> Option<(usize, usize)> {
+        match r.split_once(',') {
+            Some((s, c)) => Some((s.parse().ok()?, c.parse().ok()?)),
+            None => Some((r.parse().ok()?, 1)),
+        }
+    };
+    let (mut removed, mut added) = (vec![], vec![]);
+    let (mut o, mut n, mut o_left, mut n_left) = (0usize, 0usize, 0usize, 0usize);
+    let mut seen = false;
+    for l in patch.lines() {
+        if l.starts_with('\\') {
+            continue; // "\ No newline at end of file"
+        }
+        if o_left == 0 && n_left == 0 {
+            let (ranges, _) = l.strip_prefix("@@ -")?.split_once(" @@")?;
+            let (old_r, new_r) = ranges.split_once(" +")?;
+            (o, o_left) = range(old_r)?;
+            (n, n_left) = range(new_r)?;
+            seen = true;
+            continue;
+        }
+        match l.chars().next() {
+            Some(' ') => {
+                o_left = o_left.checked_sub(1)?;
+                n_left = n_left.checked_sub(1)?;
+                o += 1;
+                n += 1;
+            }
+            Some('-') => {
+                o_left = o_left.checked_sub(1)?;
+                removed.push((o, l[1..].to_string()));
+                o += 1;
+            }
+            Some('+') => {
+                n_left = n_left.checked_sub(1)?;
+                added.push((n, l[1..].to_string()));
+                n += 1;
+            }
+            _ => return None,
+        }
+    }
+    (seen && o_left == 0 && n_left == 0).then_some((removed, added))
+}
+
+/// For each line of a workflow file: is it a knife line? Only inside the `run: |` block of a
+/// step whose name has the word "knives": a comment line, or a command (with its `\`
+/// continuation lines) whose first word is a shell function of that block that runs
+/// scripts/knife.py. A block with a here-document is not read (its lines could be anything).
+fn knife_lines(lines: &[&str]) -> Vec<bool> {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = vec![false; lines.len()];
+    // the step being read: (indent of its "- name:", its name has the word "knives")
+    let mut step: Option<(usize, bool)> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        let t = l.trim();
+        if let Some(name) = t.strip_prefix("- name:") {
+            let knives = name
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w == "knives");
+            step = Some((indent(l), knives));
+            i += 1;
+            continue;
+        }
+        if let Some((si, knives)) = step {
+            if !t.is_empty() && indent(l) <= si {
+                step = None; // left the step: read this line again outside it
+                continue;
+            }
+            if indent(l) == si + 2 && t == "run: |" {
+                // the block is skipped whole: nothing inside it is read as a step
+                let start = i + 1;
+                let mut end = start;
+                while end < lines.len()
+                    && (lines[end].trim().is_empty() || indent(lines[end]) > si + 2)
+                {
+                    end += 1;
+                }
+                if knives {
+                    mark_knife_block(&lines[start..end], &mut out[start..end]);
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn mark_knife_block(block: &[&str], out: &mut [bool]) {
+    if block.iter().any(|l| l.contains("<<")) {
+        return;
+    }
+    // "name() { ... }" up to the line that closes it; a knife function runs scripts/knife.py
+    let mut fns = BTreeSet::new();
+    let mut i = 0;
+    while i < block.len() {
+        if let Some((name, _)) = block[i].trim().split_once("() {") {
+            let mut j = i;
+            while j + 1 < block.len() && !block[j].trim_end().ends_with('}') {
+                j += 1;
+            }
+            let ok =
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if ok && block[i..=j].iter().any(|l| l.contains("scripts/knife.py")) {
+                fns.insert(name.to_string());
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    // Some(is a knife) while the line before ended with a backslash
+    let mut cont: Option<bool> = None;
+    for (k, l) in block.iter().enumerate() {
+        let t = l.trim();
+        let knife = match cont {
+            Some(knife) => knife,
+            None if t.starts_with('#') => {
+                out[k] = true;
+                continue;
+            }
+            None => t.split_whitespace().next().is_some_and(|w| fns.contains(w)),
+        };
+        out[k] = knife;
+        cont = l.trim_end().ends_with('\\').then_some(knife);
+    }
+}
+
 /// Log lines that mean the runner itself went away (plan review 043dd L2).
 const RUNNER_LOST: &[&str] = &[
     "The runner has received a shutdown signal",
@@ -96,6 +267,8 @@ pub struct JobAttempt {
 pub struct Changed {
     pub path: String,
     pub status: String,
+    /// the diff GitHub gives for this file (None = not given: too large, binary, renamed)
+    pub patch: Option<String>,
 }
 
 /// What the head tree says about Rust crates. None anywhere = could not be worked out.
@@ -120,6 +293,9 @@ pub struct Facts {
     pub rust: Option<RustMap>,
     /// Python test file -> its source at head (None = unreadable)
     pub py_sources: BTreeMap<String, Option<String>>,
+    /// [`AIBD_YML`] at the merge base and at head; read only when that file was modified and
+    /// a Rust fingerprint needs it (None = not read; an inner None = unreadable)
+    pub aibd_yml: Option<(Option<String>, Option<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +458,10 @@ pub struct Parsed {
     /// "ci-shard ..." errors: missing / duplicate / interrupted test files
     pub shard_problems: Vec<String>,
     pub runner_lost: bool,
+    /// Rust fingerprint -> the crate dir every panic of that test points into, when the panic is
+    /// in that binary's own file (`<crate>/tests/<bin>.rs`, `<crate>/src/bin/<bin>.rs`): tells
+    /// apart a binary name that two crates build (f1fae #644 (1))
+    pub bin_crate: BTreeMap<String, String>,
 }
 
 /// Failure fingerprints in a job log.
@@ -296,6 +476,9 @@ pub fn parse_log(log: &str) -> Parsed {
     // failing tests seen before any binary line, and what each test thread's panics point at
     let mut no_bin: Vec<String> = vec![];
     let mut panics: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
+    // every panic path of each test thread, and the failing tests whose binary line was seen
+    let mut panic_paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut with_bin: Vec<(String, String, String)> = vec![];
     // ci-shard group: file name -> unittest ids seen inside its group
     let mut group: Option<String> = None;
     let mut ids: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -346,6 +529,7 @@ pub fn parse_log(log: &str) -> Parsed {
         }
         if let Some((name, path)) = panic_at(line) {
             let b = bin_from_panic(&name, &path);
+            panic_paths.entry(name.clone()).or_default().push(path);
             panics.entry(name).or_default().push(b);
             continue;
         }
@@ -357,7 +541,11 @@ pub fn parse_log(log: &str) -> Parsed {
         if let Some(rest) = t.strip_prefix("test ") {
             if let Some(name) = rest.strip_suffix(" ... FAILED") {
                 match bin.as_deref() {
-                    Some(b) => p.fingerprints.push(format!("rs:{b}::{}", name.trim())),
+                    Some(b) => {
+                        let fp = format!("rs:{b}::{}", name.trim());
+                        with_bin.push((fp.clone(), b.to_string(), name.trim().to_string()));
+                        p.fingerprints.push(fp);
+                    }
                     None => no_bin.push(name.trim().to_string()),
                 }
             }
@@ -373,9 +561,38 @@ pub fn parse_log(log: &str) -> Parsed {
         };
         p.fingerprints.push(format!("rs:{b}::{name}"));
     }
+    // a binary seen in the log: the crate its own file is in, when every panic of the test
+    // points into that file of one crate
+    for (fp, b, name) in with_bin {
+        let dirs: Option<Vec<String>> = panic_paths
+            .get(&name)
+            .map(|v| v.iter().map(|path| crate_of_bin_file(path, &b)).collect())
+            .unwrap_or_default();
+        if let Some([first, more @ ..]) = dirs.as_deref() {
+            if more.iter().all(|m| m == first) {
+                p.bin_crate.insert(fp, first.clone());
+            }
+        }
+    }
     p.fingerprints.sort();
     p.fingerprints.dedup();
     p
+}
+
+/// `<crate>/tests/<bin>.rs` or `<crate>/src/bin/<bin>.rs` (`-` read as `_`, as in the Running
+/// line) -> `<crate>`. None = the panic is in some other file.
+fn crate_of_bin_file(path: &str, bin: &str) -> Option<String> {
+    let segs: Vec<&str> = path.split('/').collect();
+    if path.contains(':') || segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return None;
+    }
+    let (dir, file) = match segs.as_slice() {
+        [dir @ .., "tests", file] | [dir @ .., "src", "bin", file] if !dir.is_empty() => {
+            (dir, file)
+        }
+        _ => return None,
+    };
+    (file.strip_suffix(".rs")?.replace('-', "_") == bin).then(|| dir.join("/"))
 }
 
 /// Steps that only prepare the runner; a red one with no fingerprint = infrastructure, not verified.
@@ -396,7 +613,14 @@ pub fn test_file_of(fp: &str) -> Option<&str> {
 
 /// Impact of one fingerprint against the PR's changed files.
 /// Ok(true) = overlap, Ok(false) = none, Err = cannot tell (counts as overlap).
-fn impact_overlap(fp: &str, f: &Facts) -> Result<bool, String> {
+/// `hint` = the crate the test's own panic points into ([`Parsed::bin_crate`]); `knife_red` =
+/// a red step is a knives step (then a changed knife line may be the cause).
+fn impact_overlap(
+    fp: &str,
+    hint: Option<&str>,
+    knife_red: bool,
+    f: &Facts,
+) -> Result<bool, String> {
     if let Some(test) = test_file_of(fp) {
         let src = f.py_sources.get(test).and_then(|s| s.as_deref());
         return py_overlap(test, &f.changed, src);
@@ -435,10 +659,14 @@ fn impact_overlap(fp: &str, f: &Facts) -> Result<bool, String> {
             }
             None => {
                 let crates = map.bins.get(bin).ok_or("binary matches no crate")?;
-                if crates.len() != 1 {
+                if crates.len() == 1 {
+                    crates.clone()
+                } else if let Some(h) = hint.filter(|h| crates.contains(*h)) {
+                    // the test's own panic is in that crate's file for this binary (f1fae #644 (1))
+                    BTreeSet::from([h.to_string()])
+                } else {
                     return Err(format!("binary matches {} crates", crates.len()));
                 }
-                crates.clone()
             }
         };
         let mut closure = BTreeSet::new();
@@ -456,7 +684,7 @@ fn impact_overlap(fp: &str, f: &Facts) -> Result<bool, String> {
             todo.extend(deps.iter().cloned());
         }
         return Ok(f.changed.iter().any(|ch| {
-            RUST_SHARED.contains(&ch.path.as_str())
+            (RUST_SHARED.contains(&ch.path.as_str()) && !knife_only_change(ch, f, knife_red))
                 || ch.path.starts_with(".cargo/")
                 || closure
                     .iter()
@@ -595,7 +823,9 @@ fn decide(
     }
     // 5. impact set vs changed files
     for fp in &p.fingerprints {
-        match impact_overlap(fp, f) {
+        let hint = p.bin_crate.get(fp).map(String::as_str);
+        let knife_red = failed_steps.iter().any(|s| s.contains("knives"));
+        match impact_overlap(fp, hint, knife_red, f) {
             Ok(false) => {}
             Ok(true) => return no(U, format!("impact_overlap: {fp}")),
             Err(e) => return no(U, format!("impact_unknown: {fp}: {e}")),
