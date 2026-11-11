@@ -776,7 +776,12 @@ fn main() {
         eprintln!("no_tty: 用 --once 印一次");
         std::process::exit(2);
     }
-    let _ = execute!(o, terminal::EnterAlternateScreen, cursor::Hide, EnableMouseCapture);
+    let _ = execute!(
+        o,
+        terminal::EnterAlternateScreen,
+        cursor::Hide,
+        EnableMouseCapture
+    );
     let mut last_check = Instant::now();
     let mut last_age_draw = Instant::now();
     let mut dirty = true;
@@ -797,8 +802,12 @@ fn main() {
                     let (x, y) = (m.column as usize, m.row as usize);
                     let go = match m.kind {
                         MouseEventKind::Down(MouseButton::Left) => on_click(&mut app, x, y),
-                        MouseEventKind::ScrollUp => on_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-                        MouseEventKind::ScrollDown => on_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                        MouseEventKind::ScrollUp => {
+                            on_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+                        }
+                        MouseEventKind::ScrollDown => {
+                            on_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+                        }
                         _ => true,
                     };
                     if !go {
@@ -852,7 +861,12 @@ fn main() {
             last_age_draw = Instant::now();
         }
     }
-    let _ = execute!(o, DisableMouseCapture, cursor::Show, terminal::LeaveAlternateScreen);
+    let _ = execute!(
+        o,
+        DisableMouseCapture,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
     let _ = terminal::disable_raw_mode();
 }
 
@@ -940,13 +954,21 @@ mod tests {
         app.open.insert("V".into());
         let _ = frame(&app, 80, 30);
         let h = app.hits.borrow().clone();
-        let gy = h.tree_top + h.tree_rows.iter().position(|&i| app.plan.nodes[i].id == "G").expect("G shown");
+        let gy = h.tree_top
+            + h.tree_rows
+                .iter()
+                .position(|&i| app.plan.nodes[i].id == "G")
+                .expect("G shown");
         assert!(on_click(&mut app, 2, gy));
         assert!(app.open.contains("G"), "click opens G");
         assert_eq!(app.plan.nodes[app.sel].id, "G");
         let _ = frame(&app, 80, 30);
         let h = app.hits.borrow().clone();
-        let gy = h.tree_top + h.tree_rows.iter().position(|&i| app.plan.nodes[i].id == "G").expect("G shown");
+        let gy = h.tree_top
+            + h.tree_rows
+                .iter()
+                .position(|&i| app.plan.nodes[i].id == "G")
+                .expect("G shown");
         assert!(on_click(&mut app, 2, gy));
         assert!(!app.open.contains("G"), "second click closes G");
         let ty = h.toolbar_y.expect("toolbar");
