@@ -3,6 +3,7 @@
 //! while another test in the same process holds the observe lock lets the
 //! child inherit that lock until it execs, and the lock tests would see a
 //! second observe that is not there (Mac B receipt 2e85de19).
+#![cfg(unix)] // the fake `gh` / `aib` are sh scripts; on Windows the helpers below would be unused (-D warnings)
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aib_drive::observe::Record;
