@@ -84,7 +84,7 @@ class Unit(unittest.TestCase):
                            "  HostName 100.64.0.2\n  User userb\n", encoding="utf-8")
             env = {"HOME": d, "AIB_DM_XHOST_HOSTS": str(Path(d) / "none.json")}
             self.assertEqual(X.ssh_target("100.64.0.2", env, str(cfg)), "box-b")
-            self.assertEqual(X.ssh_target("100.1.2.3", env, str(cfg)), "100.1.2.3")
+            self.assertEqual(X.ssh_target("100.64.0.203", env, str(cfg)), "100.64.0.203")
             hosts = Path(d) / "hosts.json"
             hosts.write_text(json.dumps({"100.64.0.2": "mini-override"}), encoding="utf-8")
             env["AIB_DM_XHOST_HOSTS"] = str(hosts)
@@ -169,7 +169,7 @@ class Unit(unittest.TestCase):
         self.assertEqual(Q._origin_or_none("xhost:100.64.0.7"), "xhost:100.64.0.7")
         self.assertEqual(Q._origin_or_none("xhost:fd7a:115c::1"), "xhost:fd7a:115c::1")
         self.assertEqual(Q._origin_or_none("abb89"), "abb89")
-        for bad in ("xhost:", "xhost:1.2.3.4;rm", "other:1.2.3.4"):
+        for bad in ("xhost:", "xhost:192.0.2.4;rm", "other:192.0.2.4"):
             self.assertIsNone(Q._origin_or_none(bad), bad)
         it = Q._new_item("1857a", "hi", "@abb89(AIB工程師)", sender_kind="seat", sender_origin="xhost:100.64.0.7")
         self.assertEqual(it["sender_origin"], "xhost:100.64.0.7")
@@ -243,7 +243,7 @@ class DmCtl(unittest.TestCase):
                          "SSH_CMD": str(self.ssh_cmd), "SSH_STDIN": str(self.ssh_stdin),
                          "SSH_CMD_LOG": str(base / "ssh_cmd_log"),
                          "AIB_DM_XHOST_HOSTS": str(base / "dm-hosts.json")})
-        (base / "dm-hosts.json").write_text(json.dumps({"100.1.2.3": "far-box"}), encoding="utf-8")
+        (base / "dm-hosts.json").write_text(json.dumps({"100.64.0.203": "far-box"}), encoding="utf-8")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -258,7 +258,7 @@ class DmCtl(unittest.TestCase):
         return p.read_text(encoding="utf-8") if p.exists() else ""
 
     def test_X1_remote_address_goes_over_ssh_with_derived_identity(self):
-        p = self.run_dm("100.1.2.3/ab12/1857a", "你好,跨主機", "--thread", "24/租約")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "你好,跨主機", "--thread", "24/租約")
         self.assertEqual(p.returncode, 0, p.stderr[-600:])
         results = [l for l in p.stdout.splitlines() if l.startswith("RESULT ")]
         self.assertEqual(results, ["RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"],
@@ -273,7 +273,7 @@ class DmCtl(unittest.TestCase):
         cmd = self.read(self.ssh_cmd)
         self.assertTrue(cmd.startswith('PATH="$PATH:$HOME/.local/bin" aib dm --xhost-ident '), cmd)
         self.assertIn(" ab12/1857a", cmd)
-        self.assertNotIn("100.1.2.3", cmd, "收件機收到的是它自己的 艙/席,不再帶 IP(免得又判成別台)")
+        self.assertNotIn("100.64.0.203", cmd, "收件機收到的是它自己的 艙/席,不再帶 IP(免得又判成別台)")
         self.assertIn("--thread '24/租約'", cmd)
         self.assertEqual(self.read(self.ssh_stdin), "你好,跨主機", "正文走 stdin")
         import dm_xhost as X
@@ -286,24 +286,24 @@ class DmCtl(unittest.TestCase):
         self.assertNotIn("paste-buffer", tm)
 
     def test_X2_ssh_unreachable_is_rc2_nothing_sent(self):
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_PROBE_RC="255")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", SSH_PROBE_RC="255")
         self.assertEqual(p.returncode, 2, p.stderr[-400:])
         self.assertIn("一個字都沒送", p.stderr)
         self.assertEqual(self.read(self.ssh_cmd), "", "連不上就不該送出正文")
         self.assertEqual(self.read(self.calls), "")
 
     def test_X3_ssh_drops_midway_is_rc4_do_not_resend(self):
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="255")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", SSH_CMD_RC="255")
         self.assertEqual(p.returncode, 4, p.stderr[-400:])
         self.assertIn("RESULT stage=xhost-unknown", p.stdout.splitlines()[-1])
 
     def test_X4_receiver_rc_passes_through(self):
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="3")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", SSH_CMD_RC="3")
         self.assertEqual(p.returncode, 3, p.stderr[-400:])
 
     def test_X4b_remote_aib_missing_is_rc2(self):
         """收件機叫不起 aib(rc 127、沒有 RESULT 行)⇒ 沒進任何艙 ⇒ rc 2;叫法可寫成多個字。"""
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="127", SSH_NO_RESULT="1",
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", SSH_CMD_RC="127", SSH_NO_RESULT="1",
                         AIB_DM_XHOST_REMOTE_AIB="bash /opt/aib/src/cockpit/aib")
         self.assertEqual(p.returncode, 2, p.stderr[-400:])
         self.assertIn("一個字都沒送", p.stderr)
@@ -314,7 +314,7 @@ class DmCtl(unittest.TestCase):
     def test_X4c_remote_path_falls_back_to_local_bin(self):
         """收件機 aib 只在登入 shell 的 PATH(~/.zprofile)⇒ 遠端指令照樣叫得到:真的用 sh 跑一次組出來的那行,
         假家目錄只在 ~/.local/bin 放 aib、PATH 裡沒有它;原本 PATH 找得到的 aib 照舊優先(10-25 Mac B)。"""
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         cmd = self.read(self.ssh_cmd)
         home = self.home.parent / "far-home"
@@ -331,12 +331,12 @@ class DmCtl(unittest.TestCase):
         r = subprocess.run(["/bin/sh", "-c", cmd], env=dict(env, PATH="%s:/usr/bin:/bin" % first),
                            capture_output=True, text=True, timeout=20)
         self.assertEqual(r.stdout.strip(), "path-first", "原本 PATH 找得到的照舊優先")
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", AIB_DM_XHOST_REMOTE_AIB="/opt/x/aib")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", AIB_DM_XHOST_REMOTE_AIB="/opt/x/aib")
         self.assertTrue(self.read(self.ssh_cmd).startswith("/opt/x/aib dm "), "有指定叫法就照寫、不加 PATH")
 
     def test_X7_old_receiver_without_xhost_falls_back_once_without_ident(self):
         """收件機是舊版(不認 --xhost-ident)⇒ 不帶身分重送一次,最後一行是重送那一輪的 RESULT。"""
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi 舊版", SSH_OLD_AIB="1", SSH_SRC_IP="100.64.0.7")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi 舊版", SSH_OLD_AIB="1", SSH_SRC_IP="100.64.0.7")
         self.assertEqual(p.returncode, 0, p.stderr[-600:])
         sent = self.read(self.ssh_cmd.parent / "ssh_cmd_log").splitlines()
         self.assertEqual(len(sent), 2, sent)
@@ -356,7 +356,7 @@ class DmCtl(unittest.TestCase):
 
     def test_X7b_other_rc2_from_receiver_is_not_resent(self):
         """對方真的擋下(rc 2 但不是不認身分)⇒ 原樣回 rc 2,不重送。"""
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="2")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", SSH_CMD_RC="2")
         self.assertEqual(p.returncode, 2, p.stderr[-400:])
         self.assertEqual(len(self.read(self.ssh_cmd.parent / "ssh_cmd_log").splitlines()), 1)
 
@@ -369,7 +369,7 @@ class DmCtl(unittest.TestCase):
 
     def test_X8_probe_builds_shared_connection_and_send_reuses_it(self):
         root = self._short_root()
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=root)
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=root)
         self.assertEqual(p.returncode, 0, p.stderr[-600:])
         probe, send = self.read(self.ssh_calls).splitlines()
         cp = "ControlPath=%s/run/ssh/%%C" % root
@@ -385,17 +385,17 @@ class DmCtl(unittest.TestCase):
         self.assertEqual(os.stat(os.path.join(root, "run", "ssh")).st_mode & 0o777, 0o700, "接口檔夾只給自己")
 
     def test_X8b_mux_off_or_path_too_long_falls_back_to_direct(self):
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=self._short_root(), AIB_DM_XHOST_MUX="0")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=self._short_root(), AIB_DM_XHOST_MUX="0")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertNotIn("ControlPath", self.read(self.ssh_calls))
         self.ssh_calls.unlink()
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=str(self.root) + "/" + "x" * 70)
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", EZ2_AIB_STATE_ROOT=str(self.root) + "/" + "x" * 70)
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertNotIn("ControlPath", self.read(self.ssh_calls), "路徑太長 ⇒ 不共用,照舊直連")
 
     def test_X1b_whoami_asks_senders_own_cabin_from_tmux(self):
         """真機第一封抓到:殼裡沒有 EZ2_AIHUB_SOCKET ⇒ 推導問預設名的艙(不存在)⇒ 落未認證。要從自己 pane 的 $TMUX 認艙。"""
-        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", TMUX="/tmp/tmux-501/aihub-%s,123,0" % INST, TMUX_PANE="%5")
+        p = self.run_dm("100.64.0.203/ab12/1857a", "hi", TMUX="/tmp/tmux-501/aihub-%s,123,0" % INST, TMUX_PANE="%5")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertIn("-L aihub-" + INST, self.read(self.calls), "推導那一輪要問寄件人自己那一艙")
 
@@ -403,14 +403,14 @@ class DmCtl(unittest.TestCase):
         """本機行程自己帶 --xhost-ident(或設個 SSH_CONNECTION 假裝)⇒ rc 2,一個字都沒進艙。"""
         import dm_xhost as X
         tok = X.encode("@8f366(第二艦長)", "8f366", "seat", "aihub-20261013-931e")
-        for extra in ({}, {"SSH_CONNECTION": "100.9.9.9 1 10.0.0.5 22"}):
+        for extra in ({}, {"SSH_CONNECTION": "100.64.0.209 1 10.0.0.5 22"}):
             p = self.run_dm("--xhost-ident", tok, "ab12/1857a", "hi", **extra)
             self.assertEqual(p.returncode, 2, p.stderr[-400:])
             self.assertIn("跨主機投遞拒收", p.stderr)
             self.assertEqual(self.read(self.calls), "", "拒收不該碰任何艙")
 
     def test_X6_remote_needs_cabin(self):
-        p = self.run_dm("100.1.2.3/@1857a", "hi")
+        p = self.run_dm("100.64.0.203/@1857a", "hi")
         self.assertEqual(p.returncode, 2, p.stderr[-400:])
         self.assertEqual(self.read(self.ssh_calls), "")
 

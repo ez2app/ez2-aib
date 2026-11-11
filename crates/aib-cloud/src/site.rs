@@ -1059,7 +1059,7 @@ mod tests {
         .unwrap()
     }
 
-    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
+    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 192.0.2.53\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
 
     #[test]
     fn s1_spec_refuses_each_bad_input() {

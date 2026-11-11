@@ -286,7 +286,7 @@ mod tests {
         let text = "# backup\nAGE_RECIPIENT=age1xyz\nREMOTE=r2:ez2-cloud-host-a/platform\n\
                     RCLONE_BIND=203.0.113.90\nexport RCLONE_RETRIES=\"5\"\nRCLONE_BIND=10.0.0.1\n\
                     RCLONE_BIND=203.0.113.90\nRCLONE_S3_ENDPOINT=$ENDPOINT\nRCLONE_lower=x\n\
-                    XRCLONE_BIND=1.2.3.4\nRCLONE_EMPTY=\n";
+                    XRCLONE_BIND=192.0.2.4\nRCLONE_EMPTY=\n";
         let env = rclone_env(text);
         assert_eq!(
             env,
@@ -296,7 +296,7 @@ mod tests {
             ]
         );
         // a later assignment that cannot be used takes the earlier one with it
-        assert_eq!(rclone_env("RCLONE_BIND=1.2.3.4\nRCLONE_BIND=$IP\n"), []);
+        assert_eq!(rclone_env("RCLONE_BIND=192.0.2.4\nRCLONE_BIND=$IP\n"), []);
         // and they reach rclone, next to the fixed arguments
         let cmd = rclone_lsjson("r2:bucket/platform", &env);
         let got: Vec<(String, String)> = cmd

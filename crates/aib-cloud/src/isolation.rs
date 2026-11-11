@@ -1212,10 +1212,10 @@ mod tests {
                 .map(|(id, ip)| Ct::new(*id, ip).unwrap())
                 .collect(),
             internet: InternetTargets {
-                dns: Ip::parse("1.1.1.1").unwrap(),
-                http: Ip::parse("151.101.2.132").unwrap(),
-                https: Ip::parse("140.82.121.4").unwrap(),
-                ssh: Ip::parse("140.82.121.4").unwrap(),
+                dns: Ip::parse("192.0.2.53").unwrap(),
+                http: Ip::parse("192.0.2.80").unwrap(),
+                https: Ip::parse("192.0.2.44").unwrap(),
+                ssh: Ip::parse("192.0.2.44").unwrap(),
                 https6: Some(Ip6::parse("2606:4700:4700::1111").unwrap()),
             },
         }
@@ -1336,7 +1336,7 @@ mod tests {
             assert!(matches!(Ip::parse(bad), Err(Error::Ip(_))), "{bad}");
         }
         for bad in [
-            "1.2.3.4",
+            "192.0.2.4",
             "2606:4700:4700::1111::",
             "12345::1",
             "gggg::1",
@@ -1481,9 +1481,9 @@ mod tests {
             matches!(judge(&other, "203.0.113.90", &good, false), Err(Error::Report(m)) if m.contains("not this plan"))
         );
         assert!(
-            matches!(judge(&cells, "1.2.3.4", &good, false), Err(Error::Report(m)) if m.contains("not 1.2.3.4"))
+            matches!(judge(&cells, "192.0.2.4", &good, false), Err(Error::Report(m)) if m.contains("not 192.0.2.4"))
         );
-        let moved = report(&cells, "203.0.113.90", |_, v| v["ip"] = json!("9.9.9.9"));
+        let moved = report(&cells, "203.0.113.90", |_, v| v["ip"] = json!("192.0.2.99"));
         assert!(
             matches!(judge(&cells, "203.0.113.90", &moved, false), Err(Error::Report(m)) if m.contains("but the cell is"))
         );
@@ -1519,7 +1519,7 @@ mod tests {
             matches!(judge(&cells, "203.0.113.90", &dup, false), Err(Error::Report(m)) if m.contains("duplicate"))
         );
         let mut unknown = good.clone();
-        unknown["results"].as_array_mut().unwrap().push(json!({"id": "nope", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": 1, "open": true}));
+        unknown["results"].as_array_mut().unwrap().push(json!({"id": "nope", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": 1, "open": true}));
         assert!(
             matches!(judge(&cells, "203.0.113.90", &unknown, false), Err(Error::Report(m)) if m.contains("unknown"))
         );
@@ -1564,7 +1564,7 @@ mod tests {
             {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
             {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
             {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
-            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
+            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "192.0.2.53", "port": 53, "expect": "open"}
         ]);
         assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
         let mut other = plan.clone();
