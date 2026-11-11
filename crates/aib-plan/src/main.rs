@@ -994,6 +994,9 @@ mod tests {
         app.err = Some("x".into());
         let _ = frame(&app, 80, 30);
         assert!(app.hits.borrow().toolbar_y.is_none());
-        assert!(on_click(&mut app, qx, ty), "old q spot does not quit on the error screen");
+        assert!(
+            on_click(&mut app, qx, ty),
+            "old q spot does not quit on the error screen"
+        );
     }
 }

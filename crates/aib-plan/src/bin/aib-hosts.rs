@@ -487,7 +487,6 @@ fn main() {
         eprintln!("{i}");
     }));
     let mut tick: u64 = 0;
-    let mut owner: Vec<Option<usize>> = Vec::new();
     loop {
         let t0 = Instant::now();
         for (i, h) in hosts.iter_mut().enumerate() {
@@ -517,8 +516,7 @@ fn main() {
             }
         }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
-        let (lines, own) = frame(&hosts, cw as usize, tick, now());
-        owner = own;
+        let (lines, owner) = frame(&hosts, cw as usize, tick, now());
         if draw(&mut out, &lines, cw as usize, ch as usize).is_err() {
             break;
         }
