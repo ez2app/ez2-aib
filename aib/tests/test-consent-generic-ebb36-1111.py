@@ -16,8 +16,10 @@ G5 execute:共用程式 ⇒ supervise 帶 --program-copy/--program-sha/--params-
    沒有 aib-consent-run ⇒ failed consent_run_missing(不退回不看雜湊、不給參數的舊路徑)
 G6 CLI:--program / --params 要一起、不能再帶 `--` 後的指令
 G7(有 AIB_CONSENT_RUN_TEST_BIN 才跑)真的 aib-consent-run:ask → decide → execute,程式拿到參數、改過的參數檔跑不到
+G8 git 狀態(c477a #662 L1):沒進 git ⇒ untracked;commit 過 ⇒ committed + 短碼;改了 ⇒ changed;不是 git 夾 / 相對路徑 ⇒
+   unknown;那個夾的 core.fsmonitor 不會被執行;對話框四種狀態各一行
 刀(複本 + run_guarded):KG1 decide 不看 stage 結果 ⇒ G4 紅;KG2 supervise 不帶參數複本旗標 ⇒ G5 紅;
-  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅
+  KG3 stage 輸出雜湊 ≠ pin 也收 ⇒ G3 紅;KG4 改過當成 committed ⇒ G8 紅;KG5 不關 fsmonitor ⇒ G8 紅
 """
 import json
 import os
@@ -323,6 +325,54 @@ class G7Real(Base):
         self.assertIn("site=s1", Path(d["log"]).read_text())
 
 
+@unittest.skipUnless(shutil.which("git"), "git")
+class G8Git(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="aib-consent-git-")).resolve()
+        self.addCleanup(shutil.rmtree, str(self.d), True)
+        self.g("init", "-q")
+        self.p = self.d / "site-remove.sh"
+        self.p.write_text("echo 1\n")
+
+    def g(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.test", "-c", "commit.gpgsign=false",
+                               "-C", str(self.d)] + list(args), check=True, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL).stdout
+
+    def test_g8_states(self):
+        self.assertEqual(C.program_git_state(str(self.p)), {"state": "untracked"})
+        self.g("add", self.p.name)
+        self.g("commit", "-q", "-m", "x")
+        short = self.g("log", "-1", "--format=%h").strip()
+        self.assertEqual(C.program_git_state(str(self.p)), {"state": "committed", "commit": short})
+        self.p.write_text("echo 2\n")
+        self.assertEqual(C.program_git_state(str(self.p)), {"state": "changed"})
+        out = Path(tempfile.mkdtemp(prefix="aib-consent-nogit-")).resolve()
+        self.addCleanup(shutil.rmtree, str(out), True)
+        (out / "x.sh").write_text("echo\n")
+        if subprocess.run(["git", "-C", str(out), "rev-parse"], capture_output=True).returncode != 0:
+            self.assertEqual(C.program_git_state(str(out / "x.sh")), {"state": "unknown"})
+        self.assertEqual(C.program_git_state("site-remove.sh"), {"state": "unknown"})
+
+    def test_g8_folder_settings_do_not_run(self):
+        mark = self.d / "PWNED"
+        hook = self.d / "fsm.sh"
+        hook.write_text("#!/bin/sh\ntouch '%s'\nexit 1\n" % mark)
+        os.chmod(str(hook), 0o755)
+        self.g("config", "core.fsmonitor", str(hook))
+        C.program_git_state(str(self.p))
+        self.assertFalse(mark.exists(), "the folder's core.fsmonitor ran")
+
+    def test_g8_dialog_lines(self):
+        lines = {st: C._git_line({"state": st, "commit": "abc1234"}) for st in ("committed", "changed", "untracked",
+                                                                                 "unknown")}
+        self.assertEqual(len(set(lines.values())), 4, lines)
+        self.assertIn("abc1234", lines["committed"])
+        self.assertEqual(C._git_line({"state": "nope"}), lines["unknown"])
+        self.assertEqual(C._git_line(None), lines["unknown"])
+        self.assertNotIn("x;y", C._git_line({"state": "committed", "commit": "x;y"}))
+
+
 class Knives(unittest.TestCase):
     def _knife(self, needle, repl, cell):
         name = Path(__file__).name
@@ -331,6 +381,13 @@ class Knives(unittest.TestCase):
                             max_procs=40, timeout=120)
         self.assertIsNone(r.tripped)
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    def test_kg4_changed_reads_as_committed(self):
+        self._knife("    if status.strip():\n        return {\"state\": \"changed\"}",
+                    "    if False:\n        return {\"state\": \"changed\"}", "G8Git")
+
+    def test_kg5_folder_fsmonitor_runs(self):
+        self._knife('"-c", "core.fsmonitor=false", ', "", "G8Git")
 
     def test_kg1_decide_ignores_stage(self):
         self._knife("        if not st.get(\"ok\"):\n            shutil.rmtree(td, ignore_errors=True)\n            why = st",

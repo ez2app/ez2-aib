@@ -109,7 +109,8 @@ pub enum Kind {
     Int,
     /// A dotted IPv4 address written the usual way (`10.77.0.4`, no leading zeros).
     Ipv4,
-    /// A host name: lower-case labels of letters, digits and `-`, joined by `.`.
+    /// A host name: lower-case labels of letters, digits and `-`, joined by `.`; at least two
+    /// labels, the last not all digits (an address is `ipv4`, not `host`; c477a #662 N3).
     Host,
 }
 
@@ -136,6 +137,11 @@ impl Kind {
                 .is_ok_and(|a| a.to_string() == v),
             Kind::Host => {
                 v.len() <= 253
+                    && v.contains('.')
+                    && !v
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|l| l.bytes().all(|c| c.is_ascii_digit()))
                     && v.split('.').all(|l| {
                         (1..=63).contains(&l.len())
                             && !l.starts_with('-')
@@ -701,6 +707,9 @@ mod tests {
             ("HOST", "Shop.example.test"),
             ("HOST", "a_b.test"),
             ("HOST", "a.test,b.test"),
+            ("HOST", "localhost"),
+            ("HOST", "10.77.0.9"),
+            ("HOST", "shop.123"),
         ] {
             assert_eq!(check(k, v), Err(refused("params_value_kind", 1)), "{k}={v}");
         }
@@ -718,7 +727,8 @@ mod tests {
             ("CT", "104"),
             ("ADDR", "10.77.0.9"),
             ("HOST", "shop.example.test"),
-            ("HOST", "localhost"),
+            ("HOST", "s-1.example.test"),
+            ("HOST", "1.example.test"),
         ] {
             assert_eq!(check(k, v), Ok(()), "{k}={v}");
         }
