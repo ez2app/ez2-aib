@@ -284,33 +284,73 @@ pub const HOST_PATHS: &[&str] = &["/var/lib/lxc/", "/etc/pve/", "/var/lib/vz/", 
 /// Shortest word [`HostHide`] takes: anything shorter would cut ordinary text apart.
 pub const HIDE_WORD_MIN: usize = 4;
 
+/// The names the host goes by, to hide: its short name, the full name `hostname -f`
+/// answers when it does, and for each name with a dot its first label and the domain
+/// after it (33e28 L3: on this kind of host `/etc/hostname` is usually the short name and
+/// the domain is where the provider shows). A name that is empty is left out; one shorter
+/// than [`HIDE_WORD_MIN`] is left out by [`HostHide::new`].
+pub fn host_names(short: &str, full: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in core::iter::once(short).chain(full).map(str::trim) {
+        let parts = name.split_once('.');
+        for n in [Some(name), parts.map(|p| p.0), parts.map(|p| p.1)]
+            .into_iter()
+            .flatten()
+        {
+            if !n.is_empty() && !out.iter().any(|o| o == n) {
+                out.push(n.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// One line of a site's log as it leaves the host: secrets masked ([`mask_line`]), the
+/// host hidden ([`HostHide::hide`]), **then** cut to [`LOG_LINE_MAX`] — cut first, a host
+/// word across the cut would be left as its first half, which no whole-word match finds
+/// (33e28 L1). What is read is bounded already ([`log_bytes_max`]).
+pub fn send_line(line: &str, hide: &HostHide) -> String {
+    let (hidden, _) = hide.hide(&mask_line(line));
+    clip_line(&hidden).to_owned()
+}
+
 /// What of the host a site's log must not carry out to its customer (4.4.1 §23, Andy
 /// 11-10: "要讓 ai 也盡量找不出主機與主機商的任何資訊"): the host's name, the words the
 /// host keeps in its own list (its addresses, the provider's name — **never in this
 /// repository**, which is public), the CT's number where it is named as one (`ct112`,
-/// `CT 112`, `lxc/112`, `lxc-112`), and the host-only paths of [`HOST_PATHS`].
+/// `CT 112`, `CT-112`, `lxc/112`, `lxc-112`, the volumes `vm-112-disk-N` and
+/// `subvol-112-disk-N`), and the host-only paths of [`HOST_PATHS`].
 ///
 /// Words match without regard to ASCII case and only as whole words: `192.0.2.1` is not
 /// found inside `192.0.2.10`. Built on the host, used per line.
+///
+/// The host's own list is where what no program here can know goes: its public
+/// addresses, the provider's name, **the gateway address of the CTs' network** (33e28
+/// N2: it tells how the host's network is laid out).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostHide {
     words: Vec<String>,
 }
 
 impl HostHide {
-    /// From the host's name, the text of the host's own list (one word per line; blank
-    /// lines and `#` lines skipped) and the CT's number. Words shorter than
-    /// [`HIDE_WORD_MIN`] are left out.
-    pub fn new(hostname: &str, list: &str, ct: u32) -> Self {
+    /// From the host's names ([`host_names`]), the text of the host's own list (one word
+    /// per line; blank lines and `#` lines skipped) and the CT's number. Words shorter
+    /// than [`HIDE_WORD_MIN`] are left out.
+    pub fn new(names: &[String], list: &str, ct: u32) -> Self {
         let mut words: Vec<String> = Vec::new();
         let ct_words = [
             alloc::format!("ct{ct}"),
             alloc::format!("ct {ct}"),
+            alloc::format!("ct-{ct}"),
             alloc::format!("lxc/{ct}"),
             alloc::format!("lxc-{ct}"),
+            alloc::format!("vm-{ct}-disk"),
+            alloc::format!("subvol-{ct}-disk"),
         ];
         let from_list = list.lines().map(str::trim).filter(|w| !w.starts_with('#'));
-        for w in core::iter::once(hostname.trim())
+        for w in names
+            .iter()
+            .map(|n| n.trim())
             .chain(from_list)
             .chain(ct_words.iter().map(String::as_str))
         {
@@ -638,7 +678,7 @@ mod tests {
 
     fn hide() -> HostHide {
         HostHide::new(
-            "host7.example.net\n",
+            &host_names("host7.example.net\n", None),
             "# the host's own list\n192.0.2.1\n\nExampleCloud\nab\n",
             112,
         )
@@ -676,8 +716,48 @@ mod tests {
     }
 
     #[test]
+    fn the_hosts_names_are_its_short_and_full_names_and_their_domain() {
+        assert_eq!(
+            host_names("node7\n", Some("node7.dc.example.net\n")),
+            ["node7", "node7.dc.example.net", "dc.example.net"]
+        );
+        // a dotted /etc/hostname gives its first label as well
+        assert_eq!(
+            host_names("node7.example.net", None),
+            ["node7.example.net", "node7", "example.net"]
+        );
+        assert!(host_names("", None).is_empty());
+        let h = HostHide::new(&host_names("node7", Some("node7.example.net")), "", 112);
+        assert_eq!(
+            h.hide("NODE7 node7.example.net mail.example.net"),
+            ("[hidden] [hidden] mail.[hidden]".to_owned(), 3)
+        );
+        // a domain shorter than the minimum is not taken
+        let h = HostHide::new(&host_names("node7", Some("node7.io")), "", 112);
+        assert_eq!(h.hide("see a.io"), ("see a.io".to_owned(), 0));
+        // more ways of naming the CT
+        assert_eq!(
+            h.hide("CT-112 vm-112-disk-0 subvol-112-disk-1"),
+            ("[hidden] [hidden]-0 [hidden]-1".to_owned(), 3)
+        );
+    }
+
+    #[test]
+    fn a_host_word_across_the_cut_is_hidden_before_the_cut() {
+        let h = HostHide::new(&host_names("host7", Some("host7.example.net")), "", 112);
+        // the cut falls inside the name: cut first, " hos" would be sent
+        let mut line = "x".repeat(LOG_LINE_MAX - 4);
+        line.push_str(" host7.example.net and more");
+        let sent = send_line(&line, &h);
+        assert_eq!(sent.len(), LOG_LINE_MAX);
+        assert!(sent.ends_with("x [hi"), "{}", &sent[LOG_LINE_MAX - 20..]);
+        // and secrets are masked on the way
+        assert_eq!(send_line("password=hunter2 on host7", &h), "password=*** on [hidden]");
+    }
+
+    #[test]
     fn host_paths_are_hidden_to_the_next_blank() {
-        let h = HostHide::new("", "", 112);
+        let h = HostHide::new(&[], "", 112);
         assert_eq!(
             h.hide("open /var/lib/lxc/112/rootfs/x failed; see /etc/pve/lxc/112.conf"),
             ("open [hidden] failed; see [hidden]".to_owned(), 2)
