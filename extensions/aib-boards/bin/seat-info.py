@@ -604,7 +604,8 @@ def _si_cache_save(code, c):
 
 
 def _si_git(cwd, *args, timeout=8):
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    # --no-optional-locks:status 不回寫 index(回寫會動 index 的 mtime ⇒ 指紋變、下一回合白白重掃;Codex 11-12 意見)
+    r = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     return r.stdout.strip() if r.returncode == 0 else None
 
 
@@ -661,14 +662,14 @@ def _si_section(name, code, repo, build):
     import time as _t
     common = _si_common_gitdir(repo)
     if not common:
-        return build(None, None, None, {}), False
+        return build(None, None, None, {}), None
     rows = _si_own_worktrees(common, code)
     c = _si_cache_load(code)
     ent = (c.get("sections") or {}).get(name) or {}
     now = _t.time()
     rem = c.get("rem") if c.get("repo") == repo else None
     if rem and ent and 0 <= now - (ent.get("at") or 0) < SEATINFO_CACHE_TTL and ent.get("fp") == _si_fingerprint(common, rows, rem):
-        return ent.get("data"), True
+        return ent.get("data"), int(now - ent["at"])
     if not rem:
         rem = _si_remote(repo)
     memo = ent.get("memo") or {}
@@ -681,7 +682,7 @@ def _si_section(name, code, repo, build):
     c2.update({"v": 1, "repo": repo, "rem": rem, "rid": rid})
     c2.setdefault("sections", {})[name] = {"at": now, "fp": _si_fingerprint(common, rows, rem), "data": data, "memo": memo}
     _si_cache_save(code, c2)
-    return data, False
+    return data, None
 
 
 # dev 視角:席碼出現在分支名或路徑裡的工作樹 = 我的樹(開席慣例 <類型>/<說明>-<席碼>-<日期>);每棵樹量 diff 與最近一次 aib test
@@ -702,7 +703,7 @@ if DEV and out["code"]:
         def _status(path):
             # status 不能 strip:第一行開頭的空白是狀態欄的一部分(舊版 strip 後檔名少第一個字)
             try:
-                r = subprocess.run(["git", "-C", path, "status", "--short"], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
+                r = subprocess.run(["git", "--no-optional-locks", "-C", path, "status", "--short"], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
             except Exception:
                 return []
             return [ln for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
@@ -766,7 +767,8 @@ if DEV and out["code"]:
         dev, _hit = _si_section("dev", out["code"], repo, _dev_build)
         for tr in dev.get("trees") or []:
             tr["last_age_s"] = int(_t.time()) - tr["last_ct"] if tr.get("last_ct") else None
-        dev["cache"] = "hit" if _hit else "miss"
+        dev["cache"] = "miss" if _hit is None else "hit"
+        dev["cache_age_s"] = _hit or 0   # 這份數字是幾秒前量的(未存檔 / 測試結果最多晚 90 秒)
     except Exception as e:
         dev = {"trees": [], "err": [f"dev git: {e}"]}
     out["dev"] = dev
@@ -821,7 +823,8 @@ if QA and out["code"]:
         _qres, _qhit = _si_section("qa", out["code"], repo, _qa_build)
         qa["unverified"] = _qres.get("unverified") or []
         qa["err"] += _qres.get("err") or []
-        qa["cache"] = "hit" if _qhit else "miss"
+        qa["cache"] = "miss" if _qhit is None else "hit"
+        qa["cache_age_s"] = _qhit or 0
     except Exception as e:
         qa["err"].append(f"qa shadow: {e}")
     # (3) 我寫過的審查/驗收檔:pending/ 裡檔名帶我席碼、名字像 XREVIEW / ACCEPT / REVIEW 的,最近 7 天

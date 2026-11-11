@@ -123,6 +123,8 @@ class SeatInfoHeat(unittest.TestCase):
         self.assertTrue((self.tmp / "state" / "seat-info-cache" / f"{CODE}.json").is_file())
         second = self.run_probe("--dev", log_git=True)
         self.assertEqual(second["dev"]["cache"], "hit")
+        self.assertGreaterEqual(second["dev"]["cache_age_s"], 0)
+        self.assertEqual(first["dev"]["cache_age_s"], 0)
         self.assertEqual(self.git_calls(), [])
         self.assertEqual(self.paths(second), self.paths(first))
 
