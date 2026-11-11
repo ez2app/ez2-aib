@@ -188,7 +188,8 @@ fn a_second_observe_is_refused_with_the_holders_pid() {
     // Windows the locked file cannot be read: 1ced7 PR-C M1)
     assert_eq!(std::fs::metadata(&p.lock).unwrap().len(), 0);
     let e = lock(&p.lock, &p.pid).unwrap_err();
-    assert!(e.contains(&std::process::id().to_string()), "{e}");
+    // "pid <n>" itself: the temp folder's name holds the pid too
+    assert!(e.contains(&format!("(pid {})", std::process::id())), "{e}");
     let mut r = |_: &BTreeMap<u64, Sha>| Ok(snap());
     assert!(matches!(once(&p, REPO, 1, &mut r), Err(Refused::State(_))));
     drop(held);

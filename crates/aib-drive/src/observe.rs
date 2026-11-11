@@ -461,6 +461,9 @@ impl Clock for RealClock {
     }
 }
 
+/// One snapshot attempt, given the heads of the last record.
+pub type Round<'a> = dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String> + 'a;
+
 /// Why `--once` did not run a round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -481,12 +484,7 @@ impl std::fmt::Display for Refused {
 /// One round for `--once`. Refused while paused or while another observe
 /// holds the lock. The pause file is looked at after the lock is taken, so
 /// a pause made while waiting for it still counts.
-pub fn once(
-    paths: &Paths,
-    repo: &str,
-    now: u64,
-    round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
-) -> Result<Record, Refused> {
+pub fn once(paths: &Paths, repo: &str, now: u64, round: &mut Round<'_>) -> Result<Record, Refused> {
     let _lock = lock(&paths.lock, &paths.pid).map_err(Refused::State)?;
     if paths.pause.exists() {
         return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));
@@ -504,7 +502,7 @@ pub fn watch(
     repo: &str,
     base: Duration,
     clock: &mut dyn Clock,
-    round: &mut dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String>,
+    round: &mut Round<'_>,
     print: &mut dyn FnMut(&Record),
     max_rounds: Option<u32>,
 ) -> Result<(), String> {

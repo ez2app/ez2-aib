@@ -2090,7 +2090,7 @@ jobs:
              failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
           # failures are not counted
           ok '            failures.saturating_add(1)' \
-             '            0 // knife' \
+             '            failures.saturating_mul(0) // knife' \
              failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
           # the reason of a failed snapshot is dropped
           ok '        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),' \
