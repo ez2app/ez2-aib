@@ -1740,7 +1740,7 @@ jobs:
              what_cannot_be_read_stops_everything
           # abandon: a plan the host no longer matches is applied
           hk siteabandon.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
-             '    if g.sha.is_empty() { // knife' \
+             '    if g.sha.is_empty() && g.plan.is_null() { // knife' \
              a_host_that_changed_after_the_plan_is_left_alone
           # abandon: a plan that says stop is applied
           hk siteabandon.rs '    if doc["next"] != "run" {' \
