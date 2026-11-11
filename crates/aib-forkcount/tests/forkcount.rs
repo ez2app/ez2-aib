@@ -127,6 +127,47 @@ fn run_reports_coverage_and_lower_bound() {
     assert!(v["result"]["fork_events"].as_u64().unwrap() >= 3, "{v}");
 }
 
+/// Goal 2 prerequisite 1: each forking pid comes with its command line, so
+/// a `bash` in `by_parent` can be told apart (which script). The value after
+/// `=` never reaches the report.
+#[test]
+fn run_names_the_forking_command_line() {
+    let mut root = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "sleep 0.5; for i in 1 2 3 4 5; do /usr/bin/true; sleep 0.1; done; sleep 0.5",
+            "pargv-marker-043dd",
+            "TOKEN=s3cret",
+        ])
+        .spawn()
+        .unwrap();
+    let pid = root.id();
+    let v = json(
+        tool()
+            .args(["run", "--seconds", "2", "--pid", &pid.to_string()])
+            .output()
+            .unwrap(),
+    );
+    let _ = root.wait();
+    let forkers = v["result"]["forkers"].as_array().unwrap();
+    let me = forkers
+        .iter()
+        .find(|f| f["pid"] == pid)
+        .unwrap_or_else(|| panic!("reason: forker_missing {v}"));
+    let argv = me["argv"].as_str().unwrap();
+    assert!(
+        argv.contains("pargv-marker-043dd"),
+        "reason: forker_argv_missing {v}"
+    );
+    assert!(argv.contains("TOKEN=…"), "reason: forker_argv_missing {v}");
+    assert!(
+        !v.to_string().contains("s3cret"),
+        "reason: argv_value_leaked {v}"
+    );
+    assert!(me["fork_events"].as_u64().unwrap() >= 3, "{v}");
+    assert_eq!(v["result"]["parent_argv_dropped"], 0, "{v}");
+}
+
 #[test]
 fn no_roots_is_a_usage_error() {
     let o = tool().args(["run", "--seconds", "1"]).output().unwrap();

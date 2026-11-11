@@ -66,6 +66,104 @@ pub struct Stats {
     pub fork_events_by_pid: BTreeMap<u32, u64>,
     /// Fork events per whole second since start.
     pub per_second: BTreeMap<u64, u64>,
+    /// Command line of each forking pid, read once at its first fork event
+    /// and shaped by [`argv_label`] (goal 2 prerequisite 1: `by_parent` only
+    /// says "bash", this says which bash). At most [`PARENT_ARGV_CAP`] pids.
+    pub parent_argv: BTreeMap<u32, String>,
+    /// Fork events whose pid got no `parent_argv` entry because the map was
+    /// full. Report only.
+    pub parent_argv_dropped: u64,
+}
+
+/// Most pids kept in [`Stats::parent_argv`].
+pub const PARENT_ARGV_CAP: usize = 4096;
+/// Longest [`argv_label`], in characters (before the trailing `…`).
+pub const ARGV_LABEL_MAX: usize = 256;
+/// Longest single word inside an [`argv_label`], in characters.
+pub const ARGV_WORD_MAX: usize = 80;
+
+/// A command line as one short, printable line for a measurement report:
+/// words joined by spaces; control and format characters become `?`; the
+/// value after `=` is replaced by `…` (an environment-style or `--k=v`
+/// argument may carry a secret); each word is cut at [`ARGV_WORD_MAX`] and
+/// the whole at [`ARGV_LABEL_MAX`] characters, a cut marked with `…`.
+/// An empty or unreadable command line is `?`.
+pub fn argv_label(argv: &[String]) -> String {
+    let mut out = String::new();
+    let mut n = 0usize;
+    for word in argv {
+        let mut w = String::new();
+        let mut wn = 0usize;
+        let mut cut = false;
+        for c in word.chars() {
+            if wn == ARGV_WORD_MAX {
+                cut = true;
+                break;
+            }
+            if c == '=' {
+                w.push_str("=…");
+                break;
+            }
+            w.push(if c.is_control() || is_format(c) {
+                '?'
+            } else {
+                c
+            });
+            wn += 1;
+        }
+        if cut {
+            w.push('…');
+        }
+        if w.is_empty() {
+            continue;
+        }
+        for c in (if out.is_empty() { "" } else { " " })
+            .chars()
+            .chain(w.chars())
+        {
+            if n == ARGV_LABEL_MAX {
+                out.push('…');
+                return out;
+            }
+            out.push(c);
+            n += 1;
+        }
+    }
+    if out.is_empty() {
+        "?".to_owned()
+    } else {
+        out
+    }
+}
+
+/// Unicode format characters (bidi overrides, zero-width, tag characters)
+/// that would make a label print differently from what it holds.
+fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F)
+}
+
+impl Stats {
+    /// Keep `label` as the command line of forking `pid` unless it already
+    /// has one; when [`PARENT_ARGV_CAP`] pids are kept, count a drop instead.
+    pub fn note_parent_argv(&mut self, pid: u32, label: Option<String>) {
+        if self.parent_argv.contains_key(&pid) {
+            return;
+        }
+        match label {
+            Some(l) if self.parent_argv.len() < PARENT_ARGV_CAP => {
+                self.parent_argv.insert(pid, l);
+            }
+            _ => self.parent_argv_dropped += 1,
+        }
+    }
+
+    /// Whether a fork by `pid` still needs its command line read.
+    pub fn wants_parent_argv(&self, pid: u32) -> bool {
+        !self.parent_argv.contains_key(&pid) && self.parent_argv.len() < PARENT_ARGV_CAP
+    }
 }
 
 /// Fault injection for the child listing (tests and `aib-forkcount
@@ -233,6 +331,25 @@ mod imp {
 
     pub fn program_name(pid: u32) -> Option<String> {
         name(i32::try_from(pid).ok()?).ok()
+    }
+
+    /// The command line of `pid` (`KERN_PROCARGS2` through sysinfo: no fork,
+    /// no `unsafe` here). `None` when the process is gone or refused.
+    pub fn program_argv(pid: u32) -> Option<Vec<String>> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let p = Pid::from_u32(pid);
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[p]),
+            false,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        let cmd = sys.process(p)?.cmd();
+        Some(
+            cmd.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        )
     }
 
     fn watch(kq: &Kqueue, pid: u32) -> bool {
@@ -557,8 +674,14 @@ mod imp {
                         let read_ns = uptime_ns().unwrap_or(0);
                         let exited = ev.fflags().contains(FilterFlag::NOTE_EXIT);
                         let parent = program_name(pid).unwrap_or_else(|| "?".into());
+                        // read outside the lock (the guard of a one-line
+                        // `lock(sh)...then(..)` would live through the read)
+                        let want = lock(sh).stats.wants_parent_argv(pid);
+                        let argv =
+                            want.then(|| super::argv_label(&program_argv(pid).unwrap_or_default()));
                         {
                             let mut g = lock(sh);
+                            g.stats.note_parent_argv(pid, argv);
                             g.record(read_ns, pid, TraceKind::Fork { exited });
                             g.stats.fork_events += 1;
                             *g.stats.fork_events_by_pid.entry(pid).or_default() += 1;
@@ -626,6 +749,10 @@ mod imp {
         None
     }
 
+    pub fn program_argv(_pid: u32) -> Option<Vec<String>> {
+        None
+    }
+
     /// Not available on this OS yet (Windows: Job Object messages, ADR 0005).
     pub struct ForkWatch;
 
@@ -665,7 +792,7 @@ mod imp {
     }
 }
 
-pub use imp::{program_name, start_time, uptime_ns, ForkWatch};
+pub use imp::{program_argv, program_name, start_time, uptime_ns, ForkWatch};
 
 #[cfg(test)]
 mod errno_tests {
@@ -699,5 +826,89 @@ mod errno_tests {
         // no such pid: ESRCH (3)
         let e = pidinfo::<BSDInfo>(i32::MAX, 0).unwrap_err();
         assert_eq!(errno_in(&e), Some(3), "{e}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+mod argv_tests {
+    use super::{argv_label, Stats, ARGV_LABEL_MAX, ARGV_WORD_MAX, PARENT_ARGV_CAP};
+
+    fn v(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn label_joins_words_and_marks_empty() {
+        assert_eq!(
+            argv_label(&v(&["/bin/bash", "pane-tick.sh", "-x"])),
+            "/bin/bash pane-tick.sh -x"
+        );
+        assert_eq!(argv_label(&[]), "?", "reason: argv_empty_not_marked");
+        assert_eq!(
+            argv_label(&v(&["", ""])),
+            "?",
+            "reason: argv_empty_not_marked"
+        );
+    }
+
+    #[test]
+    fn label_hides_values_after_equals() {
+        let l = argv_label(&v(&["env", "TOKEN=s3cret", "--key=abc", "run"]));
+        assert_eq!(l, "env TOKEN=… --key=… run", "reason: argv_value_leaked");
+        assert!(!l.contains("s3cret"), "reason: argv_value_leaked {l}");
+    }
+
+    #[test]
+    fn label_replaces_control_and_format_characters() {
+        let l = argv_label(&v(&[
+            "a\u{1b}[2Jb",
+            "c\u{202e}d",
+            "e\u{200b}f",
+            "g\u{e0041}h",
+        ]));
+        assert_eq!(l, "a?[2Jb c?d e?f g?h", "reason: argv_unprintable_kept");
+    }
+
+    #[test]
+    fn label_cuts_long_words_and_long_lines() {
+        let long = "x".repeat(ARGV_WORD_MAX + 5);
+        let l = argv_label(&v(&[&long]));
+        assert_eq!(
+            l.chars().count(),
+            ARGV_WORD_MAX + 1,
+            "reason: argv_word_not_cut"
+        );
+        assert!(l.ends_with('…'));
+        let many: Vec<String> = (0..100).map(|i| format!("w{i:03}")).collect();
+        let l = argv_label(&many);
+        assert_eq!(
+            l.chars().count(),
+            ARGV_LABEL_MAX + 1,
+            "reason: argv_line_not_cut"
+        );
+        assert!(l.ends_with('…'));
+    }
+
+    #[test]
+    fn first_label_wins_and_the_cap_counts_drops() {
+        let mut s = Stats::default();
+        assert!(s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("first".into()));
+        assert!(!s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("second".into()));
+        assert_eq!(s.parent_argv[&7], "first", "reason: argv_overwritten");
+        assert_eq!(s.parent_argv_dropped, 0);
+        for p in 0..u32::try_from(PARENT_ARGV_CAP).unwrap() {
+            s.note_parent_argv(1000 + p, Some("x".into()));
+        }
+        assert_eq!(
+            s.parent_argv.len(),
+            PARENT_ARGV_CAP,
+            "reason: argv_cap_exceeded"
+        );
+        assert!(!s.wants_parent_argv(1));
+        s.note_parent_argv(1, None);
+        assert_eq!(s.parent_argv_dropped, 2, "reason: argv_drop_not_counted");
     }
 }

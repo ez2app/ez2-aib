@@ -98,6 +98,7 @@ dependencies = [
  "aib-sys",
  "libproc",
  "nix",
+ "sysinfo",
 ]
 
 [[package]]
