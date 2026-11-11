@@ -224,10 +224,12 @@ fn opening_of(
 /// Every code given: live, removed and opening sites, and every ask.
 fn codes_given(places: &Places) -> Option<Vec<String>> {
     let mut out = Vec::new();
+    let abandoned = crate::siteabandon::abandoned_dir(&places.creating);
     for dir in [
         &places.records,
         &places.removed,
         &places.creating,
+        &abandoned,
         &places.asked,
     ] {
         for r in sitecreatecmd::read_records(dir)? {
@@ -693,6 +695,17 @@ mod tests {
                 boot_id: d.join("boot_id"),
             },
         }
+    }
+
+    /// An abandoned opening's code is never given again, though nothing holds it.
+    #[test]
+    fn an_abandoned_openings_code_stays_given() {
+        let places = scratch("abandoned");
+        let gone = crate::siteabandon::abandoned_dir(&places.creating);
+        sitecreatecmd::write_record(&gone, "s-gone01", &json!({"site": "s-gone01"})).unwrap();
+        let taken = codes_given(&places).unwrap();
+        assert!(taken.iter().any(|c| c == "s-gone01"));
+        let _ = fs::remove_dir_all(places.asked.parent().unwrap());
     }
 
     /// A process `pid` started at `start` in the scratch `/proc`.

@@ -1457,6 +1457,15 @@ pub fn read_records(dir: &Path) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// The records whose numbers and code are never given again although nothing holds them:
+/// the removed sites' and the abandoned openings' (`<creating>/abandoned`). Either not read
+/// is `None`.
+pub fn gone_records(removed: &Path, creating: &Path) -> Option<Vec<Value>> {
+    let mut out = read_records(removed)?;
+    out.extend(read_records(&crate::siteabandon::abandoned_dir(creating))?);
+    Some(out)
+}
+
 /// The sites' addresses in every `*.conf` under the given directories. Any directory or
 /// file that cannot be read is `None`.
 pub fn read_guest_ips(dirs: &[&Path]) -> Option<Vec<u8>> {
@@ -1493,7 +1502,7 @@ pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
         vm_list: capture("qm", &["list"], 20),
         guest_ips: read_guest_ips(&[Path::new(LXC_CONFIGS), Path::new(VM_CONFIGS)]),
         records: read_records(Path::new(records)),
-        removed: read_records(Path::new(REMOVED_RECORDS)),
+        removed: gone_records(Path::new(REMOVED_RECORDS), Path::new(CREATING)),
         creating: read_records(Path::new(CREATING)),
         tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
@@ -1517,6 +1526,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut continue_code: Option<String> = None;
     let mut run_code: Option<String> = None;
     let mut tenant: Option<String> = None;
+    let mut abandon_code: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1527,6 +1537,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
             }
             "--run" => run_code = Some(it.next().ok_or("--run needs a site code")?.clone()),
+            "--abandon" => {
+                abandon_code = Some(it.next().ok_or("--abandon needs a site code")?.clone());
+            }
             "--tenant" => {
                 let t = it.next().ok_or("--tenant needs a customer id")?;
                 if !aib_cloud::site::valid_code(t) {
@@ -1537,6 +1550,16 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if let Some(code) = abandon_code {
+        if blank || run_code.is_some() || continue_code.is_some() || tenant.is_some() {
+            return Err("--abandon <code> takes only --plan or --apply <plan.json>".to_owned());
+        }
+        return match (plan_only, apply_file) {
+            (true, None) => crate::siteabandon::cmd(&domain, &code, None),
+            (false, Some(file)) => crate::siteabandon::cmd(&domain, &code, Some(&file)),
+            _ => Err("--abandon <code> needs --plan or --apply <plan.json>, one of them".to_owned()),
+        };
     }
     if let Some(code) = run_code {
         if plan_only || blank || apply_file.is_some() || continue_code.is_some() || tenant.is_some()
@@ -1566,7 +1589,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
         (false, None) => {
             return Err(
-                "needs --plan, --apply <plan.json> with a plan this command printed, or --continue <code>".to_owned(),
+                "needs --plan, --apply <plan.json> with a plan this command printed, --continue <code> or --abandon <code>".to_owned(),
             )
         }
     }

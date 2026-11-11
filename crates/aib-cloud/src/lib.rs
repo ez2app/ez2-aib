@@ -52,6 +52,7 @@ pub mod r2token;
 pub mod robot;
 pub mod roster;
 pub mod site;
+pub mod siteabandon;
 pub mod sitecreate;
 pub mod sitedefaults;
 pub mod sitedns;

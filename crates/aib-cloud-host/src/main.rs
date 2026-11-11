@@ -12,6 +12,7 @@
 //! aib-cloud-host site create <domain> --apply <plan.json> [--tenant <id>]   (B1: recompute the plan under the host lock, same hash, then the clone only; undone on failure)
 //! aib-cloud-host site create <domain> --run <code>   (a customer's opening in the background: their plan applied under their code, then --continue to the end; started by their `site create`)
 //! aib-cloud-host site create <domain> --continue <code>   (B2: limits and network, firewall file, start; B3: install with the scheduler on a timer, identity — undone on failure; B4: licences, entry, health, then the full record; B5: the DNS records at Cloudflare between licences and entry — kept for a person on failure; from the opening record; each checked)
+//! aib-cloud-host site create <domain> --abandon <code> --plan | --apply <plan.json>   (an opening that stopped half way, never a site: container, firewall file, its marked DNS records, its passwords on the host, then the record to sites-creating/abandoned; numbers and code never given again; each step written, a new plan carries on)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
 //! aib-cloud-host backup check [--remote <name>:<path>] [--records dir] [--json]   (lists the off-site backup; reads nothing else)
@@ -54,6 +55,8 @@ mod probe;
 mod quarantinecmd;
 #[cfg(unix)]
 mod rostercmd;
+#[cfg(unix)]
+mod siteabandon;
 #[cfg(unix)]
 mod sitecreatecmd;
 #[cfg(unix)]

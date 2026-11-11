@@ -824,13 +824,13 @@ jobs:
           ck sitedns.rs '    let accounts = accounts.filter(|a| !a.is_empty()).ok_or(OWNER_UNKNOWN)?;' \
              '    let accounts = accounts.unwrap_or(&[]); // knife' \
              a_roster_without_accounts_cannot_tell
-          # B5 DNS: a call off the list of four is let through
+          # B5 DNS: a call off the list of five is let through
           ck sitedns.rs '        _ => false,' '        _ => true, // knife' \
-             only_the_four_calls_are_allowed
-          # B5 DNS (ebb36 L1): a delete of any record by its id goes back on the list
-          ck sitedns.rs '        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),' \
-             $'        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),\n        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r), // knife' \
-             only_the_four_calls_are_allowed
+             only_the_five_calls_are_allowed
+          # abandon (4542e): a delete of something that is not one record by its id is let through
+          ck sitedns.rs '        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),' \
+             '        ("DELETE", ["", "zones", z, "dns_records", ..], None, None) => valid_id(z), // knife' \
+             only_the_five_calls_are_allowed
           # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
           ck sitedns.rs '        && m["type"] == "A"' \
              '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
