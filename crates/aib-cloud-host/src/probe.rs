@@ -1392,7 +1392,10 @@ mod tests {
         // the backup check now counts only dumps of CT 119 from the switch on
         assert_eq!(aib_cloud::fresh::record_floor(&rec), Ok(now));
         let mut no_ssh = json!({ "site": "site3", "ct": 113, "created": "2026-01-01T00:00:00Z" });
-        assert_eq!(switched_record(&mut no_ssh, 120, "10.77.0.20", now), Ok(false));
+        assert_eq!(
+            switched_record(&mut no_ssh, 120, "10.77.0.20", now),
+            Ok(false)
+        );
         assert_eq!(no_ssh["ct_since"], "2026-11-09T03:33:11Z");
         assert!(switched_record(&mut rec, 70_000, "10.77.0.21", now).is_err());
     }

@@ -425,6 +425,12 @@ jobs:
           # backup before an update: an hour 24 or a minute 60 in the creation time is read
           ck fresh.rs '    if h > 23 || m > 59 || sec > 59 {' '    if h > 24 || m > 60 || sec > 60 { // knife' \
              the_creation_time_is_read_as_the_shell_writes_it
+          # backup before an update: a site moved by restore --switch counts from its creation (ebb36 incr. L1)
+          ck fresh.rs '    Ok(ct_since.map_or(created, |s| s.max(created)))' '    Ok(ct_since.map_or(created, |_| created)) // knife' \
+             a_site_moved_to_another_ct_counts_from_the_move
+          # backup before an update: an unreadable move time is taken as none
+          ck fresh.rs '                .ok_or("ct_since_unreadable")?,' '                .unwrap_or(0),' \
+             a_site_moved_to_another_ct_counts_from_the_move
           # quarantine: an unfinished quarantine is archived all the same (1ced7, #625 seg. 2 r2)
           ck quarantine.rs '        Some(crate::op::State::Verified) => {}' \
              '        Some(_) if true => {} // knife' \
@@ -943,9 +949,12 @@ jobs:
           # backup fresh: an entry whose details cannot be read is skipped (ebb36 N1)
           hk backupcmd.rs '        return (name, true, None, None);' '        return (name, false, None, None); // knife' \
              an_entry_that_cannot_be_read_spoils_the_answer
-          # backup fresh: the record's creation time is not read (ebb36 L1)
-          hk backupcmd.rs '        .and_then(fresh::created_secs);' '        .and_then(|_| Some(0)); // knife' \
+          # backup fresh: a record whose times cannot be read is judged from the epoch (ebb36 L1)
+          hk backupcmd.rs '        Err(why) => return unknown(why),' '        Err(_) => 0, // knife' \
              backup_fresh_answers_from_the_record_and_the_dump_folder
+          # site restore --switch: the move to another CT number is not written (ebb36 incr. L1)
+          hk probe.rs '    rec["ct_since"] = json!(aib_cloud::fresh::utc_stamp(now));' '    let _ = now; // knife' \
+             a_switch_writes_when_the_site_took_the_ct_number
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2

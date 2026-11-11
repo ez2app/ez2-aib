@@ -662,7 +662,10 @@ mod tests {
         )
         .unwrap();
         let (exit, doc) = fresh_answer("site7", 30, &r, &d, now);
-        assert_eq!((exit, doc["verdict"].as_str()), (3, Some("ct_since_unreadable")));
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("ct_since_unreadable"))
+        );
 
         // usage
         let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();

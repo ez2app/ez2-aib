@@ -132,7 +132,11 @@ pub fn record_floor(rec: &serde_json::Value) -> Result<u64, &'static str> {
         .ok_or("site_created_unreadable")?;
     let ct_since = match rec.get("ct_since") {
         None => None,
-        Some(v) => Some(v.as_str().and_then(created_secs).ok_or("ct_since_unreadable")?),
+        Some(v) => Some(
+            v.as_str()
+                .and_then(created_secs)
+                .ok_or("ct_since_unreadable")?,
+        ),
     };
     Ok(ct_since.map_or(created, |s| s.max(created)))
 }
@@ -434,7 +438,11 @@ mod tests {
         // a move written before the creation (clock trouble) does not lower the floor
         let odd = serde_json::json!({ "created": "2026-11-09T03:33:11Z", "ct_since": created });
         assert_eq!(record_floor(&odd), Ok(1_794_195_191));
-        for bad in [serde_json::json!("soon"), serde_json::json!(null), serde_json::json!(5)] {
+        for bad in [
+            serde_json::json!("soon"),
+            serde_json::json!(null),
+            serde_json::json!(5),
+        ] {
             let r = serde_json::json!({ "created": created, "ct_since": bad });
             assert_eq!(record_floor(&r), Err("ct_since_unreadable"));
         }
