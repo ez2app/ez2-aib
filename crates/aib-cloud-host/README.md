@@ -26,7 +26,7 @@ query to `<ip>:53`, ICMP one `ping -c 1 -W 2`. No shell strings anywhere. `plan_
 report of exactly that plan on that host.
 
 Replaced the Python runner `ez2-isolation-probe` (Andy 11-09: every new tool is Rust). That
-file was deleted on 11-09 after this binary re-ran the full EU02 matrix (sites 110 + 112) with
+file was deleted on 11-09 after this binary re-ran the full host A matrix (sites 110 + 112) with
 the same `plan_fnv` and cell-for-cell identical results; the Python canonical-JSON FNV is pinned
 by `aib-cloud` test `i9` so old receipts stay valid.
 

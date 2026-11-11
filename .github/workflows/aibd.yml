@@ -270,7 +270,7 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
-      # aib-cloud (EU02 dev order r1; reviews of #623): each knife takes one rule out of the
+      # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'

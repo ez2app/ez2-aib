@@ -5988,6 +5988,6 @@
   "aib.gameworld.open_failed": "ロビーのウィンドウを開けませんでした。手動で開いてください:{url}",
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
-  "aib.cloud_robot.touchid_apply": "aib:Hetzner サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(Hetzner Robot rescue / reset)"
+  "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
 }

@@ -51,7 +51,7 @@ not drop a beating entry. `tests/python_compat.rs` runs both tools on the same i
 ## Remote holder (Mac → mac-c)
 
 ```sh
-J="-J eu02-ts andymini"; RID=k10k-2240e; H=$(uname -n); S=60
+J="-J host-a-ts mac-c"; RID=k10k-2240e; H=$(uname -n); S=60
 cleanup() { kill $HB $T 2>/dev/null; ssh $J aib lease release --run-id $RID; ssh $J aib lease queue remove --run-id $RID; }
 trap cleanup EXIT                 # release on every way out: green, red, lost place, Ctrl-C
 trap 'exit 4' TERM                # the beat loop sends TERM when the place is lost
