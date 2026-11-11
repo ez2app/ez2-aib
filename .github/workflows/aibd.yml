@@ -279,6 +279,26 @@ jobs:
           set -eu
           ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # each site's own statistics key (33e28 11-11): a domain held by another account is taken over
+          ck fpkey.rs '        409 => KeyReply::Conflict,' \
+             '        409 => KeyReply::Unknown("reply_status"), // knife' \
+             a_domain_held_by_another_account_stops
+          # statistics key: a loader address that can break out of the script tag is written
+          ck fpkey.rs '            .all(|b| b.is_ascii_alphanumeric() || b":/._-".contains(&b))' \
+             '            .all(|b| b != 0) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: another key's loader address is accepted
+          ck fpkey.rs '        && rest.ends_with(&tail)' \
+             '        && (rest.ends_with(&tail) || true) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: a loader file that only contains ours (edited, added to) reads as done
+          ck fpkey.rs '        Some(Some(text)) if text == want => Probe::Done,' \
+             '        Some(Some(text)) if text.contains(want) => Probe::Done, // knife' \
+             only_the_file_we_make_for_this_site_is_done
+          # statistics key: any site code goes into the loader's mark
+          ck fpkey.rs '    if !code_ok(code) || !key_ok(key) || !script_url_ok(script_url, key) {' \
+             '    if (!code_ok(code) && false) || !key_ok(key) || !script_url_ok(script_url, key) { // knife' \
+             the_loader_file_is_one_tag_for_this_sites_key
           # site record: a limit only has to be a JSON number (f1fae, seg. 2 M1)
           ck site.rs '                if !limits.get(*key).is_some_and(fits_u32) {' \
              '                if !limits.get(*key).is_some_and(Value::is_u64) { // knife' \
