@@ -311,7 +311,13 @@ pub fn parse(text: &str, site_codes: &[&str]) -> Result<Roster, Bad> {
     let doc: Value = serde_json::from_str(text).map_err(|_| Bad::NotJson)?;
     let top = object(
         &doc,
-        &["tenant_id", "name", "members", "emails", "cloudflare_accounts"],
+        &[
+            "tenant_id",
+            "name",
+            "members",
+            "emails",
+            "cloudflare_accounts",
+        ],
     )?;
     let tenant_id = top
         .get("tenant_id")
