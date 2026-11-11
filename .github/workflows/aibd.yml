@@ -531,7 +531,7 @@ jobs:
              lines_only_for_the_rosters_own_sites
           # leak-words: the container's own bridge network goes into the list (hits everywhere, says nothing)
           hk leakwordscmd.rs '            Class::Private | Class::Other => {}' \
-             '            Class::Private | Class::Other => net(&mut out, "host address", ip.to_string()), // knife' \
+             '            Class::Private | Class::Other => out.net(ip.to_string(), "host address"), // knife' \
              what_hits_everywhere_or_says_nothing_is_left_out
           # leak-words: a value holding the list's comment mark is written
           hk leakwordscmd.rs "        && !v.contains('#')" "        && (!v.contains('#') || true) // knife" \
@@ -553,8 +553,15 @@ jobs:
              collect_reads_a_host_tree_and_names_what_it_could_not_read
           # leak-words: the printed summary names the values
           hk leakwordscmd.rs '.map(|(why, n)| format!("{why}: {n}")).collect();' \
-             '.map(|(why, n)| format!("{why}: {n} {rules:?}")).collect(); // knife' \
+             '.map(|(why, n)| format!("{why}: {n} {found:?}")).collect(); // knife' \
              the_printed_summary_never_names_a_value
+          # leak-words: values left out are not counted (the summary looks complete; 33e28 #656 L2)
+          hk leakwordscmd.rs '            *self.skipped.entry(why).or_default() += 1;' \
+             '            *self.skipped.entry(why).or_default() += 0; // knife' \
+             the_printed_summary_never_names_a_value
+          # leak-words: the file may be written inside a git work tree (33e28 #656 L1)
+          hk leakwordscmd.rs '    if inside_git_tree(Path::new(out)) {' '    if inside_git_tree(Path::new(out)) && false { // knife' \
+             a_file_inside_a_git_work_tree_is_refused
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \

@@ -5,14 +5,15 @@
 //!
 //! The hand-written list (provider, city, internal names) does not know what changes with the
 //! host: its name, its addresses, the resolvers it was given, the CPU, board and disk models,
-//! the serials, the MACs. This reads them and writes them as rules in the format the private
+//! the serials, the MACs, the resolver search domains. This reads them and writes them as rules in the format the private
 //! list already uses (`kind value  # why`, kinds `word` / `re` / `net`), so a leak scan can
 //! read the hand list and this file together.
 //!
 //! * Reads only: files under `/proc`, `/sys`, `/etc` and `ip -o addr show`. Changes nothing.
 //! * The values are host information, so they go **only** into `--out` (created 0600 through
-//!   a temporary file and a rename). Standard output gives counts per kind of fact and the
-//!   names of sources that could not be read — never a value.
+//!   a temporary file and a rename), and never inside a git work tree. Standard output gives
+//!   counts per kind of fact, how many values of each kind were left out, and the names of
+//!   sources that could not be read — never a value.
 //! * Left out on purpose: private (RFC 1918 / unique local) and link-local addresses — a
 //!   container sees its own bridge network, so they would hit everywhere and say nothing; a
 //!   tailnet address (100.64.0.0/10) is ours alone, so the address itself is kept, its
@@ -21,15 +22,15 @@
 //!   either hit everything or break the list's `  # why` comment).
 //!
 //! Exit status: 0 written, every source read; 3 written, but a source could not be read (its
-//! name is printed and written as a comment); 2 nothing written (bad arguments, no rule at
-//! all, or the file could not be written).
+//! name is printed and written as a comment); 2 nothing written (bad arguments, a file inside
+//! a git work tree, no rule at all, or the file could not be written).
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::net::IpAddr;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const IP: &str = "/usr/sbin/ip";
@@ -231,32 +232,65 @@ fn global_addrs(text: &str) -> Vec<(IpAddr, u8)> {
     out
 }
 
-/// Every rule the facts give, sorted and without repeats.
-fn rules(f: &Facts) -> Vec<Rule> {
-    let mut out = Vec::new();
-    let net = |out: &mut Vec<Rule>, why: &'static str, value: String| {
-        out.push(Rule {
+/// What the facts give: the rules, and how many values of each kind were left out (too
+/// short, a firmware fill-in, a `#` or a control character, not a name) — counted so a
+/// summary that lacks a kind says why, never which value (33e28 #656 L2).
+#[derive(Debug, Default)]
+struct Found {
+    rules: Vec<Rule>,
+    skipped: BTreeMap<&'static str, usize>,
+}
+
+impl Found {
+    fn skip(&mut self, raw: &str, why: &'static str) {
+        if !raw.trim().is_empty() {
+            *self.skipped.entry(why).or_default() += 1;
+        }
+    }
+    fn name(&mut self, raw: &str, why: &'static str) {
+        match name_rule(raw, why) {
+            Some(r) => self.rules.push(r),
+            None => self.skip(raw, why),
+        }
+    }
+    fn word(&mut self, raw: &str, why: &'static str) {
+        match clean(raw) {
+            Some(value) => self.rules.push(Rule {
+                kind: Kind::Word,
+                value,
+                why,
+            }),
+            None => self.skip(raw, why),
+        }
+    }
+    fn net(&mut self, value: String, why: &'static str) {
+        self.rules.push(Rule {
             kind: Kind::Net,
             value,
             why,
-        })
-    };
+        });
+    }
+}
+
+/// Every rule the facts give, sorted and without repeats, and what was left out.
+fn rules(f: &Facts) -> Found {
+    let mut out = Found::default();
     if let Some(h) = &f.hostname {
-        out.extend(name_rule(h, "host name"));
+        out.name(h, "host name");
     }
     if let Some(d) = f.domainname.as_deref().filter(|d| d.trim() != "(none)") {
-        out.extend(name_rule(d, "host domain name"));
+        out.name(d, "host domain name");
     }
     let own = global_addrs(f.addrs.as_deref().unwrap_or(""));
     for (ip, prefix) in &own {
         match class(*ip) {
             Class::Public => {
-                net(&mut out, "host address", ip.to_string());
+                out.net(ip.to_string(), "host address");
                 if let Some(n) = network(*ip, *prefix) {
-                    net(&mut out, "host network", n);
+                    out.net(n, "host network");
                 }
             }
-            Class::Tailnet => net(&mut out, "host tailnet address", ip.to_string()),
+            Class::Tailnet => out.net(ip.to_string(), "host tailnet address"),
             Class::Private | Class::Other => {}
         }
     }
@@ -271,13 +305,23 @@ fn rules(f: &Facts) -> Vec<Rule> {
             .any(|(a, _)| *a == ip && class(ip) != Class::Private)
             || ip.to_string() == "127.0.1.1";
         if mine {
-            out.extend(w.filter_map(|n| name_rule(n, "host name in /etc/hosts")));
+            for n in w {
+                out.name(n, "host name in /etc/hosts");
+            }
         }
     }
     for line in f.resolv.as_deref().unwrap_or("").lines() {
         let mut w = line.split_whitespace();
-        if w.next() != Some("nameserver") {
-            continue;
+        match w.next() {
+            // the search list often names the provider's or the tailnet's domain (33e28 #656 N1)
+            Some("search" | "domain") => {
+                for d in w {
+                    out.name(d, "resolver search domain");
+                }
+                continue;
+            }
+            Some("nameserver") => {}
+            _ => continue,
         }
         let Some(Ok(ip)) = w.next().map(str::parse::<IpAddr>) else {
             continue;
@@ -286,7 +330,7 @@ fn rules(f: &Facts) -> Vec<Rule> {
             continue;
         }
         if matches!(class(ip), Class::Public | Class::Tailnet) {
-            net(&mut out, "resolver the host was given", ip.to_string());
+            out.net(ip.to_string(), "resolver the host was given");
         }
     }
     let cpu = f.cpuinfo.as_deref().unwrap_or("").lines().find_map(|l| {
@@ -299,18 +343,27 @@ fn rules(f: &Facts) -> Vec<Rule> {
         .chain(f.machine_id.clone().map(|m| ("machine id", m)))
         .chain(f.hw.iter().map(|(why, v)| (*why, v.clone())));
     for (why, v) in words {
-        if let Some(value) = clean(&v) {
-            out.push(Rule {
-                why,
-                kind: Kind::Word,
-                value,
-            });
-        }
+        out.word(&v, why);
     }
     // sorted by kind and value first, so the same rule from two sources sits side by side
-    out.sort();
-    out.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
+    out.rules.sort();
+    out.rules
+        .dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
     out
+}
+
+/// Refuse an output file inside a git work tree: the values are host information and must
+/// not land where a commit can pick them up (33e28 #656 L1). Looks from the file's directory
+/// up for a `.git` (directory or file).
+fn inside_git_tree(out: &Path) -> bool {
+    let dir = match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let Ok(dir) = fs::canonicalize(&dir) else {
+        return false;
+    };
+    dir.ancestors().any(|a| a.join(".git").exists())
 }
 
 /// Read one file under `root`: `Ok(None)` when it does not exist, `Err` when it exists and
@@ -387,13 +440,19 @@ fn collect(root: &Path, addrs: Option<String>) -> Facts {
     f
 }
 
-/// The lines printed: counts per kind of fact and what could not be read. Never a value.
-fn summary(rules: &[Rule], unread: &[String]) -> Vec<String> {
+/// The lines printed: counts per kind of fact, what was left out (counts only) and what
+/// could not be read. Never a value.
+fn summary(found: &Found, unread: &[String]) -> Vec<String> {
     let mut per: BTreeMap<&str, usize> = BTreeMap::new();
-    for r in rules {
+    for r in &found.rules {
         *per.entry(r.why).or_default() += 1;
     }
     let mut out: Vec<String> = per.iter().map(|(why, n)| format!("{why}: {n}")).collect();
+    for (why, n) in &found.skipped {
+        out.push(format!(
+            "left out (too short, a fill-in, # or not a name): {why}: {n}"
+        ));
+    }
     for u in unread {
         out.push(format!("could not read: {u}"));
     }
@@ -452,11 +511,16 @@ fn run(args: &[String], root: &Path, addrs: Option<String>) -> u8 {
             return 2;
         }
     };
+    if inside_git_tree(Path::new(out)) {
+        eprintln!("leak-words: {out} is inside a git work tree: the values are host information; write it elsewhere");
+        return 2;
+    }
     let f = collect(root, addrs);
-    let rules = rules(&f);
-    for line in summary(&rules, &f.unread) {
+    let found = rules(&f);
+    for line in summary(&found, &f.unread) {
         println!("leak-words: {line}");
     }
+    let rules = found.rules;
     if rules.is_empty() {
         println!("leak-words: no rule at all: nothing written");
         return 2;
@@ -503,7 +567,7 @@ mod tests {
             ),
             addrs: Some(ADDRS.into()),
             resolv: Some(
-                "# from the provider\nnameserver 198.51.100.53\nnameserver 1.1.1.1\nnameserver 10.77.0.1\n"
+                "# from the provider\nsearch lab.example tail0.example.net\nnameserver 198.51.100.53\nnameserver 1.1.1.1\nnameserver 10.77.0.1\n"
                     .into(),
             ),
             cpuinfo: Some("processor\t: 0\nmodel name\t: Example   CPU 9000X 16-Core\n".into()),
@@ -527,7 +591,7 @@ mod tests {
 
     #[test]
     fn the_host_part_names_what_this_host_is() {
-        let r = rules(&facts());
+        let r = rules(&facts()).rules;
         let host = "(?<![a-z0-9.-])node7(?![a-z0-9-])";
         assert!(has(&r, Kind::Re, host), "{r:?}");
         assert!(has(
@@ -548,6 +612,16 @@ mod tests {
         assert!(has(&r, Kind::Net, "100.64.0.31"));
         assert!(!r.iter().any(|x| x.value.starts_with("100.64.0.0")));
         assert!(has(&r, Kind::Net, "198.51.100.53"));
+        assert!(has(
+            &r,
+            Kind::Re,
+            "(?<![a-z0-9.-])lab\\.example(?![a-z0-9-])"
+        ));
+        assert!(has(
+            &r,
+            Kind::Re,
+            "(?<![a-z0-9.-])tail0\\.example\\.net(?![a-z0-9-])"
+        ));
         assert!(has(&r, Kind::Word, "Example CPU 9000X 16-Core"));
         assert!(has(&r, Kind::Word, "0123456789abcdef0123456789abcdef"));
         assert!(has(&r, Kind::Word, "Example Boards Inc."));
@@ -560,7 +634,7 @@ mod tests {
 
     #[test]
     fn what_hits_everywhere_or_says_nothing_is_left_out() {
-        let r = rules(&facts());
+        let r = rules(&facts()).rules;
         let all: Vec<&str> = r.iter().map(|x| x.value.as_str()).collect();
         for v in &all {
             // the container's own bridge network, the loopback, link-local
@@ -591,12 +665,18 @@ mod tests {
     #[test]
     fn the_printed_summary_never_names_a_value() {
         let f = facts();
-        let r = rules(&f);
-        let text = summary(&r, &["sys/class/dmi/id/product_serial".to_owned()]).join("\n");
-        for x in &r {
+        let found = rules(&f);
+        let text = summary(&found, &["sys/class/dmi/id/product_serial".to_owned()]).join("\n");
+        for x in &found.rules {
             assert!(!text.contains(&x.value), "{} leaked into {text}", x.value);
         }
+        // the values left out are not named either
+        for v in ["To Be Filled", "Board # 2", "X1"] {
+            assert!(!text.contains(v), "{v} leaked into {text}");
+        }
         assert!(text.contains("host address: 2"), "{text}");
+        // three firmware values left out (a fill-in, a #, too short): counted, not named
+        assert!(text.contains(": firmware field: 3"), "{text}");
         assert!(text.contains("could not read: sys/class/dmi/id/product_serial"));
     }
 
@@ -624,7 +704,7 @@ mod tests {
             ["addresses", "sys/class/dmi/id/product_serial"],
             "missing files are not errors; unreadable ones and no addresses are"
         );
-        let r = rules(&f);
+        let r = rules(&f).rules;
         assert!(has(&r, Kind::Word, "EXAMPLE-BOARD-77"));
         assert!(has(&r, Kind::Word, "02:00:5e:10:00:09"));
         assert!(has(&r, Kind::Word, "EXAMPLE NVME 1TB"));
@@ -649,7 +729,7 @@ mod tests {
 
     #[test]
     fn the_file_is_in_the_private_lists_format() {
-        let r = rules(&facts());
+        let r = rules(&facts()).rules;
         let text = render(&r, &[]);
         let mut n = 0;
         for line in text.lines().filter(|l| !l.starts_with('#')) {
@@ -661,6 +741,41 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, r.len());
+    }
+
+    #[test]
+    fn a_file_inside_a_git_work_tree_is_refused() {
+        let root = std::env::temp_dir().join(format!("aib-leak-git-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("repo/.git")).unwrap();
+        fs::create_dir_all(root.join("repo/sub")).unwrap();
+        let tree = root.join("tree");
+        fs::create_dir_all(tree.join("proc/sys/kernel")).unwrap();
+        fs::write(tree.join("proc/sys/kernel/hostname"), "node7\n").unwrap();
+        for inside in ["repo/leak.txt", "repo/sub/leak.txt"] {
+            let out = root.join(inside).display().to_string();
+            assert_eq!(
+                run(
+                    &["--out".to_owned(), out.clone()],
+                    &tree,
+                    Some(ADDRS.to_owned())
+                ),
+                2
+            );
+            assert!(!Path::new(&out).exists(), "{inside} was written");
+        }
+        // next to the repository, not in it: written
+        let out = root.join("leak.txt").display().to_string();
+        assert_eq!(
+            run(
+                &["--out".to_owned(), out.clone()],
+                &tree,
+                Some(ADDRS.to_owned())
+            ),
+            0
+        );
+        assert!(Path::new(&out).exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
