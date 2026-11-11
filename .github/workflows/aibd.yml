@@ -447,9 +447,9 @@ jobs:
           ck customer.rs '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin),' \
              '            Operation::Archive | Operation::Create => matches!(self, Owner | Admin | Publisher), // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
-          # customer side: opening a site is sent before the host can do it
-          ck customer.rs '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => false,' \
-             '            OwnerRequest::Create { .. } | OwnerRequest::Domain { .. } => true, // knife' \
+          # customer side: binding a domain is sent before the host can do it
+          ck customer.rs '            OwnerRequest::Domain { .. } => false,' \
+             '            OwnerRequest::Domain { .. } => true, // knife' \
              a_customer_key_opens_a_site_and_names_a_domain
           # ARC: a raise goes past what the plan allows (4.4.1 23)
           ck arc.rs '            let next = (limits.cpulimit_x100 + 100).min(cpu_max);' \
@@ -778,6 +778,20 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # E1 customer site create: opening a site is not offered to the customer's side
+          ck customer.rs '            OwnerRequest::Create { .. } => true, // E1' \
+             '            OwnerRequest::Create { .. } => false, // knife' \
+             a_customer_key_opens_a_site_and_names_a_domain
+          # E1: anything with a state is read as an opening, a site's checks among them
+          ck customer.rs '            v.get("step_done").is_some() && v.get("state").is_some_and(Value::is_string)' \
+             '            v.get("state").is_some_and(Value::is_string) // knife' \
+             an_opening_is_told_from_the_site_s_checks
+          # E1: the progress of an opening is worded as a site's checks
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        ) if aib_cloud::customer::is_opening(out) => shown(out),' \
+            '        ) if aib_cloud::customer::is_opening(out) && false => shown(out), // knife' \
+            --expect-fail an_opening_is_shown_in_the_host_s_words \
+            -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1407,6 +1421,70 @@ jobs:
           hk sitecreatecmd.rs '        tenant: plan["quota"]["tenant_id"].as_str().map(str::to_owned),' \
              '        tenant: None, // knife' \
              apply_needs_the_tenant_the_plan_was_made_for
+          # E1 customer site create: an opening is shown for a request other than status
+          hk customercmd.rs '            if request == Request::Status && in_scope {' \
+             '            if in_scope { // knife' \
+             a_site_still_opening_answers_how_far_it_got
+          # E1: a key for some of the sites sees an opening outside them
+          hk customercmd.rs '            let in_scope = scope.is_none_or(|list| list.contains(&site));' \
+             '            let in_scope = scope.is_none_or(|_| true); // knife' \
+             a_site_still_opening_answers_how_far_it_got
+          # E1: someone else's opening of the domain hands its code to whoever asks
+          hk sitecreaterun.rs '            let own = (owner.as_deref() == Some(tenant)).then_some(code);' \
+             '            let own = (owner.as_deref() == Some(tenant) || true).then_some(code); // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: an ask whose run never wrote itself down holds the domain for ever
+          hk sitecreaterun.rs '            if now.saturating_sub(at) < START_GRACE_S {' \
+             '            if now.saturating_sub(at) < START_GRACE_S || true { // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: an opening record of the domain does not hold it
+          hk sitecreaterun.rs '        .find(|r| named(first_host(r)))' \
+             '        .find(|r| named(first_host(r)) && false) // knife' \
+             the_same_domain_while_it_is_opening_is_refused
+          # E1: a full plan is told as our trouble, not as the customer's quota
+          hk sitecreaterun.rs '        "quota_exceeded" => Some("quota_exceeded"),' \
+             '        "quota_exceeded" => None, // knife' \
+             a_plan_that_stops_is_answered_with_a_fixed_word
+          # E1: a plan made for another customer is run
+          hk sitecreaterun.rs '    if plan["quota"]["tenant_id"].as_str() != Some(tenant)' \
+             '    if plan["quota"]["tenant_id"].as_str() != Some(tenant) && false // knife' \
+             a_plan_that_stops_is_answered_with_a_fixed_word
+          # E1: another customer follows an opening by its code
+          hk sitecreaterun.rs '        || aib_cloud::site::record_tenant(&ask) != Some(tenant)' \
+             '        || (aib_cloud::site::record_tenant(&ask) != Some(tenant) && false) // knife' \
+             progress_is_the_customer_s_own_only
+          # E1: an opening that stopped on a failure is run again by itself
+          hk sitecreaterun.rs '        (Some("waiting" | "running"), _) => {}' \
+             '        (Some(_), _) => {} // knife' \
+             a_failure_stops_where_it_was_and_only_the_step_is_shown
+          # E1: a run still going is run a second time
+          hk sitecreaterun.rs '        (Some("running"), "opening") => {' \
+             '        (Some("running"), "never") => { // knife' \
+             a_run_still_going_is_not_run_twice
+          # E1: a run cut off after the clone clones again
+          hk sitecreaterun.rs '    if !opening_path.exists() && !opened_path.exists() {' \
+             '    if !opened_path.exists() { // knife' \
+             a_run_cut_off_resumes_from_the_opening_record
+          # E1: a host lock held by another operation stops the opening at once
+          hk sitecreaterun.rs '            Err(e) if e.starts_with("host is locked by operation") => {' \
+             '            Err(e) if e.starts_with("host is locked by operation") && false => { // knife' \
+             a_busy_host_lock_is_waited_for_then_given_up
+          # E1: the code a customer was given is swapped for a taken one
+          hk sitecreatecmd.rs '        if aib_cloud::site::valid_code(code) && !taken.iter().any(|t| t == code) {' \
+             '        if aib_cloud::site::valid_code(code) && (!taken.iter().any(|t| t == code) || true) { // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1: the opening record does not name the customer
+          hk sitecreatecmd.rs '    if let Some(tenant) = &input.tenant {' \
+             '    if let Some(tenant) = input.tenant.as_ref().filter(|_| false) { // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
+          # E1: the site's record does not name the customer, so their key never sees it
+          hk sitelive.rs '    if let Some(tenant) = aib_cloud::site::record_tenant(opening) {' \
+             '    if let Some(tenant) = aib_cloud::site::record_tenant(opening).filter(|_| false) { // knife' \
+             the_customer_of_the_opening_owns_the_site
+          # E1: a customer key may not approve the opening it asked for
+          hk opstore.rs 'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload", "site.create"];' \
+             'pub const CUSTOMER_COMMANDS: &[&str] = &["site.restart", "site.php-reload"]; // knife' \
+             a_customer_s_opening_is_cloned_under_the_code_they_were_given
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

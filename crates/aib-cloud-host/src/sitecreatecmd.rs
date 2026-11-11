@@ -25,6 +25,12 @@
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
+//! `--tenant <id>` names the customer the site is opened for: the plan carries it, the
+//! opening record and the full record name it (`tenant_id`), so the customer's key sees the
+//! site. `--run <code>` is the customer's opening carried out in the background
+//! ([`crate::sitecreaterun`]): the plan their `site create` made, applied under the code
+//! they were given, then `--continue` to the end.
+//!
 //! Every judgement is the rule crate's: the order and the next step
 //! ([`sitecreate::next`]), what a failure leaves ([`sitecreate::after_failure`]), the
 //! numbers ([`sitecreate::next_numbers`]), the title and the login names
@@ -54,8 +60,8 @@ use serde_json::{json, Value};
 use crate::opstore;
 use crate::probe::run_capture;
 
-const RECORDS: &str = "/var/lib/ez2-cloud/sites";
-const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
+pub(crate) const RECORDS: &str = "/var/lib/ez2-cloud/sites";
+pub(crate) const REMOVED_RECORDS: &str = "/var/lib/ez2-cloud/sites-removed";
 /// The records of sites whose opening has begun and not ended: written before the clone,
 /// so the number and the address are taken even while the new container's configuration
 /// does not name the address yet (the network is set by the step after the clone).
@@ -204,7 +210,7 @@ pub fn numbers(seen: &Seen) -> Result<(u32, u8), &'static str> {
 }
 
 /// The names that count as the same domain: the name itself and its `www` twin.
-fn same_names(domain: &str) -> [String; 2] {
+pub(crate) fn same_names(domain: &str) -> [String; 2] {
     let bare = domain.strip_prefix("www.").unwrap_or(domain);
     [bare.to_owned(), format!("www.{bare}")]
 }
@@ -532,7 +538,7 @@ pub fn code_from(random: [u8; 4]) -> String {
 }
 
 /// The codes in use: live, removed and opening sites. A code is never given twice.
-fn codes_in_use(seen: &Seen) -> Vec<String> {
+pub(crate) fn codes_in_use(seen: &Seen) -> Vec<String> {
     [&seen.records, &seen.removed, &seen.creating]
         .into_iter()
         .flatten()
@@ -553,6 +559,19 @@ pub fn new_code(
         }
     }
     Err("code_unavailable: no free site code after several tries".to_owned())
+}
+
+/// The code a customer was already given ([`crate::sitecreaterun`]): taken as it is when it
+/// is a code and still free under the lock, never swapped for another, or the customer would
+/// follow a site that is not theirs.
+pub fn chosen(code: &str) -> impl FnOnce(&[String]) -> Result<String, String> + '_ {
+    move |taken| {
+        if aib_cloud::site::valid_code(code) && !taken.iter().any(|t| t == code) {
+            Ok(code.to_owned())
+        } else {
+            Err(format!("code_taken: {code:?} is not a free site code"))
+        }
+    }
 }
 
 /// What the plan given to `--apply` says, checked before anything is read.
@@ -621,6 +640,8 @@ pub struct CloneInput {
     pub ct: u32,
     pub ip: u8,
     pub blank: bool,
+    /// The customer named by the plan, written into the opening record.
+    pub tenant: Option<String>,
 }
 
 /// The plan as this host makes it now, under the lock, checked against the plan given:
@@ -631,7 +652,7 @@ pub fn recheck(
     g: &Given,
     seen: &Seen,
     fingerprint: &str,
-    random: impl FnMut() -> Result<[u8; 4], String>,
+    pick: impl FnOnce(&[String]) -> Result<String, String>,
 ) -> Result<(Value, CloneInput), String> {
     let mut doc = plan_doc(domain, g.blank, seen);
     if let Some(obj) = doc.as_object_mut() {
@@ -659,7 +680,12 @@ pub fn recheck(
         .and_then(|a| a.strip_prefix(NET))
         .and_then(|o| o.parse().ok())
         .ok_or("the plan has no address")?;
-    let code = new_code(&codes_in_use(seen), random)?;
+    let tenant = match &g.tenant {
+        None => None,
+        Some(t) if aib_cloud::site::valid_code(t) => Some(t.clone()),
+        Some(_) => return Err("the plan's tenant_id is not a customer code".to_owned()),
+    };
+    let code = pick(&codes_in_use(seen))?;
     Ok((
         opstore::unsealed(&doc),
         CloneInput {
@@ -667,6 +693,7 @@ pub fn recheck(
             ct,
             ip,
             blank: g.blank,
+            tenant,
         },
     ))
 }
@@ -736,7 +763,7 @@ pub fn clone_step(
         aib_cloud::site::Limits::START,
     )
     .map_err(|e| format!("{e:?}"))?;
-    let record = json!({
+    let mut record = json!({
         "site": input.code,
         "ct": ct,
         "ip": format!("{NET}{}", input.ip),
@@ -747,6 +774,10 @@ pub fn clone_step(
         "started_at": crate::probe::unix_now(),
         "at": crate::probe::unix_now(),
     });
+    // only a plan that names a customer gives the opening one (an operator's plan may not)
+    if let Some(tenant) = &input.tenant {
+        record["tenant_id"] = json!(tenant);
+    }
     write_record(creating, &input.code, &record)?;
     let clone = aib_cloud::site::plan(&spec)
         .into_iter()
@@ -817,7 +848,33 @@ pub fn apply(
     domain: &str,
     creating: &Path,
     see: impl FnOnce() -> Seen,
-    random: impl FnMut() -> Result<[u8; 4], String>,
+    mut random: impl FnMut() -> Result<[u8; 4], String>,
+    runner: &mut impl Runner,
+) -> Result<Value, String> {
+    apply_by(
+        place,
+        plan,
+        domain,
+        creating,
+        see,
+        |taken| new_code(taken, &mut random),
+        opstore::BY_LOCAL_ROOT,
+        runner,
+    )
+}
+
+/// [`apply`] with the code picked by `pick` (out of the codes in use, under the lock) and
+/// the approval named: a customer's opening is the customer key's, under the code they
+/// were given ([`chosen`]).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_by(
+    place: &opstore::OpPlace,
+    plan: &Value,
+    domain: &str,
+    creating: &Path,
+    see: impl FnOnce() -> Seen,
+    pick: impl FnOnce(&[String]) -> Result<String, String>,
+    approval: &str,
     runner: &mut impl Runner,
 ) -> Result<Value, String> {
     let g = given(plan, domain)?;
@@ -826,10 +883,10 @@ pub fn apply(
         &g.op,
         COMMAND,
         &target(domain),
-        opstore::BY_LOCAL_ROOT,
+        approval,
         || {
             let seen = see();
-            recheck(domain, &g, &seen, &place.fingerprint, random).map(Some)
+            recheck(domain, &g, &seen, &place.fingerprint, pick).map(Some)
         },
         |op, input: CloneInput| clone_step(runner, creating, domain, op, &input),
     )?;
@@ -1253,13 +1310,34 @@ pub fn continue_apply(
     runner: &mut impl Runner,
     last: CreateStep,
 ) -> Result<Option<Value>, String> {
+    continue_apply_by(
+        place,
+        domain,
+        code,
+        paths,
+        runner,
+        last,
+        opstore::BY_LOCAL_ROOT,
+    )
+}
+
+/// [`continue_apply`] under the approval named (the customer key's, for their opening).
+pub fn continue_apply_by(
+    place: &opstore::OpPlace,
+    domain: &str,
+    code: &str,
+    paths: &HostPaths,
+    runner: &mut impl Runner,
+    last: CreateStep,
+    approval: &str,
+) -> Result<Option<Value>, String> {
     // the same target as the clone's, so an unfinished clone holds this back
     let on = target(domain);
     opstore::run_op_prepared(
         place,
         COMMAND,
         &on,
-        opstore::BY_LOCAL_ROOT,
+        approval,
         crate::probe::unix_now(),
         || {
             let opening = read_opening(&paths.creating, code, domain)?;
@@ -1373,7 +1451,7 @@ pub fn unfinished_on(ops: &Path, domain: &str) -> Option<Vec<Value>> {
     Some(out)
 }
 
-fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
+pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
     let proc_root = Path::new("/proc");
     Seen {
         container_list: capture("pct", &["list"], 20),
@@ -1401,7 +1479,8 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut blank = false;
     let mut apply_file: Option<String> = None;
     let mut continue_code: Option<String> = None;
-    let mut tenant = None;
+    let mut run_code: Option<String> = None;
+    let mut tenant: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1411,13 +1490,29 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "--continue" => {
                 continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
             }
-            "--tenant" => tenant = Some(it.next().ok_or("--tenant needs a customer id")?.clone()),
+            "--run" => run_code = Some(it.next().ok_or("--run needs a site code")?.clone()),
+            "--tenant" => {
+                let t = it.next().ok_or("--tenant needs a customer id")?;
+                if !aib_cloud::site::valid_code(t) {
+                    return Err("--tenant is not a customer id".to_owned());
+                }
+                tenant = Some(t.clone());
+            }
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
     }
+    if let Some(code) = run_code {
+        if plan_only || blank || apply_file.is_some() || continue_code.is_some() || tenant.is_some()
+        {
+            return Err(
+                "--run <code> stands alone: the rest is in what the customer asked".to_owned(),
+            );
+        }
+        return crate::sitecreaterun::run_cmd(&domain, &code);
+    }
     if let Some(code) = continue_code {
-        if plan_only || blank || apply_file.is_some() {
+        if plan_only || blank || apply_file.is_some() || tenant.is_some() {
             return Err("--continue <code> stands alone".to_owned());
         }
         return continue_cmd(&domain, &code);
@@ -1439,15 +1534,32 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             )
         }
     }
-    let seen = see(&domain, &records, tenant);
-    let mut doc = plan_doc(&domain, blank, &seen);
-    let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
-    seal_plan(&mut doc, &op, Path::new(opstore::MACHINE_ID))?;
+    let doc = sealed_plan(&domain, blank, tenant, &records)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
     Ok(0)
+}
+
+/// The plan `--plan` prints, made and sealed on this host: read only. The customer's
+/// `site create` makes the same one ([`crate::sitecreaterun`]).
+pub(crate) fn sealed_plan(
+    domain: &str,
+    blank: bool,
+    tenant: Option<String>,
+    records: &str,
+) -> Result<Value, String> {
+    let seen = see(domain, records, tenant);
+    let mut doc = plan_doc(domain, blank, &seen);
+    let op = opstore::op_id(crate::probe::unix_now(), opstore::random4()?);
+    seal_plan(&mut doc, &op, Path::new(opstore::MACHINE_ID))?;
+    Ok(doc)
+}
+
+/// The customer a plan names, as `see` takes it.
+pub(crate) fn plan_tenant(plan: &Value) -> Option<String> {
+    plan["quota"]["tenant_id"].as_str().map(str::to_owned)
 }
 
 /// `--apply <file>` on this host. Writing: run only as a reviewed, approved operation
@@ -2055,6 +2167,56 @@ mod tests {
             plan_doc("other.example.test", false, &unread)["stop"],
             "quota_unknown"
         );
+    }
+
+    /// E1: a customer's opening is cloned under the code they were given, names them in its
+    /// record, and is journaled as the customer key's; a code in use is never taken.
+    #[test]
+    fn a_customer_s_opening_is_cloned_under_the_code_they_were_given() {
+        let mine = place("apply-chosen");
+        let creating = mine.ops_dir.with_file_name("creating");
+        let theirs = || Seen {
+            tenant: Some("t-acme1".to_owned()),
+            ..host()
+        };
+        let plan = sealed(&mine, "new.example.test", &theirs());
+        assert_eq!(plan["quota"]["tenant_id"], "t-acme1");
+        let mut runner = fake(healthy);
+        let rec = apply_by(
+            &mine,
+            &plan,
+            "new.example.test",
+            &creating,
+            theirs,
+            chosen("s-mine01"),
+            opstore::BY_CUSTOMER_KEY,
+            &mut runner,
+        )
+        .unwrap();
+        assert_eq!(rec["site"], "s-mine01");
+        assert_eq!(rec["tenant_id"], "t-acme1");
+        assert!(creating.join("s-mine01.json").exists());
+        let path = opstore::journal_path(&mine.ops_dir, OP).unwrap();
+        let lines = opstore::read_journal(&path).unwrap().0;
+        assert_eq!(lines[1].approval, opstore::BY_CUSTOMER_KEY);
+        // the code given is taken by a live site by now: nothing is cloned
+        let taken = place("apply-chosen-taken");
+        let creating = taken.ops_dir.with_file_name("creating");
+        let plan = sealed(&taken, "new.example.test", &theirs());
+        let mut runner = fake(healthy);
+        let err = apply_by(
+            &taken,
+            &plan,
+            "new.example.test",
+            &creating,
+            theirs,
+            chosen("site2"),
+            opstore::BY_CUSTOMER_KEY,
+            &mut runner,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("code_taken"), "{err}");
+        assert!(runner.calls.is_empty());
     }
 
     #[test]
