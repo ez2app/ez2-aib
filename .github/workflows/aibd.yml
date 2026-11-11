@@ -695,8 +695,8 @@ jobs:
              'pub const DNS_ADDRESS_TYPES: [&str; 4] = ["A", "AAAA", "CNAME", "MX"]; // knife' \
              only_address_records_with_the_sites_marker_are_ours
           # removing a site, DNS: a zone we do not manage holds the removal up
-          ck siteremove.rs '            DnsProbe::Skipped | DnsProbe::Done => Probe::Done,' \
-             '            DnsProbe::Done => Probe::Done, DnsProbe::Skipped => Probe::Unknown, // knife' \
+          ck siteremove.rs '            DnsProbe::Skipped | DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done,' \
+             '            DnsProbe::Done | DnsProbe::DoneForeignLeft => Probe::Done, DnsProbe::Skipped => Probe::Unknown, // knife' \
              a_dns_step_done_from_the_start_does_not_stop_the_work
           ck siteremove.rs '        (DnsRights::NotOurs, _) => DnsProbe::Skipped,' \
              '        (DnsRights::NotOurs, _) => DnsProbe::Unknown, // knife' \
@@ -713,6 +713,26 @@ jobs:
           ck siteremove.rs $'    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n    /// The address records made for the site are deleted from its DNS zone, when that\n    /// zone is one we manage. Nothing is lost for good: the zone is snapshotted first.\n    Dns,\n' \
              $'    Dns,\n    /// Each paid plugin\'s activation is given back to its vendor.\n    Licenses,\n    /// The customer\'s way in by shell is closed on the host.\n    Access,\n    /// The container is stopped.\n    Stop,\n    /// The container and its disk are destroyed.\n    Destroy,\n    /// The container\'s firewall file is removed.\n    Firewall,\n    /// The site is taken off the host\'s export list. (The id ranges given to its\n    /// container are not looked at here; they are not given out again either way.)\n    Lists,\n' \
              dns_comes_after_the_licences_and_before_the_record
+          # removing a site, DNS (33e28 M1): a part that cannot ask DNS stops every step before it
+          ck siteremove.rs '            DnsProbe::NotDone | DnsProbe::NotAskedHere => Probe::NotDone,' \
+             '            DnsProbe::NotDone => Probe::NotDone, DnsProbe::NotAskedHere => Probe::Unknown, // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 M1): not asked here, and the DNS step is run anyway
+          ck siteremove.rs '        Next::Run(RemoveStep::Dns) if dns == DnsProbe::NotAskedHere => {' \
+             '        Next::Run(RemoveStep::Dns) if false => { // knife' \
+             a_part_that_cannot_ask_dns_lets_the_steps_before_it_go_on
+          # removing a site, DNS (33e28 L1): records without our marker left behind read as plain done
+          ck siteremove.rs '            if foreign.is_empty() {' \
+             '            if true { // knife' \
+             the_dns_step_is_passed_over_only_when_the_zone_is_not_ours
+          # removing a site, DNS (33e28 L2): only the main address is looked at
+          ck siteremove.rs '        if !names.iter().any(|n| same_name(r.name, n))' \
+             '        if !names.iter().take(1).any(|n| same_name(r.name, n)) // knife' \
+             every_address_of_the_site_is_looked_at
+          # removing a site (33e28 L3): steps done early are not listed in the plan
+          ck siteremove.rs '        .filter(|(step, probe)| **step > at && **probe == Probe::Done)' \
+             '        .filter(|(step, probe)| false && **step > at && **probe == Probe::Done) // knife' \
+             steps_done_early_are_listed_behind_a_step_that_can_be_called_off
           # removing a site, licences (Andy 11-11): an activation no program can give back holds the removal up
           ck siteremove.rs '    if seats.iter().any(|s| s.seat == Seat::Unknown) {' \
              '    if seats.iter().any(|s| s.seat == Seat::Unknown || s.seat == Seat::NoAutomaticReturn) { // knife' \
@@ -962,9 +982,13 @@ jobs:
              '        licences_wired.unwrap_or(Probe::Done), // knife' \
              the_licences_are_not_guessed
           # site remove --plan: the DNS step reads as done on a host that cannot ask (Andy 11-11 rule)
-          hk siteremovecmd.rs '        dns.unwrap_or(DnsProbe::Unknown).probe(),' \
-             '        dns.unwrap_or(DnsProbe::Done).probe(), // knife' \
-             the_dns_step_is_not_asked_on_this_host_and_the_plan_says_why
+          hk siteremovecmd.rs '        dns.probe(),' \
+             '        DnsProbe::Unknown.probe(), // knife' \
+             what_the_command_passes_lets_an_untouched_site_start_at_the_entry
+          # site remove --plan: the removed record loses the activations left at vendors (33e28 N1)
+          hk siteremovecmd.rs '    obj.insert("left_at_vendor".to_owned(), json!(left_at_vendor));' \
+             '    // knife' \
+             the_removed_record_keeps_what_was_left_at_vendors_and_what_dns_found
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
