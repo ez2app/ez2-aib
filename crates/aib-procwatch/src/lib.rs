@@ -338,7 +338,8 @@ mod imp {
     pub fn program_argv(pid: u32) -> Option<Vec<String>> {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
         let p = Pid::from_u32(pid);
-        let mut sys = System::new();
+        // sysinfo 0.40: `System::new` can fail; no reading = no argv ("?")
+        let mut sys = System::new().ok()?;
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[p]),
             false,
