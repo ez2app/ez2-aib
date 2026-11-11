@@ -386,7 +386,17 @@ fn a_newer_unreadable_line_hides_an_older_pass() {
         status(&rep, "A2"),
         Status::Unverified(Why::EvidenceUnreadable)
     );
-    // fixed by appending a readable line, the file stays append-only
+    // an older line appended later does not clear it (Codex #693 r2):
+    // 100 pass, 200 unreadable, then 50 fail
+    let p100 = ev("A1", "a", 100, 0);
+    let b200 = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 200, "check_id": "x"});
+    let f50 = ev("A1", "a", 50, 1);
+    let log = parse_evidence(&format!("{p100}\n{b200}\n{f50}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Unverified(Why::EvidenceUnreadable)
+    );
+    // fixed by appending a newer readable line, the file stays append-only
     let log = parse_evidence(&format!("{pass1}\n{broken}\n{pass1}\n"));
     assert_eq!(
         status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
@@ -552,7 +562,7 @@ fn old_prs_never_push_the_latest_one_out() {
     new["head"] = json!(H1);
     t.push_str(&format!("{new}\n"));
     let log = parse_evidence(&t);
-    assert_eq!(prs_of(&log), BTreeSet::from([900]));
+    assert_eq!(prs_of(&log, NOW), BTreeSet::from([900]));
     let gh = FakeGh(
         [(
             "repos/o/r/pulls/900".to_owned(),
@@ -561,7 +571,7 @@ fn old_prs_never_push_the_latest_one_out() {
         .into_iter()
         .collect(),
     );
-    let snap = read_heads(&gh, "o/r", &prs_of(&log));
+    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
     assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
 }
 
@@ -592,6 +602,35 @@ fn a_line_dated_in_the_future_is_unreadable() {
         status(&compare(&g, &log, &Snapshot::default(), u64::MAX), "A1"),
         Status::Fail
     );
+}
+
+#[test]
+fn a_pr_line_after_a_future_line_is_read_and_counts() {
+    // Codex #693 r2: prs_of and compare must pick the same line, or the PR of
+    // a good line after a future-dated one is never read
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let far = ev("A1", "a", u64::MAX, 0);
+    let mut good = ev("A1", "a", NOW, 0);
+    good["pr"] = json!(604);
+    good["head"] = json!(H1);
+    let log = parse_evidence(&format!("{far}\n{good}\n"));
+    assert_eq!(prs_of(&log, NOW), BTreeSet::from([604]));
+    let gh = FakeGh(
+        [(
+            "repos/o/r/pulls/604".to_owned(),
+            Ok(json!({"head": {"sha": H1}})),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
+    assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
+    // while the future line is the last thing in the file, nothing is read
+    let log = parse_evidence(&format!("{good}\n{far}\n"));
+    assert!(prs_of(&log, NOW).is_empty());
 }
 
 #[test]

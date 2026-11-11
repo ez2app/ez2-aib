@@ -2068,8 +2068,8 @@ jobs:
              '            Some(const_sha(&g, &r) == sha || true) // knife' \
              a_snapshot_edited_to_match_is_still_refused
           # KE3 (K2) the oldest line wins, so an old pass hides a newer failure
-          ek '                .max_by_key(|(i, e)| (e.at, *i))' \
-             '                .min_by_key(|(i, e)| (e.at, *i)) // knife' \
+          ek '        .max_by_key(|(i, e)| (e.at, *i))' \
+             '        .min_by_key(|(i, e)| (e.at, *i)) // knife' \
              a_failing_check_is_never_covered_by_an_older_pass
           # KE4 (K2) expired evidence still counts
           ek '    if e.valid_until.is_some_and(|t| t < now) {' \
@@ -2116,12 +2116,12 @@ jobs:
              '    if t.len() as u64 > max && false { // knife' \
              local_files_over_their_limit_are_errors
           # KE15 (a9136 #693) every PR the history names is read, so old PRs push the newest past MAX_PRS
-          ek '    latest.values().filter_map(|k| k.2).collect()' \
-             '    let _ = &latest; evidence.lines.iter().filter_map(|e| e.pr).collect() // knife' \
+          ek '            (Some(e), false) => e.pr,' \
+             '            (Some(_), false) => evidence.lines.iter().find_map(|e| e.pr), // knife' \
              old_prs_never_push_the_latest_one_out
           # KE16 (a9136 #693 L) a line dated in the future is dropped silently, the older pass shows
-          ek '                .chain(future)' \
-             '                .chain(future.filter(|_| false)) // knife' \
+          ek '    let bad_after = evidence.bad.iter().cloned().chain(future).any(|(pos, g)| {' \
+             '    let bad_after = evidence.bad.iter().cloned().chain(future.filter(|_| false)).any(|(pos, g)| { // knife' \
              a_line_dated_in_the_future_is_unreadable
           # KE17 (a9136 #693 L) a half line left by a cut write is glued to the next one
           ek '        && f.read_exact(&mut last).is_ok()' \
@@ -2131,6 +2131,14 @@ jobs:
           ek '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) {' \
              '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) && false { // knife' \
              the_evaluation_log_is_never_written_through_a_link
+          # KE19 (Codex #693 r2) an older line appended after an unreadable one clears it (last position, not the chosen line)
+          ek '        g.as_deref().is_none_or(|x| x == goal) && latest.is_none_or(|l| pos > l.pos)' \
+             '        g.as_deref().is_none_or(|x| x == goal) && evidence.lines.iter().filter(|e| e.goal == goal && e.at <= limit).map(|e| e.pos).max().is_none_or(|l| pos > l) // knife' \
+             a_newer_unreadable_line_hides_an_older_pass
+          # KE20 (Codex #693 r2) prs_of picks without the future limit, so a good PR line after a future one is never read
+          ek '        .filter_map(|g| match pick(evidence, g, now) {' \
+             '        .filter_map(|g| match pick(evidence, g, now.max(u64::MAX)) { // knife' \
+             a_pr_line_after_a_future_line_is_read_and_counts
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

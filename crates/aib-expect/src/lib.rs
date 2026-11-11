@@ -539,23 +539,47 @@ fn status_of(goal: &Goal, e: Option<&Evidence>, snap: &Snapshot, now: u64) -> St
 /// Most PRs one report reads heads for; the rest stay unknown.
 pub const MAX_PRS: usize = 30;
 
-/// The PRs whose heads decide a row: those of each goal's latest line (the
-/// same pick [`compare`] makes), not every PR the history ever named, so old
-/// PRs never push a new one past [`MAX_PRS`] (a9136 #693).
-pub fn prs_of(evidence: &EvidenceLog) -> std::collections::BTreeSet<u64> {
-    let mut latest: BTreeMap<&str, (u64, usize, Option<u64>)> = BTreeMap::new();
-    for (i, e) in evidence.lines.iter().enumerate() {
-        let key = (e.at, i, e.pr);
-        latest
-            .entry(e.goal.as_str())
-            .and_modify(|k| {
-                if (key.0, key.1) > (k.0, k.1) {
-                    *k = key;
-                }
-            })
-            .or_insert(key);
-    }
-    latest.values().filter_map(|k| k.2).collect()
+/// One goal's deciding line, and whether something that cannot be used (an
+/// unreadable line, or a line dated more than [`FUTURE_SECS`] ahead) comes
+/// after it in the file. [`compare`] and [`prs_of`] both use this, so they
+/// always look at the same line.
+fn pick<'a>(evidence: &'a EvidenceLog, goal: &str, now: u64) -> (Option<&'a Evidence>, bool) {
+    let limit = now.saturating_add(FUTURE_SECS);
+    // the latest line wins, even when it is worse than an older one
+    let latest = evidence
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.goal == goal && e.at <= limit)
+        .max_by_key(|(i, e)| (e.at, *i))
+        .map(|(_, e)| e);
+    // what cannot be used, after the chosen line, could be the newest result:
+    // never fall back. Only a line that is itself chosen clears it, not an
+    // older one appended later (Codex #693 r2).
+    let future = evidence
+        .lines
+        .iter()
+        .filter(|e| e.goal == goal && e.at > limit)
+        .map(|e| (e.pos, None));
+    let bad_after = evidence.bad.iter().cloned().chain(future).any(|(pos, g)| {
+        g.as_deref().is_none_or(|x| x == goal) && latest.is_none_or(|l| pos > l.pos)
+    });
+    (latest, bad_after)
+}
+
+/// The PRs whose heads decide a row: the PR of each goal's deciding line
+/// ([`pick`], the same one [`compare`] uses), not every PR the history ever
+/// named, so old PRs never push a new one past [`MAX_PRS`] (a9136 #693).
+pub fn prs_of(evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u64> {
+    let goals: std::collections::BTreeSet<&str> =
+        evidence.lines.iter().map(|e| e.goal.as_str()).collect();
+    goals
+        .into_iter()
+        .filter_map(|g| match pick(evidence, g, now) {
+            (Some(e), false) => e.pr,
+            _ => None,
+        })
+        .collect()
 }
 
 /// Each PR's current head through aib-drive's GET-only reader (the same one
@@ -595,35 +619,8 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
     let rows: Vec<Row> = goals
         .iter()
         .map(|g| {
-            // the latest line wins, even when it is worse than an older one
-            let latest = evidence
-                .lines
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.goal == g.id && e.at <= now.saturating_add(FUTURE_SECS))
-                .max_by_key(|(i, e)| (e.at, *i))
-                .map(|(_, e)| e.clone());
-            // a line that cannot be read, after the last readable one for
-            // this goal, could be its newest result: never fall back
-            let last = evidence
-                .lines
-                .iter()
-                .filter(|e| e.goal == g.id && e.at <= now.saturating_add(FUTURE_SECS))
-                .map(|e| e.pos)
-                .max();
-            let future = evidence
-                .lines
-                .iter()
-                .filter(|e| e.goal == g.id && e.at > now.saturating_add(FUTURE_SECS))
-                .map(|e| (e.pos, None));
-            let bad_after = evidence
-                .bad
-                .iter()
-                .cloned()
-                .chain(future)
-                .any(|(pos, goal)| {
-                    goal.as_ref().is_none_or(|x| *x == g.id) && last.is_none_or(|l| pos > l)
-                });
+            let (latest, bad_after) = pick(evidence, &g.id, now);
+            let latest = latest.cloned();
             Row {
                 status: if bad_after {
                     Status::Unverified(Why::EvidenceUnreadable)
