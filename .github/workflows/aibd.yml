@@ -45,8 +45,8 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 45: the Windows cell also runs the Job tests 5x and 7 knives
-    timeout-minutes: 45
+    # 75: the macOS cell now runs the cloud (aib-cloud / aib-cloud-host) knives too and hit 45 on main (11-12); Windows still runs the Job tests 5x and 7 knives
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -523,6 +523,86 @@ jobs:
           ck roster.rs '                .any(|k| k.usage == KeyUse::Entry && !k.revoked)' \
              '                .any(|k| k.usage == KeyUse::Entry) // knife' \
              the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # share gate (plan 14.7 #11): outer spaces stay, so a padded owner is not the registered one
+          ck share.rs '    let s = raw.trim();' '    let s = raw; // knife' \
+             an_address_is_trimmed_and_lower_cased_and_nothing_else
+          # share gate: case is kept, so Owner@ and owner@ are two people
+          ck share.rs '    Some(s.to_ascii_lowercase())' '    Some(String::from(s)) // knife' \
+             an_address_is_trimmed_and_lower_cased_and_nothing_else
+          # share gate: an address that is not ASCII is taken
+          ck share.rs '    if s.is_empty() || s.len() > ADDRESS_MAX || !s.is_ascii() {' \
+             '    if s.is_empty() || s.len() > ADDRESS_MAX || (!s.is_ascii() && s.is_empty()) { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: an address longer than the limit is taken
+          ck share.rs '    if s.is_empty() || s.len() > ADDRESS_MAX || !s.is_ascii() {' \
+             '    if s.is_empty() || (s.len() > ADDRESS_MAX && s.is_empty()) || !s.is_ascii() { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a space inside an address is taken
+          ck share.rs '    b.is_ascii_whitespace() || b.is_ascii_control()' \
+             '    b.is_ascii_control() // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a control character inside an address is taken
+          ck share.rs '    b.is_ascii_whitespace() || b.is_ascii_control()' \
+             '    b.is_ascii_whitespace() // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a second @ is taken
+          ck share.rs '    if parts.next().is_some() || local.is_empty() {' \
+             '    if local.is_empty() && parts.next().is_none() { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: an empty name before the @ is taken
+          ck share.rs '    if parts.next().is_some() || local.is_empty() {' \
+             '    if parts.next().is_some() || (local.is_empty() && local.len() > 1) { // knife' \
+             what_is_not_one_address_is_none
+          # share gate: a domain without a dot is taken
+          ck share.rs "    if !domain.contains('.') || domain.split('.').any(str::is_empty) {" \
+             "    if domain.split('.').any(str::is_empty) { // knife" \
+             what_is_not_one_address_is_none
+          # share gate: a domain with an empty label is taken
+          ck share.rs "    if !domain.contains('.') || domain.split('.').any(str::is_empty) {" \
+             "    if !domain.contains('.') { // knife" \
+             what_is_not_one_address_is_none
+          # share gate: a roster with no address registered judges the owner anyway
+          ck share.rs '    if tenant.is_empty() {' '    if tenant.is_empty() && owners.is_empty() { // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: a file whose owner the drive did not name passes
+          ck share.rs '        [] => return Gate::Unknown(Why::NoOwner),' '        [] => return Gate::Allowed, // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: of two owners the first is judged
+          ck share.rs '        _ => return Gate::Refused(Why::ManyOwners),' '        _ => owners[0], // knife' \
+             more_than_one_owner_or_a_bad_owner_is_refused
+          # share gate: an owner who is not the tenant's passes
+          ck share.rs '        Some(false) => return Gate::Refused(Why::OwnerNotRegistered),' '        Some(false) => {} // knife' \
+             another_owner_is_refused
+          # share gate: an owner that is not an address passes
+          ck share.rs '        None => return Gate::Refused(Why::NotAnAddress),' '        None => {} // knife' \
+             more_than_one_owner_or_a_bad_owner_is_refused
+          # share gate: a sharer that is not an address passes
+          ck share.rs '            return Gate::Refused(Why::NotAnAddress);' '            return Gate::Allowed; // knife' \
+             a_sharer_who_is_not_the_tenants_is_refused
+          # share gate: a sharer who is not the tenant's passes
+          ck share.rs '        if !ok {' '        if !ok && s.is_empty() { // knife' \
+             a_sharer_who_is_not_the_tenants_is_refused
+          # share gate: "cannot tell" passes as if allowed
+          ck share.rs '        matches!(self, Gate::Allowed)' '        !matches!(self, Gate::Refused(_)) // knife' \
+             no_owner_or_nothing_registered_is_unknown_not_allowed
+          # share gate: an owner another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) && sharer.is_some_and(theirs) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # share gate: a sharer another tenant also registers passes (c477a M1)
+          ck share.rs '    if theirs(owner) || sharer.is_some_and(theirs) {' \
+             '    if theirs(owner) || (sharer.is_some_and(theirs) && owners.is_empty()) { // knife' \
+             an_address_another_tenant_also_registers_is_refused
+          # entry sudoers: two tenants registering one address are both written (c477a M1)
+          ck roster.rs '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e)))' \
+             '            .any(|o| o.emails.iter().any(|e| r.emails.contains(e) && e.is_empty()))' \
+             the_sudoers_file_names_each_forced_command_and_nothing_wider
+          # roster emails: an entry is kept as written, not as compared
+          ck roster.rs '            .and_then(crate::share::normalize)' '            .map(String::from) // knife' \
+             the_registered_addresses_are_read_normalized_and_optional
+          # roster emails: the same address twice is read
+          ck roster.rs '        if out.contains(&a) {' '        if out.contains(&a) && a.is_empty() { // knife' \
+             the_registered_addresses_are_read_normalized_and_optional
           # H14: a wildcard rule is not told apart (the hand-written customer *)
           ck verify.rs "                if text.contains('*') {" \
              '                if false { // knife' \
@@ -1058,6 +1138,36 @@ jobs:
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
              the_sudoers_file_comes_from_every_roster_or_none
+          # roster share-check: "cannot tell" exits as "not this tenant's" (2), not its own 4
+          hk rostercmd.rs '        Gate::Unknown(why) => ("unknown", why, 4),' \
+             '        Gate::Unknown(why) => ("unknown", why, 2), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: only the first owner the drive names is judged
+          hk rostercmd.rs '        Some(others) => judge(&owners, sharer, &roster.emails, &others),' \
+             '        Some(others) => judge(&owners[..owners.len().min(1)], sharer, &roster.emails, &others), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: a second --sharer replaces the first
+          hk rostercmd.rs '            ("--sharer", Some(a)) if sharer.is_none() => sharer = Some(*a),' \
+             '            ("--sharer", Some(a)) => sharer = Some(*a), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: the command line refuses --owner as an unknown flag
+          hk rostercmd.rs '            "--owner" | "--sharer" | "--rosters" => {' '            "--owner-knife" | "--sharer" | "--rosters" => {' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: "not this tenant's" exits as a refused roster (2), not its own 5 (c477a N3)
+          hk rostercmd.rs '        Gate::Refused(why) => ("refused", why, 5),' \
+             '        Gate::Refused(why) => ("refused", why, 2), // knife' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: without --rosters only this tenant's roster is read (c477a M1)
+          hk rostercmd.rs '    let Some(dir) = dir else {' \
+             '    let Some(dir) = dir.or(Some("/nonexistent-knife")) else {' \
+             a_shared_backup_passes_only_from_the_tenants_own_address
+          # roster share-check: the other tenants' addresses are not collected (c477a M1)
+          hk rostercmd.rs '            out.extend(r.emails);' '            out.extend(r.emails.into_iter().filter(|_| false)); // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
+          # roster share-check: a roster that cannot be read is skipped instead of leaving it unknown
+          hk rostercmd.rs '        let r = load(path.to_str()?, records).ok()?.ok()?;' \
+             '        let Some(Ok(r)) = load(path.to_str()?, records).ok() else { continue }; // knife' \
+             an_address_another_tenant_also_registers_stops_the_restore
           # customer entry: an environment sudo did not keep reads as an empty request (33e28, #642 M1)
           hk customercmd.rs '        None if under_sudo && !has_connection => None,' \
              '        None if under_sudo && !has_connection && false => None, // knife' \
@@ -2366,6 +2476,223 @@ jobs:
             '            if audit {' \
             '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
             deny_listed_env_is_refused_and_audited_on_both_routes
+      # aib-drive decide (DECISION-aib-drive-v1 item 7): each guard of the decision table, broken
+      # on purpose, must turn its own test red (2240e takeover 11-11; the original D1–D20 knife
+      # list was never committed, so these are rebuilt from the tests)
+      - name: aib-drive decide knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          dk() { python3 -I scripts/knife.py crates/aib-drive/src/decide.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test decide "$3"; }
+          # D1 freeze unknown or on still merges
+          dk '    let freeze_off = match &s.freeze {' \
+             '    let freeze_off = true || match &s.freeze { // knife' \
+             frozen_or_unknown_freeze_merges_nothing_and_reruns_nothing
+          # D4 drafts are merged
+          dk '    if pr.draft {' \
+             '    if pr.draft && false { // knife' \
+             drafts_and_guarded_paths_never_merge
+          # D6 an empty required list counts as all green
+          dk '    if required.is_empty() {' \
+             '    if required.is_empty() && false { // knife' \
+             an_empty_required_list_merges_nothing
+          # D7 a draft-only run counts as a pass
+          dk '            CellState::Success if c.after_ready => {}' \
+             '            CellState::Success if c.after_ready || true => {} // knife' \
+             cells_that_are_not_a_real_pass_block
+          # D11 an author counts as a non-author
+          dk '    matches!(by, Known::Known(s) if !authors.contains(s))' \
+             '    matches!(by, Known::Known(s) if !authors.contains(s) || !s.is_empty()) // knife' \
+             an_author_reviewing_their_own_commits_does_not_count
+          # D11 an unverified writer counts
+          dk '    matches!(by, Known::Known(s) if !authors.contains(s))' \
+             '    !matches!(by, Known::Known(s) if authors.contains(s)) // knife' \
+             an_unverified_reviewer_does_not_count_and_the_merge_names_its_evidence
+          # D12 a pass that leaves M counts
+          dk '        self.pass && self.counts[0] == 0 && self.counts[1] == 0' \
+             '        self.pass // knife' \
+             a_pass_that_leaves_a_medium_is_not_a_merge
+          # D12 no review at this head needed (a commit list that does not end at the head)
+          dk '    if last.is_some() && covered == last && !at_head.is_empty() {' \
+             '    if last.is_some() && covered == last { // knife' \
+             a_commit_list_that_does_not_end_at_the_head_does_not_merge
+          # D13 an increment from an uncovered commit extends the chain
+          dk '                Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),' \
+             '                Some(f) => idx(f).is_some(), // knife' \
+             queue_an_unreviewed_middle_commit_blocks_and_asks_for_exactly_that_range
+          # H2 failed reviews make the chain
+          dk '        .filter(|r| r.passes() || closed_by_increment(r, &others, commits))' \
+             '        .filter(|r| r.pass || !r.pass || closed_by_increment(r, &others, commits)) // knife' \
+             a_failed_full_review_plus_a_passing_increment_is_not_a_merge
+          # D20 another reviewer closes the findings
+          dk '            && r.by.get() == Some(writer)' \
+             '            && (r.by.get() == Some(writer) || true) // knife' \
+             the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch
+          # D20 an increment off the branch closes
+          dk '            && idx(&r.head).is_some_and(|j| j > at)' \
+             '            && (idx(&r.head).is_some_and(|j| j > at) || true) // knife' \
+             a_closing_increment_off_the_branch_closes_nothing
+          # D20 a partial closing list closes all
+          dk '                        .is_some_and(|closed| raised.iter().all(|f| closed.contains(f)))' \
+             '                        .is_some_and(|closed| raised.iter().any(|f| closed.contains(f))) // knife' \
+             the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch
+          # D20e repeated ids pass
+          dk '    unique.len() == raised.len()' \
+             '    (unique.len() == raised.len() || true) // knife' \
+             the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch
+          # D20d H count not checked
+          dk '        && of('"'"'H'"'"') == u64::from(counts[0])' \
+             '        && (of('"'"'H'"'"') == u64::from(counts[0]) || true) // knife' \
+             the_same_reviewer_closing_their_findings_in_an_increment_covers_the_branch
+          # D14 a failed acceptance passes
+          dk '        if lines.iter().all(|v| v.pass && v.not_checked.is_none()) {' \
+             '        if lines.iter().all(|v| v.pass || !v.pass) { // knife' \
+             g1_a_failed_acceptance_waits_for_the_captains_ruling_on_this_head
+          # D14 a ruling for another head counts
+          dk '                && r.head.as_deref() == Some(pr.head.as_str())' \
+             '                && (r.head.as_deref() == Some(pr.head.as_str()) || true) // knife' \
+             g1_a_failed_acceptance_waits_for_the_captains_ruling_on_this_head
+          # D14 acceptance of any head carries
+          dk '        let holds = |h: &Sha| *h == pr.head || pr.verify_carry.as_ref() == Some(h);' \
+             '        let holds = |h: &Sha| *h == pr.head || pr.verify_carry.as_ref() == Some(h) || !h.is_empty(); // knife' \
+             the_queue_acceptance_carries_from_cd33802b_to_766fa8f6_only_when_the_snapshot_says_so
+          # D16 integration without int/ merges
+          dk '        && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))' \
+             '        && false // knife' \
+             integration_prs_need_the_int_prefix_and_unmoved_originals
+          # D15 moved originals do not block
+          dk '                for part in v.iter().filter(|x| x.collected != x.now) {' \
+             '                for part in v.iter().filter(|x| x.collected != x.now && false) { // knife' \
+             integration_prs_need_the_int_prefix_and_unmoved_originals
+          # D19 the journal is asked again
+          dk '            if s.done.contains(&k) || !seen.insert(k) {' \
+             '            if !seen.insert(k) { // knife' \
+             what_the_journal_holds_is_not_asked_again_and_a_busy_seat_is_nudged
+          # D19 two shared writes in one round
+          dk '            if shared {' \
+             '            if shared && false { // knife' \
+             two_clean_prs_give_one_merge_and_the_release_blocker_goes_first
+          # D3 an unknown merge slot merges
+          dk '    let slot_free = matches!(s.merge_slot_free, Known::Known(true))' \
+             '    let slot_free = !matches!(s.merge_slot_free, Known::Known(false)) // knife' \
+             every_unknown_blocks_the_merge
+      # aib-drive G2 (043dd review of 33e9a0eb, M1): each guard of compare / MatchStreak, broken
+      # on purpose, must turn its own test red. (MatchStreak's own empty-id check is not knifed:
+      # compare already refuses an empty id, so removing it changes nothing.)
+      - name: aib-drive G2 knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          gk() { python3 -I scripts/knife.py crates/aib-drive/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test g2 "$3"; }
+          # compare: an empty id or source passes
+          gk '    if d.event_source.is_empty() || d.event_id.is_empty() {' \
+             '    if false { // knife' \
+             an_empty_source_id_or_decision_is_unknown
+          # compare: an empty decision passes
+          gk '    if d.decision.is_empty() || a.decision.is_empty() {' \
+             '    if false { // knife' \
+             an_empty_source_id_or_decision_is_unknown
+          # compare: two different events compare
+          gk '    if d.event_source != a.event_source || d.event_id != a.event_id {' \
+             '    if false { // knife' \
+             another_event_or_an_unknown_side_is_unknown
+          # compare: the state (version) is not compared (L1)
+          gk '    if dv.is_empty() || dv != av {' \
+             '    if dv.is_empty() && dv != av { // knife' \
+             decisions_made_on_different_states_are_unknown
+          # streak: a record about another event counts
+          gk '        if d.event_source != event.source || d.event_id != event.id {' \
+             '        if false { // knife' \
+             an_event_without_identity_or_a_record_about_another_event_resets
+          # streak: a Different does not reset
+          gk '        if compare(dry, actual) != Comparison::Match {' \
+             '        if compare(dry, actual) == Comparison::Unknown { // knife' \
+             a_different_or_unknown_comparison_resets
+          # streak: matches do not add up
+          gk '                self.count = self.count.saturating_add(1);' \
+             '                self.count = 1; // knife' \
+             matches_on_three_events_count_to_three
+          # streak: a repeated event resets (M2)
+          gk '            Some(before) if *before == now => self.count,' \
+             '            Some(before) if *before == now && false => self.count, // knife' \
+             the_same_event_again_with_the_same_decision_is_skipped
+          # streak: another decision on the same event keeps the count
+          gk '                self.reset()' \
+             '                self.count // knife' \
+             the_same_event_with_another_decision_resets
+      # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
+      # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
+      - name: aib-drive snapshot knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$4"; }
+          # S1 an unreadable notes folder reads as "no reviews"
+          sk snapshot.rs '    let files = read_notes(inp.pending)?;' \
+             '    let files = read_notes(inp.pending).unwrap_or_default(); // knife' \
+             an_unreadable_notes_folder_is_no_snapshot
+          # S2 an unreadable dm queue reads as "not busy"
+          sk source.rs '        let v = q.waiting(seat).map_err(|e| format!("dm {seat}: {e}"))?;' \
+             '        let Ok(v) = q.waiting(seat) else { continue }; // knife' \
+             an_unreadable_dm_queue_is_no_snapshot
+          # S3 no deadline: a call that hangs is waited for
+          sk source.rs '    let stdout = match out_rx.recv_timeout(left()) {' \
+             '    let stdout = match Ok::<_, ()>(out_rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
+             a_call_past_its_deadline_is_killed_and_an_error
+          # S4 a non-zero exit with output is read as an answer
+          sk source.rs '    if !status.success() {' \
+             '    if false && !status.success() { // knife' \
+             a_non_zero_exit_is_an_error_even_with_output
+          # S5 a full page is read as the whole list
+          sk snapshot.rs '    if a.len() >= PER_PAGE {' \
+             '    if a.len() > PER_PAGE { // knife' \
+             a_full_page_of_open_pulls_is_no_snapshot
+          # S6 a file name's claim is trusted as the writer
+          sk snapshot.rs '    let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());' \
+             '    let unverified = || Known::Known("2240e".to_owned()); // knife' \
+             a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer
+          # S7 commits of a PR that moved between reads are trusted
+          sk snapshot.rs '        Known::Known(c) if c.last() != Some(&head_sha) => {' \
+             '        Known::Known(c) if c.last() != Some(&head_sha) && false => { // knife' \
+             a_commit_list_that_does_not_end_at_the_head_is_unknown
+          # S8 with no journal, a cancelled / runner-red cell is re-run
+          sk snapshot.rs '        rerun_done: true,' \
+             '        rerun_done: false, // knife' \
+             a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal
+          # S9 (1ced7 #685 L3) the wait for the exit has no deadline
+          sk source.rs '    let status = match exit_rx.recv_timeout(left()) {' \
+             '    let status = match Ok::<_, ()>(exit_rx.recv().unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into()))) { // knife' \
+             a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline
+          # S10 (1ced7 #685 L2) a file moved out of a guarded path is not seen
+          sk snapshot.rs '            if let Some(old) = st(f, "previous_filename") {' \
+             '            if let Some(old) = st(f, "previous_filename").filter(|_| false) { // knife' \
+             a_file_moved_out_of_a_guarded_path_touches_it
+          # S11 (1ced7 #685 L1) a full page of rules is read as the whole list
+          sk snapshot.rs '    let rules = match whole(&v, "rules") {' \
+             '    let rules = match arr(&v, "rules") { // knife' \
+             a_full_page_of_rules_is_unknown
+          # S12 (1ced7 #685 r2 L1) an already reaped child is killed by a pid that may be reused
+          sk source.rs '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
+             '        if let Err(TryRecvError::Empty) | Ok(_) = exit_rx.try_recv() { // knife' \
+             a_child_already_reaped_is_not_killed_by_pid_at_the_deadline
+          # S13 (Codex #685 M2) a dm item without a string priority reads as not urgent
+          sk source.rs '                .ok_or_else(|| bad("priority not a string"))?;' \
+             '                .unwrap_or_default(); // knife' \
+             a_dm_item_that_does_not_read_is_no_snapshot
+          # S14 (Codex #685 M2) a dm item whose read_at does not read counts as read
+          sk source.rs '                _ => return Err(bad("read_at missing or not a time")),' \
+             '                _ => false, // knife' \
+             a_dm_item_that_does_not_read_is_no_snapshot
+          # S15 (Codex #685 M3) a broken note about a commit of the PR is skipped as "not reviewed"
+          sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
+             '                let _ = e; // knife' \
+             a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
