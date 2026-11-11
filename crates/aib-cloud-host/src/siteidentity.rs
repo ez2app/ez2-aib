@@ -69,8 +69,21 @@ pub const SETUP_WRAP: &str =
     "log=$1; shift; (umask 077; : >\"$log\") && chmod 600 \"$log\" || exit 1; \"$@\" >\"$log\" 2>&1; rc=$?; tail -n 1 \"$log\" | cut -c1-200; exit $rc";
 /// The administrator the installer makes; the identity step replaces it with the site's own.
 pub const SETUP_ADMIN: &str = "ez2admin";
-/// The template package list inside the container: a blank site has none.
+/// The template package list inside the container: a blank site has an empty one, so the
+/// installer neither installs the package nor fetches its own small set from the network.
 const PACKAGE_LIST: &str = "/root/wp-package.conf";
+/// The template package on the host (the old ez2-site-create step 5): its folders go in
+/// as one archive, with the list and the paid plugins' keys ([`crate::sitelive::KEYS`]).
+pub const PACKAGE_DIR: &str = "/var/lib/ez2-cloud/wp-package";
+/// The template package's list on the host.
+pub const PACKAGE_CONF: &str = "/etc/ez2-cloud/wp-package.conf";
+/// The package archive inside the container for the install, and removed after.
+const PACKAGE_IN_CT: &str = "/root/wp-package.tar.gz";
+/// The paid plugins' keys inside the container for the install, shredded after.
+const KEYS_IN_CT: &str = "/root/wp-package-keys.env";
+/// What leaves the container after the install, whatever the installer said: the package,
+/// its list and the keys (shredded; removed if shred is missing).
+const PACKAGE_CLEANUP: &str = "rm -f /root/wp-package.tar.gz /root/wp-package.conf; shred -u /root/wp-package-keys.env 2>/dev/null || rm -f /root/wp-package-keys.env";
 /// The site software's command line inside the container.
 const WP_CLI: &str = "/usr/local/bin/wp";
 /// Characters of a password, and how many.
@@ -243,6 +256,59 @@ fn read_admins(paths: &HostPaths) -> Result<Vec<(String, String)>, String> {
     admins(text.as_deref()).map_err(|e| format!("{e}: {}", paths.site_admins.display()))
 }
 
+/// One host file into the container, root only.
+fn push(runner: &mut impl Runner, ct: &str, from: &str, to: &str) -> Result<(), String> {
+    runner
+        .run(&owned(&["pct", "push", ct, from, to, "--perms", "0600"]))
+        .map(|_| ())
+        .map_err(|e| format!("install_failed: push {to}: {e}"))
+}
+
+/// The template package goes in before the installer (the old ez2-site-create step 5;
+/// the template container has none, so without it no paid plugin is installed and the
+/// licences step cannot pass). A blank opening gets an empty list instead. Keys go by
+/// file, never as an argument.
+fn push_package(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    spec: &SiteSpec,
+) -> Result<(), String> {
+    if !spec.wp {
+        return runner
+            .run(&in_ct(spec.ct, &["truncate", "-s", "0", PACKAGE_LIST]))
+            .map(|_| ())
+            .map_err(|e| format!("install_failed: {PACKAGE_LIST}: {e}"));
+    }
+    if !paths.package.join("plugins").is_dir() || !paths.package_conf.is_file() {
+        return Err(format!(
+            "install_failed: the template package is not on the host ({} with plugins/, {})",
+            paths.package.display(),
+            paths.package_conf.display()
+        ));
+    }
+    let n = spec.ct.to_string();
+    let archive = format!("/tmp/{}-wp-package.tar.gz", spec.code);
+    let dir = paths.package.to_string_lossy().into_owned();
+    let made = runner
+        .run(&owned(&["tar", "-czf", &archive, "-C", &dir, "."]))
+        .map_err(|e| format!("install_failed: pack the template package: {e}"));
+    let pushed = made.and_then(|_| push(runner, &n, &archive, PACKAGE_IN_CT));
+    // the archive leaves the host whatever happened
+    let dropped = runner.run(&owned(&["rm", "-f", &archive]));
+    pushed?;
+    dropped.map_err(|e| format!("install_failed: {archive} stays on the host: {e}"))?;
+    push(
+        runner,
+        &n,
+        &paths.package_conf.to_string_lossy(),
+        PACKAGE_LIST,
+    )?;
+    if paths.keys.is_file() {
+        push(runner, &n, &paths.keys.to_string_lossy(), KEYS_IN_CT)?;
+    }
+    Ok(())
+}
+
 /// The install: the reviewed installer pushed in, run, removed; the site software must
 /// say it is installed; then the scheduler.
 pub fn install_step(
@@ -255,12 +321,7 @@ pub fn install_step(
     let admins = read_admins(paths)?;
     let (notice, _) = notice_address(record, &admins)?;
     let n = spec.ct.to_string();
-    if !spec.wp {
-        // blank: the site software only, no template package
-        runner
-            .run(&in_ct(spec.ct, &["rm", "-f", PACKAGE_LIST]))
-            .map_err(|e| format!("install_failed: {PACKAGE_LIST}: {e}"))?;
-    }
+    push_package(runner, paths, spec)?;
     let setup = paths.setup.to_string_lossy().into_owned();
     runner
         .run(&owned(&[
@@ -293,10 +354,12 @@ pub fn install_step(
             &notice,
         ],
     ));
-    // the installer leaves the container whatever it said
+    // the installer and the package leave the container whatever it said
     let removed = runner.run(&in_ct(spec.ct, &["rm", "-f", SETUP_IN_CT]));
+    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", PACKAGE_CLEANUP]));
     ran.map_err(|e| format!("install_failed: the installer: {e}"))?;
     removed.map_err(|e| format!("install_failed: {SETUP_IN_CT} stays in the container: {e}"))?;
+    cleaned.map_err(|e| format!("install_failed: the package stays in the container: {e}"))?;
     runner
         .run(&wp(spec, &["core", "is-installed"]))
         .map_err(|e| format!("install_not_done: the site software is not installed: {e}"))?;
@@ -463,6 +526,35 @@ pub fn identity_step(
         }
     }
     let admins = read_admins(paths)?;
+    // The installer gave its administrator the site's notice address, which is the first
+    // site administrator's when the customer gave none; the site software refuses a second
+    // user with that address, so the installer's administrator lets go of it first (e1a
+    // 11-12: user create failed). It is removed after the loop.
+    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some()
+    {
+        let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);
+        let flag = format!("--user_email={parked}");
+        runner
+            // --skip-email: the site software would otherwise mail "Email Changed" to the
+            // address let go of, the first administrator's (c477a M1; no mail on opening)
+            .run(&wp(
+                spec,
+                &["user", "update", SETUP_ADMIN, &flag, "--skip-email"],
+            ))
+            .map_err(|e| format!("identity_failed: {SETUP_ADMIN} address: {e}"))?;
+        let back = runner
+            .run(&wp(
+                spec,
+                &["user", "get", SETUP_ADMIN, "--field=user_email"],
+            ))
+            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;
+        if back.trim() != parked {
+            return Err(format!(
+                "identity_not_set: {SETUP_ADMIN} address reads {:?}",
+                back.trim()
+            ));
+        }
+    }
     let mut first_id: Option<String> = None;
     let mut logins = Vec::new();
     for (email, login) in &admins {
@@ -570,6 +662,13 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("secrets")).unwrap();
         fs::write(d.join("site-admins"), ADMINS).unwrap();
+        fs::create_dir_all(d.join("wp-package/plugins")).unwrap();
+        fs::write(
+            d.join("wp-package.conf"),
+            "plugin|wp-seopress|pkg|activate|-\n",
+        )
+        .unwrap();
+        fs::write(d.join("keys.env"), "SEOPRESS_PRO_LICENSE_KEY=\"tmplkey\"\n").unwrap();
         HostPaths {
             creating: d.join("creating"),
             lxc_conf: d.join("lxc"),
@@ -577,6 +676,8 @@ mod tests {
             secrets: d.join("secrets"),
             site_admins: d.join("site-admins"),
             setup: PathBuf::from("/usr/local/sbin/ez2-site-setup"),
+            package: d.join("wp-package"),
+            package_conf: d.join("wp-package.conf"),
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
@@ -594,6 +695,13 @@ mod tests {
         fed: Vec<(String, Vec<u8>)>,
         options: std::collections::BTreeMap<String, String>,
         users: Vec<String>,
+        /// each user's address; the installer's administrator has the install's notice
+        /// address, as ez2-site-setup gives it
+        emails: std::collections::BTreeMap<String, String>,
+        /// the options after the address of the last `user update`
+        updated: Vec<String>,
+        /// a `user update` that says it worked but keeps the old address
+        sticky_email: bool,
         cron: Option<String>,
         enabled: bool,
         /// a command (joined argv contains it) that fails
@@ -607,6 +715,9 @@ mod tests {
                 fed: Vec::new(),
                 options: Default::default(),
                 users: vec![SETUP_ADMIN.to_owned()],
+                emails: [(SETUP_ADMIN.to_owned(), "ops@example.test".to_owned())].into(),
+                updated: Vec::new(),
+                sticky_email: false,
                 cron: None,
                 enabled: false,
                 broken: None,
@@ -664,12 +775,31 @@ mod tests {
                     .position(|u| u == login)
                     .map(|i| format!("{}\n", i + 1))
                     .ok_or("no user".to_owned()),
-                ["user", "create", login, ..] => {
+                ["user", "create", login, email, ..] => {
+                    // the site software takes no second user with an address in use
+                    if self.emails.values().any(|e| e == email) {
+                        return Err("Error: Sorry, that email address is already used!".to_owned());
+                    }
                     self.users.push((*login).to_owned());
+                    self.emails.insert((*login).to_owned(), (*email).to_owned());
                     Ok(format!("{}\n", self.users.len()))
                 }
+                ["user", "update", login, flag, rest @ ..] => {
+                    let email = flag.strip_prefix("--user_email=").ok_or("flag")?;
+                    self.updated = rest.iter().map(|r| (*r).to_owned()).collect();
+                    if !self.sticky_email {
+                        self.emails.insert((*login).to_owned(), email.to_owned());
+                    }
+                    Ok(String::new())
+                }
+                ["user", "get", login, "--field=user_email"] => self
+                    .emails
+                    .get(*login)
+                    .map(|e| format!("{e}\n"))
+                    .ok_or("no user".to_owned()),
                 ["user", "delete", login, ..] => {
                     self.users.retain(|u| u != login);
+                    self.emails.remove(*login);
                     Ok(String::new())
                 }
                 _ => Ok(String::new()),
@@ -709,7 +839,10 @@ mod tests {
             .calls
             .contains(&format!("pct exec 131 -- rm -f {SETUP_IN_CT}")));
         assert!(
-            !site.calls.iter().any(|c| c.contains(PACKAGE_LIST)),
+            !site
+                .calls
+                .iter()
+                .any(|c| c.contains(&format!("truncate -s 0 {PACKAGE_LIST}"))),
             "a template site keeps its package"
         );
         assert_eq!(site.cron.as_deref(), Some("1"));
@@ -730,12 +863,68 @@ mod tests {
         );
     }
 
+    /// A template opening gets the package, its list and the keys before the installer
+    /// (the old ez2-site-create step 5); all three leave the container after, the keys
+    /// shredded, and no key is ever an argument (audit 11-12 #1, #9).
+    #[test]
+    fn the_template_package_goes_in_before_the_installer_and_out_after() {
+        let paths = scratch("package");
+        let mut site = Site::new();
+        install_step(&mut site, &paths, &spec(true), &json!({})).unwrap();
+        let at = |part: &str| {
+            site.calls
+                .iter()
+                .position(|c| c.contains(part))
+                .unwrap_or_else(|| panic!("{part}: {:#?}", site.calls))
+        };
+        let dir = paths.package.display().to_string();
+        let tar = at(&format!(
+            "tar -czf /tmp/s-b3test-wp-package.tar.gz -C {dir} ."
+        ));
+        let archive =
+            at("pct push 131 /tmp/s-b3test-wp-package.tar.gz /root/wp-package.tar.gz --perms 0600");
+        let dropped = at("rm -f /tmp/s-b3test-wp-package.tar.gz");
+        let list = at(&format!(
+            "pct push 131 {} /root/wp-package.conf --perms 0600",
+            paths.package_conf.display()
+        ));
+        let keys = at(&format!(
+            "pct push 131 {} /root/wp-package-keys.env --perms 0600",
+            paths.keys.display()
+        ));
+        let setup = at("/root/ez2-site-setup s-b3test");
+        let cleaned = at(&format!("pct exec 131 -- sh -c {PACKAGE_CLEANUP}"));
+        assert!(
+            tar < archive && archive < dropped && dropped < list && list < keys && keys < setup
+        );
+        assert!(setup < cleaned);
+        assert!(PACKAGE_CLEANUP.contains("shred -u /root/wp-package-keys.env"));
+        assert!(
+            !site.calls.iter().any(|c| c.contains("tmplkey")),
+            "a key is never an argument"
+        );
+        // the cleanup runs even when the installer fails
+        let mut site = Site::new();
+        site.broken = Some("/root/ez2-site-setup s-b3test");
+        assert!(install_step(&mut site, &paths, &spec(true), &json!({})).is_err());
+        assert!(site.calls.iter().any(|c| c.contains(PACKAGE_CLEANUP)));
+        // no package on the host: stopped before the installer, nothing fetched instead
+        fs::remove_file(&paths.package_conf).unwrap();
+        let mut site = Site::new();
+        let err = install_step(&mut site, &paths, &spec(true), &json!({})).unwrap_err();
+        assert!(
+            err.contains("the template package is not on the host"),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains("ez2-site-setup")));
+    }
+
     #[test]
     fn a_blank_install_drops_the_template_package_first() {
         let paths = scratch("blank");
         let mut site = Site::new();
         install_step(&mut site, &paths, &spec(false), &json!({ "blank": true })).unwrap();
-        let drop = format!("pct exec 131 -- rm -f {PACKAGE_LIST}");
+        let drop = format!("pct exec 131 -- truncate -s 0 {PACKAGE_LIST}");
         let at = site.calls.iter().position(|c| *c == drop).expect("dropped");
         let setup = site
             .calls
@@ -743,6 +932,13 @@ mod tests {
             .position(|c| c.contains("/root/ez2-site-setup s-b3test"))
             .unwrap();
         assert!(at < setup);
+        assert!(
+            !site
+                .calls
+                .iter()
+                .any(|c| c.contains("wp-package.tar.gz -C")),
+            "a blank opening gets no package"
+        );
     }
 
     #[test]
@@ -767,10 +963,59 @@ mod tests {
         site.broken = Some("/root/ez2-site-setup s-b3test");
         let err = install_step(&mut site, &paths, &spec(true), &json!({})).unwrap_err();
         assert!(err.starts_with("install_failed: the installer"), "{err}");
+        // the installer goes, then the template package and its keys (always last)
+        let n = site.calls.len();
         assert_eq!(
-            site.calls.last().map(String::as_str),
-            Some(format!("pct exec 131 -- rm -f {SETUP_IN_CT}").as_str())
+            site.calls[n - 2..],
+            [
+                format!("pct exec 131 -- rm -f {SETUP_IN_CT}"),
+                format!("pct exec 131 -- sh -c {PACKAGE_CLEANUP}"),
+            ]
         );
+    }
+
+    /// The installer's administrator has the first administrator's address (the notice
+    /// address when the customer gave none): it lets go of it before that administrator is
+    /// created, or the site software refuses the user (e1a 11-12).
+    #[test]
+    fn the_installer_s_address_is_let_go_before_the_first_administrator() {
+        let paths = scratch("setupmail");
+        let mut site = Site::new();
+        assert_eq!(site.emails[SETUP_ADMIN], "ops@example.test");
+        let mut record = json!({});
+        identity_step(&mut site, &paths, &spec(true), &mut record).unwrap();
+        let at = |part: &str| site.calls.iter().position(|c| c.contains(part)).unwrap();
+        let parked = at("user update ez2admin --user_email=ez2admin@s-b3test.invalid");
+        assert!(
+            parked < at("user create ops ops@example.test"),
+            "{:#?}",
+            site.calls
+        );
+        assert_eq!(site.users, ["ops", "ops2"]);
+        assert_eq!(site.emails["ops"], "ops@example.test");
+        assert_eq!(
+            site.updated,
+            ["--skip-email"],
+            "no Email Changed mail (c477a M1)"
+        );
+        // an address that is not taken stops the step before any user is created (c477a N1)
+        let mut site = Site::new();
+        site.sticky_email = true;
+        let err = identity_step(&mut site, &paths, &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_not_set: ez2admin address"),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains("user create")));
+        // an address that does not read back stops the step before any user is created
+        let mut site = Site::new();
+        site.broken = Some("--field=user_email");
+        let err = identity_step(&mut site, &paths, &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_unchecked: ez2admin address"),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains("user create")));
     }
 
     #[test]
