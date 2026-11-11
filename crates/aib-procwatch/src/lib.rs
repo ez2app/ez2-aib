@@ -93,9 +93,8 @@ pub fn argv_label(argv: &[String]) -> String {
     let mut n = 0usize;
     for word in argv {
         let mut w = String::new();
-        let mut wn = 0usize;
         let mut cut = false;
-        for c in word.chars() {
+        for (wn, c) in word.chars().enumerate() {
             if wn == ARGV_WORD_MAX {
                 cut = true;
                 break;
@@ -109,7 +108,6 @@ pub fn argv_label(argv: &[String]) -> String {
             } else {
                 c
             });
-            wn += 1;
         }
         if cut {
             w.push('…');
