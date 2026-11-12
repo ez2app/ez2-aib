@@ -63,16 +63,12 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-/// 台北 HH:MM;不是今天就加 MM-DD
-pub fn stamp(epoch: i64, now: i64) -> String {
+/// 台北 MM-DD HH:MM(Andy 11-12 13:4x:時間都要含日期)
+pub fn stamp(epoch: i64, _now: i64) -> String {
     let t = epoch + TAIPEI;
     let (h, mi) = (t.rem_euclid(86_400) / 3600, t.rem_euclid(3600) / 60);
-    if epoch >= day_start(now) && epoch < day_start(now) + 86_400 {
-        format!("{h:02}:{mi:02}")
-    } else {
-        let (_, m, d) = civil(t.div_euclid(86_400));
-        format!("{m:02}-{d:02} {h:02}:{mi:02}")
-    }
+    let (_, m, d) = civil(t.div_euclid(86_400));
+    format!("{m:02}-{d:02} {h:02}:{mi:02}")
 }
 
 /// 讀 seat-now/<席>.json;讀不到 / 壞掉 / --clear(idle)⇒ None
@@ -128,6 +124,63 @@ pub fn first_today(log: &[Entry], cur: Option<&Entry>, now: i64) -> Option<Entry
         .min_by_key(|e| e.seen)
         .cloned()
         .or_else(|| cur.cloned())
+}
+
+/// 別席：只讀(不替別席記任何東西)。aib now 歷史 + aib-plan 舊記(有就讀)取今天最早
+pub fn peek(state_root: &Path, seat: &str, now: i64) -> Mainline {
+    let cur = read_now(state_root, seat);
+    let mut log = parse_log(
+        &std::fs::read_to_string(
+            state_root
+                .join("seat-now")
+                .join(format!("{seat}.history.jsonl")),
+        )
+        .unwrap_or_default(),
+    );
+    log.extend(parse_log(
+        &std::fs::read_to_string(
+            state_root
+                .join("aib-plan")
+                .join(format!("mainline-{seat}.jsonl")),
+        )
+        .unwrap_or_default(),
+    ));
+    Mainline {
+        first: first_today(&log, cur.as_ref(), now),
+        now: cur,
+    }
+}
+
+fn bigrams(s: &str) -> std::collections::HashSet<(char, char)> {
+    let cs: Vec<char> = s
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    cs.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// 兩句主軸字面有多像(相鄰兩字的 Jaccard,0~1)
+pub fn similarity(a: &str, b: &str) -> f64 {
+    let (x, y) = (bigrams(a), bigrams(b));
+    if x.is_empty() && y.is_empty() {
+        return 1.0;
+    }
+    x.intersection(&y).count() as f64 / x.union(&y).count() as f64
+}
+
+/// 自稱「主軸內」,但目前主軸跟今天一開始的主軸字面幾乎不同 ⇒ 值得人看一眼(只是提示，不是判定)
+pub const DRIFT_HINT_BELOW: f64 = 0.15;
+
+pub fn drift_hint(m: &Mainline) -> bool {
+    match (&m.first, &m.now) {
+        (Some(f), Some(n)) => {
+            n.review.as_ref().is_some_and(Review::on_track)
+                && f.started_at != n.started_at
+                && similarity(&f.item, &n.item) < DRIFT_HINT_BELOW
+        }
+        _ => false,
+    }
 }
 
 /// 讀現況 + 補記 + 算兩行要的資料。寫記錄失敗不影響顯示。
@@ -189,10 +242,11 @@ mod tests {
     #[test]
     fn taipei_stamp_and_day_start() {
         let ds = day_start(NOW);
-        assert_eq!(stamp(ds, NOW), "00:00");
-        assert_eq!(stamp(ds + 9 * 60, NOW), "00:09");
-        // 前一天 → 帶日期
+        assert_eq!(stamp(ds, NOW), "11-12 00:00");
+        assert_eq!(stamp(ds + 9 * 60, NOW), "11-12 00:09");
         assert_eq!(stamp(ds - 60, NOW), "11-11 23:59");
+        // 跨年
+        assert_eq!(stamp(1_798_761_600 - TAIPEI, NOW), "01-01 00:00");
         assert_eq!(day_start(ds), ds);
         assert_eq!(day_start(ds - 1), ds - 86_400);
     }
@@ -293,6 +347,61 @@ mod tests {
             read_now(&dir, "s3").unwrap().review.is_none(),
             "track 只收 on / off"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drift_hint_flags_on_track_claims_with_a_different_topic() {
+        let rv = |track: &str| {
+            Some(Review {
+                track: track.into(),
+                why: "w".into(),
+                idea: "i".into(),
+                at: 0,
+            })
+        };
+        let m = |first: &str, now: &str, track: &str| Mainline {
+            first: Some(e(first, 1, 1)),
+            now: Some(Entry {
+                review: rv(track),
+                ..e(now, 2, 2)
+            }),
+        };
+        assert!(similarity("aib-plan 主軸兩行", "aib-plan 主軸兩行已裝") > 0.6);
+        assert!(similarity("席位接續 v2 決定", "主機發熱三條修法") < 0.15);
+        assert!(drift_hint(&m("席位接續 v2 決定", "主機發熱三條修法", "on")));
+        assert!(
+            !drift_hint(&m("席位接續 v2 決定", "主機發熱三條修法", "off")),
+            "自己說偏離就不用提示"
+        );
+        assert!(!drift_hint(&m(
+            "aib-plan 主軸兩行",
+            "aib-plan 主軸兩行已裝",
+            "on"
+        )));
+        let same_start = Mainline {
+            first: Some(e("A 主題", 2, 2)),
+            now: Some(Entry {
+                review: rv("on"),
+                ..e("完全不同", 2, 3)
+            }),
+        };
+        assert!(!drift_hint(&same_start), "同一個主軸(開始時間相同)只是改字");
+    }
+
+    #[test]
+    fn peek_never_writes() {
+        let dir = std::env::temp_dir().join(format!("aib-plan-pk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("seat-now")).unwrap();
+        std::fs::write(
+            dir.join("seat-now/s4.json"),
+            "{\"item\":\"做 X\",\"started_at\":1,\"at\":2}",
+        )
+        .unwrap();
+        let m = peek(&dir, "s4", NOW);
+        assert_eq!(m.now.unwrap().item, "做 X");
+        assert!(!dir.join("aib-plan").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

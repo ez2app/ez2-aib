@@ -9,7 +9,7 @@
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
-//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 ·
+//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · j 開合全艙判斷 ·
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
@@ -38,6 +38,20 @@ fn epoch_now() -> i64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 本艙每一席(進度資料的席位表)的主軸;只讀
+fn fleet_of(app: &App, now: i64) -> Vec<(String, Mainline)> {
+    let root = state_dir();
+    let mut seats = app.cabin_seats();
+    seats.sort();
+    seats
+        .into_iter()
+        .map(|c| {
+            let m = mainline::peek(&root, &c, now);
+            (c, m)
+        })
+        .collect()
 }
 
 /// 這個窗格屬於哪一席:tmux show -wv -t $TMUX_PANE @aib_seat;不在 tmux / 讀不到 ⇒ None
@@ -166,6 +180,9 @@ struct App {
     now_secs: i64,
     /// 判斷內容展開了沒(預設收合)
     main_open: bool,
+    /// 全艙判斷(本艙每一席的一開始 / 目前主軸 + 判斷);展開了沒(預設收合)
+    fleet: Vec<(String, Mainline)>,
+    fleet_open: bool,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -174,6 +191,8 @@ struct Hits {
     toolbar_y: Option<usize>,
     /// 目前主軸那一行(點了開合判斷內容)
     mainline_y: Option<usize>,
+    /// 一開始主軸那一行(行尾「全艙判斷」,點了開合全艙)
+    fleet_y: Option<usize>,
     toolbar: String,
     tree_top: usize,
     tree_rows: Vec<usize>,
@@ -199,6 +218,10 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     let h = app.hits.borrow().clone();
     if h.mainline_y == Some(y) {
         app.main_open = !app.main_open;
+        return true;
+    }
+    if h.fleet_y == Some(y) {
+        app.fleet_open = !app.fleet_open;
         return true;
     }
     if h.toolbar_y == Some(y) {
@@ -425,6 +448,40 @@ fn verdict(e: Option<&mainline::Entry>) -> (&'static str, Color) {
     }
 }
 
+/// 全艙判斷：每席一行 —— @席 判斷 一開始(時)：… → 目前(時)：…;自稱主軸內但字面換題 ⇒ ⚠ 換題?
+fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
+    let item = |e: Option<&mainline::Entry>| match e {
+        Some(e) => format!("({}){}", mainline::stamp(e.started_at, now), e.item),
+        None => "(—)沒有回報".to_string(),
+    };
+    fleet
+        .iter()
+        .map(|(code, m)| {
+            let (v, c) = verdict(m.now.as_ref());
+            let mut row = vec![
+                seg(format!("  @{code} ")),
+                Seg(format!("{v} "), Some(c), false, true),
+                Seg(
+                    format!("一開始{} → ", item(m.first.as_ref())),
+                    Some(Color::DarkGrey),
+                    false,
+                    false,
+                ),
+                Seg(
+                    format!("目前{}", item(m.now.as_ref())),
+                    Some(Color::White),
+                    false,
+                    false,
+                ),
+            ];
+            if mainline::drift_hint(m) {
+                row.push(Seg(" ⚠ 換題?".into(), Some(Color::Yellow), false, true));
+            }
+            row
+        })
+        .collect()
+}
+
 /// 照顯示寬度折行(中日韓字算兩格)
 fn wrap(s: &str, w: usize) -> Vec<String> {
     let w = w.max(4);
@@ -525,12 +582,33 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
     // Andy 11-12 13:1x:最上面兩行 = 本席一開始主軸 / 目前開發主軸(開始時間)/現在時間
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
-    let mut mainline_y = None;
+    let (mut mainline_y, mut fleet_y) = (None, None);
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
-        let rows = mainline_rows(m, app.now_secs, w, app.main_open);
+        let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
+        // 艦長用(Andy 11-12 13:4x):一開始那行尾端「全艙判斷 ▸」,點開看各席判斷 + 一開始 / 目前並排
+        if !app.fleet.is_empty() {
+            let hints = app
+                .fleet
+                .iter()
+                .filter(|(_, f)| mainline::drift_hint(f))
+                .count();
+            rows[0].push(Seg(
+                format!("   全艙判斷 {}", if app.fleet_open { "▾" } else { "▸" }),
+                Some(Color::Cyan),
+                false,
+                true,
+            ));
+            if hints > 0 {
+                rows[0].push(Seg(format!(" ⚠{hints}"), Some(Color::Yellow), false, true));
+            }
+            fleet_y = Some(out.len());
+        }
         mainline_y = Some(out.len() + 1);
         out.extend(rows);
+        if app.fleet_open {
+            out.extend(fleet_rows(&app.fleet, app.now_secs));
+        }
     }
     // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
     out.push(Vec::new());
@@ -540,6 +618,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         toolbar_y: Some(out.len() - 1),
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
         mainline_y,
+        fleet_y,
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -819,6 +898,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
             }
         }
         (KeyCode::Char('m'), _) => app.main_open = !app.main_open,
+        (KeyCode::Char('j'), _) => app.fleet_open = !app.fleet_open,
         (KeyCode::Char('e'), _) => {
             app.open = app
                 .plan
@@ -895,6 +975,8 @@ fn main() {
         mainline: None,
         now_secs: epoch_now(),
         main_open: false,
+        fleet: Vec::new(),
+        fleet_open: false,
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     if args.seat.is_none() {
@@ -903,6 +985,7 @@ fn main() {
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
+    app.fleet = fleet_of(&app, app.now_secs);
     app.load(&args.data);
     if let Some(i) = index(&app.plan).by.get("SC") {
         app.sel = *i;
@@ -1035,6 +1118,11 @@ fn main() {
                 }
                 app.mainline = m;
                 app.now_secs = now;
+                let f = fleet_of(&app, now);
+                if f != app.fleet {
+                    dirty = true;
+                }
+                app.fleet = f;
             }
             last_check = Instant::now();
         }
@@ -1076,6 +1164,8 @@ mod tests {
             mainline: None,
             now_secs: 0,
             main_open: false,
+            fleet: Vec::new(),
+            fleet_open: false,
         }
     }
 
@@ -1108,7 +1198,7 @@ mod tests {
         assert!(
             text(&f, 1)
                 .trim_start()
-                .starts_with("本席AI一開始主軸(00:09)/"),
+                .starts_with("本席AI一開始主軸(11-12 00:09)/11-12 "),
             "{}",
             text(&f, 1)
         );
@@ -1153,7 +1243,7 @@ mod tests {
         let f = frame(&app, 100, 40);
         assert!(text(&f, 2).ends_with(" ▾"));
         assert!(
-            text(&f, 3).contains("為什麼這麼做(回報 00:10)"),
+            text(&f, 3).contains("為什麼這麼做(回報 11-12 00:10)"),
             "{}",
             text(&f, 3)
         );
@@ -1167,6 +1257,67 @@ mod tests {
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
         );
         assert!(!app.main_open);
+    }
+
+    /// Andy 11-12 13:4x:全艙判斷 —— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
+    #[test]
+    fn fleet_rows_toggle_and_flag_topic_change() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        let now = 1_794_460_800;
+        app.now_secs = now;
+        let en = |item: &str, st: i64, track: Option<&str>| mainline::Entry {
+            item: item.into(),
+            started_at: st,
+            seen: st,
+            review: track.map(|t| mainline::Review {
+                track: t.into(),
+                why: "w".into(),
+                idea: "i".into(),
+                at: st,
+            }),
+        };
+        app.mainline = Some(Mainline {
+            first: Some(en("席位接續 v2 決定", 1, None)),
+            now: None,
+        });
+        app.fleet = vec![
+            (
+                "aaaaa".into(),
+                Mainline {
+                    first: Some(en("席位接續 v2 決定", 1, None)),
+                    now: Some(en("主機發熱三條修法", 2, Some("on"))),
+                },
+            ),
+            ("bbbbb".into(), Mainline::default()),
+        ];
+        let text =
+            |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let f = frame(&app, 160, 40);
+        assert!(text(&f, 1).contains("全艙判斷 ▸ ⚠1"), "{}", text(&f, 1));
+        assert!(text(&f, 3).is_empty(), "預設收合");
+        assert_eq!(app.hits.borrow().fleet_y, Some(1));
+        assert!(on_click(&mut app, 0, 1));
+        let f = frame(&app, 160, 40);
+        assert!(text(&f, 1).contains("全艙判斷 ▾"));
+        let a = text(&f, 3);
+        assert!(a.starts_with("  @aaaaa 判斷:主軸內 一開始"), "{a}");
+        assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
+        assert!(
+            text(&f, 4).starts_with("  @bbbbb 判斷:未回報"),
+            "{}",
+            text(&f, 4)
+        );
+        assert!(!text(&f, 4).contains('⚠'));
+        assert!(text(&f, 5).is_empty());
+        on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        assert!(!app.fleet_open);
     }
 
     #[test]
