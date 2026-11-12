@@ -1951,6 +1951,17 @@ jobs:
              each_place_read_is_scanned
           hk brandcheckcmd.rs '        Scan::Dirty { hits } => (1,' '        Scan::Dirty { hits } => (0,' \
              the_report_names_places_and_words_never_what_was_read
+          # site leakcheck: a hide word in an answer is not looked for (E6 S9)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
+             a_leak_word_in_any_answer_is_a_leak
+          # site leakcheck: an answer that could not be read counts as a pass (E6 S9)
+          hk leakcheckcmd.rs '        return (State::Unread, why);' '        return (State::Pass, why); // knife' \
+             an_unreadable_probe_is_not_a_pass
+          # site leakcheck: a failed check's host word is only looked for when it did not fail (c477a S9 L1)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if unread.is_none() && hide.is_some_and(|h| h.hide(&seen).1 > 0) { // knife' \
+             a_failed_check_that_names_the_host_is_a_leak
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \

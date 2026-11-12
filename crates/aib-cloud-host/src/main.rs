@@ -30,6 +30,7 @@
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host site brand-check <code> [--records dir] [--json]   (a hidden site's brand scan: B1 B2 B3 B10 read so far, the rest named as not read; read-only)
 //! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
+//! aib-cloud-host site leakcheck <code> --out <file> [--records dir]   (E6: the inside checklist as the site's own user, judged pass / leak / unread; answers only into the 0600 file, counts on standard output; read-only)
 //! aib-cloud-host ct mask                         (lxc.hook.mount of a site CT: covers what it would read of the machine underneath)
 //! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
@@ -57,6 +58,8 @@ mod cfdns;
 mod customercmd;
 #[cfg(unix)]
 mod edgecmd;
+#[cfg(unix)]
+mod leakcheckcmd;
 #[cfg(unix)]
 mod leakwordscmd;
 #[cfg(unix)]
