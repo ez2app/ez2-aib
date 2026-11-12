@@ -1430,8 +1430,8 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             text(&l[0])
         );
         // 兩行說明置中：左右空白差不超過 1
-        for y in 0..2 {
-            let t = text(&l[y]);
+        for (y, row) in l.iter().enumerate().take(2) {
+            let t = text(row);
             let left = t.len() - t.trim_start().len();
             assert!(
                 left > 0 && left.abs_diff(102 - w(&t)) <= 1,
