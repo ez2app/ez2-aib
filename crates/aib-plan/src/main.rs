@@ -13,7 +13,7 @@
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
-    chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Plan, PASS,
+    chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Node, Plan, PASS,
 };
 use crossterm::{
     cursor,
@@ -196,6 +196,8 @@ struct Hits {
     mainline_y: Option<usize>,
     /// 一開始主軸那一行(行尾「全艙判斷」,點了開合全艙)
     fleet_y: Option<usize>,
+    /// 右上角「建議 N」在第幾行、從第幾格到第幾格(點了跳到樹上的建議分支)
+    sugg: Option<(usize, usize, usize)>,
     /// 「起點」那一行(點了跳到樹上對應的項目)
     start_y: Option<usize>,
     /// 目前那一行「▸ 理由」從第幾格起(點那裡才開合;前面點了跳到樹上)
@@ -244,6 +246,11 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
             .and_then(|m| m.now.as_ref())
             .map(|e| e.item.clone());
         return jump_to(app, item.as_deref());
+    }
+    if let Some((sy, x0, x1)) = h.sugg {
+        if sy == y && x >= x0 && x < x1 {
+            return jump_to_suggestions(app);
+        }
     }
     if h.fleet_y == Some(y) {
         app.fleet_open = !app.fleet_open;
@@ -354,6 +361,40 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
             ""
         }
     ));
+    select(app, idx);
+    true
+}
+
+/// 建議分支:kind = "suggestion" 的節點與它們的上層。回 (上層在 nodes 的位置, 還沒完成的件數)
+fn suggestions(plan: &Plan) -> Option<(usize, usize)> {
+    let items: Vec<&Node> = plan
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "suggestion")
+        .collect();
+    let parent = items.first()?.parent.as_deref()?;
+    let at = plan.nodes.iter().position(|n| n.id == parent)?;
+    let open = items
+        .iter()
+        .filter(|n| n.status.as_deref() != Some("實查通過"))
+        .count();
+    Some((at, open))
+}
+
+/// 點右上角「建議 N」:跳到建議分支並展開，看得到每一項
+fn jump_to_suggestions(app: &mut App) -> bool {
+    let Some((idx, open)) = suggestions(&app.plan) else {
+        return true;
+    };
+    app.jump_note = Some(format!("跳到:建議(還沒完成 {open} 項)"));
+    let id = app.plan.nodes[idx].id.clone();
+    app.open.insert(id);
+    select(app, idx);
+    true
+}
+
+/// 選到那一項：展開祖先;被篩選藏起來就清掉篩選
+fn select(app: &mut App, idx: usize) {
     let ix = index(&app.plan);
     let mut cur = app.plan.nodes[idx].parent.clone();
     while let Some(pid) = cur {
@@ -371,7 +412,6 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
     {
         app.filter = Filter::default();
     }
-    true
 }
 
 impl App {
@@ -779,6 +819,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
     let (mut mainline_y, mut fleet_y) = (None, None);
     let (mut start_y, mut toggle_x) = (None, None);
+    let mut sugg = None;
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
         let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
@@ -789,6 +830,17 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             false,
             false,
         )];
+        // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
+        let mut sugg_at = None;
+        if let Some((_, open)) = suggestions(&app.plan) {
+            sugg_at = Some(tail.len());
+            tail.push(Seg(
+                format!("   建議 {open}"),
+                Some(Color::Magenta),
+                false,
+                true,
+            ));
+        }
         if !app.fleet.is_empty() {
             // Andy 14:3x:⚠ 直接寫席碼(最多兩席，其餘 +N),不展開就知道看誰
             let hints: Vec<&str> = app
@@ -818,6 +870,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         let width = |r: &[Seg]| r.iter().map(|g| str_width(&g.0)).sum::<usize>();
         let gap = w.saturating_sub(width(&rows[0]) + width(&tail) + 2).max(3);
         rows[0].push(seg(" ".repeat(gap)));
+        if let Some(k) = sugg_at {
+            // 「   建議 N」的前三格是空白，點字才算
+            let x0 = width(&rows[0]) + width(&tail[..k]) + 3;
+            sugg = Some((out.len(), x0, x0 + str_width(&tail[k].0) - 3));
+        }
         rows[0].extend(tail);
         mainline_y = Some(out.len() + 2);
         start_y = Some(out.len() + 1);
@@ -843,6 +900,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
         mainline_y,
         fleet_y,
+        sugg,
         start_y,
         toggle_x,
         ..Hits::default()
@@ -1400,6 +1458,54 @@ mod tests {
             fleet_open: false,
             jump_note: None,
         }
+    }
+
+    /// Andy 11-12 22:3x:右上角「建議 N」(還沒完成的件數),點字跳到樹上的建議分支並展開;點同一行別處照舊開合全艙
+    #[test]
+    fn the_suggestions_badge_jumps_to_the_suggestions_branch() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+                {"id":"G","parent":"V","kind":"group","title":"別的"},
+                {"id":"S","parent":"V","kind":"group","title":"建議"},
+                {"id":"S1","parent":"S","kind":"suggestion","title":"一","status":"實查通過"},
+                {"id":"S2","parent":"S","kind":"suggestion","title":"二","status":"未開始"},
+                {"id":"S3","parent":"S","kind":"suggestion","title":"三"}]}"#,
+        )
+        .unwrap();
+        app.mainline = Some(Mainline::default());
+        app.fleet = vec![("aaaaa".into(), Mainline::default())];
+        let text =
+            |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let f = frame(&app, 120, 30);
+        let top = text(&f, 1);
+        assert!(top.contains("   建議 2   全艙 ▸"), "{top}");
+        let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
+        assert_eq!(y, 1);
+        assert_eq!(x1 - x0, str_width("建議 2"));
+        let before: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert_eq!(
+            str_width(&before[..before.find("建議").unwrap()]),
+            x0,
+            "點的範圍對準字"
+        );
+        // 點「建議」:選到建議分支、展開它，看得到子項
+        assert!(on_click(&mut app, x0, y));
+        assert_eq!(app.plan.nodes[app.sel].id, "S");
+        assert!(app.open.contains("S"));
+        assert!(!app.fleet_open, "點建議不開全艙");
+        assert!(app.jump_note.as_deref().unwrap().contains("還沒完成 2 項"));
+        // 點同一行最左邊 ⇒ 照舊開合全艙
+        assert!(on_click(&mut app, 0, y));
+        assert!(app.fleet_open);
+        // 沒有建議節點 ⇒ 不顯示
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        let f = frame(&app, 120, 30);
+        assert!(!text(&f, 1).contains("建議"));
+        assert!(app.hits.borrow().sugg.is_none());
     }
 
     /// Andy 11-12 13:1x:有 --seat ⇒ 最上面兩行是一開始 / 目前主軸，下一行空白，再來才是選單;點選單照樣對得到
