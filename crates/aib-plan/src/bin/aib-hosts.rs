@@ -18,7 +18,7 @@ use crossterm::{
     cursor, event,
     event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
     execute, queue,
-    style::{Color, Print, ResetColor, SetForegroundColor},
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal,
 };
 use serde_json::Value;
@@ -59,6 +59,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
             host.role = r.to_string();
         }
         host.identity = h["identity"].as_str().map(str::to_string);
+        host.tag = h["tag"].as_str().map(str::to_string);
         host.jump_fallback = h["jump_fallback"].as_str().map(str::to_string);
         rows.push((h["order"].as_i64().unwrap_or(i64::MAX), i, host));
     }
@@ -80,6 +81,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.role = h["role"].as_str().unwrap_or("主機").to_string();
         host.poll = SERVER_POLL;
         host.identity = h["identity"].as_str().map(str::to_string);
+        host.tag = h["tag"].as_str().map(str::to_string);
         out.push(host);
     }
     out
@@ -159,6 +161,8 @@ struct Host {
     /// 多久問一次(測試機 20 秒、其他主機 60 秒)
     poll: Duration,
     identity: Option<String>,
+    /// 銘牌(hosts.json 的 tag,例 "Ez2" = 賣給客戶的主機);沒寫就照種類 M / W / L / G
+    tag: Option<String>,
     jump_fallback: Option<String>,
     asked: Option<Instant>,
     stuck: bool,
@@ -183,6 +187,7 @@ impl Host {
             role: "測試".into(),
             poll: POLL,
             identity: None,
+            tag: None,
             jump_fallback: None,
             asked: None,
             stuck: false,
@@ -799,6 +804,7 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
         Color::DarkGrey
     };
     let gap = " ".repeat(CELL - 8);
+    let (badge, badge_c) = badge(h);
     let pad = |t: String| {
         let t = fit(&t, CELL - 1);
         let n = CELL.saturating_sub(w(&t));
@@ -819,7 +825,12 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     };
     vec![
         vec![(pad(format!("{num}{}", h.name)), kind_color(h))],
-        vec![(format!("┌──────┐{gap}"), edge)],
+        // Andy 11-12 20:3x:上緣框線放銘牌，左角右邊一格起(┌M─────┐ / ┌Ez2───┐)
+        vec![
+            ("┌".into(), edge),
+            (badge.clone(), badge_c),
+            (format!("{}┐{gap}", "─".repeat(6 - w(&badge))), edge),
+        ],
         vec![("│".into(), edge), (top, fill_c), (format!("│{gap}"), edge)],
         vec![("│".into(), edge), (low, fill_c), (format!("│{gap}"), edge)],
         vec![
@@ -837,6 +848,26 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
             Color::DarkGrey,
         )],
     ]
+}
+
+/// Ez2 銘牌的記號色(draw 看到它就畫金底深字)
+const EZ2_BADGE: Color = Color::AnsiValue(178);
+
+/// 銘牌字與顏色:hosts.json 的 tag 優先(Ez2 = 賣給客戶的主機，反白);否則照種類
+/// M(Mac)/ W(Windows)/ L(Linux 主機)/ G(GitHub);最多 6 格
+fn badge(h: &Host) -> (String, Color) {
+    if let Some(t) = h.tag.as_deref().filter(|t| !t.trim().is_empty()) {
+        let t = fit(t.trim(), 6);
+        let c = if t == "Ez2" { EZ2_BADGE } else { kind_color(h) };
+        return (t, c);
+    }
+    let l = match h.kind {
+        Kind::Mac => "M",
+        Kind::Windows => "W",
+        Kind::Server => "L",
+        Kind::GitHub => "G",
+    };
+    (l.into(), kind_color(h))
 }
 
 /// 一排放幾台
@@ -902,7 +933,18 @@ fn draw(o: &mut impl Write, lines: &[Line], width: usize, height: usize) -> std:
             }
             let t = fit(txt, room);
             used += w(&t);
-            queue!(o, SetForegroundColor(*c), Print(t))?;
+            if *c == EZ2_BADGE {
+                // Ez2 銘牌：金底深字反白
+                queue!(
+                    o,
+                    SetBackgroundColor(Color::Yellow),
+                    SetForegroundColor(Color::Black),
+                    Print(t),
+                    ResetColor
+                )?;
+            } else {
+                queue!(o, SetForegroundColor(*c), Print(t))?;
+            }
         }
         queue!(
             o,
@@ -1282,6 +1324,36 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
     }
 
     /// Andy 11-12 15:0x:主機群 —— 每台一個直立機箱(預設收合),真實負載、功能;點了看明細，再點返回
+    #[test]
+    fn the_top_edge_carries_a_badge_m_w_l_g_or_the_ez2_tag() {
+        let mut mac = host("mini", None, false);
+        let mut win = host("win", None, false);
+        win.kind = Kind::Windows;
+        let mut lin = host("eu01", None, false);
+        lin.kind = Kind::Server;
+        let mut ez2 = host("eu02", None, false);
+        ez2.kind = Kind::Server;
+        ez2.tag = Some("Ez2".into());
+        let mut gh = host("gh", None, false);
+        gh.kind = Kind::GitHub;
+        let top = |h: &Host| text(&tower(h, 0)[1]);
+        // 左角右邊一格起;框線寬不變
+        assert_eq!(top(&mac).trim_end(), "┌M─────┐");
+        assert_eq!(top(&win).trim_end(), "┌W─────┐");
+        assert_eq!(top(&lin).trim_end(), "┌L─────┐");
+        assert_eq!(top(&gh).trim_end(), "┌G─────┐");
+        assert_eq!(top(&ez2).trim_end(), "┌Ez2───┐");
+        assert_eq!(w(&top(&ez2)), CELL);
+        // Ez2 用反白記號色，其他照種類色
+        assert_eq!(tower(&ez2, 0)[1][1].1, EZ2_BADGE);
+        assert_eq!(tower(&win, 0)[1][1].1, Color::Blue);
+        // hosts.json 的 tag 讀得到
+        let hs = hosts_from_config(
+            r#"{"hosts":[],"servers":[{"name":"EU02","ssh":"x","role":"代管雲","tag":"Ez2"}]}"#,
+        );
+        assert_eq!(hs[0].tag.as_deref(), Some("Ez2"));
+    }
+
     #[test]
     fn the_fleet_is_a_grid_of_towers_and_a_click_opens_one() {
         let mut hs: Vec<Host> = (0..12)
