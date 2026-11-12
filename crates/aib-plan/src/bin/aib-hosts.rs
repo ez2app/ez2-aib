@@ -697,7 +697,7 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!((run.perf, run.load5), (8.0, 5.9));
         assert!(unleased_busy(&run));
         assert_eq!(charge(Some(&run), 0), (100, Color::Magenta));
-        let h = host("x", Some(run), false);
+        let h = host("x", Some(run.clone()), false);
         let l = host_lines(&h, 0, 120, 0, 0);
         assert!(text(&l[0]).contains("沒租約在跑 不可用"), "{}", text(&l[0]));
         assert!(text(&l[2]).contains("沒拿租約"));
