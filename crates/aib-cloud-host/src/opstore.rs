@@ -724,6 +724,8 @@ pub const CUSTOMER_COMMANDS: &[&str] = &[
     "site.create",
     // E1 N1 (Andy 11-12 04:3x): the customer takes their own login link
     "site.login-link",
+    // E10 7.6: the customer clears their own site's caches (crate::cachecmd)
+    "site.cache-flush",
 ];
 
 /// Run one change as an operation whose plan reads nothing of the host (tests, and plans

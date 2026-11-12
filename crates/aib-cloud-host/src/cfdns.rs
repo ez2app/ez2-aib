@@ -200,7 +200,7 @@ fn success(answer: &Value) -> bool {
 }
 
 /// The customer's Cloudflare accounts, from the opening record's customer and their roster.
-fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, String> {
+pub(crate) fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, String> {
     let unknown = |why: String| format!("{}: {why}", sitedns::OWNER_UNKNOWN);
     let tenant = record_tenant(record)
         .ok_or_else(|| unknown("the opening record names no customer".to_owned()))?;
@@ -227,7 +227,7 @@ fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, S
 }
 
 /// Every zone the customer's accounts have under the names a zone of `domain` may have.
-fn customer_zones<R: Runner>(
+pub(crate) fn customer_zones<R: Runner>(
     cf: &mut Cf<'_, R>,
     accounts: &[String],
     domain: &str,

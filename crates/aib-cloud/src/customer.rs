@@ -12,6 +12,7 @@
 //! status
 //! logs <nginx|php|db|wp> [lines <1..=2000>] [minutes <1..=10080>]
 //! login-link
+//! cache flush
 //! php-reload
 //! restart
 //! backup
@@ -51,6 +52,10 @@ pub enum Request {
     /// dashboard (Andy 11-12 03:58: the customer takes it themselves after an opening).
     /// The host's answer is the link alone, one line on standard output.
     LoginLink,
+    /// Clear their site's caches: WordPress's object cache and the page cache plugin in
+    /// their site's CT, and at Cloudflare the cache of their site's own names only (c477a
+    /// L7: never a whole zone, never another site's).
+    CacheFlush,
     /// Reload PHP in their site.
     PhpReload,
     /// Reboot their site's CT.
@@ -64,7 +69,7 @@ impl Request {
     pub fn writes(self) -> bool {
         matches!(
             self,
-            Request::PhpReload | Request::Restart | Request::LoginLink
+            Request::PhpReload | Request::Restart | Request::LoginLink | Request::CacheFlush
         )
     }
 
@@ -134,6 +139,10 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
     match first {
         "status" => alone(Request::Status),
         "login-link" => alone(Request::LoginLink),
+        "cache" => match rest.as_slice() {
+            ["flush"] => Ok(Request::CacheFlush),
+            _ => Err(Refused::BadArguments),
+        },
         "php-reload" => alone(Request::PhpReload),
         "restart" => alone(Request::Restart),
         "backup" => alone(Request::Backup),
@@ -377,7 +386,9 @@ impl Request {
         match self {
             Request::Status => Operation::ReadPrivate,
             Request::Logs { .. } | Request::Backup => Operation::ViewAnalytics,
-            Request::PhpReload => Operation::Edit,
+            // clearing a cache changes no content and no account: whoever works on the
+            // site may (owner, admin, editor)
+            Request::PhpReload | Request::CacheFlush => Operation::Edit,
             // the link signs in as the site's administrator (Andy 11-12: owner and admin)
             Request::LoginLink => Operation::Administer,
             Request::Restart => Operation::Publish,
@@ -586,6 +597,16 @@ mod tests {
         assert_eq!(parse_request("backup"), Ok(Request::Backup));
         assert_eq!(parse_request("login-link"), Ok(Request::LoginLink));
         assert_eq!(parse_request("login-link ops"), Err(Refused::BadArguments));
+        assert_eq!(parse_request("cache flush"), Ok(Request::CacheFlush));
+        assert_eq!(parse_request("  cache   flush "), Ok(Request::CacheFlush));
+        for bad in [
+            "cache",
+            "cache flush all",
+            "cache purge",
+            "cache flush site2",
+        ] {
+            assert_eq!(parse_request(bad), Err(Refused::BadArguments), "{bad:?}");
+        }
         assert_eq!(
             parse_request("logs nginx"),
             Ok(Request::Logs {
@@ -662,6 +683,9 @@ mod tests {
         // E1 N1 (Andy 11-12 04:3x): the customer takes their login link themselves
         assert!(Request::LoginLink.offered() && Request::LoginLink.writes());
         assert!(parse_request("logs db").unwrap().offered());
+        // E10 7.6: the host clears a site's caches, but the customer is not offered it
+        // until its sentences are final (HUMAN-PASTE-4542e-1112.md, waiting on Andy)
+        assert!(!Request::CacheFlush.offered() && Request::CacheFlush.writes());
         for hidden in ["php-reload", "restart", "backup"] {
             assert!(!parse_request(hidden).unwrap().offered(), "{hidden}");
         }
@@ -918,6 +942,15 @@ mod tests {
         assert_eq!(logs.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::Backup.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::PhpReload.operation(), Operation::Edit);
+        // a cache clear changes no content and no account: whoever works on the site
+        assert_eq!(Request::CacheFlush.operation(), Operation::Edit);
+        assert_eq!(
+            all.iter()
+                .copied()
+                .filter(|r| r.may(Request::CacheFlush.operation()))
+                .collect::<alloc::vec::Vec<_>>(),
+            [Role::Owner, Role::Admin, Role::Editor]
+        );
         // a link into the dashboard signs in as the site's administrator: the owner's and
         // the platform's only, not an editor's (Andy 11-12)
         assert_eq!(Request::LoginLink.operation(), Operation::Administer);

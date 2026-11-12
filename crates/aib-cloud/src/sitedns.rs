@@ -21,9 +21,11 @@
 //!   step done: asked again, the step adds nothing (it can be carried on after any
 //!   stop). A record with the mark that is anything else is not ours as written and
 //!   stops ([`MARKED_DIFFERS`]).
-//! * **Only four calls.** [`allowed`] is the whole list of Cloudflare calls this code may
+//! * **Only five calls.** [`allowed`] is the whole list of Cloudflare calls this code may
 //!   make: list an account's zones by name, read a zone's SSL mode, list a zone's records,
-//!   add one A record to a public address, proxied, carrying a site's mark. Anything else
+//!   add one A record to a public address, proxied, carrying a site's mark, and clear the
+//!   cache of named hosts (a customer's `cache flush`: never the whole zone, c477a L7).
+//!   Anything else
 //!   — a delete above all, which the list could not tell from any other delete — is
 //!   refused before it leaves the host (ebb36 B5 L1). The key is the account's global
 //!   key, so this list is the only thing between this code and the customer's zones.
@@ -37,7 +39,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::siteremove::{dns_marker, DNS_ADDRESS_TYPES, DNS_MARKER_PREFIX};
 
@@ -128,6 +130,8 @@ pub enum CfCall {
     ListRecords { zone: String, page: u32 },
     /// Add one record (the body says which; it must carry a site's mark).
     AddRecord { zone: String },
+    /// Clear the cache of some hosts of a zone (the body names them; never everything).
+    PurgeHosts { zone: String },
 }
 
 impl CfCall {
@@ -135,7 +139,7 @@ impl CfCall {
     pub fn method(&self) -> &'static str {
         match self {
             CfCall::ListZones { .. } | CfCall::SslMode { .. } | CfCall::ListRecords { .. } => "GET",
-            CfCall::AddRecord { .. } => "POST",
+            CfCall::AddRecord { .. } | CfCall::PurgeHosts { .. } => "POST",
         }
     }
 
@@ -150,11 +154,12 @@ impl CfCall {
                 format!("/zones/{zone}/dns_records?per_page={PER_PAGE}&page={page}")
             }
             CfCall::AddRecord { zone } => format!("/zones/{zone}/dns_records"),
+            CfCall::PurgeHosts { zone } => format!("/zones/{zone}/purge_cache"),
         }
     }
 }
 
-/// Whether a written-out call is one of the four, exactly: the method, every part of the
+/// Whether a written-out call is one of the five, exactly: the method, every part of the
 /// path, the query in its one order, and for an add a body that is one A record to a
 /// public address, proxied, carrying a site's mark. Everything else is refused.
 pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
@@ -188,6 +193,7 @@ pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
                 && !page.starts_with('0')
         }
         ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),
+        ("POST", ["", "zones", z, "purge_cache"], None, Some(b)) => valid_id(z) && purge_body_ok(b),
         _ => false,
     }
 }
@@ -210,6 +216,44 @@ fn add_body_ok(body: &str) -> bool {
             .as_str()
             .and_then(|c| c.strip_prefix(DNS_MARKER_PREFIX))
             .is_some_and(crate::site::valid_code)
+}
+
+/// Most hosts one cache clear may name (Cloudflare's own limit per call is 30).
+pub const PURGE_HOSTS_MAX: usize = 30;
+
+/// The body of a cache clear: exactly `hosts`, one to [`PURGE_HOSTS_MAX`] names, each a
+/// domain, none twice. `purge_everything`, `files`, `tags`, `prefixes` or anything beside
+/// `hosts` is refused: a clear reaches the named hosts only (c477a L7).
+fn purge_body_ok(body: &str) -> bool {
+    let Ok(Value::Object(m)) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let Some(Value::Array(hosts)) = m.get("hosts") else {
+        return false;
+    };
+    let names: Vec<&str> = hosts.iter().filter_map(Value::as_str).collect();
+    let mut seen = names.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    m.len() == 1
+        && !names.is_empty()
+        && names.len() == hosts.len()
+        && names.len() <= PURGE_HOSTS_MAX
+        && seen.len() == names.len()
+        && names.iter().all(|n| crate::edge::valid_domain(n))
+}
+
+/// The body that clears the cache of the site's names that are in `zone`: `None` when
+/// none of them is, or when there are more than one call may name. Only names of the
+/// zone go in, so a clear cannot reach a host of another zone (or of another site: the
+/// names are the site's own, from its record).
+pub fn purge_body(zone: &str, names: &[&str]) -> Option<String> {
+    let mine: Vec<&str> = names.iter().copied().filter(|n| in_zone(n, zone)).collect();
+    if mine.is_empty() || mine.len() > PURGE_HOSTS_MAX {
+        return None;
+    }
+    let body = json!({ "hosts": mine }).to_string();
+    purge_body_ok(&body).then_some(body)
 }
 
 /// The names a zone of `domain` may have: the domain itself and each parent of it that
@@ -1049,5 +1093,67 @@ mod tests {
         assert_eq!(failure_word(401, true), KEY_REFUSED);
         assert_eq!(failure_word(500, true), UNREADABLE);
         assert_eq!(failure_word(0, true), UNREADABLE);
+    }
+
+    #[test]
+    fn a_cache_clear_names_hosts_and_never_the_whole_zone() {
+        let p = format!("/zones/{ZID}/purge_cache");
+        let ok = json!({"hosts": ["shop.example.com", "www.shop.example.com"]}).to_string();
+        assert!(allowed("POST", &p, Some(ok.as_str())));
+        assert_eq!(
+            CfCall::PurgeHosts {
+                zone: ZID.to_string()
+            }
+            .path(),
+            p
+        );
+        let refused = [
+            json!({"purge_everything": true}),
+            json!({"hosts": ["shop.example.com"], "purge_everything": true}),
+            json!({"files": ["https://shop.example.com/"]}),
+            json!({"prefixes": ["shop.example.com/"]}),
+            json!({"hosts": []}),
+            json!({"hosts": ["shop.example.com", "shop.example.com"]}),
+            json!({"hosts": ["shop.example.com/x"]}),
+            json!({"hosts": [1]}),
+            json!({"hosts": "shop.example.com"}),
+        ];
+        for body in &refused {
+            assert!(
+                !allowed("POST", &p, Some(body.to_string().as_str())),
+                "{body}"
+            );
+        }
+        let many: Vec<String> = (0..=PURGE_HOSTS_MAX)
+            .map(|i| format!("h{i}.example.com"))
+            .collect();
+        assert!(!allowed(
+            "POST",
+            &p,
+            Some(json!({ "hosts": many }).to_string().as_str())
+        ));
+        assert!(!allowed("POST", &p, None));
+        assert!(!allowed("GET", &p, Some(ok.as_str())));
+        assert!(!allowed(
+            "POST",
+            &format!("/zones/{ZID}/purge_cache?x=1"),
+            Some(ok.as_str())
+        ));
+    }
+
+    #[test]
+    fn a_cache_clear_body_keeps_to_the_zone() {
+        let body = purge_body(
+            "example.com",
+            &["shop.example.com", "other.test", "example.com"],
+        )
+        .unwrap();
+        assert_eq!(
+            body,
+            json!({"hosts": ["shop.example.com", "example.com"]}).to_string()
+        );
+        assert_eq!(purge_body("example.com", &["other.test"]), None);
+        assert_eq!(purge_body("example.com", &[]), None);
+        assert_eq!(purge_body("example.com", &["notexample.com"]), None);
     }
 }
