@@ -141,9 +141,9 @@ struct Hits {
 const TOOLBAR_KEYS: [(&str, char); 10] = [
     ("樹", '['),
     ("為什麼", ']'),
-    ("o 沒做完", 'o'),
-    ("x 延伸", 'x'),
-    ("n 沒人負責", 'n'),
+    ("沒做完", 'o'),
+    ("延伸", 'x'),
+    ("沒人負責", 'n'),
     ("席:", 's'),
     ("e 全開", 'e'),
     ("c 全收", 'c'),
@@ -375,9 +375,9 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
             None,
             false,
         ),
-        ("o 沒做完".to_string(), Some(f.only_open), true),
-        ("x 延伸".to_string(), Some(f.only_ext), false),
-        ("n 沒人負責".to_string(), Some(f.orphan), false),
+        ("沒做完".to_string(), Some(f.only_open), true),
+        ("延伸".to_string(), Some(f.only_ext), false),
+        ("沒人負責".to_string(), Some(f.orphan), false),
         (format!("{seat}{search}"), Some(!f.seat.is_empty()), false),
         ("e 全開".to_string(), None, true),
         ("c 全收".to_string(), None, false),
@@ -1191,7 +1191,7 @@ mod tests {
             .position(|g| g.0 == "●")
             .expect("active filter has a filled dot");
         assert_eq!(bar[dot].1, Some(Color::Green));
-        assert_eq!(bar[dot + 1].0, "o 沒做完");
+        assert_eq!(bar[dot + 1].0, "沒做完");
         assert!(
             bar.iter().any(|g| g.0 == "○"),
             "inactive filters keep the hollow dot"
@@ -1205,7 +1205,7 @@ mod tests {
             );
             assert!(text.ends_with("離開"), "q stays on screen at {w}");
         }
-        // 緊湊寫法也點得到
+        // 緊湊寫法也點得到;點圓點後的字 = 按 o
         app.plan =
             parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
                 .expect("sample parses");
@@ -1213,7 +1213,7 @@ mod tests {
         let _ = frame(&app, 76, 30);
         let h = app.hits.borrow().clone();
         let ty = h.toolbar_y.expect("toolbar");
-        let ox = str_width(&h.toolbar[..h.toolbar.find("o沒做完").expect("tight o")]);
+        let ox = str_width(&h.toolbar[..h.toolbar.find("沒做完").expect("o")]);
         assert!(on_click(&mut app, ox, ty));
         assert!(!app.filter.only_open, "click on tight o toggles it off");
         let qx = str_width(&h.toolbar[..h.toolbar.find("q離開").expect("tight q")]);
