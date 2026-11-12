@@ -1663,7 +1663,10 @@ mod tests {
         ];
         assert_eq!(marked(&by), (2, 2, 3, 0));
         assert_eq!(marked(&[]), (0, 0, 0, 0));
-        assert_eq!(marked(&[("action_scheduler_run_queue".to_owned(), 1)]), (0, 0, 0, 1));
+        assert_eq!(
+            marked(&[("action_scheduler_run_queue".to_owned(), 1)]),
+            (0, 0, 0, 1)
+        );
     }
 
     #[test]
@@ -1730,7 +1733,10 @@ mod tests {
     #[test]
     fn apply_refuses_a_container_that_is_not_this_site() {
         assert_eq!(same_site(Some("s-sched1\n"), CODE), Gate::Run);
-        assert_eq!(same_site(Some("other"), CODE), Gate::Skip("ct_not_this_site"));
+        assert_eq!(
+            same_site(Some("other"), CODE),
+            Gate::Skip("ct_not_this_site")
+        );
         assert_eq!(same_site(None, CODE), Gate::Skip("ct_hostname_unread"));
         let d = scratch("hostname");
         let p = places(&d, false);
@@ -1742,7 +1748,11 @@ mod tests {
             Ok(Applied::Skipped("ct_not_this_site"))
         );
         // nothing but its name was asked inside it
-        let inside: Vec<&String> = ct.calls.iter().filter(|l| l.starts_with("pct exec")).collect();
+        let inside: Vec<&String> = ct
+            .calls
+            .iter()
+            .filter(|l| l.starts_with("pct exec"))
+            .collect();
         assert_eq!(inside.len(), 1, "{inside:?}");
         assert!(ct.writes().is_empty());
     }
