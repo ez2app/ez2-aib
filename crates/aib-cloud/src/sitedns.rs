@@ -281,7 +281,6 @@ impl CfCall {
         match self {
             CfCall::ListZones { .. } | CfCall::SslMode { .. } | CfCall::ListRecords { .. } => "GET",
             CfCall::AddRecord { .. } | CfCall::PurgeHosts { .. } => "POST",
-            CfCall::AddRecord { .. } => "POST",
             CfCall::Delete(_) => "DELETE",
         }
     }
