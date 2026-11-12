@@ -540,12 +540,22 @@ fn fit(s: &str, max: usize) -> String {
     o
 }
 
+/// 負載的分母：效能核(Apple 晶片);讀不到 = 全部核數。機箱、明細、火花線都用它，
+/// 不然 Pro 13(4 效能核 / 8 核)機箱紅、明細卻寫「6.7/8 核」看起來沒滿(Andy 11-13 05:2x)。
+fn cores(s: &Sample) -> f64 {
+    if s.perf > 0.0 {
+        s.perf
+    } else {
+        s.ncpu
+    }
+}
+
 /// 沒人拿租約、負載卻超過每效能核 0.8 ⇒ 有人沒拿租約在跑(Andy 11-12 14:3x;a63ab 在 Pro 16 犯過)。
 /// 算法同 aib-lease hosts:max(load1, load5 × 0.8) / 效能核
 const UNLEASED_BUSY_RATIO: f64 = 0.8;
 
 fn load_ratio(s: &Sample) -> Option<f64> {
-    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    let cores = cores(s);
     (s.online && cores > 0.0).then(|| s.load1.max(s.load5 * 0.8) / cores)
 }
 
@@ -553,7 +563,7 @@ fn unleased_busy(s: &Sample) -> bool {
     if s.server {
         return false;
     }
-    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    let cores = cores(s);
     s.online && !s.held && cores > 0.0 && s.load1.max(s.load5 * 0.8) / cores > UNLEASED_BUSY_RATIO
 }
 
@@ -702,7 +712,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     if let Some(s) = s.filter(|s| !s.queue.is_empty()) {
         l1.push((format!(" · 排隊 {}", s.queue.len()), Color::Cyan));
     }
-    let cap = s.map_or(8.0, |s| if s.ncpu > 0.0 { s.ncpu } else { 8.0 });
+    let cap = s.map_or(8.0, |s| if cores(s) > 0.0 { cores(s) } else { 8.0 });
     let spark: String = h
         .loads
         .iter()
@@ -710,9 +720,17 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
         .collect();
     let online = s.is_some_and(|s| s.online);
     let load = s.filter(|s| s.online).map_or(String::new(), |s| {
-        format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
+        if s.perf > 0.0 && s.perf < s.ncpu {
+            format!(
+                "負載 {:.1}/{:.0} 效能核(共 {:.0}) ",
+                s.load1, s.perf, s.ncpu
+            )
+        } else {
+            format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
+        }
     });
-    let lcol = if s.is_some_and(|s| s.ncpu > 0.0 && s.load1 > s.ncpu) {
+    // 紅的門檻跟機箱一樣：每效能核 > 0.8
+    let lcol = if s.and_then(load_ratio).is_some_and(|r| r > 0.8) {
         Color::Red
     } else {
         Color::Blue
@@ -1308,6 +1326,13 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let l = host_lines(&h, 0, 120, 0, 0);
         assert!(text(&l[0]).contains("沒租約在跑 不可用"), "{}", text(&l[0]));
         assert!(text(&l[2]).contains("沒拿租約"));
+        // 明細跟機箱同一個分母:7.1 / 8 效能核,不是 / 16 核(Andy 11-13 05:2x)
+        assert!(
+            text(&l[1]).contains("負載 7.1/8 效能核(共 16)"),
+            "{}",
+            text(&l[1])
+        );
+        assert_eq!(l[1][2].1, Color::Red, "0.89 / 效能核 > 0.8 ⇒ 紅");
         // 同一台安靜 ⇒ 空機;讀不到效能核就用全部核數
         let quiet = parse_sample(
             &format!("{free}AIB_HOSTS_SYS 16 {{ 5.0 5.0 5.0 }} 8"),
@@ -1322,6 +1347,9 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             "",
         );
         assert!(!unleased_busy(&old), "7.1 / 16 核 = 0.44");
+        let l = host_lines(&host("x", Some(old), false), 0, 120, 0, 0);
+        assert!(text(&l[1]).contains("負載 7.1/16 核"), "{}", text(&l[1]));
+        assert_eq!(l[1][2].1, Color::Blue);
         // 有人拿著租約 ⇒ 照租約顯示，不是「沒租約在跑」
         let mut held = run.clone();
         held.held = true;
