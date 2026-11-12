@@ -259,6 +259,11 @@ pub trait RestoreHost {
     /// record names no customer. A site record that cannot be read is an error.
     fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String>;
     fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String>;
+    /// Put the site software's scheduler back as the install leaves it
+    /// ([`crate::siteidentity::scheduler`]): a backup may bring back a `wp-config.php`
+    /// without `DISABLE_WP_CRON`, and the timer must still be there. `true` when anything
+    /// had to be written again.
+    fn put_scheduler_back(&mut self, rec: &Record) -> Result<bool, String>;
     /// Throw away what was downloaded, and the restore point's archive if one was begun:
     /// a failed restore point leaves a half-made archive behind.
     fn discard(&mut self, rec: &Record) -> Result<(), String>;
@@ -510,6 +515,11 @@ pub fn carry_out(
                 before_restore_point(host, &rec).and_then(|()| host.run_step(step, &rec))
             }
             RestoreStep::Import => import_backup(host, &rec),
+            // the scheduler first: a failure from here on keeps the site for a person, and
+            // site verify S14 turns red on a site left without it (7b81e, wp-cron r2 N1)
+            RestoreStep::Tidy => host
+                .put_scheduler_back(&rec)
+                .and_then(|_| host.run_step(step, &rec)),
             _ => host.run_step(step, &rec),
         };
         if let Err(e) = ran {
@@ -983,6 +993,10 @@ impl RestoreHost for HostRestorer {
     fn run_step(&mut self, _step: RestoreStep, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
     }
+    fn put_scheduler_back(&mut self, rec: &Record) -> Result<bool, String> {
+        let spec = crate::quarantinecmd::load_spec(&rec.site, &self.sites.to_string_lossy())?;
+        crate::siteidentity::scheduler(&mut crate::sitecreatecmd::HostRunner, &spec)
+    }
     fn discard(&mut self, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
     }
@@ -1194,6 +1208,8 @@ mod tests {
         /// The site's disk once the download is done, when it changed meanwhile.
         room_later: Option<SiteRoom>,
         siblings: Vec<String>,
+        /// Putting the scheduler back fails.
+        scheduler_fails: bool,
     }
 
     const NAME: &str = "example-com-20261101-101010-ab12cd.wpress";
@@ -1236,6 +1252,7 @@ mod tests {
             said: format!("Restoring\n{}\n", restoreimport::RESTORE_COMPLETE),
             room_later: None,
             siblings: Vec::new(),
+            scheduler_fails: false,
         }
     }
 
@@ -1275,6 +1292,13 @@ mod tests {
                 return Err("made-up failure".to_owned());
             }
             Ok(())
+        }
+        fn put_scheduler_back(&mut self, _rec: &Record) -> Result<bool, String> {
+            self.calls.push("scheduler".to_owned());
+            if self.scheduler_fails {
+                return Err("cron_not_running: made-up".to_owned());
+            }
+            Ok(true)
         }
         fn discard(&mut self, _rec: &Record) -> Result<(), String> {
             self.calls.push("discard".to_owned());
@@ -2028,11 +2052,33 @@ mod tests {
                 "update_plugins",
                 "place",
                 "import",
+                "scheduler",
                 "tidy",
                 "accept",
                 "ready_to_switch"
             ]
         );
+    }
+
+    #[test]
+    fn a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot() {
+        let p = place("scheduler");
+        let mut h = fake();
+        h.scheduler_fails = true;
+        let plan = sealed(&p, &mut h);
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(err.contains("tidy failed"), "{err}");
+        // the import stays: no tidying, no throwing away, no taking back
+        assert_eq!(h.calls.last().map(String::as_str), Some("scheduler"));
+        assert!(
+            !h.calls
+                .iter()
+                .any(|c| c == "tidy" || c == "discard" || c == "roll_back"),
+            "{:?}",
+            h.calls
+        );
+        assert_eq!(mine(&h).done, STEPS[..4]);
+        assert_eq!(mine(&h).standing(), Ok(Standing::Kept(RestoreStep::Tidy)));
     }
 
     #[test]

@@ -206,8 +206,8 @@ fn scheduler_in_place(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), S
 /// ([`scheduler_in_place`]). A site where it is already in place is left alone and the
 /// answer is `false`; otherwise everything is written again and `true` once it reads
 /// back. What cannot be read back after writing stops with its fixed word. The install
-/// runs it; so can a restore that switched the site software's scheduler off (the restore
-/// steps are not in this crate yet).
+/// runs it, and so does a restore before its tidying (`restorestepscmd`): a backup may
+/// bring back a `wp-config.php` without the scheduler switched off.
 pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<bool, String> {
     // before writing, "could not read" only means "write it": the read after decides
     if scheduler_in_place(runner, spec).is_ok() {

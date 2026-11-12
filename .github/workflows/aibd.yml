@@ -2469,6 +2469,14 @@ jobs:
           hk restorestepscmd.rs '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") || name == format!("{site}.json") {' \
              '            if name.starts_with('"'"'.'"'"') || !name.ends_with(".json") { // knife' \
              the_customers_other_sites_are_read_from_the_site_records
+          # restore: the scheduler is put back before the tidying (7b81e wp-cron r2 N1)
+          hk restorestepscmd.rs '            RestoreStep::Tidy => host' \
+             '            RestoreStep::Tidy if false => host // knife' \
+             an_import_runs_on_plugins_up_to_date_with_the_backup_listed
+          # restore: a scheduler that cannot be put back stops the restore, kept for a person
+          hk restorestepscmd.rs '                .put_scheduler_back(&rec)' \
+             '                .put_scheduler_back(&rec).or(Ok::<bool, String>(false)) // knife' \
+             a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
