@@ -551,11 +551,13 @@ mod tests {
         let place = place(&d);
         let mut fake = Fake::new();
         fake.wp_fails = true;
-        let t = 1_800_000_000;
+        // the journal stamps its entries with the host's clock, so the test starts there
+        let t = crate::probe::unix_now();
         let done = customer_clear_at(&place, &p, CODE, &mut fake, t).unwrap();
         assert_eq!(done.wordpress, "failed");
         // a failed part does not fail the operation: the next one is not blocked
-        let again = customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S).unwrap();
+        let again =
+            customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S + 5).unwrap();
         assert_eq!(again.exit(), 0);
         assert!(opstore::CUSTOMER_COMMANDS.contains(&COMMAND));
         // a code that is not a site's, or a site without a record, is refused before
@@ -591,14 +593,15 @@ mod tests {
         let d = scratch("gap");
         let p = paths(&d, false);
         let place = place(&d);
-        let t = 1_800_000_000;
+        // the journal stamps its entries with the host's clock, so the test starts there
+        let t = crate::probe::unix_now();
         customer_clear_at(&place, &p, CODE, &mut Fake::new(), t).unwrap();
         let mut idle = Fake::new();
         let err = customer_clear_at(&place, &p, CODE, &mut idle, t + MIN_GAP_S - 1).unwrap_err();
         assert!(err.starts_with(TOO_SOON), "{err}");
         assert!(idle.ran.is_empty());
         // once the gap has passed it runs again
-        customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S).unwrap();
+        customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S + 5).unwrap();
         // the gap is the site's own: another site's clear does not count
         let other = aib_cloud::op::Entry {
             op: String::from("x"),
