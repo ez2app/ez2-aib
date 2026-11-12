@@ -1397,12 +1397,12 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         // hosts.json 的 tag 讀得到
         let hs = hosts_from_config(
             r#"{"github_repo":"o/r","hosts":[{"name":"m","ssh":"m","ci":true},{"name":"p","ssh":"p"}],
-                "servers":[{"name":"EU02","ssh":"x","role":"代管雲","tag":"Ez2"}]}"#,
+                "servers":[{"name":"srv1","ssh":"x","role":"代管雲","tag":"Ez2"}]}"#,
         );
         let ci: Vec<(&str, bool)> = hs.iter().map(|h| (h.name.as_str(), h.ci)).collect();
         assert_eq!(
             ci,
-            [("m", true), ("p", false), ("GitHub", true), ("EU02", false)]
+            [("m", true), ("p", false), ("GitHub", true), ("srv1", false)]
         );
         assert_eq!(hs[3].tag.as_deref(), Some("Ez2"));
     }
