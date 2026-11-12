@@ -437,7 +437,10 @@ pub const DNS_NOT_REMOVED: &str = "dns_not_removed";
 /// through Cloudflare's proxy, judged by [`sitedns::proxied`]. Reads only: the zones of the
 /// customer's accounts and the zone's records, two of the calls [`sitedns::allowed`] lists,
 /// each with its ledger line like every call here. Anything that keeps it from reading the
-/// whole zone is an error, which verify reports as unchecked, never as a pass.
+/// whole zone is an error, which verify reports as unchecked, never as a pass. One zone
+/// per site, the zone of its first name: a site with a name outside it (a second domain
+/// on another zone) is [`sitedns::MULTI_ZONE`] without its records being read.
+/// Only `site verify` calls this; a customer's status never does (c477a, S11 M1).
 pub fn proxied_names(
     runner: &mut impl Runner,
     paths: &HostPaths,
@@ -455,12 +458,7 @@ pub fn proxied_names(
         .map_err(|w| format!("{w}: {domain}"))?;
     let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
     if !names.iter().all(|n| sitedns::in_zone(n, &zone.name)) {
-        return Err(format!(
-            "{}: {} in zone {}",
-            sitedns::NAME_OUTSIDE_ZONE,
-            names.join(","),
-            zone.name
-        ));
+        return Ok(sitedns::Proxied::Unchecked(sitedns::MULTI_ZONE));
     }
     let all = listing(&mut cf, &zone.id)?;
     Ok(sitedns::proxied(&names, all.as_deref()))
@@ -1036,6 +1034,27 @@ mod tests {
         let err = proxied_names(&mut cf, &p, &spec(), &opening()).unwrap_err();
         assert!(err.starts_with(KEY_UNSET), "{err}");
         assert_eq!(cf.fed.len(), asked);
+        // a second domain on another zone: unchecked, and that zone is not listed
+        p.cloudflare = root.join("cloudflare.env");
+        let two = SiteSpec::new(
+            CODE,
+            131,
+            41,
+            &[DOMAIN, "shop.example.org"],
+            true,
+            "zh_TW",
+            aib_cloud::site::Limits::START,
+        )
+        .unwrap();
+        let listed = cf.fed.iter().filter(|c| c.contains("/dns_records")).count();
+        assert_eq!(
+            proxied_names(&mut cf, &p, &two, &opening()),
+            Ok(sitedns::Proxied::Unchecked(sitedns::MULTI_ZONE))
+        );
+        assert_eq!(
+            cf.fed.iter().filter(|c| c.contains("/dns_records")).count(),
+            listed
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -543,6 +543,9 @@ pub fn plan(
 /// A name of the site with no address record of its own and no wildcard that answers for
 /// it: nothing to judge, so not a pass.
 pub const NO_ADDRESS: &str = "dns_no_address_record";
+/// The site's names are not all in the zone of its first name (a second domain on another
+/// zone): S15 reads one zone per site, so such a site is never judged, only unchecked.
+pub const MULTI_ZONE: &str = "multi_zone";
 
 /// What `site verify` S15 (E6 D1) finds of a site's names at Cloudflare.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,8 +563,9 @@ pub enum Proxied {
 /// S15 for the site's `names` against the zone's whole listing ([`whole_listing`], `None`
 /// when it was not complete). Every address record (A, AAAA, CNAME) under a name must be
 /// proxied; a name without one of its own is answered by a wildcard over it, if any, and
-/// that wildcard is judged instead. A grey record anywhere is a fail, whatever else is
-/// unknown.
+/// that wildcard is judged instead. That is wider than DNS (a name with only mail or text
+/// records gets no answer from the wildcard), so it can only report more grey, never less.
+/// A grey record anywhere is a fail, whatever else is unknown.
 pub fn proxied(names: &[&str], records: Option<&[Record]>) -> Proxied {
     let Some(records) = records else {
         return Proxied::Unchecked(UNREADABLE);

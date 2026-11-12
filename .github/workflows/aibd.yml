@@ -2906,6 +2906,10 @@ jobs:
           hk siteverify.rs '    state != SiteState::Quarantined' \
              '    state != SiteState::Quarantined || true // knife' \
              s14_is_not_run_in_a_quarantined_container
+          # verify S15 (c477a S11 M1): a customer's status asks Cloudflare with our key
+          hk siteverify.rs '    if audience == Audience::Operator {' \
+             '    if audience == Audience::Operator || true { // knife' \
+             a_customer_status_asks_cloudflare_nothing
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
