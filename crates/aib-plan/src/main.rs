@@ -9,7 +9,7 @@
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
-//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · f 開合全艙判斷 ·
+//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · f 開合全艙 ·
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
@@ -466,11 +466,11 @@ fn left(text: &str) -> String {
     )
 }
 
-/// 全艙判斷：每席一行 —— @席 判斷 一開始(時)：… → 目前(時)：…;自稱主軸內但字面換題 ⇒ ⚠ 換題?
+/// 全艙：每席一行 —— @席 判斷 校正 起點 時 … → 目前 時 …;自稱主軸內但字面換題 ⇒ ⚠ 換題?
 fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
     let item = |e: Option<&mainline::Entry>| match e {
-        Some(e) => format!("({}){}", mainline::stamp(e.started_at, now), e.item),
-        None => "(—)沒有回報".to_string(),
+        Some(e) => format!("{} {}", mainline::stamp(e.started_at, now), e.item),
+        None => "-- 還沒回報".to_string(),
     };
     fleet
         .iter()
@@ -486,13 +486,13 @@ fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
                     false,
                 ),
                 Seg(
-                    format!("一開始{} → ", item(m.first.as_ref())),
+                    format!("起點 {} → ", item(m.first.as_ref())),
                     Some(Color::DarkGrey),
                     false,
                     false,
                 ),
                 Seg(
-                    format!("目前{}", item(m.now.as_ref())),
+                    format!("目前 {}", item(m.now.as_ref())),
                     Some(Color::White),
                     false,
                     false,
@@ -532,23 +532,23 @@ const MARGIN: &str = "  ";
 const SEP: &str = " │ ";
 
 /// 最上面兩行(Andy 11-12 13:5x 排版):
-///   判斷 90%  │ 本席AI一開始主軸  (11-12 00:09)/11-12 13:52：…   全艙判斷 ▸
-///   校正 0 次 │ 本席AI目前開發主軸(11-12 13:50)/11-12 13:52：… ▸
-/// 左欄固定寬、兩個標籤補成同寬 ⇒ 括號裡的時間上下對齊;有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合)
+///   判斷 90%  │ 起點 11-12 00:09  …   現在 11-12 14:14   全艙 ▸
+///   校正 0 次 │ 目前 11-12 13:50  … ▸
+/// 左欄固定寬、兩個標籤同寬 ⇒ 時間上下對齊;有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合)
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let now_t = mainline::stamp(now, now);
     let (vtext, vcolor) = verdict(m.now.as_ref());
-    let labels = ["本席AI一開始主軸", "本席AI目前開發主軸"];
-    let label_w = labels.iter().map(|l| str_width(l)).max().unwrap_or(0);
+    // Andy 11-12 14:1x:語意精簡 ——「本席AI一開始主軸(…)/現在：」改成「起點 / 目前 + 開始時間」,
+    // 現在時間只放一次(第一行尾)
+    let labels = ["起點", "目前"];
     let body = |label: &str, e: Option<&mainline::Entry>| -> [Seg; 2] {
         let (start, item) = match e {
             Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
-            None => ("—".to_string(), "(沒有回報 aib now)".to_string()),
+            None => ("--".to_string(), "(還沒回報 aib now)".to_string()),
         };
-        let pad = " ".repeat(label_w - str_width(label));
         [
             Seg(
-                format!("{label}{pad}({start})/{now_t}："),
+                format!("{label} {start}  "),
                 Some(Color::DarkGrey),
                 false,
                 false,
@@ -563,6 +563,12 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
         sep(),
     ];
     first.extend(body(labels[0], m.first.as_ref()));
+    first.push(Seg(
+        format!("   現在 {now_t}"),
+        Some(Color::DarkGrey),
+        false,
+        false,
+    ));
     // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
     let mut cur = vec![
         seg(MARGIN),
@@ -651,7 +657,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 .filter(|(_, f)| mainline::drift_hint(f))
                 .count();
             rows[0].push(Seg(
-                format!("   全艙判斷 {}", if app.fleet_open { "▾" } else { "▸" }),
+                format!("   全艙 {}", if app.fleet_open { "▾" } else { "▸" }),
                 Some(Color::Cyan),
                 false,
                 true,
@@ -1260,28 +1266,30 @@ mod tests {
         // Andy 13:5x:左邊留白 + 固定寬判斷欄 + 分隔線;判斷在上、校正在正下方
         let col = |t: &str| format!("{MARGIN}{}{SEP}", left(t));
         assert!(
-            text(&f, 1).starts_with(&format!(
-                "{}本席AI一開始主軸  (11-12 00:09)/11-12 ",
-                col("判斷 —")
-            )),
+            text(&f, 1).starts_with(&format!("{}起點 11-12 00:09  席位接續", col("判斷 —"))),
             "{}",
             text(&f, 1)
         );
-        assert!(text(&f, 1).ends_with("席位接續"));
         assert!(
-            text(&f, 2).starts_with(&format!("{}本席AI目前開發主軸(—)/", col("校正 0 次"))),
+            text(&f, 1).ends_with("席位接續   現在 11-12 13:20"),
+            "{}",
+            text(&f, 1)
+        );
+        assert!(
+            text(&f, 2).starts_with(&format!("{}目前 --  (還沒回報 aib now)", col("校正 0 次"))),
             "{}",
             text(&f, 2)
         );
         assert!(!text(&f, 2).contains('▸'), "沒有判斷內容就沒有開合");
         assert!(text(&f, 3).is_empty());
         assert_eq!(app.hits.borrow().toolbar_y, Some(4));
-        // 兩行的「(」上下對齊
-        let paren = |i: usize| {
+        // Andy 14:1x 語意精簡：沒有長標籤;「起點 / 目前」上下對齊
+        let at = |i: usize, k: &str| {
             let t = text(&f, i);
-            str_width(&t[..t.find('(').unwrap()])
+            str_width(&t[..t.find(k).unwrap()])
         };
-        assert_eq!(paren(1), paren(2));
+        assert_eq!(at(1, "起點"), at(2, "目前"));
+        assert!(!text(&f, 1).contains("本席AI"));
         assert!(text(&f, 1).starts_with("  "), "不貼左線");
 
         // 有判斷 ⇒ 百分比 + 顏色、行尾 ▸,預設收合
@@ -1375,14 +1383,14 @@ mod tests {
         let text =
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
-        assert!(text(&f, 1).contains("全艙判斷 ▸ ⚠1"), "{}", text(&f, 1));
+        assert!(text(&f, 1).contains("全艙 ▸ ⚠1"), "{}", text(&f, 1));
         assert!(text(&f, 3).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
-        assert!(text(&f, 1).contains("全艙判斷 ▾"));
+        assert!(text(&f, 1).contains("全艙 ▾"));
         let a = text(&f, 3);
-        assert!(a.starts_with("  @aaaaa 判斷 90%  校正1 一開始"), "{a}");
+        assert!(a.starts_with("  @aaaaa 判斷 90%  校正1 起點 "), "{a}");
         assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
         assert!(
             text(&f, 4).starts_with(&format!("  @bbbbb {}校正0 ", left("判斷 —"))),
