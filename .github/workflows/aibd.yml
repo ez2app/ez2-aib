@@ -1577,6 +1577,10 @@ jobs:
           ck quota.rs '            .ok_or(Unknown::RecordUnreadable),' \
              '            .or(Some(site::START_DISK_GB)).ok_or(Unknown::RecordUnreadable), // knife' \
              a_disk_gb_of_the_wrong_type_is_unreadable_not_the_starting_size
+          # E7 c477a M1: usage of an older month than the state wipes this month's state
+          ck quota.rs '    if usage.month < prev.month {' \
+             '    if usage.month < prev.month && false { // knife' \
+             usage_of_an_older_month_than_the_state_is_refused_and_keeps_the_state
           # E11 (Andy 11-11「可以彈出提示，同意後關閉」): a gone process reads as running
           ck op.rs '        Liveness::Gone => Progress::Gone,' \
              '        Liveness::Gone => Progress::Running, // knife' \

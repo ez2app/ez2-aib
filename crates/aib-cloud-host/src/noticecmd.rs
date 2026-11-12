@@ -48,15 +48,19 @@ pub fn decide(usage: &str, state: Option<&str>) -> Result<(MonthState, Vec<Notic
         Some(t) => Some(serde_json::from_str(t).map_err(|_| quota::NOTICE_STATE_UNREADABLE)?),
     };
     let prev = quota::parse_state(state.as_ref())?;
-    Ok(quota::month_run(prev, &usage))
+    quota::month_run(prev, &usage)
 }
 
 fn put(path: &Path, v: &Value) -> Result<(), String> {
     let mut tmp = path.to_path_buf().into_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, format!("{v}\n")).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let mut f = fs::File::create(&tmp).map_err(|e| err(&tmp, e))?;
+    std::io::Write::write_all(&mut f, format!("{v}\n").as_bytes()).map_err(|e| err(&tmp, e))?;
+    // on disk before the rename, so a crash leaves the old state or the new, never a torn one
+    f.sync_all().map_err(|e| err(&tmp, e))?;
+    fs::rename(&tmp, path).map_err(|e| err(path, e))
 }
 
 fn run(args: &[String]) -> Result<u8, String> {

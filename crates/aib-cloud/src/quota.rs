@@ -319,6 +319,9 @@ pub fn mail_held_back(sent_this_month: u64) -> bool {
 pub const NOTICE_STATE_UNREADABLE: &str = "notice_state_unreadable";
 /// The usage handed in could not be read.
 pub const NOTICE_USAGE_UNREADABLE: &str = "notice_usage_unreadable";
+/// The usage handed in is of a month before the kept state's: a late rerun of an old
+/// month would wipe this month's state and tell everything again, so nothing is done.
+pub const NOTICE_USAGE_OLDER: &str = "notice_usage_older_than_state";
 
 /// What was told in one calendar month, kept between runs: the traffic shares told per
 /// customer, and the sites told about their mail.
@@ -447,7 +450,14 @@ pub fn state_json(s: &MonthState) -> Value {
 /// One run of a month: what to tell now and the state to keep. A state of another month
 /// is a month gone: everything starts over. Each notice told is put in the state, so the
 /// next run does not tell it again.
-pub fn month_run(prev: MonthState, usage: &MonthUsage) -> (MonthState, Vec<Notice>) {
+/// Usage of a month before the state's is refused whole ([`NOTICE_USAGE_OLDER`]).
+pub fn month_run(
+    prev: MonthState,
+    usage: &MonthUsage,
+) -> Result<(MonthState, Vec<Notice>), &'static str> {
+    if usage.month < prev.month {
+        return Err(NOTICE_USAGE_OLDER);
+    }
     let mut st = prev;
     if st.month != usage.month {
         st = MonthState {
@@ -479,7 +489,7 @@ pub fn month_run(prev: MonthState, usage: &MonthUsage) -> (MonthState, Vec<Notic
             });
         }
     }
-    (st, told)
+    Ok((st, told))
 }
 
 #[cfg(test)]
@@ -706,7 +716,7 @@ mod tests {
     #[test]
     fn a_notice_told_is_kept_and_not_told_again_this_month() {
         let u = usage("2026-11", &[("acme", 4100)], &[("s1", 1200)]);
-        let (st, told) = month_run(MonthState::default(), &u);
+        let (st, told) = month_run(MonthState::default(), &u).unwrap();
         assert_eq!(
             told,
             vec![
@@ -724,9 +734,10 @@ mod tests {
         );
         // the state is kept as a file between runs
         let st = parse_state(Some(&state_json(&st))).unwrap();
-        let (st, told) = month_run(st, &u);
+        let (st, told) = month_run(st, &u).unwrap();
         assert_eq!(told, vec![]);
-        let (_, told) = month_run(st, &usage("2026-11", &[("acme", 4800)], &[("s1", 9000)]));
+        let (_, told) =
+            month_run(st, &usage("2026-11", &[("acme", 4800)], &[("s1", 9000)])).unwrap();
         assert_eq!(told.len(), 1);
         assert_eq!(told[0].code, "traffic_95");
     }
@@ -734,8 +745,9 @@ mod tests {
     #[test]
     fn a_new_month_starts_over() {
         let u = usage("2026-11", &[("acme", 4100)], &[("s1", 1200)]);
-        let (st, _) = month_run(MonthState::default(), &u);
-        let (st, told) = month_run(st, &usage("2026-12", &[("acme", 4100)], &[("s1", 1200)]));
+        let (st, _) = month_run(MonthState::default(), &u).unwrap();
+        let (st, told) =
+            month_run(st, &usage("2026-12", &[("acme", 4100)], &[("s1", 1200)])).unwrap();
         assert_eq!(told.len(), 2);
         assert_eq!(st.month, "2026-12");
     }
@@ -794,5 +806,19 @@ mod tests {
                 Err(Unknown::RecordUnreadable)
             );
         }
+    }
+
+    #[test]
+    fn usage_of_an_older_month_than_the_state_is_refused_and_keeps_the_state() {
+        let u = usage("2026-12", &[("acme", 4100)], &[("s1", 1200)]);
+        let (st, told) = month_run(MonthState::default(), &u).unwrap();
+        assert!(!told.is_empty());
+        let late = usage("2026-11", &[("acme", 4100)], &[("s1", 1200)]);
+        assert_eq!(month_run(st.clone(), &late), Err(NOTICE_USAGE_OLDER));
+        // the same month again tells nothing, a later one starts over
+        let (_, again) = month_run(st.clone(), &u).unwrap();
+        assert!(again.is_empty());
+        let (_, next) = month_run(st, &usage("2027-01", &[("acme", 4100)], &[])).unwrap();
+        assert!(!next.is_empty());
     }
 }
