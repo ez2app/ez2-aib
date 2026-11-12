@@ -366,7 +366,8 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
 }
 
 /// 建議分支:kind = "suggestion" 的節點與它們的上層。回 (上層在 nodes 的位置, 還沒完成的件數)
-fn suggestions(plan: &Plan) -> Option<(usize, usize)> {
+/// (建議分支在 nodes 的位置, 完成件數, 未完成件數);完成 = 實查通過
+fn suggestions(plan: &Plan) -> Option<(usize, usize, usize)> {
     let items: Vec<&Node> = plan
         .nodes
         .iter()
@@ -378,12 +379,12 @@ fn suggestions(plan: &Plan) -> Option<(usize, usize)> {
         .iter()
         .filter(|n| n.status.as_deref() != Some("實查通過"))
         .count();
-    Some((at, open))
+    Some((at, items.len() - open, open))
 }
 
 /// 點右上角「建議 N」:跳到建議分支並展開，看得到每一項
 fn jump_to_suggestions(app: &mut App) -> bool {
-    let Some((idx, open)) = suggestions(&app.plan) else {
+    let Some((idx, _, open)) = suggestions(&app.plan) else {
         return true;
     };
     app.jump_note = Some(format!("跳到:建議(還沒完成 {open} 項)"));
@@ -832,10 +833,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         )];
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
-        if let Some((_, open)) = suggestions(&app.plan) {
+        // Andy 11-12 23:1x:右上角與分支標題數字要一致 ⇒ 兩處都顯示「完成 / 未完成」,都由同一個函式算
+        if let Some((_, done, open)) = suggestions(&app.plan) {
             sugg_at = Some(tail.len());
             tail.push(Seg(
-                format!("   建議 {open}"),
+                format!("   建議 完成 {done}/未完成 {open}"),
                 Some(Color::Magenta),
                 false,
                 true,
@@ -932,6 +934,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         if rows.is_empty() {
             tree_lines.push(vec![seg("沒有符合篩選的項目。")]);
         }
+        let sugg_counts = suggestions(p);
         for r in rows.iter().skip(start).take(room) {
             hits.tree_rows.push(r.idx);
             let n = &p.nodes[r.idx];
@@ -953,12 +956,23 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 ),
                 app.dm_txt(n.owner.as_deref())
             );
+            let title = match sugg_counts {
+                Some((at, done, open)) if at == r.idx => format!(
+                    "{}(完成 {done} / 未完成 {open})",
+                    n.title
+                        .split(['(', '('])
+                        .next()
+                        .unwrap_or(&n.title)
+                        .trim_end()
+                ),
+                _ => n.title.clone(),
+            };
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
                 mark(p, &ix, r.idx, &app.open, f.active()),
                 if n.kind == "ext" { "延伸 " } else { "" },
-                n.title
+                title
             );
             let lw = tree_w.saturating_sub(str_width(&right)).max(8).min(tree_w);
             let col = if leaf {
@@ -1480,10 +1494,10 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 120, 30);
         let top = text(&f, 1);
-        assert!(top.contains("   建議 2   全艙 ▸"), "{top}");
+        assert!(top.contains("   建議 完成 1/未完成 2   全艙 ▸"), "{top}");
         let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
         assert_eq!(y, 1);
-        assert_eq!(x1 - x0, str_width("建議 2"));
+        assert_eq!(x1 - x0, str_width("建議 完成 1/未完成 2"));
         let before: String = f[1].iter().map(|g| g.0.as_str()).collect();
         assert_eq!(
             str_width(&before[..before.find("建議").unwrap()]),
@@ -1496,6 +1510,15 @@ mod tests {
         assert!(app.open.contains("S"));
         assert!(!app.fleet_open, "點建議不開全艙");
         assert!(app.jump_note.as_deref().unwrap().contains("還沒完成 2 項"));
+        // 分支標題用同一組數字(資料裡寫的「(14 項)」不算數)
+        app.plan.nodes[2].title = "建議(14 項)".into();
+        let f = frame(&app, 120, 30);
+        let all: Vec<String> = (0..f.len()).map(|i| text(&f, i)).collect();
+        assert!(
+            all.iter().any(|l| l.contains("建議(完成 1 / 未完成 2)")),
+            "{all:#?}"
+        );
+        assert!(!all.iter().any(|l| l.contains("14 項")), "{all:#?}");
         // 點同一行最左邊 ⇒ 照舊開合全艙
         assert!(on_click(&mut app, 0, y));
         assert!(app.fleet_open);
