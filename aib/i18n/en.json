@@ -2948,6 +2948,8 @@
   "aib.now.help.why": "why this was done (one line; required when a stage is handed back)",
   "aib.now.help.idea": "what the owner may not have thought of that you suggest (write \"none\" if nothing; required when a stage is handed back)",
   "aib.now.review_bad": "give --track, --why and --idea together; --track is a 0-100 match; --why / --idea must not be blank",
+  "aib.now.help.goal": "the goal this stage serves: expectation table A1, A4b… or dev plan E1, E6…; chores (dm, handoff, review) write none with --why",
+  "aib.now.goal_bad": "--goal takes A<number> (optional lowercase suffix, e.g. A4b), E<number>, or none; none needs --why saying what the chore is",
   "aib.now.auto_new": "the item is almost entirely different from the last one, so it counts as a new mainline and the start time is now (if you only reworded it, correct with --started 'MM-DD HH:MM')",
   "aib.nowgate.review": "aib-now-gate: @{code} finished a stage (all steps done, or waiting for a reply / decision) but has not reported the check yet. Before handing back run:\n  aib now \"<item>\" <n/m> --state <reply|decide> --track 0-100 --why \"why this was done\" --idea \"what the owner may not have thought of (or none)\"\nNow: {line}",
   "aib.now.help.state": "busy = working (default) / reply = waiting for a reply (from another seat) / decide = waiting for your decision",

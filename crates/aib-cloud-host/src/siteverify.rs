@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S15), hands what it saw to `aib_cloud::verify`, prints the
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S16), hands what it saw to `aib_cloud::verify`, prints the
 //! verdicts. Nothing here writes, save one line per Cloudflare call in the Cloudflare
 //! ledger; `--active` checks are a later slice. One check asks Cloudflare: S15 lists the
 //! customer's zone, read only (`crate::cfdns::proxied_names`), to see that every record
 //! under the site's names goes through the proxy; a customer's status (`customer`) never
-//! runs it. A site whose names span two zones is unchecked (`multi_zone`). One check enters a site's container: S14 asks its scheduler timer's state and
+//! runs it. A site whose names span two zones is unchecked (`multi_zone`). Two checks enter a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
-//! customer's plugins and theme, each with a time limit and a cap on what is read. Nothing
-//! is run inside a quarantined container: S14 is left out for one.
+//! customer's plugins and theme, each with a time limit and a cap on what is read; S16
+//! tests whether a platform template's own files are there (names only); S17 reads
+//! nginx's whole configuration and each PHP-FPM's `expose_php` (E6 S7), for `site verify`
+//! only, not a customer's status. Nothing is run inside a quarantined container: S14, S16
+//! and S17 are left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -97,6 +100,30 @@ pub(crate) fn s14_check(
         .ok();
     let events = runner.run(&wp(spec, &CRON_LIST)).ok();
     verify::s14_wp_cron(now, red_after, shown.as_deref(), events.as_deref())
+}
+
+/// S16 for one site: whether a file a platform template leaves (`mask::PLATFORM_FILES`)
+/// is inside its container, judged by `aib_cloud::verify::s16_no_platform_file`. Only
+/// names are tested; nothing is read.
+pub(crate) fn s16_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
+    let mut args: Vec<&str> = vec!["sh", "-c", verify::S16_SCRIPT, "sh"];
+    args.extend(aib_cloud::mask::PLATFORM_FILES);
+    let listing = runner.run(&in_ct(ct, &args)).ok();
+    verify::s16_no_platform_file(listing.as_deref())
+}
+
+/// S17 for one site (E6 S7): whether nginx and PHP-FPM name their versions in the site's
+/// answers, read inside its container and judged by
+/// `aib_cloud::verify::s17_no_version_banner`. For `site verify` only, as S15 is (c477a
+/// S7 L1): most sites were made from a template that does not turn these off yet, so a
+/// customer would see a red check they cannot fix themselves. Whether to show it to
+/// customers is f1fae's / Andy's call once the template is rebuilt and the older sites
+/// are brought up to it.
+pub(crate) fn s17_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
+    let listing = runner
+        .run(&in_ct(ct, &["sh", "-c", verify::S17_SCRIPT]))
+        .ok();
+    verify::s17_no_version_banner(listing.as_deref())
 }
 
 /// S15 (E6 D1): every address record under the site's names is proxied at Cloudflare, so a
@@ -448,6 +475,13 @@ fn site_checks_for(
             crate::probe::unix_now(),
             verify::WP_CRON_OVERDUE_RED,
         ));
+        // S16 enters the container too: not a quarantined one
+        results.push(s16_check(&mut CtReader, spec.ct));
+    }
+    // S17 enters the container too: not a quarantined one. `site verify` only for now (see
+    // s17_check): never a customer's status
+    if audience == Audience::Operator && s14_runs_in(state) {
+        results.push(s17_check(&mut CtReader, spec.ct));
     }
     // S15 reads Cloudflare only, so it is looked at for a quarantined site too; never for
     // a customer's status
@@ -594,6 +628,9 @@ fn run(args: &[String]) -> Result<u8, String> {
         for (code, names) in &grey {
             eprintln!("S15 {code} not proxied: {}", names.join(" "));
         }
+        if s17_red_anywhere(&sites) {
+            eprintln!("{}", s17_template_hint());
+        }
         eprintln!(
             "{} checks on the host and {} site(s): exit {exit}",
             all.len(),
@@ -601,6 +638,25 @@ fn run(args: &[String]) -> Result<u8, String> {
         );
     }
     Ok(exit)
+}
+
+/// Whether any site's S17 is red: `site verify` then prints [`s17_template_hint`].
+fn s17_red_anywhere(sites: &[(String, Vec<CheckResult>)]) -> bool {
+    sites
+        .iter()
+        .flat_map(|(_, r)| r)
+        .any(|r| r.id == "S17" && matches!(r.outcome, Outcome::Red(_)))
+}
+
+/// What the site template is to carry so new sites start with S17 green (E6 S7): a plan
+/// for when the template is next rebuilt. Nothing here writes it; an existing site is
+/// changed by its own reviewed approval, not by this.
+fn s17_template_hint() -> String {
+    format!(
+        "S17 plan for site template CT {} (next rebuild, not written here):\n  {}",
+        aib_cloud::site::TEMPLATE_CT,
+        verify::S17_TEMPLATE_LINES.join("\n  ")
+    )
 }
 
 #[cfg(test)]
@@ -676,7 +732,10 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        assert_eq!(r.len(), 11);
+        // S00–S06, S10–S14 and S16; S15 asks Cloudflare and S17 is not yet shown to
+        // customers, both for `site verify` only (c477a S7 L1)
+        assert_eq!(r.len(), 12, "S00–S06, S10–S14 and S16");
+        assert!(r.iter().all(|x| x.id != "S17"), "{r:?}");
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");
@@ -752,6 +811,91 @@ mod tests {
             };
             answer.map(str::to_owned).map_err(|()| "failed".to_owned())
         }
+    }
+
+    #[test]
+    fn s16_asks_only_whether_the_platform_files_are_there() {
+        struct Ls(Result<&'static str, ()>, Vec<Vec<String>>);
+        impl Runner for Ls {
+            fn run(&mut self, argv: &[String]) -> Result<String, String> {
+                self.1.push(argv.to_vec());
+                self.0.map(str::to_owned).map_err(|()| "failed".to_owned())
+            }
+        }
+        let mut ct = Ls(Ok("ez2-s16-end\n"), Vec::new());
+        assert_eq!(s16_check(&mut ct, 131).outcome, Outcome::Green);
+        let argv = &ct.1[0];
+        assert_eq!(
+            &argv[..8],
+            [
+                "pct",
+                "exec",
+                "131",
+                "--",
+                "sh",
+                "-c",
+                verify::S16_SCRIPT,
+                "sh"
+            ]
+        );
+        assert_eq!(&argv[8..], aib_cloud::mask::PLATFORM_FILES);
+        ct.0 = Ok("/etc/appliance.info\nez2-s16-end\n");
+        assert_eq!(
+            s16_check(&mut ct, 131).outcome,
+            Outcome::Red("platform_file")
+        );
+        ct.0 = Err(());
+        assert_eq!(s16_check(&mut ct, 131).outcome, Outcome::Unknown("unread"));
+    }
+
+    #[test]
+    fn s17_reads_nginx_and_php_inside_the_container() {
+        struct Sh(Result<String, ()>, Vec<Vec<String>>);
+        impl Runner for Sh {
+            fn run(&mut self, argv: &[String]) -> Result<String, String> {
+                self.1.push(argv.to_vec());
+                self.0.clone().map_err(|()| "failed".to_owned())
+            }
+        }
+        let good = format!(
+            "{}\nexpose_php => Off => Off\n{}\n{}\n# configuration file /etc/nginx/nginx.conf:\nhttp {{\n    server_tokens off;\n}}\n{}\n",
+            verify::S17_PHP,
+            verify::S17_POOL,
+            verify::S17_NGINX,
+            verify::S17_END
+        );
+        let mut ct = Sh(Ok(good.clone()), Vec::new());
+        assert_eq!(s17_check(&mut ct, 131).outcome, Outcome::Green);
+        assert_eq!(
+            ct.1[0],
+            ["pct", "exec", "131", "--", "sh", "-c", verify::S17_SCRIPT]
+        );
+        ct.0 = Ok(good.replace("expose_php => Off => Off", "expose_php => On => On"));
+        assert_eq!(
+            s17_check(&mut ct, 131).outcome,
+            Outcome::Red("expose_php_on")
+        );
+        ct.0 = Err(());
+        assert_eq!(s17_check(&mut ct, 131).outcome, Outcome::Unknown("unread"));
+        // only a red S17 brings the template plan, which names the template CT
+        let red = [(
+            "site2".to_owned(),
+            vec![s17_check(
+                &mut Sh(
+                    Ok(good.replace("server_tokens off", "server_tokens on")),
+                    Vec::new(),
+                ),
+                131,
+            )],
+        )];
+        assert!(s17_red_anywhere(&red));
+        assert!(!s17_red_anywhere(&[(
+            "site2".to_owned(),
+            vec![s17_check(&mut Sh(Ok(good), Vec::new()), 131)]
+        )]));
+        let hint = s17_template_hint();
+        assert!(hint.contains("server_tokens off;") && hint.contains("expose_php = Off"));
+        assert!(hint.contains(&aib_cloud::site::TEMPLATE_CT.to_string()));
     }
 
     fn spec() -> aib_cloud::site::SiteSpec {
