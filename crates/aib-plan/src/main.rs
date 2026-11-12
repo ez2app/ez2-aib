@@ -389,6 +389,8 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     }
     // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
+    // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
+    out.push(Vec::new());
     out.push(toolbar(app, w));
     let f = &app.filter;
     let mut hits = Hits {
