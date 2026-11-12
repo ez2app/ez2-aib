@@ -337,6 +337,29 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     return rec
 
 
+AUTO_NEW_BELOW = 0.15   # 主項目字面相似度低於這個 ⇒ 當成換主軸(跟 aib-plan mainline.rs DRIFT_HINT_BELOW 同一個算法與門檻)
+
+
+def _bigrams(text):
+    cs = [c.lower() for c in str(text or "") if c.isalnum()]
+    return {(a, b) for a, b in zip(cs, cs[1:])}
+
+
+def similarity(a, b):
+    """兩句主項目字面有多像:相鄰兩字的 Jaccard(0~1);兩邊都沒有字 ⇒ 1。"""
+    x, y = _bigrams(a), _bigrams(b)
+    if not x and not y:
+        return 1.0
+    return len(x & y) / len(x | y)
+
+
+def auto_new(prev, item):
+    """Andy 11-12 13:4x:忘了 --new 也要重新計時 —— 上一筆有主項目、不是【我很閒】,字面幾乎全換 ⇒ True。"""
+    if not isinstance(prev, dict) or prev.get("idle") or not prev.get("item"):
+        return False
+    return similarity(prev.get("item"), item) < AUTO_NEW_BELOW
+
+
 TRACK_VALUES = ("on", "off")
 REVIEW_MAX = 400   # 判斷的為什麼 / 建議放在進度畫面可展開的那幾行，比主項目寬鬆
 
@@ -1111,12 +1134,16 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         if started is None:
             err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
+    new = args.new
+    if not new and started is None and auto_new(read(code, state_root=state_root), item):
+        new = True
+        err.write("aib now: %s\n" % T("aib.now.auto_new"))
     review, ok = parse_review(args.track, args.why, args.idea)
     if not ok:
         err.write("aib now: %s\n" % T("aib.now.review_bad"))
         return 2
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
-                new=args.new, review=review)
+                new=new, review=review)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
     nudge = dm_stale_nudge(code) if state_root is None else ""
     if nudge:

@@ -107,6 +107,30 @@ class Review(unittest.TestCase):
             self.assertEqual(rc, 2, argv)
         self.assertIsNone(self.rec())
 
+    def test_auto_new_when_topic_changes(self):
+        import time
+        self.assertEqual(self.now("席位接續 v2 決定已寫", "1/2", "--started", "11-12 00:09")[0], 0)
+        st0 = self.rec()["started_at"]
+        rc, e = self.now("席位接續 v2 決定已寫,等 Andy 看", "2/2")   # 只是補字 ⇒ 沿用
+        self.assertEqual((rc, e), (0, ""))
+        self.assertEqual(self.rec()["started_at"], st0)
+        before = int(time.time())
+        rc, e = self.now("主機發熱三條修法", "0/3")                   # 字面全換 ⇒ 自動重新計時 + 提示
+        self.assertEqual(rc, 0)
+        self.assertIn("aib now:", e)
+        self.assertGreaterEqual(self.rec()["started_at"], before)
+        rc, e = self.now("另一件完全無關", "0/1", "--started", "11-12 00:09")  # 有 --started ⇒ 照給的，不自動
+        self.assertEqual(e, "")
+        self.assertEqual(self.rec()["started_at"], st0)
+
+    def test_similarity_matches_aib_plan(self):
+        # 跟 crates/aib-plan/src/mainline.rs 的測試同一組數字
+        self.assertGreater(seat_now.similarity("aib-plan 主軸兩行", "aib-plan 主軸兩行已裝"), 0.6)
+        self.assertLess(seat_now.similarity("席位接續 v2 決定", "主機發熱三條修法"), 0.15)
+        self.assertEqual(seat_now.similarity("", ""), 1.0)
+        self.assertFalse(seat_now.auto_new({"idle": True, "item": "x"}, "完全不同"))
+        self.assertFalse(seat_now.auto_new({}, "完全不同"))
+
     def test_stage_done(self):
         self.assertTrue(seat_now.stage_done({"steps_done": 3, "steps_total": 3, "state": "busy"}))
         self.assertTrue(seat_now.stage_done({"steps_done": 1, "steps_total": 3, "state": "reply"}))
