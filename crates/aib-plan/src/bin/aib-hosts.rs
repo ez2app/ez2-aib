@@ -964,6 +964,8 @@ fn sign_script(name: &str, p: &Probe, pr: &Proc, receipt: &str) -> Option<String
     {
         return None;
     }
+    // 主機名寫進腳本註解：只留英數與 . _ -(hosts.json 的名字有換行就會多一行指令;043dd #733 L1)
+    let name = slug(name);
     let (pid, start) = (pr.pid, &pr.start);
     let head = format!(
         "#!/bin/bash\n\
@@ -1008,8 +1010,7 @@ fn sign_script(name: &str, p: &Probe, pr: &Proc, receipt: &str) -> Option<String
         ));
     }
     out.push_str(&format!(
-        "if [ \"$rc\" = 255 ]; then echo '連不上 {}(ssh 255),沒有關'; exit 4; fi\nexit \"$rc\"\n",
-        slug(name)
+        "if [ \"$rc\" = 255 ]; then echo '連不上 {name}(ssh 255),沒有關'; exit 4; fi\nexit \"$rc\"\n"
     ));
     Some(out)
 }
@@ -2109,9 +2110,11 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let mut p = host("a=local", None, false).probe();
         let local = sign_script("Pro 16", &p, &pr, "/r/k.log").unwrap();
         assert!(
-            local.contains("# 可丟環境: Pro 16 收據: /r/k.log"),
+            local.contains("# 可丟環境: Pro_16 收據: /r/k.log"),
             "{local}"
         );
+        let evil = sign_script("x\nrm -rf ~", &p, &pr, "/r/k.log").unwrap();
+        assert!(!evil.contains("\nrm "), "名字裡的換行不能變成指令:{evil}");
         assert!(local.contains("set -euo pipefail"), "{local}");
         assert!(local.contains("ps -o lstart= -p 4321"), "{local}");
         assert!(

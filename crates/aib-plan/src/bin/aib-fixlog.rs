@@ -81,6 +81,16 @@ fn build(args: &[String], now: i64) -> Result<Fix, String> {
             sev.label()
         ));
     }
+    // commit 要像一個 commit(7–40 碼小寫十六進位);隨便寫一個字就過不了 H/M 的「修完要帶 commit」(043dd #733 L2)
+    if let Some(c) = &commit {
+        if !(7..=40).contains(&c.len())
+            || !c
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(format!("bad_commit: {c}(7–40 碼小寫十六進位)"));
+        }
+    }
     let f = Fix {
         at: now,
         seat: need(seat, "--seat")?,
@@ -178,6 +188,20 @@ mod tests {
         )
         .is_err());
         assert!(build(&a("list"), 7).is_err());
+        assert!(
+            build(
+                &a("add|--seat|a|--work|w|--sev|H|--what|q|--state|fixed|--commit|x"),
+                7
+            )
+            .unwrap_err()
+            .starts_with("bad_commit"),
+            "隨便一個字不算 commit"
+        );
+        assert!(build(
+            &a("add|--seat|a|--work|w|--sev|H|--what|q|--state|fixed|--commit|CB9014CD"),
+            7
+        )
+        .is_err());
         assert!(
             build(&a("add|--seat|--work|w|--sev|L|--what|q|--state|noted"), 7)
                 .unwrap_err()
