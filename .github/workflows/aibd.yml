@@ -279,6 +279,30 @@ jobs:
           set -eu
           ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # each site's own statistics key (33e28 11-11): a domain held by another account is taken over
+          ck fpkey.rs '        409 => KeyReply::Conflict,' \
+             '        409 => KeyReply::Unknown("reply_status"), // knife' \
+             a_domain_held_by_another_account_stops
+          # statistics key: a loader address that can break out of the script tag is written
+          ck fpkey.rs '            .all(|b| b.is_ascii_alphanumeric() || b":/._-".contains(&b))' \
+             '            .all(|b| b != 0) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: another key's loader address is accepted
+          ck fpkey.rs '        && rest.ends_with(&tail)' \
+             '        && (rest.ends_with(&tail) || true) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: a loader file that only contains ours (edited, added to) reads as done
+          ck fpkey.rs '        Some(Some(text)) if text == want => Probe::Done,' \
+             '        Some(Some(text)) if text.contains(want) => Probe::Done, // knife' \
+             only_the_file_we_make_for_this_site_is_done
+          # statistics key: any site code goes into the loader's mark
+          ck fpkey.rs '    if !code_ok(code) || !key_ok(key) || !script_url_ok(script_url, key) {' \
+             '    if (!code_ok(code) && false) || !key_ok(key) || !script_url_ok(script_url, key) { // knife' \
+             the_loader_file_is_one_tag_for_this_sites_key
+          # statistics key: a loader address on a host that is neither ours nor the site's is written (ebb36 L1)
+          ck fpkey.rs '    !host.is_empty() && hosts.iter().any(|h| h.eq_ignore_ascii_case(host))' \
+             '    !host.is_empty() && (hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) || true) // knife' \
+             a_loader_address_on_a_host_not_ours_is_never_written
           # restore expectation: a REPLACE's rows are skipped and the counts come out short (ebb36 L2)
           ck wpress.rs '        } else if starts_ci(h, b"REPLACE") {' '        } else if starts_ci(h, b"REPLACE-KNIFE") {' \
              a_broken_dump_is_unknown
@@ -358,6 +382,31 @@ jobs:
           ck site.rs '        if !LIMITS_STEP_KEYS.contains(&k) {' \
              '        if !LIMITS_STEP_KEYS.contains(&k) || true { // knife' \
              the_limits_step_is_checked_on_its_own_keys
+          # statistics loader: a 400 for another reason is taken as the probe's proof (33e28 F2)
+          ck fploader.rs '        (400, true) => None,' '        (400, _) => None, // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the loader twice in the page passes (33e28 F2)
+          ck fploader.rs '        _ => Some(not_done("loader_twice")),' '        _ => None, // knife' \
+             the_loader_is_in_the_page_exactly_once
+          # statistics loader: a page that could not be read counts as "not done" (33e28 F2)
+          ck fploader.rs '        return Some(unknown("page_unreadable"));' \
+             '        return Some(not_done("page_unreadable")); // knife' \
+             a_question_not_answered_is_unknown
+          # statistics loader: a 200 without this site's key passes as the loader (33e28 F2)
+          ck fploader.rs '        (200, false) => Some(unknown("script_not_loader")),' '        (200, false) => None, // knife' \
+             the_served_loader_carries_the_key
+          # statistics loader: the intake question is not asked (33e28 F2)
+          ck fploader.rs '        .or_else(|| intake(i))' '        .or_else(|| intake(i).filter(|_| false)) // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the host switch is ignored and every site reads "off" (33e28 F2)
+          ck fploader.rs '    if !enabled {' '    if !enabled || true { // knife' \
+             all_three_answers_make_it_done
+          # F2 L1 (ebb36): another key's loader in the page reads as done
+          ck fploader.rs '    if p.other_keys > 0 {' '    if p.other_keys > 99 { // knife' \
+             a_loader_of_another_key_is_not_done
+          # F2 N2 (c477a): a firewall's 403 reads as the server refusing the origin
+          ck fploader.rs '        (403, _) if i.reason_origin => Some(not_done("origin_refused")),' '        (403, _) if i.reason_origin || true => Some(not_done("origin_refused")), // knife' \
+             a_403_from_something_in_front_is_unknown
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
@@ -1026,6 +1075,39 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+          # background site create (33e28, site-create plan r2 M1): a creating site whose worker is gone
+          ck create.rs '            Some(_) => match lock(holder, boot_id, liveness) {' \
+             '            Some(_) => match lock(holder, &boot_id[..0], liveness) { // knife: boot id ignored' \
+             another_boot_is_interrupted
+          ck create.rs '                Lock::TakeOver => Verdict::Interrupted,' \
+             '                Lock::TakeOver => Verdict::Creating, // knife' \
+             gone_worker_is_interrupted
+          ck create.rs '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Unknown,' \
+             '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Interrupted, // knife' \
+             unknown_changes_nothing
+          ck create.rs '            None if now.saturating_sub(created_at) > START_GRACE_SECS => Verdict::Interrupted,' \
+             '            None if now.saturating_sub(created_at) > 0 => Verdict::Interrupted, // knife' \
+             missing_holder_waits_out_the_start_grace
+          ck create.rs '    now_state == CreateState::Creating && judged.0 == now_record.0 && judged.1 == now_record.1' \
+             '    now_state == CreateState::Creating && judged.1 == now_record.1 // knife: holder not compared' \
+             mark_only_the_same_attempt
+          # create: a late worker takes a record already marked unfinished / held by another (c477a L1)
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    (now_state == CreateState::Creating || true) && now_record.0.is_none() && now_record.1 == my_created_at // knife: state not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.0.is_none() && (now_record.1 == my_created_at || true) // knife: attempt not compared' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.1 == my_created_at // knife: holder not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          # create: Unknown for too long is never told to us (c477a liveness N1)
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS * 100 // knife' \
+             unknown_for_too_long_tells_us
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v != Verdict::Ready && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS // knife' \
+             only_unknown_alerts
           # ---- B1 (customer opens a site) and site removal: the pure rules (4542e 11-11)
           # opening a site: a probe that could not tell is read as not done
           ck sitecreate.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
@@ -1412,10 +1494,18 @@ jobs:
           ck restoreimport.rs '        .any(|l| l.split_whitespace().any(|field| field == name));' \
              '        .any(|l| l.split_whitespace().any(|field| field.starts_with(name))); // knife' \
              the_plugin_must_list_the_backup
-          # restore import: any line that mentions a complete restore counts (B3 slice 4)
-          ck restoreimport.rs '    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {' \
-             '    if output.lines().any(|l| l.contains("Restore complete")) { // knife' \
+          # restore import: an Error line next to a Success line is let through (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    if said(WP_CLI_ERROR) || !said(WP_CLI_SUCCESS) {' \
+             '    if !said(WP_CLI_SUCCESS) { // knife' \
              only_the_plugins_own_complete_line_counts
+          # restore import: a Success line not at the start of its line counts (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.contains(prefix)); // knife' \
+             only_the_plugins_own_complete_line_counts
+          # restore import: only English words are read, so a zh_TW site is taken as failed (c477a slice 4 L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.is_ascii() && l.trim_start().starts_with(prefix)); // knife' \
+             a_site_in_another_language_is_not_taken_as_failed
           # restore gate: a name that only starts with another site's is told as that site's (B3 slice 4, c477a slice 3 r2 N1)
           ck restoregate.rs "    !d.is_empty() && slug == d.replace('.', \"-\")" \
              "    !d.is_empty() && slug.starts_with(&d.replace('.', \"-\")) // knife" \
@@ -1651,6 +1741,88 @@ jobs:
             '        ) if aib_cloud::customer::is_opening(out) && false => match aib_cloud::customer::opened_of(out) { // knife' \
             --expect-fail an_opening_is_shown_in_the_host_s_words \
             -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
+          # HUMAN-PASTE-4542e-1111 17 to 21 (final: Andy 11-12 12:1x): one character of a
+          # sentence changed is red, word for word as the customer reads it
+          # 17 opening: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '站碼 {code}。大約需要幾分鐘' \
+            '站號 {code}。大約需要幾分鐘' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18 already_opening: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '已經在開站中(站碼' \
+            '已經在開站中(站號' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 13 / 19 domain_taken: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '不能重複綁定。' \
+            '不能重覆綁定。' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 20 opened, no administrator named: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '會另外提供給您。' \
+            '會另外提供給你。' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 21 abandoned: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '做到一半的部分清掉了' \
+            '做到一半的部份清掉了' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18: the customer's own opening loses its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'wording::already_opening(&own, name)' \
+            'wording::already_opening(&own[..0], name)' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18 / 13: already_opening is shown as its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '(Some("already_opening"), OwnerRequest::Create { name, .. }) if code == 2 => {' \
+            '(Some("already_opening_knife"), OwnerRequest::Create { name, .. }) if code == 2 => {' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 19: domain_taken is shown as its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '(Some("domain_taken"), OwnerRequest::Create { .. }) if code == 2 => {' \
+            '(Some("domain_taken_knife"), OwnerRequest::Create { .. }) if code == 2 => {' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 17: the opening started is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        (_, OwnerRequest::Create { name, .. }) if code == 0 => {' \
+            '        (_, OwnerRequest::Create { name, .. }) if code == 9 => { // knife' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 21: an abandoned opening is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'aib_cloud::customer::abandoned_domain_of(out)' \
+            'aib_cloud::customer::abandoned_domain_of("") /* knife */' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 20: an opened site with no administrator named is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'aib_cloud::customer::opened_without_login_of(out)' \
+            'aib_cloud::customer::opened_without_login_of("") /* knife */' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 17 to 21: what fills a sentence in reaches the terminal as it came
+          ck wording.rs '    crate::svc::plain(word)' \
+             '    String::from(word) // knife' \
+             the_opening_sentences_show_nothing_that_acts_on_the_terminal
+          # 17 to 21: the answers are read from any shape
+          ck customer.rs '    if !stopped || !abandoned || !is_opening(reply) {' \
+             '    if !stopped || !(abandoned || true) || !is_opening(reply) { // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
+          ck customer.rs '        .is_some_and(|a| !a.is_empty());' \
+             '        .is_some_and(|_| false); // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
+          ck customer.rs '    let known = crate::site::valid_code(site);' \
+             '    let known = !site.is_empty(); // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
           # B5 DNS (4542e): only a zone of an account the roster names is used
           ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
              '                same_name(&z.name, &name) && z.status == "active" && (accounts.contains(&z.account) || true) // knife' \
@@ -1733,6 +1905,18 @@ jobs:
           ck roster.rs '        if out.iter().any(|x| x == id) {' \
              '        if out.iter().any(|x| x == id) && false { // knife' \
              the_customers_cloudflare_accounts_are_read_strictly
+          # rescue API origin (f1fae 11-11, §16): plain http is refused again
+          ck robot.rs '        let rest = raw.strip_prefix("https://").ok_or(Error::BadOrigin)?;' \
+             '        let rest = raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")).ok_or(Error::BadOrigin)?; // knife' \
+             api_origin_rejects_everything_else
+          # rescue API origin: an approval no longer names where the request goes
+          ck robot.rs '            self.origin.as_str(),' \
+             '            "", // knife' \
+             plan_hash_changes_with_request
+          # rescue API origin: an IPv4 address passes as a host name again (c477a N1)
+          ck robot.rs "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && tld_ok;" \
+             "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && (tld_ok || true); // knife" \
+             api_origin_rejects_everything_else
           # abandon (4542e): a site is abandoned
           ck siteabandon.rs '        Some(true) => return Some(ALREADY_A_SITE),' \
              '        Some(true) => {} // knife' \
@@ -2588,6 +2772,34 @@ jobs:
           hk restorestepscmd.rs '                .put_scheduler_back(&rec)' \
              '                .put_scheduler_back(&rec).or(Ok::<bool, String>(false)) // knife' \
              a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot
+          # restore wiring: the import runs in the site's language, not C (c477a slice 4 L1)
+          hk restorestepscmd.rs '    v.extend(restoreimport::IMPORT_ENV.iter().map(|e| (*e).to_owned()));' \
+             '    // knife: no IMPORT_ENV' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: wp prints colours (c477a slice 4 N1)
+          hk restorestepscmd.rs '    v.push("--no-color".into());' \
+             '    // knife: colours on' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: a plugin zip not as SHA256SUMS says is installed (B3 slice 5)
+          hk restorestepscmd.rs '            if !got.eq_ignore_ascii_case(want) {' \
+             '            if !got.eq_ignore_ascii_case(want) && false { // knife' \
+             a_plugin_zip_not_as_summed_is_not_installed
+          # restore wiring: an import that ends with 1 but printed Success: is taken as done (c477a slice 4 L1)
+          hk restorestepscmd.rs '        self.run.run(&restore_argv)' \
+             '        self.run.run(&restore_argv).or_else(|e| Ok(format!("Success: {e}"))) // knife' \
+             an_import_that_does_not_end_with_0_fails_and_is_rolled_back
+          # restore wiring: an accept that differs goes on (B3 slice 5; Andy 11-12: keep)
+          hk restorestepscmd.rs '            1 => Err(format!("accept_differ: {}", doc["strict"])),' \
+             '            1 => Ok(()), // knife' \
+             an_accept_that_differs_keeps_the_site
+          # restore wiring: a push lands on a path the site's user could have put a link at (c477a rwire2 L1)
+          hk restorestepscmd.rs '        let file = format!("{dir}/{name}");' \
+             '        let file = format!("/tmp/ez2-{name}"); // knife' \
+             nothing_is_pushed_where_the_site_could_have_put_a_link
+          # restore wiring: a big site's import progress past the cap is a failure (c477a rwire2 L2)
+          hk restorestepscmd.rs '        let keep_tail = Self::is_import(argv);' \
+             '        let keep_tail = false; // knife' \
+             an_import_that_says_more_than_is_read_and_ends_with_success_is_done
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
@@ -2784,6 +2996,42 @@ jobs:
           hk siteidentity.rs '            return Err(format!("identity_not_set: plugin {slug} is still there"));' \
              '            let _ = slug; // knife' \
              the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # Andy 11-11 07:30 no forced 2FA (e1a 11-12 10:09): the forced file is copied, not moved
+          hk siteidentity.rs '            .and_then(|_| runner.run(&in_ct(spec.ct, &["mv", &file, &to])))' \
+             '            .and_then(|_| runner.run(&in_ct(spec.ct, &["cp", &file, &to]))) // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: a forced file still there after the move is taken as gone
+          hk siteidentity.rs '        if mu_forced_present(runner, spec, &file)? {' \
+             '        if false { // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (c477a L1): a failed ask for the forced file is taken as "not there"
+          hk siteidentity.rs '        .map_err(|e| format!("identity_unchecked: {FORCED_2FA_MU}: {e}"))?;' \
+             '        .unwrap_or_else(|_| "no".to_owned()); // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (33e28 L1): a dangling link in the forced file's place is taken as gone
+          hk siteidentity.rs '                "if test -e \"$1\" || test -L \"$1\"; then echo yes; else echo no; fi",' \
+             '                "if test -e \"$1\"; then echo yes; else echo no; fi", // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (c477a L1): an answer that is neither yes nor no is taken as no
+          hk siteidentity.rs '    match out.trim() {' \
+             '    match if out.trim() == "yes" { "yes" } else { "no" } { // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: the two-factor plugins are not deactivated
+          hk siteidentity.rs '            .run(&wp(spec, &["plugin", "deactivate", slug]))' \
+             '            .run(&wp(spec, &["plugin", "status", slug])) // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: a plugin still active after the deactivate is taken as off
+          hk siteidentity.rs '        return Err(format!("identity_not_set: plugin {slug} is still active"));' \
+             '        let _ = slug; // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: the identity step does not call it
+          hk siteidentity.rs '    two_factor_not_forced(runner, spec)?;' \
+             '    if false { two_factor_not_forced(runner, spec)?; } // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: an active list that cannot be read counts as none active
+          hk siteidentity.rs '        .map_err(|e| format!("identity_unchecked: active plugins: {e}"))?;' \
+             '        .unwrap_or_default(); // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
           # e1a 11-12: health asks the REST address, not the front page
           hk sitelive.rs '    let url = format!("https://{host}/wp-json/");' \
              '    let url = format!("https://{host}/"); // knife' \
@@ -3027,6 +3275,13 @@ jobs:
           hk sitecreaterun.rs '        || aib_cloud::site::record_tenant(&ask) != Some(tenant)' \
              '        || (aib_cloud::site::record_tenant(&ask) != Some(tenant) && false) // knife' \
              progress_is_the_customer_s_own_only
+          # HUMAN-PASTE-4542e-1111 21: an abandoned opening does not say so, or any stop says so
+          hk sitecreaterun.rs '    if gave_up && state == "stopped" {' \
+             '    if gave_up && state == "knife" {' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
+          hk sitecreaterun.rs '    if gave_up && state == "stopped" {' \
+             '    if (gave_up || true) && state == "stopped" { // knife' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
           # E1: an opening that stopped on a failure is run again by itself
           hk sitecreaterun.rs '        (Some("waiting" | "running"), _) => {}' \
              '        (Some(_), _) => {} // knife' \

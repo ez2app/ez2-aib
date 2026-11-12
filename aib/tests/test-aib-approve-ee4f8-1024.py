@@ -427,7 +427,7 @@ class Approve(Base):
 
     def test_a15_more_edges(self):
         import touchid_approve as TA
-        for over in ({"ip": "203.0.113.7\u202e"}, {"ip": "1.2.3.4\n"}, {"iat": NOW - 5, "exp": NOW - 5},
+        for over in ({"ip": "203.0.113.7\u202e"}, {"ip": "192.0.2.4\n"}, {"iat": NOW - 5, "exp": NOW - 5},
                      {"iat": NOW, "exp": NOW - 1}):
             self.site.items = []
             self.site.add(kid=self.kid, **over)
