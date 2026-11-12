@@ -24,6 +24,9 @@
 //! B4 adds the licences, the entry and the health; B5 the DNS step between the licences
 //! and the entry ([`crate::cfdns`]): the customer's zone at Cloudflare, proxied records
 //! carrying the site's mark, read back.
+//! The identity also puts the one-time login plugin in place, and an opened site's answer
+//! names `site login-link` for the caller to run next ([`crate::loginlink`]); it never
+//! carries the link.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -1326,6 +1329,8 @@ pub fn continue_steps(
 ) -> Result<Value, String> {
     let Opening { mut record, spec } = opening;
     for &step in steps {
+        // E11: the progress file says which step the opening is in
+        crate::opstop::step(step.as_str());
         if step == CreateStep::Start {
             if let Err(why) = ready_to_start(runner, spec.ct) {
                 record["held"] = json!(why);
@@ -1554,6 +1559,15 @@ pub fn read_records(dir: &Path) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// The records whose numbers and code are never given again although nothing holds them:
+/// the removed sites' and the abandoned openings' (`<creating>/abandoned`). Either not read
+/// is `None`.
+pub fn gone_records(removed: &Path, creating: &Path) -> Option<Vec<Value>> {
+    let mut out = read_records(removed)?;
+    out.extend(read_records(&crate::siteabandon::abandoned_dir(creating))?);
+    Some(out)
+}
+
 /// The sites' addresses in every `*.conf` under the given directories. Any directory or
 /// file that cannot be read is `None`.
 pub fn read_guest_ips(dirs: &[&Path]) -> Option<Vec<u8>> {
@@ -1590,7 +1604,7 @@ pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
         vm_list: capture("qm", &["list"], 20),
         guest_ips: read_guest_ips(&[Path::new(LXC_CONFIGS), Path::new(VM_CONFIGS)]),
         records: read_records(Path::new(records)),
-        removed: read_records(Path::new(REMOVED_RECORDS)),
+        removed: gone_records(Path::new(REMOVED_RECORDS), Path::new(CREATING)),
         creating: read_records(Path::new(CREATING)),
         tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
@@ -1614,6 +1628,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut continue_code: Option<String> = None;
     let mut run_code: Option<String> = None;
     let mut tenant: Option<String> = None;
+    let mut abandon_code: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1624,6 +1639,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
             }
             "--run" => run_code = Some(it.next().ok_or("--run needs a site code")?.clone()),
+            "--abandon" => {
+                abandon_code = Some(it.next().ok_or("--abandon needs a site code")?.clone());
+            }
             "--tenant" => {
                 let t = it.next().ok_or("--tenant needs a customer id")?;
                 if !aib_cloud::site::valid_code(t) {
@@ -1634,6 +1652,18 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if let Some(code) = abandon_code {
+        if blank || run_code.is_some() || continue_code.is_some() || tenant.is_some() {
+            return Err("--abandon <code> takes only --plan or --apply <plan.json>".to_owned());
+        }
+        return match (plan_only, apply_file) {
+            (true, None) => crate::siteabandon::cmd(&domain, &code, None),
+            (false, Some(file)) => crate::siteabandon::cmd(&domain, &code, Some(&file)),
+            _ => {
+                Err("--abandon <code> needs --plan or --apply <plan.json>, one of them".to_owned())
+            }
+        };
     }
     if let Some(code) = run_code {
         if plan_only || blank || apply_file.is_some() || continue_code.is_some() || tenant.is_some()
@@ -1663,7 +1693,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
         (false, None) => {
             return Err(
-                "needs --plan, --apply <plan.json> with a plan this command printed, or --continue <code>".to_owned(),
+                "needs --plan, --apply <plan.json> with a plan this command printed, --continue <code> or --abandon <code>".to_owned(),
             )
         }
     }
@@ -1741,6 +1771,12 @@ fn apply_cmd(
 /// number is used again, but `site verify` may report a `.fw` without a container as a
 /// leftover (c477a B2 N3; whether destroy removes it is a host test).
 ///
+/// An opened site's answer names the next command for its one-time login link
+/// (`login_link_next`, Andy 11-11: a direct login, not a password reset): the caller runs
+/// `site login-link <domain> --login <first administrator>` itself, whose standard output
+/// is the link alone. The link is never in this answer, which callers keep as receipts
+/// (ebb36 L1, f1fae 11-11).
+///
 /// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
@@ -1759,12 +1795,21 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         Some(record) => {
             let open =
                 record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
+            let next = if open {
+                link_login(&record)
+                    .ok()
+                    .map(|login| login_link_next(domain, &login))
+            } else {
+                None
+            };
             json!({
                 "applied": record.get("step"),
                 "record": record,
                 "open": open,
                 // from the record: what B3 left for later and the licences not done
                 "pending": crate::sitelive::pending_of(&record),
+                // the command, never the link: this answer is kept as a receipt
+                "login_link_next": next,
             })
         }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
@@ -1774,6 +1819,22 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
     Ok(u8::from(held))
+}
+
+/// The login every opened site's link is for: the first administrator the identity made.
+pub fn link_login(record: &Value) -> Result<String, String> {
+    record
+        .get("admins")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "login_unknown: the record names no administrator".to_owned())
+}
+
+/// The command an opened site's caller runs next for the one-time login link.
+pub fn login_link_next(domain: &str, login: &str) -> String {
+    format!("aib-cloud-host site login-link {domain} --login {login}")
 }
 
 #[cfg(test)]
@@ -2742,6 +2803,42 @@ mod tests {
             .iter()
             .find(|e| e.target == "domain:new.example.test")
             .map(|e| e.state)
+    }
+
+    /// E11: the progress file names the step each host command belongs to.
+    #[test]
+    fn an_opening_says_which_step_it_is_in() {
+        let (place, paths) = opened("b2steps", "clone");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut host = b2_host(shown_config());
+        let mut runner = fake(|argv: &[String]| {
+            seen.borrow_mut().push(format!(
+                "{} {}",
+                crate::opstop::current_step().unwrap_or_default(),
+                argv[1]
+            ));
+            host(argv)
+        });
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            *seen.borrow(),
+            [
+                "limits set",
+                "limits config",
+                "start config",
+                "start start",
+                "start status"
+            ]
+        );
     }
 
     #[test]

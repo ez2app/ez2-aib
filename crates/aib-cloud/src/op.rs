@@ -483,6 +483,215 @@ pub fn lock(holder: Option<&Holder>, boot_id: &str, liveness: Liveness) -> Lock 
     }
 }
 
+// ------------------------------------------------------------------ progress and stop (E11)
+//
+// Andy 11-11 09:5x「可以彈出提示，同意後關閉」: a long operation that looks stuck is stopped
+// only after a person approves it in a window, and only its own processes. These are the
+// judgements; the host shell writes the progress file, reads `/proc` and sends signals.
+
+/// A long operation writes its step and the time at least this often (seconds), also in
+/// the middle of a long step (a download, an import).
+pub const HEARTBEAT_SECS: u64 = 30;
+/// Running with no update for this long (seconds) is `stalled`. Being slow is not being
+/// dead: stalled only says "a person may want to look", never "gone".
+pub const STALLED_SECS: u64 = 300;
+
+/// What `op status <op>` says an operation is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    /// The journal says running, the process is there (or cannot be told) and it wrote
+    /// lately.
+    Running,
+    /// The journal says running and nothing was written for [`STALLED_SECS`] or more.
+    Stalled,
+    /// The journal says running and the process that recorded it is gone: interrupted.
+    Gone,
+    /// The journal is past running (or never got there).
+    Finished,
+}
+
+impl Progress {
+    /// The verdict printed: `running`, `stalled` or `finished`. An interrupted operation
+    /// is `stalled` too; [`Progress::why`] tells it apart.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Progress::Running => "running",
+            Progress::Stalled | Progress::Gone => "stalled",
+            Progress::Finished => "finished",
+        }
+    }
+
+    /// The fixed code that goes with the verdict.
+    pub fn why(self) -> &'static str {
+        match self {
+            Progress::Running => "updated_recently",
+            Progress::Stalled => "no_update",
+            Progress::Gone => "process_gone",
+            Progress::Finished => "journal_not_running",
+        }
+    }
+}
+
+/// Judge an operation from its journal's last state, the last time it wrote its progress,
+/// and whether the process it recorded is still that process (pid and start time). How
+/// long it has been silent decides between running and stalled only; it never makes a
+/// live process gone.
+pub fn progress(
+    last: State,
+    updated_at: u64,
+    now: u64,
+    live: Liveness,
+    stalled_after: u64,
+) -> Progress {
+    if last != State::Running {
+        return Progress::Finished;
+    }
+    match live {
+        Liveness::Gone => Progress::Gone,
+        Liveness::Alive | Liveness::Unknown => {
+            if now.saturating_sub(updated_at) >= stalled_after {
+                Progress::Stalled
+            } else {
+                Progress::Running
+            }
+        }
+    }
+}
+
+/// A step name as it is written in the progress file and in the `stopped_at_<step>`
+/// code: lower letters, digits and `_`; `-` and `.` become `_`. Anything else, empty or
+/// longer than 60, is not a step.
+pub fn step_token(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.len() > 60 {
+        return None;
+    }
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            'a'..='z' | '0'..='9' | '_' => out.push(c),
+            '-' | '.' => out.push('_'),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The code of the journal line a stop writes: `failed` with `stopped_at_<step>`, so the
+/// journal says where it stopped and the existing rule holds (a failed operation keeps its
+/// target until `op recovered`).
+pub fn stop_code(step: &str) -> Option<String> {
+    let step = step_token(step)?;
+    let mut code = String::from("stopped_at_");
+    code.push_str(&step);
+    Some(code)
+}
+
+/// What `/proc/<pid>/stat` showed for a recorded pid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcSeen {
+    /// No such pid.
+    Missing,
+    /// There, but the start time could not be read.
+    Unreadable,
+    /// A zombie with this start time: it has exited.
+    Zombie(u64),
+    /// A live process with this start time.
+    Live(u64),
+}
+
+/// Why a stop is refused. The spelling ([`StopRefusal::as_str`]) is the fixed detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopRefusal {
+    /// The journal is not at running: nothing to stop.
+    NotRunning,
+    /// The operation recorded no process (no progress file, no lock naming it).
+    NoProcessRecord,
+    /// The recorded process is from another boot: it is gone.
+    OtherBoot,
+    /// The recorded or the current start time cannot be read: the pid cannot be proven
+    /// to be the same process.
+    StartTimeUnreadable,
+    /// The pid now belongs to a process started at another time.
+    PidReused,
+    /// The process has exited: nothing to stop; check the host and `op recovered`.
+    ProcessGone,
+    /// The plan given is not the plan recomputed under the lock.
+    PlanChanged,
+    /// The host side runs on Linux only.
+    NotLinux,
+    /// The plan was made while the operation was still writing its progress (`not_stuck`)
+    /// and `--even-if-running` was not given (f1fae 11-11 23:59).
+    NotStuck,
+}
+
+impl StopRefusal {
+    /// The fixed detail.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopRefusal::NotRunning => "op_not_running",
+            StopRefusal::NoProcessRecord => "no_process_record",
+            StopRefusal::OtherBoot => "process_from_another_boot",
+            StopRefusal::StartTimeUnreadable => "start_time_unreadable",
+            StopRefusal::PidReused => "pid_reused",
+            StopRefusal::ProcessGone => "process_gone",
+            StopRefusal::PlanChanged => "plan_changed",
+            StopRefusal::NotLinux => "not_linux",
+            StopRefusal::NotStuck => "not_stuck_needs_even_if_running",
+        }
+    }
+}
+
+/// Whether the process an operation recorded may be stopped: the journal is at running,
+/// it is this boot, the recorded start time is known and the pid still has exactly that
+/// start time. A reused pid, or one whose start time cannot be read, is never signalled.
+pub fn may_stop(
+    last: State,
+    recorded_start: Option<u64>,
+    same_boot: bool,
+    seen: ProcSeen,
+) -> Result<(), StopRefusal> {
+    if last != State::Running {
+        return Err(StopRefusal::NotRunning);
+    }
+    if !same_boot {
+        return Err(StopRefusal::OtherBoot);
+    }
+    let Some(recorded) = recorded_start else {
+        return Err(StopRefusal::StartTimeUnreadable);
+    };
+    match seen {
+        ProcSeen::Missing => Err(StopRefusal::ProcessGone),
+        ProcSeen::Unreadable => Err(StopRefusal::StartTimeUnreadable),
+        ProcSeen::Zombie(st) | ProcSeen::Live(st) if st != recorded => Err(StopRefusal::PidReused),
+        ProcSeen::Zombie(_) => Err(StopRefusal::ProcessGone),
+        ProcSeen::Live(_) => Ok(()),
+    }
+}
+
+/// Whether a process seen now is the one a stop plan named: same start time, not exited.
+/// Checked again right before each signal, so a pid reused since the plan is left alone.
+pub fn still_the_one(planned_start: u64, seen: ProcSeen) -> bool {
+    matches!(seen, ProcSeen::Live(st) if st == planned_start)
+}
+
+/// Whether a stop may be planned as "not stuck": the operation is still writing its
+/// progress. A plan is made all the same — a person may want to stop one that is slow
+/// rather than stuck — but it says so (f1fae 11-11 23:59).
+pub fn not_stuck(p: Progress) -> bool {
+    p == Progress::Running
+}
+
+/// Whether an approved stop plan may be carried out: one made while the operation was
+/// not stuck needs `--even-if-running` as well, so the person has said twice that they
+/// mean to stop work that is still moving.
+pub fn may_apply_stop(planned_not_stuck: bool, even_if_running: bool) -> Result<(), StopRefusal> {
+    if planned_not_stuck && !even_if_running {
+        Err(StopRefusal::NotStuck)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -792,5 +1001,142 @@ mod tests {
         // a complete last line without a newline is simply read
         let no_newline = whole.trim_end().to_owned();
         assert_eq!(parse_journal(&no_newline).unwrap(), (j, false));
+    }
+
+    /// E11: silence decides running against stalled; a live process is never judged gone
+    /// on time alone, and a gone one is told apart.
+    #[test]
+    fn a_silent_operation_is_stalled_but_not_gone() {
+        let t = 1_800_000_000;
+        let p = |last, upd, live| progress(last, upd, t, live, STALLED_SECS);
+        assert_eq!(
+            p(State::Running, t - 10, Liveness::Alive),
+            Progress::Running
+        );
+        assert_eq!(
+            p(State::Running, t - STALLED_SECS + 1, Liveness::Alive),
+            Progress::Running
+        );
+        assert_eq!(
+            p(State::Running, t - STALLED_SECS, Liveness::Alive),
+            Progress::Stalled
+        );
+        // hours of silence from a live process: stalled, still not gone
+        assert_eq!(
+            p(State::Running, t - 36_000, Liveness::Alive),
+            Progress::Stalled
+        );
+        assert_eq!(
+            p(State::Running, t - 36_000, Liveness::Unknown),
+            Progress::Stalled
+        );
+        assert_eq!(p(State::Running, t, Liveness::Unknown), Progress::Running);
+        // a gone process is gone however fresh its last line
+        assert_eq!(p(State::Running, t, Liveness::Gone), Progress::Gone);
+        assert_eq!(Progress::Gone.as_str(), "stalled");
+        assert_eq!(Progress::Gone.why(), "process_gone");
+        // a clock that went back is not silence
+        assert_eq!(
+            p(State::Running, t + 99, Liveness::Alive),
+            Progress::Running
+        );
+        // the threshold is a parameter
+        assert_eq!(
+            progress(State::Running, t - 5, t, Liveness::Alive, 5),
+            Progress::Stalled
+        );
+        for s in [
+            State::Verified,
+            State::Failed,
+            State::Recovery,
+            State::Planned,
+        ] {
+            assert_eq!(
+                p(s, t - 36_000, Liveness::Alive),
+                Progress::Finished,
+                "{s:?}"
+            );
+        }
+        assert_eq!(Progress::Finished.as_str(), "finished");
+    }
+
+    #[test]
+    fn a_stop_names_the_step_it_stopped_at() {
+        assert_eq!(stop_code("install").as_deref(), Some("stopped_at_install"));
+        assert_eq!(
+            stop_code("b3-wpress.import").as_deref(),
+            Some("stopped_at_b3_wpress_import")
+        );
+        assert_eq!(stop_code(""), None);
+        assert_eq!(stop_code("Install"), None);
+        assert_eq!(stop_code("a b"), None);
+        assert_eq!(stop_code(&"x".repeat(61)), None);
+        // every code made fits a journal line
+        let code = stop_code(&"x".repeat(60)).unwrap();
+        let mut e = entry(4, State::Failed);
+        e.code = code;
+        assert!(e.validate().is_ok());
+    }
+
+    /// E11: only the process the operation recorded, proven by its start time.
+    #[test]
+    fn only_the_recorded_process_may_be_stopped() {
+        use ProcSeen::{Live, Missing, Unreadable, Zombie};
+        let ok = |seen| may_stop(State::Running, Some(500), true, seen);
+        assert_eq!(ok(Live(500)), Ok(()));
+        assert_eq!(ok(Live(501)), Err(StopRefusal::PidReused));
+        assert_eq!(ok(Zombie(7)), Err(StopRefusal::PidReused));
+        assert_eq!(ok(Zombie(500)), Err(StopRefusal::ProcessGone));
+        assert_eq!(ok(Missing), Err(StopRefusal::ProcessGone));
+        assert_eq!(ok(Unreadable), Err(StopRefusal::StartTimeUnreadable));
+        assert_eq!(
+            may_stop(State::Running, None, true, Live(500)),
+            Err(StopRefusal::StartTimeUnreadable)
+        );
+        assert_eq!(
+            may_stop(State::Running, Some(500), false, Live(500)),
+            Err(StopRefusal::OtherBoot)
+        );
+        for s in [
+            State::Verified,
+            State::Failed,
+            State::Recovery,
+            State::Approved,
+        ] {
+            assert_eq!(
+                may_stop(s, Some(500), true, Live(500)),
+                Err(StopRefusal::NotRunning),
+                "{s:?}"
+            );
+        }
+        assert!(still_the_one(500, Live(500)));
+        assert!(!still_the_one(500, Live(501)));
+        assert!(!still_the_one(500, Zombie(500)));
+        assert!(!still_the_one(500, Missing));
+        assert!(!still_the_one(500, Unreadable));
+        assert_eq!(StopRefusal::PidReused.as_str(), "pid_reused");
+        assert_eq!(
+            StopRefusal::StartTimeUnreadable.as_str(),
+            "start_time_unreadable"
+        );
+        assert_eq!(StopRefusal::PlanChanged.as_str(), "plan_changed");
+    }
+
+    /// f1fae 11-11 L1: a plan for an operation that still writes is made, marked, and
+    /// carried out only with `--even-if-running`.
+    #[test]
+    fn a_stop_of_work_still_moving_needs_even_if_running() {
+        assert!(not_stuck(Progress::Running));
+        for p in [Progress::Stalled, Progress::Gone, Progress::Finished] {
+            assert!(!not_stuck(p), "{p:?}");
+        }
+        assert_eq!(may_apply_stop(true, false), Err(StopRefusal::NotStuck));
+        assert_eq!(may_apply_stop(true, true), Ok(()));
+        assert_eq!(may_apply_stop(false, false), Ok(()));
+        assert_eq!(may_apply_stop(false, true), Ok(()));
+        assert_eq!(
+            StopRefusal::NotStuck.as_str(),
+            "not_stuck_needs_even_if_running"
+        );
     }
 }
