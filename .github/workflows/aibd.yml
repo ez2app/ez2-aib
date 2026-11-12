@@ -279,6 +279,30 @@ jobs:
           set -eu
           ck() { python3 -I scripts/knife.py "crates/aib-cloud/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-cloud --locked --lib "$4"; }
+          # each site's own statistics key (33e28 11-11): a domain held by another account is taken over
+          ck fpkey.rs '        409 => KeyReply::Conflict,' \
+             '        409 => KeyReply::Unknown("reply_status"), // knife' \
+             a_domain_held_by_another_account_stops
+          # statistics key: a loader address that can break out of the script tag is written
+          ck fpkey.rs '            .all(|b| b.is_ascii_alphanumeric() || b":/._-".contains(&b))' \
+             '            .all(|b| b != 0) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: another key's loader address is accepted
+          ck fpkey.rs '        && rest.ends_with(&tail)' \
+             '        && (rest.ends_with(&tail) || true) // knife' \
+             anything_that_does_not_read_right_is_unknown
+          # statistics key: a loader file that only contains ours (edited, added to) reads as done
+          ck fpkey.rs '        Some(Some(text)) if text == want => Probe::Done,' \
+             '        Some(Some(text)) if text.contains(want) => Probe::Done, // knife' \
+             only_the_file_we_make_for_this_site_is_done
+          # statistics key: any site code goes into the loader's mark
+          ck fpkey.rs '    if !code_ok(code) || !key_ok(key) || !script_url_ok(script_url, key) {' \
+             '    if (!code_ok(code) && false) || !key_ok(key) || !script_url_ok(script_url, key) { // knife' \
+             the_loader_file_is_one_tag_for_this_sites_key
+          # statistics key: a loader address on a host that is neither ours nor the site's is written (ebb36 L1)
+          ck fpkey.rs '    !host.is_empty() && hosts.iter().any(|h| h.eq_ignore_ascii_case(host))' \
+             '    !host.is_empty() && (hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) || true) // knife' \
+             a_loader_address_on_a_host_not_ours_is_never_written
           # restore expectation: a REPLACE's rows are skipped and the counts come out short (ebb36 L2)
           ck wpress.rs '        } else if starts_ci(h, b"REPLACE") {' '        } else if starts_ci(h, b"REPLACE-KNIFE") {' \
              a_broken_dump_is_unknown
@@ -358,6 +382,31 @@ jobs:
           ck site.rs '        if !LIMITS_STEP_KEYS.contains(&k) {' \
              '        if !LIMITS_STEP_KEYS.contains(&k) || true { // knife' \
              the_limits_step_is_checked_on_its_own_keys
+          # statistics loader: a 400 for another reason is taken as the probe's proof (33e28 F2)
+          ck fploader.rs '        (400, true) => None,' '        (400, _) => None, // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the loader twice in the page passes (33e28 F2)
+          ck fploader.rs '        _ => Some(not_done("loader_twice")),' '        _ => None, // knife' \
+             the_loader_is_in_the_page_exactly_once
+          # statistics loader: a page that could not be read counts as "not done" (33e28 F2)
+          ck fploader.rs '        return Some(unknown("page_unreadable"));' \
+             '        return Some(not_done("page_unreadable")); // knife' \
+             a_question_not_answered_is_unknown
+          # statistics loader: a 200 without this site's key passes as the loader (33e28 F2)
+          ck fploader.rs '        (200, false) => Some(unknown("script_not_loader")),' '        (200, false) => None, // knife' \
+             the_served_loader_carries_the_key
+          # statistics loader: the intake question is not asked (33e28 F2)
+          ck fploader.rs '        .or_else(|| intake(i))' '        .or_else(|| intake(i).filter(|_| false)) // knife' \
+             the_probe_event_proves_the_origin_and_stores_nothing
+          # statistics loader: the host switch is ignored and every site reads "off" (33e28 F2)
+          ck fploader.rs '    if !enabled {' '    if !enabled || true { // knife' \
+             all_three_answers_make_it_done
+          # F2 L1 (ebb36): another key's loader in the page reads as done
+          ck fploader.rs '    if p.other_keys > 0 {' '    if p.other_keys > 99 { // knife' \
+             a_loader_of_another_key_is_not_done
+          # F2 N2 (c477a): a firewall's 403 reads as the server refusing the origin
+          ck fploader.rs '        (403, _) if i.reason_origin => Some(not_done("origin_refused")),' '        (403, _) if i.reason_origin || true => Some(not_done("origin_refused")), // knife' \
+             a_403_from_something_in_front_is_unknown
           # customer logs: control characters go out as they came (ebb36, #641 seg. 2 L1)
           ck svc.rs '    plain(&mask_secrets(line))' '    mask_secrets(line) // knife' \
              nothing_in_a_line_reaches_the_terminal_as_a_control
@@ -1026,6 +1075,39 @@ jobs:
           ck verify.rs '        return result("H04", Outcome::Unknown("unread"));' \
              '        return result("H04", Outcome::Green); // knife' \
              h04_disk_thresholds
+          # background site create (33e28, site-create plan r2 M1): a creating site whose worker is gone
+          ck create.rs '            Some(_) => match lock(holder, boot_id, liveness) {' \
+             '            Some(_) => match lock(holder, &boot_id[..0], liveness) { // knife: boot id ignored' \
+             another_boot_is_interrupted
+          ck create.rs '                Lock::TakeOver => Verdict::Interrupted,' \
+             '                Lock::TakeOver => Verdict::Creating, // knife' \
+             gone_worker_is_interrupted
+          ck create.rs '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Unknown,' \
+             '                Lock::Busy if liveness == Liveness::Unknown => Verdict::Interrupted, // knife' \
+             unknown_changes_nothing
+          ck create.rs '            None if now.saturating_sub(created_at) > START_GRACE_SECS => Verdict::Interrupted,' \
+             '            None if now.saturating_sub(created_at) > 0 => Verdict::Interrupted, // knife' \
+             missing_holder_waits_out_the_start_grace
+          ck create.rs '    now_state == CreateState::Creating && judged.0 == now_record.0 && judged.1 == now_record.1' \
+             '    now_state == CreateState::Creating && judged.1 == now_record.1 // knife: holder not compared' \
+             mark_only_the_same_attempt
+          # create: a late worker takes a record already marked unfinished / held by another (c477a L1)
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    (now_state == CreateState::Creating || true) && now_record.0.is_none() && now_record.1 == my_created_at // knife: state not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.0.is_none() && (now_record.1 == my_created_at || true) // knife: attempt not compared' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
+             '    now_state == CreateState::Creating && now_record.1 == my_created_at // knife: holder not checked' \
+             a_late_worker_takes_only_its_own_unheld_attempt
+          # create: Unknown for too long is never told to us (c477a liveness N1)
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS * 100 // knife' \
+             unknown_for_too_long_tells_us
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v != Verdict::Ready && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS // knife' \
+             only_unknown_alerts
           # ---- B1 (customer opens a site) and site removal: the pure rules (4542e 11-11)
           # opening a site: a probe that could not tell is read as not done
           ck sitecreate.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
@@ -1815,6 +1897,18 @@ jobs:
           ck roster.rs '        if out.iter().any(|x| x == id) {' \
              '        if out.iter().any(|x| x == id) && false { // knife' \
              the_customers_cloudflare_accounts_are_read_strictly
+          # rescue API origin (f1fae 11-11, §16): plain http is refused again
+          ck robot.rs '        let rest = raw.strip_prefix("https://").ok_or(Error::BadOrigin)?;' \
+             '        let rest = raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")).ok_or(Error::BadOrigin)?; // knife' \
+             api_origin_rejects_everything_else
+          # rescue API origin: an approval no longer names where the request goes
+          ck robot.rs '            self.origin.as_str(),' \
+             '            "", // knife' \
+             plan_hash_changes_with_request
+          # rescue API origin: an IPv4 address passes as a host name again (c477a N1)
+          ck robot.rs "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && tld_ok;" \
+             "            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && (tld_ok || true); // knife" \
+             api_origin_rejects_everything_else
           # abandon (4542e): a site is abandoned
           ck siteabandon.rs '        Some(true) => return Some(ALREADY_A_SITE),' \
              '        Some(true) => {} // knife' \

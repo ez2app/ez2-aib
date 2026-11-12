@@ -113,7 +113,7 @@ class Wire(unittest.TestCase):
 
     def test_w4_tampered_global_sends_nothing(self):
         b = R.Box(self)
-        qid, _ = enqueue_global(b, tamper={"shown": "IP:1.2.3.4/6ddf/X"})
+        qid, _ = enqueue_global(b, tamper={"shown": "IP:192.0.2.4/6ddf/X"})
         p = deliver(b, qid)
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertEqual(b.exec_calls(), [])
