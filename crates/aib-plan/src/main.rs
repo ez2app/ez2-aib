@@ -1868,7 +1868,8 @@ mod tests {
                 .map(|r| app.plan.nodes[r.idx].id.clone())
                 .collect()
         };
-        let want = ["V", "A", "C", "S"];
+        // S1(本席的建議)已實查通過:篩選中不列(同 lib 的 filter_keeps_ancestors_and_drops_passed),只進徽章數字
+        let want = ["V", "A", "C"];
         assert_eq!(ids(&app), want, "only the pinned seats' nodes and parents");
         // 鍵盤 s、r
         for k in ['s', 's', 'r'] {
