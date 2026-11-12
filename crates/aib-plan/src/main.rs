@@ -833,11 +833,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         )];
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
-        // Andy 11-12 23:1x:右上角與分支標題數字要一致 ⇒ 兩處都顯示「完成 / 未完成」,都由同一個函式算
+        // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角只放數字「建議 完成/未完成」(23:1x「建議 6/17 數字就好」)
         if let Some((_, done, open)) = suggestions(&app.plan) {
             sugg_at = Some(tail.len());
             tail.push(Seg(
-                format!("   建議 完成 {done}/未完成 {open}"),
+                format!("   建議 {done}/{open}"),
                 Some(Color::Magenta),
                 false,
                 true,
@@ -1494,10 +1494,10 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 120, 30);
         let top = text(&f, 1);
-        assert!(top.contains("   建議 完成 1/未完成 2   全艙 ▸"), "{top}");
+        assert!(top.contains("   建議 1/2   全艙 ▸"), "{top}");
         let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
         assert_eq!(y, 1);
-        assert_eq!(x1 - x0, str_width("建議 完成 1/未完成 2"));
+        assert_eq!(x1 - x0, str_width("建議 1/2"));
         let before: String = f[1].iter().map(|g| g.0.as_str()).collect();
         assert_eq!(
             str_width(&before[..before.find("建議").unwrap()]),
