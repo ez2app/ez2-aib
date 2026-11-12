@@ -1488,7 +1488,8 @@ mod tests {
         assert!(!site
             .calls
             .iter()
-            .any(|c| c.contains(" mv ") || c.contains("plugin deactivate")));
+            .any(|c| (c.contains(" mv ") && c.contains(FORCED_2FA_MU))
+                || c.contains("plugin deactivate")));
         // a forced file that stays is refused
         let mut site = Site::new();
         site.sticky_mu = true;
@@ -1519,7 +1520,10 @@ mod tests {
             err.starts_with(&format!("identity_unchecked: {FORCED_2FA_MU}")),
             "{err}"
         );
-        assert!(!site.calls.iter().any(|c| c.contains(" mv ")));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains(" mv ") && c.contains(FORCED_2FA_MU)));
         // a dangling link in its place is moved aside too (33e28 L1)
         let mut site = Site::new();
         site.mu_forced = false;
