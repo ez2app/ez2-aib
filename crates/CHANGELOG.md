@@ -20,6 +20,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   the base calls binary are counted in the summary as not read. `--require-denylist`: an absent
   denylist is exit 3, not a pass (CI passes it once the base-built gate knows the flag, so a
   fork PR without the secret is red, not silently green).
+- `aib-public-leak` on a git without the global `--attr-source` (before 2.41, e.g. Apple Git 2.39
+  on macOS 15; also an unknown or pre-release version) reads every file as text (`--text`) and
+  says `full_read` in the summary, instead of exit 2 on every run. Stricter, never looser: no
+  attribute can hide a line. `--full-read` forces that path on any git. Git output is read
+  lossily (a file read as text may hold any bytes).
 
 ## 0.2.0-preview.5 — 2026-11-12
 

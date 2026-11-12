@@ -19,6 +19,54 @@
 /// Environment variable holding the denylist.
 pub const DENYLIST_ENV: &str = "AIB_PUBLIC_DENYLIST";
 
+/// `git version 2.39.5 (Apple Git-154)` ⇒ `Some((2, 39))`. A pre-release (`rc`) is unknown:
+/// it may not have what the release has (Codex).
+pub fn git_version(s: &str) -> Option<(u32, u32)> {
+    let v = s.trim().strip_prefix("git version ")?;
+    if v.contains("rc") {
+        return None;
+    }
+    let mut it = v.split(|c: char| !c.is_ascii_digit());
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// The global `git --attr-source` exists from git 2.41 (not in 2.40's git.c; Codex checked the
+/// sources). Unknown version ⇒ no (read every file as text).
+pub fn has_attr_source(v: Option<(u32, u32)>) -> bool {
+    matches!(v, Some((major, minor)) if major > 2 || (major == 2 && minor >= 41))
+}
+
+/// The git arguments for the diff (DECISION-690-old-git, 043dd + Codex). With `attr_source`,
+/// attributes come from BASE (`--attr-source`, 043dd #636 L1): the PR's own .gitattributes
+/// cannot turn its added lines into "Binary files differ", and files BASE calls binary are
+/// counted as not read. Without it (git < 2.41, or `--full-read`) every file is read as text
+/// (`--text`): no attribute can hide a line, which is stricter, never looser. Both paths use
+/// `--no-textconv`, so no configured filter rewrites what is read.
+pub fn diff_args(base: &str, range3: &str, attr_source: bool) -> Vec<String> {
+    let mut v = Vec::new();
+    if attr_source {
+        v.push(format!("--attr-source={base}"));
+    }
+    for a in [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "-U0",
+    ] {
+        v.push(a.to_string());
+    }
+    if !attr_source {
+        v.push("--text".to_string());
+    }
+    v.push(range3.to_string());
+    v.push("--".to_string());
+    v
+}
+
 /// Which rule a finding broke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
@@ -388,6 +436,53 @@ pub fn report_line(f: &Finding) -> String {
         Rule::PublicIpv4 => "public IPv4 address".to_string(),
     };
     format!("public-leak: {place}: {rule}")
+}
+
+#[cfg(test)]
+mod git_args_tests {
+    use super::*;
+
+    #[test]
+    fn git_versions_are_read_and_2_40_has_attr_source() {
+        assert_eq!(
+            git_version("git version 2.39.5 (Apple Git-154)\n"),
+            Some((2, 39))
+        );
+        assert_eq!(git_version("git version 2.50.1"), Some((2, 50)));
+        assert_eq!(git_version("git version 2.45.2.windows.1"), Some((2, 45)));
+        assert_eq!(git_version("not git"), None);
+        assert_eq!(
+            git_version("git version 2.41.0.rc1"),
+            None,
+            "a pre-release is unknown"
+        );
+        assert!(!has_attr_source(Some((2, 39))));
+        assert!(
+            !has_attr_source(Some((2, 40))),
+            "2.40 has no global --attr-source"
+        );
+        assert!(has_attr_source(Some((2, 41))));
+        assert!(has_attr_source(Some((3, 0))));
+        assert!(
+            !has_attr_source(None),
+            "unknown version reads every file as text"
+        );
+    }
+
+    #[test]
+    fn without_attr_source_every_file_is_read_as_text() {
+        let full = diff_args("b", "b...h", false);
+        assert!(full.iter().any(|a| a == "--text"));
+        assert!(full.iter().any(|a| a == "--no-textconv"));
+        assert!(!full.iter().any(|a| a.starts_with("--attr-source")));
+        assert!(diff_args("b", "b...h", true)
+            .iter()
+            .any(|a| a == "--no-textconv"));
+        let attr = diff_args("b", "b...h", true);
+        assert_eq!(attr[0], "--attr-source=b");
+        assert!(!attr.iter().any(|a| a == "--text"));
+        assert_eq!(attr.last().map(String::as_str), Some("--"));
+    }
 }
 
 #[cfg(test)]

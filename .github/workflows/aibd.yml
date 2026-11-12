@@ -310,10 +310,25 @@ jobs:
              a_new_empty_file_or_a_mode_change_still_has_its_path_checked
           pm() { python3 -I scripts/knife.py crates/aib-public-leak/src/main.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-public-leak --locked --test leak "$3"; }
-          # PL9 (043dd #636 L1) the PR's own .gitattributes decide what is read
-          pm '    let attr = format!("--attr-source={}", a.base);' \
-             '    let attr = "--no-pager".to_string(); // knife' \
-             a_pr_cannot_hide_its_lines_with_its_own_gitattributes
+          # PL9 (043dd #636 L1) the PR's own .gitattributes decide what is read. Needs a git
+          # with the global --attr-source (2.41+); an older git takes the read-everything path,
+          # so this knife cannot bite there: named SKIP decided by capability (DECISION-690-old-git).
+          if git --attr-source=HEAD rev-parse --git-dir >/dev/null 2>&1; then
+            python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+              '        v.push(format!("--attr-source={base}"));' \
+              '        let _ = &base; // knife' \
+              --expect-fail a_pr_cannot_hide_its_lines_with_its_own_gitattributes \
+              -- cargo test -p aib-public-leak --locked --test leak a_pr_cannot_hide_its_lines_with_its_own_gitattributes
+          else
+            echo "KNIFE PL9: SKIP (named) this git has no --attr-source; the read-everything path is knife PL11"
+          fi
+          # PL11 (DECISION-690-old-git, 043dd + Codex) the read-everything path lets a binary
+          # attribute hide lines. Runs on every git through --full-read.
+          python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+            '        v.push("--text".to_string());' \
+            '        // knife: no --text' \
+            --expect-fail full_read_reads_files_any_attributes_call_binary \
+            -- cargo test -p aib-public-leak --locked --test leak full_read_reads_files_any_attributes_call_binary
           # PL10 (a63ab after #636) a required denylist that is absent passes
           pm '    } else if deny.is_empty() && a.require_denylist {' \
              '    } else if deny.is_empty() && a.require_denylist && false { // knife' \
