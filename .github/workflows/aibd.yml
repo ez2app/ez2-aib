@@ -1651,6 +1651,88 @@ jobs:
             '        ) if aib_cloud::customer::is_opening(out) && false => match aib_cloud::customer::opened_of(out) { // knife' \
             --expect-fail an_opening_is_shown_in_the_host_s_words \
             -- cargo test -p aib-cloud-cli --locked an_opening_is_shown_in_the_host_s_words
+          # HUMAN-PASTE-4542e-1111 17 to 21 (final: Andy 11-12 12:1x): one character of a
+          # sentence changed is red, word for word as the customer reads it
+          # 17 opening: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '站碼 {code}。大約需要幾分鐘' \
+            '站號 {code}。大約需要幾分鐘' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18 already_opening: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '已經在開站中(站碼' \
+            '已經在開站中(站號' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 13 / 19 domain_taken: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '不能重複綁定。' \
+            '不能重覆綁定。' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 20 opened, no administrator named: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '會另外提供給您。' \
+            '會另外提供給你。' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 21 abandoned: one character changed
+          python3 -I scripts/knife.py crates/aib-cloud/src/wording.rs \
+            '做到一半的部分清掉了' \
+            '做到一半的部份清掉了' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18: the customer's own opening loses its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'wording::already_opening(&own, name)' \
+            'wording::already_opening(&own[..0], name)' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 18 / 13: already_opening is shown as its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '(Some("already_opening"), OwnerRequest::Create { name, .. }) if code == 2 => {' \
+            '(Some("already_opening_knife"), OwnerRequest::Create { name, .. }) if code == 2 => {' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 19: domain_taken is shown as its code
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '(Some("domain_taken"), OwnerRequest::Create { .. }) if code == 2 => {' \
+            '(Some("domain_taken_knife"), OwnerRequest::Create { .. }) if code == 2 => {' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 17: the opening started is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            '        (_, OwnerRequest::Create { name, .. }) if code == 0 => {' \
+            '        (_, OwnerRequest::Create { name, .. }) if code == 9 => { // knife' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 21: an abandoned opening is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'aib_cloud::customer::abandoned_domain_of(out)' \
+            'aib_cloud::customer::abandoned_domain_of("") /* knife */' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 20: an opened site with no administrator named is shown as the host's document
+          python3 -I scripts/knife.py crates/aib-cloud-cli/src/main.rs \
+            'aib_cloud::customer::opened_without_login_of(out)' \
+            'aib_cloud::customer::opened_without_login_of("") /* knife */' \
+            --expect-fail the_opening_sentences_are_the_final_wording_word_for_word \
+            -- cargo test -p aib-cloud-cli --locked the_opening_sentences_are_the_final_wording_word_for_word
+          # 17 to 21: what fills a sentence in reaches the terminal as it came
+          ck wording.rs '    crate::svc::plain(word)' \
+             '    String::from(word) // knife' \
+             the_opening_sentences_show_nothing_that_acts_on_the_terminal
+          # 17 to 21: the answers are read from any shape
+          ck customer.rs '    if !stopped || !abandoned || !is_opening(reply) {' \
+             '    if !stopped || !(abandoned || true) || !is_opening(reply) { // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
+          ck customer.rs '        .is_some_and(|a| !a.is_empty());' \
+             '        .is_some_and(|_| false); // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
+          ck customer.rs '    let known = crate::site::valid_code(site);' \
+             '    let known = !site.is_empty(); // knife' \
+             the_opening_answers_are_read_only_from_their_own_shape
           # B5 DNS (4542e): only a zone of an account the roster names is used
           ck sitedns.rs '                same_name(&z.name, &name) && z.status == "active" && accounts.contains(&z.account)' \
              '                same_name(&z.name, &name) && z.status == "active" && (accounts.contains(&z.account) || true) // knife' \
@@ -3063,6 +3145,13 @@ jobs:
           hk sitecreaterun.rs '        || aib_cloud::site::record_tenant(&ask) != Some(tenant)' \
              '        || (aib_cloud::site::record_tenant(&ask) != Some(tenant) && false) // knife' \
              progress_is_the_customer_s_own_only
+          # HUMAN-PASTE-4542e-1111 21: an abandoned opening does not say so, or any stop says so
+          hk sitecreaterun.rs '    if gave_up && state == "stopped" {' \
+             '    if gave_up && state == "knife" {' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
+          hk sitecreaterun.rs '    if gave_up && state == "stopped" {' \
+             '    if (gave_up || true) && state == "stopped" { // knife' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
           # E1: an opening that stopped on a failure is run again by itself
           hk sitecreaterun.rs '        (Some("waiting" | "running"), _) => {}' \
              '        (Some(_), _) => {} // knife' \

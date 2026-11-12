@@ -422,7 +422,7 @@ fn step_after(done: Option<&str>) -> Option<&'static str> {
 /// What a customer sees of their opening under `code`: `None` unless there is an ask of
 /// theirs under it. `state` is `opening`, `open` or `stopped`; `step_done` is the last step
 /// done (none before the clone); `stopped_at` the step it stopped at, when it stopped and
-/// that is known.
+/// that is known. An opening that was abandoned adds `why: abandoned` and its `domain`.
 pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<Value> {
     if !aib_cloud::site::valid_code(code) {
         return None;
@@ -465,12 +465,20 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
         })
         .or_else(|| step_after(step_done.as_deref()).map(str::to_owned))
     });
-    Some(json!({
+    let mut view = json!({
         "site": code,
         "state": state,
         "step_done": step_done,
         "stopped_at": stopped_at.flatten(),
-    }))
+    });
+    // an opening we abandoned says so, with the domain it was for: the customer's side
+    // words it (HUMAN-PASTE-4542e-1111 21, Andy 11-12 12:1x). No other stop says why.
+    let gave_up = ask.get("why").and_then(Value::as_str) == Some("abandoned");
+    if gave_up && state == "stopped" {
+        view["why"] = json!("abandoned");
+        view["domain"] = ask.get("domain").cloned().unwrap_or(Value::Null);
+    }
+    Some(view)
 }
 
 /// How long after it opened a site's `status` answers that it opened, with what the
@@ -811,16 +819,21 @@ mod tests {
             "state": "running", "holder": null, "asked_at": NOW});
         write_new_ask(&p.asked, "s-gone02", &ask).unwrap();
         assert_eq!(ask_now(&p, "s-gone02", NOW), Ok(Some("stopped")));
+        // stopped but not abandoned: no why, no domain
+        let before = progress(&p, "t-aaa", "s-gone02", NOW + 1).unwrap();
+        assert_eq!(before["state"], "stopped");
+        assert!(before.get("why").is_none() && before.get("domain").is_none());
         stop_ask_abandoned(&p, "s-gone02", NOW + 5).unwrap();
         let kept = read_json(&p.asked.join("s-gone02.json")).unwrap();
         assert_eq!(kept["state"], "stopped");
         assert_eq!(kept["why"], "abandoned");
         assert_eq!(kept["domain"], "gone.example.test");
         assert!(codes_given(&p).unwrap().iter().any(|c| c == "s-gone02"));
-        assert_eq!(
-            progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap()["state"],
-            "stopped"
-        );
+        let told = progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap();
+        assert_eq!(told["state"], "stopped");
+        // the customer's side words it (HUMAN-PASTE-4542e-1111 21): why, and for which domain
+        assert_eq!(told["why"], "abandoned");
+        assert_eq!(told["domain"], "gone.example.test");
         // no ask: nothing to stop, nothing to tell
         stop_ask_abandoned(&p, "s-none01", NOW).unwrap();
         assert_eq!(ask_now(&p, "s-none01", NOW), Ok(None));
