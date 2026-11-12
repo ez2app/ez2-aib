@@ -6,8 +6,13 @@
 //!
 //! It filters `debug_information`: the server section's architecture (`php_uname`: the
 //! kernel's release names the platform) and web server software (its name and version)
-//! are taken out, and so is any other field whose text holds the kernel's release or the
-//! machine's name as PHP sees it. It prints nothing and changes no setting. What an
+//! are taken out, and so is any other field whose text (its `value` or its `debug`, the
+//! copy-to-clipboard form, a list read to the end) holds the kernel's release. Inside the
+//! container PHP's own name for the machine is the site's code (the mask sets it), so the
+//! paths and names that hold the code stay; only where that name is not the site's code
+//! (a site whose mask did not take) is it the machine's, and then fields holding it are
+//! taken out too. The site's code is the last part of `ABSPATH`, so every site gets the
+//! same file byte for byte. It prints nothing and changes no setting. What an
 //! administrator can still read another way (`phpinfo()`, a plugin of their own, a shell)
 //! is not covered: `aib_cloud::mask::CANNOT_HIDE` says so.
 
@@ -24,13 +29,27 @@ add_filter('debug_information', function ($info) {
     if (isset($info['wp-server']['fields']) && is_array($info['wp-server']['fields'])) {
         unset($info['wp-server']['fields']['server_architecture'], $info['wp-server']['fields']['httpd_software']);
     }
-    $words = array_filter(array(php_uname('r'), php_uname('n'), (string) gethostname()), 'strlen');
+    $words = array(php_uname('r'));
+    $site = defined('ABSPATH') ? basename(rtrim(ABSPATH, '/')) : '';
+    $node = php_uname('n');
+    if ($node !== '' && strcasecmp($node, $site) !== 0) { $words[] = $node; }
+    $words = array_filter($words, 'strlen');
     foreach ($info as $s => $section) {
         if (!is_array($section) || !isset($section['fields']) || !is_array($section['fields'])) { continue; }
         foreach ($section['fields'] as $k => $field) {
-            $text = is_array($field) && isset($field['value']) && is_string($field['value']) ? $field['value'] : '';
+            if (!is_array($field)) { continue; }
+            $text = '';
+            foreach (array('value', 'debug') as $part) {
+                if (!isset($field[$part])) { continue; }
+                $v = $field[$part];
+                if (is_array($v)) {
+                    array_walk_recursive($v, function ($x) use (&$text) { if (is_scalar($x)) { $text .= ' ' . $x; } });
+                } elseif (is_scalar($v)) {
+                    $text .= ' ' . $v;
+                }
+            }
             foreach ($words as $w) {
-                if ($text !== '' && stripos($text, $w) !== false) { unset($info[$s]['fields'][$k]); break; }
+                if (stripos($text, $w) !== false) { unset($info[$s]['fields'][$k]); break; }
             }
         }
     }
@@ -98,7 +117,10 @@ mod tests {
         // it takes out the architecture (kernel release) and the web server software
         assert!(PLUGIN.contains("['server_architecture']"));
         assert!(PLUGIN.contains("['httpd_software']"));
-        assert!(PLUGIN.contains("php_uname('r')") && PLUGIN.contains("gethostname()"));
+        assert!(PLUGIN.contains("$words = array(php_uname('r'));"));
+        // both forms of a field are read, a list to the end
+        assert!(PLUGIN.contains("array('value', 'debug')"));
+        assert!(PLUGIN.contains("array_walk_recursive("));
         // it says nothing itself: no output, no setting, no name of a platform or vendor
         for word in [
             "echo",
@@ -129,6 +151,84 @@ mod tests {
         } else {
             eprintln!("php not installed: php -l skipped");
         }
+    }
+
+    /// Runs the plugin's filter in PHP on a health screen whose site lives in
+    /// `/var/www/<site>/` (`=`: PHP's own name for the machine), and answers the fields
+    /// left in each section; `None` where no PHP is installed.
+    fn filtered(site: &str) -> Option<String> {
+        let php = Command::new("php").arg("-v").output();
+        if !php.is_ok_and(|o| o.status.success()) {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("ez2-host-neutral-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plugin = dir.join("plugin.php");
+        let run = dir.join("run.php");
+        std::fs::write(&plugin, PLUGIN).unwrap();
+        std::fs::write(&run, RUN).unwrap();
+        let out = Command::new("php")
+            .arg(&run)
+            .arg(&plugin)
+            .arg(site)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// A health screen as the site software builds it, with the site in `/var/www/<argv 2>/`
+    /// (`=`: PHP's name for the machine, as in a masked container), its paths named the way
+    /// PHP names the machine.
+    const RUN: &str = r#"<?php
+define('ABSPATH', '/var/www/' . ($argv[2] === '=' ? php_uname('n') : $argv[2]) . '/');
+function add_filter($hook, $f, $order) { $GLOBALS['f'] = $f; }
+require $argv[1];
+$node = php_uname('n');
+$info = array(
+    'wp-paths-sizes' => array('fields' => array(
+        'wordpress_path' => array('label' => 'path', 'value' => '/var/www/' . $node),
+        'uploads_path' => array('label' => 'uploads', 'value' => '/var/www/' . $node . '/wp-content/uploads', 'debug' => '/var/www/' . $node . '/wp-content/uploads'),
+    )),
+    'wp-server' => array('fields' => array(
+        'server_architecture' => array('value' => 'x'),
+        'httpd_software' => array('value' => 'y'),
+        'kernel_in_debug' => array('value' => 'Linux', 'debug' => php_uname('r')),
+        'kernel_in_list' => array('value' => array('a' => array('b' => php_uname('r')))),
+        'php_version' => array('value' => '8.3'),
+    )),
+);
+$out = call_user_func($GLOBALS['f'], $info);
+foreach ($out as $s => $section) { fwrite(STDOUT, $s . ':' . implode(',', array_keys($section['fields'])) . "\n"); }
+"#;
+
+    #[test]
+    fn a_row_holding_the_site_code_stays() {
+        // the machine's name is only a word to take out where it is not the site's code
+        assert!(PLUGIN
+            .contains("if ($node !== '' && strcasecmp($node, $site) !== 0) { $words[] = $node; }"));
+        assert!(PLUGIN.contains("basename(rtrim(ABSPATH, '/'))"));
+        assert!(!PLUGIN.contains("gethostname()"));
+        let Some(same) = filtered("=") else {
+            eprintln!("php not installed: the filter was not run, only read");
+            return;
+        };
+        // the site's code is PHP's name for the machine: its paths stay; the kernel's
+        // release goes, in `debug` and deep in a list as well as in `value`
+        assert!(
+            same.contains("wp-paths-sizes:wordpress_path,uploads_path\n"),
+            "{same}"
+        );
+        assert!(same.contains("wp-server:php_version\n"), "{same}");
+        // a site whose mask did not take: PHP's name is the machine's, and it goes
+        let other = filtered("s-xyz000").unwrap();
+        assert!(other.contains("wp-paths-sizes:\n"), "{other}");
+        assert!(other.contains("wp-server:php_version\n"), "{other}");
     }
 
     /// A site that answers the plugin's look, write and read-back.
