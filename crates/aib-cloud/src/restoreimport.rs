@@ -4,8 +4,11 @@
 //! done. The steps are the EU01 restore line's (SOP v3.5, phase B): the import plugins
 //! are brought up to date (an old one fails the import outright), the backup is put where
 //! the plugin finds it and the plugin must list it (one it cannot see is a permission
-//! fault), then the plugin's command line restores it and only its own "Restore
-//! complete" counts.
+//! fault), then the plugin's command line restores it: the command must end with 0, say
+//! WP-CLI's own `Success:` and no `Error:`. The words after those prefixes are the
+//! plugin's and follow the site's language (a zh_TW site prints `Success: 還原完成。`),
+//! so they are not read (c477a slice 4 L1); what the import brought is checked against
+//! the backup by the accept step.
 //!
 //! Room is counted twice, in two places:
 //! * on the host, by the download gate ([`crate::restoregate`]): the downloaded file;
@@ -23,8 +26,21 @@ pub const IMPORT_PLUGINS: [&str; 2] = [
     "all-in-one-wp-migration-unlimited-extension",
 ];
 
-/// The plugin's own line for a finished restore.
+/// The plugin's line for a finished restore on a site in English. Only an example: the
+/// words after `Success:` follow the site's language and are not read.
 pub const RESTORE_COMPLETE: &str = "Success: Restore complete.";
+
+/// WP-CLI's own prefix for a command that did what it was asked. WP-CLI never translates
+/// it, whatever the site's language.
+pub const WP_CLI_SUCCESS: &str = "Success:";
+
+/// WP-CLI's own prefix for a command that failed; never translated either.
+pub const WP_CLI_ERROR: &str = "Error:";
+
+/// The environment the import runs in: the C locale, so whatever the shell and PHP print
+/// of their own is in English. It does not change the site's language, which is why the
+/// plugin's words are not read.
+pub const IMPORT_ENV: [&str; 3] = ["LC_ALL=C", "LANG=C", "LANGUAGE=C"];
 
 /// The site's disk as `df` reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,13 +93,15 @@ pub fn backup_listed(listing: &str, name: &str) -> Result<(), &'static str> {
     }
 }
 
-/// Whether the plugin said the restore was complete, on a line of its own.
+/// Whether the restore command, which ended with 0, said it was done: a line WP-CLI
+/// begins with [`WP_CLI_SUCCESS`] and none with [`WP_CLI_ERROR`]. The words after the
+/// prefix are not read: they are in the site's language.
 pub fn import_finished(output: &str) -> Result<(), &'static str> {
-    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {
-        Ok(())
-    } else {
-        Err("import_not_confirmed")
+    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));
+    if said(WP_CLI_ERROR) || !said(WP_CLI_SUCCESS) {
+        return Err("import_not_confirmed");
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -198,5 +216,31 @@ mod tests {
             Err("import_not_confirmed")
         );
         assert_eq!(import_finished(""), Err("import_not_confirmed"));
+        assert_eq!(
+            import_finished("Success: Restore complete.\nError: could not flush the cache\n"),
+            Err("import_not_confirmed")
+        );
+        assert_eq!(
+            import_finished("Restoring... Success: Restore complete.\n"),
+            Err("import_not_confirmed")
+        );
+    }
+
+    #[test]
+    fn a_site_in_another_language_is_not_taken_as_failed() {
+        // c477a slice 4 L1: the plugin's words follow the site's language; WP-CLI's
+        // prefix does not
+        assert_eq!(
+            import_finished("正在還原備份…\nSuccess: 還原完成。\n"),
+            Ok(())
+        );
+        assert_eq!(
+            import_finished("正在還原備份…\nError: 無法開啟備份檔。\n"),
+            Err("import_not_confirmed")
+        );
+        assert_eq!(
+            import_finished("正在還原備份…\n"),
+            Err("import_not_confirmed")
+        );
     }
 }
