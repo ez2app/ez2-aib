@@ -238,8 +238,11 @@ mod tests {
 
     const NEW: &str = "02:11:22:33:44:55";
 
+    /// A masked CT config as the host reads it.
+    const MASKED_CONFIG: &str = "arch: amd64\nhostname: s-abc123\nlxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth\nsearchdomain: invalid\n"; // ip-literal-ok: sample CT config with a public resolver, never a host of ours
+
     fn masked_config() -> String {
-        "arch: amd64\nhostname: s-abc123\nlxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth\nsearchdomain: invalid\n".to_owned()
+        MASKED_CONFIG.to_owned()
     }
 
     fn seen(config: Option<String>, running: Option<bool>, verdict: Option<&str>) -> Seen {

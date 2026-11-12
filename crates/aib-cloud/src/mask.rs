@@ -279,12 +279,14 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
 
 /// The resolver a site CT is given when its configuration names none (without one, the CT
 /// inherits the host's). Neutral: it names nobody's network.
-pub const NEUTRAL_RESOLVER: &str = "1.1.1.1";
+pub const NEUTRAL_RESOLVER: &str = "1.1.1.1"; // ip-literal-ok: well-known public resolver, never a host of ours
 
 /// Whether a CT's `nameserver` value names only public resolvers: every address in it
-/// IPv4, and none private, loopback, link-local, shared (100.64.0.0/10, where a tailnet's
-/// own resolver lives), unspecified, broadcast, multicast, reserved (240.0.0.0/4),
-/// documentation or benchmarking (c477a, ct-mask2 N4). A private one is the host's resolver or our
+/// IPv4, and none private, loopback, link-local, shared, unspecified, broadcast, multicast,
+/// reserved, documentation or benchmarking (c477a, ct-mask2 N4).
+/// Shared is 100.64.0.0/10, where a tailnet's own resolver lives. (ip-literal-ok: range name, never a host of ours)
+/// Reserved is 240.0.0.0/4. (ip-literal-ok: range name, never a host of ours)
+/// A private one is the host's resolver or our
 /// network's (it would show in the CT's `resolv.conf`); IPv6 is not given to a site CT.
 /// An empty value is not neutral (c477a, ct-mask2 N1).
 pub fn resolver_is_neutral(value: &str) -> bool {
@@ -296,7 +298,7 @@ pub fn resolver_is_neutral(value: &str) -> bool {
         };
         let [a, b, ..] = ip.octets();
         let shared = a == 100 && (64..128).contains(&b);
-        // reserved (240.0.0.0/4, the broadcast address in it) and benchmarking (198.18.0.0/15)
+        // reserved (240.0.0.0/4, the broadcast address in it) and benchmarking (198.18.0.0/15) (ip-literal-ok: range name / boundary sample, never a host of ours)
         let special = a >= 240 || (a == 198 && (b & 0xFE) == 18);
         if ip.is_private()
             || ip.is_loopback()
@@ -770,7 +772,7 @@ mod tests {
         let c = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth"),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         assert_eq!(config_fixes(&c, NEW), Ok(Vec::new()));
@@ -807,7 +809,7 @@ mod tests {
             let mut lines: Vec<(&str, &str)> =
                 hooks.iter().map(|h| ("lxc.hook.mount", *h)).collect();
             lines.push(("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"));
-            lines.push(("nameserver", "1.1.1.1"));
+            lines.push(("nameserver", "1.1.1.1")); // ip-literal-ok: well-known public resolver, never a host of ours
             lines.push(("searchdomain", "invalid"));
             let fixes = config_fixes(&cfg(&lines), NEW).unwrap();
             assert_eq!(fixes.len(), 1, "{hooks:?}");
@@ -823,7 +825,7 @@ mod tests {
                 "net0",
                 "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24,gw6=fe80::1",
             ),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         let f = config_fixes(&v6, NEW).unwrap();
@@ -835,7 +837,7 @@ mod tests {
         let bare = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,ip=10.77.0.9/24"),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         assert_eq!(
@@ -862,20 +864,24 @@ mod tests {
 
     #[test]
     fn a_resolver_of_ours_or_the_hosts_is_not_neutral() {
-        for good in ["1.1.1.1", "1.1.1.1 9.9.9.9", "8.8.8.8"] {
+        for good in [
+            "1.1.1.1",         // ip-literal-ok: well-known public resolver, never a host of ours
+            "1.1.1.1 9.9.9.9", // ip-literal-ok: well-known public resolver, never a host of ours
+            "8.8.8.8",         // ip-literal-ok: well-known public resolver, never a host of ours
+        ] {
             assert!(resolver_is_neutral(good), "{good}");
         }
         for bad in [
             "",
             "10.77.0.1",
-            "100.100.100.100",
+            "100.100.100.100", // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
             "100.64.0.1",
             "192.168.1.1",
             "172.16.0.1",
             "127.0.0.53",
             "169.254.1.1",
-            "1.1.1.1 10.77.0.1",
-            "2606:4700:4700::1111",
+            "1.1.1.1 10.77.0.1", // ip-literal-ok: well-known public resolver, never a host of ours
+            "2606:4700:4700::1111", // ip-literal-ok: well-known public resolver, never a host of ours
             "0.0.0.0",
             "dns.example",
         ] {
@@ -884,7 +890,7 @@ mod tests {
         let c = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"),
-            ("nameserver", "100.100.100.100"),
+            ("nameserver", "100.100.100.100"), // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
             ("searchdomain", "invalid"),
         ]);
         let f = config_fixes(&c, NEW).unwrap();
@@ -921,19 +927,24 @@ mod tests {
     fn a_resolver_that_is_no_public_host_is_not_neutral() {
         for bad in [
             "255.255.255.255",
-            "224.0.0.251",
-            "239.1.1.1",
-            "240.0.0.1",
-            "250.1.2.3",
+            "224.0.0.251", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "239.1.1.1",   // ip-literal-ok: range name / boundary sample, never a host of ours
+            "240.0.0.1",   // ip-literal-ok: range name / boundary sample, never a host of ours
+            "250.1.2.3",   // ip-literal-ok: range name / boundary sample, never a host of ours
             "192.0.2.53",
             "198.51.100.1",
             "203.0.113.9",
-            "198.18.0.1",
-            "198.19.255.254",
+            "198.18.0.1", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "198.19.255.254", // ip-literal-ok: range name / boundary sample, never a host of ours
         ] {
             assert!(!resolver_is_neutral(bad), "{bad}");
         }
-        for good in ["198.17.0.1", "198.20.0.1", "223.255.255.1", "9.9.9.9"] {
+        for good in [
+            "198.17.0.1",    // ip-literal-ok: range name / boundary sample, never a host of ours
+            "198.20.0.1",    // ip-literal-ok: range name / boundary sample, never a host of ours
+            "223.255.255.1", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "9.9.9.9",       // ip-literal-ok: range name / boundary sample, never a host of ours
+        ] {
             assert!(resolver_is_neutral(good), "{good}");
         }
     }
