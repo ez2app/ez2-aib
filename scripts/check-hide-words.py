@@ -174,6 +174,13 @@ def added_lines(commit, parents):
             yield ("line", path, n, line[cols:])
 
 
+def touched_paths(commit, parents):
+    """Every path the commit adds or changes, from the name list (binary and empty files have no +++ line)."""
+    args = ["diff-tree", "-r", "--name-only", "-z", "--no-commit-id"]
+    args += ["--cc"] if parents > 1 else ["--root"]
+    return [n for n in git(args + [commit]).split("\0") if n]
+
+
 def commits_to_push(stdin_text, remote):
     seen, out = set(), []
     for row in stdin_text.splitlines():
@@ -219,6 +226,11 @@ def scan(commits, terms, allow):
 
     for c, parents in commits:
         short = c[:10]
+        for path in touched_paths(c, parents):
+            if path_terms(path) and (c, path) not in reported:
+                reported.add((c, path))
+                for k in path_terms(path):
+                    found.append("%s 命中第 %d 個詞(檔名;commit %s)" % (HIDDEN_PATH, k, short))
         for kind, path, n, text in added_lines(c, parents):
             hidden = bool(path_terms(path))
             if kind == "path":

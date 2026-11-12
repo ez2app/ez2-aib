@@ -161,6 +161,24 @@ class HideWords(unittest.TestCase):
         self.assertIn("commit 訊息第 1 行 命中第 4 個詞", out)
         self.assertNoSecret(out)
 
+    def test_new_binary_file_name_is_scanned(self):
+        f = self.repo / "assets" / "vendor-x-logo.png"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\xff")
+        self.git("add", "--", "assets/vendor-x-logo.png")
+        self.git("commit", "-q", "-m", "logo")
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("檔名", out)
+        self.assertNoSecret(out)
+
+    def test_new_empty_file_name_is_scanned(self):
+        self.commit("notes/xyz-cloud.txt", "")
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("命中第 4 個詞(檔名", out)
+        self.assertNoSecret(out)
+
     def test_word_added_then_removed_still_blocks(self):
         self.commit("f.txt", "vendor-x\n")
         self.commit("f.txt", "gone\n")
