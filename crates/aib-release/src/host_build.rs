@@ -394,29 +394,18 @@ impl GitCli {
 }
 
 impl GitCli {
-    /// When this clone last fetched: the time of its `FETCH_HEAD` (seconds since the epoch),
-    /// or None when it never fetched or git cannot say. Printed next to a verdict judged
-    /// against the local origin/main, so a stale snapshot shows (binsync).
-    pub fn fetched_at(&self) -> Option<u64> {
+    /// When `origin/main` last moved in this clone: the newest entry of its reflog (seconds
+    /// since the epoch), or None when there is no reflog or git cannot say. FETCH_HEAD is not
+    /// used: any fetch (another branch, another remote) touches it (§18 review L4). A fetch
+    /// that found main unchanged does not move it, so this can only look older than it is.
+    pub fn main_moved_at(&self) -> Option<u64> {
         let out = self
-            .git(&[
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-path",
-                "FETCH_HEAD",
-            ])
+            .git(&["log", "-g", "-1", "--format=%ct", MAIN_REF, "--"])
             .ok()?;
         if !out.status.success() {
             return None;
         }
-        let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-        std::fs::metadata(p)
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs())
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     }
 }
 

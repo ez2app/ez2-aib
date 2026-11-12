@@ -311,11 +311,17 @@ fn parse_binsync(argv: &[String]) -> Result<BinsyncArgs, String> {
         return Err("binsync needs install, rollback or status".into());
     }
     let mut it = argv.iter().skip(2);
+    let mut seen: Vec<&str> = Vec::new();
     while let Some(k) = it.next() {
-        let mut val = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{k} needs a value"))
+        // a flag given twice is refused, not silently replaced (§18 review N3)
+        if seen.contains(&k.as_str()) {
+            return Err(format!("{k} given twice"));
+        }
+        seen.push(k.as_str());
+        // the next flag is not a value: `--name --file x` is a usage error (N3)
+        let mut val = || match it.next() {
+            Some(v) if !v.starts_with("--") => Ok(v.clone()),
+            _ => Err(format!("{k} needs a value")),
         };
         match k.as_str() {
             "--name" => a.name = Some(val()?),
@@ -405,7 +411,7 @@ fn main_binsync(argv: &[String]) -> ! {
                         by: a.by.clone().unwrap_or_default(),
                         allow_downgrade: a.down.clone(),
                         allow_unknown_current: a.unknown.clone(),
-                        fetched_at: git.fetched_at(),
+                        main_moved_at: git.main_moved_at(),
                         os: os.into(),
                         arch: arch.into(),
                         now: binsync::now_secs(),
@@ -462,6 +468,73 @@ fn main() {
 #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
 mod tests {
     use super::*;
+
+    fn bs(s: &str) -> Result<BinsyncArgs, String> {
+        parse_binsync(&v(s))
+    }
+
+    #[test]
+    fn binsync_args_each_action_takes_its_own() {
+        let a = bs("binsync install --name aib-title --file f --by @043dd --dest d").unwrap();
+        assert_eq!(
+            (a.name.as_deref(), a.file.as_deref(), a.by.as_deref()),
+            (Some("aib-title"), Some("f"), Some("@043dd"))
+        );
+        assert!(bs("binsync rollback --name aib-title --by x --why because").is_ok());
+        assert!(bs("binsync status --dest d --repo-dir r").is_ok());
+        for (bad, what) in [
+            ("binsync", "no_action"),
+            ("binsync remove --name aib-title", "unknown_action"),
+            (
+                "binsync install --name aib-title --by x",
+                "install_needs_file",
+            ),
+            (
+                "binsync install --name aib-title --file f",
+                "install_needs_by",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --why because",
+                "install_no_why",
+            ),
+            (
+                "binsync rollback --name aib-title --by x",
+                "rollback_needs_why",
+            ),
+            (
+                "binsync rollback --name aib-title --by x --why because --file f",
+                "rollback_no_file",
+            ),
+            (
+                "binsync rollback --name aib-title --by x --why because --allow-downgrade xxxx",
+                "rollback_no_allow",
+            ),
+            ("binsync status --name aib-title", "status_no_name"),
+            ("binsync status --allow-downgrade xxxx", "status_no_allow"),
+            (
+                "binsync install --name --file f --by x",
+                "flag_is_not_a_value",
+            ),
+            (
+                "binsync install --name a --name aib-title --file f --by x",
+                "twice",
+            ),
+            (
+                "binsync install --name aib-title --file f --by a;b",
+                "by_plain",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --allow-downgrade no",
+                "why_too_short",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --what y",
+                "unknown_flag",
+            ),
+        ] {
+            assert!(bs(bad).is_err(), "{what}: {bad}");
+        }
+    }
 
     fn v(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()

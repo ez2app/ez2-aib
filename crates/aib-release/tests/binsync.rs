@@ -65,7 +65,7 @@ fn req(dest: &Path, bytes: Vec<u8>) -> Install {
         by: "@043dd".into(),
         allow_downgrade: None,
         allow_unknown_current: None,
-        fetched_at: Some(1_794_500_000),
+        main_moved_at: Some(1_794_500_000),
         os: "macos".into(),
         arch: "aarch64".into(),
         now: 1_794_515_000,
@@ -154,7 +154,7 @@ fn first_install_puts_the_file_and_the_ledger() {
     assert!(!dest.join("aib-title.prev").exists(), "no_prev_on_first");
     let j = out.to_json();
     assert_eq!(j["main"], C, "judged_against_main");
-    assert_eq!(j["fetched_at"], 1_794_500_000u64, "fetch_time_shown");
+    assert_eq!(j["main_moved_at"], 1_794_500_000u64, "main_time_shown");
     assert!(
         j["allowed"][0]["why"]
             .as_str()
@@ -458,4 +458,123 @@ fn a_reader_sees_the_old_or_the_new_file_never_a_gap() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let reads = reader.join().expect("reader saw a gap or a half file");
     assert!(reads > 0, "the reader ran");
+}
+
+/// §18 review M2: the same file again swaps nothing, so `.prev` stays the real previous one.
+#[test]
+fn the_same_file_again_keeps_prev() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    install(&MAIN, &req(dest, good(B)));
+    install(&MAIN, &req(dest, good(C)));
+    let out = install(&MAIN, &req(dest, good(C)));
+    assert_eq!((out.verdict, out.code), (Verdict::Ok, "same"), "same");
+    assert_eq!(
+        fs::read(dest.join("aib-title.prev")).unwrap(),
+        good(B),
+        "prev_kept"
+    );
+    assert_eq!(
+        ledger(dest)["aib-title"]["action"],
+        "same",
+        "ledger_says_same"
+    );
+}
+
+/// §18 review M1: a rollback stopped between its renames leaves the only copy of a version
+/// in a temp file; the next run keeps it as `.rescued-*`, and status lists it.
+#[test]
+fn a_stopped_rollback_leaves_nothing_to_lose() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    install(&MAIN, &req(dest, good(B)));
+    fs::write(dest.join(".aib-title.tmp-back-1-2-x"), good(A)).unwrap();
+    fs::write(dest.join(".aib-title.tmp-fwd-1-2-x"), good(B)).unwrap();
+    fs::write(dest.join(".aib-title.tmp-new-1-2-x"), b"half").unwrap();
+    let out = install(&MAIN, &req(dest, good(C)));
+    let j = out.to_json();
+    assert_eq!(
+        (j["swept_tmp"].clone(), j["rescued_tmp"].clone()),
+        (1.into(), 2.into()),
+        "{j}"
+    );
+    let rescued: Vec<String> = names(dest)
+        .into_iter()
+        .filter(|n| n.starts_with("aib-title.rescued-"))
+        .collect();
+    assert_eq!(rescued.len(), 2, "kept: {rescued:?}");
+    let kept: BTreeSet<Vec<u8>> = rescued
+        .iter()
+        .map(|n| fs::read(dest.join(n)).unwrap())
+        .collect();
+    assert!(kept.contains(&good(A)), "the_only_copy_of_A_kept");
+    let s = status(Some(&MAIN), dest).to_json();
+    assert_eq!(
+        s["tools"][0]["rescued"].as_array().unwrap().len(),
+        2,
+        "status_lists"
+    );
+}
+
+/// §18 review L3: an unreadable ledger is never written over.
+#[test]
+fn an_unreadable_ledger_stops_before_anything() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    fs::write(dest.join(LEDGER), b"{ half written").unwrap();
+    let out = install(&MAIN, &req(dest, good(B)));
+    assert_eq!(
+        (out.verdict, out.code),
+        (Verdict::Error, "ledger_unreadable"),
+        "install"
+    );
+    assert!(!dest.join("aib-title").exists(), "nothing_installed");
+    assert_eq!(
+        fs::read(dest.join(LEDGER)).unwrap(),
+        b"{ half written",
+        "ledger_untouched"
+    );
+    assert_eq!(
+        rollback(dest, "aib-title", "x", "because", "macos", "aarch64", 1).code,
+        "ledger_unreadable",
+        "rollback"
+    );
+    assert_eq!(
+        status(Some(&MAIN), dest).to_json()["ledger"],
+        "ledger_unreadable",
+        "status"
+    );
+}
+
+/// §18 review L5: a reason the check did not use is shown; N1: the ledger is not executable.
+#[test]
+fn unused_reasons_are_shown_and_the_ledger_is_not_executable() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    let mut r = req(dest, good(B));
+    r.allow_unknown_current = Some("there is an old hand copy".into());
+    r.allow_downgrade = Some("just in case".into());
+    let j = install(&MAIN, &r).to_json();
+    let flags: BTreeSet<String> = j["unused_allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["flag"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        flags,
+        ["allow_downgrade", "allow_unknown_current"]
+            .map(String::from)
+            .into(),
+        "{j}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(dest.join(LEDGER))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644, "ledger_0644");
+    }
 }

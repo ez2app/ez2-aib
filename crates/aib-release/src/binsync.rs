@@ -17,8 +17,9 @@
 //! * the git check is [`host_build::check`] as is: built clean, an ancestor of
 //!   `origin/main` as this clone last fetched it, a descendant of what is there now unless
 //!   `--allow-downgrade <why>`. Missing objects are "could not answer" (rc 3), never "not on
-//!   main". The answer names the main commit it was judged against and when this clone last
-//!   fetched: it says "matches the local snapshot", not "is on main now". Nothing is fetched;
+//!   main". The answer names the main commit it was judged against and when origin/main last
+//!   moved in this clone: it says "matches the local snapshot", not "is on main now". Nothing
+//!   is fetched. The same file again is `same` (no swap: `.prev` stays the real previous one);
 //! * one writer at a time: an exclusive lock on `<dest>/.aib-binsync.lock` (held for the
 //!   whole install / rollback; a second one gets rc 3 `busy`);
 //! * the swap: write a new file with a name of its own (`create_new`), make it executable,
@@ -31,10 +32,15 @@
 //!   not the authority on what runs: whether a binary and the repository agree is the
 //!   handshake's job (aib-title SAMPLER_PROTO).
 //!
-//! Stopped half way (killed, power): the next install or rollback removes its own leftover
-//! temporary files (`.<name>.tmp-*`) under the lock. A tool renamed but a ledger not yet
-//! written shows in `status` as `ledger_stale`; the next install writes it. `.prev` written
-//! but the tool not yet renamed leaves the old tool in place, which is the state before.
+//! Stopped half way (killed, power): the next install or rollback removes an install's
+//! leftover temporary files (`.<name>.tmp-new-*` / `-prev-*`, copies of files still in
+//! place) under the lock; a rollback's (`-back-*` / `-fwd-*`) may be the only copy of a
+//! version, so they are kept as `<name>.rescued-*` and `status` lists them. Every rename is
+//! followed by a directory sync. An install stopped after `.prev` was replaced but before the
+//! tool was: the tool is the old one and `.prev` is a copy of it (the `.prev` before is gone,
+//! as it would be after a finished install). A tool renamed but a ledger not yet written:
+//! rc 0 `ledger_stale`, `status` says so, installing the same file again writes the ledger
+//! (`same`). An unreadable ledger is never written over (`ledger_unreadable`, rc 3).
 //!
 //! Exit: 0 done / status read, 2 refused, 3 could not answer (git, I/O, busy), 64 usage.
 
@@ -189,8 +195,9 @@ pub struct Install {
     pub by: String,
     pub allow_downgrade: Option<String>,
     pub allow_unknown_current: Option<String>,
-    /// When this clone last fetched (`FETCH_HEAD`'s time), printed with the answer.
-    pub fetched_at: Option<u64>,
+    /// When origin/main last moved in this clone (its reflog), printed with the answer: a
+    /// main judged against that is old shows as old (it can only look older than it is).
+    pub main_moved_at: Option<u64>,
     /// The OS / architecture this runs on (`std::env::consts` in the command; fixed in tests).
     pub os: String,
     pub arch: String,
@@ -251,19 +258,41 @@ pub fn lock(dest: &Path) -> Result<Lock, Outcome> {
     }
 }
 
-/// Remove this tool's leftover temporary files (a run stopped half way). Under the lock only.
-fn sweep(dest: &Path, name: &str) -> Result<usize, Outcome> {
+/// Leftover temporary files of this tool (a run stopped half way), under the lock only.
+/// An install's (`new`, `prev`) and the ledger's are copies of something still in place and
+/// are removed. A rollback's (`back`, `fwd`) may be the only copy of a version (stopped
+/// between its two renames, §18 review M1), so they are never removed: each is renamed to
+/// `<name>.rescued-<what>-<now>-<n>` and counted; `status` lists them. Returns (removed,
+/// rescued).
+fn sweep(dest: &Path, name: &str, now: u64) -> Result<(usize, usize), Outcome> {
     let pre = tmp_prefix(name);
-    let mut n = 0;
+    let (mut removed, mut rescued) = (0, 0);
     let rd = fs::read_dir(dest).map_err(|e| err("io", format!("{}: {e}", dest.display())))?;
     for e in rd.flatten() {
-        if e.file_name().to_string_lossy().starts_with(&pre) {
+        let fname = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = fname.strip_prefix(&pre) else {
+            continue;
+        };
+        let what = rest.split('-').next().unwrap_or("");
+        if matches!(what, "back" | "fwd") {
+            let to = dest.join(format!("{name}.rescued-{what}-{now}-{rescued}"));
+            put(&e.path(), &to)?;
+            rescued += 1;
+        } else {
             fs::remove_file(e.path())
                 .map_err(|x| err("io", format!("{}: {x}", e.path().display())))?;
-            n += 1;
+            removed += 1;
         }
     }
-    Ok(n)
+    sync_dir(dest);
+    Ok((removed, rescued))
+}
+
+/// Both sweeps an install / rollback makes: this tool's temps and the ledger's.
+fn sweep_all(dest: &Path, name: &str, now: u64) -> Result<(usize, usize), Outcome> {
+    let (a, b) = sweep(dest, name, now)?;
+    let (c, d) = sweep(dest, "BINS", now)?;
+    Ok((a + c, b + d))
 }
 
 fn sync_dir(dest: &Path) {
@@ -277,9 +306,16 @@ fn sync_dir(dest: &Path) {
     let _ = dest;
 }
 
-/// Write `bytes` to a new temporary file of its own in `dest`, executable, synced and read
-/// back; return its path. The caller renames it into place.
-fn stage(dest: &Path, name: &str, what: &str, bytes: &[u8], now: u64) -> Result<PathBuf, Outcome> {
+/// Write `bytes` to a new temporary file of its own in `dest` (0755 for a tool, 0644 for the
+/// ledger), synced and read back; return its path. The caller renames it into place.
+fn stage(
+    dest: &Path,
+    name: &str,
+    what: &str,
+    bytes: &[u8],
+    now: u64,
+    exec: bool,
+) -> Result<PathBuf, Outcome> {
     let p = dest.join(format!(
         "{}{what}-{}-{now}-{}",
         tmp_prefix(name),
@@ -296,7 +332,8 @@ fn stage(dest: &Path, name: &str, what: &str, bytes: &[u8], now: u64) -> Result<
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(fs::Permissions::from_mode(0o755))
+        let mode = if exec { 0o755 } else { 0o644 };
+        f.set_permissions(fs::Permissions::from_mode(mode))
             .map_err(io)?;
     }
     f.sync_all().map_err(io)?;
@@ -315,25 +352,45 @@ fn stage(dest: &Path, name: &str, what: &str, bytes: &[u8], now: u64) -> Result<
     Ok(p)
 }
 
+/// Rename, then sync the directory so this rename reaches the disk before the next one
+/// (§18 review L1: two renames in a row may otherwise land out of order on power loss).
 fn put(from: &Path, to: &Path) -> Result<(), Outcome> {
     fs::rename(from, to).map_err(|e| {
         err(
             "io",
             format!("rename {} -> {}: {e}", from.display(), to.display()),
         )
-    })
+    })?;
+    if let Some(d) = to.parent() {
+        sync_dir(d);
+    }
+    Ok(())
 }
 
-fn read_ledger(dest: &Path) -> Map<String, Value> {
-    fs::read_to_string(dest.join(LEDGER))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default()
+/// The ledger; a missing one is empty. Anything else that cannot be read (bad JSON, not an
+/// object, a permission error) is an error, never "empty": writing over it would drop every
+/// tool's record and history (§18 review L3).
+fn read_ledger(dest: &Path) -> Result<Map<String, Value>, Outcome> {
+    let p = dest.join(LEDGER);
+    let text = match fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(err("ledger_unreadable", format!("{}: {e}", p.display()))),
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(m)) => Ok(m),
+        _ => Err(err(
+            "ledger_unreadable",
+            format!(
+                "{} is not a JSON object: fix or move it away first",
+                p.display()
+            ),
+        )),
+    }
 }
 
 fn write_ledger(dest: &Path, name: &str, entry: Value, now: u64) -> Result<(), Outcome> {
-    let mut all = read_ledger(dest);
+    let mut all = read_ledger(dest)?;
     let mut history: Vec<Value> = all
         .get(name)
         .and_then(|v| v.get("history"))
@@ -351,12 +408,36 @@ fn write_ledger(dest: &Path, name: &str, entry: Value, now: u64) -> Result<(), O
     all.insert(name.to_owned(), entry);
     let text = serde_json::to_string_pretty(&Value::Object(all))
         .map_err(|e| err("io", format!("ledger: {e}")))?;
-    let tmp = stage(dest, "BINS", "ledger", text.as_bytes(), now)?;
+    let tmp = stage(dest, "BINS", "ledger", text.as_bytes(), now, false)?;
     put(&tmp, &dest.join(LEDGER))
 }
 
 fn info_json(i: &BuildInfo) -> Value {
     json!({"version": i.version, "commit": i.commit, "dirty": i.dirty})
+}
+
+fn ledger_entry(
+    req: &Install,
+    candidate: &BuildInfo,
+    tool: &ToolInfo,
+    main: &Option<String>,
+    action: &str,
+    prev_sha: Value,
+    base: &Outcome,
+) -> Value {
+    json!({
+        "sha256": sha256_hex(&req.bytes),
+        "version": candidate.version,
+        "commit": candidate.commit,
+        "target": tool.target,
+        "main": main,
+        "main_moved_at": req.main_moved_at,
+        "installed_at": req.now,
+        "by": req.by,
+        "action": action,
+        "prev_sha256": prev_sha,
+        "allowed": base.facts.get("allowed").cloned().unwrap_or(Value::Null),
+    })
 }
 
 /// Install `req.bytes` as `req.name` under `req.dest`. Nothing is written unless every check
@@ -398,10 +479,13 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
         Ok(l) => l,
         Err(o) => return o,
     };
-    let swept = match sweep(&req.dest, &req.name).and_then(|a| Ok(a + sweep(&req.dest, "BINS")?)) {
+    let (swept, rescued) = match sweep_all(&req.dest, &req.name, req.now) {
         Ok(n) => n,
         Err(o) => return o,
     };
+    if let Err(o) = read_ledger(&req.dest) {
+        return o;
+    }
     let target_path = tool_path(&req.dest, &req.name);
     let current = match read_slot(&target_path) {
         Ok(s) => s,
@@ -444,6 +528,19 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
         ..host_build::Request::for_host(candidate.clone(), cur_info.clone())
     };
     let rep = host_build::check(git, &hreq);
+    // a reason given that the check did not need (on a first install the user's
+    // --allow-unknown-current is replaced by "first install"): shown, as host-build does
+    let unused: Vec<Value> = [
+        ("allow_downgrade", &req.allow_downgrade),
+        ("allow_unknown_current", &req.allow_unknown_current),
+    ]
+    .into_iter()
+    .filter_map(|(flag, why)| {
+        let why = why.as_ref()?;
+        let used = rep.allowed.iter().any(|(f, w)| *f == flag && w == why);
+        (!used).then(|| json!({"flag": flag, "why": why}))
+    })
+    .collect();
     let mut base = Outcome::new(rep.verdict, rep.code, rep.detail.clone())
         .with("name", json!(req.name))
         .with("path", json!(target_path.display().to_string()))
@@ -452,7 +549,7 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
         .with("target", json!(tool.target))
         .with("main_ref", json!(host_build::MAIN_REF))
         .with("main", json!(rep.main))
-        .with("fetched_at", json!(req.fetched_at))
+        .with("main_moved_at", json!(req.main_moved_at))
         .with(
             "judged",
             json!("against this clone's origin/main as last fetched, not the remote now"),
@@ -465,21 +562,45 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
                 .map(|(f, w)| json!({"flag": f, "why": w}))
                 .collect::<Vec<_>>()),
         )
-        .with("swept_tmp", json!(swept));
+        .with("swept_tmp", json!(swept))
+        .with("rescued_tmp", json!(rescued))
+        .with("unused_allow", json!(unused));
     if let Current::Known(i) = &cur_info {
         base = base.with("current", info_json(i));
     }
     if rep.verdict != Verdict::Ok {
         return base;
     }
+    // the same file again (a retry after ledger_stale, or a rebuild with equal bytes): no swap,
+    // or .prev would become a copy of the tool and the real previous version would be lost
+    // (§18 review M2); only the ledger is written
+    if matches!(&current, Slot::File(b) if sha256_hex(b) == sha) {
+        let entry = ledger_entry(
+            req,
+            &candidate,
+            &tool,
+            &rep.main,
+            "same",
+            Value::Null,
+            &base,
+        );
+        return match write_ledger(&req.dest, &req.name, entry, req.now) {
+            Ok(()) => Outcome {
+                code: "same",
+                detail: format!("{} already is this file", target_path.display()),
+                ..base
+            },
+            Err(o) => o,
+        };
+    }
     // publish: new file staged first, the old one copied to .prev, then the swap
-    let staged = match stage(&req.dest, &req.name, "new", &req.bytes, req.now) {
+    let staged = match stage(&req.dest, &req.name, "new", &req.bytes, req.now, true) {
         Ok(p) => p,
         Err(o) => return o,
     };
     let mut prev_sha = Value::Null;
     if let Slot::File(old) = &current {
-        let p = match stage(&req.dest, &req.name, "prev", old, req.now) {
+        let p = match stage(&req.dest, &req.name, "prev", old, req.now, true) {
             Ok(p) => p,
             Err(o) => return o,
         };
@@ -491,27 +612,28 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
     if let Err(o) = put(&staged, &target_path) {
         return o;
     }
-    sync_dir(&req.dest);
-    let entry = json!({
-        "sha256": sha,
-        "version": candidate.version,
-        "commit": candidate.commit,
-        "target": tool.target,
-        "main": rep.main,
-        "fetched_at": req.fetched_at,
-        "installed_at": req.now,
-        "by": req.by,
-        "action": "install",
-        "prev_sha256": prev_sha,
-        "allowed": base.facts.get("allowed").cloned().unwrap_or(Value::Null),
-    });
-    if let Err(o) = write_ledger(&req.dest, &req.name, entry, req.now) {
-        // the tool is in place; the ledger is behind (status says ledger_stale)
-        return o.with("installed", json!(true));
+    let entry = ledger_entry(
+        req,
+        &candidate,
+        &tool,
+        &rep.main,
+        "install",
+        prev_sha.clone(),
+        &base,
+    );
+    let base = base
+        .with("prev_sha256", prev_sha)
+        .with("installed", json!(true));
+    match write_ledger(&req.dest, &req.name, entry, req.now) {
+        Ok(()) => base,
+        // the tool IS in place: rc 0 with its own code, never rc 3 "nothing done", or a
+        // retry would install the same file again (§18 review L2)
+        Err(o) => Outcome {
+            code: "ledger_stale",
+            detail: format!("installed; the ledger was not written: {}", o.detail),
+            ..base
+        },
     }
-    sync_dir(&req.dest);
-    base.with("prev_sha256", prev_sha)
-        .with("installed", json!(true))
 }
 
 /// Swap the tool and its `.prev` (so a second rollback goes forward again).
@@ -534,7 +656,11 @@ pub fn rollback(
         Ok(l) => l,
         Err(o) => return o,
     };
-    if let Err(o) = sweep(dest, name).and_then(|_| sweep(dest, "BINS")) {
+    let rescued = match sweep_all(dest, name, now) {
+        Ok((_, r)) => r,
+        Err(o) => return o,
+    };
+    if let Err(o) = read_ledger(dest) {
         return o;
     }
     let (tp, pp) = (tool_path(dest, name), prev_path(dest, name));
@@ -557,13 +683,13 @@ pub fn rollback(
         }
         Err(e) => return refuse("prev_not_this_tool", e),
     }
-    let staged_prev = match stage(dest, name, "back", &prev, now) {
+    let staged_prev = match stage(dest, name, "back", &prev, now, true) {
         Ok(p) => p,
         Err(o) => return o,
     };
     let mut cur_sha = Value::Null;
     if let Slot::File(c) = &cur {
-        let p = match stage(dest, name, "fwd", c, now) {
+        let p = match stage(dest, name, "fwd", c, now, true) {
             Ok(p) => p,
             Err(o) => return o,
         };
@@ -595,17 +721,25 @@ pub fn rollback(
     )
     .with("name", json!(name))
     .with("sha256", json!(sha))
-    .with("prev_sha256", cur_sha);
+    .with("prev_sha256", cur_sha)
+    .with("rescued_tmp", json!(rescued));
     match write_ledger(dest, name, entry, now) {
         Ok(()) => out,
-        Err(o) => o.with("installed", json!(true)),
+        Err(o) => Outcome {
+            code: "ledger_stale",
+            detail: format!("rolled back; the ledger was not written: {}", o.detail),
+            ..out
+        },
     }
 }
 
 /// What is installed: per allowed tool, the file's hash and build, whether the ledger agrees,
 /// and (when git can say) whether its commit is on the local origin/main. Reads only.
 pub fn status(git: Option<&dyn Git>, dest: &Path) -> Outcome {
-    let ledger = read_ledger(dest);
+    let (ledger, ledger_state) = match read_ledger(dest) {
+        Ok(m) => (m, "ok"),
+        Err(_) => (Map::new(), "ledger_unreadable"),
+    };
     let main = git.map(|g| g.resolve(host_build::MAIN_REF));
     let mut tools = Vec::new();
     for name in ALLOWED {
@@ -661,10 +795,21 @@ pub fn status(git: Option<&dyn Git>, dest: &Path) -> Outcome {
                 Ok(Slot::File(_))
             )),
         );
+        let rescued_pre = format!("{name}.rescued-");
+        let rescued: Vec<String> = fs::read_dir(dest)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with(&rescued_pre))
+                    .collect()
+            })
+            .unwrap_or_default();
+        t.insert("rescued".into(), json!(rescued));
         tools.push(Value::Object(t));
     }
     Outcome::new(Verdict::Ok, "ok", "read only")
         .with("dest", json!(dest.display().to_string()))
+        .with("ledger", json!(ledger_state))
         .with(
             "main",
             match &main {
