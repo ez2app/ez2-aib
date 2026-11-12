@@ -60,6 +60,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         }
         host.identity = h["identity"].as_str().map(str::to_string);
         host.tag = h["tag"].as_str().map(str::to_string);
+        host.ci = h["ci"].as_bool().unwrap_or(false);
         host.jump_fallback = h["jump_fallback"].as_str().map(str::to_string);
         rows.push((h["order"].as_i64().unwrap_or(i64::MAX), i, host));
     }
@@ -69,6 +70,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         let mut g = Host::new(&format!("GitHub={repo}"));
         g.kind = Kind::GitHub;
         g.role = "CI".into();
+        g.ci = true;
         out.push(g);
     }
     // Andy 11-12 15:0x「把所有能 ssh 的主機全列出」:servers 只看負載(唯讀)
@@ -82,6 +84,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.poll = SERVER_POLL;
         host.identity = h["identity"].as_str().map(str::to_string);
         host.tag = h["tag"].as_str().map(str::to_string);
+        host.ci = h["ci"].as_bool().unwrap_or(false);
         out.push(host);
     }
     out
@@ -163,6 +166,8 @@ struct Host {
     identity: Option<String>,
     /// 銘牌(hosts.json 的 tag,例 "Ez2" = 賣給客戶的主機);沒寫就照種類 M / W / L / G
     tag: Option<String>,
+    /// 能跑 CI(GitHub 出問題時接手 CI 格的機器;hosts.json 的 "ci": true,GitHub 本身也是)
+    ci: bool,
     jump_fallback: Option<String>,
     asked: Option<Instant>,
     stuck: bool,
@@ -188,6 +193,7 @@ impl Host {
             poll: POLL,
             identity: None,
             tag: None,
+            ci: false,
             jump_fallback: None,
             asked: None,
             stuck: false,
@@ -855,19 +861,25 @@ const EZ2_BADGE: Color = Color::AnsiValue(178);
 
 /// 銘牌字與顏色:hosts.json 的 tag 優先(Ez2 = 賣給客戶的主機，反白);否則照種類
 /// M(Mac)/ W(Windows)/ L(Linux 主機)/ G(GitHub);最多 6 格
+/// 能跑 CI 的再加「-CI」(Andy 11-12 20:4x,例 M-CI、Ez2-CI)
 fn badge(h: &Host) -> (String, Color) {
-    if let Some(t) = h.tag.as_deref().filter(|t| !t.trim().is_empty()) {
-        let t = fit(t.trim(), 6);
-        let c = if t == "Ez2" { EZ2_BADGE } else { kind_color(h) };
-        return (t, c);
-    }
-    let l = match h.kind {
-        Kind::Mac => "M",
-        Kind::Windows => "W",
-        Kind::Server => "L",
-        Kind::GitHub => "G",
+    let (base, c) = match h.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => (
+            t.to_string(),
+            if t == "Ez2" { EZ2_BADGE } else { kind_color(h) },
+        ),
+        None => {
+            let l = match h.kind {
+                Kind::Mac => "M",
+                Kind::Windows => "W",
+                Kind::Server => "L",
+                Kind::GitHub => "G",
+            };
+            (l.to_string(), kind_color(h))
+        }
     };
-    (l.into(), kind_color(h))
+    let t = if h.ci { format!("{base}-CI") } else { base };
+    (fit(&t, 6), c)
 }
 
 /// 一排放幾台
@@ -881,12 +893,14 @@ fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
         vec![
             (format!("主機群 {}(台北)", taipei_clock(t)), Color::White),
             (
-                "  燈:連線 · 租約(綠空 黃租 紫沒租約在跑)· 白測試 藍Win 紫CI 青主機 · 點機箱看明細 · q 離開"
-                    .into(),
+                "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機".into(),
                 Color::DarkGrey,
             ),
         ],
-        Vec::new(),
+        vec![(
+            "燈:連線 · 租約(綠空 黃租 紫沒租約在跑)· 點機箱看明細(1–9 也可)".into(),
+            Color::DarkGrey,
+        )],
     ];
     if let Some((i, h)) = hosts.iter().enumerate().find(|(_, h)| h.open) {
         lines.push(vec![(
@@ -1336,12 +1350,19 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         ez2.tag = Some("Ez2".into());
         let mut gh = host("gh", None, false);
         gh.kind = Kind::GitHub;
+        gh.ci = true;
+        let mut mac_ci = host("andymini", None, false);
+        mac_ci.ci = true;
         let top = |h: &Host| text(&tower(h, 0)[1]);
         // 左角右邊一格起;框線寬不變
         assert_eq!(top(&mac).trim_end(), "┌M─────┐");
         assert_eq!(top(&win).trim_end(), "┌W─────┐");
         assert_eq!(top(&lin).trim_end(), "┌L─────┐");
-        assert_eq!(top(&gh).trim_end(), "┌G─────┐");
+        assert_eq!(top(&gh).trim_end(), "┌G-CI──┐");
+        assert_eq!(top(&mac_ci).trim_end(), "┌M-CI──┐");
+        ez2.ci = true;
+        assert_eq!(top(&ez2).trim_end(), "┌Ez2-CI┐", "最長剛好 6 格");
+        ez2.ci = false;
         assert_eq!(top(&ez2).trim_end(), "┌Ez2───┐");
         assert_eq!(w(&top(&ez2)), CELL);
         // Ez2 用反白記號色，其他照種類色
@@ -1349,9 +1370,15 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!(tower(&win, 0)[1][1].1, Color::Blue);
         // hosts.json 的 tag 讀得到
         let hs = hosts_from_config(
-            r#"{"hosts":[],"servers":[{"name":"EU02","ssh":"x","role":"代管雲","tag":"Ez2"}]}"#,
+            r#"{"github_repo":"o/r","hosts":[{"name":"m","ssh":"m","ci":true},{"name":"p","ssh":"p"}],
+                "servers":[{"name":"EU02","ssh":"x","role":"代管雲","tag":"Ez2"}]}"#,
         );
-        assert_eq!(hs[0].tag.as_deref(), Some("Ez2"));
+        let ci: Vec<(&str, bool)> = hs.iter().map(|h| (h.name.as_str(), h.ci)).collect();
+        assert_eq!(
+            ci,
+            [("m", true), ("p", false), ("GitHub", true), ("EU02", false)]
+        );
+        assert_eq!(hs[3].tag.as_deref(), Some("Ez2"));
     }
 
     #[test]
@@ -1372,6 +1399,9 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         });
         let l = screen(&hs, 102, 0, 1500);
         assert!(text(&l[0]).starts_with("主機群 "), "{}", text(&l[0]));
+        // 說明兩行都要在 102 格內看得完整
+        assert!(text(&l[0]).contains("Ez2 客戶主機") && w(&text(&l[0])) <= 102);
+        assert!(text(&l[1]).starts_with("燈:連線") && w(&text(&l[1])) <= 102);
         assert_eq!(l.len(), 2 + 2 * TOWER_H, "102 格一排 8 台,12 台兩排");
         for (r, row) in l.iter().enumerate().skip(2) {
             assert!(w(&text(row)) <= 102, "row {r} too wide");
