@@ -1635,6 +1635,30 @@ jobs:
           ck verify.rs '        if !line.bytes().all(|b| b.is_ascii_digit()) {' \
              '        if !line.bytes().all(|b| b.is_ascii_digit()) && false { // knife' \
              s14_what_cannot_be_read_is_unknown_never_green
+          # S17 (E6 S7, 4542e 11-12): server_tokens off counts only straight inside http
+          ck verify.rs '                        } else if (path == MAIN && stack.len() == 1 && stack[0] == "http")' \
+             '                        } else if (path == MAIN && !stack.is_empty()) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: no http-level server_tokens off is red
+          ck verify.rs '    file.map(|_| off_at_http && !other)' \
+             '    file.map(|_| (off_at_http || true) && !other) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: a PHP-FPM with expose_php On is red
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if (php.contains(&Some(true)) && false) || pool_on => Outcome::Red("expose_php_on"), // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17: no PHP-FPM, or one whose setting was not read, is unknown, never green
+          ck verify.rs '        _ if !in_pools || php.is_empty() || php.iter().any(Option::is_none) => {' \
+             '        _ if !in_pools && false => { // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17 (c477a S7 N1): a pool that turns expose_php on is red, though php-fpm -i says Off
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if php.contains(&Some(true)) || (pool_on && false) => Outcome::Red("expose_php_on"), // knife' \
+             a_pool_that_turns_expose_php_on_is_flagged
+          # S17: a listing cut before its end line is unknown, never green
+          ck verify.rs '    if lines[last].trim() != S17_END || at > last {' \
+             '    if at > last { // knife' \
+             s17_what_cannot_be_read_is_unknown_never_green
           # site scan (4542e 11-11, E10 cat. 9): read-only scan of one site; each rule out turns its test red
           ck scan.rs '        if other > self {' '        if other > self && false { // knife' \
              the_scan_is_its_worst_check
@@ -1850,13 +1874,13 @@ jobs:
           ck sitedns.rs '        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),' \
              '        ("DELETE", ["", "zones", z, "dns_records", ..], None, None) => valid_id(z), // knife' \
              only_the_five_calls_are_allowed
-          # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
-          ck sitedns.rs '        && m["type"] == "A"' \
-             '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
+          # B5 DNS (ebb36 L1): an add of an AAAA is let through
+          ck sitedns.rs '            Some("A") => m["content"].as_str().is_some_and(valid_origin),' \
+             '            Some("A" | "AAAA") => m["content"].as_str().is_some_and(valid_origin), // knife' \
              an_add_must_carry_a_sites_mark_and_be_proxied
           # B5 DNS (ebb36 L1): an add to anything but a public address is let through
-          ck sitedns.rs '        && m["content"].as_str().is_some_and(valid_origin)' \
-             '        && m["content"].is_string() // knife' \
+          ck sitedns.rs '            Some("A") => m["content"].as_str().is_some_and(valid_origin),' \
+             '            Some("A") => m["content"].is_string(), // knife' \
              an_add_must_carry_a_sites_mark_and_be_proxied
           # B5 DNS (ebb36 L2): a name outside the zone is added under it
           ck sitedns.rs '    if !names.iter().all(|n| in_zone(n, zone)) {' \
@@ -1875,9 +1899,37 @@ jobs:
              '        if here.iter().any(|r| r.comment != mark) && false { // knife' \
              a_name_answered_elsewhere_is_left_alone
           # B5 DNS: a record with the mark counts as done whatever it points at
-          ck sitedns.rs '            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,' \
+          ck sitedns.rs '            [ours] if target.is(ours) && ours.proxied => continue,' \
              '            [ours] if ours.comment == mark => continue, // knife' \
              this_sites_record_is_the_step_done
+          # E6 S5 (4542e): a CNAME to the host's entry name is not let through
+          ck sitedns.rs '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry),' \
+             '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry) && false, // knife' \
+             the_add_is_a_cname_to_the_entry
+          # E6 S5: a CNAME to any name is let through
+          ck sitedns.rs '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry),' \
+             '            Some("CNAME") => m["content"].as_str().is_some_and(|c| !c.is_empty() || to_entry(c)), // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5: this site's CNAME pointing elsewhere counts as the step done
+          ck sitedns.rs '                (r.kind == "CNAME" && same_name(&r.content, name))' \
+             '                (r.kind == "CNAME" && !name.is_empty()) // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5: an entry name that is one of the site's own names is used
+          ck sitedns.rs '        if !crate::edge::valid_domain(name) || names.iter().any(|n| same_name(n, name)) {' \
+             '        if !crate::edge::valid_domain(name) { // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5 (c477a L1): a zone in another account than the entry gets the CNAME (1014)
+          ck sitedns.rs '    if entry_account != Some(zone.account.as_str()) {' \
+             '    if entry_account != Some(zone.account.as_str()) && false { // knife' \
+             a_zone_in_another_account_falls_back_to_a
+          # E6 S5 (c477a L1): no entry account set still lets the CNAME be judged
+          ck sitedns.rs '    if !entry_account.is_some_and(valid_id) {' \
+             '    if !entry_account.is_some_and(valid_id) && false { // knife' \
+             no_entry_account_means_no_cname
+          # E6 S5 (c477a N1): a name with a TXT / MX that is not the site's gets a CNAME
+          ck sitedns.rs '    if records.iter().any(in_use) {' \
+             '    if records.iter().any(in_use) && false { // knife' \
+             a_name_in_use_falls_back_to_a
           # B5 DNS: a wildcard that answers for the name today is passed over
           ck sitedns.rs '            .any(|r| wildcard_covers(&r.name, name))' \
              '            .any(|r| wildcard_covers(&r.name, name) && false) // knife' \
@@ -3261,6 +3313,10 @@ jobs:
           hk siteverify.rs '    if audience == Audience::Operator {' \
              '    if audience == Audience::Operator || true { // knife' \
              a_customer_status_asks_cloudflare_nothing
+          # verify S17 (c477a S7 L1): not in a customer's status until the template is rebuilt
+          hk siteverify.rs '    if audience == Audience::Operator && s14_runs_in(state) {' \
+             '    if s14_runs_in(state) { // knife' \
+             a_site_with_no_readable_record_is_red_not_skipped
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
@@ -3391,8 +3447,8 @@ jobs:
              '        (Some("waiting"), "never") => { // knife' \
              a_run_started_too_late_does_not_take_its_ask
           # B5 DNS (4542e): a call off the list of five goes out
-          hk cfdns.rs '        if !sitedns::allowed(call.method(), &call.path(), body) {' \
-             '        if !sitedns::allowed(call.method(), &call.path(), body) && false { // knife' \
+          hk cfdns.rs '        if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) {' \
+             '        if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) && false { // knife' \
              a_call_off_the_list_is_refused_and_written_down
           # B5 DNS: a call made leaves no ledger line
           hk cfdns.rs '        self.ledger_line(&mut file, call, json!(http))?;' \
@@ -3403,9 +3459,19 @@ jobs:
              '        let _ = &paths.creating; // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # B5 DNS: an add that does not read back counts as done
-          hk cfdns.rs '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done' \
-             '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false // knife' \
+          hk cfdns.rs '        if read_back != DnsPlan::Done {' \
+             '        if read_back != DnsPlan::Done && false { // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # E6 S5 (4542e): the host's entry name is not handed to the call check
+          hk cfdns.rs '    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(entry.clone());' \
+             '    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(None); // knife' \
+             a_host_with_an_entry_name_adds_cnames_to_it
+          # E6 S5: removing a site leaves its marked CNAME behind
+          python3 -I scripts/knife.py crates/aib-cloud/src/siteremove.rs \
+            'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "CNAME"];' \
+            'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "AAAA"]; // knife' \
+            --expect-fail a_sites_marked_cname_is_removed_and_no_other \
+            -- cargo test -p aib-cloud-host --locked a_sites_marked_cname_is_removed_and_no_other
           # B5 DNS: a roster file that is another customer's is used
           hk cfdns.rs '    if roster.tenant_id != tenant {' '    if roster.tenant_id != tenant && false { // knife' \
              a_customer_without_accounts_cannot_be_told
