@@ -305,7 +305,8 @@ def legacy_line_of(item, pct, state="busy", color=False):
                                  times_text(None, None))
 
 
-def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False):
+def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False,
+          review=None):
     """啟動時間:加 new(aib now --new)才重新計時;改主項目文字、步數、狀態都沿用(the maintainer 10-10「--new 才重新計時」——
     以前一改字就當新項目,a seat 自己改字就把 16:04 洗成 17:46)。上一筆是【我很閒】(--clear)⇒ 接的一定是新工作,
     自動重新計時。--started 可更正。舊紀錄沒有這欄 ⇒ 用它上次回報的時間(最早量得到的),不是「現在」。"""
@@ -321,6 +322,11 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     rec = {"item": item, "steps_done": done, "steps_total": total, "pct": progress_pct(done, total),
            "state": state if state in SETTABLE_STATES else "busy",
            "started_at": int(started_at), "at": at, "code": code}
+    # 判斷(Andy 11-12 13:3x):--track / --why / --idea。這次有給 ⇒ 記上這次的時間;沒給 ⇒ 同一個主軸沿用上一筆
+    if review:
+        rec["review"] = dict(review, at=at)
+    elif not new and isinstance(prev.get("review"), dict) and prev.get("started_at") == rec["started_at"]:
+        rec["review"] = prev["review"]
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
     if prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
         append_history(d, code, rec)
@@ -329,6 +335,47 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
         fh.write(line_of(item, done, total, rec["state"], started_at=rec["started_at"], at=rec["at"]) + "\n")
     os.replace(tmp, os.path.join(d, code + ".line"))
     return rec
+
+
+TRACK_VALUES = ("on", "off")
+REVIEW_MAX = 400   # 判斷的為什麼 / 建議放在進度畫面可展開的那幾行，比主項目寬鬆
+
+
+def _clean_review(text):
+    t = " ".join(str(text or "").split())
+    return t[:REVIEW_MAX - 1] + "…" if len(t) > REVIEW_MAX else t
+
+
+def stage_done(rec):
+    """「一個階段完成、交回給人」:步數做滿,或狀態是【等回應】/【等你決定】。"""
+    if not isinstance(rec, dict):
+        return False
+    try:
+        full = int(rec.get("steps_total") or 0) > 0 and int(rec.get("steps_done") or 0) >= int(rec.get("steps_total"))
+    except (TypeError, ValueError):
+        full = False
+    return full or rec.get("state") in ("reply", "decide")
+
+
+def review_at(rec):
+    """這一筆最近一次回報判斷的時間;沒有 ⇒ 0。"""
+    r = rec.get("review") if isinstance(rec, dict) else None
+    if not isinstance(r, dict):
+        return 0
+    try:
+        return int(r.get("at") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_review(track, why, idea):
+    """三個都沒給 ⇒ (None, True);三個齊、track 合法、字不空 ⇒ (dict, True);其他 ⇒ (None, False)。"""
+    if track is None and why is None and idea is None:
+        return None, True
+    why, idea = _clean_review(why), _clean_review(idea)
+    if track not in TRACK_VALUES or not why or not idea:
+        return None, False
+    return {"track": track, "why": why, "idea": idea}, True
 
 
 HISTORY_SUFFIX = ".history.jsonl"
@@ -886,6 +933,9 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--started", metavar="'MM-DD HH:MM'", help=T("aib.now.help.started"))
     ap.add_argument("--state", choices=SETTABLE_STATES, default="busy",
                     help=T("aib.now.help.state"))
+    ap.add_argument("--track", choices=TRACK_VALUES, default=None, help=T("aib.now.help.track"))
+    ap.add_argument("--why", default=None, help=T("aib.now.help.why"))
+    ap.add_argument("--idea", default=None, help=T("aib.now.help.idea"))
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
@@ -1061,8 +1111,12 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         if started is None:
             err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
+    review, ok = parse_review(args.track, args.why, args.idea)
+    if not ok:
+        err.write("aib now: %s\n" % T("aib.now.review_bad"))
+        return 2
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
-                new=args.new)
+                new=args.new, review=review)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
     nudge = dm_stale_nudge(code) if state_root is None else ""
     if nudge:
