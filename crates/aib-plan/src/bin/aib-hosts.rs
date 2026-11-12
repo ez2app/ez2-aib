@@ -912,6 +912,11 @@ fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
             Color::DarkGrey,
         )],
     ];
+    // Andy 11-12 20:5x:上面兩行說明也置中
+    for l in lines.iter_mut() {
+        let lw: usize = l.iter().map(|(t, _)| w(t)).sum();
+        l.insert(0, (" ".repeat(width.saturating_sub(lw) / 2), Color::White));
+    }
     if let Some((i, h)) = hosts.iter().enumerate().find(|(_, h)| h.open) {
         lines.push(vec![(
             format!("◀ 返回(點任一處)  {} · {}", h.name, h.role),
@@ -1419,10 +1424,23 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             ..Sample::default()
         });
         let l = screen(&hs, 102, 0, 1500);
-        assert!(text(&l[0]).starts_with("主機群 "), "{}", text(&l[0]));
+        assert!(
+            text(&l[0]).trim_start().starts_with("主機群 "),
+            "{}",
+            text(&l[0])
+        );
+        // 兩行說明置中：左右空白差不超過 1
+        for y in 0..2 {
+            let t = text(&l[y]);
+            let left = t.len() - t.trim_start().len();
+            assert!(
+                left > 0 && left.abs_diff(102 - w(&t)) <= 1,
+                "第 {y} 行沒置中:{t:?}"
+            );
+        }
         // 說明兩行都要在 102 格內看得完整
         assert!(text(&l[0]).contains("Ez2 客戶主機") && w(&text(&l[0])) <= 102);
-        assert!(text(&l[1]).starts_with("燈:連線") && w(&text(&l[1])) <= 102);
+        assert!(text(&l[1]).trim_start().starts_with("燈:連線") && w(&text(&l[1])) <= 102);
         assert_eq!(l.len(), 2 + 2 * TOWER_H, "102 格一排 8 台,12 台兩排");
         for (r, row) in l.iter().enumerate().skip(2) {
             assert!(w(&text(row)) <= 102, "row {r} too wide");
