@@ -1,4 +1,5 @@
 //! `aib-expect check-goal` (RULES-seats-aib2 §17, DECISION-goalcheck-gate-a63ab-1112).
+#![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
 use aib_expect::goalcheck::*;
 use aib_expect::*;

@@ -4533,7 +4533,7 @@ jobs:
              a_chore_needs_its_reason
           # KG3 a goal already 實查通過 is not flagged
           gk '    if row.status == Status::Pass {' \
-             '    if false { // knife' \
+             '    if row.status == Status::Pass && false { // knife' \
              a_live_goal_is_ok_and_a_passed_one_is_a_reminder
           # KG4 a goal added after the stage started is taken as named from the start
           gk '            .is_some_and(|r| r.goal.is_none());' \
