@@ -44,6 +44,7 @@ pub mod arc;
 pub mod backup;
 pub mod brand;
 pub mod brandscan;
+pub mod cfonly;
 pub mod client;
 pub mod create;
 pub mod customer;
