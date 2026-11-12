@@ -102,6 +102,9 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   end; this end exits **76 `remote_running`** and prints the runner's pid and log path. Check it
   with `aib lease status` on that Mac; stop it with `kill <pid>` there (TERM / INT stop the steps
   and release on the way out). The log and exit-code files stay in `$TMPDIR` after a drop.
+  **Ctrl-C (or closing the terminal) here does not stop it either**: as soon as the runner starts,
+  this end prints its pid and `ssh <host> kill <pid>`. A drop after unpacking but before that line
+  also exits 76 (the run may already be going); check `aib lease status` before sending it again.
   Stopping a step reaches only processes still in its tree; one that left it (re-parented to
   launchd, as Chrome for Testing helpers do) is not stopped.
 * cargo builds into `~/.cache/aib-lease/<seat>/target` on that Mac (`AIB_LEASE_TARGET_ROOT`),

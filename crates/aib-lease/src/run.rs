@@ -821,7 +821,17 @@ fn execute(a: &Args) -> Ran {
             } else if let Some(h) = line.strip_prefix(&host_mark) {
                 ran.host = Some(h.trim().to_string());
             } else if let Some(d) = line.strip_prefix(&det_mark) {
-                ran.detached = Some(d.trim().to_string());
+                let d = d.trim().to_string();
+                // 043dd #720 M1: say it before anything can go wrong, so whoever presses
+                // Ctrl-C (or closes the terminal) has already seen how to stop the run
+                let (pid, logf) = d.split_once(' ').unwrap_or((d.as_str(), "?"));
+                eprintln!(
+                    "aib-lease: run {} is detached on {} (pid {pid}, log {logf}); a dropped \
+                     connection or Ctrl-C here does not stop it. Stop: ssh {} kill {pid} \
+                     (it releases on the way out).",
+                    a.spec.rid, a.spec.host, a.spec.host
+                );
+                ran.detached = Some(d);
             } else if line == beat {
                 // the remote side checking that this end is still here
             } else {
@@ -846,6 +856,16 @@ fn execute(a: &Args) -> Ran {
             "aib-lease: the connection to {} dropped; run {} is still running there (pid {pid}, \
              log {logf}) and keeps its lease until its steps end. Check: `aib lease status` on \
              that Mac; stop: kill {pid} there (it releases on the way out).",
+            a.spec.host, a.spec.rid
+        );
+        ran.outcome = RunOutcome::RemoteRunning;
+    } else if dropped && ran.host.is_some() {
+        // 043dd #720 L1: the drop came after unpacking but before the runner's marker; it may
+        // already be running with the lease, so a plain connection error (rc 3) would invite
+        // a second copy of the same run
+        eprintln!(
+            "aib-lease: the connection to {} dropped after unpacking; run {} may already be \
+             running there. Check `aib lease status` on that Mac before sending it again.",
             a.spec.host, a.spec.rid
         );
         ran.outcome = RunOutcome::RemoteRunning;

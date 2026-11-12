@@ -408,6 +408,11 @@ fn a_dropped_connection_leaves_the_run_going_and_the_lease_held() {
     let (rc, out) = run(&w, &[("FAKE_SSH_DROP", "3")], &["--step", TWO_SLEEPS]);
     assert_eq!(rc, 76, "{out}");
     assert!(out.contains("is still running there (pid "), "{out}");
+    // the stop hint is printed when the runner starts, not only after a drop (Ctrl-C case)
+    assert!(
+        out.contains("a dropped connection or Ctrl-C here does not stop it. Stop: ssh "),
+        "{out}"
+    );
     assert_eq!(history(&w)[0]["outcome"], "remote_running");
     let pa = PathBuf::from(format!("{}.a", w.out.display()));
     let pp = PathBuf::from(format!("{}.p", w.out.display()));
@@ -444,5 +449,26 @@ fn a_dropped_connection_leaves_the_run_going_and_the_lease_held() {
     });
     wait_for("the unpacked tree to go", || {
         !leftovers(&w).iter().any(|f| f.ends_with(".noindex"))
+    });
+}
+
+#[test]
+fn a_drop_before_the_runner_marker_is_not_a_plain_connection_error() {
+    let w = world();
+    // only the host line gets through: the runner may already be going
+    let (rc, out) = run(&w, &[("FAKE_SSH_DROP", "1")], &["--step", TWO_SLEEPS]);
+    assert_eq!(rc, 76, "{out}");
+    assert!(out.contains("may already be running there"), "{out}");
+    assert_eq!(history(&w)[0]["outcome"], "remote_running");
+    let pp = PathBuf::from(format!("{}.p", w.out.display()));
+    wait_for("the runner to start", || !read_pid(&pp).is_empty());
+    let runner = read_pid(&pp);
+    let s = Command::new("kill")
+        .args(["-TERM", &runner])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    wait_for("the release", || {
+        log(&w).contains("aib lease release --run-id 043dd-run-")
     });
 }
