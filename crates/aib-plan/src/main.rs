@@ -727,8 +727,8 @@ const TIME_W: usize = 11;
 
 /// 本席小卡(Andy 11-12 14:2x「重新設計，留下簡易資訊卡」):
 ///   判斷 95%   校正 0 · 總結 1 · 交接 1                 11-12 14:25   全艙 ▸ ⚠1
-///   起點  00:09        席位接續 v2 決定已寫,等 Andy 看
-///   目前  14:07        挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
+///   起點  11-12 00:09  席位接續 v2 決定已寫,等 Andy 看
+///   目前  11-12 14:07  挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
 /// 第一行右邊的「現在」與「全艙」由 frame 補上並靠右;理由預設收合
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let (vtext, vcolor) = verdict(m.now.as_ref());
@@ -747,7 +747,8 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     let toggle = review.map(|_| if open { "  ▾ 理由" } else { "  ▸ 理由" });
     let line = |label: &str, e: Option<&mainline::Entry>, strong: bool, tail: Option<&str>| {
         let (t, item) = match e {
-            Some(e) => (short_stamp(e.started_at, now), e.item.clone()),
+            // Andy 11-12 23:2x「起點 / 目前 應該是要帶出日期時間」⇒ 一律 月-日 時:分(不再省略今天的日期)
+            Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
             None => ("--".to_string(), "還沒回報 aib now".to_string()),
         };
         let lead = format!(
@@ -1573,8 +1574,12 @@ mod tests {
         );
         assert!(text(&f, 1).ends_with("11-12 13:20"), "{}", text(&f, 1));
         assert_eq!(str_width(&text(&f, 1)), 98, "靠右留 2 格");
-        // 起點 / 目前：今天只寫時:分,字頭上下對齊
-        assert!(text(&f, 2).starts_with("  起點  00:09"), "{}", text(&f, 2));
+        // 起點 / 目前：一律帶日期(Andy 11-12 23:2x),字頭上下對齊
+        assert!(
+            text(&f, 2).starts_with("  起點  11-12 00:09"),
+            "{}",
+            text(&f, 2)
+        );
         assert!(text(&f, 3).starts_with("  目前  --"), "{}", text(&f, 3));
         let at = |i: usize, k: &str| {
             let t = text(&f, i);
