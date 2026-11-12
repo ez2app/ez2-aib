@@ -1777,6 +1777,26 @@ jobs:
           ck sitedns.rs '        return Proxied::Unchecked(UNREADABLE);' \
              '        return Proxied::All; // knife' \
              an_unreadable_zone_is_unchecked_not_pass
+          # 80 / 443 only from Cloudflare (E6 C3, S4): an empty list goes through, as if it let everyone in
+          ck cfonly.rs '    if out.is_empty() {' \
+             '    if out.is_empty() && false { // knife' \
+             a_malformed_range_list_is_refused
+          # 80 / 443 only from Cloudflare (E6 C3, S4): 0.0.0.0/0 is not refused by name
+          ck cfonly.rs '        if line == "0.0.0.0/0" {' \
+             '        if line == "0.0.0.0/0" && false { // knife' \
+             a_malformed_range_list_is_refused
+          # 80 / 443 only from Cloudflare (E6 C3, S4): the accept rule loses its source set
+          ck cfonly.rs '    "IN ACCEPT -source +ez2-cloudflare-v4 -p tcp -dport 80,443 -log nolog",' \
+             '    "IN ACCEPT -p tcp -dport 80,443 -log nolog", // knife' \
+             only_cloudflare_ranges_are_let_in
+          # 80 / 443 only from Cloudflare (E6 C3, S4): another rule before ours reads back as fine
+          ck cfonly.rs '    if rules.get(..2) != Some(&RULES[..]) {' \
+             '    if rules.get(..2) != Some(&RULES[..]) && false { // knife' \
+             only_cloudflare_ranges_are_let_in
+          # 80 / 443 only from Cloudflare (E6 C3, S4): an extra range on disk reads back as fine
+          ck cfonly.rs '            for h in have.iter().filter(|h| !want_s.contains(h)) {' \
+             '            for h in have.iter().filter(|h| !want_s.contains(h) && false) { // knife' \
+             a_read_back_set_must_match_exactly
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -3370,6 +3390,10 @@ jobs:
           hk customercmd.rs '        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {' \
              '        if sites.iter().any(|(code, _)| code == site) { // knife' \
              a_site_just_opened_answers_status_with_its_opened_view
+          # edge cf-only (E6 C3, S4): a fetched list that fails the check is swapped for the built-in one
+          hk edgecmd.rs '        cfonly::parse_ranges(&text).map_err(|e| format!("{}: {e}", cfonly::SOURCE_URL))?' \
+             '        cfonly::parse_ranges(&text).or_else(|_| Ok::<_, String>(known.clone()))? // knife' \
+             a_bad_or_missing_fetch_is_refused_not_replaced
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

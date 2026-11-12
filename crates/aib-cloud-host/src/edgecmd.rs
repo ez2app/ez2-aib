@@ -7,11 +7,19 @@
 //!
 //! A lookup that fails (no `dig`, a timeout, a resolver error) is "could not look", never
 //! "no such record": the domain is then not ready.
+//!
+//! `edge cf-only --plan | --check [--builtin] [--fw <file>]` (E6 C3, sheet H8): 80 / 443 of
+//! the edge only from Cloudflare. Fetches Cloudflare's IPv4 list (or takes the one in the
+//! code with `--builtin`), checks it with `aib_cloud::cfonly`, and prints the edge CT's
+//! firewall file as it would be with the set and the two rules put in, plus what the file
+//! on disk says now. `--check` reads the file back only: rc 0 when it holds exactly that,
+//! 1 when not. **Nothing is written**: the file is changed by a sign sheet.
 
 use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
+use aib_cloud::cfonly;
 use aib_cloud::edge::{self, Action, Dns, NotReady};
 use aib_cloud::quarantine;
 use aib_cloud::site::SiteSpec;
@@ -141,8 +149,105 @@ fn valid_ipv4(ip: &str) -> bool {
     ip.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
+/// Gets a page; the host's is `curl`, tests hand in their own (no network in tests).
+pub trait Fetch {
+    fn get(&mut self, url: &str) -> Result<String, String>;
+}
+
+/// The real host: `curl` over https only, failing on an HTTP error.
+pub struct Curl;
+
+impl Fetch for Curl {
+    fn get(&mut self, url: &str) -> Result<String, String> {
+        let mut cmd = Command::new("curl");
+        cmd.args(["-fsS", "--proto", "=https", "--max-time", "20", url])
+            .env("LC_ALL", "C");
+        run_capture(&mut cmd, Duration::from_secs(30))
+    }
+}
+
+/// `edge cf-only`: the plan (or the read-back) for one firewall file text. A fetched list
+/// that fails the check is refused, never replaced by the built-in one behind the
+/// person's back.
+pub fn cf_only(
+    fetch: &mut dyn Fetch,
+    builtin: bool,
+    fw: &str,
+    check: bool,
+) -> Result<(Value, u8), String> {
+    let known = cfonly::parse_ranges(cfonly::BUILTIN_V4).map_err(|e| e.to_string())?;
+    let ranges = if builtin {
+        known.clone()
+    } else {
+        let text = fetch.get(cfonly::SOURCE_URL)?;
+        cfonly::parse_ranges(&text).map_err(|e| format!("{}: {e}", cfonly::SOURCE_URL))?
+    };
+    let now = cfonly::readback(fw, &ranges);
+    let rc = u8::from(!now.is_empty());
+    if check {
+        return Ok((
+            json!({ "check": "edge cf-only", "ok": now.is_empty(), "found": now }),
+            rc,
+        ));
+    }
+    let text = cfonly::apply(fw, &ranges);
+    let after = cfonly::readback(&text, &ranges);
+    if !after.is_empty() {
+        return Err(format!(
+            "the planned file would not read back: {}",
+            after.join(", ")
+        ));
+    }
+    let (added, dropped) = cfonly::difference(&known, &ranges);
+    let source = if builtin {
+        "builtin"
+    } else {
+        cfonly::SOURCE_URL
+    };
+    let doc = json!({
+        "plan": "edge cf-only",
+        "level": "L2",
+        "source": source,
+        "ranges": ranges.len(),
+        "added_to_builtin": added,
+        "dropped_from_builtin": dropped,
+        "found_now": now,
+        "steps": [{ "do": "write_edge_firewall", "text": text }, { "do": "read_back" }],
+    });
+    Ok((doc, 0))
+}
+
+fn cmd_cf_only(args: &[String]) -> Result<u8, String> {
+    let usage = "edge cf-only --plan | --check [--builtin] [--fw <file>]";
+    let mut fw_path = format!("/etc/pve/firewall/{}.fw", aib_cloud::site::EDGE_CT);
+    let (mut plan, mut check, mut builtin) = (false, false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--plan" => plan = true,
+            "--check" => check = true,
+            "--builtin" => builtin = true,
+            "--fw" => fw_path = it.next().ok_or("--fw needs a file")?.clone(),
+            _ => return Err(usage.to_owned()),
+        }
+    }
+    if plan == check {
+        return Err(usage.to_owned());
+    }
+    let fw = fs::read_to_string(&fw_path).map_err(|e| format!("{fw_path}: {e}"))?;
+    let (doc, rc) = cf_only(&mut Curl, builtin, &fw, check)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+    );
+    Ok(rc)
+}
+
 pub fn cmd(args: &[String]) -> Result<u8, String> {
-    let usage = "edge domain preflight <name> --ip <our ipv4> | edge domain add|rm <site> <name> [--ip <our ipv4>] --plan";
+    let usage = "edge domain preflight <name> --ip <our ipv4> | edge domain add|rm <site> <name> [--ip <our ipv4>] --plan | edge cf-only --plan | --check [--builtin] [--fw <file>]";
+    if args.first().map(String::as_str) == Some("cf-only") {
+        return cmd_cf_only(&args[1..]);
+    }
     if args.first().map(String::as_str) != Some("domain") {
         return Err(usage.to_owned());
     }
@@ -233,6 +338,51 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A fetch that answers from a string and counts its calls.
+    struct Fake(Result<String, String>, usize);
+
+    impl Fetch for Fake {
+        fn get(&mut self, url: &str) -> Result<String, String> {
+            assert_eq!(url, cfonly::SOURCE_URL);
+            self.1 += 1;
+            self.0.clone()
+        }
+    }
+
+    const EDGE_FW: &str = "[OPTIONS]\nenable: 1\n\n[RULES]\nGROUP ez2-edge-v1\n";
+
+    #[test]
+    fn a_fetched_list_is_checked_and_its_change_shown() {
+        let list = format!("{}198.51.100.0/24\n", cfonly::BUILTIN_V4);
+        let mut f = Fake(Ok(list), 0);
+        let (doc, rc) = cf_only(&mut f, false, EDGE_FW, false).unwrap();
+        assert_eq!((rc, f.1), (0, 1));
+        assert_eq!(doc["added_to_builtin"], json!(["198.51.100.0/24"]));
+        assert_eq!(doc["found_now"], json!(["set_missing", "rules_not_first"]));
+        let text = doc["steps"][0]["text"].as_str().unwrap();
+        // the planned file read back with --check is clean
+        let mut again = Fake(Ok(format!("{}198.51.100.0/24\n", cfonly::BUILTIN_V4)), 0);
+        assert_eq!(cf_only(&mut again, false, text, true).unwrap().1, 0);
+        assert_eq!(cf_only(&mut again, false, EDGE_FW, true).unwrap().1, 1);
+        // the built-in list never fetches
+        let mut none = Fake(Err("offline".into()), 0);
+        assert!(cf_only(&mut none, true, EDGE_FW, false).is_ok());
+        assert_eq!(none.1, 0);
+    }
+
+    #[test]
+    fn a_bad_or_missing_fetch_is_refused_not_replaced() {
+        for answer in [
+            Ok(String::new()),
+            Ok("0.0.0.0/0\n".into()),
+            Ok("<html>".into()),
+            Err("timeout".into()),
+        ] {
+            let mut f = Fake(answer, 0);
+            assert!(cf_only(&mut f, false, EDGE_FW, false).is_err());
+        }
+    }
 
     #[test]
     fn dig_output() {
