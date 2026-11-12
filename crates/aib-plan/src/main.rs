@@ -1145,7 +1145,7 @@ mod tests {
         assert!(on_click(&mut app, 2, gy));
         assert!(app.open.contains("G"), "click opens G");
         assert_eq!(app.plan.nodes[app.sel].id, "G");
-        let _ = frame(&app, 80, 30);
+        let _ = frame(&app, 100, 30);
         let h = app.hits.borrow().clone();
         let gy = h.tree_top
             + h.tree_rows
@@ -1155,7 +1155,12 @@ mod tests {
         assert!(on_click(&mut app, 2, gy));
         assert!(!app.open.contains("G"), "second click closes G");
         let ty = h.toolbar_y.expect("toolbar");
-        let x = str_width(&h.toolbar[..h.toolbar.find("e 全開").expect("e")]);
+        let x = str_width(
+            &h.toolbar[..h
+                .toolbar
+                .find("e 全開")
+                .unwrap_or_else(|| panic!("e in {:?}", h.toolbar))],
+        );
         assert!(on_click(&mut app, x + 1, ty));
         assert!(app.open.contains("G"), "toolbar e opens all");
         let qx = str_width(&h.toolbar[..h.toolbar.find("q 離開").expect("q")]);
@@ -1169,7 +1174,7 @@ mod tests {
         app.typing = None;
         // 043dd incr3 L1:錯誤畫面不沿用舊的點擊對照
         app.err = Some("x".into());
-        let _ = frame(&app, 80, 30);
+        let _ = frame(&app, 100, 30);
         assert!(app.hits.borrow().toolbar_y.is_none());
         assert!(
             on_click(&mut app, qx, ty),
@@ -1201,6 +1206,10 @@ mod tests {
             assert!(text.ends_with("離開"), "q stays on screen at {w}");
         }
         // 緊湊寫法也點得到
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .expect("sample parses");
+        app.err = None;
         let _ = frame(&app, 76, 30);
         let h = app.hits.borrow().clone();
         let ty = h.toolbar_y.expect("toolbar");
