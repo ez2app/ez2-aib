@@ -600,19 +600,26 @@ fn expect_rows_reach_drive_without_an_order_of_their_own() {
 #[test]
 fn the_report_says_how_many_evidence_lines_were_unreadable() {
     // 1ced7 wiring N1: skipped evidence is counted in the report, not only
-    // visible as a thinner table
+    // visible as a thinner table; L1: an evidence file that cannot be read at
+    // all is "not known" (null), never "0 lines unreadable"
     use aib_drive::observe::{expect_side, record_with};
     let gh = CountGh(std::cell::RefCell::new(vec![]));
-    let goals = vec![aib_expect::Goal {
-        id: "A1".into(),
-        text: "a".into(),
-    }];
+    let goals = || {
+        vec![aib_expect::Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        }]
+    };
     let log = aib_expect::EvidenceLog {
         unreadable: 2,
         ..Default::default()
     };
-    let side = expect_side(&gh, REPO, Ok(goals), Ok(log), &snap(), 1);
-    assert_eq!(side.unreadable_evidence, 2);
+    let side = expect_side(&gh, REPO, Ok(goals()), Ok(log), &snap(), 1);
+    assert_eq!(
+        side.unreadable_evidence,
+        Some(2),
+        "reason: count_not_passed_from_expect"
+    );
     let rec = record_with(
         1,
         REPO,
@@ -620,12 +627,39 @@ fn the_report_says_how_many_evidence_lines_were_unreadable() {
         Ok((snap(), Some(side))),
         Some(EV),
     );
-    assert_eq!(rec.report.unwrap().unreadable_evidence, 2);
-    // a report written before the field still reads, as 0
+    assert_eq!(
+        rec.report.unwrap().unreadable_evidence,
+        Some(2),
+        "reason: count_dropped_from_report"
+    );
+    // the evidence file cannot be read: unknown, not 0
+    let unreadable = aib_expect::GoalsError::Unreadable("x".into());
+    let side = expect_side(&gh, REPO, Ok(goals()), Err(unreadable), &snap(), 1);
+    assert!(
+        side.unknown.is_some(),
+        "reason: unreadable_evidence_file_not_unknown"
+    );
+    assert_eq!(
+        side.unreadable_evidence, None,
+        "reason: unreadable_evidence_file_counted_as_0"
+    );
+    let rec = record_with(
+        1,
+        REPO,
+        &BTreeMap::new(),
+        Ok((snap(), Some(side))),
+        Some(EV),
+    );
+    let v = serde_json::to_value(rec.report.unwrap()).unwrap();
+    assert!(
+        v["unreadable_evidence"].is_null(),
+        "reason: report_writes_0_for_unknown {v}"
+    );
+    // a report written before the field still reads, as unknown
     let old = serde_json::json!({
         "event": EV, "at": 1, "table": [], "expect_unknown": null,
         "next": [], "ai_order": null, "dry_run": true
     });
     let r: aib_drive::report::Report = serde_json::from_value(old).unwrap();
-    assert_eq!(r.unreadable_evidence, 0);
+    assert_eq!(r.unreadable_evidence, None, "reason: old_line_not_unknown");
 }

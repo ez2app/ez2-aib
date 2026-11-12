@@ -2204,12 +2204,17 @@ jobs:
              -- cargo test -p aib-drive --locked --test observe expect_rows_reach_drive_without_an_order_of_their_own
           # W13 (1ced7 N1) the report drops the unreadable-evidence count
           python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '            side.unreadable_evidence,' \
-             '            0, // knife' \
+             '            None, // knife' \
              --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
              -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
           # W14 (1ced7 N1) expect_side does not pass the count on
-          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '        unreadable_evidence: r.unreadable_evidence,' \
-             '        unreadable_evidence: 0, // knife' \
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '        unreadable_evidence: evidence_read.then_some(r.unreadable_evidence),' \
+             '        unreadable_evidence: evidence_read.then_some(0), // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W16 (1ced7 L1) an evidence file that cannot be read is counted as 0, not unknown
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '    let evidence_read = evidence.is_ok();' \
+             '    let evidence_read = true; // knife' \
              --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
              -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
           # W15 (a9136 N1) without source.rs's pub use, run_fixed's old path is gone: the callers fail on a private import (E0603).

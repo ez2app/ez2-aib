@@ -167,11 +167,13 @@ pub struct Record {
 /// table as `gap_json` rows, why the goals could not be used, if so, and how
 /// many evidence lines could not be read (1ced7 wiring N1: a reader of the
 /// report sees that some evidence was skipped, not only a thinner table).
+/// `None` when the evidence file itself could not be read: "not known", never
+/// "0 lines unreadable" (1ced7 wiring L1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExpectSide {
     pub table: Vec<Value>,
     pub unknown: Option<String>,
-    pub unreadable_evidence: usize,
+    pub unreadable_evidence: Option<usize>,
 }
 
 /// aib-expect's side of one round, from the snapshot drive just read. The
@@ -190,6 +192,7 @@ pub fn expect_side(
 ) -> ExpectSide {
     use aib_expect as ex;
     let known: BTreeMap<u64, String> = s.prs.iter().map(|p| (p.number, p.head.clone())).collect();
+    let evidence_read = evidence.is_ok();
     let (goals, evidence) = match (goals, evidence) {
         (Ok(g), Ok(ev)) => (Ok(g), ev),
         (Err(e), ev) => (Err(e), ev.unwrap_or_default()),
@@ -203,7 +206,7 @@ pub fn expect_side(
     ExpectSide {
         table: r.table.iter().map(ex::gap_json).collect(),
         unknown: r.source_unknown,
-        unreadable_evidence: r.unreadable_evidence,
+        unreadable_evidence: evidence_read.then_some(r.unreadable_evidence),
     }
 }
 
