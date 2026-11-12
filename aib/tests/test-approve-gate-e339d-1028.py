@@ -152,7 +152,7 @@ class G4Clean(Env):
         self.assertIn(host, r)
 
     def test_full_too_long_refused_and_no_window(self):
-        r = mint_site("aib_approve.yes", {"code": "1", "site": "s" * (AG.FULL_MAX + 1), "user": "u", "ip": "1.2.3.4"})
+        r = mint_site("aib_approve.yes", {"code": "1", "site": "s" * (AG.FULL_MAX + 1), "user": "u", "ip": "192.0.2.4"})
         self.assertTrue(r.refused and r.refused.startswith("fact_too_long"))
         self.assertIsNone(AG.se_reason(r))
         called = []
@@ -161,7 +161,7 @@ class G4Clean(Env):
         self.assertEqual(called, [])
 
     def test_full_fact_still_cleaned(self):
-        r = mint_site("aib_approve.yes", {"code": "1", "site": "ex" + RLO + "ample", "user": "u", "ip": "1.2.3.4"})
+        r = mint_site("aib_approve.yes", {"code": "1", "site": "ex" + RLO + "ample", "user": "u", "ip": "192.0.2.4"})
         self.assertIn("example", r)
         self.assertNotIn(RLO, r)
 
