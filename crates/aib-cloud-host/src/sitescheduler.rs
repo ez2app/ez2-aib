@@ -239,24 +239,42 @@ pub fn judge_constant(has: Result<(), Option<i32>>, got: Option<Result<&str, ()>
 pub fn observe(runner: &mut impl Runner, spec: &SiteSpec) -> (State, Vec<Found>) {
     let mut found = Vec::new();
     let has = runner
-        .run(&wp(spec, &[QUIET[0], QUIET[1], "config", "has", "DISABLE_WP_CRON"]))
+        .run(&wp(
+            spec,
+            &[QUIET[0], QUIET[1], "config", "has", "DISABLE_WP_CRON"],
+        ))
         .map(|_| ())
         .map_err(|e| exit_code(&e));
     let got = if has.is_ok() {
         Some(
             runner
-                .run(&wp(spec, &[QUIET[0], QUIET[1], "config", "get", "DISABLE_WP_CRON"]))
+                .run(&wp(
+                    spec,
+                    &[QUIET[0], QUIET[1], "config", "get", "DISABLE_WP_CRON"],
+                ))
                 .map_err(|_| ()),
         )
     } else {
         None
     };
-    found.extend(judge_constant(has, got.as_ref().map(|r| r.as_deref().map_err(|_| ()))));
+    found.extend(judge_constant(
+        has,
+        got.as_ref().map(|r| r.as_deref().map_err(|_| ())),
+    ));
     let pattern = format!("{}.*", cron_unit(&spec.code));
     let listing = runner
         .run(&in_ct(
             spec.ct,
-            &["find", UNIT_DIR, "-maxdepth", "1", "-name", &pattern, "-printf", "%f %y\\n"],
+            &[
+                "find",
+                UNIT_DIR,
+                "-maxdepth",
+                "1",
+                "-name",
+                &pattern,
+                "-printf",
+                "%f %y\\n",
+            ],
         ))
         .ok()
         .and_then(|t| parse_listing(&t));
@@ -267,8 +285,20 @@ pub fn observe(runner: &mut impl Runner, spec: &SiteSpec) -> (State, Vec<Found>)
             .run(&in_ct(
                 spec.ct,
                 &[
-                    "systemctl", "show", &unit, "-p", "LoadState", "-p", "UnitFileState", "-p",
-                    "ActiveState", "-p", "FragmentPath", "-p", "DropInPaths", "-p",
+                    "systemctl",
+                    "show",
+                    &unit,
+                    "-p",
+                    "LoadState",
+                    "-p",
+                    "UnitFileState",
+                    "-p",
+                    "ActiveState",
+                    "-p",
+                    "FragmentPath",
+                    "-p",
+                    "DropInPaths",
+                    "-p",
                     "NeedDaemonReload",
                 ],
             ))
@@ -340,7 +370,9 @@ impl Places {
 fn gate_of(runner: &mut impl Runner, places: &Places, spec: &SiteSpec) -> Gate {
     let fw = fs::read_to_string(places.firewall.join(format!("{}.fw", spec.ct))).ok();
     let ct = spec.ct.to_string();
-    let status = runner.run(&["pct".to_owned(), "status".to_owned(), ct]).ok();
+    let status = runner
+        .run(&["pct".to_owned(), "status".to_owned(), ct])
+        .ok();
     gate(fw.as_deref(), status.as_deref())
 }
 
@@ -406,7 +438,10 @@ fn constant(runner: &mut impl Runner, spec: &SiteSpec, name: &str) -> String {
 /// How many entries a list option holds (`option get … --format=json`): `0` when the
 /// option is not there, `unread` otherwise.
 fn list_option(runner: &mut impl Runner, spec: &SiteSpec, name: &str) -> String {
-    match runner.run(&wp(spec, &[QUIET[0], QUIET[1], "option", "get", name, "--format=json"])) {
+    match runner.run(&wp(
+        spec,
+        &[QUIET[0], QUIET[1], "option", "get", name, "--format=json"],
+    )) {
         Ok(t) => match serde_json::from_str::<Value>(t.trim()) {
             Ok(Value::Array(a)) => a.len().to_string(),
             Ok(Value::Object(o)) => o.len().to_string(),
@@ -435,7 +470,14 @@ fn queue(runner: &mut impl Runner, spec: &SiteSpec) -> String {
     let tables = format!("SHOW TABLES LIKE '{table}'");
     match runner.run(&wp(
         spec,
-        &[QUIET[0], QUIET[1], "db", "query", &tables, "--skip-column-names"],
+        &[
+            QUIET[0],
+            QUIET[1],
+            "db",
+            "query",
+            &tables,
+            "--skip-column-names",
+        ],
     )) {
         Ok(t) if t.trim().is_empty() => return "none".to_owned(),
         Ok(t) if t.trim() == table => {}
@@ -444,7 +486,14 @@ fn queue(runner: &mut impl Runner, spec: &SiteSpec) -> String {
     let count = format!("SELECT status, COUNT(*) FROM {table} GROUP BY status");
     let Ok(rows) = runner.run(&wp(
         spec,
-        &[QUIET[0], QUIET[1], "db", "query", &count, "--skip-column-names"],
+        &[
+            QUIET[0],
+            QUIET[1],
+            "db",
+            "query",
+            &count,
+            "--skip-column-names",
+        ],
     )) else {
         return "unread".to_owned();
     };
@@ -470,7 +519,15 @@ fn last_run(runner: &mut impl Runner, spec: &SiteSpec) -> String {
     let service = format!("{}.service", cron_unit(&spec.code));
     match runner.run(&in_ct(
         spec.ct,
-        &["systemctl", "show", &service, "-p", "Result", "-p", "ExecMainStatus"],
+        &[
+            "systemctl",
+            "show",
+            &service,
+            "-p",
+            "Result",
+            "-p",
+            "ExecMainStatus",
+        ],
     )) {
         Ok(t) => {
             let mut parts = Vec::new();
@@ -511,7 +568,15 @@ fn details(runner: &mut impl Runner, spec: &SiteSpec, now: u64) -> Vec<String> {
     let mut lines = Vec::new();
     let events = runner.run(&wp(
         spec,
-        &[QUIET[0], QUIET[1], "cron", "event", "list", "--fields=hook,time", "--format=csv"],
+        &[
+            QUIET[0],
+            QUIET[1],
+            "cron",
+            "event",
+            "list",
+            "--fields=hook,time",
+            "--format=csv",
+        ],
     ));
     match events.ok().as_deref().and_then(|t| due_events(t, now)) {
         Some((by, oldest)) => {
@@ -565,7 +630,12 @@ fn plan_of(spec: &SiteSpec, needs: &[&'static str]) -> Value {
 }
 
 /// `--check`: 0 in place, 1 something to put right, 3 not looked at or not known.
-pub fn check(runner: &mut impl Runner, places: &Places, code: &str, now: u64) -> Result<(u8, Vec<String>), String> {
+pub fn check(
+    runner: &mut impl Runner,
+    places: &Places,
+    code: &str,
+    now: u64,
+) -> Result<(u8, Vec<String>), String> {
     let spec = load(places, code)?;
     if let Gate::Skip(why) = gate_of(runner, places, &spec) {
         return Ok((3, vec![format!("{code} {why}")]));
@@ -585,7 +655,11 @@ pub fn check(runner: &mut impl Runner, places: &Places, code: &str, now: u64) ->
     let mut lines = vec![format!(
         "{code} {} {}",
         state.word(),
-        if codes.is_empty() { "-".to_owned() } else { codes.join(",") }
+        if codes.is_empty() {
+            "-".to_owned()
+        } else {
+            codes.join(",")
+        }
     )];
     lines.extend(details(runner, &spec, now));
     Ok((rc, lines))
@@ -593,7 +667,12 @@ pub fn check(runner: &mut impl Runner, places: &Places, code: &str, now: u64) ->
 
 /// `--plan`: what `--apply` would do now. 0 with a plan or "no change", 3 when it would
 /// refuse.
-pub fn plan(runner: &mut impl Runner, places: &Places, code: &str, now: u64) -> Result<(u8, Vec<String>), String> {
+pub fn plan(
+    runner: &mut impl Runner,
+    places: &Places,
+    code: &str,
+    now: u64,
+) -> Result<(u8, Vec<String>), String> {
     let spec = load(places, code)?;
     if let Gate::Skip(why) = gate_of(runner, places, &spec) {
         return Ok((3, vec![format!("{code} {why}")]));
@@ -735,7 +814,14 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         Mode::Plan => plan(&mut runner, &places, &code, now)?,
         Mode::Apply => {
             let place = opstore::OpPlace::host()?;
-            match apply(&place, &places, &code, opstore::BY_LOCAL_ROOT, &mut runner, now)? {
+            match apply(
+                &place,
+                &places,
+                &code,
+                opstore::BY_LOCAL_ROOT,
+                &mut runner,
+                now,
+            )? {
                 Applied::Changed => (0, vec![format!("{code} changed")]),
                 Applied::NoChange => (0, vec![format!("{code} no_change")]),
                 Applied::Skipped(why) => (3, vec![format!("{code} skipped {why}")]),
@@ -776,7 +862,14 @@ mod tests {
         format!("\"pct\" exited exit status: {n}")
     }
 
-    fn unit_text(load: &str, file: &str, active: &str, frag: &str, dropin: &str, reload: &str) -> String {
+    fn unit_text(
+        load: &str,
+        file: &str,
+        active: &str,
+        frag: &str,
+        dropin: &str,
+        reload: &str,
+    ) -> String {
         format!(
             "LoadState={load}\nUnitFileState={file}\nActiveState={active}\nFragmentPath={frag}\nDropInPaths={dropin}\nNeedDaemonReload={reload}\n"
         )
@@ -801,6 +894,8 @@ mod tests {
         exit: Option<(&'static str, i32)>,
         /// writes that do not take (a unit file written but read back different)
         sticky: bool,
+        /// a drop-in shows up with the reload: the install's read back cannot see it
+        dropin_after_write: bool,
     }
 
     impl Ct {
@@ -818,6 +913,7 @@ mod tests {
                 fail: None,
                 exit: None,
                 sticky: false,
+                dropin_after_write: false,
             }
         }
         fn in_place() -> Self {
@@ -845,7 +941,10 @@ mod tests {
                 .collect()
         }
         fn entered(&self) -> usize {
-            self.calls.iter().filter(|l| l.starts_with("pct exec")).count()
+            self.calls
+                .iter()
+                .filter(|l| l.starts_with("pct exec"))
+                .count()
         }
         fn show(&self, unit: &str) -> String {
             let timer = unit.ends_with(".timer");
@@ -854,10 +953,24 @@ mod tests {
             }
             unit_text(
                 "loaded",
-                if timer && self.enabled { "enabled" } else if timer { "disabled" } else { "static" },
-                if timer && self.active { "active" } else { "inactive" },
+                if timer && self.enabled {
+                    "enabled"
+                } else if timer {
+                    "disabled"
+                } else {
+                    "static"
+                },
+                if timer && self.active {
+                    "active"
+                } else {
+                    "inactive"
+                },
                 &format!("{UNIT_DIR}/{unit}"),
-                if self.dropin { "/etc/systemd/system/x.d/override.conf" } else { "" },
+                if self.dropin {
+                    "/etc/systemd/system/x.d/override.conf"
+                } else {
+                    ""
+                },
                 "no",
             )
         }
@@ -918,13 +1031,22 @@ mod tests {
             }
             // the install's read back asks these (`siteidentity::scheduler_in_place`)
             if line.contains("systemctl is-enabled") {
-                return if self.enabled { Ok("enabled\n".to_owned()) } else { Err(exited(1)) };
+                return if self.enabled {
+                    Ok("enabled\n".to_owned())
+                } else {
+                    Err(exited(1))
+                };
             }
             if line.contains("systemctl is-active") {
-                return if self.active { Ok("active\n".to_owned()) } else { Err(exited(3)) };
+                return if self.active {
+                    Ok("active\n".to_owned())
+                } else {
+                    Err(exited(3))
+                };
             }
             if line.contains("daemon-reload") {
                 self.loaded = !self.files.is_empty();
+                self.dropin = self.dropin || self.dropin_after_write;
                 return Ok(String::new());
             }
             if line.contains("enable --now") {
@@ -933,7 +1055,12 @@ mod tests {
                 return Ok(String::new());
             }
             if line.contains("cron event list") {
-                return Ok(format!("hook,time\nwp_version_check,{}\naction_scheduler_run_queue,{}\nlater,{}\n", NOW - 100, NOW - 50, NOW + 10));
+                return Ok(format!(
+                    "hook,time\nwp_version_check,{}\naction_scheduler_run_queue,{}\nlater,{}\n",
+                    NOW - 100,
+                    NOW - 50,
+                    NOW + 10
+                ));
             }
             if line.contains("option get") {
                 return Err(exited(1));
@@ -997,7 +1124,10 @@ mod tests {
         let filler = (3..22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
         fs::write(
             me.join("stat"),
-            format!("{} (aib-cloud-host) {filler} 4242 0 0\n", std::process::id()),
+            format!(
+                "{} (aib-cloud-host) {filler} 4242 0 0\n",
+                std::process::id()
+            ),
         )
         .unwrap();
         fs::create_dir_all(d.join("ops")).unwrap();
@@ -1015,7 +1145,12 @@ mod tests {
     fn journal_states(pl: &opstore::OpPlace) -> Vec<String> {
         let mut out = Vec::new();
         for e in fs::read_dir(&pl.ops_dir).unwrap() {
-            let text = fs::read_to_string(e.unwrap().path()).unwrap();
+            // the journals only: an operation also leaves its progress file beside them
+            let path = e.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let text = fs::read_to_string(path).unwrap();
             for l in text.lines() {
                 let v: Value = serde_json::from_str(l).unwrap();
                 out.push(v["state"].as_str().unwrap().to_owned());
@@ -1050,14 +1185,32 @@ mod tests {
 
     #[test]
     fn the_constant_is_known_missing_only_from_exit_1() {
-        assert_eq!(judge_constant(Err(Some(1)), None), [Found::Needs("cron_not_set")]);
-        assert_eq!(judge_constant(Err(Some(255)), None), [Found::Unknown("cron_constant_unread")]);
-        assert_eq!(judge_constant(Err(None), None), [Found::Unknown("cron_constant_unread")]);
+        assert_eq!(
+            judge_constant(Err(Some(1)), None),
+            [Found::Needs("cron_not_set")]
+        );
+        assert_eq!(
+            judge_constant(Err(Some(255)), None),
+            [Found::Unknown("cron_constant_unread")]
+        );
+        assert_eq!(
+            judge_constant(Err(None), None),
+            [Found::Unknown("cron_constant_unread")]
+        );
         assert!(judge_constant(Ok(()), Some(Ok("1\n"))).is_empty());
         assert!(judge_constant(Ok(()), Some(Ok("true"))).is_empty());
-        assert_eq!(judge_constant(Ok(()), Some(Ok("false"))), [Found::Needs("cron_not_set")]);
-        assert_eq!(judge_constant(Ok(()), Some(Err(()))), [Found::Unknown("cron_constant_unread")]);
-        assert_eq!(judge_constant(Ok(()), None), [Found::Unknown("cron_constant_unread")]);
+        assert_eq!(
+            judge_constant(Ok(()), Some(Ok("false"))),
+            [Found::Needs("cron_not_set")]
+        );
+        assert_eq!(
+            judge_constant(Ok(()), Some(Err(()))),
+            [Found::Unknown("cron_constant_unread")]
+        );
+        assert_eq!(
+            judge_constant(Ok(()), None),
+            [Found::Unknown("cron_constant_unread")]
+        );
     }
 
     #[test]
@@ -1077,28 +1230,62 @@ mod tests {
         cron_files(CODE)[1].1.clone()
     }
     fn shown(load: &str, file: &str, active: &str, dropin: &str, reload: &str) -> String {
-        unit_text(load, file, active, &format!("{UNIT_DIR}/{}", timer()), dropin, reload)
+        unit_text(
+            load,
+            file,
+            active,
+            &format!("{UNIT_DIR}/{}", timer()),
+            dropin,
+            reload,
+        )
     }
 
     #[test]
     fn a_timer_in_place_has_no_finding() {
         let s = shown("loaded", "enabled", "active", "", "no");
-        assert!(judge_unit(&timer(), true, Some(&s), Some("f"), Some(Ok(&want())), &want()).is_empty());
+        assert!(judge_unit(
+            &timer(),
+            true,
+            Some(&s),
+            Some("f"),
+            Some(Ok(&want())),
+            &want()
+        )
+        .is_empty());
     }
 
     #[test]
     fn a_unit_someone_else_put_there_is_a_conflict() {
         let w = want();
         let t = timer();
-        let dropin = shown("loaded", "enabled", "active", "/etc/systemd/system/x.d/a.conf", "no");
-        assert!(judge_unit(&t, true, Some(&dropin), Some("f"), Some(Ok(&w)), &w)
-            .contains(&Found::Conflict("cron_unit_dropin")));
-        let elsewhere = unit_text("loaded", "enabled", "active", "/lib/systemd/system/x", "", "no");
-        assert!(judge_unit(&t, true, Some(&elsewhere), Some("f"), Some(Ok(&w)), &w)
-            .contains(&Found::Conflict("cron_unit_elsewhere")));
+        let dropin = shown(
+            "loaded",
+            "enabled",
+            "active",
+            "/etc/systemd/system/x.d/a.conf",
+            "no",
+        );
+        assert!(
+            judge_unit(&t, true, Some(&dropin), Some("f"), Some(Ok(&w)), &w)
+                .contains(&Found::Conflict("cron_unit_dropin"))
+        );
+        let elsewhere = unit_text(
+            "loaded",
+            "enabled",
+            "active",
+            "/lib/systemd/system/x",
+            "",
+            "no",
+        );
+        assert!(
+            judge_unit(&t, true, Some(&elsewhere), Some("f"), Some(Ok(&w)), &w)
+                .contains(&Found::Conflict("cron_unit_elsewhere"))
+        );
         let masked = shown("masked", "masked", "inactive", "", "no");
-        assert!(judge_unit(&t, true, Some(&masked), Some("f"), Some(Ok(&w)), &w)
-            .contains(&Found::Conflict("cron_unit_masked")));
+        assert!(
+            judge_unit(&t, true, Some(&masked), Some("f"), Some(Ok(&w)), &w)
+                .contains(&Found::Conflict("cron_unit_masked"))
+        );
         let ok = shown("loaded", "enabled", "active", "", "no");
         assert!(judge_unit(&t, true, Some(&ok), Some("l"), None, &w)
             .contains(&Found::Conflict("cron_unit_not_file")));
@@ -1108,13 +1295,20 @@ mod tests {
     fn a_unit_not_read_is_unknown_never_in_place() {
         let w = want();
         let t = timer();
-        assert_eq!(judge_unit(&t, true, None, Some("f"), Some(Ok(&w)), &w), [Found::Unknown("cron_unit_unread")]);
+        assert_eq!(
+            judge_unit(&t, true, None, Some("f"), Some(Ok(&w)), &w),
+            [Found::Unknown("cron_unit_unread")]
+        );
         let ok = shown("loaded", "enabled", "active", "", "no");
-        assert!(judge_unit(&t, true, Some(&ok), Some("f"), Some(Err(())), &w)
-            .contains(&Found::Unknown("cron_unit_unread")));
+        assert!(
+            judge_unit(&t, true, Some(&ok), Some("f"), Some(Err(())), &w)
+                .contains(&Found::Unknown("cron_unit_unread"))
+        );
         let odd = shown("bad-setting", "enabled", "active", "", "no");
-        assert!(judge_unit(&t, true, Some(&odd), Some("f"), Some(Ok(&w)), &w)
-            .contains(&Found::Unknown("cron_unit_load_state")));
+        assert!(
+            judge_unit(&t, true, Some(&odd), Some("f"), Some(Ok(&w)), &w)
+                .contains(&Found::Unknown("cron_unit_load_state"))
+        );
     }
 
     #[test]
@@ -1130,11 +1324,29 @@ mod tests {
         let reload = shown("loaded", "enabled", "active", "", "yes");
         assert_eq!(
             judge_unit(&t, true, Some(&reload), Some("f"), Some(Ok("old")), &w),
-            [Found::Needs("cron_unit_differs"), Found::Needs("cron_unit_reload")]
+            [
+                Found::Needs("cron_unit_differs"),
+                Found::Needs("cron_unit_reload")
+            ]
         );
         // a oneshot service is inactive between runs: not a finding
-        let svc = unit_text("loaded", "static", "inactive", &format!("{UNIT_DIR}/x.service"), "", "no");
-        assert!(judge_unit("x.service", false, Some(&svc), Some("f"), Some(Ok("a")), "a").is_empty());
+        let svc = unit_text(
+            "loaded",
+            "static",
+            "inactive",
+            &format!("{UNIT_DIR}/x.service"),
+            "",
+            "no",
+        );
+        assert!(judge_unit(
+            "x.service",
+            false,
+            Some(&svc),
+            Some("f"),
+            Some(Ok("a")),
+            "a"
+        )
+        .is_empty());
     }
 
     #[test]
@@ -1142,11 +1354,23 @@ mod tests {
         let normal = quarantine::expected_firewall(&spec(), false);
         let cut = quarantine::expected_firewall(&spec(), true);
         assert_eq!(gate(Some(&normal), Some("status: running\n")), Gate::Run);
-        assert_eq!(gate(Some(&cut), Some("status: running\n")), Gate::Skip("skipped_quarantined"));
-        assert_eq!(gate(None, Some("status: running\n")), Gate::Skip("firewall_unread"));
-        assert_eq!(gate(Some(&normal), Some("status: stopped\n")), Gate::Skip("ct_not_running"));
+        assert_eq!(
+            gate(Some(&cut), Some("status: running\n")),
+            Gate::Skip("skipped_quarantined")
+        );
+        assert_eq!(
+            gate(None, Some("status: running\n")),
+            Gate::Skip("firewall_unread")
+        );
+        assert_eq!(
+            gate(Some(&normal), Some("status: stopped\n")),
+            Gate::Skip("ct_not_running")
+        );
         assert_eq!(gate(Some(&normal), None), Gate::Skip("ct_status_unread"));
-        assert_eq!(gate(Some(&normal), Some("status: paused")), Gate::Skip("ct_status_unread"));
+        assert_eq!(
+            gate(Some(&normal), Some("status: paused")),
+            Gate::Skip("ct_status_unread")
+        );
     }
 
     #[test]
@@ -1161,7 +1385,14 @@ mod tests {
         );
         let (by, oldest) = due_events(&csv, NOW).unwrap();
         assert_eq!(oldest, 500);
-        assert_eq!(by, [("a_hook".to_owned(), 2), ("b_hook".to_owned(), 1), ("other".to_owned(), 1)]);
+        assert_eq!(
+            by,
+            [
+                ("a_hook".to_owned(), 2),
+                ("b_hook".to_owned(), 1),
+                ("other".to_owned(), 1)
+            ]
+        );
         assert!(due_events("time\n1\n", NOW).is_none());
         assert!(due_events("hook,time\na,soon\n", NOW).is_none());
     }
@@ -1172,7 +1403,9 @@ mod tests {
     fn a_fresh_site_needs_everything_and_nothing_is_written_by_reading() {
         let mut ct = Ct::fresh();
         let (state, _) = observe(&mut ct, &spec());
-        let State::Needs(needs) = state else { panic!("{state:?}") };
+        let State::Needs(needs) = state else {
+            panic!("{state:?}")
+        };
         assert!(needs.contains(&"cron_not_set"));
         assert!(needs.contains(&"cron_unit_missing"));
         assert!(ct.writes().is_empty(), "{:?}", ct.calls);
@@ -1194,10 +1427,16 @@ mod tests {
     fn a_reading_that_fails_without_an_answer_is_unknown() {
         let mut ct = Ct::fresh();
         ct.has = Err(255);
-        assert_eq!(observe(&mut ct, &spec()).0, State::Unknown("cron_constant_unread"));
+        assert_eq!(
+            observe(&mut ct, &spec()).0,
+            State::Unknown("cron_constant_unread")
+        );
         let mut ct = Ct::fresh();
         ct.fail = Some(" find ");
-        assert_eq!(observe(&mut ct, &spec()).0, State::Unknown("cron_unit_unread"));
+        assert_eq!(
+            observe(&mut ct, &spec()).0,
+            State::Unknown("cron_unit_unread")
+        );
     }
 
     // ---------------------------------------------------------------- the modes
@@ -1209,9 +1448,22 @@ mod tests {
         assert_eq!(check(&mut Ct::in_place(), &p, CODE, NOW).unwrap().0, 0);
         let (rc, lines) = check(&mut Ct::fresh(), &p, CODE, NOW).unwrap();
         assert_eq!(rc, 1);
-        assert!(lines[0].starts_with(&format!("{CODE} needs cron_not_set")), "{lines:?}");
-        assert!(lines.iter().any(|l| l.starts_with("due 2 oldest_waiting_s=100")), "{lines:?}");
-        assert!(lines.iter().any(|l| l == "auto_update core=undefined disabled=undefined plugins=0 themes=0"), "{lines:?}");
+        assert!(
+            lines[0].starts_with(&format!("{CODE} needs cron_not_set")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("due 2 oldest_waiting_s=100")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "auto_update core=undefined disabled=undefined plugins=0 themes=0"),
+            "{lines:?}"
+        );
         assert!(lines.iter().any(|l| l == "queue none"), "{lines:?}");
         let mut ct = Ct::fresh();
         ct.has = Err(2);
@@ -1243,7 +1495,10 @@ mod tests {
         assert_eq!(v["steps"].as_array().unwrap().len(), 5);
         assert!(ct.writes().is_empty(), "{:?}", ct.calls);
         let mut ct = Ct::in_place();
-        assert_eq!(plan(&mut ct, &p, CODE, NOW).unwrap().1[0], format!("{CODE} no_change"));
+        assert_eq!(
+            plan(&mut ct, &p, CODE, NOW).unwrap().1[0],
+            format!("{CODE} no_change")
+        );
     }
 
     #[test]
@@ -1252,14 +1507,28 @@ mod tests {
         let p = places(&d, false);
         let pl = place(&d);
         let mut ct = Ct::fresh();
-        assert_eq!(apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW), Ok(Applied::Changed));
-        assert_eq!(journal_states(&pl), ["planned", "approved", "running", "verified"]);
+        assert_eq!(
+            apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW),
+            Ok(Applied::Changed)
+        );
+        assert_eq!(
+            journal_states(&pl),
+            ["planned", "approved", "running", "verified"]
+        );
         assert!(!ct.writes().is_empty());
         let before = ct.calls.len();
-        assert_eq!(apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW), Ok(Applied::NoChange));
+        assert_eq!(
+            apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW),
+            Ok(Applied::NoChange)
+        );
         let again: Vec<&String> = ct.calls[before..]
             .iter()
-            .filter(|l| l.contains(" tee ") || l.contains("config set") || l.contains("daemon-reload") || l.contains("enable --now"))
+            .filter(|l| {
+                l.contains(" tee ")
+                    || l.contains("config set")
+                    || l.contains("daemon-reload")
+                    || l.contains("enable --now")
+            })
             .collect();
         assert!(again.is_empty(), "{again:?}");
         // no change leaves no new journal
@@ -1299,7 +1568,10 @@ mod tests {
             let p = places(&d, quarantined);
             let mut ct = Ct::fresh();
             ct.status = status;
-            assert_eq!(apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW), Ok(Applied::Skipped(why)));
+            assert_eq!(
+                apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW),
+                Ok(Applied::Skipped(why))
+            );
             assert_eq!(ct.entered(), 0, "{:?}", ct.calls);
         }
     }
@@ -1313,7 +1585,10 @@ mod tests {
         ct.sticky = true;
         let err = apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW).unwrap_err();
         assert!(err.starts_with("cron_unit_differs"), "{err}");
-        assert_eq!(journal_states(&pl).last().map(String::as_str), Some("failed"));
+        assert_eq!(
+            journal_states(&pl).last().map(String::as_str),
+            Some("failed")
+        );
         // a failed operation holds the site back until a person closes it
         let mut ct = Ct::in_place();
         assert!(apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW).is_err());
@@ -1349,7 +1624,28 @@ mod tests {
             assert_eq!(cmd(&a(bad)), Ok(64), "{bad:?}");
         }
         assert_eq!(parse(&a(&[CODE, "--plan"])).unwrap().1, Mode::Plan);
-        assert_eq!(parse(&a(&[CODE, "--records", "/r", "--apply"])).unwrap().1, Mode::Apply);
+        assert_eq!(
+            parse(&a(&[CODE, "--records", "/r", "--apply"])).unwrap().1,
+            Mode::Apply
+        );
+    }
+
+    #[test]
+    fn apply_reads_back_with_its_own_reading_not_only_the_installs() {
+        let d = scratch("dropin");
+        let p = places(&d, false);
+        let pl = place(&d);
+        let mut ct = Ct::fresh();
+        ct.dropin_after_write = true;
+        let err = apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW).unwrap_err();
+        assert!(
+            err.starts_with("cron_not_in_place_after: cron_unit_dropin"),
+            "{err}"
+        );
+        assert_eq!(
+            journal_states(&pl).last().map(String::as_str),
+            Some("failed")
+        );
     }
 
     #[test]

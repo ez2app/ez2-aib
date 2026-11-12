@@ -95,9 +95,9 @@ mod siteremovecmd;
 #[cfg(unix)]
 mod siteremovelic;
 #[cfg(unix)]
-mod sitescheduler;
-#[cfg(unix)]
 mod sitescancmd;
+#[cfg(unix)]
+mod sitescheduler;
 #[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]

@@ -3608,6 +3608,36 @@ jobs:
           hk customercmd.rs '        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {' \
              '        if sites.iter().any(|(code, _)| code == site) { // knife' \
              a_site_just_opened_answers_status_with_its_opened_view
+          # site scheduler (E10 6.2, 7b81e 11-12): writes only when every part was read
+          hk sitescheduler.rs '        return State::Unknown(c);' \
+             '        let _ = c; // knife: an unread part is not decisive' \
+             apply_writes_nothing_where_it_does_not_know
+          # site scheduler: only exit 1 of `config has` says the constant is missing
+          hk sitescheduler.rs '        (Err(_), _) => vec![Found::Unknown("cron_constant_unread")],' \
+             '        (Err(_), _) => vec![Found::Needs("cron_not_set")], // knife' \
+             the_constant_is_known_missing_only_from_exit_1
+          # site scheduler: a quarantined container is entered
+          hk sitescheduler.rs '    if quarantine::is_quarantined(fw) {' \
+             '    if quarantine::is_quarantined(fw) && false { // knife' \
+             apply_never_enters_a_quarantined_or_stopped_container
+          # site scheduler: a stopped container is entered
+          hk sitescheduler.rs '        Some("status: stopped") => Gate::Skip("ct_not_running"),' \
+             '        Some("status: stopped") => Gate::Run, // knife' \
+             apply_never_enters_a_quarantined_or_stopped_container
+          # site scheduler: a site in place is written again (not rerunnable)
+          hk sitescheduler.rs '                    *end.borrow_mut() = Some(Applied::NoChange);' \
+             '                    *end.borrow_mut() = Some(Applied::NoChange); if true { return Ok(Some((plan_of(site, &[]), runner))); } // knife' \
+             apply_writes_reads_back_and_a_second_run_changes_nothing
+          # site scheduler: the change is not read back with its own reading
+          hk sitescheduler.rs '                other => Err(format!("cron_not_in_place_after: {}", other.word())),' \
+             '                _ => Ok(()), // knife' \
+             apply_reads_back_with_its_own_reading_not_only_the_installs
+          # site scheduler: a customer's key may approve it
+          hk opstore.rs '    "site.login-link",' '    "site.login-link", "site.scheduler", // knife' \
+             a_customer_key_cannot_approve_it
+          # site scheduler: a usage error is not 64
+          hk sitescheduler.rs '            return Ok(64);' '            return Err(e); // knife' \
+             a_usage_error_is_64_and_never_a_mode
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
