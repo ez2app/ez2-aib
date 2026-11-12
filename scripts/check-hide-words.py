@@ -175,8 +175,8 @@ def added_lines(commit, parents):
 
 
 def touched_paths(commit, parents):
-    """Every path the commit adds or changes, from the name list (binary and empty files have no +++ line)."""
-    args = ["diff-tree", "-r", "--name-only", "-z", "--no-commit-id"]
+    """Every path the commit adds or changes (deletions skipped, so removing a leak never blocks), from the name list (binary and empty files have no +++ line)."""
+    args = ["diff-tree", "-r", "--name-only", "-z", "--no-commit-id", "--diff-filter=d"]
     args += ["--cc"] if parents > 1 else ["--root"]
     return [n for n in git(args + [commit]).split("\0") if n]
 

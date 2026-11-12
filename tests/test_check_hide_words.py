@@ -179,6 +179,16 @@ class HideWords(unittest.TestCase):
         self.assertIn("命中第 4 個詞(檔名", out)
         self.assertNoSecret(out)
 
+    def test_deleting_an_already_pushed_hit_file_passes(self):
+        self.commit("notes/xyz-cloud.txt", "")
+        self.git("push", "-q", "--no-verify", "origin", "main")
+        pushed = self.git("rev-parse", "HEAD")
+        self.git("rm", "-q", "--", "notes/xyz-cloud.txt")
+        self.git("commit", "-q", "-m", "remove")
+        rc, out = self.run_check(remote_sha=pushed)
+        self.assertEqual(rc, 0, out)
+        self.assertNoSecret(out)
+
     def test_word_added_then_removed_still_blocks(self):
         self.commit("f.txt", "vendor-x\n")
         self.commit("f.txt", "gone\n")
