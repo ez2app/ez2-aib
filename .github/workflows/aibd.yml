@@ -45,8 +45,8 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 45: the Windows cell also runs the Job tests 5x and 7 knives
-    timeout-minutes: 45
+    # 75: the macOS cell now runs the cloud (aib-cloud / aib-cloud-host) knives too and hit 45 on main (11-12); Windows still runs the Job tests 5x and 7 knives
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -1730,8 +1730,8 @@ jobs:
              '    if plain.len() <= TARGET_MAX || plain.len() > TARGET_MAX { // knife' \
              a_long_domain_is_planned_under_its_hashed_target
           # site create --continue (B2): limits that did not take go on to the firewall (4542e 11-11)
-          hk sitecreatecmd.rs '    if differ.is_empty() {' \
-             '    if differ.is_empty() || !differ.is_empty() { // knife' \
+          hk sitecreatecmd.rs '    if keys.is_empty() {' \
+             '    if keys.is_empty() || !keys.is_empty() { // knife' \
              limits_that_did_not_take_are_undone
           # site create --continue: the firewall file is never written (the clone's stays)
           hk sitecreatecmd.rs '    write_via_tmp(&fw, &want).map_err(|e| format!("firewall_failed: {e}"))?;' \
@@ -1742,7 +1742,7 @@ jobs:
              '        Ok(out) if out.lines().any(|l| l.trim() == "status: running") || true => Ok(()), // knife' \
              a_container_that_does_not_run_is_undone
           # site create --continue: the record does not move on (op status would show the wrong step)
-          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            record["step"] = json!(step.as_str());' \
+          hk sitecreatecmd.rs $'        let moved = done.and_then(|()| {\n            step_done(&mut record, step);' \
              $'        let moved = done.and_then(|()| {\n            let _ = step.as_str(); // knife' \
              an_opening_is_carried_on_through_limits_firewall_and_start
           # site create --continue: a running container is destroyed without being stopped
@@ -1857,6 +1857,22 @@ jobs:
           hk sitelive.rs '    if marked {' \
              '    if marked || true { // knife' \
              health_needs_200_and_the_site_s_own_mark
+          # e1a 11-12: health takes a 401 with the mark from the REST address
+          hk sitelive.rs '    if !matches!(status, Some(200 | 401)) {' \
+             '    if !matches!(status, Some(200)) { // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
+          # e1a 11-12: the backup plugin and its extension stay on a new site
+          hk siteidentity.rs '            .run(&wp(spec, &["plugin", "uninstall", slug, "--deactivate"]))' \
+             '            .run(&wp(spec, &["plugin", "status", slug])) // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: a plugin still there after the uninstall is taken as gone
+          hk siteidentity.rs '            return Err(format!("identity_not_set: plugin {slug} is still there"));' \
+             '            let _ = slug; // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: health asks the REST address, not the front page
+          hk sitelive.rs '    let url = format!("https://{host}/wp-json/");' \
+             '    let url = format!("https://{host}/"); // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
           # B4 health: a record already there for the code is written over
           hk sitelive.rs '        Ok(there) if there == text => {}' \
              '        Ok(there) if there == text || true => {} // knife' \
@@ -1984,6 +2000,10 @@ jobs:
           hk sitecreatecmd.rs '    } else if platform.is_none() {' \
              '    } else if platform.is_none() && false {' \
              the_platform_s_own_domains_are_not_opened
+          # E1 audit #5: an opening a person carried on to the end (--continue) still reads as stopped
+          hk sitecreaterun.rs '    if opened {' \
+             '    if opened && false { // knife' \
+             a_stop_carried_on_by_a_person_reads_as_open
           # E1 (33e28 N2): a unit started after its ask stopped waiting takes the ask up
           hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
              '        (Some("waiting"), "never") => { // knife' \
@@ -2015,6 +2035,78 @@ jobs:
           hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
              '        if let Some(i) = at(CreateStep::Health) { // knife' \
              an_unreadable_entry_stops_at_the_entry_step
+          # E1 e1a 11-12: the limits step gives net0 a locally administered address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             the_limits_step_gives_net0_a_local_address
+          hk sitecreatecmd.rs '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) {' \
+             '    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
+             a_platform_address_shown_after_the_limits_is_refused
+          hk sitecreatecmd.rs '    let first = (raw[0] & 0xFC) | 0x02;' \
+             '    let first = raw[0] | 0x02; // knife' \
+             a_local_hardware_address_is_made_of_any_six_bytes
+          hk sitecreatecmd.rs '            main = false;' \
+             '            main = !line.is_empty(); // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs '                            format!("{lead}hwaddr={mac}")' \
+             '                            format!("{}hwaddr={mac}", lead.trim()) // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          hk sitecreatecmd.rs "    if !text.ends_with('\\n') {" \
+             '    if false { // knife' \
+             only_the_main_net0_hwaddr_is_replaced
+          # E1 e1a 11-12: the installer's administrator lets go of the first administrator's address
+          hk siteidentity.rs '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some()' \
+             '    if !admins.iter().any(|(_, l)| l == SETUP_ADMIN) && user_id(runner, spec, SETUP_ADMIN).is_some() && false // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        let parked = format!("{SETUP_ADMIN}@{}.invalid", spec.code);' \
+             '        let parked = format!("{SETUP_ADMIN}@{}.example", spec.code); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '            .map_err(|e| format!("identity_unchecked: {SETUP_ADMIN} address: {e}"))?;' \
+             '            .unwrap_or_default(); // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '                &["user", "update", SETUP_ADMIN, &flag, "--skip-email"],' \
+             '                &["user", "update", SETUP_ADMIN, &flag], // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          hk siteidentity.rs '        if back.trim() != parked {' \
+             '        if back.trim() != parked && false { // knife' \
+             the_installer_s_address_is_let_go_before_the_first_administrator
+          # E1 audit 11-12 #1/#9: the template package goes in before the installer, out after
+          hk siteidentity.rs '            .run(&in_ct(spec.ct, &["truncate", "-s", "0", PACKAGE_LIST]))' \
+             '            .run(&in_ct(spec.ct, &["rm", "-f", PACKAGE_LIST])) // knife' \
+             a_blank_install_drops_the_template_package_first
+          hk siteidentity.rs '    if !paths.package.join("plugins").is_dir() || !paths.package_conf.is_file() {' \
+             '    if (!paths.package.join("plugins").is_dir() || !paths.package_conf.is_file()) && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    if paths.keys.is_file() {' \
+             '    if paths.keys.is_file() && false { // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let dropped = runner.run(&owned(&["rm", "-f", &archive]));' \
+             '    let dropped = runner.run(&owned(&["true", &archive])); // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          hk siteidentity.rs '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", PACKAGE_CLEANUP]));' \
+             '    let cleaned = runner.run(&in_ct(spec.ct, &["sh", "-c", "true"])); let _ = PACKAGE_CLEANUP; // knife' \
+             the_template_package_goes_in_before_the_installer_and_out_after
+          # E1 audit 11-12 #3: health asks again until the certificate is there
+          hk sitelive.rs '    for attempt in 0..HEALTH_TRIES {' \
+             '    for attempt in 0..1 { let _ = HEALTH_TRIES; // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                last = None;' \
+             '                last = Some(String::new()); // knife' \
+             health_asks_again_until_the_certificate_is_there
+          hk sitelive.rs '                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))' \
+             '                .run(&owned(&["true", HEALTH_PAUSE_SECS])) // knife' \
+             health_asks_again_until_the_certificate_is_there
+          # E1 audit 11-12 #6: a step that goes through clears kept
+          hk sitecreatecmd.rs '        fields.remove("kept");' \
+             '        fields.remove("kept_"); // knife' \
+             a_step_that_goes_through_clears_kept
+          # E1 audit 11-12 #8: a new opening goes into the current firewall group (v2)
+          hk sitecreatecmd.rs '    .and_then(|s| s.with_fw_group(group.unwrap_or(NEW_SITE_FW_GROUP)))' \
+             '    .and_then(|s| s.with_fw_group(group.unwrap_or(aib_cloud::site::FW_GROUP))) // knife' \
+             a_new_opening_uses_the_current_firewall_group
+          hk sitecreatecmd.rs '    let group = record.get("fw_group").and_then(Value::as_str);' \
+             '    let group = record.get("fw_group_").and_then(Value::as_str); // knife' \
+             a_new_opening_uses_the_current_firewall_group
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
@@ -2728,6 +2820,102 @@ jobs:
           sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
              '                let _ = e; // knife' \
              a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+      # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock, backoff, quota):
+      # each guard, broken on purpose, must turn its own test red. K1 / K4 (never executes, never
+      # writes outside the state root): aib-drive has no executor and no write call to break; the
+      # end-to-end test with fake gh / aib on PATH checks every program call is a read, and the
+      # quota-read knives run against it.
+      - name: aib-drive observe knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ok() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe "$3"; }
+          # once while paused runs anyway
+          ok '        return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));' \
+             '        let _ = paths; // knife' \
+             a_round_while_paused_is_refused_and_writes_nothing
+          # --watch ignores the pause file
+          ok '        if paths.pause.exists() {' \
+             '        if false && paths.pause.exists() { // knife' \
+             watch_marks_the_pause_and_the_resume_once_each
+          # the journal is rewritten, not appended
+          ok '        .append(true)' \
+             '        .write(true).truncate(true) // knife' \
+             two_rounds_append_two_lines_and_decide_the_same
+          # EZ2_AIB_STATE_ROOT is ignored
+          ok '    if let Some(r) = env_root.filter(|r| !r.is_empty()) {' \
+             '    if let Some(r) = env_root.filter(|r| r.is_empty() && !r.is_empty()) { // knife' \
+             the_state_root_is_the_env_root_or_the_home_default
+          # EZ2_AIB_HOME is ignored (two roots, two locks)
+          ok '    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {' \
+             '    if let Some(h) = aib_home.filter(|h| h.is_empty() && !h.is_empty()) { // knife' \
+             the_state_root_is_the_env_root_or_the_home_default
+          # a held lock is taken over
+          ok '    match f.try_lock() {' \
+             '    match Ok::<(), TryLockError>(()).or(f.try_lock()) { // knife' \
+             a_second_observe_is_refused_with_the_holders_pid
+          # the backoff has no cap
+          ok '            return cap;' \
+             '            return d; // knife' \
+             failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
+          # failures are not counted
+          ok '            failures.saturating_add(1)' \
+             '            failures.saturating_mul(0) // knife' \
+             failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
+          # the reason of a failed snapshot is dropped
+          ok '        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),' \
+             '        Err(e) => (Some(clean(&e, 0)), prev.clone(), Vec::new()), // knife' \
+             a_failed_snapshot_is_recorded_with_its_reason
+          # outside text keeps its control characters
+          ok '            if c.is_control() || is_format(c) {' \
+             '            if is_format(c) { // knife' \
+             outside_text_is_cleaned_and_cut
+          # a right-to-left override is kept
+          ok '            | '"'"'\u{202a}'"'"'..='"'"'\u{202e}'"'"'' \
+             '            | '"'"'\u{202a}'"'"'..='"'"'\u{202d}'"'"' // knife' \
+             format_characters_are_cleaned_too
+          # --interval has no floor
+          ok '    if d < MIN_INTERVAL {' \
+             '    if d < Duration::ZERO { // knife' \
+             an_interval_under_60_seconds_is_refused
+          # a last line longer than the first read is never found
+          ok '        if want >= len {' \
+             '        if true { // knife' \
+             the_last_heads_are_read_from_the_end_of_a_long_journal
+          # the holder's pid is read from the locked file (unreadable on Windows)
+          ok '            let who = std::fs::read_to_string(pid).unwrap_or_default();' \
+             '            let who = std::fs::read_to_string(path).unwrap_or_default(); // knife' \
+             a_second_observe_is_refused_with_the_holders_pid
+          # a round runs below the quota floor
+          ok '        Ok(n) if n >= floor => Ok(()),' \
+             '        Ok(n) if n >= floor.min(1) => Ok(()), // knife' \
+             a_round_needs_the_quota_floor_left
+          # the quota read becomes another call
+          ob() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          ob '    vec!["api".to_owned(), "rate_limit".to_owned()]' \
+             '    vec!["api".to_owned(), "graphql".to_owned()] // knife' \
+             the_program_runs_only_reads_and_prints_one_line_and_json
+          # the program skips the quota gate
+          om() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          om '        observe::quota_gate(left, observe::QUOTA_FLOOR)?;' \
+             '        let _ = (left, observe::QUOTA_FLOOR); // knife' \
+             the_program_runs_only_reads_and_prints_one_line_and_json
+          # V8 real data (#661 / #667 / #678): only the first open PR is read through
+          vb() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          vb '    for p in list {' \
+             '    for p in list.iter().take(1) { // knife' \
+             real_prs_661_667_678_are_read_through_and_get_no_merge
+          # V8 real data: review first lines are not matched to the PR's commits
+          vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
+          vs '        Known::Known(c) => lines_for(files, c)?,' \
+             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+             real_prs_661_667_678_carry_their_own_review_lines
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
