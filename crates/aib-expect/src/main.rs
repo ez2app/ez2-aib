@@ -137,6 +137,10 @@ fn run(a: &Args) -> Result<u8, String> {
     };
     if a.cmd == "check-goal" {
         let seat = get("--seat").ok_or("--seat is required")?;
+        // a bad seat code is a usage error before anything is read (rc 2)
+        if !ex::goalcheck::seat_ok(seat) {
+            return Err(format!("bad seat code {seat:?}"));
+        }
         let dir = get("--now-dir").ok_or("--now-dir is required")?;
         let evidence = match evidence {
             Ok(e) => e,
