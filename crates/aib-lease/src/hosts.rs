@@ -24,8 +24,9 @@
 //!   so a race is still settled by `acquire` (rc 4 ⇒ ask again).
 //! - Load (a63ab host-pick, Andy 11-12 12:4x「先查看目前測試機現況，挑選最快可用的」): the
 //!   same ssh also prints `AIBLOAD` lines (performance cores, `hw.ncpu`, `vm.loadavg`). Load per
-//!   performance core (max of load1, load5 × 0.8) over 1.0 is hot: `--pick` takes a free machine
-//!   that is not hot first, a hot one only when every free one is hot. Unknown load is unknown,
+//!   performance core (max of load1, load5 × 0.8) over 1.0 is hot. A machine with no lease but
+//!   over 0.8 per core is `unleased_busy` (the maintainer 11-12 14:3x: someone is running without
+//!   a lease, a63ab did on Pro 16): `--pick` never takes it. Unknown load is unknown,
 //!   never 0. `recommended` / `ranking` order every usable machine by: not hot first, then the
 //!   minutes until a run could start (holder's estimate, else expiry, past it 0 and `late`, plus
 //!   15 per queued run), then config order. `jump_fallback` is tried only when the direct ssh
@@ -322,7 +323,7 @@ pub fn pick_with_last_resort<'a>(
         return (p, rc, Some(w));
     }
     // the working machine must be known to be quiet: an unread load does not count as quiet
-    let quiet = |v: &&&HostView| load_ratio(v).is_some_and(|r| r <= HOT_RATIO);
+    let quiet = |v: &&&HostView| load_ratio(v).is_some_and(|r| r <= UNLEASED_BUSY_RATIO);
     match lr.iter().find(|v| v.state == State::Free && quiet(v)) {
         Some(v) => (Some(v.name.as_str()), RC_PICKED, Some("last_resort_used")),
         None => (p, rc, Some("last_resort_skipped: busy or loaded")),
@@ -357,14 +358,16 @@ pub fn github_busy(repo: &str) -> Option<bool> {
 
 /// The first free machine in order (views are already in config order), or why none.
 pub fn pick<'a>(views: &[&'a HostView]) -> (Option<&'a str>, u8) {
-    // a free machine that is not hot first; a hot one only when every free one is hot
-    let free = || views.iter().filter(|v| v.state == State::Free);
-    if let Some(v) = free().find(|v| !is_hot(v)).or_else(|| free().next()) {
+    // free and quiet: a free machine whose load says someone runs there without a lease is busy
+    if let Some(v) = views
+        .iter()
+        .find(|v| v.state == State::Free && !unleased_busy(v))
+    {
         return (Some(v.name.as_str()), RC_PICKED);
     }
     let reachable = views
         .iter()
-        .any(|v| matches!(v.state, State::Busy | State::Queued));
+        .any(|v| matches!(v.state, State::Busy | State::Queued | State::Free));
     (
         None,
         if reachable {
@@ -381,7 +384,7 @@ pub fn view_json(v: &HostView) -> Value {
         "expiry_epoch": v.expiry_epoch, "expect_end_epoch": v.expect_end_epoch,
         "queue_len": v.queue_len, "queue_first": v.queue_first,
         "why": v.why, "cores": v.cores, "load1": v.load1, "load5": v.load5,
-        "load_per_core": load_ratio(v), "hot": is_hot(v),
+        "load_per_core": load_ratio(v), "hot": is_hot(v), "unleased_busy": unleased_busy(v),
     })
 }
 
@@ -444,6 +447,14 @@ pub const PER_QUEUED_MIN: f64 = 15.0;
 
 pub fn is_hot(v: &HostView) -> bool {
     load_ratio(v).is_some_and(|r| r > HOT_RATIO)
+}
+
+/// Above this per performance core with no lease held: someone runs there without a lease
+/// (the maintainer 11-12 14:3x), so it is not free to pick.
+pub const UNLEASED_BUSY_RATIO: f64 = 0.8;
+
+pub fn unleased_busy(v: &HostView) -> bool {
+    v.state == State::Free && load_ratio(v).is_some_and(|r| r > UNLEASED_BUSY_RATIO)
 }
 
 /// Minutes until a run could start here: free 0; queued / busy = what is left of the holder
@@ -1262,16 +1273,23 @@ mod tests {
     }
 
     #[test]
-    fn a_hot_free_machine_is_picked_only_when_every_free_one_is_hot() {
+    fn a_free_machine_under_load_counts_as_busy() {
         let named = |n: &str, out: String| view(n, Some(0), &out);
         let hot = named("hot", loaded("6", "10", "{ 9.0 9.0 9.0 }"));
+        let warm = named("warm", loaded("6", "10", "{ 5.0 5.0 5.0 }")); // 0.83 per core
+        let edge = named("edge", loaded("6", "10", "{ 4.5 4.5 4.5 }")); // 0.75: still free
         let cool = named("cool", loaded("6", "10", "{ 1.0 1.0 1.0 }"));
+        let blind = named("blind", FREE.to_string());
+        assert!(unleased_busy(&hot) && unleased_busy(&warm));
+        assert!(!unleased_busy(&edge) && !unleased_busy(&blind));
         assert_eq!(pick(&[&hot, &cool]), (Some("cool"), RC_PICKED));
+        assert_eq!(pick(&[&warm, &edge]), (Some("edge"), RC_PICKED));
         assert_eq!(
-            pick(&[&hot]),
-            (Some("hot"), RC_PICKED),
-            "only hot ones ⇒ still picked"
+            pick(&[&hot, &warm]),
+            (None, RC_NONE_FREE),
+            "loaded without a lease ⇒ someone runs there: not picked"
         );
+        assert_eq!(view_json(&warm)["unleased_busy"], json!(true));
     }
 
     #[test]
