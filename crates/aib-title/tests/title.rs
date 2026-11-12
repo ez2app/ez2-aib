@@ -401,7 +401,9 @@ fn parity_real_write_same_tmux_commands_and_probe() {
     );
     assert_eq!(
         &bc[0][2..],
-        ["display-message", "-p", "#{window_id}"].map(String::from).as_slice(),
+        ["display-message", "-p", "#{window_id}"]
+            .map(String::from)
+            .as_slice(),
         "probe_args"
     );
     assert_eq!(
@@ -417,9 +419,21 @@ fn parity_real_write_same_tmux_commands_and_probe() {
         .to_vec(),
         "title_set"
     );
-    assert_eq!(bc[3][3..], ["@aib_ver_state", "current"].map(String::from), "state_set");
-    assert!(b.dump.contains("EZ2_TB_WINDOW=@9"), "probe_window {:?}", b.dump);
-    assert!(b.dump.contains("EZ2_TB_UUID=uuid-0"), "uuid_order {:?}", b.dump);
+    assert_eq!(
+        bc[3][3..],
+        ["@aib_ver_state", "current"].map(String::from),
+        "state_set"
+    );
+    assert!(
+        b.dump.contains("EZ2_TB_WINDOW=@9"),
+        "probe_window {:?}",
+        b.dump
+    );
+    assert!(
+        b.dump.contains("EZ2_TB_UUID=uuid-0"),
+        "uuid_order {:?}",
+        b.dump
+    );
 }
 
 /// a63ab L2: --print without --dry-run never touches tmux, not even the window probe.
