@@ -1879,6 +1879,13 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # site leakcheck: a hide word in an answer is not looked for (E6 S9)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
+             a_leak_word_in_any_answer_is_a_leak
+          # site leakcheck: an answer that could not be read counts as a pass (E6 S9)
+          hk leakcheckcmd.rs '        return (State::Unread, why);' '        return (State::Pass, why); // knife' \
+             an_unreadable_probe_is_not_a_pass
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
