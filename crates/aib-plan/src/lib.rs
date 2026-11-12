@@ -249,6 +249,8 @@ pub fn cell_width(c: char) -> usize {
         || (0xFF00..=0xFF60).contains(&u)
         || (0xFFE0..=0xFFE6).contains(&u)
         || (0x1F300..=0x1FAFF).contains(&u)
+        // 終端機畫成兩格的鐘 / 沙漏(⌚⌛⏩–⏬⏰⏳;右上角「建議 ✓/⏳」用到,Andy 11-12 23:3x)
+        || matches!(u, 0x231A | 0x231B | 0x23E9..=0x23EC | 0x23F0 | 0x23F3)
         || (0x20000..=0x3FFFD).contains(&u);
     if wide {
         2
