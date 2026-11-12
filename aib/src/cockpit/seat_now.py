@@ -306,7 +306,7 @@ def legacy_line_of(item, pct, state="busy", color=False):
 
 
 def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False,
-          review=None, goal=None):
+          review=None, goal=None, goal_why=None):
     """啟動時間:加 new(aib now --new)才重新計時;改主項目文字、步數、狀態都沿用(the maintainer 10-10「--new 才重新計時」——
     以前一改字就當新項目,a seat 自己改字就把 16:04 洗成 17:46)。上一筆是【我很閒】(--clear)⇒ 接的一定是新工作,
     自動重新計時。--started 可更正。舊紀錄沒有這欄 ⇒ 用它上次回報的時間(最早量得到的),不是「現在」。"""
@@ -330,12 +330,18 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
         rec["review"] = prev["review"]
     # 目標(RULES §17,Andy 11-12 21:2x;DECISION-goalcheck-gate-a63ab-1112):--goal A8 / E6 / none。
     # 這次有給 ⇒ 記上時間;沒給 ⇒ 同一個主軸沿用上一筆。只記錄，對不對表由 Rust aib-expect check-goal 判
+    # goal_at = 這個目標第一次寫下的時間:重給同一個目標不改(1ced7 #727 L1);none 的理由記在 goal_why
     if goal:
+        kept = same and prev.get("goal") == goal
         rec["goal"] = goal
-        rec["goal_at"] = at
+        rec["goal_at"] = prev.get("goal_at") if kept and prev.get("goal_at") else at
+        if goal == "none":
+            rec["goal_why"] = goal_why or (prev.get("goal_why") if kept else None)
     elif same and prev.get("goal"):
         rec["goal"] = prev["goal"]
         rec["goal_at"] = prev.get("goal_at")
+        if prev.get("goal_why"):
+            rec["goal_why"] = prev["goal_why"]
     # 這個階段什麼時候完成的(043dd #714 L3,a63ab 裁):一個階段只要求回報一次判斷 ——
     # 同一主軸停在【等回應】巡好幾回合，不必每回合重寫;換主軸 / 從未完成變完成才重新要求
     if stage_done(rec):
@@ -432,7 +438,7 @@ def review_at(rec):
         return 0
 
 
-_GOAL = re.compile(r"^(?:([AE])(\d{1,2})([a-z]?)|none)$", re.IGNORECASE)
+_GOAL = re.compile(r"^(?:([AE])([0-9]{1,2})([a-z]?)|none)$", re.IGNORECASE)
 
 
 def parse_goal(goal, why=None):
@@ -445,6 +451,8 @@ def parse_goal(goal, why=None):
         return None, False
     if not m.group(1):
         return ("none", True) if _clean_review(why) else (None, False)
+    if int(m.group(2)) == 0:
+        return None, False   # A0 / E0 不在任何表(1ced7 #727 N2)
     return "%s%d%s" % (m.group(1).upper(), int(m.group(2)), m.group(3).lower()), True
 
 
@@ -1197,20 +1205,27 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         if started is None:
             err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
-    review, ok = parse_review(args.track, args.why, args.idea)
-    if not ok:
-        err.write("aib now: %s\n" % T("aib.now.review_bad", min=ON_TRACK_MIN))
-        return 2
     goal, ok = parse_goal(args.goal, args.why)
     if not ok:
         err.write("aib now: %s\n" % T("aib.now.goal_bad"))
         return 2
+    goal_why = None
+    if goal == "none" and args.track is None and args.idea is None:
+        # 雜務(回 dm、交接、審查)只帶 --why:那是雜務的理由，不是判斷回報(1ced7 #727 M1)
+        goal_why, review = _clean_review(args.why), None
+    else:
+        review, ok = parse_review(args.track, args.why, args.idea)
+        if not ok:
+            err.write("aib now: %s\n" % T("aib.now.review_bad", min=ON_TRACK_MIN))
+            return 2
+        if goal == "none":
+            goal_why = review["why"]
     new = args.new
     if not new and started is None and auto_new(read(code, state_root=state_root), item):
         new = True
         err.write("aib now: %s\n" % T("aib.now.auto_new"))
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
-                new=new, review=review, goal=goal)
+                new=new, review=review, goal=goal, goal_why=goal_why)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
     nudge = dm_stale_nudge(code) if state_root is None else ""
     if nudge:
