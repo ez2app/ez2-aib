@@ -898,10 +898,13 @@ pub fn caddy_marker(code: &str) -> String {
 }
 
 /// The normal block: proxy to the site CT at `upstream_ip` (the spec's own IP, or the new CT's
-/// during a blue-green restore). Carries the white-label import (WL-1).
+/// during a blue-green restore). Carries the white-label import (WL-1) and, on its own,
+/// strips what names the server (E6 C1): `Server` / `Via` / `X-Powered-By` from every
+/// response, and the CT's `Server` / `X-Powered-By` before they are copied out, so a block
+/// does not depend on the hand-kept snippet on the Edge to stay quiet.
 pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\tencode zstd gzip\n\treverse_proxy {ip}:80 {{\n\t\theader_up X-Real-IP {{remote_host}}\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\tencode zstd gzip\n\treverse_proxy {ip}:80 {{\n\t\theader_up X-Real-IP {{remote_host}}\n\t\theader_down -Server\n\t\theader_down -X-Powered-By\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
         ip = upstream_ip
@@ -913,7 +916,7 @@ pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
 /// customer-facing text Andy decides (§14 P2), this only wires it.
 pub fn caddy_block_suspended(spec: &SiteSpec, page_path: &str) -> String {
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:suspended\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:suspended\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
         dir = page_path.rsplit_once('/').map_or("/srv/errors", |(d, _)| d),
@@ -1578,6 +1581,40 @@ mod tests {
             "empty config is unreadable, not clean"
         );
         assert!(drift(&site2(), "garbage", Some(&fw)).is_err());
+    }
+
+    /// E6 C1: what a visitor gets back must not name the server. Each shape strips
+    /// `Server` / `Via` / `X-Powered-By` itself (the whitelabel snippet is hand-kept on the
+    /// Edge), and the live block also drops the CT's own before Caddy copies them out.
+    #[test]
+    fn a_site_block_strips_server_headers() {
+        const STRIP: &str = "\theader {\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}\n";
+        let sp = site2();
+        let up = caddy_block_upstream(&sp, &sp.ip());
+        assert_eq!(up.matches(STRIP).count(), 1, "{up}");
+        let proxy = up
+            .split_once("\treverse_proxy ")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        assert!(
+            proxy.contains("\t\theader_down -Server\n")
+                && proxy.contains("\t\theader_down -X-Powered-By\n"),
+            "{up}"
+        );
+        let sus = caddy_block_suspended(&sp, "/srv/errors/suspended.html");
+        assert_eq!(sus.matches(STRIP).count(), 1, "{sus}");
+        // still one block each: the nested braces do not close it early
+        for block in [&up, &sus] {
+            let file = alloc::format!("{block}\n# site:other\nother.example {{\n}}\n");
+            assert_eq!(
+                crate::quarantine::caddy_block_text(&file, "site2").unwrap(),
+                block.as_str()
+            );
+        }
+        assert!(
+            caddy_block_is_suspended(&caddy_swap_block(&up, "site2", &sus).unwrap(), "site2")
+                .unwrap()
+        );
     }
 
     #[test]
