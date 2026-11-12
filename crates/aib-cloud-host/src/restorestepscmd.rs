@@ -33,6 +33,18 @@
 //!   so that comes first.
 //! * A record is read only from its own site's file: one whose `site` is another site's
 //!   (a copy a person made by hand) is an error, so it is never written over the other.
+//! * Before a restore starts, the download gate ([`aib_cloud::restoregate`]) is asked:
+//!   who shared the backup, whether its name is this site's, its size against the room
+//!   on the host, and whether the site's database has been up long enough. The plan
+//!   carries the backup's name and size; the verify step checks the downloaded file
+//!   against them and writes its SHA-256 into the record (B3 slice 3). Reading the share
+//!   itself is not wired yet: until it is, every plan here stops at `source_unknown`.
+//! * The import ([`aib_cloud::restoreimport`], B3 slice 4): the site's own disk must
+//!   hold it (asked by the plan and again right before the restore point, since the
+//!   download takes time); the import plugins are brought up to date and must be
+//!   active, the plugin must list the backup, and only its "Restore complete" makes the
+//!   import step done. `df` and `mysqladmin` run with `LC_ALL=C`, so their words are
+//!   the ones read.
 //! * The command is `site restore-wpress`, not `site restore`: that one brings a whole
 //!   container back from the host's own archive, a different thing.
 
@@ -41,6 +53,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use aib_cloud::restoregate::{self, Facts, Sharer};
+use aib_cloud::restoreimport::{self, SiteRoom};
 use aib_cloud::restoresteps::{
     self, AfterFailure, Close, Next, Other, RestoreStep, Standing, STEPS,
 };
@@ -61,6 +75,15 @@ pub const CLOSE_COMMAND: &str = "site.restore-wpress-close";
 pub const NOT_WIRED: &str =
     "not_wired: the restore steps are not wired on this host yet (B3 slices 3 and 4); nothing was done";
 
+/// The backup a restore downloads: its name and size as the share said, and the
+/// SHA-256 of what was downloaded once it was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backup {
+    pub name: String,
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+
 /// One site's last restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -77,6 +100,8 @@ pub struct Record {
     pub cleaned_up: bool,
     /// How a person closed it and the operation that did, when one did.
     pub closed: Option<(Close, String)>,
+    /// The backup, when the plan named one.
+    pub backup: Option<Backup>,
 }
 
 impl Record {
@@ -90,6 +115,7 @@ impl Record {
             "failed": self.failed.as_ref().map(|(s, why)| json!({ "step": s.as_str(), "why": why })),
             "cleaned_up": self.cleaned_up,
             "closed": self.closed.as_ref().map(|(how, op)| json!({ "how": how.as_str(), "op": op })),
+            "backup": self.backup.as_ref().map(|b| json!({ "name": b.name, "size": b.size, "sha256": b.sha256 })),
         })
     }
 
@@ -135,6 +161,10 @@ impl Record {
                     .to_owned(),
             )),
         };
+        let backup = match v.get("backup") {
+            None | Some(Value::Null) => None,
+            Some(b) => Some(backup_from(b).ok_or("step record: a backup without name or size")?),
+        };
         Ok(Record {
             site: text("site")?,
             domain: text("domain")?,
@@ -147,6 +177,7 @@ impl Record {
                 .and_then(Value::as_bool)
                 .ok_or("step record: no cleaned_up")?,
             closed,
+            backup,
         })
     }
 
@@ -166,6 +197,31 @@ impl Record {
     }
 }
 
+/// A backup's name and size from a plan or a record; the SHA-256 when there is one.
+fn backup_from(v: &Value) -> Option<Backup> {
+    Some(Backup {
+        name: v.get("name")?.as_str()?.to_owned(),
+        size: v.get("size")?.as_u64()?,
+        sha256: v.get("sha256").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
+/// What the share says of a backup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub name: String,
+    pub size: Option<u64>,
+    pub sharer: Sharer,
+}
+
+/// What was downloaded: its length, its first bytes and its SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub size: u64,
+    pub head: Vec<u8>,
+    pub sha256: String,
+}
+
 /// What a restore needs from the host. The real host is [`HostRestorer`]; tests use a
 /// made-up one.
 pub trait RestoreHost {
@@ -180,7 +236,34 @@ pub trait RestoreHost {
     fn others(&mut self, site: &str) -> Result<Vec<Record>, String>;
     /// Whether the target site is up.
     fn site_up(&mut self) -> Probe;
+    /// What the share says of the backup, with the share gate's verdict on who shared
+    /// it; `None` when the share could not be read.
+    fn source(&mut self, source: &str) -> Result<Option<Source>, String>;
+    /// Free bytes where downloads go.
+    fn free_bytes(&mut self) -> Option<u64>;
+    /// How long the target's database has been up.
+    fn db_up_secs(&mut self) -> Option<u64>;
+    /// What the download step left.
+    fn downloaded(&mut self, rec: &Record) -> Result<Fetched, String>;
+    /// The target site's own disk.
+    fn site_room(&mut self) -> Option<SiteRoom>;
+    /// Bring the import plugins up to date; what `plugin list --status=active
+    /// --field=name` then prints.
+    fn update_import_plugins(&mut self, rec: &Record) -> Result<String, String>;
+    /// Put the downloaded backup where the plugin finds it; what `ai1wm list-backups`
+    /// then prints.
+    fn place_backup(&mut self, rec: &Record) -> Result<String, String>;
+    /// Run the plugin's restore of the backup; what it printed.
+    fn import(&mut self, rec: &Record) -> Result<String, String>;
+    /// The domains of the customer's other sites on this host; none when the site's
+    /// record names no customer. A site record that cannot be read is an error.
+    fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String>;
     fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String>;
+    /// Put the site software's scheduler back as the install leaves it
+    /// ([`crate::siteidentity::scheduler`]): a backup may bring back a `wp-config.php`
+    /// without `DISABLE_WP_CRON`, and the timer must still be there. `true` when anything
+    /// had to be written again.
+    fn put_scheduler_back(&mut self, rec: &Record) -> Result<bool, String>;
     /// Throw away what was downloaded, and the restore point's archive if one was begun:
     /// a failed restore point leaves a half-made archive behind.
     fn discard(&mut self, rec: &Record) -> Result<(), String>;
@@ -222,6 +305,7 @@ pub fn plan_doc(
         "next": "stop",
         "from": Value::Null,
         "stop": Value::Null,
+        "backup": Value::Null,
     });
     let stop = |doc: &mut Value, why: &str| doc["stop"] = json!(why);
     if let Err(why) = restoresteps::ready_to_go_on(host.site_up()) {
@@ -230,10 +314,14 @@ pub fn plan_doc(
     }
     match restoresteps::next(standing) {
         Next::Start => match restoresteps::admit(&spec.code, &domain, &other_list) {
-            Ok(()) => {
-                doc["next"] = json!("start");
-                doc["from"] = json!(RestoreStep::Download.as_str());
-            }
+            Ok(()) => match download_gate(&spec.code, source, &domain, host)? {
+                Ok(backup) => {
+                    doc["backup"] = backup;
+                    doc["next"] = json!("start");
+                    doc["from"] = json!(RestoreStep::Download.as_str());
+                }
+                Err(refused) => stop(&mut doc, refused),
+            },
             Err(why) => stop(&mut doc, why),
         },
         Next::GoOn(step) => match &last {
@@ -246,6 +334,90 @@ pub fn plan_doc(
         Next::Stop(why) => stop(&mut doc, why),
     }
     Ok(doc)
+}
+
+/// The download gate, from what the host says now: the backup's name and size for the
+/// plan, or the gate's fixed word.
+fn download_gate(
+    site: &str,
+    source: &str,
+    domain: &str,
+    host: &mut impl RestoreHost,
+) -> Result<Result<Value, &'static str>, String> {
+    let Some(src) = host.source(source)? else {
+        return Ok(Err("source_unknown"));
+    };
+    let facts = Facts {
+        sharer: src.sharer,
+        name: &src.name,
+        domain,
+        size: src.size,
+        free: host.free_bytes(),
+        db_up_secs: host.db_up_secs(),
+    };
+    if let Err(refused) = restoregate::admit_download(&facts) {
+        return Ok(Err(refused));
+    }
+    // c477a (slice 3 r2 N1): the name's second level lets a backup of the customer's other
+    // site through; one whose name is exactly that other site is refused here
+    let siblings = host.sibling_domains(site)?;
+    let siblings: Vec<&str> = siblings.iter().map(String::as_str).collect();
+    if restoregate::names_another_site(&src.name, &siblings) {
+        return Ok(Err("backup_of_another_site"));
+    }
+    let size = src.size.unwrap_or_default();
+    Ok(
+        restoreimport::site_room(size, host.site_room(), RESTORE_POINT_IN_SITE)
+            .map(|()| json!({ "name": src.name, "size": size })),
+    )
+}
+
+/// Whether the restore point is kept in the site's own disk. Until the restore point step
+/// is wired and its place known, it is counted there.
+pub const RESTORE_POINT_IN_SITE: bool = true;
+
+/// Before the restore point: the site's disk must still hold the import, now that the
+/// download is done.
+fn before_restore_point(host: &mut impl RestoreHost, rec: &Record) -> Result<(), String> {
+    let size = rec
+        .backup
+        .as_ref()
+        .map(|b| b.size)
+        .ok_or("the step record names no backup")?;
+    restoreimport::site_room(size, host.site_room(), RESTORE_POINT_IN_SITE).map_err(str::to_owned)
+}
+
+/// The import step: plugins up to date and active, the backup listed, the plugin's own
+/// "Restore complete".
+fn import_backup(host: &mut impl RestoreHost, rec: &Record) -> Result<(), String> {
+    let name = rec
+        .backup
+        .as_ref()
+        .map(|b| b.name.clone())
+        .ok_or("the step record names no backup")?;
+    let active = host.update_import_plugins(rec)?;
+    restoreimport::plugins_ready(&active).map_err(str::to_owned)?;
+    let listing = host.place_backup(rec)?;
+    restoreimport::backup_listed(&listing, &name).map_err(str::to_owned)?;
+    let said = host.import(rec)?;
+    restoreimport::import_finished(&said).map_err(str::to_owned)
+}
+
+/// The verify step: what was downloaded must be what the plan named; its SHA-256 goes
+/// into the record.
+fn verify_download(host: &mut impl RestoreHost, rec: &mut Record) -> Result<(), String> {
+    let planned = rec
+        .backup
+        .as_ref()
+        .map(|b| b.size)
+        .ok_or("the step record names no backup")?;
+    let got = host.downloaded(rec)?;
+    restoregate::check_download(planned, got.size, &got.head, &got.sha256)
+        .map_err(str::to_owned)?;
+    if let Some(b) = rec.backup.as_mut() {
+        b.sha256 = Some(got.sha256);
+    }
+    Ok(())
 }
 
 fn standing_word(s: Standing) -> String {
@@ -337,7 +509,20 @@ pub fn carry_out(
     rec.cleaned_up = false;
     host.write_record(&rec)?;
     for &step in &STEPS[start..] {
-        if let Err(e) = host.run_step(step, &rec) {
+        let ran = match step {
+            RestoreStep::Verify => verify_download(host, &mut rec),
+            RestoreStep::RestorePoint => {
+                before_restore_point(host, &rec).and_then(|()| host.run_step(step, &rec))
+            }
+            RestoreStep::Import => import_backup(host, &rec),
+            // the scheduler first: a failure from here on keeps the site for a person, and
+            // site verify S14 turns red on a site left without it (7b81e, wp-cron r2 N1)
+            RestoreStep::Tidy => host
+                .put_scheduler_back(&rec)
+                .and_then(|_| host.run_step(step, &rec)),
+            _ => host.run_step(step, &rec),
+        };
+        if let Err(e) = ran {
             rec.failed = Some((step, e.clone()));
             host.write_record(&rec)?;
             let after = restoresteps::after_failure(step);
@@ -428,6 +613,7 @@ pub fn apply(
                     failed: None,
                     cleaned_up: false,
                     closed: None,
+                    backup: plan.get("backup").and_then(backup_from),
                 },
             };
             Ok(Some((opstore::unsealed(plan), (rec, from))))
@@ -565,9 +751,54 @@ pub fn apply_close(
     done.ok_or_else(|| "nothing to do".to_owned())
 }
 
+/// The file system downloads go to.
+const DOWNLOADS_ON: &str = "/var/lib/ez2-cloud";
+
+/// The free bytes `df -Pk` says: the fourth column of its one data line, in KiB.
+fn df_avail_bytes(out: &str) -> Option<u64> {
+    df_kib(out).and_then(|(_, avail)| kib_bytes(avail))
+}
+
+/// The used and free KiB of `df -Pk`'s one data line (its third and fourth columns).
+fn df_kib(out: &str) -> Option<(u64, u64)> {
+    let mut lines = out.lines().filter(|l| !l.trim().is_empty());
+    if !lines.next()?.starts_with("Filesystem") {
+        return None;
+    }
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let mut columns = line.split_whitespace().skip(2);
+    let used = columns.next()?.parse().ok()?;
+    let avail = columns.next()?.parse().ok()?;
+    Some((used, avail))
+}
+
+fn kib_bytes(kib: u64) -> Option<u64> {
+    kib.checked_mul(1024)
+}
+
+/// The site's disk from `df -Pk /` in its container.
+fn df_room(out: &str) -> Option<SiteRoom> {
+    let (used, avail) = df_kib(out)?;
+    Some(SiteRoom {
+        free: kib_bytes(avail)?,
+        used: kib_bytes(used)?,
+    })
+}
+
+/// The seconds `mysqladmin status` says the server has been up.
+fn db_uptime(out: &str) -> Option<u64> {
+    let rest = out.trim_start().strip_prefix("Uptime:")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 /// The real host. Its steps are not wired yet: [`RestoreHost::wired`] is false.
 pub struct HostRestorer {
     pub records: PathBuf,
+    /// The site records: `<site code>.json` each.
+    pub sites: PathBuf,
     pub ct: u32,
 }
 
@@ -674,8 +905,97 @@ impl RestoreHost for HostRestorer {
             _ => Probe::Unknown,
         }
     }
+    fn source(&mut self, _source: &str) -> Result<Option<Source>, String> {
+        // reading the share (and asking the share gate) is wired with the download
+        Ok(None)
+    }
+    fn free_bytes(&mut self) -> Option<u64> {
+        let mut cmd = Command::new("df");
+        cmd.env("LC_ALL", "C").args(["-Pk", DOWNLOADS_ON]);
+        crate::probe::run_capture(&mut cmd, Duration::from_secs(20))
+            .ok()
+            .and_then(|out| df_avail_bytes(&out))
+    }
+    fn db_up_secs(&mut self) -> Option<u64> {
+        let mut cmd = Command::new("pct");
+        cmd.args([
+            "exec",
+            &self.ct.to_string(),
+            "--",
+            "env",
+            "LC_ALL=C",
+            "mysqladmin",
+            "status",
+        ]);
+        crate::probe::run_capture(&mut cmd, Duration::from_secs(30))
+            .ok()
+            .and_then(|out| db_uptime(&out))
+    }
+    fn downloaded(&mut self, _rec: &Record) -> Result<Fetched, String> {
+        Err(NOT_WIRED.to_owned())
+    }
+    fn site_room(&mut self) -> Option<SiteRoom> {
+        let mut cmd = Command::new("pct");
+        cmd.args([
+            "exec",
+            &self.ct.to_string(),
+            "--",
+            "env",
+            "LC_ALL=C",
+            "df",
+            "-Pk",
+            "/",
+        ]);
+        crate::probe::run_capture(&mut cmd, Duration::from_secs(20))
+            .ok()
+            .and_then(|out| df_room(&out))
+    }
+    fn update_import_plugins(&mut self, _rec: &Record) -> Result<String, String> {
+        Err(NOT_WIRED.to_owned())
+    }
+    fn place_backup(&mut self, _rec: &Record) -> Result<String, String> {
+        Err(NOT_WIRED.to_owned())
+    }
+    fn import(&mut self, _rec: &Record) -> Result<String, String> {
+        Err(NOT_WIRED.to_owned())
+    }
+    fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String> {
+        let read = |path: &Path| -> Result<Value, String> {
+            let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+        };
+        let own = read(&self.sites.join(format!("{site}.json")))?;
+        let Some(tenant) = aib_cloud::site::record_tenant(&own) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        let entries =
+            fs::read_dir(&self.sites).map_err(|e| format!("{}: {e}", self.sites.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.starts_with('.') || !name.ends_with(".json") || name == format!("{site}.json") {
+                continue;
+            }
+            let rec = read(&path)?;
+            if aib_cloud::site::record_tenant(&rec) == Some(tenant) {
+                let spec = aib_cloud::site::spec_from_record(&rec)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                out.extend(spec.hosts);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
     fn run_step(&mut self, _step: RestoreStep, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
+    }
+    fn put_scheduler_back(&mut self, rec: &Record) -> Result<bool, String> {
+        let spec = crate::quarantinecmd::load_spec(&rec.site, &self.sites.to_string_lossy())?;
+        crate::siteidentity::scheduler(&mut crate::sitecreatecmd::HostRunner, &spec)
     }
     fn discard(&mut self, _rec: &Record) -> Result<(), String> {
         Err(NOT_WIRED.to_owned())
@@ -761,6 +1081,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let spec = crate::quarantinecmd::load_spec(&code, SITE_RECORDS)?;
     let mut host = HostRestorer {
         records: PathBuf::from(RECORDS),
+        sites: PathBuf::from(SITE_RECORDS),
         ct: spec.ct,
     };
     match (plan_only, file) {
@@ -872,6 +1193,35 @@ mod tests {
         seen_done: Vec<usize>,
         /// Records moved aside.
         aside: Vec<Record>,
+        source: Option<Source>,
+        free: Option<u64>,
+        db_up: Option<u64>,
+        /// What is wrong with the download, when something is: "size" or "head".
+        bad_download: Option<&'static str>,
+        room: Option<SiteRoom>,
+        /// What the plugin list prints after the update.
+        active: String,
+        /// What the backup listing prints; `None` lists the record's backup.
+        listing: Option<String>,
+        /// What the restore prints.
+        said: String,
+        /// The site's disk once the download is done, when it changed meanwhile.
+        room_later: Option<SiteRoom>,
+        siblings: Vec<String>,
+        /// Putting the scheduler back fails.
+        scheduler_fails: bool,
+    }
+
+    const NAME: &str = "example-com-20261101-101010-ab12cd.wpress";
+    const SIZE: u64 = 2 * 1024 * 1024 * 1024;
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn wpress_head() -> Vec<u8> {
+        let mut h = vec![0u8; restoregate::HEADER_LEN];
+        h[..12].copy_from_slice(b"package.json");
+        h[255..258].copy_from_slice(b"512");
+        h[269..279].copy_from_slice(b"1730000000");
+        h
     }
 
     fn fake() -> Fake {
@@ -885,6 +1235,24 @@ mod tests {
             calls: Vec::new(),
             seen_done: Vec::new(),
             aside: Vec::new(),
+            source: Some(Source {
+                name: NAME.to_owned(),
+                size: Some(SIZE),
+                sharer: Sharer::Allowed,
+            }),
+            free: Some(4 * SIZE + restoregate::SPARE_BYTES),
+            db_up: Some(3600),
+            bad_download: None,
+            room: Some(SiteRoom {
+                free: 3 * SIZE + 4 * restoreimport::SITE_SPARE_BYTES,
+                used: SIZE,
+            }),
+            active: restoreimport::IMPORT_PLUGINS.join("\n"),
+            listing: None,
+            said: format!("Restoring\n{}\n", restoreimport::RESTORE_COMPLETE),
+            room_later: None,
+            siblings: Vec::new(),
+            scheduler_fails: false,
         }
     }
 
@@ -925,6 +1293,13 @@ mod tests {
             }
             Ok(())
         }
+        fn put_scheduler_back(&mut self, _rec: &Record) -> Result<bool, String> {
+            self.calls.push("scheduler".to_owned());
+            if self.scheduler_fails {
+                return Err("cron_not_running: made-up".to_owned());
+            }
+            Ok(true)
+        }
         fn discard(&mut self, _rec: &Record) -> Result<(), String> {
             self.calls.push("discard".to_owned());
             if self.undo_fails {
@@ -943,6 +1318,71 @@ mod tests {
             self.records.remove(&rec.site);
             self.aside.push(rec.clone());
             Ok(())
+        }
+        fn source(&mut self, _source: &str) -> Result<Option<Source>, String> {
+            Ok(self.source.clone())
+        }
+        fn free_bytes(&mut self) -> Option<u64> {
+            self.free
+        }
+        fn db_up_secs(&mut self) -> Option<u64> {
+            self.db_up
+        }
+        fn downloaded(&mut self, rec: &Record) -> Result<Fetched, String> {
+            self.calls.push("verify".to_owned());
+            if let Some(later) = self.room_later.take() {
+                self.room = Some(later);
+            }
+            let stored = self
+                .records
+                .get(&rec.site)
+                .map_or(usize::MAX, |r| r.done.len());
+            self.seen_done.push(stored);
+            if self.fail_at == Some(RestoreStep::Verify) {
+                return Err("made-up failure".to_owned());
+            }
+            let mut got = Fetched {
+                size: SIZE,
+                head: wpress_head(),
+                sha256: SHA.to_owned(),
+            };
+            match self.bad_download {
+                Some("size") => got.size -= 1,
+                Some("head") => got.head[..4].copy_from_slice(b"PK\x03\x04"),
+                _ => {}
+            }
+            Ok(got)
+        }
+        fn site_room(&mut self) -> Option<SiteRoom> {
+            self.room
+        }
+        fn update_import_plugins(&mut self, _rec: &Record) -> Result<String, String> {
+            self.calls.push("update_plugins".to_owned());
+            Ok(self.active.clone())
+        }
+        fn place_backup(&mut self, rec: &Record) -> Result<String, String> {
+            self.calls.push("place".to_owned());
+            Ok(self.listing.clone().unwrap_or_else(|| {
+                format!(
+                    "| {} | today |",
+                    rec.backup.as_ref().map_or("", |b| b.name.as_str())
+                )
+            }))
+        }
+        fn sibling_domains(&mut self, _site: &str) -> Result<Vec<String>, String> {
+            Ok(self.siblings.clone())
+        }
+        fn import(&mut self, rec: &Record) -> Result<String, String> {
+            self.calls.push("import".to_owned());
+            let stored = self
+                .records
+                .get(&rec.site)
+                .map_or(usize::MAX, |r| r.done.len());
+            self.seen_done.push(stored);
+            if self.fail_at == Some(RestoreStep::Import) {
+                return Err("made-up failure".to_owned());
+            }
+            Ok(self.said.clone())
         }
     }
 
@@ -981,6 +1421,7 @@ mod tests {
             failed: failed.map(|s| (s, "earlier".to_owned())),
             cleaned_up,
             closed: None,
+            backup: None,
         }
     }
 
@@ -1033,6 +1474,7 @@ mod tests {
         let d = scratch("record");
         let mut host = HostRestorer {
             records: d.join("restores"),
+            sites: d.join("sites"),
             ct: 119,
         };
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
@@ -1236,7 +1678,11 @@ mod tests {
         let records = d.join("restores");
         fs::create_dir_all(&records).unwrap();
         fs::write(records.join("site8.json"), "{not json").unwrap();
-        let mut host = HostRestorer { records, ct: 119 };
+        let mut host = HostRestorer {
+            records,
+            sites: PathBuf::new(),
+            ct: 119,
+        };
         assert!(host.others("site9").is_err());
     }
 
@@ -1286,7 +1732,11 @@ mod tests {
         fs::create_dir_all(&records).unwrap();
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
         fs::write(records.join("site8.json"), r.to_json().to_string()).unwrap();
-        let mut host = HostRestorer { records, ct: 119 };
+        let mut host = HostRestorer {
+            records,
+            sites: PathBuf::new(),
+            ct: 119,
+        };
         let err = host.read_record("site8").unwrap_err();
         assert!(err.contains("is of site9, not of site8"), "{err}");
         assert!(host.others("site7").is_err());
@@ -1369,6 +1819,7 @@ mod tests {
         let d = scratch("aside");
         let mut host = HostRestorer {
             records: d.join("restores"),
+            sites: d.join("sites"),
             ct: 119,
         };
         let mut r = interrupted();
@@ -1440,5 +1891,301 @@ mod tests {
         assert_eq!(mine(&h).closed, None);
         assert!(h.aside.is_empty());
         assert!(states(&p).is_empty());
+    }
+
+    #[test]
+    fn the_download_gate_stops_the_plan() {
+        let mut h = fake();
+        let doc = plan_doc(&spec(), SOURCE, &mut h).unwrap();
+        assert_eq!(doc["next"], "start");
+        assert_eq!(doc["backup"], json!({ "name": NAME, "size": SIZE }));
+        h.source = None;
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "source_unknown"
+        );
+        h.source = Some(Source {
+            name: NAME.to_owned(),
+            size: Some(SIZE),
+            sharer: Sharer::Refused("share_address_not_on_roster"),
+        });
+        let doc = plan_doc(&spec(), SOURCE, &mut h).unwrap();
+        assert_eq!(
+            (
+                doc["next"].as_str(),
+                doc["stop"].as_str(),
+                doc["backup"].is_null()
+            ),
+            (Some("stop"), Some("share_address_not_on_roster"), true)
+        );
+        h = fake();
+        h.free = Some(1);
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "disk_too_small"
+        );
+        h = fake();
+        h.db_up = Some(10);
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "database_restarted_lately"
+        );
+    }
+
+    #[test]
+    fn a_backup_changed_at_the_share_after_the_plan_is_refused() {
+        let p = place("sharechanged");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        h.source.as_mut().unwrap().size = Some(SIZE + 1);
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(err.contains("plan_changed"), "{err}");
+        assert!(h.calls.is_empty());
+    }
+
+    #[test]
+    fn the_downloads_hash_is_written_down() {
+        let p = place("hash");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap();
+        assert_eq!(
+            mine(&h).backup,
+            Some(Backup {
+                name: NAME.to_owned(),
+                size: SIZE,
+                sha256: Some(SHA.to_owned()),
+            })
+        );
+        let r = mine(&h).clone();
+        assert_eq!(Record::from_json(&r.to_json()), Ok(r));
+    }
+
+    #[test]
+    fn a_download_that_is_not_what_the_share_said_is_thrown_away() {
+        for (bad, word) in [("size", "download_size_differs"), ("head", "not_a_wpress")] {
+            let p = place(&format!("bad{bad}"));
+            let mut h = fake();
+            h.bad_download = Some(bad);
+            let plan = sealed(&p, &mut h);
+            let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+            assert!(err.contains(word), "{err}");
+            assert_eq!(h.calls, ["download", "verify", "discard"], "{bad}");
+            assert_eq!(mine(&h).standing(), Ok(Standing::Discarded));
+            assert_eq!(mine(&h).backup.as_ref().unwrap().sha256, None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_hosts_free_room_and_database_uptime_are_read() {
+        let df = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/md2        937276536 109847516 779745496      13% /\n";
+        assert_eq!(df_avail_bytes(df), Some(779_745_496 * 1024));
+        assert_eq!(
+            df_avail_bytes("Filesystem 1024-blocks Used Available\n"),
+            None
+        );
+        assert_eq!(df_avail_bytes(&format!("{df}/dev/md3 1 1 1 1% /x\n")), None);
+        assert_eq!(
+            df_avail_bytes("/dev/md2 937276536 109847516 779745496 13% /\n"),
+            None
+        );
+        assert_eq!(
+            db_uptime("Uptime: 86412  Threads: 1  Questions: 25  Slow queries: 0\n"),
+            Some(86412)
+        );
+        assert_eq!(
+            db_uptime("mysqladmin: connect to server at 'localhost' failed\n"),
+            None
+        );
+        assert_eq!(db_uptime("Uptime: soon"), None);
+    }
+
+    #[test]
+    fn a_site_disk_too_small_for_the_import_stops_the_plan() {
+        let mut h = fake();
+        h.room = Some(SiteRoom {
+            free: 3 * SIZE,
+            used: SIZE,
+        });
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "site_disk_too_small"
+        );
+        h.room = None;
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "site_disk_unknown"
+        );
+    }
+
+    #[test]
+    fn the_site_disk_is_asked_again_before_the_restore_point() {
+        let p = place("roomlater");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        // the site grew while the backup was downloading
+        h.room_later = Some(SiteRoom {
+            free: 3 * SIZE,
+            used: SIZE,
+        });
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(
+            err.contains("restore_point failed: site_disk_too_small"),
+            "{err}"
+        );
+        assert_eq!(h.calls, ["download", "verify", "discard"]);
+        assert_eq!(mine(&h).standing(), Ok(Standing::Discarded));
+    }
+
+    #[test]
+    fn an_import_runs_on_plugins_up_to_date_with_the_backup_listed() {
+        let p = place("import-ok");
+        let mut h = fake();
+        let plan = sealed(&p, &mut h);
+        apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap();
+        assert_eq!(
+            h.calls,
+            [
+                "download",
+                "verify",
+                "restore_point",
+                "update_plugins",
+                "place",
+                "import",
+                "scheduler",
+                "tidy",
+                "accept",
+                "ready_to_switch"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot() {
+        let p = place("scheduler");
+        let mut h = fake();
+        h.scheduler_fails = true;
+        let plan = sealed(&p, &mut h);
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(err.contains("tidy failed"), "{err}");
+        // the import stays: no tidying, no throwing away, no taking back
+        assert_eq!(h.calls.last().map(String::as_str), Some("scheduler"));
+        assert!(
+            !h.calls
+                .iter()
+                .any(|c| c == "tidy" || c == "discard" || c == "roll_back"),
+            "{:?}",
+            h.calls
+        );
+        assert_eq!(mine(&h).done, STEPS[..4]);
+        assert_eq!(mine(&h).standing(), Ok(Standing::Kept(RestoreStep::Tidy)));
+    }
+
+    #[test]
+    fn an_import_without_its_plugins_or_its_listing_is_taken_back_unrun() {
+        for (what, word) in [
+            ("plugins", "import_plugin_missing"),
+            ("listing", "backup_not_visible"),
+        ] {
+            let p = place(&format!("import-{what}"));
+            let mut h = fake();
+            match what {
+                "plugins" => h.active = restoreimport::IMPORT_PLUGINS[0].to_owned(),
+                _ => h.listing = Some("No backups found.".to_owned()),
+            }
+            let plan = sealed(&p, &mut h);
+            let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+            assert!(err.contains(word), "{err}");
+            assert!(
+                !h.calls.iter().any(|c| c == "import"),
+                "{what}: {:?}",
+                h.calls
+            );
+            assert_eq!(h.calls.last().map(String::as_str), Some("roll_back"));
+            assert_eq!(mine(&h).standing(), Ok(Standing::RolledBack));
+        }
+    }
+
+    #[test]
+    fn an_import_the_plugin_did_not_call_complete_is_taken_back() {
+        let p = place("import-said");
+        let mut h = fake();
+        h.said = "Restoring\nError: could not open the archive\n".to_owned();
+        let plan = sealed(&p, &mut h);
+        let err = apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap_err();
+        assert!(err.contains("import_not_confirmed"), "{err}");
+        assert_eq!(h.calls.last().map(String::as_str), Some("roll_back"));
+        assert_eq!(mine(&h).done, STEPS[..3]);
+    }
+
+    #[test]
+    fn the_sites_disk_is_read_from_df_in_its_container() {
+        let df = "Filesystem     1024-blocks    Used Available Capacity Mounted on\n/dev/mapper/pve-vm--119--disk--0 16337788 4194304 11288380 28% /\n";
+        assert_eq!(
+            df_room(df),
+            Some(SiteRoom {
+                free: 11_288_380 * 1024,
+                used: 4_194_304 * 1024,
+            })
+        );
+        assert_eq!(
+            df_room("Dateisystem 1K-Blöcke Benutzt Verfügbar\n/dev/x 1 2 3 1% /\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_backup_of_another_site_of_the_customer_is_refused() {
+        let mut h = fake();
+        h.source.as_mut().unwrap().name = "example-shop-20261101-101010-ab12cd.wpress".to_owned();
+        // the second level lets it through for www.example.com ...
+        assert_eq!(plan_doc(&spec(), SOURCE, &mut h).unwrap()["next"], "start");
+        // ... unless it is the name of the customer's other site
+        h.siblings = vec!["www.example.shop".to_owned()];
+        assert_eq!(
+            plan_doc(&spec(), SOURCE, &mut h).unwrap()["stop"],
+            "backup_of_another_site"
+        );
+    }
+
+    #[test]
+    fn the_customers_other_sites_are_read_from_the_site_records() {
+        let d = scratch("siblings");
+        let sites = d.join("sites");
+        fs::create_dir_all(&sites).unwrap();
+        let rec = |code: &str, ct: u32, hosts: &str, tenant: Option<&str>| {
+            let mut v = json!({
+                "site": code, "ct": ct, "ip": format!("10.77.0.{}", ct - 100), "hosts": hosts,
+                "wp": 1, "locale": "en_US", "created": "2026-01-01T00:00:00Z", "template": 900,
+                "limits": { "cores": 2, "cpulimit_x100": 200, "memory_mb": 1024, "swap_mb": 512, "pids_max": 512 }
+            });
+            if let Some(t) = tenant {
+                v["tenant_id"] = json!(t);
+            }
+            fs::write(sites.join(format!("{code}.json")), v.to_string()).unwrap();
+        };
+        rec("site9", 119, "www.example.com", Some("t1"));
+        rec("site8", 118, "example.shop,shop.example.net", Some("t1"));
+        rec("site7", 117, "other.shop", Some("t2"));
+        rec("site6", 116, "nobody.shop", None);
+        let mut host = HostRestorer {
+            records: d.join("restores"),
+            sites: sites.clone(),
+            ct: 119,
+        };
+        assert_eq!(
+            host.sibling_domains("site9"),
+            Ok(vec![
+                "example.shop".to_owned(),
+                "shop.example.net".to_owned()
+            ])
+        );
+        assert_eq!(
+            host.sibling_domains("site6"),
+            Ok(Vec::new()),
+            "no customer, no siblings"
+        );
+        fs::write(sites.join("site5.json"), "{not json").unwrap();
+        assert!(host.sibling_domains("site9").is_err());
     }
 }
