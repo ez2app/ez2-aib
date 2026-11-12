@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S13), hands what it saw to `aib_cloud::verify`, prints the
-//! verdicts. Nothing here writes, enters a CT or opens a connection; `--active` checks are
-//! a later slice.
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S14), hands what it saw to `aib_cloud::verify`, prints the
+//! verdicts. Nothing here writes or opens a connection; `--active` checks are a later
+//! slice. One check enters a site's container: S14 asks its scheduler timer's state and
+//! lists the site software's scheduled events as the site's own user, without the
+//! customer's plugins and theme, each with a time limit and a cap on what is read. Nothing
+//! is run inside a quarantined container: S14 is left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -20,6 +23,8 @@ use aib_cloud::verify::{self, CheckResult, DiskUse, EntrySudoers, Outcome, SiteS
 use serde_json::{json, Value};
 
 use crate::probe::run_capture;
+use crate::sitecreatecmd::{Runner, CT_OUT_MAX};
+use crate::siteidentity::{cron_unit, in_ct, wp};
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const THIN_POOL: &str = "vg0/data";
@@ -29,6 +34,67 @@ const DUMP_DIR: &str = "/var/lib/vz";
 const CLUSTER_FW: &str = "/etc/pve/firewall/cluster.fw";
 const HOST_HEALTH: &str = "/run/ez2-host-health.json";
 const REBOOT_REQUIRED: &str = "/var/run/reboot-required";
+/// How long one read inside a site's container may take (S14).
+const CT_SECONDS: u64 = 20;
+/// The site software's scheduled events, when each is due. The events are stored with the
+/// site: none of the customer's plugins or theme has to run to list them.
+pub(crate) const CRON_LIST: [&str; 7] = [
+    "cron",
+    "event",
+    "list",
+    "--fields=time",
+    "--format=csv",
+    "--skip-plugins",
+    "--skip-themes",
+];
+
+/// Reads inside a site's container: a time limit, a cap on what is read, nothing fed in.
+struct CtReader;
+
+impl Runner for CtReader {
+    fn run(&mut self, argv: &[String]) -> Result<String, String> {
+        let (program, args) = argv.split_first().ok_or("an empty command")?;
+        let mut cmd = Command::new(program);
+        cmd.args(args).env("LC_ALL", "C");
+        crate::probe::run_bounded_input(&mut cmd, Duration::from_secs(CT_SECONDS), CT_OUT_MAX, b"")
+    }
+}
+
+/// Whether S14 is looked at for a site in this state: nothing is run inside a quarantined
+/// container (Andy 11-10).
+fn s14_runs_in(state: SiteState) -> bool {
+    state != SiteState::Quarantined
+}
+
+/// S14 for one site: its scheduler timer's state and its scheduled events, read inside its
+/// container, judged by `aib_cloud::verify::s14_wp_cron` against `red_after` seconds.
+/// Whatever could not be read is passed on as `None`.
+pub(crate) fn s14_check(
+    runner: &mut impl Runner,
+    spec: &aib_cloud::site::SiteSpec,
+    now: u64,
+    red_after: u64,
+) -> CheckResult {
+    let timer = format!("{}.timer", cron_unit(&spec.code));
+    let shown = runner
+        .run(&in_ct(
+            spec.ct,
+            &[
+                "systemctl",
+                "show",
+                &timer,
+                "-p",
+                "LoadState",
+                "-p",
+                "UnitFileState",
+                "-p",
+                "ActiveState",
+            ],
+        ))
+        .ok();
+    let events = runner.run(&wp(spec, &CRON_LIST)).ok();
+    verify::s14_wp_cron(now, red_after, shown.as_deref(), events.as_deref())
+}
 
 /// Run a read-only command; `None` when it could not be run, timed out or failed.
 fn observe(program: &str, args: &[&str], seconds: u64) -> Option<String> {
@@ -270,7 +336,7 @@ pub(crate) fn site_checks(
                 .count(),
         )
     });
-    let results = vec![
+    let mut results = vec![
         verify::s01_ct_status(state, status.as_deref()),
         verify::s02_unprivileged(config.as_deref()),
         verify::s03_firewall_attached(config.as_deref(), ct_fw.as_deref()),
@@ -294,6 +360,14 @@ pub(crate) fn site_checks(
         verify::s12_hwaddr(config.as_deref()),
         verify::s13_no_ipv6(config.as_deref()),
     ];
+    if s14_runs_in(state) {
+        results.push(s14_check(
+            &mut CtReader,
+            &spec,
+            crate::probe::unix_now(),
+            verify::WP_CRON_OVERDUE_RED,
+        ));
+    }
     (name, Some(spec.ct), results)
 }
 
@@ -492,7 +566,7 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len(), 11);
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");
@@ -546,5 +620,92 @@ mod tests {
             ["root ALL=(ALL) ALL\n", "a\n", "b\n"]
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A container that answers each command from a table, and keeps what was asked.
+    struct Ct {
+        asked: Vec<String>,
+        show: Result<&'static str, ()>,
+        events: Result<&'static str, ()>,
+    }
+
+    impl Runner for Ct {
+        fn run(&mut self, argv: &[String]) -> Result<String, String> {
+            let line = argv.join(" ");
+            self.asked.push(line.clone());
+            let answer = if line.contains(" systemctl show ") {
+                self.show
+            } else if line.contains(" cron event list ") {
+                self.events
+            } else {
+                Err(())
+            };
+            answer.map(str::to_owned).map_err(|()| "failed".to_owned())
+        }
+    }
+
+    fn spec() -> aib_cloud::site::SiteSpec {
+        aib_cloud::site::SiteSpec::new(
+            "s-wpcron",
+            131,
+            31,
+            &["new.example.test"],
+            true,
+            "zh_TW",
+            aib_cloud::site::Limits::START,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn s14_is_not_run_in_a_quarantined_container() {
+        assert!(!s14_runs_in(SiteState::Quarantined));
+        assert!(s14_runs_in(SiteState::Active));
+        assert!(s14_runs_in(SiteState::Suspended));
+    }
+
+    const ON: &str = "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n";
+
+    #[test]
+    fn s14_reads_the_timer_and_the_events_inside_the_container() {
+        let now = 1_000_000;
+        let mut ct = Ct {
+            asked: Vec::new(),
+            show: Ok(ON),
+            events: Ok("time\n999000\n1000100\n"),
+        };
+        let r = s14_check(&mut ct, &spec(), now, 3600);
+        assert_eq!((r.id, r.outcome), ("S14", Outcome::Green));
+        assert_eq!(
+            ct.asked[0],
+            "pct exec 131 -- systemctl show wpcron-s-wpcron.timer -p LoadState -p UnitFileState -p ActiveState"
+        );
+        // as the site's own user, without the customer's plugins and theme
+        assert_eq!(
+            ct.asked[1],
+            "pct exec 131 -- sudo -u s-wpcron -H /usr/local/bin/wp --path=/var/www/s-wpcron cron event list --fields=time --format=csv --skip-plugins --skip-themes"
+        );
+        // an event an hour and more late is red, with the limit the caller gives
+        ct.events = Ok("time\n990000\n");
+        assert_eq!(
+            s14_check(&mut ct, &spec(), now, 3600).outcome,
+            Outcome::Red("overdue")
+        );
+        assert_eq!(
+            s14_check(&mut ct, &spec(), now, 20_000).outcome,
+            Outcome::Green
+        );
+        // what could not be read is unknown, not green
+        ct.events = Err(());
+        assert_eq!(
+            s14_check(&mut ct, &spec(), now, 3600).outcome,
+            Outcome::Unknown("events_unread")
+        );
+        ct.events = Ok("time\n");
+        ct.show = Err(());
+        assert_eq!(
+            s14_check(&mut ct, &spec(), now, 3600).outcome,
+            Outcome::Unknown("timer_unread")
+        );
     }
 }

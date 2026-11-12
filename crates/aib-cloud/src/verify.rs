@@ -15,7 +15,8 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! Passive host checks: H01–H10, H12–H14. Passive site checks: S01–S06. Still to come:
+//! Passive host checks: H01–H10, H12–H15. Passive site checks: S01–S06, S10–S13 (the mask) and S14 (the
+//! site software's scheduled events run: f1fae's ten-category map, class 6). Still to come:
 //! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
 //! the `--active` checks.
 
@@ -928,6 +929,106 @@ pub fn s05_limits(spec: &SiteSpec, pct_config: Option<&str>) -> CheckResult {
         Outcome::Green
     };
     result("S05", outcome)
+}
+
+/// S14: how long the most overdue scheduled event of the site software may wait before it
+/// is red. The timer runs the due events every five minutes; an hour is twelve runs missed.
+pub const WP_CRON_OVERDUE_RED: u64 = 3600;
+
+/// The state of the site's scheduler timer in its container, from `systemctl show <timer>
+/// -p LoadState -p UnitFileState -p ActiveState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CronTimer {
+    /// No such unit: the site software's events run only when a page is visited, or never.
+    Missing,
+    /// The unit is there and not both enabled and active (or masked, or broken).
+    Off,
+    /// Enabled and active.
+    On,
+}
+
+/// The three `KEY=value` lines of `systemctl show`, in any order, each once. Anything else
+/// in the output, or a load state not known here, is `None`: not understood.
+pub fn parse_cron_timer(text: &str) -> Option<CronTimer> {
+    let (mut load, mut file, mut active) = (None, None, None);
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (key, value) = line.split_once('=')?;
+        let slot = match key {
+            "LoadState" => &mut load,
+            "UnitFileState" => &mut file,
+            "ActiveState" => &mut active,
+            _ => return None,
+        };
+        if slot.replace(value).is_some() {
+            return None;
+        }
+    }
+    match (load?, file?, active?) {
+        ("not-found", _, _) => Some(CronTimer::Missing),
+        ("loaded", "enabled", "active") => Some(CronTimer::On),
+        ("loaded" | "masked" | "bad-setting" | "error", _, _) => Some(CronTimer::Off),
+        _ => None,
+    }
+}
+
+/// When each scheduled event is due, from `wp cron event list --fields=time --format=csv`:
+/// a `time` header, then one number of seconds since the epoch per line. No events is an
+/// empty list; any other line is `None`, never a list with that line left out.
+pub fn parse_cron_times(text: &str) -> Option<Vec<u64>> {
+    let mut times = Vec::new();
+    for (i, line) in text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .enumerate()
+    {
+        if i == 0 && line == "time" {
+            continue;
+        }
+        if !line.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        times.push(line.parse().ok()?);
+    }
+    Some(times)
+}
+
+/// S14: the site software's scheduled events run. The timer that runs them must be there,
+/// enabled and active, and the event that has waited longest past its time must not have
+/// waited more than `red_after` seconds ([`WP_CRON_OVERDUE_RED`] on a host). `timer` is
+/// the `systemctl show` output and `events` the event list; `None` when either could not
+/// be read. Red from either side is red; otherwise anything not read or not understood is
+/// unknown, never green.
+pub fn s14_wp_cron(
+    now: u64,
+    red_after: u64,
+    timer: Option<&str>,
+    events: Option<&str>,
+) -> CheckResult {
+    let timer = match timer.map(parse_cron_timer) {
+        None => Err("timer_unread"),
+        Some(None) => Err("timer_unparsed"),
+        Some(Some(CronTimer::Missing)) => return result("S14", Outcome::Red("no_timer")),
+        Some(Some(CronTimer::Off)) => return result("S14", Outcome::Red("timer_off")),
+        Some(Some(CronTimer::On)) => Ok(()),
+    };
+    let late = match events.map(parse_cron_times) {
+        None => Err("events_unread"),
+        Some(None) => Err("events_unparsed"),
+        // an event not yet due is not late; the one due longest ago is the latest
+        Some(Some(times)) => Ok(times
+            .iter()
+            .filter(|t| **t <= now)
+            .map(|t| now - t)
+            .max()
+            .unwrap_or(0)),
+    };
+    let outcome = match (timer, late) {
+        (_, Ok(late)) if late > red_after => Outcome::Red("overdue"),
+        (Err(code), _) | (_, Err(code)) => Outcome::Unknown(code),
+        (Ok(()), Ok(_)) => Outcome::Green,
+    };
+    result("S14", outcome)
 }
 
 /// The state a record or an operator names; anything else is refused.
@@ -1912,5 +2013,98 @@ mod tests {
         assert_eq!(s06_drift(Some(0)).outcome, Outcome::Green);
         assert_eq!(s06_drift(Some(2)).outcome, Outcome::Red("drift"));
         assert_eq!(s06_drift(None).outcome, Outcome::Unknown("unread"));
+    }
+
+    const SHOW_ON: &str = "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n";
+
+    #[test]
+    fn s14_the_timer_must_be_there_enabled_and_active() {
+        let s14 = |timer: &str| s14_wp_cron(10_000, 3600, Some(timer), Some("time\n")).outcome;
+        assert_eq!(s14(SHOW_ON), Outcome::Green);
+        // any order, as systemctl prints them
+        assert_eq!(
+            s14("ActiveState=active\nLoadState=loaded\nUnitFileState=enabled"),
+            Outcome::Green
+        );
+        assert_eq!(
+            s14("LoadState=not-found\nUnitFileState=\nActiveState=inactive\n"),
+            Outcome::Red("no_timer")
+        );
+        for off in [
+            "LoadState=loaded\nUnitFileState=disabled\nActiveState=active\n",
+            "LoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\n",
+            "LoadState=masked\nUnitFileState=masked\nActiveState=inactive\n",
+        ] {
+            assert_eq!(s14(off), Outcome::Red("timer_off"), "{off}");
+        }
+        // what is not the three lines, each once, is not understood
+        for odd in [
+            "",
+            "LoadState=loaded\nUnitFileState=enabled\n",
+            "LoadState=loaded\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active",
+            "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\nId=x.timer",
+            "LoadState=weird\nUnitFileState=enabled\nActiveState=active",
+            "Failed to connect to bus",
+        ] {
+            assert_eq!(s14(odd), Outcome::Unknown("timer_unparsed"), "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn s14_an_event_waiting_past_the_limit_is_red() {
+        let now = 1_000_000;
+        let s14 = |events: &str| s14_wp_cron(now, 3600, Some(SHOW_ON), Some(events)).outcome;
+        assert_eq!(s14("time\n"), Outcome::Green);
+        assert_eq!(s14(""), Outcome::Green);
+        // due a little ago, and some not yet due: fine
+        assert_eq!(s14("time\n999700\n1000300\n2000000\n"), Outcome::Green);
+        assert_eq!(s14("time\n996400\n"), Outcome::Green);
+        // the oldest due one decides, wherever it is in the list
+        assert_eq!(s14("time\n999900\n996399\n"), Outcome::Red("overdue"));
+        assert_eq!(s14("time\n0\n"), Outcome::Red("overdue"));
+        // the limit is the caller's
+        assert_eq!(
+            s14_wp_cron(now, 60, Some(SHOW_ON), Some("time\n999900\n")).outcome,
+            Outcome::Red("overdue")
+        );
+        // late events are red even when the timer could not be read
+        assert_eq!(
+            s14_wp_cron(now, 3600, None, Some("time\n1\n")).outcome,
+            Outcome::Red("overdue")
+        );
+    }
+
+    #[test]
+    fn s14_what_cannot_be_read_is_unknown_never_green() {
+        let now = 1_000_000;
+        assert_eq!(
+            s14_wp_cron(now, 3600, None, Some("time\n")).outcome,
+            Outcome::Unknown("timer_unread")
+        );
+        assert_eq!(
+            s14_wp_cron(now, 3600, Some(SHOW_ON), None).outcome,
+            Outcome::Unknown("events_unread")
+        );
+        for odd in [
+            "time\nPHP Warning: something\n999990\n",
+            "999990\nsoon\n",
+            "time\n-5\n",
+            "time\n+999990\n",
+            "time\n99999999999999999999999\n",
+            "hook,time\nwp_version_check,999990\n",
+        ] {
+            assert_eq!(
+                s14_wp_cron(now, 3600, Some(SHOW_ON), Some(odd)).outcome,
+                Outcome::Unknown("events_unparsed"),
+                "{odd:?}"
+            );
+        }
+        // a missing timer is red whatever the events say
+        let missing = "LoadState=not-found\nUnitFileState=\nActiveState=inactive";
+        assert_eq!(
+            s14_wp_cron(now, 3600, Some(missing), None).outcome,
+            Outcome::Red("no_timer")
+        );
+        assert_eq!(parse_cron_times("time\n5\n6\n"), Some(vec![5, 6]));
     }
 }
