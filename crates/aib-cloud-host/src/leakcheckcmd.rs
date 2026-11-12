@@ -767,7 +767,7 @@ mod tests {
             "cpu_dir" => (s("2\n"), 0),
             "hw_lists" => (s("ls: cannot access '/sys/block': No such file or directory\n"), 0),
             "hostname" => (s("s-abc123\ns-abc123\n"), 0),
-            "resolv" => (s("search invalid\nnameserver 1.1.1.1\n"), 0),
+            "resolv" => (s("search invalid\nnameserver 1.1.1.1\n"), 0), // ip-literal-ok: public resolver in a probe fixture, never a host of ours
             "hosts" => (mask::hosts_text("s-abc123").unwrap(), 0),
             "mac" => (s("06:aa:bb:cc:dd:ee\n"), 0),
             "ip6" => (s(""), 0),
@@ -1000,7 +1000,7 @@ mod tests {
             ("cmdline", "118\n", 0),
             ("cpu_dir", "12\n", 0),
             ("hw_lists", "/sys/block:\ndm-0\ndm-1\n", 0),
-            ("resolv", "# --- BEGIN PVE ---\nsearch example.ts.net\nnameserver 1.1.1.1\n# --- END PVE ---\n", 0),
+            ("resolv", "# --- BEGIN PVE ---\nsearch example.ts.net\nnameserver 1.1.1.1\n# --- END PVE ---\n", 0), // ip-literal-ok: public resolver in a probe fixture, never a host of ours
             ("resolv", "search invalid\nnameserver 10.77.0.1\n", 0),
             ("hosts", "127.0.0.1 localhost\n10.77.0.12 s-abc123.lan s-abc123\n", 0),
             ("mac", "00:11:22:33:44:55\n", 0),
@@ -1117,7 +1117,7 @@ mod tests {
             "tail0abc",
             "PRIVATE-ANSWER",
             "vCPU",
-            "1.1.1.1",
+            "1.1.1.1", // ip-literal-ok: resolver value that must not reach stdout, never a host of ours
         ] {
             assert!(!printed.contains(v), "{v} reached stdout: {printed}");
         }

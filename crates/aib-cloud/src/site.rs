@@ -58,6 +58,12 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// The disk a new site starts with, in GiB (Andy 11-12 13:07: 10 GB, was 20). Shown, not
+/// judged: [`crate::quota`] counts a record that names no `disk_gb` at this size. The size
+/// a new container really gets is the template's (CT 900), a host setting this code does
+/// not write.
+pub const START_DISK_GB: u32 = 10;
+
 /// Resource limits of one site CT. The numbers are **guarantees for the test tier**
 /// (§23: the customer-facing plan ceiling is shown, not reserved); every field is bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1148,7 +1154,7 @@ mod tests {
         assert!(limits_differ(&spec, "").is_err());
     }
 
-    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
+    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 192.0.2.53\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
 
     #[test]
     fn s1_spec_refuses_each_bad_input() {

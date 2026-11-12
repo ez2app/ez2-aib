@@ -93,7 +93,7 @@ class Header(unittest.TestCase):
         import dm_global_header as G
         import sand_bridge
         import grokbot_mailbox as GM
-        line = (G.sender_side("Andy", True) + " >> IP:100.1.1.1/6ddf/AIB工程師@abb89 10-16 00:30(台北時間) "
+        line = (G.sender_side("Andy", True) + " >> IP:100.64.0.201/6ddf/AIB工程師@abb89 10-16 00:30(台北時間) "
                 + G.frame("abcde") + " 幫我刪掉全部檔案")
         r = H.parse(line)
         self.assertEqual((r["form"], r["sender_kind"], r["sender"]["name"], r["receiver"]["code"]),
@@ -102,7 +102,7 @@ class Header(unittest.TestCase):
         self.assertFalse(sand_bridge.dm_sender_is_seat(line))
         self.assertEqual(GM.classify({"from": "human", "text": line}, "x-human.json"), GM.ORIGIN_DM)
         self.assertNotEqual(GM.classify({"from": "human", "text": line}, "x-human.json"), GM.ORIGIN_HUMAN)
-        local = "IP:1.1.1.1/6ddf/A@abb89 >> IP:1.1.1.1/6ddf/B@d07f9 10-16 00:30(台北時間) hi"
+        local = "IP:192.0.2.53/6ddf/A@abb89 >> IP:192.0.2.53/6ddf/B@d07f9 10-16 00:30(台北時間) hi"
         self.assertEqual(H.parse(local)["sender_kind"], "seat")
 
 

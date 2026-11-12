@@ -63,7 +63,7 @@ class Core(RT.CoreBox):
         import dm_global_header as G
         rec, iid = self.delivered_item(content="這是一封全球來信")
         code = self.item(iid)["global"]["reply_code"]
-        head = G.sender_side("Bob", True) + " >> IP:100.1.1.1/6ddf/收件席@%s 10-16 01:30(台北時間) " % self.seat
+        head = G.sender_side("Bob", True) + " >> IP:100.64.0.201/6ddf/收件席@%s 10-16 01:30(台北時間) " % self.seat
         wrong = head + G.frame("zzzzz") + " 這是一封全球來信"
         self.assertEqual(CB.mark_queue_read(self.seat, [{"text": wrong}], env=self.env), 0)
         right = head + G.frame(code) + " 這是一封全球來信"
