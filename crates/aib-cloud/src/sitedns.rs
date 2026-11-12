@@ -25,12 +25,15 @@
 //!   address ([`Target::Origin`]). The host may name one fixed entry name in its settings
 //!   instead; then each record is a CNAME to that name ([`Target::Entry`]), so a lookup of
 //!   the customer's name shows the entry name and no address of ours. The name is the
-//!   host's setting, never written in this code. A site opened one way and asked again
-//!   the other way stops ([`MARKED_DIFFERS`]): switching is a change of its own.
+//!   host's setting, never written in this code. Whether a zone gets the CNAME is decided
+//!   per zone ([`target_for`]): only when the host also names the entry's own account and
+//!   the zone is in it, and no name of the site has a record that is not this site's;
+//!   otherwise A records, with the word for why. A site's record already written as an A
+//!   record reads back as done either way.
 //!   **Not solved here (PLAN-e6 question 15):** a CNAME to a proxied name in another
-//!   Cloudflare account is refused by Cloudflare (error 1014, cross-account). A customer
-//!   zone that is not in the same account as the entry name must be confirmed first, or
-//!   go through Cloudflare for SaaS; until then the entry setting stays off for it.
+//!   Cloudflare account is refused by Cloudflare (error 1014, cross-account). Such a zone
+//!   gets A records ([`ENTRY_SKIPPED_OTHER_ACCOUNT`]); a CNAME for it would need
+//!   Cloudflare for SaaS, which this code does not do.
 //! * **Only five calls.** [`allowed`] is the whole list of Cloudflare calls this code may
 //!   make: list an account's zones by name, read a zone's SSL mode, list a zone's records,
 //!   add one record, proxied, carrying a site's mark (an A record to a public address, or,
@@ -94,34 +97,85 @@ pub const ENTRY_UNSET: &str = "dns_entry_unset";
 pub enum Target<'a> {
     /// An A record to the host's own public address: the default.
     Origin(&'a str),
-    /// A CNAME to the one entry name the host's settings give.
-    Entry(&'a str),
+    /// A CNAME to the one entry name the host's settings give. `origin` is the host's
+    /// address all the same: a record of the site already written as an A record to it
+    /// reads back as done (c477a S5 L1), it is not rewritten.
+    Entry { name: &'a str, origin: &'a str },
 }
+
+/// The host has an entry name but no account id for it (`CF_ENTRY_ACCOUNT`), or one that
+/// is not an id: whether a zone is in the entry's account cannot be told, so A records.
+pub const ENTRY_SKIPPED_NO_ACCOUNT: &str = "entry_skipped_no_account";
+/// The zone is in another Cloudflare account than the entry name: a CNAME to it would be
+/// refused by Cloudflare (error 1014), so A records.
+pub const ENTRY_SKIPPED_OTHER_ACCOUNT: &str = "entry_skipped_other_account";
+/// A name of the site already has a record that is not this site's (a TXT, an MX, any):
+/// Cloudflare refuses a CNAME beside it, so A records (c477a S5 N1).
+pub const ENTRY_SKIPPED_NAME_IN_USE: &str = "entry_skipped_name_in_use";
 
 impl Target<'_> {
     /// The record type written.
     pub fn kind(&self) -> &'static str {
         match self {
             Target::Origin(_) => "A",
-            Target::Entry(_) => "CNAME",
+            Target::Entry { .. } => "CNAME",
         }
     }
 
     /// What the record holds.
     pub fn content(&self) -> &str {
         match self {
-            Target::Origin(o) | Target::Entry(o) => o,
+            Target::Origin(o) => o,
+            Target::Entry { name, .. } => name,
         }
     }
 
-    /// Whether a listed record points here: the same type, and the same address (an A
-    /// record) or the same name, no case and no final dot (a CNAME).
+    /// Whether a listed record points here, judged by the record's own type: an A record
+    /// to the host's address, or (with an entry name) a CNAME to that name, no case and no
+    /// final dot.
     pub fn is(&self, r: &Record) -> bool {
         match self {
             Target::Origin(o) => r.kind == "A" && r.content == *o,
-            Target::Entry(e) => r.kind == "CNAME" && same_name(&r.content, e),
+            Target::Entry { name, origin } => {
+                (r.kind == "CNAME" && same_name(&r.content, name))
+                    || (r.kind == "A" && r.content == *origin)
+            }
         }
     }
+}
+
+/// Where zone `zone`'s records for site `code` point, and why the entry name was passed
+/// over when it was (E6 S5, c477a L1 / N1). Without an entry name: the host's address,
+/// nothing to say. With one, a CNAME only when the host names the entry's own account
+/// (`entry_account`), the zone is in that same account, and no name of the site has any
+/// record that is not this site's (`records`, the zone's whole listing). Anything else is
+/// the host's address and the word for why: never a stop, never a CNAME Cloudflare would
+/// refuse or answer with 1014.
+pub fn target_for<'a>(
+    zone: &Zone,
+    names: &[&str],
+    records: &[Record],
+    code: &str,
+    origin: &'a str,
+    entry: Option<&'a str>,
+    entry_account: Option<&str>,
+) -> (Target<'a>, Option<&'static str>) {
+    let address = Target::Origin(origin);
+    let Some(name) = entry else {
+        return (address, None);
+    };
+    if !entry_account.is_some_and(valid_id) {
+        return (address, Some(ENTRY_SKIPPED_NO_ACCOUNT));
+    }
+    if entry_account != Some(zone.account.as_str()) {
+        return (address, Some(ENTRY_SKIPPED_OTHER_ACCOUNT));
+    }
+    let mark = dns_marker(code);
+    let in_use = |r: &Record| r.comment != mark && names.iter().any(|n| same_name(&r.name, n));
+    if records.iter().any(in_use) {
+        return (address, Some(ENTRY_SKIPPED_NAME_IN_USE));
+    }
+    (Target::Entry { name, origin }, None)
 }
 
 /// The records listing is asked this many at a time.
@@ -567,14 +621,16 @@ pub fn plan_to(
     code: &str,
     target: Target<'_>,
 ) -> DnsPlan {
-    match target {
-        Target::Origin(o) if !valid_origin(o) => return DnsPlan::Stop(ORIGIN_UNSET),
-        Target::Entry(e)
-            if !crate::edge::valid_domain(e) || names.iter().any(|n| same_name(n, e)) =>
-        {
-            return DnsPlan::Stop(ENTRY_UNSET)
+    let origin = match target {
+        Target::Origin(o) | Target::Entry { origin: o, .. } => o,
+    };
+    if !valid_origin(origin) {
+        return DnsPlan::Stop(ORIGIN_UNSET);
+    }
+    if let Target::Entry { name, .. } = target {
+        if !crate::edge::valid_domain(name) || names.iter().any(|n| same_name(n, name)) {
+            return DnsPlan::Stop(ENTRY_UNSET);
         }
-        _ => {}
     }
     let Some(records) = records else {
         return DnsPlan::Stop(UNREADABLE);
@@ -1300,7 +1356,10 @@ mod tests {
             &names,
             Some(&[][..]),
             "s-abc123",
-            Target::Entry(ENTRY),
+            Target::Entry {
+                name: ENTRY,
+                origin: ORIGIN,
+            },
         );
         let DnsPlan::Add(add) = got.clone() else {
             panic!("{got:?}");
@@ -1349,7 +1408,10 @@ mod tests {
                 &names,
                 Some(&there[..]),
                 "s-abc123",
-                Target::Entry(ENTRY)
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN
+                }
             ),
             DnsPlan::Done
         );
@@ -1414,13 +1476,25 @@ mod tests {
                 &["example.com"],
                 Some(r),
                 "s-abc123",
-                Target::Entry(ENTRY),
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN,
+                },
             )
         };
         assert_eq!(to_entry(&r[..]), DnsPlan::Stop(MARKED_DIFFERS));
-        // a site opened with an A record asked again with the entry: a change of its own
+        // judged by the record's own type: this site's A record to the host is done as it
+        // is, one to another address is not ours as written (c477a S5 L1)
         let a = [rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123")];
-        assert_eq!(to_entry(&a[..]), DnsPlan::Stop(MARKED_DIFFERS));
+        assert_eq!(to_entry(&a[..]), DnsPlan::Done);
+        let moved = [rec(
+            "A",
+            "example.com",
+            "198.51.100.7",
+            true,
+            "ez2:site:s-abc123",
+        )];
+        assert_eq!(to_entry(&moved[..]), DnsPlan::Stop(MARKED_DIFFERS));
         // an entry name that is not a name, or is one of the site's own names
         for e in ["not a name", "example.com", "Example.com."] {
             assert_eq!(
@@ -1429,12 +1503,108 @@ mod tests {
                     &["example.com"],
                     Some(&[][..]),
                     "s-abc123",
-                    Target::Entry(e)
+                    Target::Entry {
+                        name: e,
+                        origin: ORIGIN
+                    }
                 ),
                 DnsPlan::Stop(ENTRY_UNSET),
                 "{e}"
             );
         }
+    }
+
+    #[test]
+    fn a_zone_in_another_account_falls_back_to_a() {
+        let names = ["example.com", "www.example.com"];
+        let theirs = zone("example.com", "active", OTHER);
+        let (t, why) = target_for(
+            &theirs,
+            &names,
+            &[],
+            "s-abc123",
+            ORIGIN,
+            Some(ENTRY),
+            Some(ACC),
+        );
+        assert_eq!(
+            (t, why),
+            (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_OTHER_ACCOUNT))
+        );
+        // the plan for it is the A records, not a stop
+        let DnsPlan::Add(add) = plan_to("example.com", &names, Some(&[][..]), "s-abc123", t) else {
+            panic!("not an add");
+        };
+        assert!(add.iter().all(|r| r.kind == "A" && r.content == ORIGIN));
+        // the same account: the CNAME
+        let ours = zone("example.com", "active", ACC);
+        assert_eq!(
+            target_for(
+                &ours,
+                &names,
+                &[],
+                "s-abc123",
+                ORIGIN,
+                Some(ENTRY),
+                Some(ACC)
+            ),
+            (
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN
+                },
+                None
+            )
+        );
+        // no entry name: the address, nothing to say
+        assert_eq!(
+            target_for(&ours, &names, &[], "s-abc123", ORIGIN, None, Some(ACC)),
+            (Target::Origin(ORIGIN), None)
+        );
+    }
+
+    #[test]
+    fn no_entry_account_means_no_cname() {
+        let names = ["example.com"];
+        let ours = zone("example.com", "active", ACC);
+        for account in [None, Some(""), Some("not-an-id")] {
+            assert_eq!(
+                target_for(&ours, &names, &[], "s-abc123", ORIGIN, Some(ENTRY), account),
+                (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_NO_ACCOUNT)),
+                "{account:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_in_use_falls_back_to_a() {
+        let names = ["example.com", "www.example.com"];
+        let ours = zone("example.com", "active", ACC);
+        let pick =
+            |r: &[Record]| target_for(&ours, &names, r, "s-abc123", ORIGIN, Some(ENTRY), Some(ACC));
+        for other in [
+            rec("TXT", "www.example.com", "v=spf1 -all", false, ""),
+            rec("MX", "WWW.example.com.", "mail.example.net", false, ""),
+            rec("TXT", "example.com", "hello", false, "ez2:site:s-other1"),
+        ] {
+            assert_eq!(
+                pick(&[other.clone()]),
+                (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_NAME_IN_USE)),
+                "{other:?}"
+            );
+        }
+        // this site's own records and records under other names do not count
+        let fine = [
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec("TXT", "mail.example.com", "v=spf1 -all", false, ""),
+        ];
+        assert_eq!(
+            pick(&fine[..]).0,
+            Target::Entry {
+                name: ENTRY,
+                origin: ORIGIN
+            }
+        );
     }
 
     #[test]

@@ -1711,13 +1711,25 @@ jobs:
              '            Some("CNAME") => m["content"].as_str().is_some_and(|c| !c.is_empty() || to_entry(c)), // knife' \
              a_cname_elsewhere_is_refused
           # E6 S5: this site's CNAME pointing elsewhere counts as the step done
-          ck sitedns.rs '            Target::Entry(e) => r.kind == "CNAME" && same_name(&r.content, e),' \
-             '            Target::Entry(e) => r.kind == "CNAME" && !e.is_empty(), // knife' \
+          ck sitedns.rs '                (r.kind == "CNAME" && same_name(&r.content, name))' \
+             '                (r.kind == "CNAME" && !name.is_empty()) // knife' \
              a_cname_elsewhere_is_refused
           # E6 S5: an entry name that is one of the site's own names is used
-          ck sitedns.rs '            if !crate::edge::valid_domain(e) || names.iter().any(|n| same_name(n, e)) =>' \
-             '            if !crate::edge::valid_domain(e) => // knife' \
+          ck sitedns.rs '        if !crate::edge::valid_domain(name) || names.iter().any(|n| same_name(n, name)) {' \
+             '        if !crate::edge::valid_domain(name) { // knife' \
              a_cname_elsewhere_is_refused
+          # E6 S5 (c477a L1): a zone in another account than the entry gets the CNAME (1014)
+          ck sitedns.rs '    if entry_account != Some(zone.account.as_str()) {' \
+             '    if entry_account != Some(zone.account.as_str()) && false { // knife' \
+             a_zone_in_another_account_falls_back_to_a
+          # E6 S5 (c477a L1): no entry account set still lets the CNAME be judged
+          ck sitedns.rs '    if !entry_account.is_some_and(valid_id) {' \
+             '    if !entry_account.is_some_and(valid_id) && false { // knife' \
+             no_entry_account_means_no_cname
+          # E6 S5 (c477a N1): a name with a TXT / MX that is not the site's gets a CNAME
+          ck sitedns.rs '    if records.iter().any(in_use) {' \
+             '    if records.iter().any(in_use) && false { // knife' \
+             a_name_in_use_falls_back_to_a
           # B5 DNS: a wildcard that answers for the name today is passed over
           ck sitedns.rs '            .any(|r| wildcard_covers(&r.name, name))' \
              '            .any(|r| wildcard_covers(&r.name, name) && false) // knife' \
@@ -3116,8 +3128,8 @@ jobs:
              '        let _ = &paths.creating; // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # B5 DNS: an add that does not read back counts as done
-          hk cfdns.rs '            != DnsPlan::Done' \
-             '            != DnsPlan::Done && false // knife' \
+          hk cfdns.rs '        if read_back != DnsPlan::Done {' \
+             '        if read_back != DnsPlan::Done && false { // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # E6 S5 (4542e): the host's entry name is not handed to the call check
           hk cfdns.rs '    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(entry.clone());' \
