@@ -58,6 +58,10 @@ pub struct HostCfg {
     pub order: i64,
     /// What this machine takes; `None` ⇒ everything.
     pub kinds: Option<Vec<String>>,
+    /// The maintainer's own working machine (11-12): picked only when every other eligible
+    /// machine is taken or unreachable, the CI runners are busy too (`github_busy`), and this
+    /// one is free and not loaded. `"ssh": "local"` reads it without ssh.
+    pub last_resort: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +159,10 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
             os: get("os").unwrap_or_else(|| "mac".into()),
             order: h.get("order").and_then(Value::as_i64).unwrap_or(i64::MAX),
             kinds,
+            last_resort: h
+                .get("last_resort")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         });
     }
     if out.is_empty() {
@@ -288,6 +296,61 @@ pub fn soonest<'a>(views: &[&'a HostView]) -> Option<&'a HostView> {
         .filter_map(|v| v.expect_end_epoch.or(v.expiry_epoch).map(|t| (t, v)))
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, v)| v)
+}
+
+/// `pick` for the regular machines; the last-resort ones only when every condition holds
+/// (the maintainer 11-12: the other machines and the CI runners all in use, this one not busy).
+/// Returns the pick, its rc, and why a last-resort machine was or was not used.
+pub fn pick_with_last_resort<'a>(
+    views: &[&'a HostView],
+    last_resort: &[&str],
+    github_busy: Option<bool>,
+) -> (Option<&'a str>, u8, Option<&'static str>) {
+    let is_lr = |v: &&HostView| last_resort.contains(&v.name.as_str());
+    let regular: Vec<&HostView> = views.iter().copied().filter(|v| !is_lr(v)).collect();
+    let (p, rc) = pick(&regular);
+    let lr: Vec<&HostView> = views.iter().copied().filter(is_lr).collect();
+    if p.is_some() || lr.is_empty() {
+        return (p, rc, None);
+    }
+    let why = match github_busy {
+        Some(true) => None,
+        Some(false) => Some("last_resort_skipped: CI runners are not all busy"),
+        None => Some("last_resort_skipped: could not read CI runner state"),
+    };
+    if let Some(w) = why {
+        return (p, rc, Some(w));
+    }
+    match lr.iter().find(|v| v.state == State::Free && !is_hot(v)) {
+        Some(v) => (Some(v.name.as_str()), RC_PICKED, Some("last_resort_used")),
+        None => (p, rc, Some("last_resort_skipped: busy or loaded")),
+    }
+}
+
+/// CI runners all in use = this repository has a run waiting for a runner. `None`: unknown.
+pub fn github_busy(repo: &str) -> Option<bool> {
+    let o = Command::new("gh")
+        .args([
+            "run",
+            "list",
+            "-R",
+            repo,
+            "--status",
+            "queued",
+            "--limit",
+            "1",
+            "--json",
+            "databaseId",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&o.stdout).ok()?;
+    v.as_array().map(|a| !a.is_empty())
 }
 
 /// The first free machine in order (views are already in config order), or why none.
@@ -453,6 +516,25 @@ pub fn ssh_args_via(h: &HostCfg, jump: Option<&str>) -> Vec<String> {
 }
 
 fn ask(h: &HostCfg) -> HostView {
+    if h.ssh == "local" {
+        let o = Command::new("sh")
+            .args(["-c", &remote_status_command()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        return match o {
+            Ok(o) => view(
+                &h.name,
+                o.status.code(),
+                &String::from_utf8_lossy(&o.stdout),
+            ),
+            Err(e) => {
+                let mut v = view(&h.name, None, "");
+                v.why = Some(format!("local probe not started: {e}"));
+                v
+            }
+        };
+    }
     let run = |jump: Option<&str>| {
         Command::new("ssh")
             .args(ssh_args_via(h, jump))
@@ -479,6 +561,18 @@ fn ask(h: &HostCfg) -> HostView {
             v
         }
     }
+}
+
+/// The CI runner state, asked only when the file has a last-resort machine and names
+/// `"github_repo"`; otherwise `None` (a last-resort machine is then never picked).
+pub fn github_state(path: &std::path::Path, cfg: &[HostCfg]) -> Option<bool> {
+    if !cfg.iter().any(|h| h.last_resort) {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let repo = v.get("github_repo")?.as_str()?;
+    github_busy(repo)
 }
 
 /// The hosts file, read and checked. `Err` names the file.
@@ -529,9 +623,20 @@ pub fn report(
     cfg: &[HostCfg],
     ok: &dyn Fn(&HostCfg) -> bool,
     me: Option<&str>,
+    github: Option<bool>,
 ) -> (Value, u8) {
     let el = eligible(views, cfg, ok);
-    let (picked, rc) = pick(&el);
+    let lr: Vec<&str> = cfg
+        .iter()
+        .filter(|h| h.last_resort)
+        .map(|h| h.name.as_str())
+        .collect();
+    let (picked, rc, lr_why) = pick_with_last_resort(&el, &lr, github);
+    // the ranking shows a last-resort machine only when it was the pick
+    let el: Vec<&HostView> = el
+        .into_iter()
+        .filter(|v| !lr.contains(&v.name.as_str()) || picked == Some(v.name.as_str()))
+        .collect();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -579,6 +684,7 @@ pub fn report(
                "recommended": best.map(|(v, _, _)| v.name.clone()),
                "recommended_eta_min": best.map(|(_, e, _)| (e * 10.0).round() / 10.0),
                "can_start_now": picked.is_some(),
+               "last_resort": lr_why, "github_busy": github,
                "why": why, "ranking": ranking}),
         rc,
     )
@@ -626,7 +732,8 @@ pub fn cli(argv: &[String]) -> u8 {
     let ok = |h: &HostCfg| {
         kind.as_deref().is_none_or(|k| takes(h, k)) && os.as_deref().is_none_or(|o| h.os == o)
     };
-    let (doc, rc) = report(&path, &views, &cfg, &ok, me.as_deref());
+    let gh = github_state(&path, &cfg);
+    let (doc, rc) = report(&path, &views, &cfg, &ok, me.as_deref(), gh);
     println!("{doc}");
     if want_pick {
         rc
@@ -742,9 +849,11 @@ pub fn resolve_any_host(argv: &[String]) -> Result<Vec<String>, u8> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    // the remote script is bash: never a windows machine; then what the machine takes
+    // the remote script is bash: never a windows machine; `run` always goes over ssh, so never
+    // the local last-resort machine (`hosts --pick` may name it; the caller then runs locally)
     let ok = |h: &HostCfg| {
         h.os != "windows"
+            && h.ssh != "local"
             && match kind.as_deref() {
                 Some(k) => takes(h, k),
                 None => takes(
@@ -756,7 +865,7 @@ pub fn resolve_any_host(argv: &[String]) -> Result<Vec<String>, u8> {
             }
     };
     let views = probe_all(&cfg, me.as_deref());
-    let (doc, _) = report(&path, &views, &cfg, &ok, me.as_deref());
+    let (doc, _) = report(&path, &views, &cfg, &ok, me.as_deref(), None);
     eprintln!("aib-lease: {doc}");
     let picked = doc["pick"]
         .as_str()
@@ -910,6 +1019,7 @@ mod tests {
             os: os.into(),
             order: 1,
             kinds: kinds.map(|k| k.iter().map(|s| s.to_string()).collect()),
+            last_resort: false,
         }
     }
 
@@ -962,6 +1072,7 @@ mod tests {
             &cfg,
             &ok,
             Some("@c477a"),
+            None,
         );
         assert_eq!(
             (doc["pick"].clone(), rc),
@@ -978,7 +1089,14 @@ mod tests {
         assert_eq!(doc["hosts"][0]["eligible"], false);
         // a short run may take the short machine
         let ok = |h: &HostCfg| h.os != "windows" && takes(h, "short");
-        let (doc, rc) = report(std::path::Path::new("/h.json"), &views, &cfg, &ok, None);
+        let (doc, rc) = report(
+            std::path::Path::new("/h.json"),
+            &views,
+            &cfg,
+            &ok,
+            None,
+            None,
+        );
         assert_eq!((doc["pick"].as_str(), rc), (Some("short"), RC_PICKED));
         assert_eq!(doc["queue_hint"], Value::Null);
     }
@@ -1052,6 +1170,7 @@ mod tests {
             os: "mac".into(),
             order: 1,
             kinds: None,
+            last_resort: false,
         };
         let a = v(&["--any-host", "--step", "x", "--", "echo", "--any-host"]);
         assert_eq!(wants_any_host(&a), Ok(true));
@@ -1090,6 +1209,7 @@ mod tests {
             os: "mac".into(),
             order: 1,
             kinds: None,
+            last_resort: false,
         };
         let a = ssh_args(&h);
         let j = a.join(" ");
@@ -1199,5 +1319,93 @@ mod tests {
             c.trim_end().ends_with("aib lease status --json"),
             "its rc is the command's"
         );
+    }
+
+    /// the maintainer 11-12: the working machine only when the other machines and the CI
+    /// runners are all in use, and it is free and not loaded
+    #[test]
+    fn last_resort_only_when_everything_else_is_taken() {
+        let free = view("x", Some(0), FREE);
+        let named = |n: &str, mut v: HostView| {
+            v.name = n.into();
+            v
+        };
+        let mut busy = free.clone();
+        busy.state = State::Busy;
+        let mut off = free.clone();
+        off.state = State::Offline;
+        let mut hot = free.clone();
+        hot.cores = Some(8.0);
+        hot.load1 = Some(20.0);
+        let a = named("a", busy.clone());
+        let b = named("b", off.clone());
+        let pro = named("pro", free.clone());
+        let lr = ["pro"];
+        // others taken + CI busy + pro free ⇒ pro
+        assert_eq!(
+            pick_with_last_resort(&[&a, &b, &pro], &lr, Some(true)),
+            (Some("pro"), RC_PICKED, Some("last_resort_used"))
+        );
+        // CI not busy / unknown ⇒ not pro
+        let (p, rc, why) = pick_with_last_resort(&[&a, &b, &pro], &lr, Some(false));
+        assert_eq!((p, rc), (None, RC_NONE_FREE));
+        assert!(why.unwrap().contains("not all busy"));
+        assert_eq!(pick_with_last_resort(&[&a, &b, &pro], &lr, None).0, None);
+        // another machine free ⇒ that one, pro never considered
+        let c = named("c", free.clone());
+        assert_eq!(
+            pick_with_last_resort(&[&a, &c, &pro], &lr, Some(true)),
+            (Some("c"), RC_PICKED, None)
+        );
+        // pro itself busy or loaded ⇒ not pro
+        let pro_hot = named("pro", hot);
+        assert_eq!(
+            pick_with_last_resort(&[&a, &b, &pro_hot], &lr, Some(true)).0,
+            None
+        );
+        let pro_busy = named("pro", busy.clone());
+        assert_eq!(
+            pick_with_last_resort(&[&a, &b, &pro_busy], &lr, Some(true)).0,
+            None
+        );
+        // parse: last_resort and "local" accepted
+        let cfg = parse_config(
+            r#"{"github_repo":"o/r","hosts":[{"name":"m","ssh":"u@m"},{"name":"pro","ssh":"local","last_resort":true}]}"#,
+        )
+        .unwrap();
+        assert!(!cfg[0].last_resort && cfg[1].last_resort && cfg[1].ssh == "local");
+        // report: ranking hides pro unless it is the pick
+        let views = [named("m", busy.clone()), named("pro", free.clone())];
+        let ok = |_: &HostCfg| true;
+        let (doc, _) = report(
+            std::path::Path::new("/h.json"),
+            &views,
+            &cfg,
+            &ok,
+            None,
+            Some(false),
+        );
+        assert!(
+            doc["ranking"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["name"] != "pro"),
+            "{doc}"
+        );
+        let (doc, rc) = report(
+            std::path::Path::new("/h.json"),
+            &views,
+            &cfg,
+            &ok,
+            None,
+            Some(true),
+        );
+        assert_eq!(
+            (doc["pick"].as_str(), rc),
+            (Some("pro"), RC_PICKED),
+            "{doc}"
+        );
+        assert_eq!(doc["last_resort"], "last_resort_used");
     }
 }
