@@ -367,6 +367,23 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
 
 /// 建議分支:kind = "suggestion" 的節點與它們的上層。回 (上層在 nodes 的位置, 還沒完成的件數)
 /// (建議分支在 nodes 的位置, 完成件數, 未完成件數);完成 = 實查通過
+/// 畫面上顯示的標題：建議分支的數字一律由 [`suggestions`] 算(資料裡寫的數字不算),
+/// 樹、右欄都用這一個,跟右上角「建議 完成/未完成」同一組數字(Andy 11-12 23:1x)
+fn shown_title(p: &Plan, counts: Option<(usize, usize, usize)>, idx: usize) -> String {
+    let n = &p.nodes[idx];
+    match counts {
+        Some((at, done, open)) if at == idx => format!(
+            "{}(完成 {done} / 未完成 {open})",
+            n.title
+                .split(['(', '('])
+                .next()
+                .unwrap_or(&n.title)
+                .trim_end()
+        ),
+        _ => n.title.clone(),
+    }
+}
+
 fn suggestions(plan: &Plan) -> Option<(usize, usize, usize)> {
     let items: Vec<&Node> = plan
         .nodes
@@ -810,6 +827,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     }
     let p = &app.plan;
+    let sugg_counts = suggestions(p);
     let ix = index(p);
     if ix.root.is_none() {
         out.push(vec![seg("進度資料是空的")]);
@@ -834,7 +852,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
         // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角只放數字「建議 完成/未完成」(23:1x「建議 6/17 數字就好」)
-        if let Some((_, done, open)) = suggestions(&app.plan) {
+        if let Some((_, done, open)) = sugg_counts {
             sugg_at = Some(tail.len());
             tail.push(Seg(
                 format!("   建議 {done}/{open}"),
@@ -934,7 +952,6 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         if rows.is_empty() {
             tree_lines.push(vec![seg("沒有符合篩選的項目。")]);
         }
-        let sugg_counts = suggestions(p);
         for r in rows.iter().skip(start).take(room) {
             hits.tree_rows.push(r.idx);
             let n = &p.nodes[r.idx];
@@ -956,17 +973,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 ),
                 app.dm_txt(n.owner.as_deref())
             );
-            let title = match sugg_counts {
-                Some((at, done, open)) if at == r.idx => format!(
-                    "{}(完成 {done} / 未完成 {open})",
-                    n.title
-                        .split(['(', '('])
-                        .next()
-                        .unwrap_or(&n.title)
-                        .trim_end()
-                ),
-                _ => n.title.clone(),
-            };
+            let title = shown_title(p, sugg_counts, r.idx);
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
@@ -1033,7 +1040,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                         "{}{}{}",
                         "  ".repeat(i),
                         if i > 0 { "└ " } else { "" },
-                        p.nodes[c].title
+                        shown_title(p, sugg_counts, c)
                     ),
                     side_w,
                 ),
