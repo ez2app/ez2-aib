@@ -11,7 +11,8 @@
 //! also closes a gap f1fae's ten-category map found: the site software's own scheduler
 //! runs only when a page is visited, so it is switched off (`DISABLE_WP_CRON`) and a timer
 //! in the container runs the due events every five minutes, as the site's own user; the
-//! timer must be enabled and active afterwards.
+//! timer must be enabled and active afterwards. The constant and both unit files are read
+//! back as written; a site where all of it is already in place is left alone.
 //!
 //! **Identity.** Everything that came from the template and would be the same on every
 //! site is made the site's own: the keys and salts are made anew, the address and the
@@ -24,7 +25,9 @@
 //! site's address and administrator address — Andy: new sites carry no backup plugin;
 //! f1fae found both active on e1a 11-12) are deactivated and deleted first, before any
 //! address changes, and must be gone after. The site's notice address is the customer's when the opening
-//! record carries one, else the first administrator's (the template's is ours).
+//! record carries one, else the first administrator's (the template's is ours). The
+//! must-load plugin of the one-time login is put in place and read back
+//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
 //!
 //! The installer's own output goes to a log in the container and only its exit code and
 //! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
@@ -151,14 +154,26 @@ pub fn cron_timer(code: &str) -> String {
     )
 }
 
-/// The site software's scheduler off, the timer in its place, both read back.
-fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
-    runner
-        .run(&wp(
-            spec,
-            &["config", "set", "DISABLE_WP_CRON", "true", "--raw"],
-        ))
-        .map_err(|e| format!("cron_failed: config set: {e}"))?;
+/// The two unit files of the scheduler in the container, with what each must hold.
+fn cron_files(code: &str) -> [(String, String); 2] {
+    let unit = cron_unit(code);
+    [
+        (
+            format!("/etc/systemd/system/{unit}.service"),
+            cron_service(code),
+        ),
+        (
+            format!("/etc/systemd/system/{unit}.timer"),
+            cron_timer(code),
+        ),
+    ]
+}
+
+/// Whether the scheduler is in place as [`scheduler`] leaves it, read back: the site
+/// software's own scheduler off, both unit files exactly as written, the timer enabled and
+/// active. The fixed word says what is not: `cron_unchecked` could not be read,
+/// `cron_not_set` the constant, `cron_unit_differs` a file, `cron_not_running` the timer.
+fn scheduler_in_place(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
     let got = runner
         .run(&wp(spec, &["config", "get", "DISABLE_WP_CRON"]))
         .map_err(|e| format!("cron_unchecked: config get: {e}"))?;
@@ -168,28 +183,15 @@ fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
             got.trim()
         ));
     }
-    let unit = cron_unit(&spec.code);
-    for (file, text) in [
-        (
-            format!("/etc/systemd/system/{unit}.service"),
-            cron_service(&spec.code),
-        ),
-        (
-            format!("/etc/systemd/system/{unit}.timer"),
-            cron_timer(&spec.code),
-        ),
-    ] {
-        runner
-            .run_input(&in_ct(spec.ct, &["tee", &file]), text.as_bytes())
-            .map_err(|e| format!("cron_failed: {file}: {e}"))?;
+    for (file, text) in cron_files(&spec.code) {
+        let there = runner
+            .run(&in_ct(spec.ct, &["cat", &file]))
+            .map_err(|e| format!("cron_unchecked: {file}: {e}"))?;
+        if there != text {
+            return Err(format!("cron_unit_differs: {file}"));
+        }
     }
-    let timer = format!("{unit}.timer");
-    runner
-        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload"]))
-        .map_err(|e| format!("cron_failed: daemon-reload: {e}"))?;
-    runner
-        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
-        .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
+    let timer = format!("{}.timer", cron_unit(&spec.code));
     for (ask, want) in [("is-enabled", "enabled"), ("is-active", "active")] {
         let said = runner
             .run(&in_ct(spec.ct, &["systemctl", ask, &timer]))
@@ -202,6 +204,39 @@ fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The site software's scheduler off and the timer in its place, read back
+/// ([`scheduler_in_place`]). A site where it is already in place is left alone and the
+/// answer is `false`; otherwise everything is written again and `true` once it reads
+/// back. What cannot be read back after writing stops with its fixed word. The install
+/// runs it, and so does a restore before its tidying (`restorestepscmd`): a backup may
+/// bring back a `wp-config.php` without the scheduler switched off.
+pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<bool, String> {
+    // before writing, "could not read" only means "write it": the read after decides
+    if scheduler_in_place(runner, spec).is_ok() {
+        return Ok(false);
+    }
+    runner
+        .run(&wp(
+            spec,
+            &["config", "set", "DISABLE_WP_CRON", "true", "--raw"],
+        ))
+        .map_err(|e| format!("cron_failed: config set: {e}"))?;
+    for (file, text) in cron_files(&spec.code) {
+        runner
+            .run_input(&in_ct(spec.ct, &["tee", &file]), text.as_bytes())
+            .map_err(|e| format!("cron_failed: {file}: {e}"))?;
+    }
+    let timer = format!("{}.timer", cron_unit(&spec.code));
+    runner
+        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload"]))
+        .map_err(|e| format!("cron_failed: daemon-reload: {e}"))?;
+    runner
+        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
+        .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
+    scheduler_in_place(runner, spec)?;
+    Ok(true)
 }
 
 // ------------------------------------------------------------------ install
@@ -367,7 +402,7 @@ pub fn install_step(
     runner
         .run(&wp(spec, &["core", "is-installed"]))
         .map_err(|e| format!("install_not_done: the site software is not installed: {e}"))?;
-    scheduler(runner, spec)
+    scheduler(runner, spec).map(|_| ())
 }
 
 // ------------------------------------------------------------------ identity
@@ -533,6 +568,106 @@ fn remove_unwanted_plugins(runner: &mut impl Runner, spec: &SiteSpec) -> Result<
     Ok(())
 }
 
+/// The template's must-use file that sends every administrator to set up two-factor
+/// sign-in before any other admin page. Andy 11-11 07:30: new sites do not start with
+/// two-factor sign-in forced; the file is moved aside, not deleted (e1a 11-12 10:09).
+pub const FORCED_2FA_MU: &str = "ez2-2fa-require-admin.php";
+/// Where files taken off a new site are kept inside its container.
+pub const SITE_OFF: &str = "/root/ez2-site-off";
+/// The two-factor plugins: kept installed for the customer to turn on, but not active on
+/// a new site. The first slug is the WebAuthn provider; f1fae read both slugs off the
+/// template 11-12 10:1x.
+pub const TWO_FACTOR_OFF: [&str; 2] = ["two-factor-provider-webauthn", "two-factor"];
+
+/// The active plugins, by name, read from the plugin list (not `is-installed`, whose
+/// failure cannot tell "not there" from "could not ask").
+fn active_plugins(runner: &mut impl Runner, spec: &SiteSpec) -> Result<Vec<String>, String> {
+    let out = runner
+        .run(&wp(
+            spec,
+            &["plugin", "list", "--status=active", "--field=name"],
+        ))
+        .map_err(|e| format!("identity_unchecked: active plugins: {e}"))?;
+    Ok(out
+        .lines()
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// The site's must-use plugin folder, inside its container.
+fn mu_dir(spec: &SiteSpec) -> String {
+    format!("/var/www/{}/wp-content/mu-plugins", spec.code)
+}
+
+/// Whether the forced two-factor file is in the must-use folder: the container answers
+/// `yes` or `no` (a dangling link counts as there: 33e28 L1); a failed ask or any other answer is not taken as "not there" (c477a L1
+/// on 126907cc, as f1fae's urgent sign r2).
+fn mu_forced_present(
+    runner: &mut impl Runner,
+    spec: &SiteSpec,
+    file: &str,
+) -> Result<bool, String> {
+    let out = runner
+        .run(&in_ct(
+            spec.ct,
+            &[
+                "sh",
+                "-c",
+                "if test -e \"$1\" || test -L \"$1\"; then echo yes; else echo no; fi",
+                "sh",
+                file,
+            ],
+        ))
+        .map_err(|e| format!("identity_unchecked: {FORCED_2FA_MU}: {e}"))?;
+    match out.trim() {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        other => Err(format!(
+            "identity_unchecked: {FORCED_2FA_MU}: answer {other:?}"
+        )),
+    }
+}
+
+/// The forced two-factor file moved aside (to [`SITE_OFF`], with the time), and gone from
+/// the must-use folder after; the two-factor plugins deactivated and not active after.
+fn two_factor_not_forced(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
+    let file = format!("{}/{FORCED_2FA_MU}", mu_dir(spec));
+    if mu_forced_present(runner, spec, &file)? {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let to = format!("{SITE_OFF}/{FORCED_2FA_MU}.{stamp}");
+        runner
+            .run(&in_ct(spec.ct, &["mkdir", "-p", SITE_OFF]))
+            .and_then(|_| runner.run(&in_ct(spec.ct, &["mv", &file, &to])))
+            .map_err(|e| format!("identity_failed: move {FORCED_2FA_MU} aside: {e}"))?;
+        if mu_forced_present(runner, spec, &file)? {
+            return Err(format!(
+                "identity_not_set: {FORCED_2FA_MU} is still a must-use file"
+            ));
+        }
+    }
+    let before = active_plugins(runner, spec)?;
+    for slug in TWO_FACTOR_OFF {
+        if !before.iter().any(|p| p == slug) {
+            continue;
+        }
+        runner
+            .run(&wp(spec, &["plugin", "deactivate", slug]))
+            .map_err(|e| format!("identity_failed: deactivate plugin {slug}: {e}"))?;
+    }
+    let after = active_plugins(runner, spec)?;
+    if let Some(slug) = TWO_FACTOR_OFF
+        .iter()
+        .find(|s| after.iter().any(|p| p == *s))
+    {
+        return Err(format!("identity_not_set: plugin {slug} is still active"));
+    }
+    Ok(())
+}
+
 /// The identity: keys and salts anew, address and title, the first administrators with
 /// their own passwords, the installer's administrator gone, the notice address.
 pub fn identity_step(
@@ -548,6 +683,7 @@ pub fn identity_step(
         .run(&wp(spec, &["config", "shuffle-salts"]))
         .map_err(|e| format!("identity_failed: shuffle-salts: {e}"))?;
     remove_unwanted_plugins(runner, spec)?;
+    two_factor_not_forced(runner, spec)?;
     for (key, value) in [("siteurl", &url), ("home", &url), ("blogname", &title)] {
         runner
             .run(&wp(spec, &["option", "update", key, value]))
@@ -659,6 +795,11 @@ pub fn identity_step(
     if back.trim() != notice {
         return Err("identity_not_set: admin_email reads otherwise".to_owned());
     }
+    // the one-time login (Andy 11-11 23:1x): the plugin that makes a link a direct login,
+    // in place and read back; the link itself comes from `site login-link`
+    let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)
+        .map_err(|e| format!("identity_failed: {e}"))?;
+    record["login_plugin"] = json!(plugin);
     let mut pending: Vec<String> = [fp_site_key(spec), mask_files(spec)]
         .into_iter()
         .map(|Pending::Later(w)| w.to_owned())
@@ -738,12 +879,30 @@ mod tests {
         sticky_email: bool,
         cron: Option<String>,
         enabled: bool,
+        /// the one-time login plugin in the site
+        mu: Option<Vec<u8>>,
+        /// files written with `tee`, read with `cat`
+        files: std::collections::BTreeMap<String, Vec<u8>>,
+        /// `tee` keeps something other than what it was fed
+        garble: bool,
         /// a command (joined argv contains it) that fails
         broken: Option<&'static str>,
         /// installed plugins (the template's backup plugin and its extension)
         plugins: Vec<String>,
         /// an uninstall that says it worked but leaves the plugin
         sticky_plugin: bool,
+        /// the template's forced two-factor file is in the must-use folder
+        mu_forced: bool,
+        /// a move that says it worked but leaves the forced two-factor file
+        sticky_mu: bool,
+        /// the container's answer to "is the forced file there", when not yes / no
+        mu_answer: Option<&'static str>,
+        /// the forced file is a link whose target is gone (test -e says no)
+        mu_link: bool,
+        /// active plugins (the template's two-factor ones)
+        active: Vec<String>,
+        /// a deactivate that says it worked but leaves the plugin active
+        sticky_active: bool,
     }
 
     impl Site {
@@ -758,9 +917,18 @@ mod tests {
                 sticky_email: false,
                 cron: None,
                 enabled: false,
+                mu: None,
+                files: Default::default(),
+                garble: false,
                 broken: None,
                 plugins: NOT_ON_NEW_SITES.iter().map(|p| (*p).to_owned()).collect(),
                 sticky_plugin: false,
+                mu_forced: true,
+                sticky_mu: false,
+                mu_answer: None,
+                mu_link: false,
+                active: TWO_FACTOR_OFF.iter().map(|p| (*p).to_owned()).collect(),
+                sticky_active: false,
             }
         }
         /// the arguments after the site software's `--path=`
@@ -777,7 +945,42 @@ mod tests {
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
             }
+            if line.contains("ez2-onetime-login.php") {
+                let sha = self
+                    .mu
+                    .as_ref()
+                    .map(|b| format!("{}  x\n", crate::opstore::sha256_hex(b).unwrap()));
+                let reads_back = argv.len() >= 2 && argv[argv.len() - 2] == "sha256sum";
+                return match sha {
+                    Some(sha) => Ok(sha),
+                    None if reads_back => Err("no file".to_owned()),
+                    None => Ok("none\n".to_owned()),
+                };
+            }
             let Some(a) = Self::wp_args(argv) else {
+                if line.contains(FORCED_2FA_MU) {
+                    if line.contains(" test -e ") {
+                        if let Some(answer) = self.mu_answer {
+                            return Ok(answer.to_owned());
+                        }
+                        let there = self.mu_forced || (self.mu_link && line.contains(" test -L "));
+                        return Ok(if there { "yes\n" } else { "no\n" }.to_owned());
+                    }
+                    if line.contains(" mv ") && !self.sticky_mu {
+                        self.mu_forced = false;
+                        self.mu_link = false;
+                    }
+                    return Ok(String::new());
+                }
+                if let [.., cat, file] = argv {
+                    if cat == "cat" {
+                        return self
+                            .files
+                            .get(file)
+                            .map(|b| String::from_utf8_lossy(b).into_owned())
+                            .ok_or("no such file".to_owned());
+                    }
+                }
                 let asks = line.contains("is-enabled") || line.contains("is-active");
                 if asks && !self.enabled {
                     return Err("disabled".to_owned());
@@ -849,6 +1052,15 @@ mod tests {
                         Err("not installed".to_owned())
                     }
                 }
+                ["plugin", "list", "--status=active", "--field=name"] => {
+                    Ok(self.active.iter().map(|p| format!("{p}\n")).collect())
+                }
+                ["plugin", "deactivate", slug] => {
+                    if !self.sticky_active {
+                        self.active.retain(|p| p != slug);
+                    }
+                    Ok(String::new())
+                }
                 ["plugin", "uninstall", slug, "--deactivate"] => {
                     if !self.sticky_plugin {
                         self.plugins.retain(|p| p != slug);
@@ -865,6 +1077,20 @@ mod tests {
             self.fed.push((line.clone(), input.to_vec()));
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
+            }
+            if line.contains("ez2-onetime-login.php") {
+                self.mu = Some(input.to_vec());
+                return Ok(String::new());
+            }
+            if let [.., tee, file] = argv {
+                if tee == "tee" {
+                    let kept = if self.garble {
+                        b"other".to_vec()
+                    } else {
+                        input.to_vec()
+                    };
+                    self.files.insert(file.clone(), kept);
+                }
             }
             Ok(if line.contains(" eval ") {
                 "set\n".to_owned()
@@ -1010,6 +1236,55 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduler_already_in_place_is_left_alone() {
+        let mut site = Site::new();
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        let written = site.fed.len();
+        let calls = site.calls.len();
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(false));
+        assert_eq!(site.fed.len(), written, "nothing written again");
+        let again = &site.calls[calls..];
+        assert!(
+            again
+                .iter()
+                .all(|c| !c.contains(" set ") && !c.contains("--now")),
+            "{again:#?}"
+        );
+        // one file changed since: everything is written again and read back
+        let timer = cron_files("s-b3test")[1].0.clone();
+        site.files.insert(timer.clone(), b"[Timer]\n".to_vec());
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        assert_eq!(site.files[&timer], cron_timer("s-b3test").as_bytes());
+        // and the constant switched back on since: the same
+        site.cron = Some(String::new());
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        assert_eq!(site.cron.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_scheduler_is_read_back_as_written() {
+        // a unit file that does not hold what was written
+        let mut site = Site::new();
+        site.garble = true;
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unit_differs"), "{err}");
+        // a unit file that cannot be read back after writing
+        let mut site = Site::new();
+        site.broken = Some(" cat ");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unchecked"), "{err}");
+        // the constant that does not read as on
+        let mut site = Site::new();
+        site.broken = Some("set DISABLE_WP_CRON");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_failed"), "{err}");
+        let mut site = Site::new();
+        site.broken = Some("get DISABLE_WP_CRON");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unchecked"), "{err}");
+    }
+
+    #[test]
     fn an_installer_that_fails_is_still_taken_out_of_the_container() {
         let paths = scratch("setupfail");
         let mut site = Site::new();
@@ -1091,6 +1366,12 @@ mod tests {
         );
         assert_eq!(record["admin_email_from"], "customer");
         assert_eq!(record["admins"], json!(["ops", "ops2"]));
+        // the one-time login plugin is in the site (Andy 11-11: a link logs straight in)
+        assert_eq!(
+            site.mu.as_deref(),
+            Some(crate::loginlink::MU_PLUGIN.as_bytes())
+        );
+        assert_eq!(record["login_plugin"], "written");
         assert_eq!(
             site.users,
             ["ops", "ops2"],
@@ -1170,6 +1451,103 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("is still there"), "{err}");
+    }
+
+    /// Andy 11-11 07:30「2 不要先啟用2FA」: the template's forced two-factor file is moved
+    /// aside (not deleted) and the two-factor plugins deactivated (kept installed for the
+    /// customer), before any address changes; a site without them is left alone; a file
+    /// or a plugin that stays is refused (e1a 11-12 10:09).
+    #[test]
+    fn two_factor_sign_in_is_not_forced_on_a_new_site() {
+        let mut site = Site::new();
+        identity_step(&mut site, &scratch("no2fa"), &spec(true), &mut json!({})).unwrap();
+        assert!(!site.mu_forced);
+        assert!(site.active.is_empty(), "{:?}", site.active);
+        let at = |what: &str| site.calls.iter().position(|c| c.contains(what)).unwrap();
+        let mv = at(&format!(" mv /var/www/s-b3test/wp-content/mu-plugins/{FORCED_2FA_MU} {SITE_OFF}/{FORCED_2FA_MU}."));
+        assert!(mv < at("option update siteurl"));
+        let ends = |what: &str| site.calls.iter().position(|c| c.ends_with(what)).unwrap();
+        assert!(
+            ends("plugin deactivate two-factor-provider-webauthn") < at("option update siteurl")
+        );
+        // the core plugin's own line (not the webauthn one it is a prefix of)
+        assert!(ends("plugin deactivate two-factor") < at("option update siteurl"));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains(" rm ") && c.contains(FORCED_2FA_MU)));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains("plugin uninstall two-factor")));
+        // a site without them: nothing is moved or deactivated
+        let mut site = Site::new();
+        site.mu_forced = false;
+        site.active.clear();
+        identity_step(&mut site, &scratch("no2fa2"), &spec(true), &mut json!({})).unwrap();
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| (c.contains(" mv ") && c.contains(FORCED_2FA_MU))
+                || c.contains("plugin deactivate")));
+        // a forced file that stays is refused
+        let mut site = Site::new();
+        site.sticky_mu = true;
+        let err =
+            identity_step(&mut site, &scratch("no2fa3"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("is still a must-use file"), "{err}");
+        // a plugin that stays active is refused
+        let mut site = Site::new();
+        site.sticky_active = true;
+        let err =
+            identity_step(&mut site, &scratch("no2fa4"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("is still active"), "{err}");
+        // a deactivate that fails names the plugin
+        let mut site = Site::new();
+        site.broken = Some("plugin deactivate two-factor-provider-webauthn");
+        let err =
+            identity_step(&mut site, &scratch("no2fa5"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_failed: deactivate plugin two-factor-provider-webauthn"),
+            "{err}"
+        );
+        // a failed ask for the forced file stops, it is not taken as "not there"
+        let mut site = Site::new();
+        site.broken = Some(" test -e ");
+        let err =
+            identity_step(&mut site, &scratch("no2fa7"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with(&format!("identity_unchecked: {FORCED_2FA_MU}")),
+            "{err}"
+        );
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains(" mv ") && c.contains(FORCED_2FA_MU)));
+        // a dangling link in its place is moved aside too (33e28 L1)
+        let mut site = Site::new();
+        site.mu_forced = false;
+        site.mu_link = true;
+        identity_step(&mut site, &scratch("no2fa9"), &spec(true), &mut json!({})).unwrap();
+        assert!(site
+            .calls
+            .iter()
+            .any(|c| c.contains(" mv ") && c.contains(FORCED_2FA_MU)));
+        // an answer that is neither yes nor no stops too
+        let mut site = Site::new();
+        site.mu_answer = Some("");
+        let err =
+            identity_step(&mut site, &scratch("no2fa8"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("answer"), "{err}");
+        // the active list that cannot be read stops, it is not taken as empty
+        let mut site = Site::new();
+        site.broken = Some("plugin list --status=active");
+        let err =
+            identity_step(&mut site, &scratch("no2fa6"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_unchecked: active plugins"),
+            "{err}"
+        );
     }
 
     #[test]
