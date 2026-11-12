@@ -1486,42 +1486,42 @@ mod tests {
 
     #[test]
     fn h1_whitelist_refuses_each_defect() {
-        let good = cell("host-egress-dns", "host", "dns", "1.1.1.1", 53, "open");
+        let good = cell("host-egress-dns", "host", "dns", "192.0.2.53", 53, "open");
         assert_eq!(validate_plan(&json!([good.clone()])).unwrap().len(), 1);
         let bad = [
             ("empty", json!([])),
             ("not array", json!({})),
             (
                 "id uppercase",
-                json!([cell("X", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("X", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "id leading dash",
-                json!([cell("-a", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("-a", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct:0",
-                json!([cell("a", "ct:0", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:0", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct leading zero",
-                json!([cell("a", "ct:010", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:010", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct too long",
-                json!([cell("a", "ct:1234567890", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:1234567890", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "from garbage",
-                json!([cell("a", "host;id", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host;id", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "kind",
-                json!([cell("a", "host", "udp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "udp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ip shell",
-                json!([cell("a", "host", "tcp", "1.1.1.1; rm -rf /", 80, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53; rm -rf /", 80, "open")]),
             ),
             (
                 "ip hostname",
@@ -1529,27 +1529,27 @@ mod tests {
             ),
             (
                 "port range",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 70000, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 70000, "open")]),
             ),
             (
                 "port string",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": "80", "expect": "open"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": "80", "expect": "open"}]),
             ),
             (
                 "icmp with port",
-                json!([cell("a", "host", "icmp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "icmp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "tcp port 0",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 0, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 0, "open")]),
             ),
             (
                 "expect",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 80, "maybe")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 80, "maybe")]),
             ),
             (
                 "unknown key",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": 80, "expect": "open", "cmd": "x"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": 80, "expect": "open", "cmd": "x"}]),
             ),
             ("duplicate", json!([good.clone(), good.clone()])),
         ];
@@ -1585,9 +1585,9 @@ mod tests {
             {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
             {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
             {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
-            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
+            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "192.0.2.53", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
+        assert_eq!(plan_fingerprint(&plan), "473e1dd2dde568f2");
     }
 
     #[test]
@@ -1710,7 +1710,7 @@ mod tests {
             "host must be an ip"
         );
         assert!(
-            parse_run(&["--host".into(), "1.1.1.1".into()]).is_err(),
+            parse_run(&["--host".into(), "192.0.2.53".into()]).is_err(),
             "plan required"
         );
     }
