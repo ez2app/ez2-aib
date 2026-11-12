@@ -1555,6 +1555,28 @@ jobs:
           ck quota.rs 'pub fn mail_held_back(sent_this_month: u64) -> bool {' \
              'pub fn mail_held_back(sent_this_month: u64) -> bool { if sent_this_month > MAIL_FREE_PER_SITE_MONTH { return true; } // knife' \
              mail_over_1000_notices_once_never_blocks
+          # E7 c477a N1: a site past 100 % of its traffic is cut off
+          ck quota.rs '    let _ = used_gb;' \
+             '    if used_gb >= TRAFFIC_PLAN_GB { return true; } // knife' \
+             over_100_still_only_notices
+          # E7 notices: a month gone does not start over
+          ck quota.rs '    if st.month != usage.month {' \
+             '    if st.month != usage.month && false { // knife' \
+             a_new_month_starts_over
+          # E7 notices: a traffic notice told is not kept, so the next run tells it again
+          ck quota.rs '            sent.push(pct);' '            // knife' \
+             a_notice_told_is_kept_and_not_told_again_this_month
+          # E7 notices: a mail notice told is not kept
+          ck quota.rs '            st.mail_noticed.insert(code.clone());' '            // knife' \
+             a_notice_told_is_kept_and_not_told_again_this_month
+          # E7 notices: a state of a customer code that is not one is read
+          ck quota.rs '        if !site::valid_code(who) {' \
+             '        if !site::valid_code(who) && false { // knife' \
+             a_state_that_cannot_be_read_is_not_an_empty_one
+          # E7 c477a N3: a disk_gb of the wrong type counts at the starting size
+          ck quota.rs '            .ok_or(Unknown::RecordUnreadable),' \
+             '            .or(Some(site::START_DISK_GB)).ok_or(Unknown::RecordUnreadable), // knife' \
+             a_disk_gb_of_the_wrong_type_is_unreadable_not_the_starting_size
           # E11 (Andy 11-11「可以彈出提示，同意後關閉」): a gone process reads as running
           ck op.rs '        Liveness::Gone => Progress::Gone,' \
              '        Liveness::Gone => Progress::Running, // knife' \
@@ -2044,6 +2066,13 @@ jobs:
           # restore verify, uploads: the generated folders are matched as folders, not their files
           hk restorecmd.rs '        .map(|g| format!("./{g}/*"))' '        .map(|g| format!("./{g}")) // knife' \
              the_site_is_asked_through_the_runner_as_its_own_user_and_never_lists_files
+          # E7 site notices: a state file that cannot be read is taken as no state (tells all again)
+          hk noticecmd.rs '        Some(t) => Some(serde_json::from_str(t).map_err(|_| quota::NOTICE_STATE_UNREADABLE)?),' \
+             '        Some(t) => serde_json::from_str(t).ok(), // knife' \
+             a_state_file_that_cannot_be_read_stops_the_run
+          # E7 site notices: --write keeps nothing
+          hk noticecmd.rs '    if write {' '    if write && false { // knife' \
+             write_keeps_the_state_and_a_second_run_tells_nothing
           # site quarantine without --plan goes on (33e28, seg. 4 L1)
           hk quarantinecmd.rs '    if !plan_only {' '    if !plan_only && args.is_empty() { // knife' \
              nothing_but_a_plan

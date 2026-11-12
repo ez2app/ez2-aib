@@ -14,14 +14,19 @@
 //! with). Removed sites are not read at all. Counted per resource the plan enforces and
 //! the starting tier names — CPU (the sum of the sites' `cpulimit`, as [`arc::held`]) and
 //! memory. Disk is added up and shown, not judged: a record that names no size counts at
-//! the starting size [`site::START_DISK_GB`] (Andy 11-12: 10 GB).
+//! the starting size [`site::START_DISK_GB`] (Andy 11-12: "10 GB"; disk sizes here are
+//! Proxmox's `G`, which is GiB). A record that names a size that is not a whole number of
+//! GiB above 0 cannot be read (c477a E7 N3), never counted at the starting size.
 //!
 //! Also here, the other two numbers of the plan Andy set on 11-12, as decisions only (who
 //! is told, and how, is the caller's): **traffic** — 5 TB a month, a notice at 80, 95 and
 //! 100 %, each once, and the site is never cut off ([`traffic_notice`]); **mail** — 1,000
 //! a site a month free, one notice past it, and mail is never held back ([`mail_notice`],
 //! [`mail_held_back`]). The notices are codes ([`traffic_code`], [`MAIL_OVER_FREE`]); the
-//! customer's words for them are not written here.
+//! customer's words for them are not written here. Traffic is the plan's, so it is told
+//! per customer; mail is per site. A month's notices are remembered in a [`MonthState`]
+//! between runs, so each one is told once a month ([`month_run`]); traffic is in decimal
+//! GB (5 TB = 5,000 GB, as the plan's bytes), unlike disk.
 //!
 //! No I/O: the host reads the records and hands them in.
 //!
@@ -40,7 +45,8 @@
 //!   at [`site::START_DISK_GB`], whatever the container really has. It is shown, not
 //!   judged.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use serde_json::Value;
@@ -122,11 +128,17 @@ pub fn plan_of(tenant: Option<&str>) -> Result<Plan, Unknown> {
     }
 }
 
-fn disk_of(rec: &Value) -> u32 {
-    rec.get("disk_gb")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .unwrap_or(site::START_DISK_GB)
+/// The disk a record holds, in GiB: [`site::START_DISK_GB`] when it names none; a size
+/// that is not a whole number above 0 that fits cannot be read (c477a E7 N3).
+fn disk_of(rec: &Value) -> Result<u32, Unknown> {
+    match rec.get("disk_gb") {
+        None => Ok(site::START_DISK_GB),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or(Unknown::RecordUnreadable),
+    }
 }
 
 /// Count what `tenant` holds. `live`: the live records (a record that names no tenant is
@@ -154,7 +166,7 @@ pub fn count(tenant: &str, live: &[Value], opening: &[Value]) -> Result<Count, U
         if let Some(code) = rec.get("site").and_then(Value::as_str) {
             codes.insert(code);
         }
-        sites.push((spec.limits, disk_of(rec)));
+        sites.push((spec.limits, disk_of(rec)?));
         n_live = n_live.saturating_add(1);
     }
     let mut n_opening = 0u32;
@@ -180,7 +192,7 @@ pub fn count(tenant: &str, live: &[Value], opening: &[Value]) -> Result<Count, U
         } else {
             Limits::START
         };
-        sites.push((limits, disk_of(rec)));
+        sites.push((limits, disk_of(rec)?));
         n_opening = n_opening.saturating_add(1);
     }
     Ok(Count {
@@ -298,6 +310,176 @@ pub fn mail_notice(sent_this_month: u64, already_noticed: bool) -> bool {
 pub fn mail_held_back(sent_this_month: u64) -> bool {
     let _ = sent_this_month;
     false
+}
+
+// ---------------------------------------------------------------- E7 a month's notices
+
+/// The notice state file could not be read: nothing is told and nothing written, so no
+/// notice is told twice.
+pub const NOTICE_STATE_UNREADABLE: &str = "notice_state_unreadable";
+/// The usage handed in could not be read.
+pub const NOTICE_USAGE_UNREADABLE: &str = "notice_usage_unreadable";
+
+/// What was told in one calendar month, kept between runs: the traffic shares told per
+/// customer, and the sites told about their mail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MonthState {
+    /// `YYYY-MM`; empty before the first run.
+    pub month: String,
+    pub traffic_sent: BTreeMap<String, Vec<u8>>,
+    pub mail_noticed: BTreeSet<String>,
+}
+
+/// One notice to tell: to a customer (`tenant`) about traffic, or about one site's mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    /// `tenant` or `site`.
+    pub about: &'static str,
+    pub who: String,
+    pub code: &'static str,
+}
+
+/// What a month's run reads: the month, each customer's traffic in GB and each site's
+/// mail sent so far this month.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonthUsage {
+    pub month: String,
+    pub traffic_gb: Vec<(String, u64)>,
+    pub mail_sent: Vec<(String, u64)>,
+}
+
+/// `YYYY-MM` with a month 01–12.
+pub fn valid_month(m: &str) -> bool {
+    let b = m.as_bytes();
+    b.len() == 7
+        && b[4] == b'-'
+        && b[..4].iter().chain(&b[5..]).all(u8::is_ascii_digit)
+        && matches!(m[5..].parse::<u8>(), Ok(1..=12))
+}
+
+fn counts(v: Option<&Value>) -> Option<Vec<(String, u64)>> {
+    let Some(v) = v else {
+        return Some(Vec::new());
+    };
+    v.as_object()?
+        .iter()
+        .map(|(k, n)| {
+            site::valid_code(k)
+                .then_some(())
+                .and(n.as_u64())
+                .map(|n| (k.clone(), n))
+        })
+        .collect()
+}
+
+/// Read the usage of a month: `{"month":"YYYY-MM","traffic_gb":{<customer>:GB},
+/// "mail_sent":{<site>:N}}`. Either map may be missing (nothing measured); a code that
+/// is not one, or a count that is not a whole number, makes the whole usage unreadable.
+pub fn parse_usage(v: &Value) -> Result<MonthUsage, &'static str> {
+    let month = v
+        .get("month")
+        .and_then(Value::as_str)
+        .filter(|m| valid_month(m))
+        .ok_or(NOTICE_USAGE_UNREADABLE)?;
+    Ok(MonthUsage {
+        month: String::from(month),
+        traffic_gb: counts(v.get("traffic_gb")).ok_or(NOTICE_USAGE_UNREADABLE)?,
+        mail_sent: counts(v.get("mail_sent")).ok_or(NOTICE_USAGE_UNREADABLE)?,
+    })
+}
+
+/// Read the state a run left. `None`: there is no state yet (the first run). Anything
+/// that is there but cannot be read wholly is [`NOTICE_STATE_UNREADABLE`], never "nothing
+/// told yet" — that would tell every notice again.
+pub fn parse_state(v: Option<&Value>) -> Result<MonthState, &'static str> {
+    let Some(v) = v else {
+        return Ok(MonthState::default());
+    };
+    let bad = NOTICE_STATE_UNREADABLE;
+    let month = v
+        .get("month")
+        .and_then(Value::as_str)
+        .filter(|m| valid_month(m))
+        .ok_or(bad)?;
+    let mut traffic_sent = BTreeMap::new();
+    for (who, sent) in v
+        .get("traffic_sent")
+        .and_then(Value::as_object)
+        .ok_or(bad)?
+    {
+        let sent = sent
+            .as_array()
+            .ok_or(bad)?
+            .iter()
+            .map(|p| {
+                p.as_u64()
+                    .and_then(|p| u8::try_from(p).ok())
+                    .filter(|p| TRAFFIC_NOTICE_PCT.contains(p))
+            })
+            .collect::<Option<Vec<u8>>>()
+            .ok_or(bad)?;
+        if !site::valid_code(who) {
+            return Err(bad);
+        }
+        traffic_sent.insert(who.clone(), sent);
+    }
+    let mut mail_noticed = BTreeSet::new();
+    for s in v.get("mail_noticed").and_then(Value::as_array).ok_or(bad)? {
+        let s = s.as_str().filter(|s| site::valid_code(s)).ok_or(bad)?;
+        mail_noticed.insert(String::from(s));
+    }
+    Ok(MonthState {
+        month: String::from(month),
+        traffic_sent,
+        mail_noticed,
+    })
+}
+
+/// The state as the file keeps it ([`parse_state`] reads it back).
+pub fn state_json(s: &MonthState) -> Value {
+    serde_json::json!({
+        "month": s.month,
+        "traffic_sent": s.traffic_sent,
+        "mail_noticed": s.mail_noticed,
+    })
+}
+
+/// One run of a month: what to tell now and the state to keep. A state of another month
+/// is a month gone: everything starts over. Each notice told is put in the state, so the
+/// next run does not tell it again.
+pub fn month_run(prev: MonthState, usage: &MonthUsage) -> (MonthState, Vec<Notice>) {
+    let mut st = prev;
+    if st.month != usage.month {
+        st = MonthState {
+            month: usage.month.clone(),
+            ..MonthState::default()
+        };
+    }
+    let mut told = Vec::new();
+    for (tenant, gb) in &usage.traffic_gb {
+        let sent = st.traffic_sent.entry(tenant.clone()).or_default();
+        if let Some(pct) = traffic_notice(*gb, sent) {
+            sent.push(pct);
+            if let Some(code) = traffic_code(pct) {
+                told.push(Notice {
+                    about: "tenant",
+                    who: tenant.clone(),
+                    code,
+                });
+            }
+        }
+    }
+    for (code, n) in &usage.mail_sent {
+        if mail_notice(*n, st.mail_noticed.contains(code)) {
+            st.mail_noticed.insert(code.clone());
+            told.push(Notice {
+                about: "site",
+                who: code.clone(),
+                code: MAIL_OVER_FREE,
+            });
+        }
+    }
+    (st, told)
 }
 
 #[cfg(test)]
@@ -510,5 +692,107 @@ mod tests {
             panic!("count")
         };
         assert_eq!(c.held.disk_gb, 40 + 2 * site::START_DISK_GB);
+    }
+
+    fn usage(month: &str, traffic: &[(&str, u64)], mail: &[(&str, u64)]) -> MonthUsage {
+        let own = |l: &[(&str, u64)]| l.iter().map(|(k, n)| (String::from(*k), *n)).collect();
+        MonthUsage {
+            month: String::from(month),
+            traffic_gb: own(traffic),
+            mail_sent: own(mail),
+        }
+    }
+
+    #[test]
+    fn a_notice_told_is_kept_and_not_told_again_this_month() {
+        let u = usage("2026-11", &[("acme", 4100)], &[("s1", 1200)]);
+        let (st, told) = month_run(MonthState::default(), &u);
+        assert_eq!(
+            told,
+            vec![
+                Notice {
+                    about: "tenant",
+                    who: String::from("acme"),
+                    code: "traffic_80"
+                },
+                Notice {
+                    about: "site",
+                    who: String::from("s1"),
+                    code: MAIL_OVER_FREE
+                },
+            ]
+        );
+        // the state is kept as a file between runs
+        let st = parse_state(Some(&state_json(&st))).unwrap();
+        let (st, told) = month_run(st, &u);
+        assert_eq!(told, vec![]);
+        let (_, told) = month_run(st, &usage("2026-11", &[("acme", 4800)], &[("s1", 9000)]));
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].code, "traffic_95");
+    }
+
+    #[test]
+    fn a_new_month_starts_over() {
+        let u = usage("2026-11", &[("acme", 4100)], &[("s1", 1200)]);
+        let (st, _) = month_run(MonthState::default(), &u);
+        let (st, told) = month_run(st, &usage("2026-12", &[("acme", 4100)], &[("s1", 1200)]));
+        assert_eq!(told.len(), 2);
+        assert_eq!(st.month, "2026-12");
+    }
+
+    #[test]
+    fn a_state_that_cannot_be_read_is_not_an_empty_one() {
+        assert_eq!(parse_state(None), Ok(MonthState::default()));
+        for bad in [
+            json!({}),
+            json!({ "month": "2026-13", "traffic_sent": {}, "mail_noticed": [] }),
+            json!({ "month": "2026-11", "traffic_sent": { "acme": [70] }, "mail_noticed": [] }),
+            json!({ "month": "2026-11", "traffic_sent": {}, "mail_noticed": ["Not A Code"] }),
+            json!({ "month": "2026-11", "traffic_sent": {} }),
+            json!({ "month": "2026-11", "traffic_sent": { "Not A Code": [80] }, "mail_noticed": [] }),
+            json!([]),
+        ] {
+            assert_eq!(
+                parse_state(Some(&bad)),
+                Err(NOTICE_STATE_UNREADABLE),
+                "{bad}"
+            );
+        }
+        let ok =
+            json!({ "month": "2026-11", "traffic_sent": { "acme": [80] }, "mail_noticed": ["s1"] });
+        assert_eq!(state_json(&parse_state(Some(&ok)).unwrap()), ok);
+    }
+
+    #[test]
+    fn usage_that_cannot_be_read_is_refused_whole() {
+        let ok = json!({ "month": "2026-11", "traffic_gb": { "acme": 4100 } });
+        assert_eq!(
+            parse_usage(&ok).unwrap(),
+            usage("2026-11", &[("acme", 4100)], &[])
+        );
+        for bad in [
+            json!({ "traffic_gb": {} }),
+            json!({ "month": "2026-11", "traffic_gb": { "acme": "4100" } }),
+            json!({ "month": "2026-11", "mail_sent": { "Not A Code": 3 } }),
+            json!({ "month": "2026-11", "mail_sent": [] }),
+        ] {
+            assert_eq!(parse_usage(&bad), Err(NOTICE_USAGE_UNREADABLE), "{bad}");
+        }
+        assert!(valid_month("2026-01") && !valid_month("2026-00") && !valid_month("26-11"));
+    }
+
+    #[test]
+    fn a_disk_gb_of_the_wrong_type_is_unreadable_not_the_starting_size() {
+        let mut r = live("s1", "acme", 1024, 200);
+        assert_eq!(disk_of(&r), Ok(site::START_DISK_GB));
+        r["disk_gb"] = json!(16);
+        assert_eq!(disk_of(&r), Ok(16));
+        for bad in [json!("16"), json!(0), json!(u64::MAX), json!(1.5)] {
+            r["disk_gb"] = bad;
+            assert_eq!(
+                count("acme", core::slice::from_ref(&r), &[]),
+                Err(Unknown::RecordUnreadable)
+            );
+        }
     }
 }
