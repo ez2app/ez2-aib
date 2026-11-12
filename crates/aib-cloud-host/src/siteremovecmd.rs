@@ -21,7 +21,10 @@
 //! that cannot be read (container gone or stopped, site software not answering:
 //! `site_unreadable`), are written into the removed record's `left_at_vendor` and do not
 //! hold the removal up (Andy 11-11). `--licences-left-at-vendor` still passes the step
-//! over on the person's word; the plain flow no longer needs it.
+//! over on the person's word; the plain flow no longer needs it. What a run sees of the
+//! licence step while the site can still be read, and what it gives back, is kept on the
+//! host ([`kept_licences_path`]) for a run that comes after the container is gone (ebb36
+//! L1): the removed record's `licences_seen` says `this_run`, `earlier_run` or `never`.
 //!
 //! The DNS step is not probed on this host: the key that manages DNS zones is not kept
 //! here. The step is "not asked here": the steps before it are planned as usual and the
@@ -467,6 +470,78 @@ pub trait RemoveHost {
     fn exists(&mut self, path: &str) -> Result<bool, String>;
     /// `path` removed: a file, or a directory with all it holds.
     fn remove_path(&mut self, path: &str) -> Result<(), String>;
+    /// What an earlier run of this removal kept of the licence step ([`kept_text`]);
+    /// `Ok(None)`: nothing kept.
+    fn kept_licences(&mut self) -> Result<Option<String>, String>;
+    /// What this run saw of the licence step kept for a later run (0600, at
+    /// [`kept_licences_path`]).
+    fn keep_licences(&mut self, text: &str) -> Result<(), String>;
+}
+
+/// Where a run of `site remove` keeps what it saw of the licence step: among the site's
+/// own files under [`crate::siteidentity::SECRETS`], named `<code>.…`, so that step 10
+/// (after the record is moved) takes it away with the others and checks it is gone; not
+/// in the records directory, which is read as records.
+pub fn kept_licences_path(code: &str) -> String {
+    format!("{}/{code}.remove-licences", crate::siteidentity::SECRETS)
+}
+
+/// Where what is said about the paid plugins in the removed record comes from (ebb36 L1
+/// on 9faf2a78): seen in this run while the site could be read, kept from an earlier run
+/// (this run could no longer read the site), or never read in any run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LicencesSeen {
+    #[default]
+    Never,
+    EarlierRun,
+    ThisRun,
+}
+
+impl LicencesSeen {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LicencesSeen::Never => "never",
+            LicencesSeen::EarlierRun => "earlier_run",
+            LicencesSeen::ThisRun => "this_run",
+        }
+    }
+}
+
+/// What a run keeps of the licence step: the site, what was left at the vendors as seen
+/// while the site could be read, and what was given back.
+pub fn kept_text(code: &str, left: &[String], given_back: &[&str]) -> String {
+    json!({ "site": code, "left": left, "given_back": given_back }).to_string() + "\n"
+}
+
+/// What an earlier run kept, read back: only for this site, every left entry
+/// `<plugin>:<word>` of a paid plugin, every plugin given back a paid plugin given back
+/// in the site. Anything else is not taken (`None`), as if nothing was kept.
+pub fn kept_from(text: &str, code: &str) -> Option<(Vec<String>, Vec<&'static str>)> {
+    use aib_cloud::siteremove::{give_back_of, GiveBack, PAID_PLUGINS};
+    let v: Value = serde_json::from_str(text).ok()?;
+    if v.get("site").and_then(Value::as_str) != Some(code) {
+        return None;
+    }
+    let paid = |name: &str| PAID_PLUGINS.iter().find(|p| p.name == name).map(|p| p.name);
+    let mut left = Vec::new();
+    for l in v.get("left")?.as_array()? {
+        let l = l.as_str()?;
+        let (plugin, word) = l.split_once(':')?;
+        paid(plugin)?;
+        if word.is_empty() || !word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+            return None;
+        }
+        left.push(l.to_owned());
+    }
+    let mut given_back = Vec::new();
+    for g in v.get("given_back")?.as_array()? {
+        let name = paid(g.as_str()?)?;
+        if give_back_of(name) != Some(GiveBack::InSite) || given_back.contains(&name) {
+            return None;
+        }
+        given_back.push(name);
+    }
+    Some((left, given_back))
 }
 
 /// The entry's configuration without this site's block. The block must be the site's one
@@ -671,11 +746,34 @@ struct Carried {
     /// What is left at the vendors (`<plugin>:<why>`), as last looked at while the site
     /// could be read; as unreadable only when it never could be in this run.
     licences_left: Option<Vec<String>>,
-    /// The activations given back by this run.
+    /// The activations given back by this run, and by an earlier run that kept them.
     given_back: Vec<&'static str>,
+    /// Where `licences_left` comes from.
+    licences_seen: LicencesSeen,
+    /// What this run last kept for a later run ([`kept_text`]).
+    kept: Option<String>,
 }
 
 impl Carried {
+    /// Keep what this run saw of the licence step for a later run, when it saw it and it
+    /// changed since last kept.
+    fn keep(&mut self, host: &mut impl RemoveHost, code: &str) -> Result<(), String> {
+        if self.licences_seen != LicencesSeen::ThisRun {
+            return Ok(());
+        }
+        let text = kept_text(
+            code,
+            self.licences_left.as_deref().unwrap_or_default(),
+            &self.given_back,
+        );
+        if self.kept.as_deref() != Some(text.as_str()) {
+            host.keep_licences(&text)
+                .map_err(|e| format!("licences_not_kept: {e}"))?;
+            self.kept = Some(text);
+        }
+        Ok(())
+    }
+
     /// What the removed record lists as left at the vendors: on the person's word, that
     /// word; otherwise what was looked at, without what this run gave back (a plugin
     /// given back may no longer keep what identifies it, and then reads as left).
@@ -763,7 +861,10 @@ fn do_step(
                 let (call_ok, now) = host.give_back(plugin);
                 siteremove::give_back_after(call_ok, now)
                     .map_err(|code| format!("{code}: {plugin}"))?;
-                carried.given_back.push(plugin);
+                if !carried.given_back.contains(&plugin) {
+                    carried.given_back.push(plugin);
+                }
+                carried.keep(host, &spec.code)?;
             }
             Ok(())
         }
@@ -771,7 +872,7 @@ fn do_step(
             let record = host.read_record()?;
             let left_list = carried.left_list(left);
             let left_refs: Vec<&str> = left_list.iter().map(String::as_str).collect();
-            let removed = removed_record(
+            let mut removed = removed_record(
                 &record,
                 removed_at,
                 carried.archive_name.as_deref(),
@@ -780,6 +881,11 @@ fn do_step(
                 dns,
                 dns_ledger,
             )?;
+            removed["licences_seen"] = json!(if left {
+                "not_asked"
+            } else {
+                carried.licences_seen.as_str()
+            });
             host.move_record(&removed)
         }
         // the DNS key is not on this host: the plan stops before the DNS step, or it was
@@ -983,15 +1089,33 @@ pub fn carry_out(
     let dns = dns_here(spec, dns_ledger)?;
     let mut applied: Vec<RemoveStep> = Vec::new();
     let mut carried = Carried::default();
+    // what an earlier run of this removal saw of the licence step, while it still could
+    // (ebb36 L1): what it gave back counts, and its view of what is left stands when this
+    // run can no longer read the site
+    let kept = host
+        .kept_licences()?
+        .and_then(|t| kept_from(&t, &spec.code));
+    if let Some((_, given_back)) = &kept {
+        carried.given_back.clone_from(given_back);
+    }
     let words = |a: &[RemoveStep]| a.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     for _ in 0..=STEPS.len() {
         let seen = host.see();
         if seen.archive_name.is_some() {
             carried.archive_name.clone_from(&seen.archive_name);
         }
-        if seen.licences.is_some() || carried.licences_left.is_none() {
+        if seen.licences.is_some() {
             carried.licences_left =
                 Some(siteremove::licences_look(spec.wp, seen.licences.as_deref()).left);
+            carried.licences_seen = LicencesSeen::ThisRun;
+            carried.keep(host, &spec.code)?;
+        } else if carried.licences_left.is_none() {
+            if let Some((left, _)) = &kept {
+                carried.licences_left = Some(left.clone());
+                carried.licences_seen = LicencesSeen::EarlierRun;
+            } else {
+                carried.licences_left = Some(siteremove::licences_look(spec.wp, None).left);
+            }
         }
         let p = probes(spec, &seen, dns);
         let next = next_here(&p, left, dns);
@@ -1057,6 +1181,7 @@ pub fn carry_out(
             "archive": carried.archive_name,
             "licences_given_back": carried.given_back,
             "licences_left": carried.left_list(left),
+            "licences_seen": if left { "not_asked" } else { carried.licences_seen.as_str() },
             "dns": dns.as_str(),
             "dns_ledger": dns_ledger,
             "dns_names": spec.hosts,
@@ -1162,6 +1287,24 @@ fn keep_copy(path: &str, label: &str, stamp: &str) -> Result<(), String> {
 impl RemoveHost for HostRemover {
     fn see(&mut self) -> Seen {
         see(&self.spec, &self.records)
+    }
+
+    fn kept_licences(&mut self) -> Result<Option<String>, String> {
+        let path = kept_licences_path(&self.spec.code);
+        match fs::read_to_string(&path) {
+            Ok(t) => Ok(Some(t)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{path}: {e}")),
+        }
+    }
+
+    fn keep_licences(&mut self, text: &str) -> Result<(), String> {
+        let path = kept_licences_path(&self.spec.code);
+        write_whole(Path::new(&path), text, 0o600)?;
+        if fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))? != text {
+            return Err(format!("{path}: not as written"));
+        }
+        Ok(())
     }
 
     fn others(&mut self) -> Vec<(String, Option<u16>)> {
@@ -1986,6 +2129,8 @@ mod tests {
         /// The vendor's answer right after an activation is given back, in place of the
         /// one the made-up site then has.
         after_give_back: Option<VendorAnswer>,
+        /// What a run kept of the licence step (beside the record, kept across runs).
+        kept: Option<String>,
         calls: Vec<String>,
         /// The step the progress file named at each write (E11).
         steps: Vec<String>,
@@ -2015,6 +2160,7 @@ mod tests {
             refused: None,
             licences: Some(answers()),
             after_give_back: None,
+            kept: None,
             calls: Vec::new(),
             steps: Vec::new(),
         }
@@ -2187,6 +2333,13 @@ mod tests {
             if self.sticky != Some(path) {
                 self.files.retain(|f| f != path);
             }
+            Ok(())
+        }
+        fn kept_licences(&mut self) -> Result<Option<String>, String> {
+            Ok(self.kept.clone())
+        }
+        fn keep_licences(&mut self, text: &str) -> Result<(), String> {
+            self.kept = Some(text.to_owned());
             Ok(())
         }
     }
@@ -2824,6 +2977,111 @@ mod tests {
             "{e}"
         );
         assert_eq!(states(&pl).last(), Some(&State::Failed));
+    }
+
+    /// ebb36 L1 on 9faf2a78: a removal cut off after the container is gone and before the
+    /// record is moved is run again; the site can no longer be read, so the record says
+    /// what the first run saw and gave back, and that it was seen in an earlier run.
+    #[test]
+    fn a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next() {
+        let pl = place("licenceskept");
+        let mut h = fake();
+        h.licences = Some(answer(answers(), "fluentformpro", VendorAnswer::Active));
+        h.no_effect = Some("move_record");
+        let plan = sealed(&pl, &mut h, false);
+        let e = apply(&pl, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        assert!(e.contains("record: done, but not done"), "{e}");
+        assert!(!h.listed, "the container is gone");
+        let kept = h.kept.clone().unwrap();
+        assert_eq!(
+            kept_from(&kept, "site9"),
+            Some((
+                vec![
+                    // Fluent no longer keeps its key once given back: left out of the
+                    // record by what was given back, not here
+                    "fluentformpro:no_data_in_site".to_owned(),
+                    "flyingpress:activation".to_owned(),
+                    "stackable:activation".to_owned()
+                ],
+                vec!["seopress", "fluentformpro"]
+            ))
+        );
+        // the next run, on the host as the first left it
+        h.no_effect = None;
+        let pl2 = place("licenceskept2");
+        let plan = sealed(&pl2, &mut h, false);
+        assert_eq!(plan["next_step"], "record");
+        let out = apply(&pl2, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(out["applied"], json!(["record"]));
+        let rec = h.moved.clone().unwrap();
+        assert_eq!(
+            rec["left_at_vendor"],
+            json!(["flyingpress:activation", "stackable:activation"])
+        );
+        assert_eq!(
+            rec["licences_given_back"],
+            json!(["seopress", "fluentformpro"])
+        );
+        assert_eq!(rec["licences_seen"], "earlier_run");
+        assert_eq!(out["licences_seen"], "earlier_run");
+        // nothing kept: never read, and said so
+        let pl3 = place("licenceskept3");
+        let mut h = fake();
+        h.licences = Some(answer(answers(), "fluentformpro", VendorAnswer::Active));
+        h.no_effect = Some("move_record");
+        let plan = sealed(&pl3, &mut h, false);
+        apply(&pl3, &plan, &spec(), "www.example.com", &mut h, "t").unwrap_err();
+        h.no_effect = None;
+        h.kept = None;
+        let pl4 = place("licenceskept4");
+        let plan = sealed(&pl4, &mut h, false);
+        apply(&pl4, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        let rec = h.moved.clone().unwrap();
+        assert!(
+            rec["left_at_vendor"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l.as_str().unwrap().ends_with(":site_unreadable")),
+            "{rec}"
+        );
+        assert_eq!(rec["licences_seen"], "never");
+        // a site read in this run says so; the kept file is one step 10 takes away
+        let pl5 = place("licenceskept5");
+        let mut h = fake();
+        let plan = sealed(&pl5, &mut h, false);
+        apply(&pl5, &plan, &spec(), "www.example.com", &mut h, "t").unwrap();
+        assert_eq!(h.moved.clone().unwrap()["licences_seen"], "this_run");
+        assert!(kept_licences_path("site9").starts_with("/etc/ez2-cloud/sites/site9."));
+    }
+
+    #[test]
+    fn what_an_earlier_run_kept_is_taken_only_for_this_site_and_known_plugins() {
+        let ok = kept_text(
+            "site9",
+            &["flyingpress:activation".to_owned()],
+            &["seopress"],
+        );
+        assert_eq!(
+            kept_from(&ok, "site9"),
+            Some((vec!["flyingpress:activation".to_owned()], vec!["seopress"]))
+        );
+        assert_eq!(kept_from(&ok, "site90"), None);
+        let other = kept_text("site9", &["someother:activation".to_owned()], &[]);
+        assert_eq!(kept_from(&other, "site9"), None);
+        // only a plugin given back in the site can have been given back
+        let record_only = kept_text("site9", &[], &["flyingpress"]);
+        assert_eq!(kept_from(&record_only, "site9"), None);
+        let twice = kept_text("site9", &[], &["seopress", "seopress"]);
+        assert_eq!(kept_from(&twice, "site9"), None);
+        assert_eq!(kept_from("not json", "site9"), None);
+        assert_eq!(
+            kept_from(
+                &kept_text("site9", &["seopress:Bad word".to_owned()], &[]),
+                "site9"
+            ),
+            None
+        );
     }
 
     #[test]

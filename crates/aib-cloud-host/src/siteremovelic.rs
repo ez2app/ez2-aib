@@ -8,6 +8,11 @@
 //! `site create` asks it ([`crate::sitelive`]), with the plugin's own store address and
 //! item number.
 //!
+//! SEOPress is given back only when the key in the site is the template's; Fluent Forms
+//! Pro is given back with whatever key the site holds, the customer's own included (its
+//! client deactivates the key the site keeps): the site is being removed, so giving that
+//! seat back does no harm, but the two rules differ (ebb36 N3).
+//!
 //! Keys stay inside the site or in memory: the template's SEOPress key is read from the
 //! host's key file and compared with the site's key in memory; neither is an argument or
 //! a line of output.
@@ -69,16 +74,44 @@ pub fn seopress_off(out: &str) -> bool {
     line_after(out, "SPOFF license=").is_some_and(|w| !w.is_empty())
 }
 
-/// Fluent Forms Pro's answer: `valid` is held; any other word the vendor says is not;
-/// no plugin or no key in the site is "nothing in the site"; no answer is unknown.
+/// The words of Fluent's licence server that say this site holds no activation.
+pub const FLUENT_NOT_ACTIVE: [&str; 3] = ["inactive", "site_inactive", "deactivated"];
+/// The words that say the key itself is not good, as SEOPress's `NotValid` (ebb36 L2 on
+/// 9faf2a78): the seat may still count at the vendor once the key is renewed, so it is
+/// recorded as left, never taken as given back.
+pub const FLUENT_NOT_VALID: [&str; 7] = [
+    "expired",
+    "disabled",
+    "invalid",
+    "revoked",
+    "blocked",
+    "key_mismatch",
+    "item_mismatch",
+];
+
+/// One status word of Fluent's licence server: `valid` is held, a word of
+/// [`FLUENT_NOT_ACTIVE`] is not, a word of [`FLUENT_NOT_VALID`] is a key not good; any
+/// other word (or none) is not understood.
+pub fn fluent_word(w: &str) -> VendorAnswer {
+    if w == "valid" {
+        VendorAnswer::Active
+    } else if FLUENT_NOT_ACTIVE.contains(&w) {
+        VendorAnswer::NotActive
+    } else if FLUENT_NOT_VALID.contains(&w) {
+        VendorAnswer::NotValid
+    } else {
+        VendorAnswer::Unknown
+    }
+}
+
+/// Fluent Forms Pro's answer: the vendor's status word read by [`fluent_word`]; no
+/// plugin or no key in the site is "nothing in the site"; no answer is unknown.
 pub fn fluent_answer(out: &str) -> VendorAnswer {
     match line_after(out, "FFV ") {
         Some("absent" | "nokey") => VendorAnswer::NoData,
-        Some(rest) => match rest.strip_prefix("status=") {
-            Some("valid") => VendorAnswer::Active,
-            Some(w) if !w.is_empty() => VendorAnswer::NotActive,
-            _ => VendorAnswer::Unknown,
-        },
+        Some(rest) => rest
+            .strip_prefix("status=")
+            .map_or(VendorAnswer::Unknown, fluent_word),
         None => VendorAnswer::Unknown,
     }
 }
@@ -87,9 +120,7 @@ pub fn fluent_answer(out: &str) -> VendorAnswer {
 /// right after it.
 pub fn fluent_off(out: &str) -> (bool, VendorAnswer) {
     match line_after(out, "FFOFF DONE after=") {
-        Some("valid") => (true, VendorAnswer::Active),
-        Some("" | "unknown") => (true, VendorAnswer::Unknown),
-        Some(_) => (true, VendorAnswer::NotActive),
+        Some(w) => (true, fluent_word(w)),
         None => (false, VendorAnswer::Unknown),
     }
 }
@@ -205,9 +236,33 @@ mod tests {
     #[test]
     fn each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed() {
         assert_eq!(fluent_answer("FFV status=valid\n"), VendorAnswer::Active);
+        // a key not good is recorded as SEOPress's is; only a word saying "not activated"
+        // is not held; a word not known is not guessed (ebb36 L2 on 9faf2a78)
         assert_eq!(
             fluent_answer("FFV status=expired\n"),
+            VendorAnswer::NotValid
+        );
+        for w in FLUENT_NOT_VALID {
+            assert_eq!(fluent_word(w), VendorAnswer::NotValid, "{w}");
+        }
+        for w in FLUENT_NOT_ACTIVE {
+            assert_eq!(fluent_word(w), VendorAnswer::NotActive, "{w}");
+        }
+        assert_eq!(
+            fluent_answer("FFV status=site_inactive\n"),
             VendorAnswer::NotActive
+        );
+        assert_eq!(
+            fluent_answer("FFV status=somethingnew\n"),
+            VendorAnswer::Unknown
+        );
+        assert_eq!(
+            fluent_off("FFOFF DONE after=somethingnew\n"),
+            (true, VendorAnswer::Unknown)
+        );
+        assert_eq!(
+            fluent_off("FFOFF DONE after=expired\n"),
+            (true, VendorAnswer::NotValid)
         );
         assert_eq!(fluent_answer("FFV status=\n"), VendorAnswer::Unknown);
         assert_eq!(fluent_answer("FFV absent\n"), VendorAnswer::NoData);
