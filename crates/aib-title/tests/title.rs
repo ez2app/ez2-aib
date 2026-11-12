@@ -171,20 +171,26 @@ fn cockpit() -> PathBuf {
 
 struct Side {
     out: Vec<String>,
+    rcs: Vec<i32>,
     dump: String,
     beat: String,
+    /// every tmux call the shim saw, one line each, arguments ended by \x1f
+    tmux: String,
 }
 
 /// Run one path twice in its own state dir. `rust` false = `env -u TMUX bash title-beat.sh`,
 /// what pane-right-tabs.sh ran; true = source cockpit-env.sh, then the binary (what the pane
-/// does now: it has sourced cockpit-env.sh itself).
-fn run_side(rust: bool, extra: &[&str]) -> Side {
+/// does now: it has sourced cockpit-env.sh itself). A tmux shim is FIRST on PATH, so a real
+/// tmux server is never touched; it answers `display-message` with @9.
+fn run_side(rust: bool, extra: &[&str], envs: &[(&str, &str)]) -> Side {
     let td = tempfile::tempdir().expect("tempdir");
     let t = td.path();
     let bin = t.join("bin");
     let shim = t.join("shim");
-    fs::create_dir_all(&bin).expect("bin");
-    fs::create_dir_all(&shim).expect("shim");
+    let tshim = t.join("tshim");
+    for d in [&bin, &shim, &tshim] {
+        fs::create_dir_all(d).expect("dir");
+    }
     let stub = bin.join("py-stub");
     fs::write(
         &stub,
@@ -193,12 +199,22 @@ fn run_side(rust: bool, extra: &[&str]) -> Side {
          [ \"$1\" = -c ] && exec python3 \"$@\"\n\
          printf 'argv=%s/%s\\n' \"$(basename \"$(dirname \"$1\")\")\" \"$(basename \"$1\")\" >> \"$AIB_TITLE_TEST_DUMP\"\n\
          env | grep -E '^(EZ2_TB_[A-Z_]*|TMUX)=' | sort >> \"$AIB_TITLE_TEST_DUMP\"\n\
+         [ -n \"${AIB_TITLE_TEST_RC:-}\" ] && exit \"$AIB_TITLE_TEST_RC\"\n\
          printf 'T b=%s w=%s\\n\\n' \"$EZ2_TB_BEAT\" \"$EZ2_TB_WINDOW\"\n",
     )
     .expect("stub");
     // macOS runners have no flock(1): a no-op one at the END of PATH, so a real one wins
     fs::write(shim.join("flock"), "#!/bin/sh\nexit 0\n").expect("flock shim");
-    for p in [&stub, &shim.join("flock")] {
+    fs::write(
+        tshim.join("tmux"),
+        "#!/bin/sh\n\
+         for a in \"$@\"; do printf '%s\\037' \"$a\"; done >> \"$AIB_TITLE_TEST_TMUX\"\n\
+         printf '\\n' >> \"$AIB_TITLE_TEST_TMUX\"\n\
+         case \" $* \" in *\" display-message \"*) echo @9 ;; esac\n\
+         exit 0\n",
+    )
+    .expect("tmux shim");
+    for p in [&stub, &shim.join("flock"), &tshim.join("tmux")] {
         Command::new("chmod")
             .arg("+x")
             .arg(p)
@@ -221,12 +237,15 @@ fn run_side(rust: bool, extra: &[&str]) -> Side {
     )
     .expect("vf");
     let dump = t.join("dump.txt");
+    let tlog = t.join("tmux.txt");
     let path = format!(
-        "{}:{}",
+        "{}:{}:{}",
+        tshim.display(),
         std::env::var("PATH").unwrap_or_default(),
         shim.display()
     );
     let mut out = Vec::new();
+    let mut rcs = Vec::new();
     for _ in 0..2 {
         let mut c = Command::new("bash");
         if rust {
@@ -252,24 +271,41 @@ fn run_side(rust: bool, extra: &[&str]) -> Side {
             .env("EZ2_AIB_INSTANCE", "20261112-000000-abcd")
             .env("EZ2_COCKPIT_STATE_DIR", &state)
             .env("EZ2_PY3", &stub)
-            .env("EZ2_TB_WINDOW", "@7")
             .env("CLAUDE_CODE_SESSION_ID", "uuid-1")
             .env("TMUX", "/nonexistent/tmux-x,1,2")
-            .env("AIB_TITLE_TEST_DUMP", &dump);
+            .env("AIB_TITLE_TEST_DUMP", &dump)
+            .env("AIB_TITLE_TEST_TMUX", &tlog);
+        for (k, v) in envs {
+            c.env(k, v);
+        }
         let o = c.output().expect("run");
-        assert!(
-            o.status.success(),
-            "rc {:?} stderr {}",
-            o.status.code(),
-            String::from_utf8_lossy(&o.stderr)
-        );
+        rcs.push(o.status.code().unwrap_or(-1));
         out.push(String::from_utf8_lossy(&o.stdout).into_owned());
     }
     Side {
         out,
+        rcs,
         dump: fs::read_to_string(&dump).unwrap_or_default(),
         beat: fs::read_to_string(state.join(BEAT_FILE)).unwrap_or_default(),
+        tmux: fs::read_to_string(&tlog).unwrap_or_default(),
     }
+}
+
+/// tmux calls as commands: a chained call (`a ; b ; c`) counts as its three commands.
+fn tmux_commands(log: &str) -> Vec<Vec<String>> {
+    let mut cmds = Vec::new();
+    for line in log.lines() {
+        let mut cur: Vec<String> = Vec::new();
+        for a in line.split('\x1f').filter(|a| !a.is_empty()) {
+            if a == ";" {
+                cmds.push(std::mem::take(&mut cur));
+            } else {
+                cur.push(a.to_string());
+            }
+        }
+        cmds.push(cur);
+    }
+    cmds
 }
 
 fn skip_without_bash() -> bool {
@@ -280,13 +316,17 @@ fn skip_without_bash() -> bool {
     false
 }
 
+const WIN7: &[(&str, &str)] = &[("EZ2_TB_WINDOW", "@7")];
+
 #[test]
 fn parity_dry_run_same_stdout_beat_and_sampler_input() {
     if skip_without_bash() {
         return;
     }
-    let b = run_side(false, &["--dry-run"]);
-    let r = run_side(true, &["--dry-run"]);
+    let b = run_side(false, &["--dry-run"], WIN7);
+    let r = run_side(true, &["--dry-run"], WIN7);
+    assert_eq!(b.rcs, vec![0, 0], "bash_rc");
+    assert_eq!(r.rcs, b.rcs, "rc_differs");
     assert_eq!(r.out, b.out, "stdout_differs");
     assert_eq!(r.beat, b.beat, "beat_file_differs");
     assert_eq!(r.dump, b.dump, "sampler_input_differs");
@@ -313,6 +353,8 @@ fn parity_dry_run_same_stdout_beat_and_sampler_input() {
         b.dump
     );
     assert!(!b.dump.contains("TMUX="), "tmux_env_leaked {:?}", b.dump);
+    assert_eq!(b.tmux, "", "dry_touched_tmux {:?}", b.tmux);
+    assert_eq!(r.tmux, "", "dry_touched_tmux_rust {:?}", r.tmux);
 }
 
 #[test]
@@ -320,8 +362,8 @@ fn parity_print_same_and_no_tmux_lines() {
     if skip_without_bash() {
         return;
     }
-    let b = run_side(false, &["--print", "--dry-run"]);
-    let r = run_side(true, &["--print", "--dry-run"]);
+    let b = run_side(false, &["--print", "--dry-run"], WIN7);
+    let r = run_side(true, &["--print", "--dry-run"], WIN7);
     assert_eq!(r.out, b.out, "print_stdout_differs");
     assert_eq!(r.dump, b.dump, "print_sampler_input_differs");
     assert_eq!(b.out[0], "T b=1 w=@7\n", "print_is_title_only");
@@ -329,5 +371,86 @@ fn parity_print_same_and_no_tmux_lines() {
         b.dump.contains("EZ2_TB_PRINT_ONLY=1"),
         "print_only_passed {:?}",
         b.dump
+    );
+}
+
+/// a63ab L2: the real write path, the hub window probe and the session-id order, with no
+/// window given. bash makes 1 display + 3 set-option calls per run; the binary 1 + 1 chained.
+#[test]
+fn parity_real_write_same_tmux_commands_and_probe() {
+    if skip_without_bash() {
+        return;
+    }
+    let ids = &[("EZ2_SESSION_UUID", "uuid-0")];
+    let b = run_side(false, &[], ids);
+    let r = run_side(true, &[], ids);
+    assert_eq!(b.rcs, vec![0, 0], "bash_rc");
+    assert_eq!(r.rcs, b.rcs, "rc_differs");
+    assert_eq!(r.out, b.out, "stdout_differs");
+    assert_eq!(r.dump, b.dump, "sampler_input_differs");
+    let (bc, rc) = (tmux_commands(&b.tmux), tmux_commands(&r.tmux));
+    assert_eq!(rc, bc, "tmux_commands_differ");
+    assert_eq!(b.tmux.lines().count(), 8, "bash_tmux_calls {:?}", b.tmux);
+    assert_eq!(r.tmux.lines().count(), 4, "rust_not_chained {:?}", r.tmux);
+    assert_eq!(bc.len(), 8, "commands {bc:?}");
+    assert_eq!(
+        &bc[0][..2],
+        ["-L".to_string(), "aihub-20261112-000000-abcd".to_string()].as_slice(),
+        "probe_socket {:?}",
+        bc[0]
+    );
+    assert_eq!(
+        &bc[0][2..],
+        ["display-message", "-p", "#{window_id}"].map(String::from).as_slice(),
+        "probe_args"
+    );
+    assert_eq!(
+        bc[1],
+        [
+            "set-option",
+            "-t",
+            "aib-20261112-000000-abcd",
+            "@aib_title",
+            "T b=1 w=@9"
+        ]
+        .map(String::from)
+        .to_vec(),
+        "title_set"
+    );
+    assert_eq!(bc[3][3..], ["@aib_ver_state", "current"].map(String::from), "state_set");
+    assert!(b.dump.contains("EZ2_TB_WINDOW=@9"), "probe_window {:?}", b.dump);
+    assert!(b.dump.contains("EZ2_TB_UUID=uuid-0"), "uuid_order {:?}", b.dump);
+}
+
+/// a63ab L2: --print without --dry-run never touches tmux, not even the window probe.
+#[test]
+fn parity_print_real_never_touches_tmux() {
+    if skip_without_bash() {
+        return;
+    }
+    let b = run_side(false, &["--print"], &[]);
+    let r = run_side(true, &["--print"], &[]);
+    assert_eq!(r.out, b.out, "print_stdout_differs");
+    assert_eq!(b.tmux, "", "bash_print_touched_tmux {:?}", b.tmux);
+    assert_eq!(r.tmux, "", "print_touched_tmux {:?}", r.tmux);
+}
+
+/// a63ab L2: the sampler's exit code comes back, and nothing is written.
+#[test]
+fn parity_sampler_failure_same_rc_no_write() {
+    if skip_without_bash() {
+        return;
+    }
+    let fail = &[("AIB_TITLE_TEST_RC", "3")];
+    let b = run_side(false, &[], fail);
+    let r = run_side(true, &[], fail);
+    assert_eq!(b.rcs, vec![3, 3], "bash_rc");
+    assert_eq!(r.rcs, b.rcs, "rc_differs");
+    assert_eq!(r.out, b.out, "stdout_differs");
+    let (bc, rc) = (tmux_commands(&b.tmux), tmux_commands(&r.tmux));
+    assert_eq!(rc, bc, "tmux_commands_differ");
+    assert!(
+        bc.iter().all(|c| !c.contains(&"set-option".to_string())),
+        "wrote_after_failure {bc:?}"
     );
 }
