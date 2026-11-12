@@ -624,7 +624,8 @@ mod tests {
             {"__typename":"CheckRun","name":"tip","status":"COMPLETED","conclusion":"SUCCESS"},
             {"__typename":"CheckRun","name":"win","status":"COMPLETED","conclusion":"CANCELLED"},
             {"__typename":"CheckRun","name":"py39","status":"COMPLETED","conclusion":"SKIPPED"},
-            {"__typename":"StatusContext","context":"legacy","state":"PENDING"}],
+            {"__typename":"StatusContext","context":"legacy","state":"PENDING"},
+            {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"}],
           "commits":[{"oid":"2114b286ff751f6ab30e76ba9490a55259b913d4"},{"oid":"bad"}]}]"#;
         let p = &parse_gh(j).unwrap()[0];
         let cells: Vec<Cell> = p.checks.iter().map(|c| c.cell).collect();
@@ -635,9 +636,10 @@ mod tests {
                 Cell::Pass,
                 Cell::Cancel,
                 Cell::Skip,
-                Cell::Running
+                Cell::Running,
+                Cell::Fail
             ],
-            "取消另算、略過不算"
+            "取消另算、略過不算、失敗算紅"
         );
         assert_eq!(p.checks[4].name, "legacy");
         assert_eq!(p.checks[0].started, Some(1_794_522_071));
