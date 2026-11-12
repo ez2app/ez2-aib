@@ -8,12 +8,15 @@
 //! A lookup that fails (no `dig`, a timeout, a resolver error) is "could not look", never
 //! "no such record": the domain is then not ready.
 //!
-//! `edge cf-only --plan | --check [--builtin] [--fw <file>]` (E6 C3, sheet H8): 80 / 443 of
+//! `edge cf-only --plan | --check [--builtin] [--accept-diff] [--fw <file>]` (E6 C3, sheet H8): 80 / 443 of
 //! the edge only from Cloudflare. Fetches Cloudflare's IPv4 list (or takes the one in the
 //! code with `--builtin`), checks it with `aib_cloud::cfonly`, and prints the edge CT's
 //! firewall file as it would be with the set and the two rules put in, plus what the file
-//! on disk says now. `--check` reads the file back only: rc 0 when it holds exactly that,
-//! 1 when not. **Nothing is written**: the file is changed by a sign sheet.
+//! on disk says now, with the edge's network cards (`pct config`) and the cluster switch.
+//! A fetched list that differs from the built-in one gives no steps (rc 2) without
+//! `--accept-diff`. `--check` reads back only: rc 0 when the file holds exactly that and
+//! the firewall applies to every card, 1 when not. **Nothing is written**: the file is
+//! changed by a sign sheet.
 
 use std::fs;
 use std::process::Command;
@@ -166,30 +169,81 @@ impl Fetch for Curl {
     }
 }
 
-/// `edge cf-only`: the plan (or the read-back) for one firewall file text. A fetched list
-/// that fails the check is refused, never replaced by the built-in one behind the
-/// person's back.
+/// What `edge cf-only` reads on the host; `None` where it could not be read.
+pub struct EdgeFacts {
+    /// The edge CT's firewall file.
+    pub fw: Option<String>,
+    /// `pct config <edge CT>`: its network cards.
+    pub pct_config: Option<String>,
+    /// The cluster firewall file.
+    pub cluster_fw: Option<String>,
+}
+
+/// The switches of `edge cf-only`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CfOpts {
+    /// Take the list in the code, fetch nothing.
+    pub builtin: bool,
+    /// Read back only.
+    pub check: bool,
+    /// A fetched list that differs from the built-in one has been looked at.
+    pub accept_diff: bool,
+}
+
+/// What the person who signs H8 must know; printed with every plan.
+fn plan_notes() -> Vec<String> {
+    vec![
+        format!(
+            "after the sign sheet: run `pve-firewall compile` and confirm PVEFW-{}-{} is in its output, then `edge cf-only --check` must give rc 0",
+            aib_cloud::site::EDGE_CT,
+            cfonly::IPSET
+        ),
+        "IPv6 is blocked whole: the drop has no source and the set is IPv4 only (the edge has no public IPv6 path; a proxied AAAA would need ips-v6 first)".to_owned(),
+        "the drop also stops hosts and CTs on the internal bridge calling the edge on 80 / 443; our own calls enter the edge with pct exec to 127.0.0.1".to_owned(),
+        "nic_firewall_off / fw_* / cluster_* in found_now are not fixed by this file: fix them first, or the rules do not apply".to_owned(),
+    ]
+}
+
+/// `edge cf-only`: the plan (or the read-back) from what was read on the host. A fetched
+/// list that fails the check is refused, never replaced by the built-in one behind the
+/// person's back; one that differs from the built-in one gives no steps (rc 2) until
+/// `--accept-diff` says it was looked at (c477a L1). The read-back counts the cards and
+/// the cluster switch too (c477a M1): a clean file behind a card without the firewall is
+/// not "only Cloudflare".
 pub fn cf_only(
     fetch: &mut dyn Fetch,
-    builtin: bool,
-    fw: &str,
-    check: bool,
+    opts: CfOpts,
+    facts: &EdgeFacts,
 ) -> Result<(Value, u8), String> {
     let known = cfonly::builtin_ranges().map_err(|e| e.to_string())?;
-    let ranges = if builtin {
+    let ranges = if opts.builtin {
         known.clone()
     } else {
         let text = fetch.get(cfonly::SOURCE_URL)?;
         cfonly::parse_ranges(&text).map_err(|e| format!("{}: {e}", cfonly::SOURCE_URL))?
     };
-    let now = cfonly::readback(fw, &ranges);
-    let rc = u8::from(!now.is_empty());
-    if check {
-        return Ok((
-            json!({ "check": "edge cf-only", "ok": now.is_empty(), "found": now }),
-            rc,
-        ));
+    let (added, dropped) = cfonly::difference(&known, &ranges);
+    let source = if opts.builtin {
+        "builtin"
+    } else {
+        cfonly::SOURCE_URL
+    };
+    let fw = facts.fw.as_deref();
+    let mut now =
+        cfonly::firewall_applies(facts.pct_config.as_deref(), fw, facts.cluster_fw.as_deref());
+    now.extend(cfonly::readback(fw.unwrap_or_default(), &ranges));
+    if opts.check {
+        let rc = u8::from(!now.is_empty());
+        let doc = json!({
+            "check": "edge cf-only", "ok": now.is_empty(), "found": now, "source": source,
+            "added_to_builtin": added, "dropped_from_builtin": dropped,
+        });
+        return Ok((doc, rc));
     }
+    // c477a N2: the plan edits the edge's own file; it does not make one
+    let fw = fw.ok_or(
+        "the edge CT's firewall file could not be read: this plan only edits an existing file",
+    )?;
     let text = cfonly::apply(fw, &ranges);
     let after = cfonly::readback(&text, &ranges);
     if !after.is_empty() {
@@ -198,44 +252,53 @@ pub fn cf_only(
             after.join(", ")
         ));
     }
-    let (added, dropped) = cfonly::difference(&known, &ranges);
-    let source = if builtin {
-        "builtin"
-    } else {
-        cfonly::SOURCE_URL
-    };
-    let doc = json!({
+    let needs_ack = !added.is_empty() || !dropped.is_empty();
+    let mut doc = json!({
         "plan": "edge cf-only",
         "level": "L2",
         "source": source,
         "ranges": ranges.len(),
         "added_to_builtin": added,
         "dropped_from_builtin": dropped,
+        "needs_ack": needs_ack,
         "found_now": now,
-        "steps": [{ "do": "write_edge_firewall", "text": text }, { "do": "read_back" }],
+        "notes": plan_notes(),
     });
+    if needs_ack && !opts.accept_diff {
+        doc["refused"] = json!("the fetched list differs from the built-in one: look at added_to_builtin / dropped_from_builtin, then run again with --accept-diff (and update BUILTIN_V4 in a PR)");
+        return Ok((doc, 2));
+    }
+    doc["steps"] = json!([{ "do": "write_edge_firewall", "text": text }, { "do": "read_back" }]);
     Ok((doc, 0))
 }
 
 fn cmd_cf_only(args: &[String]) -> Result<u8, String> {
-    let usage = "edge cf-only --plan | --check [--builtin] [--fw <file>]";
+    let usage = "edge cf-only --plan | --check [--builtin] [--accept-diff] [--fw <file>]";
     let mut fw_path = format!("/etc/pve/firewall/{}.fw", aib_cloud::site::EDGE_CT);
-    let (mut plan, mut check, mut builtin) = (false, false, false);
+    let (mut plan, mut opts) = (false, CfOpts::default());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--plan" => plan = true,
-            "--check" => check = true,
-            "--builtin" => builtin = true,
+            "--check" => opts.check = true,
+            "--builtin" => opts.builtin = true,
+            "--accept-diff" => opts.accept_diff = true,
             "--fw" => fw_path = it.next().ok_or("--fw needs a file")?.clone(),
             _ => return Err(usage.to_owned()),
         }
     }
-    if plan == check {
+    if plan == opts.check {
         return Err(usage.to_owned());
     }
-    let fw = fs::read_to_string(&fw_path).map_err(|e| format!("{fw_path}: {e}"))?;
-    let (doc, rc) = cf_only(&mut Curl, builtin, &fw, check)?;
+    let edge_ct = aib_cloud::site::EDGE_CT.to_string();
+    let mut pct = Command::new("pct");
+    pct.args(["config", edge_ct.as_str()]).env("LC_ALL", "C");
+    let facts = EdgeFacts {
+        fw: fs::read_to_string(&fw_path).ok(),
+        pct_config: run_capture(&mut pct, Duration::from_secs(10)).ok(),
+        cluster_fw: fs::read_to_string("/etc/pve/firewall/cluster.fw").ok(),
+    };
+    let (doc, rc) = cf_only(&mut Curl, opts, &facts)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
@@ -244,7 +307,7 @@ fn cmd_cf_only(args: &[String]) -> Result<u8, String> {
 }
 
 pub fn cmd(args: &[String]) -> Result<u8, String> {
-    let usage = "edge domain preflight <name> --ip <our ipv4> | edge domain add|rm <site> <name> [--ip <our ipv4>] --plan | edge cf-only --plan | --check [--builtin] [--fw <file>]";
+    let usage = "edge domain preflight <name> --ip <our ipv4> | edge domain add|rm <site> <name> [--ip <our ipv4>] --plan | edge cf-only --plan | --check [--builtin] [--accept-diff] [--fw <file>]";
     if args.first().map(String::as_str) == Some("cf-only") {
         return cmd_cf_only(&args[1..]);
     }
@@ -354,10 +417,33 @@ mod tests {
     const SAMPLE: &str = "192.0.2.0/24\n198.51.100.0/24\n";
     const EDGE_FW: &str = "[OPTIONS]\nenable: 1\n\n[RULES]\nGROUP ez2-edge-v1\n";
 
+    const EDGE_CFG: &str =
+        "hostname: edge\nnet0: name=eth0,bridge=vmbr1,firewall=1\nunprivileged: 1\n";
+    const CLUSTER: &str = "[OPTIONS]\nenable: 1\npolicy_in: DROP\n";
+
+    fn facts(fw: &str) -> EdgeFacts {
+        EdgeFacts {
+            fw: Some(fw.to_owned()),
+            pct_config: Some(EDGE_CFG.to_owned()),
+            cluster_fw: Some(CLUSTER.to_owned()),
+        }
+    }
+
+    const PLAN: CfOpts = CfOpts {
+        builtin: false,
+        check: false,
+        accept_diff: true,
+    };
+    const CHECK: CfOpts = CfOpts {
+        builtin: false,
+        check: true,
+        accept_diff: false,
+    };
+
     #[test]
     fn a_fetched_list_is_checked_and_its_change_shown() {
         let mut f = Fake(Ok(SAMPLE.into()), 0);
-        let (doc, rc) = cf_only(&mut f, false, EDGE_FW, false).unwrap();
+        let (doc, rc) = cf_only(&mut f, PLAN, &facts(EDGE_FW)).unwrap();
         assert_eq!((rc, f.1), (0, 1));
         assert_eq!(
             doc["added_to_builtin"],
@@ -365,15 +451,49 @@ mod tests {
         );
         assert_eq!(doc["dropped_from_builtin"].as_array().unwrap().len(), 15);
         assert_eq!(doc["found_now"], json!(["set_missing", "rules_not_first"]));
+        assert!(doc["notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("PVEFW-101-ez2-cloudflare-v4"));
         let text = doc["steps"][0]["text"].as_str().unwrap();
         // the planned file read back with --check is clean
         let mut again = Fake(Ok(SAMPLE.into()), 0);
-        assert_eq!(cf_only(&mut again, false, text, true).unwrap().1, 0);
-        assert_eq!(cf_only(&mut again, false, EDGE_FW, true).unwrap().1, 1);
+        assert_eq!(cf_only(&mut again, CHECK, &facts(text)).unwrap().1, 0);
+        assert_eq!(cf_only(&mut again, CHECK, &facts(EDGE_FW)).unwrap().1, 1);
+        // a clean file behind a card without the firewall is not ok (c477a M1)
+        let mut open = facts(text);
+        open.pct_config = Some(format!("{EDGE_CFG}net1: name=eth1,bridge=vmbr0\n"));
+        let (doc, rc) = cf_only(&mut again, CHECK, &open).unwrap();
+        assert_eq!((rc, doc["found"].clone()), (1, json!(["nic_firewall_off"])));
         // the built-in list never fetches
         let mut none = Fake(Err("offline".into()), 0);
-        assert!(cf_only(&mut none, true, EDGE_FW, false).is_ok());
+        let builtin = CfOpts {
+            builtin: true,
+            ..CfOpts::default()
+        };
+        assert_eq!(cf_only(&mut none, builtin, &facts(EDGE_FW)).unwrap().1, 0);
         assert_eq!(none.1, 0);
+        // no firewall file of the edge: no plan, a reason
+        let mut gone = facts(EDGE_FW);
+        gone.fw = None;
+        assert!(cf_only(&mut none, builtin, &gone).is_err());
+    }
+
+    #[test]
+    fn a_changed_list_needs_accept_diff() {
+        let mut f = Fake(Ok(SAMPLE.into()), 0);
+        let (doc, rc) = cf_only(&mut f, CfOpts::default(), &facts(EDGE_FW)).unwrap();
+        assert_eq!(rc, 2);
+        assert_eq!(doc["needs_ack"], json!(true));
+        assert!(doc.get("steps").is_none() && doc["refused"].is_string());
+        // the built-in list has nothing to accept
+        let builtin = CfOpts {
+            builtin: true,
+            ..CfOpts::default()
+        };
+        let (doc, rc) = cf_only(&mut f, builtin, &facts(EDGE_FW)).unwrap();
+        assert_eq!((rc, doc["needs_ack"].clone()), (0, json!(false)));
+        assert!(doc["steps"].is_array());
     }
 
     #[test]
@@ -385,7 +505,7 @@ mod tests {
             Err("timeout".into()),
         ] {
             let mut f = Fake(answer, 0);
-            assert!(cf_only(&mut f, false, EDGE_FW, false).is_err());
+            assert!(cf_only(&mut f, PLAN, &facts(EDGE_FW)).is_err());
         }
     }
 

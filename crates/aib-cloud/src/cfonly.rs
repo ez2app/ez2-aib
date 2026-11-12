@@ -20,10 +20,24 @@
 //! * **Read back, not trusted** ([`readback`]): the file on disk must have the firewall on,
 //!   the set equal to the list exactly (nothing missing, nothing extra) and the two rules
 //!   first.
+//! * **The rules must apply at all** ([`firewall_applies`], c477a M1): Proxmox filters a
+//!   CT only when the cluster firewall is on (H09), the CT's file is on and **every**
+//!   network card of the CT carries `firewall=1` (S03). One card without it is a way round
+//!   every rule, so a clean file alone is not "only Cloudflare".
+//!
+//! Known limits, written into the plan for the person who signs it: the drop has no
+//! source, so it also drops IPv6 to 80 / 443 (the set is IPv4 only; the edge has no public
+//! IPv6 path today, which is the precondition) and drops hosts and CTs on the internal
+//! bridge that call the edge on 80 / 443 (our own calls enter the edge with `pct exec` to
+//! 127.0.0.1, which the CT firewall does not see). The set is referenced as
+//! `+guest/<name>` (Proxmox 8 and later) so a cluster set of the same name is never taken
+//! instead.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
+
+use crate::verify::{self, Outcome};
 
 /// Where Cloudflare publishes its IPv4 ranges, one CIDR per line.
 pub const SOURCE_URL: &str = "https://www.cloudflare.com/ips-v4";
@@ -58,7 +72,7 @@ pub const IPSET: &str = "ez2-cloudflare-v4";
 /// The two rules, in this order, first in the edge CT's `[RULES]`: web ports from the set
 /// are let in, web ports from anywhere else are dropped.
 pub const RULES: [&str; 2] = [
-    "IN ACCEPT -source +ez2-cloudflare-v4 -p tcp -dport 80,443 -log nolog",
+    "IN ACCEPT -source +guest/ez2-cloudflare-v4 -p tcp -dport 80,443 -log nolog",
     "IN DROP -p tcp -dport 80,443 -log nolog",
 ];
 
@@ -260,6 +274,32 @@ pub fn readback(fw: &str, want: &[Range]) -> Vec<String> {
     found
 }
 
+/// Whether the edge CT's firewall applies at all, by the same checks `site verify` uses:
+/// S03 on the CT's configuration (`pct config`) and its file, H09 on the cluster file.
+/// Empty when it does. Codes: `nic_firewall_off` (a card without `firewall=1`),
+/// `edge_config_unread`, S03's other codes (`fw_disabled`, `fw_file_missing`,
+/// `ct_policy_open`), `cluster_fw_off`, `cluster_policy_in_open`, `cluster_fw_unread`.
+pub fn firewall_applies(
+    pct_config: Option<&str>,
+    edge_fw: Option<&str>,
+    cluster_fw: Option<&str>,
+) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    match verify::s03_firewall_attached(pct_config, edge_fw).outcome {
+        Outcome::Green => {}
+        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),
+        Outcome::Red(c) | Outcome::Warn(c) => found.push(c.to_string()),
+        Outcome::Unknown(_) => found.push("edge_config_unread".to_string()),
+    }
+    match verify::h09_cluster_firewall(cluster_fw).outcome {
+        Outcome::Green => {}
+        Outcome::Red("cluster_fw_off") => found.push("cluster_fw_off".to_string()),
+        Outcome::Red(c) | Outcome::Warn(c) => found.push(alloc::format!("cluster_{c}")),
+        Outcome::Unknown(_) => found.push("cluster_fw_unread".to_string()),
+    }
+    found
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -287,7 +327,7 @@ mod tests {
         // the two rules come first: the old "80,443 from anywhere" line is after the drop
         let rules: Vec<&str> = fw.lines().skip_while(|l| *l != "[RULES]").skip(1).collect();
         assert_eq!(rules[..2], RULES);
-        assert!(rules[0].contains(&alloc::format!("-source +{IPSET}")));
+        assert!(rules[0].contains(&alloc::format!("-source +guest/{IPSET}")));
         assert!(rules[1].starts_with("IN DROP") && !rules[1].contains("-source"));
         assert_eq!(readback(&fw, &r), Vec::<String>::new());
         // applied twice is applied once; nothing else in the file is lost
@@ -300,6 +340,32 @@ mod tests {
         assert_eq!(readback(&late, &r), ["rules_not_first"]);
         let off = fw.replace("enable: 1", "enable: 0");
         assert_eq!(readback(&off, &r), ["firewall_off"]);
+    }
+
+    #[test]
+    fn every_card_of_the_edge_must_carry_the_firewall() {
+        let fw = apply(EDGE_FW, &parse_ranges(SAMPLE).unwrap());
+        let one = "hostname: edge\nnet0: name=eth0,bridge=vmbr0,firewall=1\nunprivileged: 1\n";
+        let cluster = "[OPTIONS]\nenable: 1\npolicy_in: DROP\n";
+        assert_eq!(
+            firewall_applies(Some(one), Some(&fw), Some(cluster)),
+            Vec::<String>::new()
+        );
+        // a second card without firewall=1 is a way round every rule
+        let two = alloc::format!("{one}net1: name=eth1,bridge=vmbr1\n");
+        assert_eq!(
+            firewall_applies(Some(&two), Some(&fw), Some(cluster)),
+            ["nic_firewall_off"]
+        );
+        let off = cluster.replace("enable: 1", "enable: 0");
+        assert_eq!(
+            firewall_applies(Some(one), Some(&fw), Some(&off)),
+            ["cluster_fw_off"]
+        );
+        assert_eq!(
+            firewall_applies(None, Some(&fw), None),
+            ["edge_config_unread", "cluster_fw_unread"]
+        );
     }
 
     #[test]

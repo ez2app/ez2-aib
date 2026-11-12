@@ -23,7 +23,7 @@
 //! aib-cloud-host restore verify <code> <file.wpress> [--users-extra N]   (after the import: the site's own counts against the backup's; read-only)
 //! aib-cloud-host backup fresh <code> [--max-minutes N]   (a finished local dump of the site within N minutes, before an update; read-only)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
-//! aib-cloud-host edge cf-only --plan | --check [--builtin] [--fw <file>]   (E6 H8: the edge's firewall file with 80 / 443 only from Cloudflare's checked list, and its read-back; writes nothing)
+//! aib-cloud-host edge cf-only --plan | --check [--builtin] [--accept-diff] [--fw <file>]   (E6 H8: the edge's firewall file with 80 / 443 only from Cloudflare's checked list, and its read-back with the cards and the cluster switch; writes nothing)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
