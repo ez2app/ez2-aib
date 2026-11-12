@@ -42,9 +42,11 @@
 //! * The import ([`aib_cloud::restoreimport`], B3 slice 4): the site's own disk must
 //!   hold it (asked by the plan and again right before the restore point, since the
 //!   download takes time); the import plugins are brought up to date and must be
-//!   active, the plugin must list the backup, and only its "Restore complete" makes the
-//!   import step done. `df` and `mysqladmin` run with `LC_ALL=C`, so their words are
-//!   the ones read.
+//!   active, the plugin must list the backup, and the restore must end with 0 and print
+//!   WP-CLI's own `Success:` and no `Error:` (the plugin's words after them follow the
+//!   site's language and are not read; c477a slice 4 L1). `df` and `mysqladmin` run
+//!   with `LC_ALL=C`, so their words are the ones read; the import runs with
+//!   [`restoreimport::IMPORT_ENV`].
 //! * The command is `site restore-wpress`, not `site restore`: that one brings a whole
 //!   container back from the host's own archive, a different thing.
 
@@ -253,7 +255,9 @@ pub trait RestoreHost {
     /// Put the downloaded backup where the plugin finds it; what `ai1wm list-backups`
     /// then prints.
     fn place_backup(&mut self, rec: &Record) -> Result<String, String>;
-    /// Run the plugin's restore of the backup; what it printed.
+    /// Run the plugin's restore of the backup with [`restoreimport::IMPORT_ENV`]; what
+    /// it printed. A command that ends with anything but 0 is an error, whatever it
+    /// printed.
     fn import(&mut self, rec: &Record) -> Result<String, String>;
     /// The domains of the customer's other sites on this host; none when the site's
     /// record names no customer. A site record that cannot be read is an error.
@@ -387,8 +391,8 @@ fn before_restore_point(host: &mut impl RestoreHost, rec: &Record) -> Result<(),
     restoreimport::site_room(size, host.site_room(), RESTORE_POINT_IN_SITE).map_err(str::to_owned)
 }
 
-/// The import step: plugins up to date and active, the backup listed, the plugin's own
-/// "Restore complete".
+/// The import step: plugins up to date and active, the backup listed, the restore ended
+/// with 0 and said WP-CLI's `Success:` (in whatever language the site is).
 fn import_backup(host: &mut impl RestoreHost, rec: &Record) -> Result<(), String> {
     let name = rec
         .backup
@@ -2104,6 +2108,18 @@ mod tests {
             assert_eq!(h.calls.last().map(String::as_str), Some("roll_back"));
             assert_eq!(mine(&h).standing(), Ok(Standing::RolledBack));
         }
+    }
+
+    #[test]
+    fn an_import_on_a_site_in_another_language_goes_on() {
+        // c477a slice 4 L1: a zh_TW site prints the plugin's words in zh_TW
+        let p = place("import-zh");
+        let mut h = fake();
+        h.said = "正在還原備份…\nSuccess: 還原完成。\n".to_owned();
+        let plan = sealed(&p, &mut h);
+        apply(&p, &plan, &spec(), Mode::Apply, &mut h).unwrap();
+        assert_eq!(mine(&h).done, STEPS);
+        assert!(!h.calls.iter().any(|c| c == "roll_back"), "{:?}", h.calls);
     }
 
     #[test]
