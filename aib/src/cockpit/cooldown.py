@@ -77,6 +77,17 @@ LOAD_CRIT = 25.0
 
 # 面板輪詢秒數:熱了就放慢。★ warn 不放太慢——盯艦隊時反應變鈍會被當成面板壞了。
 POLL_S = {OK: 5, WARN: 10, HOT: 30, CRIT: 30}
+# goal 2 量測治具(a63ab 11-12 01:00 定):面板節奏固定在一級,A / B 才比得到 B 版本身,
+#   不會混進「負載過 8 ⇒ 右欄放慢」那一份(RESULT-goal2-prereq2 §0)。
+#   ★ 只換 poll_s;等級、nogo 旗標、收行程、通知全照真值,所以真艙設了也只是面板不自己放慢。
+#   值不是 ok / warn / hot / critical 就當沒設。落進 machine-status.json 的 poll_pinned,收據印得出來。
+POLL_PIN_ENV = "EZ2_AIB_COOLDOWN_POLL_PIN"
+
+
+def poll_pin(environ=None):
+    env = os.environ if environ is None else environ
+    v = (env.get(POLL_PIN_ENV) or "").strip().lower()
+    return v if v in POLL_S else None
 
 MARK = {OK: "🟢", WARN: "🟡", HOT: "🔴", CRIT: "🔴🔴"}
 LABEL_KEY = {OK: "aib.cool.level.ok", WARN: "aib.cool.level.warn", HOT: "aib.cool.level.hot",
@@ -698,6 +709,10 @@ def apply(cells, dry_run=None):
            "poll_s": POLL_S[lv], "reasons": reasons, "reap": None,
            "load_level": load_lv, "load_reasons": load_reasons,
            "thermal_level": thermal_lv, "thermal_reasons": thermal_reasons}
+    pin = poll_pin()
+    if pin:
+        out["poll_s"] = POLL_S[pin]
+        out["poll_pinned"] = pin
     if not enabled():
         out["label"] = _ui("aib.cool.label_off", {"label": LABEL[lv]})
         return out

@@ -442,6 +442,14 @@ jobs:
           ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
              '        None => {} // knife' \
              a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # edge block: the live block stops stripping Server / Via / X-Powered-By (E6 C1, S3)
+          ck site.rs 'import ez2_whitelabel\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\tencode zstd gzip' \
+             'import ez2_whitelabel\n\tencode zstd gzip' \
+             a_site_block_strips_server_headers
+          # edge block: the quarantine page stops stripping them (E6 C1, S3)
+          ck quarantine.rs '\t# ez2:quarantined\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n' \
+             '\t# ez2:quarantined\n' \
+             a_quarantined_block_strips_them_too
           # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
           ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
              '        let unprintable = false; // knife' \
@@ -1761,6 +1769,14 @@ jobs:
           ck sitedns.rs '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))' \
              '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)) || true) // knife' \
              only_marked_address_records_under_the_names_are_removed
+          # verify S15 (E6 D1): a grey (DNS only) record under the site's names reads as proxied
+          ck sitedns.rs '        } else if here.iter().any(|r| !r.proxied) {' \
+             '        } else if here.iter().any(|r| !r.proxied) && false { // knife' \
+             a_grey_record_under_the_site_is_a_fail
+          # verify S15 (E6 D1): a zone listing not read whole reads as all proxied
+          ck sitedns.rs '        return Proxied::Unchecked(UNREADABLE);' \
+             '        return Proxied::All; // knife' \
+             an_unreadable_zone_is_unchecked_not_pass
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1888,6 +1904,17 @@ jobs:
           hk hostneutral.rs "    if (\$node !== '' && strcasecmp(\$node, \$site) !== 0) { \$words[] = \$node; }" \
              "    if (\$node !== '') { \$words[] = \$node; }" \
              a_row_holding_the_site_code_stays
+          # site leakcheck: a hide word in an answer is not looked for (E6 S9)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
+             a_leak_word_in_any_answer_is_a_leak
+          # site leakcheck: an answer that could not be read counts as a pass (E6 S9)
+          hk leakcheckcmd.rs '        return (State::Unread, why);' '        return (State::Pass, why); // knife' \
+             an_unreadable_probe_is_not_a_pass
+          # site leakcheck: a failed check's host word is only looked for when it did not fail (c477a S9 L1)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if unread.is_none() && hide.is_some_and(|h| h.hide(&seen).1 > 0) { // knife' \
+             a_failed_check_that_names_the_host_is_a_leak
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
@@ -2218,8 +2245,8 @@ jobs:
              '                { let _ = (call_ok, now); Ok::<(), &str>(()) } // knife' \
              a_vendor_still_saying_activated_after_the_call_stops_the_work_there
           # what was seen while the site ran is replaced by "unreadable" once it is stopped
-          hk siteremovecmd.rs '        if seen.licences.is_some() || carried.licences_left.is_none() {' \
-             '        if true { // knife' \
+          hk siteremovecmd.rs '        } else if carried.licences_left.is_none() {' \
+             '        } else if true { // knife' \
              without_the_persons_word_what_can_be_given_back_is_and_the_rest_is_recorded
           # a seat given back is listed as left because the plugin cleared its key
           hk siteremovecmd.rs "                    .any(|g| l.split(':').next() == Some(*g))" \
@@ -2245,10 +2272,38 @@ jobs:
           hk siteremovelic.rs '    runner.run(&wp(spec, &["option", "get", "siteurl"])).ok()?;' \
              '    let _ = runner.run(&wp(spec, &["option", "get", "siteurl"])); // knife' \
              every_paid_plugin_is_asked_and_a_site_that_does_not_answer_is_unreadable
-          # an empty Fluent status reads as not activated
-          hk siteremovelic.rs '            Some(w) if !w.is_empty() => VendorAnswer::NotActive,' \
-             '            Some(_) => VendorAnswer::NotActive, // knife' \
+          # ebb36 L2: an expired / disabled Fluent key reads as not activated (not recorded)
+          hk siteremovelic.rs '    } else if FLUENT_NOT_VALID.contains(&w) {' \
+             '    } else if false { // knife' \
              each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed
+          # ebb36 L2: a Fluent word not known (or none) reads as not activated
+          hk siteremovelic.rs '    } else if FLUENT_NOT_ACTIVE.contains(&w) {' \
+             '    } else if !w.is_empty() && !FLUENT_NOT_VALID.contains(&w) { // knife' \
+             each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed
+          # ebb36 L2: any word after Fluent's give back but valid counts as given back
+          hk siteremovelic.rs '        Some(w) => (true, fluent_word(w)),' \
+             '        Some(w) => (true, if w == "valid" { VendorAnswer::Active } else { VendorAnswer::NotActive }), // knife' \
+             each_answer_is_read_by_its_own_words_and_nothing_else_is_guessed
+          # ebb36 L1: what an earlier run kept of the licence step is not read
+          hk siteremovecmd.rs '        .and_then(|t| kept_from(&t, &spec.code));' \
+             '        .and_then(|_t| None::<(Vec<String>, Vec<&str>)>); // knife' \
+             a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
+          # ebb36 L1: what a run saw of the licence step is never kept
+          hk siteremovecmd.rs '        if self.licences_seen != LicencesSeen::ThisRun {' \
+             '        if self.licences_seen != LicencesSeen::Never { // knife' \
+             a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
+          # ebb36 L1: what an earlier run gave back is not counted
+          hk siteremovecmd.rs '        carried.given_back.clone_from(given_back);' \
+             '        let _ = given_back; // knife' \
+             a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
+          # ebb36 L1: what was kept from an earlier run reads as never read
+          hk siteremovecmd.rs '                carried.licences_seen = LicencesSeen::EarlierRun;' \
+             '                carried.licences_seen = LicencesSeen::Never; let _ = LicencesSeen::EarlierRun; // knife' \
+             a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
+          # ebb36 L1: what another site's run kept is taken for this one
+          hk siteremovecmd.rs '    if v.get("site").and_then(Value::as_str) != Some(code) {' \
+             '    if code.is_empty() && false { // knife' \
+             what_an_earlier_run_kept_is_taken_only_for_this_site_and_known_plugins
           # ---- site remove --apply (4542e 11-11)
           # an archive two days old is reused while the container is still there (site-remove.sh L1)
           hk siteremovecmd.rs '                Ok(age) if age.as_secs() < FRESH_SECS => {}' \
@@ -2907,6 +2962,10 @@ jobs:
           hk siteverify.rs '    state != SiteState::Quarantined' \
              '    state != SiteState::Quarantined || true // knife' \
              s14_is_not_run_in_a_quarantined_container
+          # verify S15 (c477a S11 M1): a customer's status asks Cloudflare with our key
+          hk siteverify.rs '    if audience == Audience::Operator {' \
+             '    if audience == Audience::Operator || true { // knife' \
+             a_customer_status_asks_cloudflare_nothing
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
