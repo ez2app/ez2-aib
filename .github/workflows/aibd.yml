@@ -1989,6 +1989,15 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # host-neutral plugin: the health screen's filter is not added (E6 S6)
+          hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
+             "add_filter('knife_not_this_hook', function (\$info) {" \
+             the_health_filter_names_no_platform
+          # host-neutral plugin: PHP's name for the machine is a word even where it is the
+          # site's code, so the site's own paths go (c477a S6 L1)
+          hk hostneutral.rs "    if (\$node !== '' && strcasecmp(\$node, \$site) !== 0) { \$words[] = \$node; }" \
+             "    if (\$node !== '') { \$words[] = \$node; }" \
+             a_row_holding_the_site_code_stays
           # site leakcheck: a hide word in an answer is not looked for (E6 S9)
           hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
              '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
