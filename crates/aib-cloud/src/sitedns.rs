@@ -21,12 +21,14 @@
 //!   step done: asked again, the step adds nothing (it can be carried on after any
 //!   stop). A record with the mark that is anything else is not ours as written and
 //!   stops ([`MARKED_DIFFERS`]).
-//! * **Only four calls.** [`allowed`] is the whole list of Cloudflare calls this code may
+//! * **Only five calls.** [`allowed`] is the whole list of Cloudflare calls this code may
 //!   make: list an account's zones by name, read a zone's SSL mode, list a zone's records,
-//!   add one A record to a public address, proxied, carrying a site's mark. Anything else
-//!   — a delete above all, which the list could not tell from any other delete — is
-//!   refused before it leaves the host (ebb36 B5 L1). The key is the account's global
-//!   key, so this list is the only thing between this code and the customer's zones.
+//!   add one A record to a public address, proxied, carrying a site's mark, and delete one
+//!   record. Anything else is refused before it leaves the host. The list cannot tell one
+//!   delete from another (ebb36 B5 L1), so a delete can only be written out as a
+//!   [`MarkedDelete`], and the only way to get one is [`delete_of`]: a record just listed,
+//!   an address record, carrying this site's mark. The key is the account's global key,
+//!   so this list is the only thing between this code and the customer's zones.
 //! * **Inside the zone.** Every name of the site must be the zone or a name under it
 //!   ([`NAME_OUTSIDE_ZONE`]): Cloudflare would take any other name as a label under the
 //!   zone and make a record nobody asked for (ebb36 B5 L2).
@@ -128,6 +130,43 @@ pub enum CfCall {
     ListRecords { zone: String, page: u32 },
     /// Add one record (the body says which; it must carry a site's mark).
     AddRecord { zone: String },
+    /// Delete one record: only ever one [`delete_of`] gave.
+    Delete(MarkedDelete),
+}
+
+/// A delete of one record that was listed with this site's mark. Its fields are private:
+/// it is made by [`delete_of`] only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedDelete {
+    zone: String,
+    record: String,
+}
+
+/// The delete of `r`, listed in zone `zone`, for site `code`: only an address record
+/// whose comment is exactly the site's mark (the rule of removing a site, #669), with ids
+/// that are ids. Anything else gives nothing.
+pub fn delete_of(zone: &str, r: &Record, code: &str) -> Option<MarkedDelete> {
+    (valid_id(zone)
+        && valid_id(&r.id)
+        && crate::site::valid_code(code)
+        && DNS_ADDRESS_TYPES.contains(&r.kind.as_str())
+        && r.comment == dns_marker(code))
+    .then(|| MarkedDelete {
+        zone: String::from(zone),
+        record: r.id.clone(),
+    })
+}
+
+/// The records of site `code` under its `names` in a whole listing: address records
+/// carrying the site's mark. Mail and text records and unmarked records are not in it.
+pub fn marked_to_remove<'a>(names: &[&str], records: &'a [Record], code: &str) -> Vec<&'a Record> {
+    let mark = dns_marker(code);
+    records
+        .iter()
+        .filter(|r| DNS_ADDRESS_TYPES.contains(&r.kind.as_str()))
+        .filter(|r| r.comment == mark)
+        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))
+        .collect()
 }
 
 impl CfCall {
@@ -136,6 +175,7 @@ impl CfCall {
         match self {
             CfCall::ListZones { .. } | CfCall::SslMode { .. } | CfCall::ListRecords { .. } => "GET",
             CfCall::AddRecord { .. } => "POST",
+            CfCall::Delete(_) => "DELETE",
         }
     }
 
@@ -150,13 +190,15 @@ impl CfCall {
                 format!("/zones/{zone}/dns_records?per_page={PER_PAGE}&page={page}")
             }
             CfCall::AddRecord { zone } => format!("/zones/{zone}/dns_records"),
+            CfCall::Delete(d) => format!("/zones/{}/dns_records/{}", d.zone, d.record),
         }
     }
 }
 
-/// Whether a written-out call is one of the four, exactly: the method, every part of the
+/// Whether a written-out call is one of the five, exactly: the method, every part of the
 /// path, the query in its one order, and for an add a body that is one A record to a
-/// public address, proxied, carrying a site's mark. Everything else is refused.
+/// public address, proxied, carrying a site's mark. Everything else is refused. (Whose a
+/// deleted record is cannot be seen here: that is [`delete_of`]'s.)
 pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
     let (route, query) = match path.split_once('?') {
         Some((r, q)) => (r, Some(q)),
@@ -188,6 +230,7 @@ pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
                 && !page.starts_with('0')
         }
         ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),
+        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),
         _ => false,
     }
 }
@@ -497,6 +540,67 @@ pub fn plan(
     }
 }
 
+/// A name of the site with no address record of its own and no wildcard that answers for
+/// it: nothing to judge, so not a pass.
+pub const NO_ADDRESS: &str = "dns_no_address_record";
+/// The site's names are not all in the zone of its first name (a second domain on another
+/// zone): S15 reads one zone per site, so such a site is never judged, only unchecked.
+pub const MULTI_ZONE: &str = "multi_zone";
+
+/// What `site verify` S15 (E6 D1) finds of a site's names at Cloudflare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proxied {
+    /// Every name answers, and every address record that answers for it goes through the
+    /// proxy.
+    All,
+    /// These names answer with at least one record that is "DNS only": anyone who looks
+    /// the name up gets the host's own address. Names only, never what the record holds.
+    Grey(Vec<String>),
+    /// Could not tell. Never a pass.
+    Unchecked(&'static str),
+}
+
+/// S15 for the site's `names` against the zone's whole listing ([`whole_listing`], `None`
+/// when it was not complete). Every address record (A, AAAA, CNAME) under a name must be
+/// proxied; a name without one of its own is answered by a wildcard over it, if any, and
+/// that wildcard is judged instead. That is wider than DNS (a name with only mail or text
+/// records gets no answer from the wildcard), so it can only report more grey, never less.
+/// A grey record anywhere is a fail, whatever else is unknown.
+pub fn proxied(names: &[&str], records: Option<&[Record]>) -> Proxied {
+    let Some(records) = records else {
+        return Proxied::Unchecked(UNREADABLE);
+    };
+    let is_address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());
+    let mut grey = Vec::new();
+    let mut unanswered = names.is_empty();
+    for name in names {
+        let mut here: Vec<&Record> = records
+            .iter()
+            .filter(is_address)
+            .filter(|r| same_name(&r.name, name))
+            .collect();
+        if here.is_empty() {
+            here = records
+                .iter()
+                .filter(is_address)
+                .filter(|r| wildcard_covers(&r.name, name))
+                .collect();
+        }
+        if here.is_empty() {
+            unanswered = true;
+        } else if here.iter().any(|r| !r.proxied) {
+            grey.push(String::from(*name));
+        }
+    }
+    if !grey.is_empty() {
+        Proxied::Grey(grey)
+    } else if unanswered {
+        Proxied::Unchecked(NO_ADDRESS)
+    } else {
+        Proxied::All
+    }
+}
+
 /// The word for a Cloudflare answer that was not a success: our key refused (401),
 /// access to the customer's account taken away (403 on an account's listing), or could
 /// not tell.
@@ -787,6 +891,75 @@ mod tests {
     }
 
     #[test]
+    fn only_a_listed_record_with_this_sites_mark_can_be_deleted() {
+        let ours = rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123");
+        let d = delete_of(ZID, &ours, "s-abc123").unwrap();
+        let call = CfCall::Delete(d);
+        assert_eq!(call.method(), "DELETE");
+        assert_eq!(call.path(), format!("/zones/{ZID}/dns_records/{RID}"));
+        assert!(allowed(call.method(), &call.path(), None));
+        for (r, code) in [
+            (rec("A", "example.com", ORIGIN, true, ""), "s-abc123"),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
+                "s-abc123",
+            ),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123 "),
+                "s-abc123",
+            ),
+            (
+                rec(
+                    "MX",
+                    "example.com",
+                    "mail.example.com",
+                    false,
+                    "ez2:site:s-abc123",
+                ),
+                "s-abc123",
+            ),
+            (
+                rec("TXT", "example.com", "x", false, "ez2:site:s-abc123"),
+                "s-abc123",
+            ),
+        ] {
+            assert_eq!(delete_of(ZID, &r, code), None, "{r:?}");
+        }
+        let mut bad_id = ours.clone();
+        bad_id.id = String::from("../x");
+        assert_eq!(delete_of(ZID, &bad_id, "s-abc123"), None);
+        assert_eq!(delete_of("zone", &ours, "s-abc123"), None);
+    }
+
+    #[test]
+    fn only_marked_address_records_under_the_names_are_removed() {
+        let records = [
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec(
+                "AAAA",
+                "www.example.com",
+                "2001:db8::1",
+                true,
+                "ez2:site:s-abc123",
+            ),
+            rec("A", "other.example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec("A", "example.com", "198.51.100.7", false, ""),
+            rec(
+                "MX",
+                "example.com",
+                "mail.example.com",
+                false,
+                "ez2:site:s-abc123",
+            ),
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
+        ];
+        let got = marked_to_remove(&["example.com", "WWW.example.com."], &records, "s-abc123");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name, "example.com");
+        assert_eq!(got[1].name, "www.example.com");
+    }
+
+    #[test]
     fn a_name_outside_the_zone_adds_nothing() {
         // Cloudflare would make other.example.net.example.com of it (ebb36 B5 L2)
         for names in [
@@ -905,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_calls_are_allowed() {
+    fn only_the_five_calls_are_allowed() {
         let zone = String::from(ZID);
         let body = NewRecord {
             name: String::from("example.com"),
@@ -968,8 +1141,8 @@ mod tests {
             ("GET", "/user/tokens".to_string(), None),
             ("GET", format!("/accounts/{ACC}/members"), None),
             ("DELETE", format!("/zones/{ZID}"), None),
-            // no delete at all in this slice (ebb36 B5 L1)
-            ("DELETE", format!("/zones/{ZID}/dns_records/{RID}"), None),
+            ("DELETE", format!("/zones/{ZID}/dns_records/{RID}/x"), None),
+            ("DELETE", format!("/zones/{ZID}/dns_records/x"), None),
             (
                 "DELETE",
                 format!("/zones/{ZID}/dns_records/{RID}"),
@@ -1049,5 +1222,79 @@ mod tests {
         assert_eq!(failure_word(401, true), KEY_REFUSED);
         assert_eq!(failure_word(500, true), UNREADABLE);
         assert_eq!(failure_word(0, true), UNREADABLE);
+    }
+
+    /// S15 samples: an IPv6 address from the documentation range.
+    const V6: &str = "2001:db8::10"; // ip-literal-ok: documentation range sample (S15 tests)
+    const SHOP: &str = "shop.example.com";
+    const WWW: &str = "www.shop.example.com";
+
+    #[test]
+    fn all_proxied_is_a_pass() {
+        let records = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("AAAA", SHOP, V6, true, ""),
+            rec("CNAME", WWW, SHOP, true, ""),
+            // mail and text records are not served through the proxy and say nothing here
+            rec("MX", SHOP, "mail.example.net", false, ""),
+            rec("TXT", SHOP, "v=spf1 -all", false, ""),
+        ];
+        assert_eq!(proxied(&[SHOP, WWW], Some(&records)), Proxied::All);
+        // a name without a record of its own is judged by the wildcard that answers for it
+        let wild = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("A", "*.shop.example.com", ORIGIN, true, ""),
+        ];
+        assert_eq!(proxied(&[SHOP, WWW], Some(&wild)), Proxied::All);
+    }
+
+    #[test]
+    fn a_grey_record_under_the_site_is_a_fail() {
+        // one of two records under the name is DNS only: the name is grey
+        let records = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("AAAA", SHOP, V6, false, ""),
+            rec("CNAME", WWW, SHOP, true, ""),
+        ];
+        let got = proxied(&[SHOP, WWW], Some(&records));
+        assert_eq!(got, Proxied::Grey(vec![String::from(SHOP)]));
+        // the finding names the name, never what the record holds
+        if let Proxied::Grey(names) = &got {
+            assert!(names.iter().all(|n| !n.contains(ORIGIN) && !n.contains(V6)));
+        }
+        // a grey wildcard answering for a name is grey too, and a grey record wins over a
+        // name that cannot be judged
+        let wild = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("A", "*.shop.example.com", ORIGIN, false, ""),
+        ];
+        assert_eq!(
+            proxied(&[SHOP, WWW, "other.example.org"], Some(&wild)),
+            Proxied::Grey(vec![String::from(WWW)])
+        );
+        // case and a final dot do not hide a record
+        let upper = vec![rec("A", "SHOP.example.com.", ORIGIN, false, "")];
+        assert_eq!(
+            proxied(&[SHOP], Some(&upper)),
+            Proxied::Grey(vec![String::from(SHOP)])
+        );
+    }
+
+    #[test]
+    fn an_unreadable_zone_is_unchecked_not_pass() {
+        // a listing that was not read whole
+        assert_eq!(proxied(&[SHOP], None), Proxied::Unchecked(UNREADABLE));
+        // a name nothing answers for, or no names at all, cannot be judged
+        let records = vec![rec("A", SHOP, ORIGIN, true, "")];
+        assert_eq!(
+            proxied(&[SHOP, WWW], Some(&records)),
+            Proxied::Unchecked(NO_ADDRESS)
+        );
+        assert_eq!(proxied(&[], Some(&records)), Proxied::Unchecked(NO_ADDRESS));
+        let mail_only = vec![rec("MX", SHOP, "mail.example.net", false, "")];
+        assert_eq!(
+            proxied(&[SHOP], Some(&mail_only)),
+            Proxied::Unchecked(NO_ADDRESS)
+        );
     }
 }
