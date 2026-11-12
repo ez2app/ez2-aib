@@ -859,7 +859,9 @@ impl App {
 
 /// 「影子續跑  共省 X(N 次)  ▸ 明細」;展開後每次省成功一行:時間、省多少、實跑 / 沿用支數
 fn shadow_rows(s: Option<&Savings>, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
-    let lead = format!("{MARGIN}{SHADOW_LABEL}  ");
+    // 內容跟上面「最初目標 / 目前目標」同一欄起(空過時間欄);展開的每一筆把時間放在時間欄
+    let pad = " ".repeat(str_width(MARGIN) + str_width(SHADOW_LABEL) + 2);
+    let lead = format!("{MARGIN}{SHADOW_LABEL}  {}", " ".repeat(TIME_W + 2));
     let mut head = vec![Seg(lead.clone(), Some(Color::DarkGrey), false, false)];
     let s = match s {
         Some(s) if !s.saves.is_empty() => s,
@@ -882,7 +884,6 @@ fn shadow_rows(s: Option<&Savings>, now: i64, w: usize, open: bool) -> Vec<Vec<S
     head.push(Seg(toggle.into(), Some(Color::Cyan), false, true));
     let mut rows = vec![head];
     if open {
-        let pad = " ".repeat(str_width(&lead));
         let line_w = w.saturating_sub(str_width(&pad)).max(8);
         for e in s.saves.iter().take(SHADOW_MAX) {
             let t = format!(
@@ -1717,7 +1718,10 @@ mod tests {
         assert_eq!(at(3, "席位接續"), at(4, "還沒回報"));
         assert!(!text(&f, 4).contains('▸'), "沒有判斷內容就沒有開合");
         // Andy 11-12 23:5x:目前目標下面一行影子續跑;沒有紀錄檔就寫還沒有
-        assert_eq!(text(&f, 5), "  影子續跑  還沒有省到時間的紀錄");
+        assert_eq!(
+            text(&f, 5),
+            format!("  影子續跑  {}還沒有省到時間的紀錄", " ".repeat(TIME_W + 2))
+        );
         assert_eq!(at(5, "還沒有"), at(4, "還沒回報"), "跟上面兩行同一欄起");
         assert!(text(&f, 6).is_empty());
         assert_eq!(app.hits.borrow().toolbar_y, Some(7));
@@ -2005,7 +2009,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let t = |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 100, 60);
-        assert_eq!(t(&f, 5), "  影子續跑  共省 4 時 10 分(25 次)  ▸ 明細");
+        assert_eq!(
+            t(&f, 5),
+            format!(
+                "  影子續跑  {}共省 4 時 10 分(25 次)  ▸ 明細",
+                " ".repeat(TIME_W + 2)
+            )
+        );
         assert!(t(&f, 6).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().shadow_y, Some(5));
         assert!(on_click(&mut app, 4, 5));

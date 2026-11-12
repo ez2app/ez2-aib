@@ -47,7 +47,7 @@ pub fn parse(text: &str) -> Savings {
             })
         })
         .collect();
-    saves.sort_by(|a, b| b.at.cmp(&a.at));
+    saves.sort_by_key(|s| std::cmp::Reverse(s.at));
     Savings {
         total_s: saves.iter().map(|s| s.saved_s).sum(),
         saves,
