@@ -10,7 +10,7 @@
 //! - 收起時每台固定 3 行(名字電池 / 負載 / 在做什麼),離線與讀取中也一樣高。
 //! - 滑鼠點一台(或按 1–9)展開 / 收起：正在跑的是誰、做什麼、跑多久;排隊的每一位是誰、做什麼、
 //!   等多久、有沒有優先。
-//! - 主機參數 `名字=目標`(例 `"Pro 13=andyimkt@100.116.110.31"`),只寫目標就用目標當名字。
+//! - 主機參數 `名字=目標`(例 `"Pro 13=user@host"`);沒給就讀 ~/.ez2-aib/hosts.json,只寫目標就用目標當名字。
 //! - 只讀：不拿租約、不寫任何狀態。`--once [--width N] [--open]` 印一次就結束(測試用)。
 //! - ssh 一律 `ForwardAgent=no` / `ClearAllForwardings=yes` / `BatchMode=yes`。
 
@@ -27,17 +27,55 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 測試機順序(andymini > Pro 13 > lin-macmini > Pro 16,11-11 定);Pro 16 是這台本機。
-const DEFAULT_HOSTS: &[&str] = &[
-    "andymini=andymini",
-    "Pro 13=andyimkt@100.116.110.31",
-    "lin-macmini=lin-macmini",
-    "Pro 16 本機=local",
-];
+/// 測試機清單讀私有設定 `~/.ez2-aib/hosts.json`(`AIB_HOSTS_FILE`),跟 `aib-lease hosts` 同一份;
+/// 公開倉不寫主機位址與帳號(Andy 11-12 14:5x 加 GitHub 與 Windows 時一起改)。
+/// 欄位:name / ssh(`local` = 本機)/ os(`windows`)/ order / identity / jump_fallback;
+/// 頂層 `github_repo` ⇒ 多一列 GitHub(CI 執行機)。
+fn config_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("AIB_HOSTS_FILE") {
+        return p.into();
+    }
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    std::path::Path::new(&home)
+        .join(".ez2-aib")
+        .join("hosts.json")
+}
+
+fn hosts_from_config(text: &str) -> Vec<Host> {
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(i64, usize, Host)> = Vec::new();
+    for (i, h) in v["hosts"].as_array().into_iter().flatten().enumerate() {
+        let (Some(name), Some(ssh)) = (h["name"].as_str(), h["ssh"].as_str()) else {
+            continue;
+        };
+        let mut host = Host::new(&format!("{name}={ssh}"));
+        if h["os"].as_str() == Some("windows") {
+            host.kind = Kind::Windows;
+        }
+        host.identity = h["identity"].as_str().map(str::to_string);
+        host.jump_fallback = h["jump_fallback"].as_str().map(str::to_string);
+        rows.push((h["order"].as_i64().unwrap_or(i64::MAX), i, host));
+    }
+    rows.sort_by_key(|(o, i, _)| (*o, *i));
+    let mut out: Vec<Host> = rows.into_iter().map(|(_, _, h)| h).collect();
+    if let Some(repo) = v["github_repo"].as_str() {
+        let mut g = Host::new(&format!("GitHub={repo}"));
+        g.kind = Kind::GitHub;
+        out.push(g);
+    }
+    out
+}
+
 const POLL: Duration = Duration::from_secs(20);
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
+/// Windows(OpenSSH 預設 cmd.exe):CPU 使用率 % 與邏輯核數;沒有 aib 租約系統
+const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WIN ' + \
+                          (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average \
+                          + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\"";
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
                       $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null)";
@@ -48,6 +86,15 @@ struct Waiter {
     what: String,
     since: i64,
     priority: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum Kind {
+    #[default]
+    Mac,
+    Windows,
+    /// GitHub Actions(CI 執行機):看執行中 / 排隊中的工作
+    GitHub,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -64,15 +111,25 @@ struct Sample {
     load5: f64,
     /// 效能核數(Apple 晶片);讀不到 = 0,改用 ncpu
     perf: f64,
+    /// 這台沒有 aib 租約系統(Windows)
+    no_lease: bool,
+    /// GitHub:(執行中, 排隊中)
+    gh: Option<(u32, u32)>,
+    /// GitHub 的工作(owner = 分支、what = 工作流程名、since = 建立時間、priority = 排隊中)
+    runs: Vec<Waiter>,
     err: String,
 }
 
+#[derive(Clone)]
 struct Host {
     name: String,
     target: String,
     last: Option<Sample>,
     at: Option<Instant>,
     loads: Vec<f64>,
+    kind: Kind,
+    identity: Option<String>,
+    jump_fallback: Option<String>,
     asked: Option<Instant>,
     stuck: bool,
     open: bool,
@@ -92,6 +149,9 @@ impl Host {
             last: None,
             at: None,
             loads: Vec::new(),
+            kind: Kind::Mac,
+            identity: None,
+            jump_fallback: None,
             asked: None,
             stuck: false,
             open: false,
@@ -167,37 +227,168 @@ fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
     s
 }
 
-fn ask(idx: usize, target: String, tx: mpsc::Sender<(usize, Sample)>) {
-    std::thread::spawn(move || {
-        let o = if target == "local" {
-            Command::new("/bin/sh")
-                .args(["-c", REMOTE])
-                .stdin(Stdio::null())
-                .output()
+fn parse_win(out: &str, ok: bool, err: &str) -> Sample {
+    let mut s = Sample {
+        err: err.lines().last().unwrap_or("").trim().to_string(),
+        no_lease: true,
+        ..Sample::default()
+    };
+    let nums: Vec<f64> = out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("AIB_WIN "))
+        .map(|r| {
+            r.split_whitespace()
+                .filter_map(|w| w.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let (true, [pct, n, ..]) = (ok, nums.as_slice()) {
+        s.online = *n > 0.0;
+        s.ncpu = *n;
+        s.perf = *n;
+        s.load1 = pct / 100.0 * n;
+        s.load5 = s.load1;
+    }
+    s
+}
+
+/// `2026-11-12T06:40:00Z` ⇒ epoch 秒;讀不到 0
+fn iso_epoch(t: &str) -> i64 {
+    let n = |r: std::ops::Range<usize>| t.get(r).and_then(|x| x.parse::<i64>().ok());
+    let (Some(y), Some(m), Some(d), Some(hh), Some(mm), Some(ss)) =
+        (n(0..4), n(5..7), n(8..10), n(11..13), n(14..16), n(17..19))
+    else {
+        return 0;
+    };
+    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * 86400 + hh * 3600 + mm * 60 + ss
+}
+
+fn parse_gh(out: &str, ok: bool, err: &str) -> Sample {
+    let mut s = Sample {
+        err: err.lines().last().unwrap_or("").trim().to_string(),
+        ..Sample::default()
+    };
+    let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(out.trim()) else {
+        return s;
+    };
+    s.online = ok;
+    let (mut run, mut wait) = (0, 0);
+    for r in rows {
+        let queued = match r["status"].as_str() {
+            Some("in_progress") => false,
+            Some("queued" | "waiting" | "pending" | "requested") => true,
+            _ => continue,
+        };
+        if queued {
+            wait += 1;
         } else {
-            Command::new("ssh")
+            run += 1;
+        }
+        s.runs.push(Waiter {
+            owner: r["headBranch"].as_str().unwrap_or("").to_string(),
+            what: r["name"].as_str().unwrap_or("").to_string(),
+            since: iso_epoch(r["createdAt"].as_str().unwrap_or("")),
+            priority: queued,
+        });
+    }
+    s.gh = Some((run, wait));
+    s
+}
+
+/// 一台要怎麼問:種類、目標、ssh 金鑰、跳板(直連網路失敗 rc 255 才用)
+#[derive(Debug, Clone)]
+struct Probe {
+    kind: Kind,
+    target: String,
+    identity: Option<String>,
+    jump_fallback: Option<String>,
+}
+
+impl Host {
+    fn probe(&self) -> Probe {
+        Probe {
+            kind: self.kind,
+            target: self.target.clone(),
+            identity: self.identity.clone(),
+            jump_fallback: self.jump_fallback.clone(),
+        }
+    }
+}
+
+fn ssh_run(p: &Probe, cmd: &str, jump: Option<&str>) -> std::io::Result<std::process::Output> {
+    let mut c = Command::new("ssh");
+    c.args([
+        "-o",
+        "ForwardAgent=no",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+    ]);
+    if let Some(i) = &p.identity {
+        c.args(["-i", i.as_str()]);
+    }
+    if let Some(j) = jump {
+        c.args(["-J", j]);
+    }
+    c.args(["--", p.target.as_str(), cmd])
+        .stdin(Stdio::null())
+        .output()
+}
+
+fn ask(idx: usize, p: Probe, tx: mpsc::Sender<(usize, Sample)>) {
+    std::thread::spawn(move || {
+        let o = match p.kind {
+            Kind::GitHub => Command::new("gh")
                 .args([
-                    "-o",
-                    "ForwardAgent=no",
-                    "-o",
-                    "ClearAllForwardings=yes",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=8",
-                    "--",
-                    target.as_str(),
-                    REMOTE,
+                    "run",
+                    "list",
+                    "-R",
+                    p.target.as_str(),
+                    "--limit",
+                    "50",
+                    "--json",
+                    "status,name,headBranch,createdAt",
                 ])
                 .stdin(Stdio::null())
-                .output()
+                .output(),
+            _ if p.target == "local" => Command::new("/bin/sh")
+                .args(["-c", REMOTE])
+                .stdin(Stdio::null())
+                .output(),
+            k => {
+                let cmd = if k == Kind::Windows {
+                    WIN_REMOTE
+                } else {
+                    REMOTE
+                };
+                match ssh_run(&p, cmd, None) {
+                    Ok(o) if o.status.code() == Some(255) && p.jump_fallback.is_some() => {
+                        ssh_run(&p, cmd, p.jump_fallback.as_deref())
+                    }
+                    o => o,
+                }
+            }
         };
         let s = match o {
-            Ok(o) => parse_sample(
-                &String::from_utf8_lossy(&o.stdout),
-                o.status.success(),
-                &String::from_utf8_lossy(&o.stderr),
-            ),
+            Ok(o) => {
+                let (out, err) = (
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr),
+                );
+                match p.kind {
+                    Kind::GitHub => parse_gh(&out, o.status.success(), &err),
+                    Kind::Windows => parse_win(&out, o.status.success(), &err),
+                    Kind::Mac => parse_sample(&out, o.status.success(), &err),
+                }
+            }
             Err(e) => Sample {
                 err: e.to_string(),
                 ..Sample::default()
@@ -246,11 +437,63 @@ fn unleased_busy(s: &Sample) -> bool {
     s.online && !s.held && cores > 0.0 && s.load1.max(s.load5 * 0.8) / cores > UNLEASED_BUSY_RATIO
 }
 
+/// GitHub 那一列：第 2 行執行中 / 排隊數，第 3 行第一個在跑的;展開列出全部
+fn gh_lines(mut out: Vec<Line>, s: Option<&Sample>, open: bool, room: usize, t: i64) -> Vec<Line> {
+    let Some(s) = s.filter(|s| s.online) else {
+        out.push(vec![pad(), ("工作 —".into(), Color::DarkGrey)]);
+        let why = s.map_or("第一次讀取中".to_string(), |s| {
+            format!("讀不到 GitHub:{}", s.err)
+        });
+        out.push(vec![pad(), (fit(&why, room), Color::DarkGrey)]);
+        return out;
+    };
+    let (r, q) = s.gh.unwrap_or((0, 0));
+    out.push(vec![
+        pad(),
+        (format!("工作 執行中 {r} · 排隊 {q}"), Color::DarkGrey),
+    ]);
+    let line = |w: &Waiter| {
+        let tag = if w.priority { "排隊" } else { "▶" };
+        let age = if w.since > 0 {
+            format!(" · {}", mins(t - w.since))
+        } else {
+            String::new()
+        };
+        format!("{tag} {} · {}{age}", w.what, w.owner)
+    };
+    if !open {
+        let first = s.runs.iter().find(|w| !w.priority).or(s.runs.first());
+        let third = first.map_or("沒有工作在跑".to_string(), line);
+        out.push(vec![pad(), (fit(&third, room), Color::DarkGrey)]);
+        return out;
+    }
+    if s.runs.is_empty() {
+        out.push(vec![pad(), ("▶ 沒有工作在跑".into(), Color::Green)]);
+    }
+    for w in &s.runs {
+        let c = if w.priority {
+            Color::Cyan
+        } else {
+            Color::Yellow
+        };
+        out.push(vec![pad(), (fit(&line(w), room), c)]);
+    }
+    out
+}
+
 /// 電池剩多少(0..=100)與顏色。
 fn charge(s: Option<&Sample>, t: i64) -> (u32, Color) {
     match s {
         None => (0, Color::DarkGrey),
         Some(s) if !s.online => (0, Color::Red),
+        // GitHub:有排隊 = 執行機都在用(空);只有執行中 = 還有空位(半格黃);都沒有 = 滿格綠
+        Some(Sample {
+            gh: Some((_, q)), ..
+        }) if *q > 0 => (0, Color::Red),
+        Some(Sample {
+            gh: Some((r, _)), ..
+        }) if *r > 0 => (50, Color::Yellow),
+        Some(Sample { gh: Some(_), .. }) => (100, Color::Green),
         Some(s) if unleased_busy(s) => (100, Color::Magenta),
         Some(s) if !s.held => (100, Color::Green),
         Some(s) => {
@@ -315,7 +558,14 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     let status = match s {
         None => "讀取中…".to_string(),
         Some(s) if !s.online => format!("離線 {}", fit(&s.err, 30)),
+        Some(Sample {
+            gh: Some((r, q)), ..
+        }) if *q > 0 => format!("滿了 · 跑 {r} · 排隊 {q}"),
+        Some(Sample {
+            gh: Some((r, _)), ..
+        }) => format!("跑 {r} · 還有空位"),
         Some(s) if unleased_busy(s) => "沒租約在跑 不可用".to_string(),
+        Some(s) if s.no_lease => "空機 可用(沒有租約系統)".to_string(),
         Some(s) if !s.held => "空機 可用".to_string(),
         Some(s) => format!("{} 用 · 剩 {}", s.owner, mins(s.expiry - t)),
     };
@@ -347,6 +597,9 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     };
     let mut out = vec![l1];
     let room = width.saturating_sub(NAME_W + 2);
+    if h.kind == Kind::GitHub {
+        return gh_lines(out, s, h.open, room, t);
+    }
     // 每台收起時固定 3 行(Andy 11-12 07:2x「離線的主機跟其他主機的高度間距要一致」):
     // 第 2 行負載(離線 / 讀取中寫「負載 —」),第 3 行在做什麼 / 空機 / 離線原因。
     if online {
@@ -417,7 +670,7 @@ fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Opt
         vec![
             (format!("測試機 {clock}(台北)"), Color::White),
             (
-                "  綠 空機 · 紫 沒租約在跑 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
+                "  綠 空機 · 紫 沒租約在跑 · GitHub 紅 = 排隊中 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
                     .into(),
                 Color::DarkGrey,
             ),
@@ -482,24 +735,31 @@ fn main() {
             "-h" | "--help" => {
                 println!(
                     "usage: aib-hosts [--once [--width N] [--open]] [名字=目標]...  \
-                     (預設 andymini、Pro 13、lin-macmini、Pro 16 本機;目標 local = 本機)"
+                     (沒給就讀 ~/.ez2-aib/hosts.json,含 Windows 與 GitHub;目標 local = 本機)"
                 );
                 return;
             }
             h => names.push(h.to_string()),
         }
     }
-    if names.is_empty() {
-        names = DEFAULT_HOSTS.iter().map(|s| s.to_string()).collect();
+    let mut hosts: Vec<Host> = if names.is_empty() {
+        hosts_from_config(&std::fs::read_to_string(config_path()).unwrap_or_default())
+    } else {
+        names.iter().map(|n| Host::new(n)).collect()
+    };
+    if hosts.is_empty() {
+        eprintln!(
+            "沒有測試機設定:{}(或在參數寫 名字=目標)",
+            config_path().display()
+        );
     }
-    let mut hosts: Vec<Host> = names.iter().map(|n| Host::new(n)).collect();
     for h in hosts.iter_mut() {
         h.open = open_all;
     }
     let (tx, rx) = mpsc::channel::<(usize, Sample)>();
     if once {
         for (i, h) in hosts.iter().enumerate() {
-            ask(i, h.target.clone(), tx.clone());
+            ask(i, h.probe(), tx.clone());
         }
         drop(tx);
         for (i, s) in rx.iter() {
@@ -539,7 +799,7 @@ fn main() {
                 Some(_) => {}
                 None if due => {
                     h.asked = Some(Instant::now());
-                    ask(i, h.target.clone(), tx.clone());
+                    ask(i, h.probe(), tx.clone());
                 }
                 None => {}
             }
@@ -723,25 +983,94 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
 
     #[test]
     fn names_are_labels_and_the_target_stays_behind() {
-        let h = Host::new("Pro 13=andyimkt@100.116.110.31");
+        let h = Host::new("Pro 13=user@host-b");
         assert_eq!(
             (h.name.as_str(), h.target.as_str()),
-            ("Pro 13", "andyimkt@100.116.110.31")
+            ("Pro 13", "user@host-b")
         );
         let h = Host::new("andymini");
         assert_eq!(
             (h.name.as_str(), h.target.as_str()),
             ("andymini", "andymini")
         );
-        assert_eq!(DEFAULT_HOSTS.len(), 4, "Andy:四台都要");
-        let (lines, _) = frame(
-            &[host("Pro 13=andyimkt@100.116.110.31", None, false)],
-            100,
+        let (lines, _) = frame(&[host("Pro 13=user@host-b", None, false)], 100, 0, 0);
+        let all: String = lines.iter().map(text).collect();
+        assert!(all.contains("Pro 13") && !all.contains("host-b"), "{all}");
+    }
+
+    /// Andy 11-12 14:5x:測試機也要有 GitHub 與 Windows;清單從私有設定讀(公開倉不寫位址)
+    #[test]
+    fn config_adds_windows_and_github() {
+        let cfg = r#"{"github_repo":"o/r","hosts":[
+            {"name":"win","ssh":"u@w","os":"windows","order":5,"identity":"/k"},
+            {"name":"m","ssh":"m","order":1,"jump_fallback":"j"},
+            {"name":"bad"}]}"#;
+        let hs = hosts_from_config(cfg);
+        let names: Vec<&str> = hs.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["m", "win", "GitHub"]);
+        assert_eq!(hs[0].jump_fallback.as_deref(), Some("j"));
+        assert_eq!(
+            (hs[1].kind, hs[1].identity.as_deref()),
+            (Kind::Windows, Some("/k"))
+        );
+        assert_eq!((hs[2].kind, hs[2].target.as_str()), (Kind::GitHub, "o/r"));
+        assert!(hosts_from_config("").is_empty() && hosts_from_config("{}").is_empty());
+        // Windows:CPU 50%、8 核 ⇒ 負載 4/8,沒有租約系統
+        let w = parse_win("AIB_WIN 50 8\r\n", true, "");
+        assert!(w.online && w.no_lease && (w.load1 - 4.0).abs() < 1e-9);
+        assert_eq!(charge(Some(&w), 0), (100, Color::Green));
+        let busy = parse_win("AIB_WIN 95 8", true, "");
+        assert!(unleased_busy(&busy));
+        assert!(!parse_win("", false, "timed out").online);
+        let l = host_lines(
+            &Host {
+                last: Some(w),
+                ..hs[1].clone()
+            },
+            1,
+            120,
             0,
             0,
         );
-        let all: String = lines.iter().map(text).collect();
-        assert!(all.contains("Pro 13") && !all.contains("100.116"), "{all}");
+        assert!(
+            text(&l[0]).contains("空機 可用(沒有租約系統)"),
+            "{}",
+            text(&l[0])
+        );
+    }
+
+    #[test]
+    fn github_row_counts_running_and_queued() {
+        let now = iso_epoch("2026-11-12T06:40:00Z");
+        assert_eq!(now, 1_794_465_600);
+        let j = r#"[{"status":"in_progress","name":"ci","headBranch":"b1","createdAt":"2026-11-12T06:30:00Z"},
+                    {"status":"queued","name":"aibd","headBranch":"b2","createdAt":"2026-11-12T06:38:00Z"},
+                    {"status":"completed","name":"x","headBranch":"b3","createdAt":"2026-11-12T06:00:00Z"}]"#;
+        let s = parse_gh(j, true, "");
+        assert_eq!(s.gh, Some((1, 1)));
+        assert_eq!(
+            charge(Some(&s), now),
+            (0, Color::Red),
+            "有排隊 = 執行機都在用"
+        );
+        let mut g = Host::new("GitHub=o/r");
+        g.kind = Kind::GitHub;
+        g.last = Some(s.clone());
+        let l = host_lines(&g, 0, 120, 0, now);
+        assert_eq!(l.len(), 3, "收起也是 3 行");
+        assert!(
+            text(&l[0]).contains("滿了 · 跑 1 · 排隊 1"),
+            "{}",
+            text(&l[0])
+        );
+        assert!(text(&l[1]).contains("執行中 1 · 排隊 1"));
+        assert!(text(&l[2]).contains("▶ ci · b1"), "{}", text(&l[2]));
+        g.open = true;
+        let l = host_lines(&g, 0, 120, 0, now);
+        assert!(l.iter().any(|x| text(x).contains("排隊 aibd · b2")));
+        let idle = parse_gh("[]", true, "");
+        assert_eq!(charge(Some(&idle), now), (100, Color::Green));
+        assert!(!parse_gh("not json", false, "HTTP 502").online);
     }
 
     #[test]
