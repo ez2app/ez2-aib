@@ -338,6 +338,85 @@ fn goal_lines(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Vec<Seg>> {
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
+/// 工具列：開著的篩選是彩色實心 ●、關著的是灰色空心 ○;寬度不夠就把間距縮小，不讓後面的鍵被切掉。
+fn toolbar(app: &App, w: usize) -> Vec<Seg> {
+    let f = &app.filter;
+    let grey = Some(Color::DarkGrey);
+    let seat = if f.seat.is_empty() {
+        "席:全部(s)".to_string()
+    } else {
+        format!("席:{}", f.seat)
+    };
+    let search = match &app.typing {
+        Some(t) => format!(":{t}▏"),
+        None if !f.q.is_empty() => format!(":{}", f.q),
+        None => String::new(),
+    };
+    // (字, 開著嗎, 前面要不要大間距)
+    let items: Vec<(String, Option<bool>, bool)> = vec![
+        (
+            (if app.show_tree { "◀樹" } else { "▶樹" }).to_string(),
+            None,
+            false,
+        ),
+        (
+            (if app.show_side {
+                "為什麼▶"
+            } else {
+                "◀為什麼"
+            })
+            .to_string(),
+            None,
+            false,
+        ),
+        ("o 沒做完".to_string(), Some(f.only_open), true),
+        ("x 延伸".to_string(), Some(f.only_ext), false),
+        ("n 沒人負責".to_string(), Some(f.orphan), false),
+        (format!("{seat}{search}"), Some(!f.seat.is_empty()), false),
+        ("e 全開".to_string(), None, true),
+        ("c 全收".to_string(), None, false),
+        ("r 清除".to_string(), None, false),
+        ("q 離開".to_string(), None, false),
+    ];
+    let body: usize = items
+        .iter()
+        .map(|(t, o, _)| str_width(t) + usize::from(o.is_some() && !t.starts_with("席:")))
+        .sum();
+    let bigs = items.iter().filter(|i| i.2).count();
+    let n = items.len() - 1;
+    let (small, big) = if body + n * 3 + bigs * 3 <= w {
+        (3, 6)
+    } else if body + n * 2 + bigs * 2 <= w {
+        (2, 4)
+    } else {
+        (1, 2)
+    };
+    let mut out = Vec::new();
+    for (i, (t, o, wide)) in items.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Seg(
+                " ".repeat(if wide { big } else { small }),
+                None,
+                false,
+                false,
+            ));
+        }
+        match o {
+            Some(true) if t.starts_with("席:") => out.push(Seg(t, Some(Color::Cyan), false, true)),
+            Some(true) => {
+                out.push(Seg("●".into(), Some(Color::Green), false, true));
+                out.push(Seg(t, Some(Color::Green), false, true));
+            }
+            Some(false) if !t.starts_with("席:") => {
+                out.push(Seg("○".into(), grey, false, false));
+                out.push(Seg(t, grey, false, false));
+            }
+            _ => out.push(Seg(t, grey, false, false)),
+        }
+    }
+    out
+}
+
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
     *app.hits.borrow_mut() = Hits::default();
@@ -412,38 +491,10 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         ));
     }
     out.push(seats);
-    let f = &app.filter;
-    let on = |b: bool, s: &str| format!("{}{s}", if b { "●" } else { "○" });
-    out.push(vec![Seg(
-        format!(
-            "{}   {}      {}   {}   {}   席:{}{}      e 全開   c 全收   r 清除   q 離開",
-            if app.show_tree { "◀樹" } else { "▶樹" },
-            if app.show_side {
-                "為什麼▶"
-            } else {
-                "◀為什麼"
-            },
-            on(f.only_open, "o 沒做完"),
-            on(f.only_ext, "x 延伸"),
-            on(f.orphan, "n 沒人負責"),
-            if f.seat.is_empty() {
-                "全部(s)"
-            } else {
-                &f.seat
-            },
-            match &app.typing {
-                Some(t) => format!(":{t}▏"),
-                None if !f.q.is_empty() => format!(":{}", f.q),
-                None => String::new(),
-            }
-        ),
-        Some(Color::DarkGrey),
-        false,
-        false,
-    )]);
+    out.push(toolbar(app, w));
     let mut hits = Hits {
         toolbar_y: Some(out.len() - 1),
-        toolbar: out[out.len() - 1][0].0.clone(),
+        toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -1103,5 +1154,30 @@ mod tests {
             on_click(&mut app, qx, ty),
             "old q spot does not quit on the error screen"
         );
+    }
+    #[test]
+    fn toolbar_colours_an_active_filter_and_fits_a_narrow_pane() {
+        let mut app = empty_app();
+        app.filter.only_open = true;
+        let bar = toolbar(&app, 120);
+        let dot = bar
+            .iter()
+            .position(|g| g.0 == "●")
+            .expect("active filter has a filled dot");
+        assert_eq!(bar[dot].1, Some(Color::Green));
+        assert_eq!(bar[dot + 1].0, "o 沒做完");
+        assert!(
+            bar.iter().any(|g| g.0 == "○"),
+            "inactive filters keep the hollow dot"
+        );
+        for w in [80, 90, 101] {
+            let text: String = toolbar(&app, w).iter().map(|g| g.0.as_str()).collect();
+            assert!(
+                str_width(&text) <= w,
+                "toolbar fits {w}: {}",
+                str_width(&text)
+            );
+            assert!(text.ends_with("q 離開"));
+        }
     }
 }
