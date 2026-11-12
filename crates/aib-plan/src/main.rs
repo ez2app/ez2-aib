@@ -526,18 +526,29 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 }
 
 /// 最上面：一開始主軸、目前主軸(左邊是判斷);有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合),展開列出為什麼 / 建議
+/// 左邊留白(跟下面樹的縮排一致，不貼左線)
+const MARGIN: &str = "  ";
+/// 判斷欄與主軸之間的分隔
+const SEP: &str = " │ ";
+
+/// 最上面兩行(Andy 11-12 13:5x 排版):
+///   判斷 90%  │ 本席AI一開始主軸  (11-12 00:09)/11-12 13:52：…   全艙判斷 ▸
+///   校正 0 次 │ 本席AI目前開發主軸(11-12 13:50)/11-12 13:52：… ▸
+/// 左欄固定寬、兩個標籤補成同寬 ⇒ 括號裡的時間上下對齊;有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合)
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let now_t = mainline::stamp(now, now);
     let (vtext, vcolor) = verdict(m.now.as_ref());
-    let lead = VERDICT_W;
+    let labels = ["本席AI一開始主軸", "本席AI目前開發主軸"];
+    let label_w = labels.iter().map(|l| str_width(l)).max().unwrap_or(0);
     let body = |label: &str, e: Option<&mainline::Entry>| -> [Seg; 2] {
         let (start, item) = match e {
             Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
             None => ("—".to_string(), "(沒有回報 aib now)".to_string()),
         };
+        let pad = " ".repeat(label_w - str_width(label));
         [
             Seg(
-                format!("{label}({start})/{now_t}："),
+                format!("{label}{pad}({start})/{now_t}："),
                 Some(Color::DarkGrey),
                 false,
                 false,
@@ -545,10 +556,29 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
             Seg(item, Some(Color::White), false, true),
         ]
     };
-    let mut first = vec![seg(" ".repeat(lead))];
-    first.extend(body("本席AI一開始主軸", m.first.as_ref()));
-    let mut cur = vec![Seg(left(&vtext), Some(vcolor), false, true)];
-    cur.extend(body("本席AI目前開發主軸", m.now.as_ref()));
+    let sep = || Seg(SEP.into(), Some(Color::DarkGrey), false, false);
+    let mut first = vec![
+        seg(MARGIN),
+        Seg(left(&vtext), Some(vcolor), false, true),
+        sep(),
+    ];
+    first.extend(body(labels[0], m.first.as_ref()));
+    // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
+    let mut cur = vec![
+        seg(MARGIN),
+        Seg(
+            left(&format!("校正 {} 次", m.corrections)),
+            Some(if m.corrections > 0 {
+                Color::Yellow
+            } else {
+                Color::DarkGrey
+            }),
+            false,
+            false,
+        ),
+        sep(),
+    ];
+    cur.extend(body(labels[1], m.now.as_ref()));
     let review = m.now.as_ref().and_then(|e| e.review.as_ref());
     if review.is_some() {
         cur.push(Seg(
@@ -558,29 +588,21 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
             true,
         ));
     }
-    // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
-    let fix = vec![Seg(
-        left(&format!("校正 {} 次", m.corrections)),
-        Some(if m.corrections > 0 {
-            Color::Yellow
-        } else {
-            Color::DarkGrey
-        }),
-        false,
-        false,
-    )];
-    let mut rows = vec![first, cur, fix];
+    let mut rows = vec![first, cur];
     if let (Some(r), true) = (review, open) {
-        let pad = " ".repeat(lead + 2);
-        let text_w = w.saturating_sub(lead + 2);
+        // 展開的內容接在分隔線右邊，跟主軸字頭對齊
+        let lead = str_width(MARGIN) + VERDICT_W;
+        let text_w = w.saturating_sub(lead + str_width(SEP));
         let mut part = |label: &str, text: &str, color: Color| {
             rows.push(vec![
-                seg(pad.clone()),
+                seg(" ".repeat(lead)),
+                sep(),
                 Seg(label.into(), Some(color), false, true),
             ]);
             for l in wrap(text, text_w) {
                 rows.push(vec![
-                    seg(pad.clone()),
+                    seg(" ".repeat(lead)),
+                    sep(),
                     Seg(l, Some(Color::White), false, false),
                 ]);
             }
@@ -1232,31 +1254,32 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         // Andy 13:3x:最上面空一行
         assert!(text(&f, 0).is_empty());
+        // Andy 13:5x:左邊留白 + 固定寬判斷欄 + 分隔線;判斷在上、校正在正下方
+        let col = |t: &str| format!("{MARGIN}{}{SEP}", left(t));
         assert!(
-            text(&f, 1)
-                .trim_start()
-                .starts_with("本席AI一開始主軸(11-12 00:09)/11-12 "),
+            text(&f, 1).starts_with(&format!(
+                "{}本席AI一開始主軸  (11-12 00:09)/11-12 ",
+                col("判斷 —")
+            )),
             "{}",
             text(&f, 1)
         );
         assert!(text(&f, 1).ends_with("席位接續"));
         assert!(
-            text(&f, 2).starts_with(&format!("{}本席AI目前開發主軸(—)/", left("判斷 —"))),
+            text(&f, 2).starts_with(&format!("{}本席AI目前開發主軸(—)/", col("校正 0 次"))),
             "{}",
             text(&f, 2)
         );
         assert!(!text(&f, 2).contains('▸'), "沒有判斷內容就沒有開合");
-        // Andy 13:4x:百分比正下方是校正次數
-        assert_eq!(text(&f, 3), left("校正 0 次"));
-        assert!(text(&f, 4).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(5));
-        // 兩行的主軸字頭對齊
-        for i in [1, 2] {
-            assert_eq!(
-                str_width(&text(&f, i)[..text(&f, i).find('本').unwrap()]),
-                VERDICT_W
-            );
-        }
+        assert!(text(&f, 3).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(4));
+        // 兩行的「(」上下對齊
+        let paren = |i: usize| {
+            let t = text(&f, i);
+            str_width(&t[..t.find('(').unwrap()])
+        };
+        assert_eq!(paren(1), paren(2));
+        assert!(text(&f, 1).starts_with("  "), "不貼左線");
 
         // 有判斷 ⇒ 百分比 + 顏色、行尾 ▸,預設收合
         let review = |pct: u8| {
@@ -1279,29 +1302,29 @@ mod tests {
                 corrections: 2,
             });
             let f = frame(&app, 100, 40);
-            assert_eq!(f[2][0].0.trim_end(), format!("判斷 {pct}%"));
-            assert_eq!(f[2][0].1, Some(color), "{pct}");
-            assert_eq!(text(&f, 3), left("校正 2 次"));
+            assert_eq!(f[1][1].0.trim_end(), format!("判斷 {pct}%"));
+            assert_eq!(f[1][1].1, Some(color), "{pct}");
+            assert_eq!(f[2][1].0.trim_end(), "校正 2 次");
+            assert_eq!(f[2][1].1, Some(Color::Yellow));
         }
         let f = frame(&app, 100, 40);
         assert!(text(&f, 2).ends_with(" ▸"));
-        assert!(text(&f, 4).is_empty());
+        assert!(text(&f, 3).is_empty());
         assert_eq!(app.hits.borrow().mainline_y, Some(2));
-        // 點那一行 ⇒ 展開;再按 m ⇒ 收合
+        // 點那一行 ⇒ 展開(接在分隔線右邊);再按 m ⇒ 收合
         assert!(on_click(&mut app, 3, 2));
         let f = frame(&app, 100, 40);
         assert!(text(&f, 2).ends_with(" ▾"));
-        assert_eq!(text(&f, 3), left("校正 2 次"));
-        assert!(
-            text(&f, 4).contains("為什麼這麼做(回報 11-12 00:10)"),
-            "{}",
-            text(&f, 4)
+        let body = format!("{}{SEP}", " ".repeat(str_width(MARGIN) + VERDICT_W));
+        assert_eq!(
+            text(&f, 3),
+            format!("{body}為什麼這麼做(回報 11-12 00:10):")
         );
-        assert!(text(&f, 5).contains("因為 Andy 要"));
-        assert!(text(&f, 6).contains("有什麼是你沒想到、我建議的"));
-        assert!(text(&f, 7).contains("建議 X"));
-        assert!(text(&f, 8).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(9));
+        assert_eq!(text(&f, 4), format!("{body}因為 Andy 要"));
+        assert!(text(&f, 5).contains("有什麼是你沒想到、我建議的"));
+        assert!(text(&f, 6).contains("建議 X"));
+        assert!(text(&f, 7).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(8));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
@@ -1350,21 +1373,21 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙判斷 ▸ ⚠1"), "{}", text(&f, 1));
-        assert!(text(&f, 4).is_empty(), "預設收合");
+        assert!(text(&f, 3).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙判斷 ▾"));
-        let a = text(&f, 4);
+        let a = text(&f, 3);
         assert!(a.starts_with("  @aaaaa 判斷 90%  校正1 一開始"), "{a}");
         assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
         assert!(
-            text(&f, 5).starts_with(&format!("  @bbbbb {}校正0 ", left("判斷 —"))),
+            text(&f, 4).starts_with(&format!("  @bbbbb {}校正0 ", left("判斷 —"))),
             "{}",
-            text(&f, 5)
+            text(&f, 4)
         );
-        assert!(!text(&f, 5).contains('⚠'));
-        assert!(text(&f, 6).is_empty());
+        assert!(!text(&f, 4).contains('⚠'));
+        assert!(text(&f, 5).is_empty());
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
