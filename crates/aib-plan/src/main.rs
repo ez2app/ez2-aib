@@ -452,13 +452,10 @@ fn autofix_path() -> PathBuf {
 /// 樹上「自動審修」分支的節點 id(autofix-1 = 最新;前綴夠長，不會撞到進度資料的 id)
 const FIX_ID: &str = "autofix";
 
-/// 右上角的字:「影子續跑 17時45分」;沒有省成功的紀錄 ⇒ 不顯示
+/// 右上角的字:「影子續跑」(Andy 11-13 06:1x 只留字，省多少時間看樹上的分支);沒有省成功的紀錄 ⇒ 不顯示
 fn shadow_badge(s: Option<&Savings>) -> Option<String> {
-    let s = s.filter(|s| !s.saves.is_empty())?;
-    Some(format!(
-        "   影子續跑 {}",
-        shadow::dur(s.total_s).replace(' ', "")
-    ))
+    s.filter(|s| !s.saves.is_empty())?;
+    Some("   影子續跑".to_string())
 }
 
 impl App {
@@ -1058,11 +1055,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         )];
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
-        // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角「建議 ✓完成/⏳未完成」(23:1x 數字就好;23:3x 加打勾 / 等待符號)
+        // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角「建議 ✓完成/!未完成」(23:1x 數字就好;23:3x 加打勾 / 等待符號;11-13 06:1x 沙漏改 !)
         if let Some((_, done, open)) = sugg_counts {
             sugg_at = Some(tail.len());
             tail.push(Seg(
-                format!("   建議 ✓{done}/⏳{open}"),
+                format!("   建議 ✓{done}/!{open}"),
                 Some(Color::Magenta),
                 false,
                 true,
@@ -1739,10 +1736,10 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 120, 30);
         let top = text(&f, 1);
-        assert!(top.contains("   建議 ✓1/⏳2   全艙 ▸"), "{top}");
+        assert!(top.contains("   建議 ✓1/!2   全艙 ▸"), "{top}");
         let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
         assert_eq!(y, 1);
-        assert_eq!(x1 - x0, str_width("建議 ✓1/⏳2"));
+        assert_eq!(x1 - x0, str_width("建議 ✓1/!2"));
         assert_eq!(
             str_width("⏳"),
             2,
@@ -2211,12 +2208,16 @@ mod tests {
         );
         let t = |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 120, 40);
-        assert!(t(&f, 1).contains("   影子續跑 30分0秒"), "{}", t(&f, 1));
+        assert!(t(&f, 1).contains("   影子續跑"), "{}", t(&f, 1));
+        assert!(
+            !t(&f, 1).contains("30分0秒"),
+            "右上角只留字(Andy 11-13 06:1x)"
+        );
         let (y, x0, x1) = app.hits.borrow().shadow.expect("右上角可點");
         assert_eq!(y, 1);
         let top = t(&f, 1);
         let at = str_width(&top[..top.find("影子續跑").unwrap()]);
-        assert_eq!((x0, x1), (at, at + str_width("影子續跑 30分0秒")));
+        assert_eq!((x0, x1), (at, at + str_width("影子續跑")));
         assert!(on_click(&mut app, x0, y));
         assert_eq!(app.plan.nodes[app.sel].id, "shadow");
         assert!(app.open.contains("shadow"));
