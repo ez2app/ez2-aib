@@ -4,6 +4,7 @@
 //! 完成度規則與網頁版、Claude mod 同一套:每個有狀態的節點算一件，
 //! 「實查通過」算完成;上層 = 底下(含自己)完成數 / 總數。
 
+pub mod autofix;
 pub mod mainline;
 pub mod shadow;
 

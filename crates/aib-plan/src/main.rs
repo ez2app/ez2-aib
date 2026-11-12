@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
+use aib_plan::autofix::{self, Fixes};
 use aib_plan::mainline::{self, Mainline};
 use aib_plan::shadow::{self, Savings};
 
@@ -190,6 +191,9 @@ struct App {
     /// 影子續跑省下的時間(右上角 + 樹上「影子續跑」分支;None = 讀不到紀錄檔);檔案沒變就不重讀
     shadow: Option<Savings>,
     shadow_mtime: Option<SystemTime>,
+    /// 自動審修紀錄(樹上「自動審修」分支，接在影子續跑下方);檔案沒變就不重讀
+    fixes: Option<Fixes>,
+    fixes_mtime: Option<SystemTime>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -438,6 +442,16 @@ fn shadow_cache() -> PathBuf {
     state_dir().join("aib-plan").join("shadow-names.json")
 }
 
+/// 自動審修紀錄檔(`aib-fixlog add` 寫;EZ2_AUTOFIX_LOG 可改位置)
+fn autofix_path() -> PathBuf {
+    std::env::var_os("EZ2_AUTOFIX_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir().join("aib-plan").join("autofix.jsonl"))
+}
+
+/// 樹上「自動審修」分支的節點 id(fix-1 = 最新)
+const FIX_ID: &str = "autofix";
+
 /// 右上角的字:「影子續跑 17時45分」;沒有省成功的紀錄 ⇒ 不顯示
 fn shadow_badge(s: Option<&Savings>) -> Option<String> {
     let s = s.filter(|s| !s.saves.is_empty())?;
@@ -474,11 +488,26 @@ impl App {
         changed
     }
 
+    /// 自動審修紀錄沒變(修改時間一樣)就不重讀;回傳有沒有換資料
+    fn load_fixes(&mut self, path: &Path) -> bool {
+        let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if m.is_some() && m == self.fixes_mtime {
+            return false;
+        }
+        let f = autofix::read(path);
+        let changed = f != self.fixes;
+        self.fixes = f;
+        self.fixes_mtime = m;
+        changed
+    }
+
     /// Andy 11-12 23:5x / 12:0x:影子續跑跟建議一樣，右上角一個數字 + 樹上一個分支，每次省成功一項。
     /// 進度資料重讀或紀錄檔換了都要重接(先拔掉舊的再接;接在最上層底下最後面，沒有狀態 ⇒ 不算進完成度)
     fn graft_shadow(&mut self) {
         let keep = self.plan.nodes.get(self.sel).map(|n| n.id.clone());
-        let ours = |id: &str| id == SHADOW_ID || id.starts_with("shadow-");
+        let ours = |id: &str| {
+            id == SHADOW_ID || id.starts_with("shadow-") || id == FIX_ID || id.starts_with("fix-")
+        };
         self.plan.nodes.retain(|n| !ours(&n.id));
         let root = self
             .plan
@@ -486,7 +515,7 @@ impl App {
             .iter()
             .find(|n| n.parent.is_none())
             .map(|n| n.id.clone());
-        if let (Some(root), Some(s)) = (root, self.shadow.as_ref()) {
+        if let (Some(root), Some(s)) = (root.clone(), self.shadow.as_ref()) {
             if !s.saves.is_empty() {
                 self.plan.nodes.push(Node {
                     id: SHADOW_ID.into(),
@@ -517,6 +546,44 @@ impl App {
                         ),
                         why: Some(format!("實跑 {} 支、沿用 {} 支", e.ran, e.reused)),
                         owner: e.seat().map(str::to_string),
+                        ..Node::default()
+                    });
+                }
+            }
+        }
+        // Andy 11-13 01:3x:每修一個 bug 就在影子續跑下方顯示;輕度先跳過的也列出來(註記還有哪些問題)
+        if let (Some(root), Some(f)) = (root, self.fixes.as_ref()) {
+            if !f.items.is_empty() {
+                self.plan.nodes.push(Node {
+                    id: FIX_ID.into(),
+                    parent: Some(root),
+                    kind: "group".into(),
+                    title: format!("自動審修(修 {},註記 {})", f.fixed(), f.noted()),
+                    why: Some(
+                        "每做完一個功能審一輪：嚴重 / 中度修完才算完成，輕度可以先記下(紀錄檔 state/aib-plan/autofix.jsonl)"
+                            .into(),
+                    ),
+                    ..Node::default()
+                });
+                for (i, e) in f.items.iter().enumerate() {
+                    self.plan.nodes.push(Node {
+                        id: format!("fix-{}", i + 1),
+                        parent: Some(FIX_ID.into()),
+                        kind: "fix".into(),
+                        title: format!(
+                            "{} {} {} · {} · {}",
+                            mainline::stamp(e.at, self.now_secs),
+                            if e.fixed { "修" } else { "註記" },
+                            e.sev.label(),
+                            e.what,
+                            e.work
+                        ),
+                        why: Some(match &e.commit {
+                            Some(c) if e.fixed => format!("修正 commit {c}"),
+                            _ if e.fixed => "已修".into(),
+                            _ => "輕度，先記下沒修".into(),
+                        }),
+                        owner: Some(e.seat.clone()),
                         ..Node::default()
                     });
                 }
@@ -1439,6 +1506,8 @@ fn main() {
         jump_note: None,
         shadow: None,
         shadow_mtime: None,
+        fixes: None,
+        fixes_mtime: None,
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     if args.seat.is_none() {
@@ -1449,6 +1518,7 @@ fn main() {
     }
     app.load(&args.data);
     app.load_shadow(&shadow_path(), &shadow_cache());
+    app.load_fixes(&autofix_path());
     app.graft_shadow();
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
@@ -1573,7 +1643,11 @@ fn main() {
             app.load(&args.data);
             // 進度資料重讀會蓋掉接上去的影子續跑分支 ⇒ 兩邊任一換了都重接
             let plan_changed = app.mtime != before;
-            if app.load_shadow(&shadow_path(), &shadow_cache()) || plan_changed {
+            // 用 | 不用 ||:兩份都要讀，不能前一份換了就跳過後一份
+            if app.load_shadow(&shadow_path(), &shadow_cache())
+                | app.load_fixes(&autofix_path())
+                | plan_changed
+            {
                 app.graft_shadow();
                 dirty = true;
             }
@@ -1637,6 +1711,8 @@ mod tests {
             jump_note: None,
             shadow: None,
             shadow_mtime: None,
+            fixes: None,
+            fixes_mtime: None,
         }
     }
 
@@ -2005,6 +2081,60 @@ mod tests {
 
     /// Andy 11-12 12:0x:影子續跑跟建議一樣：右上角「影子續跑 共省」,點了跳到樹上的影子續跑分支，
     /// 每次省成功一項(新的在前);進度資料重讀後分支還在
+    #[test]
+    fn autofix_branch_sits_below_shadow_and_lists_each_finding() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.now_secs = 1_794_460_800;
+        app.shadow = Some(shadow::parse(
+            r#"{"saved_s": 60, "ran": 1, "reused": 2, "utc": "2026-11-01T00:00:00Z"}"#,
+        ));
+        let dir = std::env::temp_dir().join(format!("aib-plan-fix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("autofix.jsonl");
+        let rows = [
+            r##"{"at":1793491200,"seat":"a63ab","work":"#731","sev":"M","what":"舊名稱沒清","state":"fixed","commit":"cb9014cd"}"##,
+            r##"{"at":1793494800,"seat":"043dd","work":"#730","sev":"L","what":"註解錯字","state":"noted"}"##,
+            r##"{"at":1793498400,"seat":"a63ab","work":"#731","sev":"H","what":"只記不修","state":"noted"}"##,
+        ];
+        std::fs::write(&path, rows.join("\n")).unwrap();
+        assert!(app.load_fixes(&path), "第一次讀 = 換資料");
+        assert!(!app.load_fixes(&path), "檔案沒變不重讀");
+        let _ = std::fs::remove_dir_all(&dir);
+        app.graft_shadow();
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["V", "shadow", "shadow-1", "autofix", "fix-1", "fix-2"],
+            "接在影子續跑下方;接兩次不重複;嚴重只記不修的列不收"
+        );
+        let title = |id: &str| app.plan.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(title("autofix").title, "自動審修(修 1,註記 1)");
+        assert_eq!(title("autofix").parent.as_deref(), Some("V"));
+        assert_eq!(
+            title("fix-1").title,
+            "11-01 09:00 註記 輕度 · 註解錯字 · #730"
+        );
+        assert_eq!(
+            title("fix-2").title,
+            "11-01 08:00 修 中度 · 舊名稱沒清 · #731"
+        );
+        assert_eq!(title("fix-2").why.as_deref(), Some("修正 commit cb9014cd"));
+        assert_eq!(title("fix-2").owner.as_deref(), Some("a63ab"));
+        assert!(
+            app.plan
+                .nodes
+                .iter()
+                .filter(|n| n.id.starts_with("fix") || n.id == "autofix")
+                .all(|n| n.status.is_none()),
+            "沒有狀態 ⇒ 不算進完成度"
+        );
+    }
+
     #[test]
     fn shadow_badge_jumps_to_its_branch_with_one_item_per_save() {
         let mut app = empty_app();
