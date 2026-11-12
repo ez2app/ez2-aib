@@ -270,6 +270,55 @@ fn status_color(s: Option<&str>) -> Option<Color> {
     }
 }
 
+/// 第二行:「你的期望」(id 為 E 的大項目)各狀態幾項 + 最落後的三個大項目(名字取冒號前)
+fn goal_line(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Seg> {
+    let mut line = Vec::new();
+    let kids = &ix.kids[root];
+    if let Some(&e) = kids.iter().find(|&&k| p.nodes[k].id == "E") {
+        let (mut ok, mut bad, mut open) = (0, 0, 0);
+        for &k in &ix.kids[e] {
+            match p.nodes[k].status.as_deref() {
+                Some(PASS) => ok += 1,
+                Some("實查不通過") => bad += 1,
+                _ => open += 1,
+            }
+        }
+        line.push(Seg(
+            format!("你的期望 {} 項 ", ix.kids[e].len()),
+            None,
+            false,
+            true,
+        ));
+        line.push(Seg(format!("✓{ok} "), Some(Color::Green), false, false));
+        line.push(Seg(format!("✗{bad} "), Some(Color::Red), false, false));
+        line.push(Seg(format!("?{open}"), Some(Color::DarkGrey), false, false));
+        line.push(Seg("   ".into(), None, false, false));
+    }
+    let mut g: Vec<(u32, String)> = kids
+        .iter()
+        .filter(|&&k| p.nodes[k].id != "E")
+        .map(|&k| {
+            let t = &p.nodes[k].title;
+            let short = t.split([':', ':']).next().unwrap_or(t).to_string();
+            (pct(tally(p, ix, k)), short)
+        })
+        .collect();
+    g.sort();
+    if !g.is_empty() {
+        line.push(Seg("最落後:".into(), Some(Color::DarkGrey), false, false));
+        for (i, (v, t)) in g.iter().take(3).enumerate() {
+            let col = if *v < 40 { Color::Red } else { Color::Yellow };
+            line.push(Seg(
+                format!("{}{t} {v}%", if i > 0 { " · " } else { "" }),
+                Some(col),
+                false,
+                false,
+            ));
+        }
+    }
+    line
+}
+
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
@@ -291,63 +340,48 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     };
     let all = tally(p, &ix, root);
+    // Andy 11-12 10:2x:頂部太擠、看不出進度 ⇒ 三行:總進度 / 你的期望 + 最落後的大項目 / 只列有信的席
     out.push(vec![
+        Seg(format!("艙 {}  ", p.cabin), None, false, true),
+        Seg(bar(pct(all), 24), Some(Color::Green), false, false),
+        Seg(format!(" {}%", pct(all)), None, false, true),
         Seg(
-            format!(
-                "艙 {} · 整體 {}% {} ({}/{})",
-                p.cabin,
-                pct(all),
-                bar(pct(all), 16),
-                all.0,
-                all.1
-            ),
-            None,
-            false,
-            true,
-        ),
-        Seg(
-            format!("  · {}", p.asof),
+            format!("  {}/{} 項實查通過  · {}", all.0, all.1, p.asof),
             Some(Color::DarkGrey),
             false,
             false,
         ),
     ]);
-    let mut g = Vec::new();
-    for &k in &ix.kids[root] {
-        let t = tally(p, &ix, k);
-        g.push(seg(format!(
-            "{} {} {}%   ",
-            p.nodes[k].id,
-            bar(pct(t), 6),
-            pct(t)
-        )));
-    }
-    out.push(g);
-    let mut seats = vec![seg("席位:")];
+    out.push(goal_line(p, &ix, root));
+    let mut seats = Vec::new();
     for s in app.cabin_seats() {
         let d = app.dm_txt(Some(&s));
+        if d.is_empty() {
+            continue;
+        }
         let col = if d.contains('✉') {
             Some(Color::Red)
         } else {
-            None
+            Some(Color::Yellow)
         };
+        seats.push(Seg(format!("{s}{d}   "), col, false, false));
+    }
+    if seats.is_empty() {
         seats.push(Seg(
-            format!("{s}{}   ", if d.is_empty() { " ✓".into() } else { d }),
-            col,
+            "信:全部結了 ✓".into(),
+            Some(Color::DarkGrey),
+            false,
+            false,
+        ));
+    } else {
+        seats.insert(0, Seg("信:".into(), Some(Color::DarkGrey), false, false));
+        seats.push(Seg(
+            "(✉ 待審 · ◌ 已讀未結)".into(),
+            Some(Color::DarkGrey),
             false,
             false,
         ));
     }
-    let age = app
-        .dm_at
-        .map(|t| format!("佇列 {} 秒前", t.elapsed().as_secs()))
-        .unwrap_or_else(|| "佇列：用資料檔".into());
-    seats.push(Seg(
-        format!("(✉ 待審 · ◌ 已讀未結 · {age})"),
-        Some(Color::DarkGrey),
-        false,
-        false,
-    ));
     out.push(seats);
     let f = &app.filter;
     let on = |b: bool, s: &str| format!("{}{s}", if b { "●" } else { "○" });
@@ -374,7 +408,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 None => String::new(),
             }
         ),
-        Some(Color::Cyan),
+        Some(Color::DarkGrey),
         false,
         false,
     )]);
@@ -929,6 +963,39 @@ mod tests {
     }
 
     /// 043dd L2:極窄寬度(--once --width 5)不下溢
+    #[test]
+    fn header_says_expectations_and_the_three_furthest_behind() {
+        let p = parse(
+            r#"{"cabin":"9320","nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+            {"id":"E","parent":"V","kind":"group","title":"你的期望"},
+            {"id":"E1","parent":"E","kind":"task","title":"A1","status":"實查不通過"},
+            {"id":"E2","parent":"E","kind":"task","title":"A2","status":"未驗"},
+            {"id":"E3","parent":"E","kind":"task","title":"A3","status":"實查通過"},
+            {"id":"G1","parent":"V","kind":"group","title":"跨平台核心:Windows 與 mac"},
+            {"id":"T1","parent":"G1","kind":"task","title":"t","status":"未驗"},
+            {"id":"G2","parent":"V","kind":"group","title":"自動推進:事件完成"},
+            {"id":"T2","parent":"G2","kind":"task","title":"t","status":"實查通過"}]}"#,
+        )
+        .expect("sample parses");
+        let mut app = empty_app();
+        app.plan = p;
+        app.err = None;
+        let f = frame(&app, 97, 30);
+        let line = |i: usize| f[i].iter().map(|s| s.0.as_str()).collect::<String>();
+        assert!(line(0).contains("項實查通過"), "{}", line(0));
+        let l1 = line(1);
+        assert!(l1.contains("你的期望 3 項"), "{l1}");
+        assert!(
+            l1.contains("✓1") && l1.contains("✗1") && l1.contains("?1"),
+            "{l1}"
+        );
+        // 最落後排前面,名字取冒號前,期望本身不列
+        let a = l1.find("跨平台核心 0%").expect("weakest first");
+        let b = l1.find("自動推進 100%").expect("then the next");
+        assert!(a < b, "{l1}");
+        assert!(!l1.contains("Windows"), "{l1}");
+    }
+
     #[test]
     fn narrow_width_does_not_underflow() {
         let p = parse(
