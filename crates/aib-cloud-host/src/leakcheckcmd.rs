@@ -16,9 +16,13 @@
 //!   `svc::HIDE_WORD_MIN` characters, ASCII case ignored, whole words only. Phrases known
 //!   to be harmless (a public mirror's name that holds a word, say) go in the allow list
 //!   [`ALLOW_WORDS`], root's and 0600: they are blanked out of an answer before the words
-//!   are looked for. An allow phrase that is a hide word on its own is dropped (it would
-//!   switch the word off). An allow list that is missing, cannot be read, or is not root's
-//!   0600 is **not applied** — every hit stays a leak; it never lets everything pass;
+//!   are looked for, only where a phrase stands whole. A phrase is kept only when it holds
+//!   a hide word whole and is more than that word (a bare word would switch it off; a
+//!   piece of one would cut it apart — c477a S9 L2). An allow list that is missing,
+//!   cannot be read, or is not root's 0600 is **not applied** — every hit stays a leak; it
+//!   never lets everything pass. A host word is looked for in whatever a check printed, before its exit status or
+//!   its end mark are: a check that failed, or was cut, but named the host is a leak
+//!   (c477a S9 L1);
 //! * `unread` — it could not be read: the shell did not run, its answer is cut or has no
 //!   end mark, it failed where it must not, it cannot be judged, or the hide list could
 //!   not be read (a missing list included: then the provider's name was not looked for).
@@ -67,29 +71,48 @@ const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 /// 0600, never in this repository (c477a, PLAN-e6 §7 L2).
 pub const ALLOW_WORDS: &str = "/etc/ez2-cloud/hide-words.allow";
 
-/// The allow list's phrases out of its text: blank and `#` lines skipped, lower-cased,
-/// shorter than `svc::HIDE_WORD_MIN` left out, and so is a phrase that is a hide word on
-/// its own.
+/// The allow list's phrases out of its text: blank and `#` lines skipped, lower-cased.
+/// A phrase is kept only when it holds a hide word whole and is more than that word:
+/// one shorter than `svc::HIDE_WORD_MIN`, one that is a hide word on its own (it would
+/// switch the word off), and one that holds no hide word whole (a piece of one, `ndor`
+/// out of `vendor-x`, or a tail such as `x.example` — blanked, either would cut a hide
+/// word apart; c477a S9 L2) are left out.
 pub fn allow_list(text: &str, hide: &HostHide) -> Vec<String> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#') && l.len() >= svc::HIDE_WORD_MIN)
-        .filter(|l| hide.hide(l).0 != svc::HIDDEN)
+        .filter(|l| {
+            let (left, hits) = hide.hide(l);
+            hits > 0 && left != svc::HIDDEN
+        })
         .map(str::to_ascii_lowercase)
         .collect()
 }
 
-/// `text` with every allowed phrase (ASCII case ignored) blanked out.
+/// `text` with every allowed phrase (ASCII case ignored) blanked out where it stands as
+/// a whole: the characters on either side of it are not letters or digits (the rule
+/// `svc::HostHide` matches its words by). `mydocs.vendor-x.example` is not
+/// `docs.vendor-x.example`.
 fn without_allowed(text: &str, allow: &[String]) -> String {
+    let word_char = |b: Option<&u8>| b.is_some_and(u8::is_ascii_alphanumeric);
     let mut out = text.to_owned();
     for a in allow {
         let lower = out.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
         let mut kept = String::with_capacity(out.len());
         let mut i = 0;
-        while let Some(k) = lower[i..].find(a.as_str()) {
-            kept.push_str(&out[i..i + k]);
-            kept.push(' ');
-            i += k + a.len();
+        let mut from = 0;
+        while let Some(k) = lower[from..].find(a.as_str()).map(|k| k + from) {
+            let end = k + a.len();
+            let whole = (k == 0 || !word_char(bytes.get(k - 1))) && !word_char(bytes.get(end));
+            if whole {
+                kept.push_str(&out[i..k]);
+                kept.push(' ');
+                i = end;
+                from = end;
+            } else {
+                from = k + lower[k..].chars().next().map_or(1, char::len_utf8);
+            }
         }
         kept.push_str(&out[i..]);
         out = kept;
@@ -314,23 +337,51 @@ pub fn command(spec: &SiteSpec, nonce: &str) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
 }
 
-/// One check's answer as read: its text and exit status, or why it was not read.
-type Answer = Result<(String, i32), &'static str>;
+/// One check's answer as read: what it printed — all of it, or as much as came before
+/// its output stopped — and its exit status, or why there is none.
+pub struct Answer {
+    text: String,
+    rc: Result<i32, &'static str>,
+}
 
-/// The answer of `id` in the shell's output.
+impl Answer {
+    fn none(why: &'static str) -> Self {
+        Answer {
+            text: String::new(),
+            rc: Err(why),
+        }
+    }
+}
+
+/// The answer of `id` in the shell's output. Without its end mark, the text is what
+/// came after its begin mark up to the next check's (or the end of the output): a host
+/// word in it is still a leak (c477a S9 L1).
 fn answer_of(out: &str, nonce: &str, id: &str) -> Answer {
     let begin = format!("\n{nonce} begin {id}\n");
-    let at = out.find(&begin).ok_or("no_begin_mark")? + begin.len();
+    let Some(at) = out.find(&begin).map(|k| k + begin.len()) else {
+        return Answer::none("no_begin_mark");
+    };
     let rest = &out[at..];
     let end = format!("\n{nonce} end {id} ");
-    let stop = rest.find(&end).ok_or("no_end_mark")?;
+    let Some(stop) = rest.find(&end) else {
+        let next = rest
+            .find(&format!("\n{nonce} begin "))
+            .unwrap_or(rest.len());
+        return Answer {
+            text: rest[..next].to_owned(),
+            rc: Err("no_end_mark"),
+        };
+    };
     let tail = &rest[stop + end.len()..];
     let rc = tail
         .split('\n')
         .next()
         .and_then(|r| r.trim().parse::<i32>().ok())
-        .ok_or("no_exit_status")?;
-    Ok((rest[..stop].to_owned(), rc))
+        .ok_or("no_exit_status");
+    Answer {
+        text: rest[..stop].to_owned(),
+        rc,
+    }
 }
 
 /// Lines of an `ls` listing that are entries: headers (`dir:`), error lines and blanks
@@ -463,6 +514,8 @@ pub struct Judged {
     state: State,
     why: &'static str,
     answer: Answer,
+    /// The shell's whole output was cut at the reader's cap (c477a S9 N2).
+    cut: bool,
 }
 
 fn judge(
@@ -472,25 +525,26 @@ fn judge(
     allow: &[String],
     spec: &SiteSpec,
 ) -> (State, &'static str) {
-    let unread = match answer {
-        Err(why) => Some(*why),
-        Ok((_, rc)) => match p.rc {
-            Rc::Zero if *rc != 0 => Some("failed"),
-            Rc::Refused if *rc == 126 || *rc == 127 => Some("not_runnable"),
+    let unread = match answer.rc {
+        Err(why) => Some(why),
+        Ok(rc) => match p.rc {
+            Rc::Zero if rc != 0 => Some("failed"),
+            Rc::Refused if rc == 126 || rc == 127 => Some("not_runnable"),
             _ => None,
         },
     };
-    if let Some(why) = unread {
-        return (State::Unread, why);
-    }
-    let Ok((text, rc)) = answer else {
-        return (State::Unread, "no_answer");
-    };
-    let seen = without_allowed(text, allow);
+    // a host word in what was printed is a leak whatever the exit status (c477a S9 L1)
+    let seen = without_allowed(&answer.text, allow);
     if hide.is_some_and(|h| h.hide(&seen).1 > 0) {
         return (State::Leak, "hide_word");
     }
-    if p.rc == Rc::Refused && *rc == 0 {
+    if let Some(why) = unread {
+        return (State::Unread, why);
+    }
+    let (text, Ok(rc)) = (&answer.text, answer.rc) else {
+        return (State::Unread, "no_answer");
+    };
+    if p.rc == Rc::Refused && rc == 0 {
         return (State::Leak, "not_refused");
     }
     match expect(p.id, text, spec) {
@@ -516,9 +570,9 @@ pub fn check(
     PROBES
         .iter()
         .map(|p| {
-            let answer = match &out {
-                Ok((text, _cut)) => answer_of(text, nonce, p.id),
-                Err(_) => Err("not_run"),
+            let (answer, cut) = match &out {
+                Ok((text, cut)) => (answer_of(text, nonce, p.id), *cut),
+                Err(_) => (Answer::none("not_run"), false),
             };
             let (state, why) = judge(p, &answer, hide, allow, spec);
             Judged {
@@ -528,6 +582,7 @@ pub fn check(
                 state,
                 why,
                 answer,
+                cut,
             }
         })
         .collect()
@@ -574,12 +629,11 @@ pub fn report(
         "site": code,
         "hide_words": hide_words,
         "allow_list": allow,
+        "cut": judged.iter().any(|j| j.cut),
         "inside_expect": mask::INSIDE_EXPECT.iter().map(|(r, w)| json!({ "read": r, "want": w })).collect::<Vec<_>>(),
         "checks": judged.iter().map(|j| {
-            let (text, rc) = match &j.answer {
-                Ok((t, rc)) => (Value::from(t.as_str()), Value::from(*rc)),
-                Err(_) => (Value::Null, Value::Null),
-            };
+            let text = Value::from(j.answer.text.as_str());
+            let rc = j.answer.rc.map_or(Value::Null, Value::from);
             json!({ "id": j.id, "item": j.item, "inside_expect": j.inside, "state": j.state.word(), "why": j.why, "rc": rc, "answer": text })
         }).collect::<Vec<_>>(),
         "not_here": NOT_HERE,
@@ -850,6 +904,78 @@ mod tests {
             with("see docs.vendor-x.example and vendor-x\n", &allow),
             (State::Leak, "hide_word")
         );
+    }
+
+    #[test]
+    fn a_failed_check_that_names_the_host_is_a_leak() {
+        let h = hide();
+        // failed where it must not, but what it printed names the host: a leak, not unread
+        let j = run_with(
+            &|id| {
+                Some(if id == "resolv" {
+                    ("search vendor-x\n".to_owned(), 1)
+                } else {
+                    clean(id)
+                })
+            },
+            Some(&h),
+        );
+        assert_eq!(state(&j, "resolv"), (State::Leak, "hide_word"));
+        assert_eq!(report("s-abc123", &j, true, "read", "/root/x.json").2, 1);
+        // cut before its end mark: what came before is still read for host words
+        let mut f = Fake {
+            seen: vec![],
+            out: Ok((
+                format!("\n{NONCE} begin cpuinfo\nmodel name : vCPU\n203.0.113.70"),
+                true,
+            )),
+        };
+        let j = check(&mut f, &spec(), Some(&h), &[], NONCE);
+        assert_eq!(state(&j, "cpuinfo"), (State::Leak, "hide_word"));
+        assert_eq!(state(&j, "hosts"), (State::Unread, "no_begin_mark"));
+        let (_, file, rc) = report("s-abc123", &j, true, "read", "/root/x.json");
+        assert_eq!(rc, 1);
+        assert_eq!(file["cut"], true);
+        // the text of a cut check stops at the next check's begin mark
+        let j = run_with(
+            &|id| if id == "hosts" { None } else { Some(clean(id)) },
+            Some(&h),
+        );
+        assert_eq!(state(&j, "hosts"), (State::Unread, "no_end_mark"));
+    }
+
+    #[test]
+    fn an_allow_phrase_never_cuts_a_hide_word_apart() {
+        let h = hide();
+        // a piece of a hide word, or a tail that holds none whole, is not kept
+        for piece in ["ndor", "ndor-x", "x.example", "dor-x.example"] {
+            assert!(allow_list(piece, &h).is_empty(), "{piece}");
+        }
+        let route = |text: &str, allow: &[String]| {
+            let mut f = Fake {
+                seen: vec![],
+                out: Ok((
+                    shell_out(NONCE, &|id| {
+                        Some(if id == "route" {
+                            (text.to_owned(), 0)
+                        } else {
+                            clean(id)
+                        })
+                    }),
+                    false,
+                )),
+            };
+            state(&check(&mut f, &spec(), Some(&h), allow, NONCE), "route").0
+        };
+        // even handed in as allowed, a piece inside a word blanks nothing: the word stays
+        let pieces: Vec<String> = vec!["ndor".to_owned()];
+        assert_eq!(route("via vendor-x.example\n", &pieces), State::Leak);
+        // an allowed phrase only counts where it stands whole
+        let allow = allow_list("docs.vendor-x.example\n", &h);
+        assert_eq!(allow, ["docs.vendor-x.example"]);
+        assert_eq!(route("see docs.vendor-x.example\n", &allow), State::Pass);
+        assert_eq!(route("see mydocs.vendor-x.example\n", &allow), State::Leak);
+        assert_eq!(route("see docs.vendor-x.examples\n", &allow), State::Leak);
     }
 
     #[test]
