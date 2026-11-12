@@ -954,13 +954,13 @@ fn badge(h: &Host) -> (String, Color) {
         ),
         None => {
             let l = if h.nerd {
-                // Nerd Font(Font Awesome)商標字:Apple / Windows / Linux(Tux)/ GitHub;
+                // Nerd Font(Material Design 組，比 Font Awesome 組畫得滿、看起來大;Andy 11-12 23:4x)商標字:Apple / Windows / Linux(Tux)/ GitHub;
                 // 字型把它畫得比一格寬，後面留一格空白免得壓到下一個字
                 match h.kind {
-                    Kind::Mac => "\u{f179} ",
-                    Kind::Windows => "\u{f17a} ",
-                    Kind::Server => "\u{f17c} ",
-                    Kind::GitHub => "\u{f09b} ",
+                    Kind::Mac => "\u{f0035} ",
+                    Kind::Windows => "\u{f05b3} ",
+                    Kind::Server => "\u{f033d} ",
+                    Kind::GitHub => "\u{f02a4} ",
                 }
             } else {
                 match h.kind {
@@ -989,7 +989,7 @@ fn per_row(width: usize) -> usize {
 /// 互動畫面：沒有打開的 ⇒ 機箱格;有打開的 ⇒ 那台的明細(點任一處返回)
 fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
     let legend = if hosts.iter().any(|h| h.nerd) {
-        "  框:\u{f179} Mac · \u{f17a} Win · \u{f17c} Linux · \u{f09b} GitHub · CI 能接 CI · Ez2 客戶主機"
+        "  框:\u{f0035} Mac · \u{f05b3} Win · \u{f033d} Linux · \u{f02a4} GitHub · CI 能接 CI · Ez2 客戶主機"
     } else {
         "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機"
     };
@@ -1473,11 +1473,11 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let mut nerd_ci = host("andymini", None, false);
         nerd_ci.ci = true;
         nerd_ci.nerd = true;
-        assert_eq!(badge(&nerd_ci).0, "\u{f179} CI");
+        assert_eq!(badge(&nerd_ci).0, "\u{f0035} CI");
         let mut nerd_win = host("w", None, false);
         nerd_win.kind = Kind::Windows;
         nerd_win.nerd = true;
-        assert_eq!(badge(&nerd_win).0, "\u{f17a}");
+        assert_eq!(badge(&nerd_win).0, "\u{f05b3}");
         ez2.ci = true;
         assert_eq!(top(&ez2).trim(), "┌Ez2-CI┐", "最長剛好 6 格");
         ez2.ci = false;
