@@ -374,6 +374,65 @@ pub fn dns_step(
     crate::sitecreatecmd::write_record(&paths.creating, &spec.code, record)
 }
 
+/// Removing an abandoned opening's DNS: the address records under `names` that carry the
+/// site's mark, and nothing else (the rule of removing a site, #669), in the customer's
+/// zone of `domain`. Each delete is one [`sitedns::delete_of`] gave for a record of a
+/// whole listing taken just before; afterwards the zone is listed again and none may be
+/// left. A zone that cannot be found or read is "could not tell" and stops.
+pub fn remove_marked(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    code: &str,
+    domain: &str,
+    names: &[&str],
+    record: &Value,
+) -> Result<(), String> {
+    let text = fs::read_to_string(&paths.cloudflare)
+        .map_err(|e| format!("{KEY_UNSET}: {}: {}", paths.cloudflare.display(), e.kind()))?;
+    let (creds, _) = creds_from(&text)?;
+    let accounts = customer_accounts(paths, record)?;
+    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, code);
+    let zones = customer_zones(&mut cf, &accounts, domain)?;
+    let zone = sitedns::pick_zone(domain, Some(accounts.as_slice()), Some(zones.as_slice()))
+        .map_err(|w| format!("{w}: {domain}"))?;
+    if !names.iter().all(|n| sitedns::in_zone(n, &zone.name)) {
+        return Err(format!(
+            "{}: {} in zone {}",
+            sitedns::NAME_OUTSIDE_ZONE,
+            names.join(","),
+            zone.name
+        ));
+    }
+    let before = listing(&mut cf, &zone.id)?
+        .ok_or_else(|| format!("{}: the records of {}", sitedns::UNREADABLE, zone.name))?;
+    for r in sitedns::marked_to_remove(names, &before, code) {
+        let d = sitedns::delete_of(&zone.id, r, code)
+            .ok_or_else(|| format!("{}: {} {}", sitedns::CALL_NOT_ALLOWED, r.kind, r.name))?;
+        let (http, answer) = cf.call(&CfCall::Delete(d), None)?;
+        if http != 200 || !success(&answer) {
+            return Err(format!(
+                "{}: the delete of {} {} was not answered as done (http {http}); carrying on looks again",
+                DNS_NOT_REMOVED, r.kind, r.name
+            ));
+        }
+    }
+    let after = listing(&mut cf, &zone.id)?
+        .ok_or_else(|| format!("{}: the records of {}", sitedns::UNREADABLE, zone.name))?;
+    let left = sitedns::marked_to_remove(names, &after, code);
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{DNS_NOT_REMOVED}: {} record(s) with the mark of {code} are still in zone {}",
+            left.len(),
+            zone.name
+        ))
+    }
+}
+
+/// A delete was not answered as done, or a marked record is still listed after it.
+pub const DNS_NOT_REMOVED: &str = "dns_not_removed";
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -401,6 +460,8 @@ mod tests {
         lose_adds: bool,
         /// the zone listing is refused with this status
         zones_http: u16,
+        /// deletes are answered but not done
+        lose_deletes: bool,
     }
 
     impl FakeCf {
@@ -415,7 +476,14 @@ mod tests {
                 ],
                 lose_adds: false,
                 zones_http: 200,
+                lose_deletes: false,
             }
+        }
+        fn deletes(&self) -> usize {
+            self.fed
+                .iter()
+                .filter(|c| c.contains("request = \"DELETE\""))
+                .count()
         }
         fn adds(&self) -> usize {
             self.fed
@@ -474,6 +542,12 @@ mod tests {
                     200,
                     json!({"success": true, "result": {"id": "ssl", "value": self.ssl}}),
                 )
+            } else if method == "DELETE" {
+                let id = path.rsplit('/').next().unwrap().to_owned();
+                if !self.lose_deletes {
+                    self.records.retain(|r| r["id"] != id.as_str());
+                }
+                (200, json!({"success": true, "result": {"id": id}}))
             } else if method == "POST" {
                 let data = config_value(&config, "data").unwrap().replace("\\\"", "\"");
                 let mut rec: Value = serde_json::from_str(&data).unwrap();
@@ -563,6 +637,95 @@ mod tests {
     fn saved(p: &HostPaths) -> Value {
         serde_json::from_str(&fs::read_to_string(p.creating.join(format!("{CODE}.json"))).unwrap())
             .unwrap()
+    }
+
+    /// The zone's records for removing: this site's marked address records under both
+    /// names, another site's, an unmarked one, the mail record.
+    fn marked_zone() -> FakeCf {
+        let mut cf = FakeCf::new();
+        let mark = format!("ez2:site:{CODE}");
+        cf.records.extend([
+            json!({"id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "type": "A", "name": DOMAIN, "content": ORIGIN, "proxied": true, "comment": mark}),
+            json!({"id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", "type": "AAAA", "name": format!("www.{DOMAIN}"), "content": "2001:db8::1", "proxied": true, "comment": mark}),
+            json!({"id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "type": "A", "name": DOMAIN, "content": "192.0.2.20", "proxied": true, "comment": "ez2:site:s-other1"}),
+            json!({"id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4", "type": "A", "name": format!("www.{DOMAIN}"), "content": "192.0.2.30", "proxied": false, "comment": null}),
+        ]);
+        cf
+    }
+
+    fn www() -> String {
+        format!("www.{DOMAIN}")
+    }
+
+    #[test]
+    fn only_this_sites_marked_address_records_are_removed() {
+        let root = scratch("rm");
+        let p = paths(&root);
+        let mut cf = marked_zone();
+        let w = www();
+        remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN, &w], &opening()).unwrap();
+        assert_eq!(cf.deletes(), 2);
+        let ids: Vec<&str> = cf
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                RID,
+                "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+                "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"
+            ]
+        );
+        // every call is in the ledger; the key is in none of it
+        assert_eq!(ledger(&p).len(), cf.fed.len());
+        assert!(!fs::read_to_string(&p.cf_ledger).unwrap().contains(KEY));
+        // asked again there is nothing left to delete
+        remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN, &w], &opening()).unwrap();
+        assert_eq!(cf.deletes(), 2);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_delete_that_does_not_take_is_not_removed() {
+        let root = scratch("rmlost");
+        let p = paths(&root);
+        let mut cf = marked_zone();
+        cf.lose_deletes = true;
+        let err = remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN], &opening()).unwrap_err();
+        assert!(err.starts_with(DNS_NOT_REMOVED), "{err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_zone_that_cannot_be_read_removes_nothing() {
+        let root = scratch("rmzone");
+        let p = paths(&root);
+        let mut cf = marked_zone();
+        cf.zones_http = 403;
+        assert!(remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN], &opening()).is_err());
+        assert_eq!(cf.deletes(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_name_outside_the_zone_removes_nothing() {
+        let root = scratch("rmout");
+        let p = paths(&root);
+        let mut cf = marked_zone();
+        let err = remove_marked(
+            &mut cf,
+            &p,
+            CODE,
+            DOMAIN,
+            &[DOMAIN, "shop.example.net"],
+            &opening(),
+        )
+        .unwrap_err();
+        assert!(err.starts_with(sitedns::NAME_OUTSIDE_ZONE), "{err}");
+        assert_eq!(cf.deletes(), 0);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
