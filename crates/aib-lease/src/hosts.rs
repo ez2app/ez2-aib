@@ -59,6 +59,8 @@ pub struct HostCfg {
     pub order: i64,
     /// What this machine takes; `None` ⇒ everything.
     pub kinds: Option<Vec<String>>,
+    /// ssh `-i` key file (the Windows laptop has its own key; the maintainer 11-12 14:5x)
+    pub identity: Option<String>,
     /// The maintainer's own working machine (11-12): picked only when every other eligible
     /// machine is taken or unreachable, the CI runners are busy too (`github_busy`), and this
     /// one is free and not loaded. `"ssh": "local"` reads it without ssh.
@@ -129,9 +131,11 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
         let ssh = get("ssh").unwrap_or_else(|| name.clone());
         let jump = get("jump");
         let jump_fallback = get("jump_fallback");
+        let identity = get("identity");
         for s in std::iter::once(&ssh)
             .chain(jump.iter())
             .chain(jump_fallback.iter())
+            .chain(identity.iter())
         {
             if !is_plain_host(s) {
                 return Err(format!("hosts[{i}] {name}: ssh / jump {s:?} must not be empty, start with '-' or hold spaces"));
@@ -160,6 +164,7 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
             os: get("os").unwrap_or_else(|| "mac".into()),
             order: h.get("order").and_then(Value::as_i64).unwrap_or(i64::MAX),
             kinds,
+            identity,
             last_resort: h
                 .get("last_resort")
                 .and_then(Value::as_bool)
@@ -285,6 +290,15 @@ pub fn eligible<'a>(
         .filter(|(_, h)| ok(h))
         .map(|(v, _)| v)
         .collect()
+}
+
+/// May `--pick` use this machine for a run of `kind` on `os`? A Windows machine only when
+/// the run asks for Windows by name (`--os windows` or `--kind windows`): anything else is a
+/// mac / bash run (the maintainer 11-12 14:5x).
+pub fn allowed(h: &HostCfg, kind: Option<&str>, os: Option<&str>) -> bool {
+    kind.is_none_or(|k| takes(h, k))
+        && os.is_none_or(|o| h.os == o)
+        && (h.os != "windows" || os == Some("windows") || kind == Some("windows"))
 }
 
 /// When none is free: the busy machine that should come free first, by the holder's estimate
@@ -518,13 +532,21 @@ pub fn ssh_args_via(h: &HostCfg, jump: Option<&str>) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if let Some(i) = &h.identity {
+        a.push("-i".into());
+        a.push(i.clone());
+    }
     if let Some(j) = jump {
         a.push("-J".into());
         a.push(j.to_string());
     }
     a.push("--".into());
     a.push(h.ssh.clone());
-    a.push(remote_status_command());
+    a.push(if h.os == "windows" {
+        windows_status_command().to_string()
+    } else {
+        remote_status_command()
+    });
     a
 }
 
@@ -563,6 +585,11 @@ fn ask(h: &HostCfg) -> HostView {
         }
     }
     match o {
+        Ok(o) if h.os == "windows" => windows_view(
+            &h.name,
+            o.status.code(),
+            &String::from_utf8_lossy(&o.stdout),
+        ),
         Ok(o) => view(
             &h.name,
             o.status.code(),
@@ -574,6 +601,47 @@ fn ask(h: &HostCfg) -> HostView {
             v
         }
     }
+}
+
+/// Windows (OpenSSH runs cmd.exe): CPU use in percent and logical processors, one line
+/// `AIBWIN <pct> <n>`. There is no aib lease there.
+pub fn windows_status_command() -> &'static str {
+    "powershell -NoProfile -Command \"Write-Output ('AIBWIN ' + (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\""
+}
+
+/// A Windows machine has no lease, so reachable and answering = `free`; its load is the CPU
+/// use × processors (so the 0.8-per-core rule counts it busy when it is working). No answer ⇒
+/// offline; an answer that is not the line ⇒ unreadable (fail closed).
+pub fn windows_view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
+    let mut v = view(name, None, "");
+    if rc != Some(0) {
+        v.why = Some(format!("windows probe rc {rc:?}"));
+        return v;
+    }
+    let nums: Vec<f64> = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("AIBWIN "))
+        .map(|r| {
+            r.split_whitespace()
+                .filter_map(|w| w.parse::<f64>().ok())
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .collect()
+        })
+        .unwrap_or_default();
+    match nums.as_slice() {
+        [pct, n, ..] if *n > 0.0 && *pct <= 100.0 => {
+            v.state = State::Free;
+            v.cores = Some(*n);
+            v.load1 = Some(pct / 100.0 * n);
+            v.load5 = v.load1;
+            v.why = Some("no lease on windows: free means reachable and quiet".into());
+        }
+        _ => {
+            v.state = State::Unreadable;
+            v.why = Some("windows probe answered something else".into());
+        }
+    }
+    v
 }
 
 /// The CI runner state, asked only when the file has a last-resort machine and names
@@ -742,9 +810,7 @@ pub fn cli(argv: &[String]) -> u8 {
     };
     let me = me.filter(|m| !m.is_empty());
     let views = probe_all(&cfg, me.as_deref());
-    let ok = |h: &HostCfg| {
-        kind.as_deref().is_none_or(|k| takes(h, k)) && os.as_deref().is_none_or(|o| h.os == o)
-    };
+    let ok = |h: &HostCfg| allowed(h, kind.as_deref(), os.as_deref());
     let gh = github_state(&path, &cfg);
     let (doc, rc) = report(&path, &views, &cfg, &ok, me.as_deref(), gh);
     println!("{doc}");
@@ -1032,6 +1098,7 @@ mod tests {
             os: os.into(),
             order: 1,
             kinds: kinds.map(|k| k.iter().map(|s| s.to_string()).collect()),
+            identity: None,
             last_resort: false,
         }
     }
@@ -1183,6 +1250,7 @@ mod tests {
             os: "mac".into(),
             order: 1,
             kinds: None,
+            identity: None,
             last_resort: false,
         };
         let a = v(&["--any-host", "--step", "x", "--", "echo", "--any-host"]);
@@ -1222,6 +1290,7 @@ mod tests {
             os: "mac".into(),
             order: 1,
             kinds: None,
+            identity: None,
             last_resort: false,
         };
         let a = ssh_args(&h);
@@ -1329,6 +1398,40 @@ mod tests {
         let a = ssh_args_via(&c[0], Some("j"));
         assert!(a.windows(2).any(|w| w == ["-J", "j"]));
         assert!(!ssh_args(&c[0]).iter().any(|x| x == "-J"), "direct first");
+    }
+
+    /// the maintainer 11-12 14:5x:the Windows laptop joins the list (own key, CPU use as load,
+    /// no lease), and is picked only when a run asks for Windows
+    #[test]
+    fn windows_is_read_by_cpu_use_and_taken_only_when_asked() {
+        let c = parse_config(
+            r#"{"hosts": [{"name": "w", "ssh": "u@w", "os": "windows", "identity": "/k/id"},
+                          {"name": "m", "ssh": "m"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(c[0].identity.as_deref(), Some("/k/id"));
+        assert!(parse_config(r#"{"hosts": [{"name": "w", "identity": "-oX"}]}"#).is_err());
+        let a = ssh_args_via(&c[0], None);
+        assert!(a.windows(2).any(|w| w == ["-i", "/k/id"]));
+        assert!(a.last().unwrap().starts_with("powershell"), "{a:?}");
+        assert!(!ssh_args_via(&c[1], None).iter().any(|x| x == "-i"));
+        let quiet = windows_view("w", Some(0), "AIBWIN 20 8\r\n");
+        assert_eq!(quiet.state, State::Free);
+        assert_eq!((quiet.cores, quiet.load1), (Some(8.0), Some(1.6)));
+        assert!(!unleased_busy(&quiet));
+        let working = windows_view("w", Some(0), "AIBWIN 95 8");
+        assert!(unleased_busy(&working), "busy CPU ⇒ not picked");
+        assert_eq!(windows_view("w", Some(255), "").state, State::Offline);
+        assert_eq!(windows_view("w", Some(0), "hello").state, State::Unreadable);
+        assert_eq!(
+            windows_view("w", Some(0), "AIBWIN 150 8").state,
+            State::Unreadable
+        );
+        // only a run that asks for Windows may take it
+        let take = allowed;
+        assert!(!take(&c[0], None, None));
+        assert!(take(&c[0], None, Some("windows")));
+        assert!(take(&c[1], None, None));
     }
 
     #[test]
