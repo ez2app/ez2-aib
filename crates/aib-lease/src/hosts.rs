@@ -321,7 +321,9 @@ pub fn pick_with_last_resort<'a>(
     if let Some(w) = why {
         return (p, rc, Some(w));
     }
-    match lr.iter().find(|v| v.state == State::Free && !is_hot(v)) {
+    // the working machine must be known to be quiet: an unread load does not count as quiet
+    let quiet = |v: &&&HostView| load_ratio(v).is_some_and(|r| r <= HOT_RATIO);
+    match lr.iter().find(|v| v.state == State::Free && quiet(v)) {
         Some(v) => (Some(v.name.as_str()), RC_PICKED, Some("last_resort_used")),
         None => (p, rc, Some("last_resort_skipped: busy or loaded")),
     }
@@ -1337,9 +1339,14 @@ mod tests {
         let mut hot = free.clone();
         hot.cores = Some(8.0);
         hot.load1 = Some(20.0);
+        hot.load5 = Some(18.0);
+        let mut quiet = free.clone();
+        quiet.cores = Some(8.0);
+        quiet.load1 = Some(2.0);
+        quiet.load5 = Some(2.0);
         let a = named("a", busy.clone());
         let b = named("b", off.clone());
-        let pro = named("pro", free.clone());
+        let pro = named("pro", quiet.clone());
         let lr = ["pro"];
         // others taken + CI busy + pro free ⇒ pro
         assert_eq!(
@@ -1364,6 +1371,12 @@ mod tests {
             None
         );
         let pro_busy = named("pro", busy.clone());
+        // load not read ⇒ not known to be quiet ⇒ not pro
+        let pro_unknown = named("pro", free.clone());
+        assert_eq!(
+            pick_with_last_resort(&[&a, &b, &pro_unknown], &lr, Some(true)).0,
+            None
+        );
         assert_eq!(
             pick_with_last_resort(&[&a, &b, &pro_busy], &lr, Some(true)).0,
             None
@@ -1375,7 +1388,7 @@ mod tests {
         .unwrap();
         assert!(!cfg[0].last_resort && cfg[1].last_resort && cfg[1].ssh == "local");
         // report: ranking hides pro unless it is the pick
-        let views = [named("m", busy.clone()), named("pro", free.clone())];
+        let views = [named("m", busy.clone()), named("pro", quiet.clone())];
         let ok = |_: &HostCfg| true;
         let (doc, _) = report(
             std::path::Path::new("/h.json"),
