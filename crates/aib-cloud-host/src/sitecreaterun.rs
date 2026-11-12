@@ -403,6 +403,11 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
     if kept.is_some() && state == "opening" {
         state = "stopped";
     }
+    // an opening that got to the end is open, whatever its ask still says: a person's
+    // `--continue` after a stop ends it without writing the ask again (E1 audit #5)
+    if opened {
+        state = "open";
+    }
     let stopped_at = (state == "stopped").then(|| {
         kept.or_else(|| {
             ask.get("stopped_at")
@@ -1161,6 +1166,49 @@ mod tests {
         let mut again = fake(&p);
         assert!(ran(&p, &code, &mut again).is_err());
         assert!(again.calls.is_empty());
+    }
+
+    /// Stopped on a failure, then carried on to the end by a person (`--continue`, which
+    /// does not write the ask): the customer sees it open, not stopped (E1 audit #5).
+    #[test]
+    fn a_stop_carried_on_by_a_person_reads_as_open() {
+        let p = scratch("run-continued");
+        let code = asked(&p);
+        let mut steps = fake(&p);
+        steps.carry = vec![Err("license_unknown: the key is not taken".to_owned())];
+        steps.reach = Some("identity");
+        assert_eq!(ran(&p, &code, &mut steps), Ok("stopped"));
+        assert_eq!(ask_on(&p, &code)["state"], "stopped");
+        // the person's --continue: the opening record becomes the opened one
+        fs::rename(
+            p.creating.join(format!("{code}.json")),
+            p.opened.join(format!("{code}.json")),
+        )
+        .unwrap();
+        let seen = progress(&p, T, &code, NOW + 20).unwrap();
+        assert_eq!(seen["state"], "open");
+        assert_eq!(seen["step_done"], "health");
+        assert_eq!(seen["stopped_at"], Value::Null);
+        // an ask that reads as anything else (failed, a word unknown) is open too
+        let mut ask = ask_on(&p, &code);
+        ask["state"] = json!("failed");
+        rewrite_ask(&p.asked, &code, &ask).unwrap();
+        assert_eq!(progress(&p, T, &code, NOW + 20).unwrap()["state"], "open");
+    }
+
+    /// Stopped and not carried on yet: still stopped, at the step it stopped at.
+    #[test]
+    fn a_stop_not_carried_on_yet_still_reads_as_stopped() {
+        let p = scratch("run-not-continued");
+        let code = asked(&p);
+        let mut steps = fake(&p);
+        steps.carry = vec![Err("license_unknown: the key is not taken".to_owned())];
+        steps.reach = Some("identity");
+        assert_eq!(ran(&p, &code, &mut steps), Ok("stopped"));
+        let seen = progress(&p, T, &code, NOW + 20).unwrap();
+        assert_eq!(seen["state"], "stopped");
+        assert_eq!(seen["step_done"], "identity");
+        assert_eq!(seen["stopped_at"], "licenses");
     }
 
     /// A step kept for a person shows where it stopped, from the opening record.
