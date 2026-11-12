@@ -1397,7 +1397,10 @@ mod tests {
         assert_eq!(pinned["at"], "t1");
         let broken = v.iter().find(|x| x["level"].is_null()).unwrap();
         // Windows prints `\` between folders (CI rust windows-latest, #708)
-        let path = broken["path"].as_str().unwrap_or_default().replace('\\', "/");
+        let path = broken["path"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/");
         assert!(
             path.ends_with("deep/1/2/3/machine-status.json"),
             "reason: cooldown_broken_path {path}"
