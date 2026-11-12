@@ -456,56 +456,95 @@ fn verdict(e: Option<&mainline::Entry>) -> (String, Color) {
     }
 }
 
-/// 左欄固定寬：兩個小格(各 CELL_W),兩行主軸字頭對齊
-///   判斷 90%  總結 1 次
-///   校正 0 次 交接 1 次
-const CELL_W: usize = 11;
-const VERDICT_W: usize = CELL_W * 2;
-
-fn cell(text: &str) -> String {
-    format!(
-        "{text}{}",
-        " ".repeat(CELL_W.saturating_sub(str_width(text)))
-    )
+/// 小卡的指標一格(標籤灰、數字亮)
+fn metric(label: &str, n: u32, warn: bool) -> [Seg; 2] {
+    [
+        Seg(format!("{label} "), Some(Color::DarkGrey), false, false),
+        Seg(
+            format!("{n}"),
+            Some(if warn && n > 0 {
+                Color::Yellow
+            } else {
+                Color::White
+            }),
+            false,
+            true,
+        ),
+    ]
 }
 
-/// 全艙：每席一行 —— @席 判斷 校正 起點 時 … → 目前 時 …;自稱主軸內但字面換題 ⇒ ⚠ 換題?
-fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
-    let item = |e: Option<&mainline::Entry>| match e {
-        Some(e) => format!("{} {}", mainline::stamp(e.started_at, now), e.item),
-        None => "-- 還沒回報".to_string(),
-    };
+/// 照顯示寬度截斷，超過補「…」
+fn fit(s: &str, w: usize) -> String {
+    if str_width(s) <= w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let cw = str_width(ch.encode_utf8(&mut [0; 4]));
+        if used + cw + 1 > w {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// 今天只寫 時:分,不是今天才帶 月-日(卡片第一行右邊已有完整日期)
+fn short_stamp(t: i64, now: i64) -> String {
+    let full = mainline::stamp(t, now);
+    if t >= mainline::day_start(now) {
+        full.rsplit(' ').next().unwrap_or(&full).to_string()
+    } else {
+        full
+    }
+}
+
+/// 全艙(Andy 11-12 14:2x 小卡化):每席一行，欄位對齊 —— @席  判斷  校正 總結 交接  時:分 目前主軸;
+/// 自稱主軸內但字面換題 ⇒ ⚠ 換題?
+fn fleet_rows(fleet: &[(String, Mainline)], now: i64, w: usize) -> Vec<Vec<Seg>> {
     fleet
         .iter()
         .map(|(code, m)| {
             let (v, c) = verdict(m.now.as_ref());
+            let pct = v.trim_start_matches("判斷 ").to_string();
+            let flag = mainline::drift_hint(m);
+            let head = format!("{MARGIN}@{code}  ");
+            let nums = format!(
+                "校正{} 總結{} 交接{}  ",
+                m.corrections, m.summaries, m.handoffs
+            );
+            let (t, item) = match m.now.as_ref() {
+                Some(e) => (short_stamp(e.started_at, now), e.item.clone()),
+                None => ("--".to_string(), "還沒回報".to_string()),
+            };
+            let t = format!("{t:<5} ");
+            let tail = if flag { "  ⚠ 換題?" } else { "" };
+            let used = str_width(&head) + 6 + str_width(&nums) + str_width(&t) + str_width(tail);
             let mut row = vec![
-                seg(format!("  @{code} ")),
-                Seg(cell(&v), Some(c), false, true),
+                Seg(head, Some(Color::DarkGrey), false, false),
                 Seg(
                     format!(
-                        "校正{} 總結{} 交接{} ",
-                        m.corrections, m.summaries, m.handoffs
+                        "{pct}{}",
+                        " ".repeat(6usize.saturating_sub(str_width(&pct)))
                     ),
-                    Some(Color::DarkGrey),
+                    Some(c),
                     false,
-                    false,
+                    true,
                 ),
+                Seg(nums, Some(Color::DarkGrey), false, false),
+                Seg(t, Some(Color::DarkGrey), false, false),
                 Seg(
-                    format!("起點 {} → ", item(m.first.as_ref())),
-                    Some(Color::DarkGrey),
-                    false,
-                    false,
-                ),
-                Seg(
-                    format!("目前 {}", item(m.now.as_ref())),
+                    fit(&item, w.saturating_sub(used).max(8)),
                     Some(Color::White),
                     false,
                     false,
                 ),
             ];
-            if mainline::drift_hint(m) {
-                row.push(Seg(" ⚠ 換題?".into(), Some(Color::Yellow), false, true));
+            if flag {
+                row.push(Seg(tail.into(), Some(Color::Yellow), false, true));
             }
             row
         })
@@ -531,105 +570,95 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
     out
 }
 
-/// 最上面：一開始主軸、目前主軸(左邊是判斷);有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合),展開列出為什麼 / 建議
-/// 左邊留白(跟下面樹的縮排一致，不貼左線)
+/// 卡片左邊留白(跟下面樹的縮排一致，不貼左線)
 const MARGIN: &str = "  ";
-/// 判斷欄與主軸之間的分隔
-const SEP: &str = " │ ";
+/// 起點 / 目前 的時間欄寬(「11-12 00:09」最寬 11 格)
+const TIME_W: usize = 11;
 
-/// 最上面兩行(Andy 11-12 13:5x 排版):
-///   判斷 90%  │ 起點 11-12 00:09  …   現在 11-12 14:14   全艙 ▸
-///   校正 0 次 │ 目前 11-12 13:50  … ▸
-/// 左欄固定寬、兩個標籤同寬 ⇒ 時間上下對齊;有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合)
+/// 本席小卡(Andy 11-12 14:2x「重新設計，留下簡易資訊卡」):
+///   判斷 95%   校正 0 · 總結 1 · 交接 1                 11-12 14:25   全艙 ▸ ⚠1
+///   起點  00:09        席位接續 v2 決定已寫,等 Andy 看
+///   目前  14:07        挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
+/// 第一行右邊的「現在」與「全艙」由 frame 補上並靠右;理由預設收合
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
-    let now_t = mainline::stamp(now, now);
     let (vtext, vcolor) = verdict(m.now.as_ref());
-    // Andy 11-12 14:1x:語意精簡 ——「本席AI一開始主軸(…)/現在：」改成「起點 / 目前 + 開始時間」,
-    // 現在時間只放一次(第一行尾)
-    let labels = ["起點", "目前"];
-    let body = |label: &str, e: Option<&mainline::Entry>| -> [Seg; 2] {
-        let (start, item) = match e {
-            Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
-            None => ("--".to_string(), "(還沒回報 aib now)".to_string()),
-        };
-        [
-            Seg(
-                format!("{label} {start}  "),
-                Some(Color::DarkGrey),
-                false,
-                false,
-            ),
-            Seg(item, Some(Color::White), false, true),
-        ]
-    };
-    let sep = || Seg(SEP.into(), Some(Color::DarkGrey), false, false);
-    let count = |label: &str, n: u32, warn: bool| {
-        Seg(
-            cell(&format!("{label} {n} 次")),
-            Some(if warn && n > 0 {
-                Color::Yellow
-            } else {
-                Color::DarkGrey
-            }),
-            false,
-            false,
-        )
-    };
-    let mut first = vec![
+    let dot = || Seg(" · ".into(), Some(Color::DarkGrey), false, false);
+    let mut head = vec![
         seg(MARGIN),
-        Seg(cell(&vtext), Some(vcolor), false, true),
-        count("總結", m.summaries, false),
-        sep(),
+        Seg(vtext, Some(vcolor), false, true),
+        seg("   "),
     ];
-    first.extend(body(labels[0], m.first.as_ref()));
-    first.push(Seg(
-        format!("   現在 {now_t}"),
-        Some(Color::DarkGrey),
-        false,
-        false,
-    ));
-    // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
-    let mut cur = vec![
-        seg(MARGIN),
-        count("校正", m.corrections, true),
-        count("交接", m.handoffs, false),
-        sep(),
-    ];
-    cur.extend(body(labels[1], m.now.as_ref()));
+    head.extend(metric("校正", m.corrections, true));
+    head.push(dot());
+    head.extend(metric("總結", m.summaries, false));
+    head.push(dot());
+    head.extend(metric("交接", m.handoffs, false));
     let review = m.now.as_ref().and_then(|e| e.review.as_ref());
-    if review.is_some() {
-        cur.push(Seg(
-            if open { " ▾" } else { " ▸" }.into(),
-            Some(Color::Cyan),
-            false,
-            true,
-        ));
-    }
-    let mut rows = vec![first, cur];
+    let toggle = review.map(|_| if open { "  ▾ 理由" } else { "  ▸ 理由" });
+    let line = |label: &str, e: Option<&mainline::Entry>, strong: bool, tail: Option<&str>| {
+        let (t, item) = match e {
+            Some(e) => (short_stamp(e.started_at, now), e.item.clone()),
+            None => ("--".to_string(), "還沒回報 aib now".to_string()),
+        };
+        let lead = format!(
+            "{MARGIN}{label}  {t}{}  ",
+            " ".repeat(TIME_W.saturating_sub(str_width(&t)))
+        );
+        let room = w
+            .saturating_sub(str_width(&lead) + tail.map_or(0, str_width))
+            .max(8);
+        let mut row = vec![
+            Seg(lead, Some(Color::DarkGrey), false, false),
+            Seg(
+                fit(&item, room),
+                Some(if strong { Color::White } else { Color::Grey }),
+                false,
+                strong,
+            ),
+        ];
+        if let Some(t) = tail {
+            row.push(Seg(t.into(), Some(Color::Cyan), false, true));
+        }
+        row
+    };
+    let mut rows = vec![
+        head,
+        line("起點", m.first.as_ref(), false, None),
+        line("目前", m.now.as_ref(), true, toggle),
+    ];
     if let (Some(r), true) = (review, open) {
-        // 展開的內容接在分隔線右邊，跟主軸字頭對齊
-        let lead = str_width(MARGIN) + VERDICT_W;
-        let text_w = w.saturating_sub(lead + str_width(SEP));
-        let mut part = |label: &str, text: &str, color: Color| {
-            rows.push(vec![
-                seg(" ".repeat(lead)),
-                sep(),
-                Seg(label.into(), Some(color), false, true),
-            ]);
-            for l in wrap(text, text_w) {
+        // 展開：接在主軸字頭下面，標籤固定寬
+        let lead = str_width(MARGIN) + 4 + 2 + TIME_W + 2;
+        let text_w = w.saturating_sub(lead + 8);
+        let mut part = |label: &str, text: &str| {
+            for (i, l) in wrap(text, text_w).into_iter().enumerate() {
                 rows.push(vec![
                     seg(" ".repeat(lead)),
-                    sep(),
+                    Seg(
+                        if i == 0 {
+                            format!("{label}  ")
+                        } else {
+                            " ".repeat(8)
+                        },
+                        Some(Color::Yellow),
+                        false,
+                        true,
+                    ),
                     Seg(l, Some(Color::White), false, false),
                 ]);
             }
         };
-        part(
-            &format!("為什麼這麼做(回報 {}):", mainline::stamp(r.at, now)),
-            &r.why,
-            Color::Yellow,
-        );
-        part("有什麼是你沒想到、我建議的:", &r.idea, Color::Yellow);
+        part("為什麼", &r.why);
+        part("建議  ", &r.idea);
+        rows.push(vec![
+            seg(" ".repeat(lead)),
+            Seg(
+                format!("回報 {}", mainline::stamp(r.at, now)),
+                Some(Color::DarkGrey),
+                false,
+                false,
+            ),
+        ]);
     }
     rows
 }
@@ -660,28 +689,39 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
         let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
-        // 艦長用(Andy 11-12 13:4x):一開始那行尾端「全艙判斷 ▸」,點開看各席判斷 + 一開始 / 目前並排
+        // 第一行右邊：現在時間 + 全艙(艦長用，點了開合);靠右
+        let mut tail = vec![Seg(
+            mainline::stamp(app.now_secs, app.now_secs),
+            Some(Color::DarkGrey),
+            false,
+            false,
+        )];
         if !app.fleet.is_empty() {
             let hints = app
                 .fleet
                 .iter()
                 .filter(|(_, f)| mainline::drift_hint(f))
                 .count();
-            rows[0].push(Seg(
+            tail.push(Seg(
                 format!("   全艙 {}", if app.fleet_open { "▾" } else { "▸" }),
                 Some(Color::Cyan),
                 false,
                 true,
             ));
             if hints > 0 {
-                rows[0].push(Seg(format!(" ⚠{hints}"), Some(Color::Yellow), false, true));
+                tail.push(Seg(format!(" ⚠{hints}"), Some(Color::Yellow), false, true));
             }
             fleet_y = Some(out.len());
         }
-        mainline_y = Some(out.len() + 1);
+        let width = |r: &[Seg]| r.iter().map(|g| str_width(&g.0)).sum::<usize>();
+        let gap = w.saturating_sub(width(&rows[0]) + width(&tail) + 2).max(3);
+        rows[0].push(seg(" ".repeat(gap)));
+        rows[0].extend(tail);
+        mainline_y = Some(out.len() + 2);
         out.extend(rows);
         if app.fleet_open {
-            out.extend(fleet_rows(&app.fleet, app.now_secs));
+            out.push(Vec::new());
+            out.extend(fleet_rows(&app.fleet, app.now_secs, w));
         }
     }
     // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
@@ -1274,42 +1314,27 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         // Andy 13:3x:最上面空一行
         assert!(text(&f, 0).is_empty());
-        // Andy 13:5x:左邊留白 + 固定寬判斷欄 + 分隔線;判斷在上、校正在正下方
-        let col = |a: &str, b: &str| format!("{MARGIN}{}{}{SEP}", cell(a), cell(b));
+        // Andy 14:2x 小卡：第一行 = 判斷 + 三個次數，右邊靠齊現在時間
         assert!(
-            text(&f, 1).starts_with(&format!(
-                "{}起點 11-12 00:09  席位接續",
-                col("判斷 —", "總結 0 次")
-            )),
+            text(&f, 1).starts_with("  判斷 —   校正 0 · 總結 0 · 交接 0"),
             "{}",
             text(&f, 1)
         );
-        assert!(
-            text(&f, 1).ends_with("席位接續   現在 11-12 13:20"),
-            "{}",
-            text(&f, 1)
-        );
-        assert!(
-            text(&f, 2).starts_with(&format!(
-                "{}目前 --  (還沒回報 aib now)",
-                col("校正 0 次", "交接 0 次")
-            )),
-            "{}",
-            text(&f, 2)
-        );
-        assert!(!text(&f, 2).contains('▸'), "沒有判斷內容就沒有開合");
-        assert!(text(&f, 3).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(4));
-        // Andy 14:1x 語意精簡：沒有長標籤;「起點 / 目前」上下對齊
+        assert!(text(&f, 1).ends_with("11-12 13:20"), "{}", text(&f, 1));
+        assert_eq!(str_width(&text(&f, 1)), 98, "靠右留 2 格");
+        // 起點 / 目前：今天只寫時:分,字頭上下對齊
+        assert!(text(&f, 2).starts_with("  起點  00:09"), "{}", text(&f, 2));
+        assert!(text(&f, 3).starts_with("  目前  --"), "{}", text(&f, 3));
         let at = |i: usize, k: &str| {
             let t = text(&f, i);
             str_width(&t[..t.find(k).unwrap()])
         };
-        assert_eq!(at(1, "起點"), at(2, "目前"));
-        assert!(!text(&f, 1).contains("本席AI"));
-        assert!(text(&f, 1).starts_with("  "), "不貼左線");
+        assert_eq!(at(2, "席位接續"), at(3, "還沒回報"));
+        assert!(!text(&f, 3).contains('▸'), "沒有判斷內容就沒有開合");
+        assert!(text(&f, 4).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(5));
 
-        // 有判斷 ⇒ 百分比 + 顏色、行尾 ▸,預設收合
+        // 有判斷 ⇒ 百分比 + 顏色;校正 > 0 黃
         let review = |pct: u8| {
             Some(mainline::Review {
                 pct,
@@ -1332,29 +1357,30 @@ mod tests {
                 handoffs: 1,
             });
             let f = frame(&app, 100, 40);
-            assert_eq!(f[1][1].0.trim_end(), format!("判斷 {pct}%"));
+            assert_eq!(f[1][1].0, format!("判斷 {pct}%"));
             assert_eq!(f[1][1].1, Some(color), "{pct}");
-            assert_eq!(f[2][1].0.trim_end(), "校正 2 次");
-            assert_eq!(f[2][1].1, Some(Color::Yellow));
-            assert_eq!(f[1][2].0.trim_end(), "總結 3 次");
-            assert_eq!(f[2][2].0.trim_end(), "交接 1 次");
+            assert!(text(&f, 1).contains("校正 2 · 總結 3 · 交接 1"));
+            assert_eq!(f[1][4].1, Some(Color::Yellow), "校正 > 0 黃");
         }
+        // 很長的主軸 ⇒ 截斷補 …,不折行
+        app.mainline = Some(Mainline {
+            first: Some(entry(&"長".repeat(80), None)),
+            now: Some(entry("做 B", review(90))),
+            ..Default::default()
+        });
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 2).ends_with(" ▸"));
-        assert!(text(&f, 3).is_empty());
-        assert_eq!(app.hits.borrow().mainline_y, Some(2));
-        // 點那一行 ⇒ 展開(接在分隔線右邊);再按 m ⇒ 收合
-        assert!(on_click(&mut app, 3, 2));
+        assert!(text(&f, 2).ends_with('…') && str_width(&text(&f, 2)) <= 100);
+        assert!(text(&f, 3).ends_with("  ▸ 理由"), "預設收合");
+        assert!(text(&f, 4).is_empty());
+        assert_eq!(app.hits.borrow().mainline_y, Some(3));
+        // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
+        assert!(on_click(&mut app, 3, 3));
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 2).ends_with(" ▾"));
-        let body = format!("{}{SEP}", " ".repeat(str_width(MARGIN) + VERDICT_W));
-        assert_eq!(
-            text(&f, 3),
-            format!("{body}為什麼這麼做(回報 11-12 00:10):")
-        );
-        assert_eq!(text(&f, 4), format!("{body}因為 Andy 要"));
-        assert!(text(&f, 5).contains("有什麼是你沒想到、我建議的"));
-        assert!(text(&f, 6).contains("建議 X"));
+        assert!(text(&f, 3).ends_with("  ▾ 理由"));
+        let pad = " ".repeat(at(2, "席位接續"));
+        assert_eq!(text(&f, 4), format!("{pad}為什麼  因為 Andy 要"));
+        assert_eq!(text(&f, 5), format!("{pad}建議    建議 X"));
+        assert_eq!(text(&f, 6), format!("{pad}回報 11-12 00:10"));
         assert!(text(&f, 7).is_empty());
         assert_eq!(app.hits.borrow().toolbar_y, Some(8));
         on_key(
@@ -1406,24 +1432,30 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▸ ⚠1"), "{}", text(&f, 1));
-        assert!(text(&f, 3).is_empty(), "預設收合");
+        assert!(text(&f, 4).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▾"));
-        let a = text(&f, 3);
+        assert!(text(&f, 4).is_empty());
+        let a = text(&f, 5);
         assert!(
-            a.starts_with("  @aaaaa 判斷 90%  校正1 總結0 交接0 起點 "),
+            a.starts_with("  @aaaaa  90%   校正1 總結0 交接0  01-01 08:00 主機發熱三條修法"),
             "{a}"
         );
-        assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
+        assert!(a.ends_with("⚠ 換題?"), "{a}");
+        let b = text(&f, 6);
         assert!(
-            text(&f, 4).starts_with(&format!("  @bbbbb {}校正0 總結0 交接0 ", cell("判斷 —"))),
-            "{}",
-            text(&f, 4)
+            b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    還沒回報"),
+            "{b}"
         );
-        assert!(!text(&f, 4).contains('⚠'));
-        assert!(text(&f, 5).is_empty());
+        assert!(!b.contains('⚠'));
+        assert_eq!(
+            str_width(&a[..a.find("校正").unwrap()]),
+            str_width(&b[..b.find("校正").unwrap()]),
+            "欄位對齊"
+        );
+        assert!(text(&f, 7).is_empty());
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
