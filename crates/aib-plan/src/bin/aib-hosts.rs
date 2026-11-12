@@ -39,7 +39,8 @@ const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
-                      echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg)";
+                      echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
+                      $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null)";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Waiter {
@@ -60,6 +61,9 @@ struct Sample {
     queue: Vec<Waiter>,
     ncpu: f64,
     load1: f64,
+    load5: f64,
+    /// 效能核數(Apple 晶片);讀不到 = 0,改用 ncpu
+    perf: f64,
     err: String,
 }
 
@@ -129,6 +133,12 @@ fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
     }
     if let Some(l) = nums.get(1) {
         s.load1 = *l;
+    }
+    if let Some(l) = nums.get(2) {
+        s.load5 = *l;
+    }
+    if let Some(p) = nums.get(4) {
+        s.perf = *p;
     }
     if let Ok(v) = serde_json::from_str::<Value>(json.trim()) {
         s.online = true;
@@ -227,11 +237,21 @@ fn fit(s: &str, max: usize) -> String {
     o
 }
 
+/// 沒人拿租約、負載卻超過每效能核 0.8 ⇒ 有人沒拿租約在跑(Andy 11-12 14:3x;a63ab 在 Pro 16 犯過)。
+/// 算法同 aib-lease hosts:max(load1, load5 × 0.8) / 效能核
+const UNLEASED_BUSY_RATIO: f64 = 0.8;
+
+fn unleased_busy(s: &Sample) -> bool {
+    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    s.online && !s.held && cores > 0.0 && s.load1.max(s.load5 * 0.8) / cores > UNLEASED_BUSY_RATIO
+}
+
 /// 電池剩多少(0..=100)與顏色。
 fn charge(s: Option<&Sample>, t: i64) -> (u32, Color) {
     match s {
         None => (0, Color::DarkGrey),
         Some(s) if !s.online => (0, Color::Red),
+        Some(s) if unleased_busy(s) => (100, Color::Magenta),
         Some(s) if !s.held => (100, Color::Green),
         Some(s) => {
             let span = (s.expiry - s.acquired).max(1);
@@ -295,6 +315,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     let status = match s {
         None => "讀取中…".to_string(),
         Some(s) if !s.online => format!("離線 {}", fit(&s.err, 30)),
+        Some(s) if unleased_busy(s) => "沒租約在跑 不可用".to_string(),
         Some(s) if !s.held => "空機 可用".to_string(),
         Some(s) => format!("{} 用 · 剩 {}", s.owner, mins(s.expiry - t)),
     };
@@ -336,6 +357,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     if !h.open {
         let third = match s {
             Some(s) if s.held => fit(&s.what, room),
+            Some(s) if unleased_busy(s) => "負載高但沒人拿租約:有人沒拿租約就在跑".to_string(),
             Some(s) if s.online => "沒有人在跑".to_string(),
             Some(_) => "連不上:ssh 逾時或主機關機,20 秒後再試".to_string(),
             None => "第一次讀取中".to_string(),
@@ -395,7 +417,7 @@ fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Opt
         vec![
             (format!("測試機 {clock}(台北)"), Color::White),
             (
-                "  綠 空機 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
+                "  綠 空機 · 紫 沒租約在跑 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
                     .into(),
                 Color::DarkGrey,
             ),
@@ -660,6 +682,43 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!(charge(Some(&off), 0), (0, Color::Red));
         assert!(off.err.contains("timed out"));
         assert_eq!(charge(None, 0).1, Color::DarkGrey);
+    }
+
+    /// Andy 11-12 14:3x:沒人拿租約、負載卻高 ⇒ 不是空機(a63ab 在 Pro 16 沒拿租約跑測，面板寫空機)
+    #[test]
+    fn a_loaded_machine_without_a_lease_is_not_free() {
+        let free = "{\"state\":\"free\",\"queue\":[]}\n";
+        // 16 核、8 效能核、load 7.1 ⇒ 0.89/效能核
+        let run = parse_sample(
+            &format!("{free}AIB_HOSTS_SYS 16 {{ 7.1 5.9 5.5 }} 8"),
+            true,
+            "",
+        );
+        assert_eq!((run.perf, run.load5), (8.0, 5.9));
+        assert!(unleased_busy(&run));
+        assert_eq!(charge(Some(&run), 0), (100, Color::Magenta));
+        let h = host("x", Some(run), false);
+        let l = host_lines(&h, 0, 120, 0, 0);
+        assert!(text(&l[0]).contains("沒租約在跑 不可用"), "{}", text(&l[0]));
+        assert!(text(&l[2]).contains("沒拿租約"));
+        // 同一台安靜 ⇒ 空機;讀不到效能核就用全部核數
+        let quiet = parse_sample(
+            &format!("{free}AIB_HOSTS_SYS 16 {{ 5.0 5.0 5.0 }} 8"),
+            true,
+            "",
+        );
+        assert!(!unleased_busy(&quiet));
+        assert_eq!(charge(Some(&quiet), 0), (100, Color::Green));
+        let old = parse_sample(
+            &format!("{free}AIB_HOSTS_SYS 16 {{ 7.1 5.9 5.5 }}"),
+            true,
+            "",
+        );
+        assert!(!unleased_busy(&old), "7.1 / 16 核 = 0.44");
+        // 有人拿著租約 ⇒ 照租約顯示，不是「沒租約在跑」
+        let mut held = run.clone();
+        held.held = true;
+        assert!(!unleased_busy(&held));
     }
 
     #[test]
