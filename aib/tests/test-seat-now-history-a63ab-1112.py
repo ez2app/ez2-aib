@@ -4,7 +4,7 @@
 
 <狀態根>/state/seat-now/<席>.history.jsonl:主項目文字或啟動時間換了才加一行 {"item","started_at","seen"};
 只改步數 / 狀態不加;太大只留最後 HISTORY_KEEP 行;寫不進去不擋 aib now。
-讀者:crates/aib-plan/src/mainline.rs(同欄位)。
+讀者:aib-plan 的 mainline 模組(同欄位)。
 
 判斷(Andy 11-12 13:3x):aib now --track 0~100 --why --idea 記進 seat-now/<席>.json 的 review;
 階段完成(步數做滿 /【等回應】/【等你決定】)交回時，本回合沒回報判斷 ⇒ aib-now-gate 擋。
@@ -168,7 +168,7 @@ class Review(unittest.TestCase):
         self.assertFalse(seat_now.auto_new({"item": "審 cd8b3ac7d"}, "審 20a37a5fe"), "頭碼不算字")
 
     def test_similarity_matches_aib_plan(self):
-        # 跟 crates/aib-plan/src/mainline.rs 的測試同一組數字
+        # 跟 aib-plan 的 mainline 模組 的測試同一組數字
         self.assertGreater(seat_now.similarity("aib-plan 主軸兩行", "aib-plan 主軸兩行已裝"), 0.6)
         self.assertLess(seat_now.similarity("席位接續 v2 決定", "主機發熱三條修法"), 0.15)
         self.assertEqual(seat_now.similarity("", ""), 1.0)
