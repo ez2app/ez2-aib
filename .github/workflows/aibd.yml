@@ -4551,6 +4551,10 @@ jobs:
           gk '    !offline && cmd != "check-goal"' \
              '    !offline && !cmd.is_empty() // knife' \
              check_goal_never_reads_pr_heads
+          # KG8 (a63ab 11-13 02:55) an idle seat (aib now --clear) is judged goal_missing
+          gk '    if st.idle {' \
+             '    if st.idle && false { // knife' \
+             an_idle_seat_has_no_goal_to_check
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

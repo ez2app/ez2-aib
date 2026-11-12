@@ -62,6 +62,7 @@ fn stage(goal: Option<&str>, why: Option<&str>) -> Stage {
         started_at: Some(100),
         goal: goal.map(str::to_owned),
         goal_why: why.map(str::to_owned),
+        idle: false,
     }
 }
 
@@ -293,4 +294,46 @@ fn the_command_answers_ok_unreadable_and_bad_seat() {
     assert_eq!(run_cli(&t, "1ced7").0, 3);
     // a seat code that is a path: usage error (rc 2), nothing read
     assert_eq!(run_cli(&t, "../x").0, 2);
+}
+
+#[test]
+fn an_idle_seat_has_no_goal_to_check() {
+    // a63ab 11-13 02:55: `aib now --clear` is rc 0, the goal reads `idle`
+    let ev = log(&[]);
+    for rec in [
+        json!({"idle": true, "at": 100, "code": "1ced7"}),
+        json!({"item": "", "goal": "idle"}),
+        json!({"idle": true, "goal": "A2", "started_at": 100}),
+    ] {
+        let st = parse_stage(&rec).unwrap();
+        assert!(st.idle, "{rec}");
+        let v = judge(&ev, Some(&st), &[]);
+        assert_eq!(
+            (v.codes.clone(), v.rc(), v.goal.as_deref()),
+            (vec![], 0, Some("idle")),
+            "{rec}"
+        );
+    }
+    // a record that is not idle is still judged
+    let st = parse_stage(&json!({"item": "x", "idle": false})).unwrap();
+    assert_eq!(judge(&ev, Some(&st), &[]).codes, vec!["goal_missing"]);
+}
+
+#[test]
+fn a_card_without_a_or_e_ids_makes_a8_unknown() {
+    // a63ab 11-13 02:55: until the cards carry A1–A12 / E1–E11 ids, every
+    // card goal is G1…, so `--goal A8` / `E6` is goal_unknown (a reminder
+    // for now; blocking waits for the ids)
+    let card = vec![Goal {
+        id: "G1".into(),
+        text: "Windows / mac 一併可用".into(),
+    }];
+    let ev = log(&[]);
+    let rep = compare(&card, &ev, &Snapshot::default(), NOW);
+    for g in ["A8", "E6"] {
+        let v = check(&ev, &rep, Some(&stage(Some(g), None)), &[]);
+        assert_eq!((v.codes.clone(), v.rc()), (vec!["goal_unknown"], 4), "{g}");
+    }
+    let v = check(&ev, &rep, Some(&stage(Some("g1"), None)), &[]);
+    assert_eq!((v.codes.clone(), v.rc()), (vec![], 0));
 }

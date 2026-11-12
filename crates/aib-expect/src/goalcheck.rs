@@ -19,7 +19,13 @@
 //!   `pr_goal_mismatch` (the item names `#N` and the evidence binds #N only
 //!   to other goals).
 //! - rc 3: the goals or the record cannot be used (the caller lets it pass).
-//! - rc 0: `ok`.
+//! - rc 0: `ok`; also an idle seat (`aib now --clear`, or `goal` = `idle`):
+//!   no item, so no goal to check; the goal reads `idle` so counts keep it
+//!   apart (a63ab 11-13 02:55).
+//!
+//! A card whose goals carry no `A?` / `E?` id (today every card: `G1`…)
+//! makes `--goal A8` `goal_unknown`; that stays a reminder until the cards
+//! carry those ids (a63ab 11-13 02:55: the precondition for blocking).
 //!
 //! Always offline: PR heads are never read, so a PR-bound row cannot be
 //! 實查通過 here and `goal_done` is only found for rows without a PR.
@@ -36,6 +42,8 @@ pub struct Stage {
     pub started_at: Option<u64>,
     pub goal: Option<String>,
     pub goal_why: Option<String>,
+    /// `aib now --clear` wrote this record: the seat has no item.
+    pub idle: bool,
 }
 
 /// One history row (only the fields used here).
@@ -146,6 +154,11 @@ pub fn check(
         v.codes.push("goal_missing");
         return v;
     };
+    // idle: nothing to check, never goal_missing (a63ab 11-13 02:55)
+    if st.idle {
+        v.goal = Some("idle".to_owned());
+        return v;
+    }
     v.prs = prs_named(&st.item);
     // an empty goal is no goal (review 1ced7-1113 L1)
     let named = st.goal.as_deref().filter(|g| !g.trim().is_empty());
@@ -211,11 +224,17 @@ pub fn check(
 pub fn parse_stage(v: &Value) -> Result<Stage, String> {
     let o = v.as_object().ok_or("the seat record is not an object")?;
     let s = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_owned);
+    let goal = s("goal");
+    let idle = o.get("idle").and_then(Value::as_bool) == Some(true)
+        || goal
+            .as_deref()
+            .is_some_and(|g| g.trim().eq_ignore_ascii_case("idle"));
     Ok(Stage {
         item: s("item").unwrap_or_default(),
         started_at: o.get("started_at").and_then(Value::as_u64),
-        goal: s("goal"),
+        goal,
         goal_why: s("goal_why"),
+        idle,
     })
 }
 
