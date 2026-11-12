@@ -1675,14 +1675,20 @@ mod tests {
             assert_ne!(c, mark, "{old:?}");
             assert_eq!(marked_by(&c), Some(code));
             let r = Record {
-                id: String::from("r1"),
+                id: String::from(RID),
                 kind: String::from("A"),
                 name: String::from("shop.example.com"),
                 content: String::from("192.0.2.10"),
                 proxied: true,
                 comment: c,
             };
-            assert!(delete_of("z1", &r, code).is_none(), "{old:?}");
+            assert!(delete_of(ZID, &r, code).is_none(), "{old:?}");
+            // the control: the same record with the bare mark is one site remove deletes
+            let bare = Record {
+                comment: mark.clone(),
+                ..r
+            };
+            assert!(delete_of(ZID, &bare, code).is_some(), "{old:?}");
         }
         assert_eq!(adopted_comment(code, ""), format!("{mark} {ADOPTED_TAIL}"));
     }
