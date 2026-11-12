@@ -2872,6 +2872,14 @@ jobs:
           ek '        .map(|g| g.id.as_str())' \
              '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
              a_goal_off_the_card_reads_no_pr
+          # KE22 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
+          ek "    let safe = uid.replace(':', \"_\");" \
+             '    let safe = uid.to_owned(); // knife' \
+             windows_never_opens_a_colon_project_folder
+          # KE23 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
+          ek '        Os::Unix if safe != uid => vec![uid.to_owned(), safe],' \
+             '        Os::Unix if safe != uid => vec![safe, uid.to_owned()], // knife' \
+             unix_reads_the_1x_colon_folder_first
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

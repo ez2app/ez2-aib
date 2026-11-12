@@ -659,6 +659,57 @@ fn a_goal_off_the_card_reads_no_pr() {
 }
 
 #[test]
+fn windows_never_opens_a_colon_project_folder() {
+    // a63ab FOLLOWUP X1: `proj:<hex>` is a stream on NTFS; Windows uses `_`
+    let uid = "proj:00aa11bb";
+    assert_eq!(
+        project_dir_names(uid, Os::Windows),
+        vec!["proj_00aa11bb".to_owned()]
+    );
+    let r = Root::new("x1win");
+    let base = r.0.join("projects");
+    // nothing there: the `_` name, so the card is not found (rc 3)
+    assert_eq!(
+        project_dir_on(&r.0, uid, Os::Windows).unwrap(),
+        base.join("proj_00aa11bb")
+    );
+    assert_eq!(
+        load_goals(&r.0, "proj_00aa11bb").unwrap_err().code(),
+        "expect_no_card"
+    );
+    fs::create_dir_all(base.join("proj_00aa11bb")).unwrap();
+    let d = project_dir_on(&r.0, uid, Os::Windows).unwrap();
+    assert_eq!(d, base.join("proj_00aa11bb"));
+    assert!(!d.to_string_lossy().contains("proj:"));
+}
+
+#[test]
+fn unix_reads_the_1x_colon_folder_first() {
+    let uid = "proj:00aa11bb";
+    assert_eq!(
+        project_dir_names(uid, Os::Unix),
+        vec![uid.to_owned(), "proj_00aa11bb".to_owned()]
+    );
+    // an id without `:` is one name on both
+    assert_eq!(project_dir_names(UID, Os::Unix), vec![UID.to_owned()]);
+    assert_eq!(project_dir_names(UID, Os::Windows), vec![UID.to_owned()]);
+    // only the `_` folder: found
+    let r = Root::new("x1unix");
+    let base = r.0.join("projects");
+    fs::create_dir_all(base.join("proj_00aa11bb")).unwrap();
+    assert_eq!(
+        project_dir_on(&r.0, uid, Os::Unix).unwrap(),
+        base.join("proj_00aa11bb")
+    );
+    // both: the 1.x one wins (a `:` folder can only be made off Windows)
+    #[cfg(not(windows))]
+    {
+        fs::create_dir_all(base.join(uid)).unwrap();
+        assert_eq!(project_dir_on(&r.0, uid, Os::Unix).unwrap(), base.join(uid));
+    }
+}
+
+#[test]
 fn project_ids_stay_inside_the_projects_folder() {
     let root = Path::new("state");
     for bad in ["", ".", "..", "a/b", "a\\b", "../x"] {
