@@ -1465,8 +1465,8 @@ jobs:
              '        .and_then(|_t| None::<(Vec<String>, Vec<&str>)>); // knife' \
              a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
           # ebb36 L1: what a run saw of the licence step is never kept
-          hk siteremovecmd.rs '            host.keep_licences(&text)' \
-             '            std::convert::identity::<Result<(), String>>({ let _ = &host; Ok(()) }) // knife' \
+          hk siteremovecmd.rs '        if self.licences_seen != LicencesSeen::ThisRun {' \
+             '        if self.licences_seen != LicencesSeen::Never { // knife' \
              a_run_cut_off_before_the_record_keeps_what_the_licence_step_saw_for_the_next
           # ebb36 L1: what an earlier run gave back is not counted
           hk siteremovecmd.rs '        carried.given_back.clone_from(given_back);' \
