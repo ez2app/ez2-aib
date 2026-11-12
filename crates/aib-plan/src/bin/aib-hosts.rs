@@ -1146,13 +1146,18 @@ fn main() {
         out,
         terminal::EnterAlternateScreen,
         EnableMouseCapture,
+        cursor::Hide,
         // Andy 11-13:截圖拖進窗格 ⇒ 路徑被當按鍵打進來,/var/folders/9q/… 的 q 把電池關掉。
         // 開括號貼上後整段變成一個 Event::Paste,落到下面的 `_ => {}` 丟掉,不當按鍵。
-        EnableBracketedPaste,
-        cursor::Hide
+        // 放最後:舊版 Windows 主控台不支援時這一項會錯,錯了不能連累前面幾項。
+        // Windows 主控台的輸入事件不會產生 Event::Paste ⇒ 那邊這個問題還在(FOLLOWUP)。
+        EnableBracketedPaste
     );
     std::panic::set_hook(Box::new(|i| {
-        restore();
+        // 只有主執行緒結束畫面;探測執行緒 panic 不動終端機(不然括號貼上被關、主迴圈卻照跑)
+        if std::thread::current().name() == Some("main") {
+            restore();
+        }
         eprintln!("{i}");
     }));
     let mut tick: u64 = 0;
