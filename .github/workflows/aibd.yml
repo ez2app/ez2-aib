@@ -56,7 +56,21 @@ jobs:
         # on 2026-11-07); the first step prints what we actually got.
         os: [macos-latest, windows-latest]
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || matrix.os }}
+    # Self-hosted Mac (label ez2-aib-mac): only the macOS cell, only when the repository variable
+    # AIB_MAC_SELFHOSTED is 'on', only for a pull request from a branch of this repository whose name
+    # starts with integ/ or release/ or that carries the label mac-selfhosted. Pushes to main stay on
+    # GitHub's runners. The cell keeps its name (it comes from matrix.os, not from runs-on). A fork can
+    # rewrite this line in its own PR, so this is not the guard: the runner refuses fork and non
+    # push / pull_request jobs in its job-started hook, and the repository asks approval for outside
+    # contributors' runs. AIB_MAC_SELFHOSTED=off sends everything back to GitHub's runners.
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || matrix.os }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -95,8 +109,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-${{ matrix.os }}-
+          # runner.environment (github-hosted / self-hosted) keeps a target built on the self-hosted Mac
+          # out of GitHub's macOS image and the other way round
+          key: aibd-${{ matrix.os }}-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-${{ matrix.os }}-${{ runner.environment }}-
       - name: Core purity
         if: env.RUN == 'true'
         shell: bash
