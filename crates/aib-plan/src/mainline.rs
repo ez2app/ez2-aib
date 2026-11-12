@@ -175,6 +175,7 @@ pub fn first_today(log: &[Entry], cur: Option<&Entry>, now: i64) -> Option<Entry
 
 /// 今天(台北)的總結次數與交接次數。只讀，讀不到就是 0。
 /// - 總結 = `<狀態根>/pending/to-maintainer-from-<席>-*.txt`(aib summary 每次寫一份),看檔案修改時間
+/// - 總結也算 `aib now --track/--why/--idea` 的回報(Andy 11-12 14:3x 同意):歷史裡帶 track 的行，看 seen
 /// - 交接 = `<狀態根>/state/handoff/<席>.receipts.jsonl` 每行一張收據，看 ts
 pub fn day_counts(state_root: &Path, seat: &str, now: i64) -> (u32, u32) {
     let ds = day_start(now);
@@ -191,7 +192,19 @@ pub fn day_counts(state_root: &Path, seat: &str, now: i64) -> (u32, u32) {
                 .filter(|d| d.as_secs() as i64 >= ds)
                 .count() as u32
         })
-        .unwrap_or(0);
+        .unwrap_or(0)
+        + std::fs::read_to_string(
+            state_root
+                .join("seat-now")
+                .join(format!("{seat}.history.jsonl")),
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("track").is_some_and(|t| !t.is_null()))
+        .filter_map(|v| v.get("seen").and_then(|t| t.as_i64()))
+        .filter(|t| *t >= ds)
+        .count() as u32;
     let handoffs = std::fs::read_to_string(
         state_root
             .join("handoff")
@@ -526,6 +539,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let state = root.join("state");
         std::fs::create_dir_all(state.join("handoff")).unwrap();
+        std::fs::create_dir_all(state.join("seat-now")).unwrap();
         std::fs::create_dir_all(root.join("pending")).unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -552,6 +566,24 @@ mod tests {
         }
         // 剛寫的檔 = 今天;交接 3 張裡 1 張是昨天、1 行壞的
         assert_eq!(day_counts(&state, "s5", now), (2, 2));
+        // aib now 帶判斷的回報也算總結：今天 2 行有 track(1 行 null 不算)、昨天 1 行、沒 track 1 行
+        std::fs::write(
+            state.join("seat-now/s5.history.jsonl"),
+            format!(
+                "{{\"item\":\"a\",\"started_at\":1,\"seen\":{},\"track\":90}}\n\
+                 {{\"item\":\"a\",\"started_at\":1,\"seen\":{},\"track\":80}}\n\
+                 {{\"item\":\"a\",\"started_at\":1,\"seen\":{},\"track\":null}}\n\
+                 {{\"item\":\"a\",\"started_at\":1,\"seen\":{}}}\n\
+                 {{\"item\":\"a\",\"started_at\":1,\"seen\":{},\"track\":70}}\n",
+                ds + 5,
+                now,
+                now,
+                now,
+                ds - 5
+            ),
+        )
+        .unwrap();
+        assert_eq!(day_counts(&state, "s5", now), (4, 2));
         assert_eq!(day_counts(&state, "zz", now), (0, 0));
         let _ = std::fs::remove_dir_all(&root);
     }
