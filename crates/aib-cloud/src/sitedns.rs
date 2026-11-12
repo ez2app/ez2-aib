@@ -21,12 +21,14 @@
 //!   step done: asked again, the step adds nothing (it can be carried on after any
 //!   stop). A record with the mark that is anything else is not ours as written and
 //!   stops ([`MARKED_DIFFERS`]).
-//! * **Only four calls.** [`allowed`] is the whole list of Cloudflare calls this code may
+//! * **Only five calls.** [`allowed`] is the whole list of Cloudflare calls this code may
 //!   make: list an account's zones by name, read a zone's SSL mode, list a zone's records,
-//!   add one A record to a public address, proxied, carrying a site's mark. Anything else
-//!   — a delete above all, which the list could not tell from any other delete — is
-//!   refused before it leaves the host (ebb36 B5 L1). The key is the account's global
-//!   key, so this list is the only thing between this code and the customer's zones.
+//!   add one A record to a public address, proxied, carrying a site's mark, and delete one
+//!   record. Anything else is refused before it leaves the host. The list cannot tell one
+//!   delete from another (ebb36 B5 L1), so a delete can only be written out as a
+//!   [`MarkedDelete`], and the only way to get one is [`delete_of`]: a record just listed,
+//!   an address record, carrying this site's mark. The key is the account's global key,
+//!   so this list is the only thing between this code and the customer's zones.
 //! * **Inside the zone.** Every name of the site must be the zone or a name under it
 //!   ([`NAME_OUTSIDE_ZONE`]): Cloudflare would take any other name as a label under the
 //!   zone and make a record nobody asked for (ebb36 B5 L2).
@@ -128,6 +130,43 @@ pub enum CfCall {
     ListRecords { zone: String, page: u32 },
     /// Add one record (the body says which; it must carry a site's mark).
     AddRecord { zone: String },
+    /// Delete one record: only ever one [`delete_of`] gave.
+    Delete(MarkedDelete),
+}
+
+/// A delete of one record that was listed with this site's mark. Its fields are private:
+/// it is made by [`delete_of`] only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedDelete {
+    zone: String,
+    record: String,
+}
+
+/// The delete of `r`, listed in zone `zone`, for site `code`: only an address record
+/// whose comment is exactly the site's mark (the rule of removing a site, #669), with ids
+/// that are ids. Anything else gives nothing.
+pub fn delete_of(zone: &str, r: &Record, code: &str) -> Option<MarkedDelete> {
+    (valid_id(zone)
+        && valid_id(&r.id)
+        && crate::site::valid_code(code)
+        && DNS_ADDRESS_TYPES.contains(&r.kind.as_str())
+        && r.comment == dns_marker(code))
+    .then(|| MarkedDelete {
+        zone: String::from(zone),
+        record: r.id.clone(),
+    })
+}
+
+/// The records of site `code` under its `names` in a whole listing: address records
+/// carrying the site's mark. Mail and text records and unmarked records are not in it.
+pub fn marked_to_remove<'a>(names: &[&str], records: &'a [Record], code: &str) -> Vec<&'a Record> {
+    let mark = dns_marker(code);
+    records
+        .iter()
+        .filter(|r| DNS_ADDRESS_TYPES.contains(&r.kind.as_str()))
+        .filter(|r| r.comment == mark)
+        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))
+        .collect()
 }
 
 impl CfCall {
@@ -136,6 +175,7 @@ impl CfCall {
         match self {
             CfCall::ListZones { .. } | CfCall::SslMode { .. } | CfCall::ListRecords { .. } => "GET",
             CfCall::AddRecord { .. } => "POST",
+            CfCall::Delete(_) => "DELETE",
         }
     }
 
@@ -150,13 +190,15 @@ impl CfCall {
                 format!("/zones/{zone}/dns_records?per_page={PER_PAGE}&page={page}")
             }
             CfCall::AddRecord { zone } => format!("/zones/{zone}/dns_records"),
+            CfCall::Delete(d) => format!("/zones/{}/dns_records/{}", d.zone, d.record),
         }
     }
 }
 
-/// Whether a written-out call is one of the four, exactly: the method, every part of the
+/// Whether a written-out call is one of the five, exactly: the method, every part of the
 /// path, the query in its one order, and for an add a body that is one A record to a
-/// public address, proxied, carrying a site's mark. Everything else is refused.
+/// public address, proxied, carrying a site's mark. Everything else is refused. (Whose a
+/// deleted record is cannot be seen here: that is [`delete_of`]'s.)
 pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
     let (route, query) = match path.split_once('?') {
         Some((r, q)) => (r, Some(q)),
@@ -188,6 +230,7 @@ pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
                 && !page.starts_with('0')
         }
         ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),
+        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),
         _ => false,
     }
 }
@@ -787,6 +830,75 @@ mod tests {
     }
 
     #[test]
+    fn only_a_listed_record_with_this_sites_mark_can_be_deleted() {
+        let ours = rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123");
+        let d = delete_of(ZID, &ours, "s-abc123").unwrap();
+        let call = CfCall::Delete(d);
+        assert_eq!(call.method(), "DELETE");
+        assert_eq!(call.path(), format!("/zones/{ZID}/dns_records/{RID}"));
+        assert!(allowed(call.method(), &call.path(), None));
+        for (r, code) in [
+            (rec("A", "example.com", ORIGIN, true, ""), "s-abc123"),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
+                "s-abc123",
+            ),
+            (
+                rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123 "),
+                "s-abc123",
+            ),
+            (
+                rec(
+                    "MX",
+                    "example.com",
+                    "mail.example.com",
+                    false,
+                    "ez2:site:s-abc123",
+                ),
+                "s-abc123",
+            ),
+            (
+                rec("TXT", "example.com", "x", false, "ez2:site:s-abc123"),
+                "s-abc123",
+            ),
+        ] {
+            assert_eq!(delete_of(ZID, &r, code), None, "{r:?}");
+        }
+        let mut bad_id = ours.clone();
+        bad_id.id = String::from("../x");
+        assert_eq!(delete_of(ZID, &bad_id, "s-abc123"), None);
+        assert_eq!(delete_of("zone", &ours, "s-abc123"), None);
+    }
+
+    #[test]
+    fn only_marked_address_records_under_the_names_are_removed() {
+        let records = [
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec(
+                "AAAA",
+                "www.example.com",
+                "2001:db8::1",
+                true,
+                "ez2:site:s-abc123",
+            ),
+            rec("A", "other.example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec("A", "example.com", "198.51.100.7", false, ""),
+            rec(
+                "MX",
+                "example.com",
+                "mail.example.com",
+                false,
+                "ez2:site:s-abc123",
+            ),
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-other1"),
+        ];
+        let got = marked_to_remove(&["example.com", "WWW.example.com."], &records, "s-abc123");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name, "example.com");
+        assert_eq!(got[1].name, "www.example.com");
+    }
+
+    #[test]
     fn a_name_outside_the_zone_adds_nothing() {
         // Cloudflare would make other.example.net.example.com of it (ebb36 B5 L2)
         for names in [
@@ -905,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_calls_are_allowed() {
+    fn only_the_five_calls_are_allowed() {
         let zone = String::from(ZID);
         let body = NewRecord {
             name: String::from("example.com"),
@@ -968,8 +1080,8 @@ mod tests {
             ("GET", "/user/tokens".to_string(), None),
             ("GET", format!("/accounts/{ACC}/members"), None),
             ("DELETE", format!("/zones/{ZID}"), None),
-            // no delete at all in this slice (ebb36 B5 L1)
-            ("DELETE", format!("/zones/{ZID}/dns_records/{RID}"), None),
+            ("DELETE", format!("/zones/{ZID}/dns_records/{RID}/x"), None),
+            ("DELETE", format!("/zones/{ZID}/dns_records/x"), None),
             (
                 "DELETE",
                 format!("/zones/{ZID}/dns_records/{RID}"),

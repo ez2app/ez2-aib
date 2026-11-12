@@ -5,16 +5,26 @@
 //! ```text
 //! a key for one site:    aib-cloud site status
 //!                        aib-cloud site logs <nginx|php|db> [lines N] [minutes N]
+//!                        aib-cloud site login-link
 //! a key for a customer:  aib-cloud sites
 //!                        aib-cloud usage
 //!                        aib-cloud site <code> status
 //!                        aib-cloud site <code> logs <nginx|php|db> [lines N] [minutes N]
+//!                        aib-cloud site <code> login-link
 //!                        aib-cloud site create <domain> [blank]
 //! ```
 //!
 //! `site create` answers the new site's code and `opening` at once; `site <code> status`
 //! then answers how far the opening got (`state`, `step_done`, `stopped_at`) until the
-//! site is live. Both are the host's fixed words, shown as they are.
+//! site is live. Both are the host's fixed words, shown as they are. For a while after the
+//! site opened, `status` answers `open` with the site's domain and administrators: that is
+//! shown as the opened screen (`aib_cloud::wording::opened`), which names the next command.
+//!
+//! `login-link` answers a one-time link that logs the site's first administrator straight
+//! in (Andy 11-12 04:3x). It is printed alone, one line on standard output, and kept
+//! nowhere by this program: no file, no log (ebb36 L1). A refusal or a failure is the
+//! host's one word on standard error (`role_forbidden`, `tenant_mismatch`,
+//! `provider_check`, `unavailable`), and the host not reached is exit 3 as for every request.
 //!
 //! With a key for one site, which site is not said here: the host knows it from the key.
 //! With a key for a customer the site is named, and the host decides from its own records
@@ -45,7 +55,7 @@ use aib_cloud::client::{parse_line, site_line, ssh_args, Line, NotSent, Target};
 use aib_cloud::customer::{OwnerRequest, Request};
 use aib_cloud::wording;
 
-const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N]> | site create <domain> [blank] | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
+const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N] | login-link> | site create <domain> [blank] | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -210,11 +220,31 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
     // plan() checked the request; one that does not parse was never sent
     match parse_line(&asked.request) {
-        Ok(Line::Site(request)) => println!("{}", wording::reply(request, code, &out, &err)),
+        Ok(Line::Site(request)) => shout(request, code, &wording::reply(request, code, &out, &err)),
+        Ok(Line::Owner(owner @ OwnerRequest::Site { request, .. })) if !answered(request, code) => {
+            eprint!("{}", owner_answer(owner, code, &out, &err));
+        }
         Ok(Line::Owner(owner)) => print!("{}", owner_answer(owner, code, &out, &err)),
         Err(_) => {}
     }
     Ok(code)
+}
+
+/// Whether what is shown for `request` goes to standard output: everything, but a
+/// `login-link` that did not give a link (its one word goes to standard error, so standard
+/// output only ever holds the link).
+fn answered(request: Request, code: u8) -> bool {
+    request != Request::LoginLink || code == 0
+}
+
+/// A site key's answer, on standard output or, for a `login-link` that gave no link, on
+/// standard error ([`answered`]).
+fn shout(request: Request, code: u8, text: &str) {
+    if answered(request, code) {
+        println!("{text}");
+    } else {
+        eprintln!("{text}");
+    }
 }
 
 /// The system's own `ssh`: on Windows the one Windows ships
@@ -250,7 +280,19 @@ fn owner_answer(owner: OwnerRequest<'_>, code: u8, out: &str, err: &str) -> Stri
                 request: Request::Status,
                 ..
             },
-        ) if aib_cloud::customer::is_opening(out) => shown(out),
+        ) if aib_cloud::customer::is_opening(out) => match aib_cloud::customer::opened_of(out) {
+            // just opened: the opened screen, for the first administrator and one other
+            Some(o) => format!(
+                "{}\n",
+                wording::opened(
+                    &o.site,
+                    &o.domain,
+                    &o.admins[0],
+                    o.admins.get(1).map(String::as_str)
+                )
+            ),
+            None => shown(out),
+        },
         (_, OwnerRequest::Site { request, .. }) => {
             format!("{}\n", wording::reply(request, code, out, err))
         }
@@ -509,6 +551,48 @@ mod tests {
         assert_eq!(ssh_program_for(false, None), PathBuf::from("ssh"));
     }
 
+    /// E1 N1 (Andy 11-12 04:3x): `login-link` is sent under either kind of key, and its
+    /// standard output is the link alone; any other answer is one word on standard error.
+    #[test]
+    fn a_login_link_is_the_only_thing_on_standard_output() {
+        let full = |typed: &[&str]| {
+            let mut a = words(typed);
+            a.extend(words(&[
+                "--host",
+                "host1.example.net",
+                "--user",
+                "site2",
+                "--known-hosts",
+                "/k",
+            ]));
+            plan(&with_env(command(&a).unwrap(), no_env)).unwrap()
+        };
+        assert_eq!(full(&["site", "login-link"]).last().unwrap(), "login-link");
+        assert_eq!(
+            full(&["site", "s-abc123", "login-link"]).last().unwrap(),
+            "site s-abc123 login-link"
+        );
+        let url = "https://shop.example.test/?ez2_otl=AbC123\n";
+        let ll = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::LoginLink,
+        };
+        assert!(answered(Request::LoginLink, 0));
+        assert_eq!(owner_answer(ll, 0, url, ""), url);
+        // a refusal or a failure is never on standard output
+        assert!(!answered(Request::LoginLink, 2) && !answered(Request::LoginLink, 3));
+        assert!(answered(Request::Status, 1));
+        assert_eq!(
+            owner_answer(ll, 2, "", "refused: role_forbidden\n"),
+            "role_forbidden\n"
+        );
+        assert_eq!(owner_answer(ll, 3, "", "unavailable\n"), "unavailable\n");
+        assert_eq!(
+            owner_answer(ll, 3, "", "provider_check\n"),
+            "provider_check\n"
+        );
+    }
+
     /// E1: opening a site and following it are shown in the host's fixed words.
     #[test]
     fn an_opening_is_shown_in_the_host_s_words() {
@@ -537,6 +621,24 @@ mod tests {
         let progress =
             "{\"site\":\"s-abc123\",\"state\":\"stopped\",\"step_done\":\"start\",\"stopped_at\":\"install\"}\n";
         assert_eq!(owner_answer(status, 0, progress, ""), progress);
+        // just opened: the opened screen, which names the next command and no link
+        let opened = "{\"site\":\"s-abc123\",\"state\":\"open\",\"step_done\":\"health\",\"stopped_at\":null,\"domain\":\"shop.example.test\",\"admins\":[\"ops\",\"ops2\"]}\n";
+        let screen = owner_answer(status, 0, opened, "");
+        assert_eq!(
+            screen,
+            format!(
+                "{}\n",
+                wording::opened("s-abc123", "shop.example.test", "ops", Some("ops2"))
+            )
+        );
+        assert!(
+            screen.contains("請輸入:aib-cloud site s-abc123 login-link\n"),
+            "{screen}"
+        );
+        assert!(!screen.contains("ez2_otl"));
+        // one administrator only
+        let one = opened.replace("[\"ops\",\"ops2\"]", "[\"ops\"]");
+        assert!(owner_answer(status, 0, &one, "").contains("   管理員帳號:ops\n"));
         // a live site's checks still get their sentences
         assert_ne!(
             owner_answer(status, 0, "{\"exit\":0,\"checks\":[]}", ""),

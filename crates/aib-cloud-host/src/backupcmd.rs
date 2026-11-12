@@ -7,13 +7,21 @@
 //! remote comes from `--remote` or from `REMOTE=` in `/etc/ez2-cloud/backup.env` (the file
 //! the backup job itself reads). Exit status as `site verify`: 0 green, 1 red, 3 unknown
 //! (including "nothing could be checked"), 2 warnings only.
+//!
+//! `aib-cloud-host backup fresh <code> [--max-minutes N] [--records dir] [--dumps dir]`
+//! (E10, backup before an update): does the site have a finished local dump from the last
+//! N minutes (default 10080, one week: Andy 11-11 20:13 「一週內算新」)? Reads the site record and the names, times and sizes in the
+//! local dump folder — no dump is opened, nothing is written. The rule is
+//! `aib_cloud::fresh`. Prints one JSON object; exit 0 fresh (an update may go ahead),
+//! 1 stale or no backup, 3 could not tell, 2 usage. Starting a backup is not part of it.
 
 use std::fs;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aib_cloud::backup::{self, Object};
-use aib_cloud::site::{spec_from_record, EDGE_CT};
+use aib_cloud::fresh::{self, DumpFile, Fresh};
+use aib_cloud::site::{spec_from_record, valid_code, EDGE_CT};
 use aib_cloud::verify;
 use serde_json::{json, Value};
 
@@ -21,6 +29,8 @@ use crate::probe::run_capture;
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const BACKUP_ENV: &str = "/etc/ez2-cloud/backup.env";
+/// Where vzdump leaves the local dumps (the `local` storage).
+const DUMPS: &str = "/var/lib/vz/dump";
 
 /// `REMOTE=` out of an env file: the last assignment wins, quotes are dropped, `export`
 /// is allowed. Nothing is expanded.
@@ -249,6 +259,141 @@ fn run(args: &[String]) -> Result<u8, String> {
     Ok(exit)
 }
 
+/// One entry of the local dump folder: name, plain file, modification time, size.
+type DumpEntry = (String, bool, Option<u64>, Option<u64>);
+
+/// The local dump folder; `None` when it cannot be listed. Links are not followed: a link
+/// is not a plain file.
+fn list_dumps(dir: &str) -> Option<Vec<DumpEntry>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let meta = fs::symlink_metadata(entry.path()).ok();
+        out.push(dump_entry(name, meta.as_ref()));
+    }
+    Some(out)
+}
+
+/// One folder entry from its name and what could be read about it. An entry whose
+/// details could not be read is handed on as a file without time or size, so a dump of
+/// the site among them makes the answer "could not tell" instead of being skipped
+/// (ebb36 N1).
+fn dump_entry(name: String, meta: Option<&fs::Metadata>) -> DumpEntry {
+    let Some(m) = meta else {
+        return (name, true, None, None);
+    };
+    let mtime = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    (name, m.is_file(), mtime, Some(m.len()))
+}
+
+/// The answer to `backup fresh`: (exit status, JSON). Every input is a parameter, so the
+/// whole path from the record to the verdict is tested without a host.
+fn fresh_answer(code: &str, max_minutes: u32, records: &str, dumps: &str, now: u64) -> (u8, Value) {
+    let unknown = |why: &str| {
+        (
+            3,
+            json!({ "site": code, "verdict": why, "update_allowed": false, "max_minutes": max_minutes }),
+        )
+    };
+    let Ok(text) = fs::read_to_string(format!("{records}/{code}.json")) else {
+        return unknown("record_unreadable");
+    };
+    let Ok(rec) = serde_json::from_str::<Value>(&text) else {
+        return unknown("record_unreadable");
+    };
+    let Ok(spec) = spec_from_record(&rec) else {
+        return unknown("record_unreadable");
+    };
+    let floor = match fresh::record_floor(&rec) {
+        Ok(t) => t,
+        Err(why) => return unknown(why),
+    };
+    let listed = list_dumps(dumps);
+    let files: Option<Vec<DumpFile<'_>>> = listed.as_ref().map(|l| {
+        l.iter()
+            .map(|(name, is_file, mtime, size)| DumpFile {
+                name,
+                is_file: *is_file,
+                mtime: *mtime,
+                size: *size,
+            })
+            .collect()
+    });
+    let got = fresh::judge(
+        spec.ct,
+        Some(floor),
+        files.as_deref(),
+        now,
+        u64::from(max_minutes) * 60,
+    );
+    let age = match got {
+        Fresh::Fresh { age } | Fresh::Stale { age } => Some(age),
+        Fresh::NoBackup | Fresh::Unknown(_) => None,
+    };
+    let exit = match got {
+        Fresh::Fresh { .. } => 0,
+        Fresh::Stale { .. } | Fresh::NoBackup => 1,
+        Fresh::Unknown(_) => 3,
+    };
+    (
+        exit,
+        json!({
+            "site": code,
+            "ct": spec.ct,
+            "verdict": got.as_str(),
+            "update_allowed": fresh::update_allowed(got),
+            "age_seconds": age,
+            "max_minutes": max_minutes,
+        }),
+    )
+}
+
+/// `backup fresh <code> [--max-minutes N] [--records dir] [--dumps dir]`.
+pub fn fresh_cmd(args: &[String]) -> Result<u8, String> {
+    let mut code: Option<&str> = None;
+    let mut max_minutes = fresh::DEFAULT_MAX_MINUTES;
+    let mut records = RECORDS.to_owned();
+    let mut dumps = DUMPS.to_owned();
+    let mut it = args.iter();
+    let usage = |why: &str| {
+        eprintln!("aib-cloud-host backup fresh: {why}");
+        Ok(2)
+    };
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--max-minutes" => match it.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) if fresh::max_minutes_ok(n) => max_minutes = n,
+                _ => return usage("--max-minutes needs 1 to 10080"),
+            },
+            "--records" => match it.next() {
+                Some(d) => records = d.clone(),
+                None => return usage("--records needs a dir"),
+            },
+            "--dumps" => match it.next() {
+                Some(d) => dumps = d.clone(),
+                None => return usage("--dumps needs a dir"),
+            },
+            other if code.is_none() && valid_code(other) => code = Some(other),
+            _ => return usage("needs <code> [--max-minutes N] [--records dir] [--dumps dir]"),
+        }
+    }
+    let Some(code) = code else {
+        return usage("needs <code>");
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let (exit, doc) = fresh_answer(code, max_minutes, &records, &dumps, now);
+    println!("{doc}");
+    Ok(exit)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -393,5 +538,207 @@ mod tests {
         ]));
         assert_eq!(listed, Ok(3));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_fresh_answers_from_the_record_and_the_dump_folder() {
+        let root = std::env::temp_dir().join(format!("aib-fresh-{}", std::process::id()));
+        let records = root.join("sites");
+        let dumps = root.join("dump");
+        fs::create_dir_all(&records).unwrap();
+        fs::create_dir_all(&dumps).unwrap();
+        fs::write(
+            records.join("site2.json"),
+            r#"{"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"s2.example.test","created":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let (r, d) = (records.to_string_lossy(), dumps.to_string_lossy());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let put = |name: &str, secs_ago: u64, body: &[u8]| {
+            let p = dumps.join(name);
+            fs::write(&p, body).unwrap();
+            let t = UNIX_EPOCH + Duration::from_secs(now - secs_ago);
+            fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+
+        // nothing in the folder yet: no backup, no update
+        let (exit, doc) = fresh_answer("site2", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("no_backup")));
+        assert_eq!(doc["update_allowed"], false);
+        assert_eq!(doc["ct"], 112);
+
+        // last night's backup only: too old
+        put("vzdump-lxc-112-2026_11_11-03_00_05.tar.zst", 3 * 3600, b"x");
+        let (exit, doc) = fresh_answer("site2", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("stale")));
+
+        // a link with a dump's name, to a fresh file, is not a backup in the folder
+        #[cfg(unix)]
+        {
+            fs::write(root.join("elsewhere"), b"x").unwrap();
+            std::os::unix::fs::symlink(
+                root.join("elsewhere"),
+                dumps.join("vzdump-lxc-112-2026_11_11-18_25_05.tar.zst"),
+            )
+            .unwrap();
+            assert_eq!(fresh_answer("site2", 30, &r, &d, now).0, 1);
+        }
+
+        // one still being written and another site's fresh one do not count
+        put("vzdump-lxc-112-2026_11_11-18_30_05.tar.dat", 60, b"x");
+        put("vzdump-lxc-113-2026_11_11-18_30_05.tar.zst", 60, b"x");
+        let (exit, _) = fresh_answer("site2", 30, &r, &d, now);
+        assert_eq!(exit, 1);
+
+        // a finished one from ten minutes ago: the update may go ahead
+        put("vzdump-lxc-112-2026_11_11-18_20_05.tar.zst", 600, b"x");
+        let (exit, doc) = fresh_answer("site2", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (0, Some("fresh")));
+        assert_eq!(doc["update_allowed"], true);
+        assert_eq!(doc["age_seconds"], 600);
+        // with a five-minute window it is not fresh enough
+        assert_eq!(fresh_answer("site2", 5, &r, &d, now).0, 1);
+
+        // what cannot be read is never "allowed"
+        let (exit, doc) = fresh_answer("site9", 30, &r, &d, now);
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("record_unreadable"))
+        );
+        assert_eq!(doc["update_allowed"], false);
+        let gone = root.join("nosuchdir");
+        let (exit, doc) = fresh_answer("site2", 30, &r, &gone.to_string_lossy(), now);
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("dump_folder_unreadable"))
+        );
+        fs::write(records.join("site3.json"), "{not json").unwrap();
+        assert_eq!(fresh_answer("site3", 30, &r, &d, now).0, 3);
+
+        // the CT number was given to a new site after the fresh dump was made: not its backup
+        fs::write(
+            records.join("site4.json"),
+            format!(
+                r#"{{"site":"site4","ct":112,"ip":"10.77.0.12","hosts":"s4.example.test","created":"{}"}}"#,
+                fresh::utc_stamp(now - 60)
+            ),
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site4", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("no_backup")));
+        // a record without a readable creation time: could not tell
+        fs::write(
+            records.join("site5.json"),
+            r#"{"site":"site5","ct":112,"ip":"10.77.0.12","hosts":"s5.example.test","created":"yesterday"}"#,
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site5", 30, &r, &d, now);
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("site_created_unreadable"))
+        );
+        // moved by restore --switch onto CT 112 a minute ago: the fresh dump is the earlier site's
+        fs::write(
+            records.join("site6.json"),
+            format!(
+                r#"{{"site":"site6","ct":112,"ip":"10.77.0.12","hosts":"s6.example.test","created":"2026-01-01T00:00:00Z","ct_since":"{}"}}"#,
+                fresh::utc_stamp(now - 60)
+            ),
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site6", 30, &r, &d, now);
+        assert_eq!((exit, doc["verdict"].as_str()), (1, Some("no_backup")));
+        fs::write(
+            records.join("site7.json"),
+            r#"{"site":"site7","ct":112,"ip":"10.77.0.12","hosts":"s7.example.test","created":"2026-01-01T00:00:00Z","ct_since":"later"}"#,
+        )
+        .unwrap();
+        let (exit, doc) = fresh_answer("site7", 30, &r, &d, now);
+        assert_eq!(
+            (exit, doc["verdict"].as_str()),
+            (3, Some("ct_since_unreadable"))
+        );
+
+        // usage
+        let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(fresh_cmd(&args(&[])), Ok(2));
+        assert_eq!(fresh_cmd(&args(&["site2", "--max-minutes", "0"])), Ok(2));
+        assert_eq!(
+            fresh_cmd(&args(&["site2", "--max-minutes", "10081"])),
+            Ok(2)
+        );
+        assert_eq!(fresh_cmd(&args(&["site2", "site3"])), Ok(2));
+        assert_eq!(fresh_cmd(&args(&["../etc"])), Ok(2));
+        assert_eq!(
+            fresh_cmd(&args(&["site2", "--records", &r, "--dumps", &d])),
+            Ok(0)
+        );
+
+        // nothing asked: a week (Andy 11-11 20:13), so a dump from two days ago will do
+        fs::write(
+            records.join("site8.json"),
+            r#"{"site":"site8","ct":118,"ip":"10.77.0.18","hosts":"s8.example.test","created":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        put(
+            "vzdump-lxc-118-2026_11_09-03_00_05.tar.zst",
+            2 * 86_400,
+            b"x",
+        );
+        let (r8, d8) = (r.to_string(), d.to_string());
+        assert_eq!(
+            fresh_cmd(&args(&["site8", "--records", &r8, "--dumps", &d8])),
+            Ok(0)
+        );
+        assert_eq!(
+            fresh_cmd(&args(&[
+                "site8",
+                "--max-minutes",
+                "10080",
+                "--records",
+                &r8,
+                "--dumps",
+                &d8
+            ])),
+            Ok(0)
+        );
+        assert_eq!(
+            fresh_cmd(&args(&[
+                "site8",
+                "--max-minutes",
+                "1440",
+                "--records",
+                &r8,
+                "--dumps",
+                &d8
+            ])),
+            Ok(1)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_read_spoils_the_answer() {
+        let name = "vzdump-lxc-112-2026_11_11-18_30_05.tar.zst".to_owned();
+        let e = dump_entry(name.clone(), None);
+        assert_eq!(e, (name, true, None, None));
+        let files = [DumpFile {
+            name: &e.0,
+            is_file: e.1,
+            mtime: e.2,
+            size: e.3,
+        }];
+        assert_eq!(
+            fresh::judge(112, Some(0), Some(&files), 1_000, 1_800),
+            Fresh::Unknown("dump_unreadable")
+        );
     }
 }
