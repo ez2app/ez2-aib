@@ -684,7 +684,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     let body_h = h.saturating_sub(out.len() + 1).max(4);
     let side_by_side = w >= 100 && app.show_tree && app.show_side;
     let tree_w = if side_by_side { w * 58 / 100 } else { w };
-    let side_w = if side_by_side { w - tree_w - 3 } else { w };
+    let side_w = if side_by_side {
+        w.saturating_sub(tree_w + 4)
+    } else {
+        w
+    };
 
     // 左：樹
     let mut tree_lines: Vec<Vec<Seg>> = Vec::new();
@@ -760,10 +764,25 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     }
 
     // 右：為什麼 + 細節
+    // Andy 11-12 13:5x:標題、內容、理由都擠在一起 ⇒ 段與段之間空一行、標籤後空格、理由折行不截斷
     let mut side: Vec<Vec<Seg>> = Vec::new();
     if app.show_side && !p.nodes.is_empty() {
         let n = &p.nodes[app.sel.min(p.nodes.len() - 1)];
+        let label = |k: &str| Seg(format!("{k}  "), Some(Color::DarkGrey), false, true);
+        // 一行「標籤  值」;值太長就折行，續行對齊值的起點
+        let kv = |side: &mut Vec<Vec<Seg>>, k: &str, v: &str, color: Option<Color>| {
+            let lw = str_width(k) + 2;
+            for (i, l) in wrap(v, side_w.saturating_sub(lw)).into_iter().enumerate() {
+                let head = if i == 0 {
+                    label(k)
+                } else {
+                    seg(" ".repeat(lw))
+                };
+                side.push(vec![head, Seg(l, color, false, false)]);
+            }
+        };
         side.push(vec![Seg("為什麼在做這件".into(), None, false, true)]);
+        side.push(Vec::new());
         let ch = chain(p, &ix, app.sel.min(p.nodes.len() - 1));
         for (i, &c) in ch.iter().enumerate() {
             let last = i + 1 == ch.len();
@@ -783,61 +802,45 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             )]);
         }
         if let Some(why) = &n.why {
-            side.push(vec![seg(fit(&format!("理由:{why}"), side_w))]);
+            side.push(Vec::new());
+            kv(&mut side, "理由", why, None);
         }
+        side.push(Vec::new());
         if let Some(s) = &n.status {
-            side.push(vec![Seg(
-                format!("狀態:{s}"),
-                status_color(Some(s)),
-                false,
-                false,
-            )]);
+            kv(&mut side, "狀態", s, status_color(Some(s)));
         }
         let with = if n.with.is_empty() {
             String::new()
         } else {
-            format!(" · 一起:{}", n.with.join(" "))
+            format!(" · 一起 {}", n.with.join(" "))
         };
-        side.push(vec![seg(fit(
-            &format!("誰做:{}{with}", n.owner.as_deref().unwrap_or("沒人負責")),
-            side_w,
-        ))]);
+        kv(
+            &mut side,
+            "誰做",
+            &format!("{}{with}", n.owner.as_deref().unwrap_or("沒人負責")),
+            None,
+        );
         if let Some(hd) = &n.handoff {
-            side.push(vec![Seg(
-                fit(&format!("接手:{hd}"), side_w),
-                Some(Color::Yellow),
-                false,
-                false,
-            )]);
+            kv(&mut side, "接手", hd, Some(Color::Yellow));
         }
         let tm: Vec<String> = [("開始", &n.start), ("更新", &n.updated), ("預計", &n.eta)]
             .iter()
             .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k} {v}")))
             .collect();
         if !tm.is_empty() {
-            side.push(vec![Seg(
-                fit(&format!("時間:{}", tm.join(" · ")), side_w),
-                Some(Color::DarkGrey),
-                false,
-                false,
-            )]);
+            kv(&mut side, "時間", &tm.join(" · "), Some(Color::DarkGrey));
         }
         if let Some((wq, rq)) = app.dm_of(n.owner.as_deref()) {
             let f = |v: Option<u32>| v.map(|x| x.to_string()).unwrap_or_else(|| "?".into());
-            side.push(vec![seg(format!(
-                "DM({}):待審 {} · 已讀未結 {}",
-                n.owner.as_deref().unwrap_or(""),
-                f(wq),
-                f(rq)
-            ))]);
+            kv(
+                &mut side,
+                &format!("DM({})", n.owner.as_deref().unwrap_or("")),
+                &format!("待審 {} · 已讀未結 {}", f(wq), f(rq)),
+                None,
+            );
         }
         if let Some(ev) = &n.evidence {
-            side.push(vec![Seg(
-                fit(&format!("證據:{ev}"), side_w),
-                Some(Color::DarkGrey),
-                false,
-                false,
-            )]);
+            kv(&mut side, "證據", ev, Some(Color::DarkGrey));
         }
     }
 
@@ -855,7 +858,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             let mut line = tree_lines.get(i).cloned().unwrap_or_default();
             let used: usize = line.iter().map(|s| str_width(&s.0)).sum();
             line.push(seg(" ".repeat(tree_w.saturating_sub(used))));
-            line.push(Seg(" │ ".into(), Some(Color::DarkGrey), false, false));
+            line.push(Seg(" │  ".into(), Some(Color::DarkGrey), false, false));
             line.extend(side.get(i).cloned().unwrap_or_default());
             out.push(line);
         }
@@ -1393,6 +1396,45 @@ mod tests {
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
         );
         assert!(!app.fleet_open);
+    }
+
+    /// Andy 11-12 13:5x:右欄標題 / 內容 / 理由要有空格與空行，理由折行不截斷
+    #[test]
+    fn side_panel_has_breathing_room() {
+        let mut app = empty_app();
+        app.err = None;
+        let why = "要考慮每個aib艙、每席ai可能重開不同，所以要能即時接上".repeat(3);
+        app.plan = parse(&format!(
+            r#"{{"nodes":[{{"id":"V","parent":null,"kind":"vision","title":"總大綱","why":"{why}"}}]}}"#
+        ))
+        .unwrap();
+        let f = frame(&app, 120, 40);
+        let side: Vec<String> = f
+            .iter()
+            .map(|l| l.iter().map(|g| g.0.as_str()).collect::<String>())
+            .filter_map(|t| t.split_once(" │  ").map(|(_, r)| r.to_string()))
+            .collect();
+        assert_eq!(side[0], "為什麼在做這件");
+        assert_eq!(side[1], "", "標題下空一行");
+        assert_eq!(side[2], "總大綱");
+        assert_eq!(side[3], "", "理由前空一行");
+        assert!(side[4].starts_with("理由  要考慮"), "{}", side[4]);
+        assert!(
+            side[5].starts_with("      "),
+            "理由續行對齊值的起點:{}",
+            side[5]
+        );
+        let joined: String = side[4..]
+            .iter()
+            .take_while(|l| !l.is_empty())
+            .map(|l| l.trim_start_matches("理由").trim())
+            .collect();
+        assert_eq!(joined, why, "理由不截斷");
+        let who = side
+            .iter()
+            .position(|l| l.starts_with("誰做  沒人負責"))
+            .expect("誰做");
+        assert_eq!(side[who - 1], "", "細節前空一行");
     }
 
     #[test]
