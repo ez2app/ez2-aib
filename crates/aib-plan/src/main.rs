@@ -1548,7 +1548,11 @@ mod tests {
             .is_some_and(|n| n.starts_with("跳到:席位接續 v2")));
         let f = frame(&app, 100, 40);
         assert!(
-            (0..8).any(|y| text(&f, y).contains("跳到:席位接續 v2")),
+            (0..8).any(|y| f[y]
+                .iter()
+                .map(|g| g.0.as_str())
+                .collect::<String>()
+                .contains("跳到:席位接續 v2")),
             "畫面上看得到跳到哪"
         );
         assert!(app.open.contains("V") && app.open.contains("G"), "祖先展開");
