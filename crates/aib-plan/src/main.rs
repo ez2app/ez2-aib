@@ -193,6 +193,10 @@ struct Hits {
     mainline_y: Option<usize>,
     /// 一開始主軸那一行(行尾「全艙判斷」,點了開合全艙)
     fleet_y: Option<usize>,
+    /// 「起點」那一行(點了跳到樹上對應的項目)
+    start_y: Option<usize>,
+    /// 目前那一行「▸ 理由」從第幾格起(點那裡才開合;前面點了跳到樹上)
+    toggle_x: Option<usize>,
     toolbar: String,
     tree_top: usize,
     tree_rows: Vec<usize>,
@@ -216,9 +220,26 @@ const TOOLBAR_KEYS: [(&str, char); 10] = [
 /// 滑鼠點擊：工具列的字 = 按那個鍵;樹上的列 = 選取並展開 / 收合。回傳 false = 要離開。
 fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     let h = app.hits.borrow().clone();
+    // Andy 11-12 14:5x:點「起點 / 目前」帶到下方樹上對應的項目;點的當下才比對，主軸換了就跳到新的
+    if h.start_y == Some(y) {
+        let item = app
+            .mainline
+            .as_ref()
+            .and_then(|m| m.first.as_ref())
+            .map(|e| e.item.clone());
+        return jump_to(app, item.as_deref());
+    }
     if h.mainline_y == Some(y) {
-        app.main_open = !app.main_open;
-        return true;
+        if h.toggle_x.is_some_and(|tx| x >= tx) {
+            app.main_open = !app.main_open;
+            return true;
+        }
+        let item = app
+            .mainline
+            .as_ref()
+            .and_then(|m| m.now.as_ref())
+            .map(|e| e.item.clone());
+        return jump_to(app, item.as_deref());
     }
     if h.fleet_y == Some(y) {
         app.fleet_open = !app.fleet_open;
@@ -259,6 +280,69 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
                 }
             }
         }
+    }
+    true
+}
+
+/// 主軸那句話最像樹上哪一項:相鄰兩字重疊(以較短的一邊為分母)+ 同一個 #PR 號加分;太不像就不跳
+fn best_node(plan: &Plan, item: &str) -> Option<usize> {
+    fn grams(s: &str) -> HashSet<(char, char)> {
+        let cs: Vec<char> = s
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        cs.windows(2).map(|w| (w[0], w[1])).collect()
+    }
+    fn prs(s: &str) -> HashSet<String> {
+        s.split(|c: char| !(c == '#' || c.is_ascii_digit()))
+            .filter(|w| w.len() > 1 && w.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    }
+    let (g, pr) = (grams(item), prs(item));
+    if g.is_empty() {
+        return None;
+    }
+    let mut best: Option<(f64, usize)> = None;
+    for (i, n) in plan.nodes.iter().enumerate() {
+        let text = format!("{} {}", n.title, n.why.as_deref().unwrap_or(""));
+        let h = grams(&n.title);
+        if h.is_empty() {
+            continue;
+        }
+        let mut score = g.intersection(&h).count() as f64 / g.len().min(h.len()) as f64;
+        if !pr.is_empty() && !pr.is_disjoint(&prs(&text)) {
+            score += 0.5;
+        }
+        if best.is_none_or(|(b, _)| score > b) {
+            best = Some((score, i));
+        }
+    }
+    best.filter(|(s, _)| *s >= 0.25).map(|(_, i)| i)
+}
+
+/// 跳到那一項：展開祖先、選它;被篩選藏起來就清掉篩選。找不到對應的就不動
+fn jump_to(app: &mut App, item: Option<&str>) -> bool {
+    let Some(idx) = item.and_then(|t| best_node(&app.plan, t)) else {
+        return true;
+    };
+    let ix = index(&app.plan);
+    let mut cur = app.plan.nodes[idx].parent.clone();
+    while let Some(pid) = cur {
+        app.open.insert(pid.clone());
+        cur = ix
+            .by
+            .get(&pid)
+            .and_then(|&i| app.plan.nodes[i].parent.clone());
+    }
+    app.show_tree = true;
+    app.sel = idx;
+    if !flatten(&app.plan, &ix, &app.open, &app.filter)
+        .iter()
+        .any(|r| r.idx == idx)
+    {
+        app.filter = Filter::default();
     }
     true
 }
@@ -667,6 +751,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // Andy 11-12 13:1x:最上面兩行 = 本席一開始主軸 / 目前開發主軸(開始時間)/現在時間
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
     let (mut mainline_y, mut fleet_y) = (None, None);
+    let (mut start_y, mut toggle_x) = (None, None);
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
         let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
@@ -708,6 +793,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         rows[0].push(seg(" ".repeat(gap)));
         rows[0].extend(tail);
         mainline_y = Some(out.len() + 2);
+        start_y = Some(out.len() + 1);
+        toggle_x = rows[2].last().filter(|g| g.0.contains("理由")).map(|_| {
+            str_width(&rows[2].iter().map(|g| g.0.as_str()).collect::<String>())
+                - str_width("  ▸ 理由")
+        });
         out.extend(rows);
         if app.fleet_open {
             out.push(Vec::new());
@@ -723,6 +813,8 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
         mainline_y,
         fleet_y,
+        start_y,
+        toggle_x,
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -1364,7 +1456,10 @@ mod tests {
         assert!(text(&f, 4).is_empty());
         assert_eq!(app.hits.borrow().mainline_y, Some(3));
         // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
-        assert!(on_click(&mut app, 3, 3));
+        // 點「▸ 理由」那幾格才開合(前面點了是跳到樹上)
+        let tx = app.hits.borrow().toggle_x.unwrap();
+        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 3)));
+        assert!(on_click(&mut app, tx + 3, 3));
         let f = frame(&app, 100, 40);
         assert!(text(&f, 3).ends_with("  ▾ 理由"));
         let pad = " ".repeat(at(2, "席位接續"));
@@ -1378,6 +1473,54 @@ mod tests {
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
         );
         assert!(!app.main_open);
+    }
+
+    /// Andy 11-12 14:5x:點「起點 / 目前」帶到樹上對應的項目;主軸換了，點下去就是新的那一項
+    #[test]
+    fn clicking_start_or_current_jumps_to_the_matching_item() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[
+            {"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+            {"id":"G","parent":"V","kind":"goal","title":"進度、期望值與席位"},
+            {"id":"S","parent":"G","kind":"task","title":"席位接續 v2:重開也能即時接上"},
+            {"id":"H","parent":"G","kind":"task","title":"交接檢查 Rust 化"},
+            {"id":"P","parent":"V","kind":"task","title":"aib now 歷史","why":"PR #714"}]}"#,
+        )
+        .unwrap();
+        let now = 1_794_460_800;
+        app.now_secs = now;
+        let e = |item: &str| mainline::Entry {
+            item: item.into(),
+            started_at: now - 60,
+            seen: now - 60,
+            review: None,
+            track: None,
+        };
+        app.mainline = Some(Mainline {
+            first: Some(e("席位接續 v2 決定已寫,等 Andy 看")),
+            now: Some(e("交接檢查整支 Rust 化:排程已寫")),
+            ..Default::default()
+        });
+        let _ = frame(&app, 100, 40);
+        let (sy, my) = {
+            let h = app.hits.borrow();
+            (h.start_y.unwrap(), h.mainline_y.unwrap())
+        };
+        assert!(on_click(&mut app, 5, sy));
+        assert_eq!(app.plan.nodes[app.sel].id, "S");
+        assert!(app.open.contains("V") && app.open.contains("G"), "祖先展開");
+        assert!(on_click(&mut app, 5, my));
+        assert_eq!(app.plan.nodes[app.sel].id, "H");
+        // 主軸即時換了 ⇒ 同一行點下去跳到新的那一項(#PR 號對得上加分)
+        app.mainline.as_mut().unwrap().now = Some(e("#714 修 CI 紅燈"));
+        assert!(on_click(&mut app, 5, my));
+        assert_eq!(app.plan.nodes[app.sel].id, "P");
+        // 對不到就不動
+        app.mainline.as_mut().unwrap().now = Some(e("吃午餐"));
+        assert!(on_click(&mut app, 5, my));
+        assert_eq!(app.plan.nodes[app.sel].id, "P");
     }
 
     /// Andy 11-12 13:4x:全艙判斷(f 或點)—— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
