@@ -6,6 +6,7 @@
 
 pub mod autofix;
 pub mod mainline;
+pub mod seatview;
 pub mod shadow;
 
 use serde::Deserialize;

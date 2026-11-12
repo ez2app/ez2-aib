@@ -9,6 +9,7 @@
 //! - --only-seat(Andy 11-13 非艦長畫面):樹固定只留這幾席的節點(與上層);s(鍵盤或點工具列)不輪替、
 //!   r 清除也留著;全艙那一列不畫;建議 / 影子續跑只算這幾席。逗號分隔或重複帶(分身繼承:519d0,a63ab)。
 //!   沒帶 --seat 時,最上面兩行主軸用清單第一席。艦長畫面不帶這個旗標。
+//! - 席位視角(`aib seatview on`,窗選項 @aib_layout=seat):沒帶 --only-seat 時自動固定在 --seat 那一席。
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
@@ -36,6 +37,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::autofix::{self, Fixes};
 use aib_plan::mainline::{self, Mainline};
+use aib_plan::seatview;
 use aib_plan::shadow::{self, Savings};
 
 fn epoch_now() -> i64 {
@@ -76,6 +78,22 @@ fn tmux_seat() -> Option<String> {
         return None;
     }
     mainline::seat_from_tmux(&String::from_utf8_lossy(&o.stdout))
+}
+
+/// 要固定的席:--only-seat 有帶就照帶的;沒帶而且這一格所在的窗是席位視角(窗選項 @aib_layout=seat,
+/// `aib seatview on`)⇒ 固定在 --seat 那一席。窗版面只在啟動時問一次(切換時 aib-seatview 會重開這格)。
+fn auto_pin(
+    only: &[String],
+    seat: Option<&str>,
+    layout: impl FnOnce() -> Option<seatview::Layout>,
+) -> Vec<String> {
+    if !only.is_empty() {
+        return only.to_vec();
+    }
+    match seat {
+        Some(s) if layout() == Some(seatview::Layout::Seat) => vec![s.to_string()],
+        _ => Vec::new(),
+    }
 }
 
 /// <狀態根>/state:跟 aib 一樣先看 EZ2_AIB_STATE_ROOT
@@ -1592,7 +1610,11 @@ fn main() {
     if args.seat.is_none() {
         args.seat = args.only_seat.first().cloned().or_else(tmux_seat);
     }
-    app.pin = args.only_seat.clone();
+    app.pin = auto_pin(&args.only_seat, args.seat.as_deref(), || {
+        std::env::var("TMUX_PANE")
+            .ok()
+            .map(|p| seatview::pane_layout(&seatview::RealTmux, &p))
+    });
     app.filter = app.base_filter();
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
@@ -2028,6 +2050,25 @@ mod tests {
         // 參數:空項是錯,不靜默變全部
         assert!(seat_list("a9136,").is_err());
         assert!(seat_list("").is_err());
+    }
+
+    /// 席位視角:窗是 seat ⇒ 固定在 --seat;--only-seat 優先;完整版面 / 不在 tmux / 沒有席 ⇒ 不固定
+    #[test]
+    fn seat_layout_pins_to_the_seat() {
+        use seatview::Layout::{Full, Seat};
+        let only = vec!["519d0".to_string(), "a63ab".to_string()];
+        assert_eq!(auto_pin(&[], Some("a9136"), || Some(Seat)), ["a9136"]);
+        assert_eq!(auto_pin(&only, Some("a9136"), || Some(Seat)), only);
+        assert!(auto_pin(&[], Some("a9136"), || Some(Full)).is_empty());
+        assert!(auto_pin(&[], Some("a9136"), || None).is_empty());
+        assert!(auto_pin(&[], None, || Some(Seat)).is_empty());
+        // --only-seat 有帶就不去問 tmux
+        let asked = std::cell::Cell::new(false);
+        let _ = auto_pin(&only, Some("a9136"), || {
+            asked.set(true);
+            Some(Seat)
+        });
+        assert!(!asked.get());
     }
 
     /// Andy 11-12 13:1x:有 --seat ⇒ 最上面兩行是一開始 / 目前主軸，下一行空白，再來才是選單;點選單照樣對得到
