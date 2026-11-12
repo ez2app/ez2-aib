@@ -1326,7 +1326,7 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
     /// Andy 11-12 15:0x:主機群 —— 每台一個直立機箱(預設收合),真實負載、功能;點了看明細，再點返回
     #[test]
     fn the_top_edge_carries_a_badge_m_w_l_g_or_the_ez2_tag() {
-        let mut mac = host("mini", None, false);
+        let mac = host("mini", None, false);
         let mut win = host("win", None, false);
         win.kind = Kind::Windows;
         let mut lin = host("eu01", None, false);
