@@ -747,13 +747,18 @@ pub enum Told {
 /// Say `line` about an operation: on standard error for root on the host, into the
 /// host's [`NOTES`] only when a customer's key approved it.
 pub fn tell(place: &OpPlace, approval: &str, line: &str) -> Told {
+    tell_in(&place.ops_dir, approval, line)
+}
+
+/// [`tell`] for one that has only the operations folder (`opstop`'s progress writer).
+pub fn tell_in(ops_dir: &Path, approval: &str, line: &str) -> Told {
     if approval == BY_CUSTOMER_KEY {
         let text = format!("{} {line}\n", crate::probe::unix_now());
         let wrote = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(place.ops_dir.join(NOTES))
+            .open(ops_dir.join(NOTES))
             .and_then(|mut f| f.write_all(text.as_bytes()));
         return if wrote.is_ok() { Told::Log } else { Told::Lost };
     }
@@ -920,6 +925,7 @@ fn journaled<P, T>(
         std::process::id(),
         crate::probe::unix_now(),
         op::HEARTBEAT_SECS,
+        approval,
     );
     let changed = change(op_id, input);
     crate::opstop::end();
