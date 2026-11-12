@@ -312,8 +312,8 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     d = now_dir(state_root)
     os.makedirs(d, exist_ok=True)
     at = int(now if now is not None else time.time())
+    prev = read(code, state_root=state_root) or {}
     if started_at is None:
-        prev = read(code, state_root=state_root) or {}
         if new or not prev or prev.get("idle"):
             started_at = at
         else:
@@ -322,11 +322,43 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
            "state": state if state in SETTABLE_STATES else "busy",
            "started_at": int(started_at), "at": at, "code": code}
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
+    if prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
+        append_history(d, code, rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(line_of(item, done, total, rec["state"], started_at=rec["started_at"], at=rec["at"]) + "\n")
     os.replace(tmp, os.path.join(d, code + ".line"))
     return rec
+
+
+HISTORY_SUFFIX = ".history.jsonl"
+HISTORY_MAX_BYTES = 256 * 1024
+HISTORY_KEEP = 300
+
+
+def history_path(code, state_root=None):
+    return os.path.join(now_dir(state_root), code + HISTORY_SUFFIX)
+
+
+def append_history(d, code, rec):
+    """主項目換了(文字或啟動時間不同)就記一行 {"item","started_at","seen"}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
+    讀者:aib-plan 最上面「本席AI一開始主軸 / 目前開發主軸」(crates/aib-plan/src/mainline.rs,同格式)。
+    超過 HISTORY_MAX_BYTES 只留最後 HISTORY_KEEP 行。寫失敗不影響 aib now 本身。"""
+    path = os.path.join(d, code + HISTORY_SUFFIX)
+    line = json.dumps({"item": rec["item"], "started_at": rec["started_at"], "seen": rec["at"]},
+                      ensure_ascii=False)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        if os.path.getsize(path) > HISTORY_MAX_BYTES:
+            with open(path, encoding="utf-8") as fh:
+                keep = fh.readlines()[-HISTORY_KEEP:]
+            tmp = path + ".%d" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(keep)
+            os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def read(code, *, state_root=None):
