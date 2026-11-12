@@ -533,6 +533,77 @@ fn remove_unwanted_plugins(runner: &mut impl Runner, spec: &SiteSpec) -> Result<
     Ok(())
 }
 
+/// The template's must-use file that sends every administrator to set up two-factor
+/// sign-in before any other admin page. Andy 11-11 07:30: new sites do not start with
+/// two-factor sign-in forced; the file is moved aside, not deleted (e1a 11-12 10:09).
+pub const FORCED_2FA_MU: &str = "ez2-2fa-require-admin.php";
+/// Where files taken off a new site are kept inside its container.
+pub const SITE_OFF: &str = "/root/ez2-site-off";
+/// The two-factor plugins: kept installed for the customer to turn on, but not active on
+/// a new site. The first slug is the WebAuthn provider; f1fae read both slugs off the
+/// template 11-12 10:1x.
+pub const TWO_FACTOR_OFF: [&str; 2] = ["two-factor-provider-webauthn", "two-factor"];
+
+/// The active plugins, by name, read from the plugin list (not `is-installed`, whose
+/// failure cannot tell "not there" from "could not ask").
+fn active_plugins(runner: &mut impl Runner, spec: &SiteSpec) -> Result<Vec<String>, String> {
+    let out = runner
+        .run(&wp(
+            spec,
+            &["plugin", "list", "--status=active", "--field=name"],
+        ))
+        .map_err(|e| format!("identity_unchecked: active plugins: {e}"))?;
+    Ok(out
+        .lines()
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// The site's must-use plugin folder, inside its container.
+fn mu_dir(spec: &SiteSpec) -> String {
+    format!("/var/www/{}/wp-content/mu-plugins", spec.code)
+}
+
+/// The forced two-factor file moved aside (to [`SITE_OFF`], with the time), and gone from
+/// the must-use folder after; the two-factor plugins deactivated and not active after.
+fn two_factor_not_forced(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
+    let file = format!("{}/{FORCED_2FA_MU}", mu_dir(spec));
+    if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let to = format!("{SITE_OFF}/{FORCED_2FA_MU}.{stamp}");
+        runner
+            .run(&in_ct(spec.ct, &["mkdir", "-p", SITE_OFF]))
+            .and_then(|_| runner.run(&in_ct(spec.ct, &["mv", &file, &to])))
+            .map_err(|e| format!("identity_failed: move {FORCED_2FA_MU} aside: {e}"))?;
+        if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {
+            return Err(format!(
+                "identity_not_set: {FORCED_2FA_MU} is still a must-use file"
+            ));
+        }
+    }
+    let before = active_plugins(runner, spec)?;
+    for slug in TWO_FACTOR_OFF {
+        if !before.iter().any(|p| p == slug) {
+            continue;
+        }
+        runner
+            .run(&wp(spec, &["plugin", "deactivate", slug]))
+            .map_err(|e| format!("identity_failed: deactivate plugin {slug}: {e}"))?;
+    }
+    let after = active_plugins(runner, spec)?;
+    if let Some(slug) = TWO_FACTOR_OFF
+        .iter()
+        .find(|s| after.iter().any(|p| p == *s))
+    {
+        return Err(format!("identity_not_set: plugin {slug} is still active"));
+    }
+    Ok(())
+}
+
 /// The identity: keys and salts anew, address and title, the first administrators with
 /// their own passwords, the installer's administrator gone, the notice address.
 pub fn identity_step(
@@ -548,6 +619,7 @@ pub fn identity_step(
         .run(&wp(spec, &["config", "shuffle-salts"]))
         .map_err(|e| format!("identity_failed: shuffle-salts: {e}"))?;
     remove_unwanted_plugins(runner, spec)?;
+    two_factor_not_forced(runner, spec)?;
     for (key, value) in [("siteurl", &url), ("home", &url), ("blogname", &title)] {
         runner
             .run(&wp(spec, &["option", "update", key, value]))
@@ -744,6 +816,14 @@ mod tests {
         plugins: Vec<String>,
         /// an uninstall that says it worked but leaves the plugin
         sticky_plugin: bool,
+        /// the template's forced two-factor file is in the must-use folder
+        mu_forced: bool,
+        /// a move that says it worked but leaves the forced two-factor file
+        sticky_mu: bool,
+        /// active plugins (the template's two-factor ones)
+        active: Vec<String>,
+        /// a deactivate that says it worked but leaves the plugin active
+        sticky_active: bool,
     }
 
     impl Site {
@@ -761,6 +841,10 @@ mod tests {
                 broken: None,
                 plugins: NOT_ON_NEW_SITES.iter().map(|p| (*p).to_owned()).collect(),
                 sticky_plugin: false,
+                mu_forced: true,
+                sticky_mu: false,
+                active: TWO_FACTOR_OFF.iter().map(|p| (*p).to_owned()).collect(),
+                sticky_active: false,
             }
         }
         /// the arguments after the site software's `--path=`
@@ -778,6 +862,19 @@ mod tests {
                 return Err("broken".to_owned());
             }
             let Some(a) = Self::wp_args(argv) else {
+                if line.contains(FORCED_2FA_MU) {
+                    if line.contains(" test -e ") {
+                        return if self.mu_forced {
+                            Ok(String::new())
+                        } else {
+                            Err("absent".to_owned())
+                        };
+                    }
+                    if line.contains(" mv ") && !self.sticky_mu {
+                        self.mu_forced = false;
+                    }
+                    return Ok(String::new());
+                }
                 let asks = line.contains("is-enabled") || line.contains("is-active");
                 if asks && !self.enabled {
                     return Err("disabled".to_owned());
@@ -848,6 +945,15 @@ mod tests {
                     } else {
                         Err("not installed".to_owned())
                     }
+                }
+                ["plugin", "list", "--status=active", "--field=name"] => {
+                    Ok(self.active.iter().map(|p| format!("{p}\n")).collect())
+                }
+                ["plugin", "deactivate", slug] => {
+                    if !self.sticky_active {
+                        self.active.retain(|p| p != slug);
+                    }
+                    Ok(String::new())
                 }
                 ["plugin", "uninstall", slug, "--deactivate"] => {
                     if !self.sticky_plugin {
@@ -1170,6 +1276,70 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("is still there"), "{err}");
+    }
+
+    /// Andy 11-11 07:30「2 不要先啟用2FA」: the template's forced two-factor file is moved
+    /// aside (not deleted) and the two-factor plugins deactivated (kept installed for the
+    /// customer), before any address changes; a site without them is left alone; a file
+    /// or a plugin that stays is refused (e1a 11-12 10:09).
+    #[test]
+    fn two_factor_sign_in_is_not_forced_on_a_new_site() {
+        let mut site = Site::new();
+        identity_step(&mut site, &scratch("no2fa"), &spec(true), &mut json!({})).unwrap();
+        assert!(!site.mu_forced);
+        assert!(site.active.is_empty(), "{:?}", site.active);
+        let at = |what: &str| site.calls.iter().position(|c| c.contains(what)).unwrap();
+        let mv = at(&format!(" mv /var/www/s-b3test/wp-content/mu-plugins/{FORCED_2FA_MU} {SITE_OFF}/{FORCED_2FA_MU}."));
+        assert!(mv < at("option update siteurl"));
+        assert!(at("plugin deactivate two-factor-provider-webauthn") < at("option update siteurl"));
+        assert!(at("plugin deactivate two-factor") < at("option update siteurl"));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains(" rm ") && c.contains(FORCED_2FA_MU)));
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains("plugin uninstall two-factor")));
+        // a site without them: nothing is moved or deactivated
+        let mut site = Site::new();
+        site.mu_forced = false;
+        site.active.clear();
+        identity_step(&mut site, &scratch("no2fa2"), &spec(true), &mut json!({})).unwrap();
+        assert!(!site
+            .calls
+            .iter()
+            .any(|c| c.contains(" mv ") || c.contains("plugin deactivate")));
+        // a forced file that stays is refused
+        let mut site = Site::new();
+        site.sticky_mu = true;
+        let err =
+            identity_step(&mut site, &scratch("no2fa3"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("is still a must-use file"), "{err}");
+        // a plugin that stays active is refused
+        let mut site = Site::new();
+        site.sticky_active = true;
+        let err =
+            identity_step(&mut site, &scratch("no2fa4"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("is still active"), "{err}");
+        // a deactivate that fails names the plugin
+        let mut site = Site::new();
+        site.broken = Some("plugin deactivate two-factor-provider-webauthn");
+        let err =
+            identity_step(&mut site, &scratch("no2fa5"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_failed: deactivate plugin two-factor-provider-webauthn"),
+            "{err}"
+        );
+        // the active list that cannot be read stops, it is not taken as empty
+        let mut site = Site::new();
+        site.broken = Some("plugin list --status=active");
+        let err =
+            identity_step(&mut site, &scratch("no2fa6"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with("identity_unchecked: active plugins"),
+            "{err}"
+        );
     }
 
     #[test]

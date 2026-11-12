@@ -1762,6 +1762,30 @@ jobs:
           hk siteidentity.rs '            return Err(format!("identity_not_set: plugin {slug} is still there"));' \
              '            let _ = slug; // knife' \
              the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # Andy 11-11 07:30 no forced 2FA (e1a 11-12 10:09): the forced file is copied, not moved
+          hk siteidentity.rs '            .and_then(|_| runner.run(&in_ct(spec.ct, &["mv", &file, &to])))' \
+             '            .and_then(|_| runner.run(&in_ct(spec.ct, &["cp", &file, &to]))) // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: a forced file still there after the move is taken as gone
+          hk siteidentity.rs '        if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {' \
+             '        if false { // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: the two-factor plugins are not deactivated
+          hk siteidentity.rs '            .run(&wp(spec, &["plugin", "deactivate", slug]))' \
+             '            .run(&wp(spec, &["plugin", "status", slug])) // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: a plugin still active after the deactivate is taken as off
+          hk siteidentity.rs '        return Err(format!("identity_not_set: plugin {slug} is still active"));' \
+             '        let _ = slug; // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: the identity step does not call it
+          hk siteidentity.rs '    two_factor_not_forced(runner, spec)?;' \
+             '    if false { two_factor_not_forced(runner, spec)?; } // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA: an active list that cannot be read counts as none active
+          hk siteidentity.rs '        .map_err(|e| format!("identity_unchecked: active plugins: {e}"))?;' \
+             '        .unwrap_or_default(); // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
           # e1a 11-12: health asks the REST address, not the front page
           hk sitelive.rs '    let url = format!("https://{host}/wp-json/");' \
              '    let url = format!("https://{host}/"); // knife' \
