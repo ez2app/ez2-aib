@@ -82,10 +82,13 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.kind = Kind::Server;
         host.role = h["role"].as_str().unwrap_or("主機").to_string();
         host.poll = SERVER_POLL;
-        // 043dd #726 L3:正式 / 客戶主機預設不探(對方登入紀錄、頻率限制都看得到),hosts.json 寫 "poll": true 才探
-        host.watch = h["poll"].as_bool().unwrap_or(false);
         host.identity = h["identity"].as_str().map(str::to_string);
         host.tag = h["tag"].as_str().map(str::to_string);
+        // 043dd #726 L3 + Andy 11-12 21:5x:賣給客戶的主機(tag Ez2)預設不探(對方登入紀錄看得到),
+        // 自家主機預設探;hosts.json 的 "poll": true / false 蓋過預設
+        host.watch = h["poll"]
+            .as_bool()
+            .unwrap_or(host.tag.as_deref() != Some("Ez2"));
         host.ci = h["ci"].as_bool().unwrap_or(false);
         out.push(host);
     }
@@ -1439,25 +1442,36 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
     }
 
     #[test]
-    fn other_servers_are_listed_but_not_probed_unless_poll_is_true() {
+    fn customer_servers_are_not_probed_by_default_and_poll_overrides() {
         let hs = hosts_from_config(
             r#"{"hosts":[{"name":"m","ssh":"m"}],
-                "servers":[{"name":"a","ssh":"x"},{"name":"b","ssh":"y","poll":true}]}"#,
+                "servers":[{"name":"own","ssh":"x"},{"name":"cust","ssh":"y","tag":"Ez2"},
+                           {"name":"cust2","ssh":"z","tag":"Ez2","poll":true},
+                           {"name":"own2","ssh":"w","poll":false}]}"#,
         );
         let watch: Vec<(&str, bool)> = hs.iter().map(|h| (h.name.as_str(), h.watch)).collect();
-        assert_eq!(watch, [("m", true), ("a", false), ("b", true)]);
+        assert_eq!(
+            watch,
+            [
+                ("m", true),
+                ("own", true),
+                ("cust", false),
+                ("cust2", true),
+                ("own2", false)
+            ]
+        );
         assert_eq!(hs[2].poll, SERVER_POLL);
         assert!(
             SERVER_POLL >= Duration::from_secs(300),
             "其他主機最快 5 分鐘一次"
         );
         // 不探的那台在機箱與明細都寫「不探」,不是「…」
-        let row: String = tower(&hs[1], 1)[5]
+        let row: String = tower(&hs[2], 2)[5]
             .iter()
             .map(|(t, _)| t.as_str())
             .collect();
         assert!(row.contains("不探"), "{row}");
-        let detail: String = host_lines(&hs[1], 1, 100, 0, 0)
+        let detail: String = host_lines(&hs[2], 2, 100, 0, 0)
             .iter()
             .flatten()
             .map(|(t, _)| t.as_str())
