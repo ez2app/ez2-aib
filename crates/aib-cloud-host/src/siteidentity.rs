@@ -11,7 +11,8 @@
 //! also closes a gap f1fae's ten-category map found: the site software's own scheduler
 //! runs only when a page is visited, so it is switched off (`DISABLE_WP_CRON`) and a timer
 //! in the container runs the due events every five minutes, as the site's own user; the
-//! timer must be enabled and active afterwards.
+//! timer must be enabled and active afterwards. The constant and both unit files are read
+//! back as written; a site where all of it is already in place is left alone.
 //!
 //! **Identity.** Everything that came from the template and would be the same on every
 //! site is made the site's own: the keys and salts are made anew, the address and the
@@ -24,7 +25,9 @@
 //! site's address and administrator address — Andy: new sites carry no backup plugin;
 //! f1fae found both active on e1a 11-12) are deactivated and deleted first, before any
 //! address changes, and must be gone after. The site's notice address is the customer's when the opening
-//! record carries one, else the first administrator's (the template's is ours).
+//! record carries one, else the first administrator's (the template's is ours). The
+//! must-load plugin of the one-time login is put in place and read back
+//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
 //!
 //! The installer's own output goes to a log in the container and only its exit code and
 //! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
@@ -151,14 +154,26 @@ pub fn cron_timer(code: &str) -> String {
     )
 }
 
-/// The site software's scheduler off, the timer in its place, both read back.
-fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
-    runner
-        .run(&wp(
-            spec,
-            &["config", "set", "DISABLE_WP_CRON", "true", "--raw"],
-        ))
-        .map_err(|e| format!("cron_failed: config set: {e}"))?;
+/// The two unit files of the scheduler in the container, with what each must hold.
+fn cron_files(code: &str) -> [(String, String); 2] {
+    let unit = cron_unit(code);
+    [
+        (
+            format!("/etc/systemd/system/{unit}.service"),
+            cron_service(code),
+        ),
+        (
+            format!("/etc/systemd/system/{unit}.timer"),
+            cron_timer(code),
+        ),
+    ]
+}
+
+/// Whether the scheduler is in place as [`scheduler`] leaves it, read back: the site
+/// software's own scheduler off, both unit files exactly as written, the timer enabled and
+/// active. The fixed word says what is not: `cron_unchecked` could not be read,
+/// `cron_not_set` the constant, `cron_unit_differs` a file, `cron_not_running` the timer.
+fn scheduler_in_place(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
     let got = runner
         .run(&wp(spec, &["config", "get", "DISABLE_WP_CRON"]))
         .map_err(|e| format!("cron_unchecked: config get: {e}"))?;
@@ -168,28 +183,15 @@ fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
             got.trim()
         ));
     }
-    let unit = cron_unit(&spec.code);
-    for (file, text) in [
-        (
-            format!("/etc/systemd/system/{unit}.service"),
-            cron_service(&spec.code),
-        ),
-        (
-            format!("/etc/systemd/system/{unit}.timer"),
-            cron_timer(&spec.code),
-        ),
-    ] {
-        runner
-            .run_input(&in_ct(spec.ct, &["tee", &file]), text.as_bytes())
-            .map_err(|e| format!("cron_failed: {file}: {e}"))?;
+    for (file, text) in cron_files(&spec.code) {
+        let there = runner
+            .run(&in_ct(spec.ct, &["cat", &file]))
+            .map_err(|e| format!("cron_unchecked: {file}: {e}"))?;
+        if there != text {
+            return Err(format!("cron_unit_differs: {file}"));
+        }
     }
-    let timer = format!("{unit}.timer");
-    runner
-        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload"]))
-        .map_err(|e| format!("cron_failed: daemon-reload: {e}"))?;
-    runner
-        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
-        .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
+    let timer = format!("{}.timer", cron_unit(&spec.code));
     for (ask, want) in [("is-enabled", "enabled"), ("is-active", "active")] {
         let said = runner
             .run(&in_ct(spec.ct, &["systemctl", ask, &timer]))
@@ -202,6 +204,39 @@ fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The site software's scheduler off and the timer in its place, read back
+/// ([`scheduler_in_place`]). A site where it is already in place is left alone and the
+/// answer is `false`; otherwise everything is written again and `true` once it reads
+/// back. What cannot be read back after writing stops with its fixed word. The install
+/// runs it, and so does a restore before its tidying (`restorestepscmd`): a backup may
+/// bring back a `wp-config.php` without the scheduler switched off.
+pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<bool, String> {
+    // before writing, "could not read" only means "write it": the read after decides
+    if scheduler_in_place(runner, spec).is_ok() {
+        return Ok(false);
+    }
+    runner
+        .run(&wp(
+            spec,
+            &["config", "set", "DISABLE_WP_CRON", "true", "--raw"],
+        ))
+        .map_err(|e| format!("cron_failed: config set: {e}"))?;
+    for (file, text) in cron_files(&spec.code) {
+        runner
+            .run_input(&in_ct(spec.ct, &["tee", &file]), text.as_bytes())
+            .map_err(|e| format!("cron_failed: {file}: {e}"))?;
+    }
+    let timer = format!("{}.timer", cron_unit(&spec.code));
+    runner
+        .run(&in_ct(spec.ct, &["systemctl", "daemon-reload"]))
+        .map_err(|e| format!("cron_failed: daemon-reload: {e}"))?;
+    runner
+        .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
+        .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
+    scheduler_in_place(runner, spec)?;
+    Ok(true)
 }
 
 // ------------------------------------------------------------------ install
@@ -367,7 +402,7 @@ pub fn install_step(
     runner
         .run(&wp(spec, &["core", "is-installed"]))
         .map_err(|e| format!("install_not_done: the site software is not installed: {e}"))?;
-    scheduler(runner, spec)
+    scheduler(runner, spec).map(|_| ())
 }
 
 // ------------------------------------------------------------------ identity
@@ -659,6 +694,11 @@ pub fn identity_step(
     if back.trim() != notice {
         return Err("identity_not_set: admin_email reads otherwise".to_owned());
     }
+    // the one-time login (Andy 11-11 23:1x): the plugin that makes a link a direct login,
+    // in place and read back; the link itself comes from `site login-link`
+    let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)
+        .map_err(|e| format!("identity_failed: {e}"))?;
+    record["login_plugin"] = json!(plugin);
     let mut pending: Vec<String> = [fp_site_key(spec), mask_files(spec)]
         .into_iter()
         .map(|Pending::Later(w)| w.to_owned())
@@ -738,6 +778,12 @@ mod tests {
         sticky_email: bool,
         cron: Option<String>,
         enabled: bool,
+        /// the one-time login plugin in the site
+        mu: Option<Vec<u8>>,
+        /// files written with `tee`, read with `cat`
+        files: std::collections::BTreeMap<String, Vec<u8>>,
+        /// `tee` keeps something other than what it was fed
+        garble: bool,
         /// a command (joined argv contains it) that fails
         broken: Option<&'static str>,
         /// installed plugins (the template's backup plugin and its extension)
@@ -758,6 +804,9 @@ mod tests {
                 sticky_email: false,
                 cron: None,
                 enabled: false,
+                mu: None,
+                files: Default::default(),
+                garble: false,
                 broken: None,
                 plugins: NOT_ON_NEW_SITES.iter().map(|p| (*p).to_owned()).collect(),
                 sticky_plugin: false,
@@ -777,7 +826,28 @@ mod tests {
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
             }
+            if line.contains("ez2-onetime-login.php") {
+                let sha = self
+                    .mu
+                    .as_ref()
+                    .map(|b| format!("{}  x\n", crate::opstore::sha256_hex(b).unwrap()));
+                let reads_back = argv.len() >= 2 && argv[argv.len() - 2] == "sha256sum";
+                return match sha {
+                    Some(sha) => Ok(sha),
+                    None if reads_back => Err("no file".to_owned()),
+                    None => Ok("none\n".to_owned()),
+                };
+            }
             let Some(a) = Self::wp_args(argv) else {
+                if let [.., cat, file] = argv {
+                    if cat == "cat" {
+                        return self
+                            .files
+                            .get(file)
+                            .map(|b| String::from_utf8_lossy(b).into_owned())
+                            .ok_or("no such file".to_owned());
+                    }
+                }
                 let asks = line.contains("is-enabled") || line.contains("is-active");
                 if asks && !self.enabled {
                     return Err("disabled".to_owned());
@@ -865,6 +935,20 @@ mod tests {
             self.fed.push((line.clone(), input.to_vec()));
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
+            }
+            if line.contains("ez2-onetime-login.php") {
+                self.mu = Some(input.to_vec());
+                return Ok(String::new());
+            }
+            if let [.., tee, file] = argv {
+                if tee == "tee" {
+                    let kept = if self.garble {
+                        b"other".to_vec()
+                    } else {
+                        input.to_vec()
+                    };
+                    self.files.insert(file.clone(), kept);
+                }
             }
             Ok(if line.contains(" eval ") {
                 "set\n".to_owned()
@@ -1010,6 +1094,55 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduler_already_in_place_is_left_alone() {
+        let mut site = Site::new();
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        let written = site.fed.len();
+        let calls = site.calls.len();
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(false));
+        assert_eq!(site.fed.len(), written, "nothing written again");
+        let again = &site.calls[calls..];
+        assert!(
+            again
+                .iter()
+                .all(|c| !c.contains(" set ") && !c.contains("--now")),
+            "{again:#?}"
+        );
+        // one file changed since: everything is written again and read back
+        let timer = cron_files("s-b3test")[1].0.clone();
+        site.files.insert(timer.clone(), b"[Timer]\n".to_vec());
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        assert_eq!(site.files[&timer], cron_timer("s-b3test").as_bytes());
+        // and the constant switched back on since: the same
+        site.cron = Some(String::new());
+        assert_eq!(scheduler(&mut site, &spec(true)), Ok(true));
+        assert_eq!(site.cron.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_scheduler_is_read_back_as_written() {
+        // a unit file that does not hold what was written
+        let mut site = Site::new();
+        site.garble = true;
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unit_differs"), "{err}");
+        // a unit file that cannot be read back after writing
+        let mut site = Site::new();
+        site.broken = Some(" cat ");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unchecked"), "{err}");
+        // the constant that does not read as on
+        let mut site = Site::new();
+        site.broken = Some("set DISABLE_WP_CRON");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_failed"), "{err}");
+        let mut site = Site::new();
+        site.broken = Some("get DISABLE_WP_CRON");
+        let err = scheduler(&mut site, &spec(true)).unwrap_err();
+        assert!(err.starts_with("cron_unchecked"), "{err}");
+    }
+
+    #[test]
     fn an_installer_that_fails_is_still_taken_out_of_the_container() {
         let paths = scratch("setupfail");
         let mut site = Site::new();
@@ -1091,6 +1224,12 @@ mod tests {
         );
         assert_eq!(record["admin_email_from"], "customer");
         assert_eq!(record["admins"], json!(["ops", "ops2"]));
+        // the one-time login plugin is in the site (Andy 11-11: a link logs straight in)
+        assert_eq!(
+            site.mu.as_deref(),
+            Some(crate::loginlink::MU_PLUGIN.as_bytes())
+        );
+        assert_eq!(record["login_plugin"], "written");
         assert_eq!(
             site.users,
             ["ops", "ops2"],
