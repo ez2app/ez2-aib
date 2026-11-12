@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S14), hands what it saw to `aib_cloud::verify`, prints the
-//! verdicts. Nothing here writes or opens a connection; `--active` checks are a later
-//! slice. One check enters a site's container: S14 asks its scheduler timer's state and
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S15), hands what it saw to `aib_cloud::verify`, prints the
+//! verdicts. Nothing here writes, save one line per Cloudflare call in the Cloudflare
+//! ledger; `--active` checks are a later slice. One check asks Cloudflare: S15 lists the
+//! customer's zone, read only (`crate::cfdns::proxied_names`), to see that every record
+//! under the site's names goes through the proxy. One check enters a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
 //! customer's plugins and theme, each with a time limit and a cap on what is read. Nothing
 //! is run inside a quarantined container: S14 is left out for one.
@@ -94,6 +96,43 @@ pub(crate) fn s14_check(
         .ok();
     let events = runner.run(&wp(spec, &CRON_LIST)).ok();
     verify::s14_wp_cron(now, red_after, shown.as_deref(), events.as_deref())
+}
+
+/// S15 (E6 D1): every address record under the site's names is proxied at Cloudflare, so a
+/// lookup of the name never gives the host's own address. A grey record is red; anything
+/// that kept the zone from being read whole is unknown, never green. Also the grey names
+/// (names only, never what the records hold), for `site verify` to print; a customer's
+/// status does not show them.
+pub(crate) fn s15_dns_proxied(
+    found: Result<aib_cloud::sitedns::Proxied, String>,
+) -> (CheckResult, Vec<String>) {
+    use aib_cloud::sitedns::{self, Proxied};
+    let mut grey = Vec::new();
+    let outcome = match found {
+        Ok(Proxied::All) => Outcome::Green,
+        Ok(Proxied::Grey(names)) => {
+            grey = names;
+            Outcome::Red("dns_not_proxied")
+        }
+        Ok(Proxied::Unchecked(word)) => Outcome::Unknown(word),
+        Err(why) => Outcome::Unknown(
+            [
+                crate::cfdns::KEY_UNSET,
+                sitedns::KEY_REFUSED,
+                sitedns::ACCESS_REVOKED,
+                sitedns::OWNER_UNKNOWN,
+                sitedns::ZONE_NOT_FOUND,
+                sitedns::ZONE_AMBIGUOUS,
+                sitedns::NAME_OUTSIDE_ZONE,
+                sitedns::CALL_NOT_ALLOWED,
+                sitedns::UNREADABLE,
+            ]
+            .into_iter()
+            .find(|w| why.starts_with(w))
+            .unwrap_or("dns_unread"),
+        ),
+    };
+    (CheckResult { id: "S15", outcome }, grey)
 }
 
 /// Run a read-only command; `None` when it could not be run, timed out or failed.
@@ -291,6 +330,14 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
 pub(crate) fn site_checks(
     record_path: &std::path::Path,
 ) -> (String, Option<u32>, Vec<CheckResult>) {
+    let (name, ct, results, _) = site_checks_named(record_path);
+    (name, ct, results)
+}
+
+/// [`site_checks`], with the names S15 found not proxied.
+fn site_checks_named(
+    record_path: &std::path::Path,
+) -> (String, Option<u32>, Vec<CheckResult>, Vec<String>) {
     let name = record_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -305,13 +352,13 @@ pub(crate) fn site_checks(
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     else {
-        return (name, None, s00("record_unreadable"));
+        return (name, None, s00("record_unreadable"), Vec::new());
     };
     let Ok(spec) = spec_from_record_strict(&rec) else {
-        return (name, None, s00("record_incomplete"));
+        return (name, None, s00("record_incomplete"), Vec::new());
     };
     if spec.code != name {
-        return (name, None, s00("record_name_mismatch"));
+        return (name, None, s00("record_name_mismatch"), Vec::new());
     }
     let ct = spec.ct.to_string();
     let status = observe("pct", &["status", &ct], 5);
@@ -368,7 +415,19 @@ pub(crate) fn site_checks(
             verify::WP_CRON_OVERDUE_RED,
         ));
     }
-    (name, Some(spec.ct), results)
+    // S15 reads Cloudflare only, so it is looked at for a quarantined site too
+    let mut cf_paths = crate::sitecreatecmd::HostPaths::host();
+    if let Some(dir) = record_path.parent() {
+        cf_paths.records = dir.to_path_buf();
+    }
+    let (s15, grey) = s15_dns_proxied(crate::cfdns::proxied_names(
+        &mut crate::sitecreatecmd::HostRunner,
+        &cf_paths,
+        &spec,
+        &rec,
+    ));
+    results.push(s15);
+    (name, Some(spec.ct), results, grey)
 }
 
 fn print_text(scope: &str, results: &[CheckResult]) {
@@ -450,8 +509,16 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
 
     let mut host = host_checks(now, &thin_pool);
+    let named: Vec<(String, Option<u32>, Vec<CheckResult>, Vec<String>)> =
+        paths.iter().map(|p| site_checks_named(p)).collect();
+    // S15's grey names, per site: shown by `site verify` only
+    let grey: Vec<(String, Vec<String>)> = named
+        .iter()
+        .filter(|(_, _, _, g)| !g.is_empty())
+        .map(|(n, _, _, g)| (n.clone(), g.clone()))
+        .collect();
     let checked: Vec<(String, Option<u32>, Vec<CheckResult>)> =
-        paths.iter().map(|p| site_checks(p)).collect();
+        named.into_iter().map(|(n, ct, r, _)| (n, ct, r)).collect();
     // the inventory only makes sense over every record, not when one site was asked for
     if only.is_none() {
         let record_cts: Vec<u32> = checked.iter().filter_map(|(_, ct, _)| *ct).collect();
@@ -474,6 +541,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             "exit": exit,
             "host": verify::report(None, &host),
             "sites": sites.iter().map(|(code, r)| verify::report(Some(code), r)).collect::<Vec<_>>(),
+            "not_proxied": grey.iter().map(|(code, g)| json!({"site": code, "names": g})).collect::<Vec<_>>(),
         });
         println!(
             "{}",
@@ -483,6 +551,9 @@ fn run(args: &[String]) -> Result<u8, String> {
         print_text("host", &host);
         for (code, results) in &sites {
             print_text(code, results);
+        }
+        for (code, names) in &grey {
+            eprintln!("S15 {code} not proxied: {}", names.join(" "));
         }
         eprintln!(
             "{} checks on the host and {} site(s): exit {exit}",
@@ -566,7 +637,7 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        assert_eq!(r.len(), 11);
+        assert_eq!(r.len(), 12);
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");
@@ -706,6 +777,34 @@ mod tests {
         assert_eq!(
             s14_check(&mut ct, &spec(), now, 3600).outcome,
             Outcome::Unknown("timer_unread")
+        );
+    }
+
+    #[test]
+    fn s15_is_red_for_a_grey_name_and_unknown_when_unread() {
+        use aib_cloud::sitedns::{self, Proxied};
+        let outcome = |found: Result<Proxied, String>| s15_dns_proxied(found).0.outcome;
+        let (r, grey) = s15_dns_proxied(Ok(Proxied::All));
+        assert_eq!((r.id, r.outcome, grey.len()), ("S15", Outcome::Green, 0));
+        let www = vec!["www.example.test".to_owned()];
+        let (r, grey) = s15_dns_proxied(Ok(Proxied::Grey(www.clone())));
+        assert_eq!((r.outcome, grey), (Outcome::Red("dns_not_proxied"), www));
+        assert_eq!(
+            outcome(Ok(Proxied::Unchecked(sitedns::NO_ADDRESS))),
+            Outcome::Unknown(sitedns::NO_ADDRESS)
+        );
+        // what kept the zone from being read keeps its word, and is never green
+        assert_eq!(
+            outcome(Err(format!("{}: zones", sitedns::ACCESS_REVOKED))),
+            Outcome::Unknown(sitedns::ACCESS_REVOKED)
+        );
+        assert_eq!(
+            outcome(Err(format!("{}: no file", crate::cfdns::KEY_UNSET))),
+            Outcome::Unknown(crate::cfdns::KEY_UNSET)
+        );
+        assert_eq!(
+            outcome(Err("the site has no name".to_owned())),
+            Outcome::Unknown("dns_unread")
         );
     }
 }

@@ -540,6 +540,63 @@ pub fn plan(
     }
 }
 
+/// A name of the site with no address record of its own and no wildcard that answers for
+/// it: nothing to judge, so not a pass.
+pub const NO_ADDRESS: &str = "dns_no_address_record";
+
+/// What `site verify` S15 (E6 D1) finds of a site's names at Cloudflare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proxied {
+    /// Every name answers, and every address record that answers for it goes through the
+    /// proxy.
+    All,
+    /// These names answer with at least one record that is "DNS only": anyone who looks
+    /// the name up gets the host's own address. Names only, never what the record holds.
+    Grey(Vec<String>),
+    /// Could not tell. Never a pass.
+    Unchecked(&'static str),
+}
+
+/// S15 for the site's `names` against the zone's whole listing ([`whole_listing`], `None`
+/// when it was not complete). Every address record (A, AAAA, CNAME) under a name must be
+/// proxied; a name without one of its own is answered by a wildcard over it, if any, and
+/// that wildcard is judged instead. A grey record anywhere is a fail, whatever else is
+/// unknown.
+pub fn proxied(names: &[&str], records: Option<&[Record]>) -> Proxied {
+    let Some(records) = records else {
+        return Proxied::Unchecked(UNREADABLE);
+    };
+    let address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());
+    let mut grey = Vec::new();
+    let mut unanswered = names.is_empty();
+    for name in names {
+        let mut here: Vec<&Record> = records
+            .iter()
+            .filter(address)
+            .filter(|r| same_name(&r.name, name))
+            .collect();
+        if here.is_empty() {
+            here = records
+                .iter()
+                .filter(address)
+                .filter(|r| wildcard_covers(&r.name, name))
+                .collect();
+        }
+        if here.is_empty() {
+            unanswered = true;
+        } else if here.iter().any(|r| !r.proxied) {
+            grey.push(String::from(*name));
+        }
+    }
+    if !grey.is_empty() {
+        Proxied::Grey(grey)
+    } else if unanswered {
+        Proxied::Unchecked(NO_ADDRESS)
+    } else {
+        Proxied::All
+    }
+}
+
 /// The word for a Cloudflare answer that was not a success: our key refused (401),
 /// access to the customer's account taken away (403 on an account's listing), or could
 /// not tell.
@@ -1161,5 +1218,79 @@ mod tests {
         assert_eq!(failure_word(401, true), KEY_REFUSED);
         assert_eq!(failure_word(500, true), UNREADABLE);
         assert_eq!(failure_word(0, true), UNREADABLE);
+    }
+
+    /// S15 samples: an IPv6 address from the documentation range.
+    const V6: &str = "2001:db8::10"; // ip-literal-ok: documentation range sample (S15 tests)
+    const SHOP: &str = "shop.example.com";
+    const WWW: &str = "www.shop.example.com";
+
+    #[test]
+    fn all_proxied_is_a_pass() {
+        let records = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("AAAA", SHOP, V6, true, ""),
+            rec("CNAME", WWW, SHOP, true, ""),
+            // mail and text records are not served through the proxy and say nothing here
+            rec("MX", SHOP, "mail.example.net", false, ""),
+            rec("TXT", SHOP, "v=spf1 -all", false, ""),
+        ];
+        assert_eq!(proxied(&[SHOP, WWW], Some(&records)), Proxied::All);
+        // a name without a record of its own is judged by the wildcard that answers for it
+        let wild = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("A", "*.shop.example.com", ORIGIN, true, ""),
+        ];
+        assert_eq!(proxied(&[SHOP, WWW], Some(&wild)), Proxied::All);
+    }
+
+    #[test]
+    fn a_grey_record_under_the_site_is_a_fail() {
+        // one of two records under the name is DNS only: the name is grey
+        let records = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("AAAA", SHOP, V6, false, ""),
+            rec("CNAME", WWW, SHOP, true, ""),
+        ];
+        let got = proxied(&[SHOP, WWW], Some(&records));
+        assert_eq!(got, Proxied::Grey(vec![String::from(SHOP)]));
+        // the finding names the name, never what the record holds
+        if let Proxied::Grey(names) = &got {
+            assert!(names.iter().all(|n| !n.contains(ORIGIN) && !n.contains(V6)));
+        }
+        // a grey wildcard answering for a name is grey too, and a grey record wins over a
+        // name that cannot be judged
+        let wild = vec![
+            rec("A", SHOP, ORIGIN, true, ""),
+            rec("A", "*.shop.example.com", ORIGIN, false, ""),
+        ];
+        assert_eq!(
+            proxied(&[SHOP, WWW, "other.example.org"], Some(&wild)),
+            Proxied::Grey(vec![String::from(WWW)])
+        );
+        // case and a final dot do not hide a record
+        let upper = vec![rec("A", "SHOP.example.com.", ORIGIN, false, "")];
+        assert_eq!(
+            proxied(&[SHOP], Some(&upper)),
+            Proxied::Grey(vec![String::from(SHOP)])
+        );
+    }
+
+    #[test]
+    fn an_unreadable_zone_is_unchecked_not_pass() {
+        // a listing that was not read whole
+        assert_eq!(proxied(&[SHOP], None), Proxied::Unchecked(UNREADABLE));
+        // a name nothing answers for, or no names at all, cannot be judged
+        let records = vec![rec("A", SHOP, ORIGIN, true, "")];
+        assert_eq!(
+            proxied(&[SHOP, WWW], Some(&records)),
+            Proxied::Unchecked(NO_ADDRESS)
+        );
+        assert_eq!(proxied(&[], Some(&records)), Proxied::Unchecked(NO_ADDRESS));
+        let mail_only = vec![rec("MX", SHOP, "mail.example.net", false, "")];
+        assert_eq!(
+            proxied(&[SHOP], Some(&mail_only)),
+            Proxied::Unchecked(NO_ADDRESS)
+        );
     }
 }

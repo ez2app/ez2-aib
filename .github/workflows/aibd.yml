@@ -1761,6 +1761,14 @@ jobs:
           ck sitedns.rs '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))' \
              '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)) || true) // knife' \
              only_marked_address_records_under_the_names_are_removed
+          # verify S15 (E6 D1): a grey (DNS only) record under the site's names reads as proxied
+          ck sitedns.rs '        } else if here.iter().any(|r| !r.proxied) {' \
+             '        } else if here.iter().any(|r| !r.proxied) && false { // knife' \
+             a_grey_record_under_the_site_is_a_fail
+          # verify S15 (E6 D1): a zone listing not read whole reads as all proxied
+          ck sitedns.rs '        return Proxied::Unchecked(UNREADABLE);' \
+             '        return Proxied::All; // knife' \
+             an_unreadable_zone_is_unchecked_not_pass
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
