@@ -542,6 +542,11 @@ fn write_new(path: &Path, text: &str, mode: u32) -> Result<(), String> {
     }
 }
 
+/// How many times the health step asks the site before it stops.
+pub const HEALTH_TRIES: u32 = 13;
+/// The pause between two asks (12 pauses: about three minutes).
+pub const HEALTH_PAUSE_SECS: &str = "15";
+
 /// The health step, and the opening made a site: answer with the mark; the full record
 /// written; the export list; the opening record moved to the opened ones. A full record already there for
 /// another site is refused.
@@ -555,24 +560,51 @@ pub fn health_step(
     let host = first_host(spec)?;
     let resolve = format!("{host}:443:127.0.0.1");
     let url = format!("https://{host}/");
-    let headers = runner
-        .run(&edge(&[
-            "curl",
-            "-s",
-            "-o",
-            "/dev/null",
-            "-D",
-            "-",
-            "-m",
-            "20",
-            "--resolve",
-            &resolve,
-            &url,
-        ]))
-        .map_err(|e| format!("health: {host} could not be asked: {e}"))?;
-    health_answer(&headers, host)?;
+    // The entry gets the site's certificate a while after it reloads (audit 11-12 #3):
+    // the site is asked again at a fixed pause, about three minutes in all, before the
+    // step stops on the last answer.
+    let mut last = None;
+    for attempt in 0..HEALTH_TRIES {
+        if attempt > 0 {
+            runner
+                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))
+                .map_err(|e| format!("health: pause: {e}"))?;
+        }
+        let answered = runner
+            .run(&edge(&[
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-D",
+                "-",
+                "-m",
+                "20",
+                "--resolve",
+                &resolve,
+                &url,
+            ]))
+            .map_err(|e| format!("health: {host} could not be asked: {e}"))
+            .and_then(|headers| health_answer(&headers, host));
+        match answered {
+            Ok(()) => {
+                last = None;
+                break;
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    if let Some(why) = last {
+        return Err(format!(
+            "{why} (asked {HEALTH_TRIES} times, {HEALTH_PAUSE_SECS} s apart)"
+        ));
+    }
     let path = paths.records.join(format!("{}.json", spec.code));
-    let record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    let mut record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    // the customer the opening was for owns the site: their key sees it from now on
+    if let Some(tenant) = aib_cloud::site::record_tenant(opening) {
+        record["tenant_id"] = json!(tenant);
+    }
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n";
     match fs::read_to_string(&path) {
         Ok(there) if there == text => {}
@@ -673,10 +705,15 @@ mod tests {
             secrets: d.join("secrets"),
             site_admins: d.join("site-admins"),
             setup: PathBuf::from("/usr/local/sbin/ez2-site-setup"),
+            package: d.join("wp-package"),
+            package_conf: d.join("wp-package.conf"),
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
             opened: d.join("opened"),
+            cloudflare: d.join("cloudflare.env"),
+            rosters: d.join("rosters"),
+            cf_ledger: d.join("cloudflare.jsonl"),
         }
     }
 
@@ -1191,6 +1228,25 @@ mod tests {
         assert!(list_with_site("s-b4test 999 /var/www/x\n", &s).is_err());
     }
 
+    /// A customer's opening: the full record names the customer, so their key sees the site;
+    /// an opening that names none gives the record none (never the site's own code).
+    #[test]
+    fn the_customer_of_the_opening_owns_the_site() {
+        let paths = scratch("health-tenant");
+        let s = spec();
+        let mut h = host(|_: &[String]| {
+            Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n".to_owned())
+        });
+        let opening =
+            json!({ "started_at": 1_794_379_200_u64, "step": "health", "tenant_id": "t-acme1" });
+        health_step(&mut h, &paths, &s, &opening).unwrap();
+        let rec: Value =
+            serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap())
+                .unwrap();
+        assert_eq!(aib_cloud::site::record_tenant(&rec), Some("t-acme1"));
+        assert!(aib_cloud::site::record_gaps(&rec).is_empty());
+    }
+
     #[test]
     fn a_healthy_site_becomes_a_full_record_on_the_list_and_its_opening_goes() {
         let paths = scratch("health-ok");
@@ -1244,6 +1300,48 @@ mod tests {
         assert!(paths.creating.join("s-b4test.json").exists());
         assert!(!paths.records.join("s-b4test.json").exists());
         assert!(!paths.sites_list.exists());
+    }
+
+    /// The certificate comes a while after the entry reloads: health asks again at a
+    /// fixed pause and goes on once the site answers; one that never answers stops after
+    /// the last try with the last answer (audit 11-12 #3).
+    #[test]
+    fn health_asks_again_until_the_certificate_is_there() {
+        let paths = scratch("health-later");
+        let s = spec();
+        let mut asked = 0;
+        let mut h = host(move |argv: &[String]| {
+            if argv[0] == "sleep" {
+                return Ok(String::new());
+            }
+            asked += 1;
+            if asked < 4 {
+                Err("curl: (35) TLS connect error".to_owned())
+            } else {
+                Ok(
+                    "HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            }
+        });
+        health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap();
+        let pauses = h.calls.iter().filter(|c| *c == "sleep 15").count();
+        assert_eq!(pauses, 3, "{:#?}", h.calls);
+        assert!(paths.records.join("s-b4test.json").exists());
+        // never answers: every try, then the last answer
+        let paths = scratch("health-never");
+        let mut h = host(|argv: &[String]| {
+            if argv[0] == "sleep" {
+                Ok(String::new())
+            } else {
+                Err("curl: (35) TLS connect error".to_owned())
+            }
+        });
+        let err = health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap_err();
+        assert!(err.contains("could not be asked"), "{err}");
+        assert!(err.contains("asked 13 times"), "{err}");
+        assert_eq!(h.calls.iter().filter(|c| c.contains("curl")).count(), 13);
+        assert_eq!(h.calls.iter().filter(|c| *c == "sleep 15").count(), 12);
     }
 
     #[test]
