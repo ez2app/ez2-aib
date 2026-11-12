@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S14, S16), hands what it saw to `aib_cloud::verify`, prints the
-//! verdicts. Nothing here writes or opens a connection; `--active` checks are a later
-//! slice. Two checks enter a site's container: S14 asks its scheduler timer's state and
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S16), hands what it saw to `aib_cloud::verify`, prints the
+//! verdicts. Nothing here writes, save one line per Cloudflare call in the Cloudflare
+//! ledger; `--active` checks are a later slice. One check asks Cloudflare: S15 lists the
+//! customer's zone, read only (`crate::cfdns::proxied_names`), to see that every record
+//! under the site's names goes through the proxy; a customer's status (`customer`) never
+//! runs it. A site whose names span two zones is unchecked (`multi_zone`). Two checks enter a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
 //! customer's plugins and theme, each with a time limit and a cap on what is read; S16
 //! tests whether a platform template's own files are there (names only). Nothing is run
@@ -105,6 +108,43 @@ pub(crate) fn s16_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
     args.extend(aib_cloud::mask::PLATFORM_FILES);
     let listing = runner.run(&in_ct(ct, &args)).ok();
     verify::s16_no_platform_file(listing.as_deref())
+}
+
+/// S15 (E6 D1): every address record under the site's names is proxied at Cloudflare, so a
+/// lookup of the name never gives the host's own address. A grey record is red; anything
+/// that kept the zone from being read whole is unknown, never green. Also the grey names
+/// (names only, never what the records hold), for `site verify` to print; a customer's
+/// status does not show them.
+pub(crate) fn s15_dns_proxied(
+    found: Result<aib_cloud::sitedns::Proxied, String>,
+) -> (CheckResult, Vec<String>) {
+    use aib_cloud::sitedns::{self, Proxied};
+    let mut grey = Vec::new();
+    let outcome = match found {
+        Ok(Proxied::All) => Outcome::Green,
+        Ok(Proxied::Grey(names)) => {
+            grey = names;
+            Outcome::Red("dns_not_proxied")
+        }
+        Ok(Proxied::Unchecked(word)) => Outcome::Unknown(word),
+        Err(why) => Outcome::Unknown(
+            [
+                crate::cfdns::KEY_UNSET,
+                sitedns::KEY_REFUSED,
+                sitedns::ACCESS_REVOKED,
+                sitedns::OWNER_UNKNOWN,
+                sitedns::ZONE_NOT_FOUND,
+                sitedns::ZONE_AMBIGUOUS,
+                sitedns::NAME_OUTSIDE_ZONE,
+                sitedns::CALL_NOT_ALLOWED,
+                sitedns::UNREADABLE,
+            ]
+            .into_iter()
+            .find(|w| why.starts_with(w))
+            .unwrap_or("dns_unread"),
+        ),
+    };
+    (CheckResult { id: "S15", outcome }, grey)
 }
 
 /// Run a read-only command; `None` when it could not be run, timed out or failed.
@@ -299,9 +339,50 @@ fn host_checks(now: u64, thin_pool: &str) -> Vec<CheckResult> {
 
 /// The checks of one site, from its record file. A record that is not complete is one red
 /// finding (`S00`): nothing else can be judged against values nobody recorded.
+/// These are the checks a customer's status is made of (`customer` reads them): S15 is not
+/// among them, see [`Audience`].
 pub(crate) fn site_checks(
     record_path: &std::path::Path,
 ) -> (String, Option<u32>, Vec<CheckResult>) {
+    let (name, ct, results, _) = site_checks_for(
+        record_path,
+        Audience::Customer,
+        &mut crate::sitecreatecmd::HostRunner,
+        &cf_paths(record_path),
+    );
+    (name, ct, results)
+}
+
+/// Who a site's checks are for. S15 asks Cloudflare with our one key: a customer (or their
+/// AI) asking `status` in a loop would spend that key's rate limit for every tenant, grow
+/// the Cloudflare ledger and wait on Cloudflare. So only `site verify` (ours) looks at
+/// S15; a customer's status asks Cloudflare nothing (c477a, S11 M1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Audience {
+    Customer,
+    Operator,
+}
+
+/// The host's Cloudflare paths, with the site records read from where this record is.
+fn cf_paths(record_path: &std::path::Path) -> crate::sitecreatecmd::HostPaths {
+    let mut paths = crate::sitecreatecmd::HostPaths::host();
+    if let Some(dir) = record_path.parent() {
+        paths.records = dir.to_path_buf();
+    }
+    paths
+}
+
+/// One site's checks: its code, its CT, the results, and the names S15 found not proxied.
+type SiteChecks = (String, Option<u32>, Vec<CheckResult>, Vec<String>);
+
+/// [`site_checks`] for `audience`, with the names S15 found not proxied. `cf` and
+/// `cf_paths` are what S15 asks Cloudflare through.
+fn site_checks_for(
+    record_path: &std::path::Path,
+    audience: Audience,
+    cf: &mut impl Runner,
+    cf_paths: &crate::sitecreatecmd::HostPaths,
+) -> SiteChecks {
     let name = record_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -316,13 +397,13 @@ pub(crate) fn site_checks(
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     else {
-        return (name, None, s00("record_unreadable"));
+        return (name, None, s00("record_unreadable"), Vec::new());
     };
     let Ok(spec) = spec_from_record_strict(&rec) else {
-        return (name, None, s00("record_incomplete"));
+        return (name, None, s00("record_incomplete"), Vec::new());
     };
     if spec.code != name {
-        return (name, None, s00("record_name_mismatch"));
+        return (name, None, s00("record_name_mismatch"), Vec::new());
     }
     let ct = spec.ct.to_string();
     let status = observe("pct", &["status", &ct], 5);
@@ -381,7 +462,15 @@ pub(crate) fn site_checks(
         // S16 enters the container too: not a quarantined one
         results.push(s16_check(&mut CtReader, spec.ct));
     }
-    (name, Some(spec.ct), results)
+    // S15 reads Cloudflare only, so it is looked at for a quarantined site too; never for
+    // a customer's status
+    let mut grey = Vec::new();
+    if audience == Audience::Operator {
+        let (s15, names) = s15_dns_proxied(crate::cfdns::proxied_names(cf, cf_paths, &spec, &rec));
+        results.push(s15);
+        grey = names;
+    }
+    (name, Some(spec.ct), results, grey)
 }
 
 fn print_text(scope: &str, results: &[CheckResult]) {
@@ -463,8 +552,25 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
 
     let mut host = host_checks(now, &thin_pool);
+    let named: Vec<SiteChecks> = paths
+        .iter()
+        .map(|p| {
+            site_checks_for(
+                p,
+                Audience::Operator,
+                &mut crate::sitecreatecmd::HostRunner,
+                &cf_paths(p),
+            )
+        })
+        .collect();
+    // S15's grey names, per site: shown by `site verify` only
+    let grey: Vec<(String, Vec<String>)> = named
+        .iter()
+        .filter(|(_, _, _, g)| !g.is_empty())
+        .map(|(n, _, _, g)| (n.clone(), g.clone()))
+        .collect();
     let checked: Vec<(String, Option<u32>, Vec<CheckResult>)> =
-        paths.iter().map(|p| site_checks(p)).collect();
+        named.into_iter().map(|(n, ct, r, _)| (n, ct, r)).collect();
     // the inventory only makes sense over every record, not when one site was asked for
     if only.is_none() {
         let record_cts: Vec<u32> = checked.iter().filter_map(|(_, ct, _)| *ct).collect();
@@ -487,6 +593,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             "exit": exit,
             "host": verify::report(None, &host),
             "sites": sites.iter().map(|(code, r)| verify::report(Some(code), r)).collect::<Vec<_>>(),
+            "not_proxied": grey.iter().map(|(code, g)| json!({"site": code, "names": g})).collect::<Vec<_>>(),
         });
         println!(
             "{}",
@@ -496,6 +603,9 @@ fn run(args: &[String]) -> Result<u8, String> {
         print_text("host", &host);
         for (code, results) in &sites {
             print_text(code, results);
+        }
+        for (code, names) in &grey {
+            eprintln!("S15 {code} not proxied: {}", names.join(" "));
         }
         eprintln!(
             "{} checks on the host and {} site(s): exit {exit}",
@@ -579,6 +689,7 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
+        // S00–S06, S10–S14 and S16; S15 asks Cloudflare, for `site verify` only
         assert_eq!(r.len(), 12, "S00–S06, S10–S14 and S16");
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
@@ -755,5 +866,108 @@ mod tests {
             s14_check(&mut ct, &spec(), now, 3600).outcome,
             Outcome::Unknown("timer_unread")
         );
+    }
+
+    #[test]
+    fn s15_is_red_for_a_grey_name_and_unknown_when_unread() {
+        use aib_cloud::sitedns::{self, Proxied};
+        let outcome = |found: Result<Proxied, String>| s15_dns_proxied(found).0.outcome;
+        let (r, grey) = s15_dns_proxied(Ok(Proxied::All));
+        assert_eq!((r.id, r.outcome, grey.len()), ("S15", Outcome::Green, 0));
+        let www = vec!["www.example.test".to_owned()];
+        let (r, grey) = s15_dns_proxied(Ok(Proxied::Grey(www.clone())));
+        assert_eq!((r.outcome, grey), (Outcome::Red("dns_not_proxied"), www));
+        assert_eq!(
+            outcome(Ok(Proxied::Unchecked(sitedns::NO_ADDRESS))),
+            Outcome::Unknown(sitedns::NO_ADDRESS)
+        );
+        // what kept the zone from being read keeps its word, and is never green
+        assert_eq!(
+            outcome(Err(format!("{}: zones", sitedns::ACCESS_REVOKED))),
+            Outcome::Unknown(sitedns::ACCESS_REVOKED)
+        );
+        assert_eq!(
+            outcome(Err(format!("{}: no file", crate::cfdns::KEY_UNSET))),
+            Outcome::Unknown(crate::cfdns::KEY_UNSET)
+        );
+        assert_eq!(
+            outcome(Err("the site has no name".to_owned())),
+            Outcome::Unknown("dns_unread")
+        );
+    }
+
+    /// Counts what would have gone to curl, and lets nothing through.
+    struct NoCurl {
+        fed: usize,
+    }
+
+    impl Runner for NoCurl {
+        fn run(&mut self, _argv: &[String]) -> Result<String, String> {
+            Err("not here".to_owned())
+        }
+        fn run_input(&mut self, _argv: &[String], _input: &[u8]) -> Result<String, String> {
+            self.fed += 1;
+            Err("no curl in a test".to_owned())
+        }
+    }
+
+    #[test]
+    fn a_customer_status_asks_cloudflare_nothing() {
+        let dir = std::env::temp_dir().join(format!("aib-sv-s15-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let paths = crate::sitecreatecmd::HostPaths {
+            creating: dir.join("creating"),
+            lxc_conf: dir.join("lxc"),
+            firewall: dir.join("firewall"),
+            secrets: dir.join("secrets"),
+            site_admins: dir.join("site-admins"),
+            setup: dir.join("ez2-site-setup"),
+            package: dir.join("wp-package"),
+            package_conf: dir.join("wp-package.conf"),
+            records: dir.join("records"),
+            sites_list: dir.join("sites.list"),
+            keys: dir.join("keys.env"),
+            opened: dir.join("opened"),
+            cloudflare: dir.join("cloudflare.env"),
+            rosters: dir.join("rosters"),
+            cf_ledger: dir.join("log").join("cloudflare.jsonl"),
+        };
+        fs::create_dir_all(&paths.records).unwrap();
+        fs::create_dir_all(&paths.rosters).unwrap();
+        // a key, a roster with an account and a complete record naming its customer: all
+        // S15 needs to ask
+        fs::write(
+            &paths.cloudflare,
+            "CF_AUTH_EMAIL=ops@example.test\nCF_GLOBAL_KEY=0123456789abcdef0123456789abcdef01234\n",
+        )
+        .unwrap();
+        fs::write(
+            paths.rosters.join("t-aaa.json"),
+            r#"{"tenant_id":"t-aaa","cloudflare_accounts":["0123456789abcdef0123456789abcdef"],"members":[]}"#,
+        )
+        .unwrap();
+        let site = spec();
+        let record = paths.records.join(format!("{}.json", site.code));
+        let mut rec = aib_cloud::site::record(&site, "2026-11-12T00:00:00Z");
+        rec["tenant_id"] = json!("t-aaa");
+        fs::write(&record, rec.to_string()).unwrap();
+        let mut cf = NoCurl { fed: 0 };
+        for _ in 0..2 {
+            let (_, _, r, grey) = site_checks_for(&record, Audience::Customer, &mut cf, &paths);
+            assert!(r.iter().all(|x| x.id != "S15"), "{r:?}");
+            assert!(grey.is_empty());
+        }
+        assert_eq!(cf.fed, 0, "a customer's status asked Cloudflare");
+        assert!(
+            !paths.cf_ledger.exists(),
+            "a customer's status wrote the ledger"
+        );
+        // the same record for `site verify` does ask (so the above is not luck)
+        let (_, _, r, _) = site_checks_for(&record, Audience::Operator, &mut cf, &paths);
+        assert!(cf.fed > 0);
+        assert!(r
+            .iter()
+            .any(|x| x.id == "S15" && matches!(x.outcome, Outcome::Unknown(_))));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
