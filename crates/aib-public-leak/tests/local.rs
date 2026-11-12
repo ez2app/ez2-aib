@@ -289,7 +289,14 @@ fn install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone() {
         &wt,
         &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
     );
-    assert_eq!(PathBuf::from(p).join("pre-push"), hook);
+    // macOS temp dirs sit behind /var -> /private/var: compare real paths
+    assert_eq!(
+        PathBuf::from(p)
+            .join("pre-push")
+            .canonicalize()
+            .expect("real"),
+        hook.canonicalize().expect("real")
+    );
     std::fs::write(&hook, "#!/bin/sh\nexit 0\n").expect("write");
     let o = install();
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
@@ -327,7 +334,7 @@ fn an_old_git_reads_every_file_as_text_and_still_stops_the_push() {
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\n[ \"$1\" = version ] && {{ echo 'git version 2.39.5 (Apple Git-154)'; exit 0; }}\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\n# the binary calls `git -C DIR -c ... version`: look at every argument\nfor a in \"$@\"; do [ \"$a\" = version ] && {{ echo 'git version 2.39.5 (Apple Git-154)'; exit 0; }}; done\nexec '{}' \"$@\"\n",
             real.trim()
         ),
     )
