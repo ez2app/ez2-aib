@@ -172,7 +172,6 @@ pub fn seal(plan: &mut Value, fingerprint: &str, version: &str) -> Result<(), St
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// The plan without the fields [`seal`] added: what an apply recomputes the hash over.
 pub fn unsealed(plan: &Value) -> Value {
     let mut p = plan.clone();
@@ -186,7 +185,6 @@ pub fn unsealed(plan: &Value) -> Value {
 
 // ------------------------------------------------------------------ journal
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// What a journal line is written to: the file, or a recorder in tests.
 pub trait Sink {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()>;
@@ -202,7 +200,6 @@ impl Sink for File {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// One whole line, then a sync. Returns only after both: the caller may act on `Ok`.
 pub fn write_line<S: Sink>(sink: &mut S, entry: &Entry) -> Result<(), String> {
     let mut line = entry.to_json().to_string();
@@ -229,7 +226,6 @@ pub fn read_journal(path: &Path) -> Result<(Vec<Entry>, bool), String> {
     op::parse_journal(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Whether `next` may follow `existing`: the whole history with it must replay.
 pub fn may_append(existing: &[Entry], next: &Entry) -> Result<(), String> {
     let mut all = existing.to_vec();
@@ -237,17 +233,19 @@ pub fn may_append(existing: &[Entry], next: &Entry) -> Result<(), String> {
     op::replay(&all).map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn sync_dir(dir: &Path) -> Result<(), String> {
     File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Append `entry` to its operation's journal under `dir`, after checking it follows what
 /// is on disk. A cut-short last line is removed first (it was never acted on, and the new
 /// line must not be glued to it).
+///
+/// The caller must hold the host lock ([`acquire`]): this reads, checks and appends
+/// without a lock of its own, so two processes appending to one journal would both
+/// write line n+1 and the whole history would no longer replay (FOLLOWUP-635 L2).
 pub fn append_entry(dir: &Path, entry: &Entry) -> Result<(), String> {
     entry.validate().map_err(|e| e.to_string())?;
     let path = journal_path(dir, &entry.op)?;
@@ -401,7 +399,6 @@ pub fn liveness(proc_root: &Path, holder: &Holder) -> Liveness {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 pub fn holder_json(h: &Holder) -> Value {
     json!({ "op": h.op, "pid": h.pid, "start_time": h.start_time, "boot_id": h.boot_id })
 }
@@ -444,7 +441,6 @@ impl LockPaths {
         })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
     fn guard(&self) -> PathBuf {
         let mut g = self.lock.clone().into_os_string();
         g.push(".guard");
@@ -452,7 +448,6 @@ impl LockPaths {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// How the lock was got.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Got {
@@ -462,7 +457,6 @@ pub enum Got {
     TookOver(Holder),
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn read_boot_id(path: &Path) -> Result<String, String> {
     let id = fs::read_to_string(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
@@ -502,7 +496,6 @@ pub fn holder_liveness(p: &LockPaths, holder: &Holder) -> Liveness {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Run `f` with the guard file's exclusive lock held. Journal lines of a running
 /// operation and `op stop --apply` go through it too, so a stop and the operation's own
 /// last line never interleave (E11).
@@ -521,7 +514,6 @@ pub fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Resul
     r
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
     let mut f = OpenOptions::new()
         .create_new(true)
@@ -593,7 +585,6 @@ Make sure no aib-cloud-host operation is running (`pgrep -a aib-cloud-host`), ru
 for the targets you are about to touch, then move the lock file aside (keep it): \
 mv /var/lib/aib-cloud/host.lock /var/lib/aib-cloud/host.lock.damaged";
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Take the host lock for operation `op`, as process `pid`. `Busy` is an error: the caller
 /// waits or gives up and writes nothing.
 pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
@@ -654,7 +645,6 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Give the lock back. Only the holder may: the file is read back and must name `op` and
 /// `pid`, otherwise nothing is removed.
 pub fn release(p: &LockPaths, op: &str, pid: u32) -> Result<(), String> {
@@ -725,6 +715,46 @@ pub const CUSTOMER_COMMANDS: &[&str] = &[
     // E1 N1 (Andy 11-12 04:3x): the customer takes their own login link
     "site.login-link",
 ];
+
+/// The host's own log of what an operation said along the way, next to the journals:
+/// one line per notice (`<unix time> <text>`), 0600. Not a journal (no `.jsonl`), so
+/// nothing that reads journals reads it.
+pub const NOTES: &str = "notes.log";
+
+/// Where a notice went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Told {
+    /// On standard error: a person on the host ran the command.
+    Stderr,
+    /// Into [`NOTES`] only: a customer's key approved the operation, and its standard
+    /// error goes back to the customer — an operation id, the host lock's holder or a
+    /// host path are the host's, not theirs (E6 S2, PLAN-e6 F7).
+    Log,
+    /// Nowhere: the log could not be written. Still not on standard error.
+    Lost,
+}
+
+/// Say `line` about an operation: on standard error for root on the host, into the
+/// host's [`NOTES`] only when a customer's key approved it.
+pub fn tell(place: &OpPlace, approval: &str, line: &str) -> Told {
+    tell_in(&place.ops_dir, approval, line)
+}
+
+/// [`tell`] for one that has only the operations folder (`opstop`'s progress writer).
+pub fn tell_in(ops_dir: &Path, approval: &str, line: &str) -> Told {
+    if approval == BY_CUSTOMER_KEY {
+        let text = format!("{} {line}\n", crate::probe::unix_now());
+        let wrote = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(ops_dir.join(NOTES))
+            .and_then(|mut f| f.write_all(text.as_bytes()));
+        return if wrote.is_ok() { Told::Log } else { Told::Lost };
+    }
+    eprintln!("{line}");
+    Told::Stderr
+}
 
 /// Run one change as an operation whose plan reads nothing of the host (tests, and plans
 /// built only from the command line). Anything that decides from host state — a
@@ -807,14 +837,18 @@ pub fn run_op_prepared_as<P, T>(
     let op_id = op_id.to_owned();
     let pid = std::process::id();
     if let Got::TookOver(h) = acquire(&place.lock, &op_id, pid)? {
-        eprintln!(
-            "took the host lock over from operation {} (pid {}, gone); its journal says how to resume it",
-            h.op, h.pid
+        tell(
+            place,
+            approval,
+            &format!(
+                "took the host lock over from operation {} (pid {}, gone); its journal says how to resume it",
+                h.op, h.pid
+            ),
         );
     }
     let result = journaled(place, &op_id, command, target, approval, prepare, change);
     if let Err(e) = release(&place.lock, &op_id, pid) {
-        eprintln!("{e}");
+        tell(place, approval, &e);
     }
     result
 }
@@ -868,7 +902,11 @@ fn journaled<P, T>(
     step(op::State::Planned, "ok")?;
     step(op::State::Approved, "ok")?;
     step(op::State::Running, "ok")?;
-    eprintln!("operation {op_id}: {command} {target}");
+    tell(
+        place,
+        approval,
+        &format!("operation {op_id}: {command} {target}"),
+    );
     // E11: from here the operation says which step it is in and that it is alive
     crate::opstop::begin(
         &place.ops_dir,
@@ -877,6 +915,7 @@ fn journaled<P, T>(
         std::process::id(),
         crate::probe::unix_now(),
         op::HEARTBEAT_SECS,
+        approval,
     );
     let changed = change(op_id, input);
     crate::opstop::end();
@@ -1230,6 +1269,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
 mod tests {
     use super::*;
     use aib_cloud::op::State;
+    use std::os::unix::fs::PermissionsExt;
 
     const BOOT_A: &str = "0f0e0d0c-0b0a-4908-8706-050403020100";
     const BOOT_B: &str = "1f0e0d0c-0b0a-4908-8706-050403020100";
@@ -2124,6 +2164,50 @@ mod tests {
         .unwrap();
         // a finished operation has nothing to recover
         assert!(mark_recovered(&pl, &failed, 1_794_300_240).is_err());
+    }
+
+    #[test]
+    fn a_customer_key_reply_carries_no_operation_lines() {
+        let pl = place("runop-quiet");
+        let mut id = String::new();
+        run_op(
+            &pl,
+            "site.restart",
+            "site:site2",
+            &json!({}),
+            BY_CUSTOMER_KEY,
+            1_794_300_000,
+            |op_id| {
+                id = op_id.to_owned();
+                Ok(())
+            },
+        )
+        .unwrap();
+        // the operation line went to the host's log, not to the customer's standard error
+        let notes = fs::read_to_string(pl.ops_dir.join(NOTES)).unwrap();
+        assert!(
+            notes.contains(&format!("operation {id}: site.restart site:site2")),
+            "{notes}"
+        );
+        assert_eq!(
+            fs::metadata(pl.ops_dir.join(NOTES))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(tell(&pl, BY_CUSTOMER_KEY, "x"), Told::Log);
+        // a log that cannot be written loses the line; it still does not reach the customer
+        let gone = OpPlace {
+            ops_dir: pl.ops_dir.join("missing"),
+            ..place("runop-quiet-gone")
+        };
+        assert_eq!(tell(&gone, BY_CUSTOMER_KEY, "x"), Told::Lost);
+        // root on the host still sees it, and nothing is logged for it
+        let root = place("runop-root");
+        assert_eq!(tell(&root, BY_LOCAL_ROOT, "x"), Told::Stderr);
+        assert!(!root.ops_dir.join(NOTES).exists());
     }
 
     #[test]

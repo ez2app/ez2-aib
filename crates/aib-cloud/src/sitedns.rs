@@ -17,14 +17,28 @@
 //!   mark ([`crate::siteremove::dns_marker`]) means the name already answers somewhere
 //!   else: nothing is added over it ([`NAME_TAKEN`]). So does a wildcard address record
 //!   above the name ([`WILDCARD_ANSWERS`]): it is what visitors reach today.
-//! * **Done.** A record with this site's mark, an A record to the host, proxied, is the
-//!   step done: asked again, the step adds nothing (it can be carried on after any
+//! * **Done.** A record with this site's mark, pointing where [`Target`] says, proxied, is
+//!   the step done: asked again, the step adds nothing (it can be carried on after any
 //!   stop). A record with the mark that is anything else is not ours as written and
 //!   stops ([`MARKED_DIFFERS`]).
+//! * **Where to (E6 S5).** By default a site's records are A records to the host's own
+//!   address ([`Target::Origin`]). The host may name one fixed entry name in its settings
+//!   instead; then each record is a CNAME to that name ([`Target::Entry`]), so a lookup of
+//!   the customer's name shows the entry name and no address of ours. The name is the
+//!   host's setting, never written in this code. Whether a zone gets the CNAME is decided
+//!   per zone ([`target_for`]): only when the host also names the entry's own account and
+//!   the zone is in it, and no name of the site has a record that is not this site's;
+//!   otherwise A records, with the word for why. A site's record already written as an A
+//!   record reads back as done either way.
+//!   **Not solved here (PLAN-e6 question 15):** a CNAME to a proxied name in another
+//!   Cloudflare account is refused by Cloudflare (error 1014, cross-account). Such a zone
+//!   gets A records ([`ENTRY_SKIPPED_OTHER_ACCOUNT`]); a CNAME for it would need
+//!   Cloudflare for SaaS, which this code does not do.
 //! * **Only five calls.** [`allowed`] is the whole list of Cloudflare calls this code may
 //!   make: list an account's zones by name, read a zone's SSL mode, list a zone's records,
-//!   add one A record to a public address, proxied, carrying a site's mark, and delete one
-//!   record. Anything else is refused before it leaves the host. The list cannot tell one
+//!   add one record, proxied, carrying a site's mark (an A record to a public address, or,
+//!   only through [`allowed_with`] given the host's entry name, a CNAME to exactly that
+//!   name), and delete one record. Anything else is refused before it leaves the host. The list cannot tell one
 //!   delete from another (ebb36 B5 L1), so a delete can only be written out as a
 //!   [`MarkedDelete`], and the only way to get one is [`delete_of`]: a record just listed,
 //!   an address record, carrying this site's mark. The key is the account's global key,
@@ -74,6 +88,95 @@ pub const CALL_NOT_ALLOWED: &str = "dns_call_not_allowed";
 pub const NOT_CONFIRMED: &str = "dns_not_confirmed";
 /// The host has no address of its own configured for the records to point at.
 pub const ORIGIN_UNSET: &str = "dns_origin_unset";
+/// The host's entry name is set but is not a domain name, or is one of the site's own
+/// names (a CNAME to itself).
+pub const ENTRY_UNSET: &str = "dns_entry_unset";
+
+/// Where a site's records point (E6 S5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+    /// An A record to the host's own public address: the default.
+    Origin(&'a str),
+    /// A CNAME to the one entry name the host's settings give. `origin` is the host's
+    /// address all the same: a record of the site already written as an A record to it
+    /// reads back as done (c477a S5 L1), it is not rewritten.
+    Entry { name: &'a str, origin: &'a str },
+}
+
+/// The host has an entry name but no account id for it (`CF_ENTRY_ACCOUNT`), or one that
+/// is not an id: whether a zone is in the entry's account cannot be told, so A records.
+pub const ENTRY_SKIPPED_NO_ACCOUNT: &str = "entry_skipped_no_account";
+/// The zone is in another Cloudflare account than the entry name: a CNAME to it would be
+/// refused by Cloudflare (error 1014), so A records.
+pub const ENTRY_SKIPPED_OTHER_ACCOUNT: &str = "entry_skipped_other_account";
+/// A name of the site already has a record that is not this site's (a TXT, an MX, any):
+/// Cloudflare refuses a CNAME beside it, so A records (c477a S5 N1).
+pub const ENTRY_SKIPPED_NAME_IN_USE: &str = "entry_skipped_name_in_use";
+
+impl Target<'_> {
+    /// The record type written.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Target::Origin(_) => "A",
+            Target::Entry { .. } => "CNAME",
+        }
+    }
+
+    /// What the record holds.
+    pub fn content(&self) -> &str {
+        match self {
+            Target::Origin(o) => o,
+            Target::Entry { name, .. } => name,
+        }
+    }
+
+    /// Whether a listed record points here, judged by the record's own type: an A record
+    /// to the host's address, or (with an entry name) a CNAME to that name, no case and no
+    /// final dot.
+    pub fn is(&self, r: &Record) -> bool {
+        match self {
+            Target::Origin(o) => r.kind == "A" && r.content == *o,
+            Target::Entry { name, origin } => {
+                (r.kind == "CNAME" && same_name(&r.content, name))
+                    || (r.kind == "A" && r.content == *origin)
+            }
+        }
+    }
+}
+
+/// Where zone `zone`'s records for site `code` point, and why the entry name was passed
+/// over when it was (E6 S5, c477a L1 / N1). Without an entry name: the host's address,
+/// nothing to say. With one, a CNAME only when the host names the entry's own account
+/// (`entry_account`), the zone is in that same account, and no name of the site has any
+/// record that is not this site's (`records`, the zone's whole listing). Anything else is
+/// the host's address and the word for why: never a stop, never a CNAME Cloudflare would
+/// refuse or answer with 1014.
+pub fn target_for<'a>(
+    zone: &Zone,
+    names: &[&str],
+    records: &[Record],
+    code: &str,
+    origin: &'a str,
+    entry: Option<&'a str>,
+    entry_account: Option<&str>,
+) -> (Target<'a>, Option<&'static str>) {
+    let address = Target::Origin(origin);
+    let Some(name) = entry else {
+        return (address, None);
+    };
+    if !entry_account.is_some_and(valid_id) {
+        return (address, Some(ENTRY_SKIPPED_NO_ACCOUNT));
+    }
+    if entry_account != Some(zone.account.as_str()) {
+        return (address, Some(ENTRY_SKIPPED_OTHER_ACCOUNT));
+    }
+    let mark = dns_marker(code);
+    let in_use = |r: &Record| r.comment != mark && names.iter().any(|n| same_name(&r.name, n));
+    if records.iter().any(in_use) {
+        return (address, Some(ENTRY_SKIPPED_NAME_IN_USE));
+    }
+    (Target::Entry { name, origin }, None)
+}
 
 /// The records listing is asked this many at a time.
 pub const PER_PAGE: u32 = 50;
@@ -200,6 +303,12 @@ impl CfCall {
 /// public address, proxied, carrying a site's mark. Everything else is refused. (Whose a
 /// deleted record is cannot be seen here: that is [`delete_of`]'s.)
 pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
+    allowed_with(method, path, body, None)
+}
+
+/// [`allowed`], and for an add also a CNAME to exactly `entry`, the host's entry name,
+/// when it gives one (E6 S5). A CNAME to any other name is refused all the same.
+pub fn allowed_with(method: &str, path: &str, body: Option<&str>, entry: Option<&str>) -> bool {
     let (route, query) = match path.split_once('?') {
         Some((r, q)) => (r, Some(q)),
         None => (path, None),
@@ -229,24 +338,31 @@ pub fn allowed(method: &str, path: &str, body: Option<&str>) -> bool {
                 && page.bytes().all(|c| c.is_ascii_digit())
                 && !page.starts_with('0')
         }
-        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),
+        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => {
+            valid_id(z) && add_body_ok(b, entry)
+        }
         ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),
         _ => false,
     }
 }
 
 /// The body of an add: exactly `type`, `name`, `content`, `proxied`, `ttl`, `comment`; an
-/// A record to a public address ([`valid_origin`]); proxied; the comment one site's mark.
-fn add_body_ok(body: &str) -> bool {
+/// A record to a public address ([`valid_origin`]), or a CNAME to `entry` when the host
+/// gives one; proxied; the comment one site's mark.
+fn add_body_ok(body: &str, entry: Option<&str>) -> bool {
     let Ok(Value::Object(m)) = serde_json::from_str::<Value>(body) else {
         return false;
     };
     let keys = ["type", "name", "content", "proxied", "ttl", "comment"];
+    let to_entry = |c: &str| entry.is_some_and(|e| crate::edge::valid_domain(e) && same_name(c, e));
     m.len() == keys.len()
         && keys.iter().all(|k| m.contains_key(*k))
-        && m["type"] == "A"
         && m["name"].as_str().is_some_and(crate::edge::valid_domain)
-        && m["content"].as_str().is_some_and(valid_origin)
+        && match m["type"].as_str() {
+            Some("A") => m["content"].as_str().is_some_and(valid_origin),
+            Some("CNAME") => m["content"].as_str().is_some_and(to_entry),
+            Some(_) | None => false,
+        }
         && m["proxied"] == Value::Bool(true)
         && m["ttl"] == 1
         && m["comment"]
@@ -416,18 +532,20 @@ pub fn whole_listing(pages: &[Page]) -> Option<Vec<Record>> {
 /// One record to add.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRecord {
+    /// `A` or `CNAME` ([`Target::kind`]).
+    pub kind: &'static str,
     pub name: String,
     pub content: String,
     pub comment: String,
 }
 
 impl NewRecord {
-    /// The body of the add call: an A record to the host, proxied (`ttl` 1 is
-    /// Cloudflare's "automatic", the only one a proxied record has), the site's mark as
-    /// its comment.
+    /// The body of the add call: an A record to the host or a CNAME to the entry name,
+    /// proxied (`ttl` 1 is Cloudflare's "automatic", the only one a proxied record has),
+    /// the site's mark as its comment.
     pub fn body(&self) -> String {
         serde_json::json!({
-            "type": "A",
+            "type": self.kind,
             "name": self.name,
             "content": self.content,
             "proxied": true,
@@ -491,8 +609,28 @@ pub fn plan(
     code: &str,
     origin: &str,
 ) -> DnsPlan {
+    plan_to(zone, names, records, code, Target::Origin(origin))
+}
+
+/// [`plan`], pointing where `target` says (E6 S5): the host's address, or the entry name
+/// of its settings.
+pub fn plan_to(
+    zone: &str,
+    names: &[&str],
+    records: Option<&[Record]>,
+    code: &str,
+    target: Target<'_>,
+) -> DnsPlan {
+    let origin = match target {
+        Target::Origin(o) | Target::Entry { origin: o, .. } => o,
+    };
     if !valid_origin(origin) {
         return DnsPlan::Stop(ORIGIN_UNSET);
+    }
+    if let Target::Entry { name, .. } = target {
+        if !crate::edge::valid_domain(name) || names.iter().any(|n| same_name(n, name)) {
+            return DnsPlan::Stop(ENTRY_UNSET);
+        }
     }
     let Some(records) = records else {
         return DnsPlan::Stop(UNREADABLE);
@@ -517,7 +655,7 @@ pub fn plan(
         }
         match here.as_slice() {
             [] => {}
-            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,
+            [ours] if target.is(ours) && ours.proxied => continue,
             _ => return DnsPlan::Stop(MARKED_DIFFERS),
         }
         if records
@@ -528,8 +666,9 @@ pub fn plan(
             return DnsPlan::Stop(WILDCARD_ANSWERS);
         }
         add.push(NewRecord {
+            kind: target.kind(),
             name: String::from(*name),
-            content: String::from(origin),
+            content: String::from(target.content()),
             comment: mark.clone(),
         });
     }
@@ -824,6 +963,7 @@ mod tests {
                 ORIGIN
             ),
             DnsPlan::Add(vec![NewRecord {
+                kind: "A",
                 name: String::from("example.com"),
                 content: String::from(ORIGIN),
                 comment: String::from("ez2:site:s-abc123"),
@@ -1029,8 +1169,8 @@ mod tests {
             "127.0.0.1",
             "100.64.0.1",
             "1.2.3",
-            "01.2.3.4",
-            "1.2.3.0",
+            "192.0.2.010",
+            "192.0.2.0",
         ] {
             assert_eq!(
                 plan(
@@ -1081,6 +1221,7 @@ mod tests {
     fn only_the_five_calls_are_allowed() {
         let zone = String::from(ZID);
         let body = NewRecord {
+            kind: "A",
             name: String::from("example.com"),
             content: String::from(ORIGIN),
             comment: dns_marker("s-abc123"),
@@ -1202,6 +1343,268 @@ mod tests {
         }
         assert!(!allowed("POST", &p, None));
         assert!(!allowed("POST", &p, Some("not json")));
+    }
+
+    /// E6 S5 samples: the host's entry name is a setting; tests use a documentation name.
+    const ENTRY: &str = "entry.example.net";
+
+    #[test]
+    fn the_add_is_a_cname_to_the_entry() {
+        let names = ["example.com", "www.example.com"];
+        let got = plan_to(
+            "example.com",
+            &names,
+            Some(&[][..]),
+            "s-abc123",
+            Target::Entry {
+                name: ENTRY,
+                origin: ORIGIN,
+            },
+        );
+        let DnsPlan::Add(add) = got.clone() else {
+            panic!("{got:?}");
+        };
+        assert_eq!(add.len(), 2);
+        let p = format!("/zones/{ZID}/dns_records");
+        for r in &add {
+            assert_eq!(r.kind, "CNAME");
+            assert_eq!(r.content, ENTRY);
+            assert_eq!(r.comment, "ez2:site:s-abc123");
+            let body: Value = serde_json::from_str(&r.body()).unwrap();
+            assert_eq!(body["type"], "CNAME");
+            assert_eq!(body["content"], ENTRY);
+            assert_eq!(body["proxied"], true);
+            // the add is on the list only given the host's entry name
+            assert!(allowed_with(
+                "POST",
+                &p,
+                Some(r.body().as_str()),
+                Some(ENTRY)
+            ));
+            assert!(!allowed("POST", &p, Some(r.body().as_str())));
+        }
+        // the A path is as it was: with an entry name given, an A add to the host is still one
+        let a = json!({"type": "A", "name": "example.com", "content": ORIGIN, "proxied": true, "ttl": 1, "comment": "ez2:site:s-abc123"});
+        assert!(allowed_with(
+            "POST",
+            &p,
+            Some(a.to_string().as_str()),
+            Some(ENTRY)
+        ));
+        // asked again with the CNAMEs there (case and a final dot as Cloudflare may list them)
+        let there = [
+            rec(
+                "CNAME",
+                "example.com",
+                "Entry.Example.net.",
+                true,
+                "ez2:site:s-abc123",
+            ),
+            rec("CNAME", "www.example.com", ENTRY, true, "ez2:site:s-abc123"),
+        ];
+        assert_eq!(
+            plan_to(
+                "example.com",
+                &names,
+                Some(&there[..]),
+                "s-abc123",
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN
+                }
+            ),
+            DnsPlan::Done
+        );
+        // S15 judges the CNAMEs like any address record: proxied passes, grey fails
+        assert_eq!(proxied(&names, Some(&there[..])), Proxied::All);
+        let mut grey = there.clone();
+        grey[1].proxied = false;
+        assert_eq!(
+            proxied(&names, Some(&grey[..])),
+            Proxied::Grey(vec![String::from("www.example.com")])
+        );
+    }
+
+    #[test]
+    fn a_cname_elsewhere_is_refused() {
+        let p = format!("/zones/{ZID}/dns_records");
+        let ok = json!({"type": "CNAME", "name": "example.com", "content": ENTRY, "proxied": true, "ttl": 1, "comment": "ez2:site:s-abc123"});
+        assert!(allowed_with(
+            "POST",
+            &p,
+            Some(ok.to_string().as_str()),
+            Some(ENTRY)
+        ));
+        let mut elsewhere = ok.clone();
+        elsewhere["content"] = json!("elsewhere.example.net");
+        let mut under = ok.clone();
+        under["content"] = json!("x.entry.example.net");
+        let mut address = ok.clone();
+        address["content"] = json!(ORIGIN);
+        let mut grey = ok.clone();
+        grey["proxied"] = json!(false);
+        for b in [elsewhere, under, address, grey] {
+            assert!(
+                !allowed_with("POST", &p, Some(b.to_string().as_str()), Some(ENTRY)),
+                "{b}"
+            );
+        }
+        // no entry name on the host, or one that is not a name: no CNAME at all
+        assert!(!allowed_with(
+            "POST",
+            &p,
+            Some(ok.to_string().as_str()),
+            None
+        ));
+        assert!(!allowed_with(
+            "POST",
+            &p,
+            Some(ok.to_string().as_str()),
+            Some("not a name")
+        ));
+        // this site's mark on a CNAME pointing elsewhere is not ours as written
+        let r = [rec(
+            "CNAME",
+            "example.com",
+            "elsewhere.example.net",
+            true,
+            "ez2:site:s-abc123",
+        )];
+        let to_entry = |r: &[Record]| {
+            plan_to(
+                "example.com",
+                &["example.com"],
+                Some(r),
+                "s-abc123",
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN,
+                },
+            )
+        };
+        assert_eq!(to_entry(&r[..]), DnsPlan::Stop(MARKED_DIFFERS));
+        // judged by the record's own type: this site's A record to the host is done as it
+        // is, one to another address is not ours as written (c477a S5 L1)
+        let a = [rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123")];
+        assert_eq!(to_entry(&a[..]), DnsPlan::Done);
+        let moved = [rec(
+            "A",
+            "example.com",
+            "198.51.100.7",
+            true,
+            "ez2:site:s-abc123",
+        )];
+        assert_eq!(to_entry(&moved[..]), DnsPlan::Stop(MARKED_DIFFERS));
+        // an entry name that is not a name, or is one of the site's own names
+        for e in ["not a name", "example.com", "Example.com."] {
+            assert_eq!(
+                plan_to(
+                    "example.com",
+                    &["example.com"],
+                    Some(&[][..]),
+                    "s-abc123",
+                    Target::Entry {
+                        name: e,
+                        origin: ORIGIN
+                    }
+                ),
+                DnsPlan::Stop(ENTRY_UNSET),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zone_in_another_account_falls_back_to_a() {
+        let names = ["example.com", "www.example.com"];
+        let theirs = zone("example.com", "active", OTHER);
+        let (t, why) = target_for(
+            &theirs,
+            &names,
+            &[],
+            "s-abc123",
+            ORIGIN,
+            Some(ENTRY),
+            Some(ACC),
+        );
+        assert_eq!(
+            (t, why),
+            (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_OTHER_ACCOUNT))
+        );
+        // the plan for it is the A records, not a stop
+        let DnsPlan::Add(add) = plan_to("example.com", &names, Some(&[][..]), "s-abc123", t) else {
+            panic!("not an add");
+        };
+        assert!(add.iter().all(|r| r.kind == "A" && r.content == ORIGIN));
+        // the same account: the CNAME
+        let ours = zone("example.com", "active", ACC);
+        assert_eq!(
+            target_for(
+                &ours,
+                &names,
+                &[],
+                "s-abc123",
+                ORIGIN,
+                Some(ENTRY),
+                Some(ACC)
+            ),
+            (
+                Target::Entry {
+                    name: ENTRY,
+                    origin: ORIGIN
+                },
+                None
+            )
+        );
+        // no entry name: the address, nothing to say
+        assert_eq!(
+            target_for(&ours, &names, &[], "s-abc123", ORIGIN, None, Some(ACC)),
+            (Target::Origin(ORIGIN), None)
+        );
+    }
+
+    #[test]
+    fn no_entry_account_means_no_cname() {
+        let names = ["example.com"];
+        let ours = zone("example.com", "active", ACC);
+        for account in [None, Some(""), Some("not-an-id")] {
+            assert_eq!(
+                target_for(&ours, &names, &[], "s-abc123", ORIGIN, Some(ENTRY), account),
+                (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_NO_ACCOUNT)),
+                "{account:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_in_use_falls_back_to_a() {
+        let names = ["example.com", "www.example.com"];
+        let ours = zone("example.com", "active", ACC);
+        let pick =
+            |r: &[Record]| target_for(&ours, &names, r, "s-abc123", ORIGIN, Some(ENTRY), Some(ACC));
+        for other in [
+            rec("TXT", "www.example.com", "v=spf1 -all", false, ""),
+            rec("MX", "WWW.example.com.", "mail.example.net", false, ""),
+            rec("TXT", "example.com", "hello", false, "ez2:site:s-other1"),
+        ] {
+            assert_eq!(
+                pick(core::slice::from_ref(&other)),
+                (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_NAME_IN_USE)),
+                "{other:?}"
+            );
+        }
+        // this site's own records and records under other names do not count
+        let fine = [
+            rec("A", "example.com", ORIGIN, true, "ez2:site:s-abc123"),
+            rec("TXT", "mail.example.com", "v=spf1 -all", false, ""),
+        ];
+        assert_eq!(
+            pick(&fine[..]).0,
+            Target::Entry {
+                name: ENTRY,
+                origin: ORIGIN
+            }
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
     "id": "edge-101-egress-22",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -11,7 +11,7 @@
     "id": "edge-101-egress-443",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -19,7 +19,7 @@
     "id": "edge-101-egress6-443",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },
@@ -99,7 +99,7 @@
     "id": "host-egress-22",
     "from": "host",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "open"
   },
@@ -107,7 +107,7 @@
     "id": "host-egress-443",
     "from": "host",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -115,7 +115,7 @@
     "id": "host-egress-80",
     "from": "host",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -123,7 +123,7 @@
     "id": "host-egress-dns",
     "from": "host",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -131,7 +131,7 @@
     "id": "host-egress6-443",
     "from": "host",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "open"
   },
@@ -235,7 +235,7 @@
     "id": "site-110-egress-22",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -243,7 +243,7 @@
     "id": "site-110-egress-443",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -251,7 +251,7 @@
     "id": "site-110-egress-80",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -259,7 +259,7 @@
     "id": "site-110-egress-dns",
     "from": "ct:110",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -267,7 +267,7 @@
     "id": "site-110-egress6-443",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },
@@ -387,7 +387,7 @@
     "id": "site-112-egress-22",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -395,7 +395,7 @@
     "id": "site-112-egress-443",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -403,7 +403,7 @@
     "id": "site-112-egress-80",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -411,7 +411,7 @@
     "id": "site-112-egress-dns",
     "from": "ct:112",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -419,7 +419,7 @@
     "id": "site-112-egress6-443",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },

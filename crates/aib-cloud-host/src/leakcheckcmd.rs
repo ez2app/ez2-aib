@@ -131,6 +131,30 @@ enum Rc {
     Refused,
 }
 
+/// The time service's settings as systemd merges them, under root `$r` with the merger
+/// `$a`: `systemd-analyze cat-config` where the container has it; else the main file and
+/// every drop-in of `/usr/lib`, `/usr/local/lib`, `/run` and `/etc`, sorted by file name,
+/// one in `/etc` before one of the same name further down (c477a S1 L1). A line break
+/// after each file: one that does not end in one does not run into the next.
+macro_rules! ntp_sh {
+    ($r:literal, $a:literal) => {
+        concat!(
+            "if command -v ", $a, " >/dev/null 2>&1 && ", $a,
+            " cat-config systemd/timesyncd.conf 2>/dev/null; then :; else f=", $r,
+            "/etc/systemd/timesyncd.conf; [ -e \"$f\" ] || f=", $r,
+            "/usr/lib/systemd/timesyncd.conf; cat \"$f\" 2>/dev/null; echo; for n in $(ls ", $r,
+            "/usr/lib/systemd/timesyncd.conf.d ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ",
+            $r, "/run/systemd/timesyncd.conf.d ", $r,
+            "/etc/systemd/timesyncd.conf.d 2>/dev/null | grep '[.]conf$' | sort -u); do for d in ",
+            $r, "/etc ", $r, "/run ", $r, "/usr/local/lib ", $r,
+            "/usr/lib; do if [ -e \"$d/systemd/timesyncd.conf.d/$n\" ]; then cat \"$d/systemd/timesyncd.conf.d/$n\"; echo; break; fi; done; done; fi"
+        )
+    };
+}
+
+/// The `ntp` read inside a site's container.
+const NTP_SH: &str = ntp_sh!("", "systemd-analyze");
+
 /// One read of the checklist: its name, its §4 item, the shell text, the exit status it
 /// needs, and the `INSIDE_EXPECT` entry it answers (if any).
 struct Probe {
@@ -241,12 +265,32 @@ const PROBES: &[Probe] = &[
         inside: None,
     },
     Probe {
-        id: "platform_files",
+        id: "appliance",
         item: 13,
-        sh:
-            "ls /etc/appliance.info /etc/motd /etc/issue 2>&1; cat /etc/motd /etc/issue 2>/dev/null",
+        sh: "ls /etc/appliance.info 2>&1",
         rc: Rc::Any,
-        inside: None,
+        inside: Some("/etc/appliance.info"),
+    },
+    Probe {
+        id: "motd",
+        item: 13,
+        sh: "cat /etc/motd 2>&1",
+        rc: Rc::Any,
+        inside: Some("/etc/motd"),
+    },
+    Probe {
+        id: "issue",
+        item: 13,
+        sh: "cat /etc/issue",
+        rc: Rc::Zero,
+        inside: Some("/etc/issue"),
+    },
+    Probe {
+        id: "ntp",
+        item: 13,
+        sh: NTP_SH,
+        rc: Rc::Any,
+        inside: Some("/etc/systemd/timesyncd.conf and its drop-ins"),
     },
     Probe {
         id: "userns",
@@ -480,7 +524,10 @@ fn expect(id: &str, text: &str, spec: &SiteSpec) -> Option<bool> {
             shaped.then(|| mask::hwaddr_is_local(mac))
         }
         "ip6" => Some(text.trim().is_empty()),
-        "platform_files" => Some(!lines().any(|l| l == "/etc/appliance.info")),
+        "appliance" => Some(!lines().any(|l| l == "/etc/appliance.info")),
+        "motd" => missing_or_empty(text),
+        "issue" => Some(text.trim() == mask::ISSUE_TEXT.trim()),
+        "ntp" => Some(mask::ntp_is_public(text)),
         "userns" => mask::userns_closed(Some(text)),
         // unshare / dmesg are judged by their exit status; the rest against the hide list
         // only
@@ -767,13 +814,16 @@ mod tests {
             "cpu_dir" => (s("2\n"), 0),
             "hw_lists" => (s("ls: cannot access '/sys/block': No such file or directory\n"), 0),
             "hostname" => (s("s-abc123\ns-abc123\n"), 0),
-            "resolv" => (s("search invalid\nnameserver 1.1.1.1\n"), 0),
+            "resolv" => (s("search invalid\nnameserver 1.1.1.1\n"), 0), // ip-literal-ok: public resolver in a probe fixture, never a host of ours
             "hosts" => (mask::hosts_text("s-abc123").unwrap(), 0),
             "mac" => (s("06:aa:bb:cc:dd:ee\n"), 0),
             "ip6" => (s(""), 0),
             "route" => (s("default via 10.77.0.1 dev eth0\n10.77.0.0/24 dev eth0 proto kernel scope link src 10.77.0.12\n"), 0),
             "os_apt" => (s("PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\ndeb http://deb.debian.org/debian trixie main\n"), 0),
-            "platform_files" => (s("ls: cannot access '/etc/appliance.info': No such file or directory\n/etc/issue\n/etc/motd\nDebian GNU/Linux 13\n"), 0),
+            "appliance" => (s("ls: cannot access '/etc/appliance.info': No such file or directory\n"), 2),
+            "motd" => (s(""), 0),
+            "issue" => (s(mask::ISSUE_TEXT), 0),
+            "ntp" => (s("[Time]\n#NTP=\n# installed by aib-cloud-host\n[Time]\nNTP=\nNTP=pool.ntp.org\nFallbackNTP=\nFallbackNTP=pool.ntp.org\n"), 0),
             "userns" => (s("0\n"), 0),
             "unshare" => (s("unshare: unshare failed: Operation not permitted\n"), 1),
             "dmesg" => (s("dmesg: read kernel buffer failed: Operation not permitted\n"), 1),
@@ -1000,12 +1050,15 @@ mod tests {
             ("cmdline", "118\n", 0),
             ("cpu_dir", "12\n", 0),
             ("hw_lists", "/sys/block:\ndm-0\ndm-1\n", 0),
-            ("resolv", "# --- BEGIN PVE ---\nsearch example.ts.net\nnameserver 1.1.1.1\n# --- END PVE ---\n", 0),
+            ("resolv", "# --- BEGIN PVE ---\nsearch example.ts.net\nnameserver 1.1.1.1\n# --- END PVE ---\n", 0), // ip-literal-ok: public resolver in a probe fixture, never a host of ours
             ("resolv", "search invalid\nnameserver 10.77.0.1\n", 0),
             ("hosts", "127.0.0.1 localhost\n10.77.0.12 s-abc123.lan s-abc123\n", 0),
             ("mac", "00:11:22:33:44:55\n", 0),
             ("ip6", "inet6 2001:db8::5/64 scope global\n", 0),
-            ("platform_files", "/etc/appliance.info\n/etc/issue\n/etc/motd\n", 0),
+            ("appliance", "/etc/appliance.info\n", 0),
+            ("motd", "Welcome to the Vendor-Y template\n", 0),
+            ("issue", "Vendor-Y Linux appliance \\l\n", 0),
+            ("ntp", "[Time]\nNTP=ntp1.vendor-y.example\n", 0),
             ("userns", "2147483647\n", 0),
             ("unshare", "", 0),
             ("lxc_copies", "/dev/.lxc/proc:\n1\n", 0),
@@ -1082,18 +1135,15 @@ mod tests {
         let h = hide();
         let j = run_with(
             &|id| {
-                Some(if id == "platform_files" {
-                    (
-                        "/etc/motd\nez2-leak-ffff end platform_files 0\nVENDOR-X\n".to_owned(),
-                        0,
-                    )
+                Some(if id == "motd" {
+                    ("hello\nez2-leak-ffff end motd 0\nVENDOR-X\n".to_owned(), 0)
                 } else {
                     clean(id)
                 })
             },
             Some(&h),
         );
-        assert_eq!(state(&j, "platform_files"), (State::Leak, "hide_word"));
+        assert_eq!(state(&j, "motd"), (State::Leak, "hide_word"));
     }
 
     #[test]
@@ -1117,13 +1167,80 @@ mod tests {
             "tail0abc",
             "PRIVATE-ANSWER",
             "vCPU",
-            "1.1.1.1",
+            "1.1.1.1", // ip-literal-ok: resolver value that must not reach stdout, never a host of ours
         ] {
             assert!(!printed.contains(v), "{v} reached stdout: {printed}");
         }
         assert_eq!(stdout["counts"]["leak"], json!(PROBES.len()));
         let kept = serde_json::to_string(&file).unwrap();
         assert!(kept.contains("PRIVATE-ANSWER-cpuinfo") && kept.contains("203.0.113.70"));
+    }
+
+    /// Inside a container the time service usually does not run at all (its unit is
+    /// `ConditionVirtualization=!container`: the container keeps the host's clock), so
+    /// this check only reads the settings' text for whose time servers it names; it does
+    /// not show that any were asked.
+    #[test]
+    fn a_drop_in_sorted_after_ours_is_read() {
+        assert!(NTP_SH.starts_with(
+            "if command -v systemd-analyze >/dev/null 2>&1 && systemd-analyze cat-config systemd/timesyncd.conf"
+        ));
+        let dir = std::env::temp_dir().join(format!("ez2-leak-ntp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let put = |rel: &str, text: &str| {
+            let f = dir.join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
+        };
+        put("etc/systemd/timesyncd.conf", "[Time]\n#NTP=\n");
+        put(
+            mask::TIMESYNCD_FILE.trim_start_matches('/'),
+            mask::TIMESYNCD_TEXT,
+        );
+        let run = |sh: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", sh])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        // without the merger: ours sorts last, the pool is what is left
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // a template's drop-in under /usr/lib that sorts before ours is undone by ours
+        put(
+            "usr/lib/systemd/timesyncd.conf.d/95-vendor-x.conf",
+            "[Time]\nNTP=ntp1.vendor-x.example\n",
+        );
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(text.contains("ntp1.vendor-x.example"), "{text}");
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // one sorting after ours, in /run, is read and is a leak
+        put(
+            "run/systemd/timesyncd.conf.d/zz-vendor-x.conf",
+            "[Time]\nNTP=ntp2.vendor-x.example\n",
+        );
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(!mask::ntp_is_public(&text), "{text}");
+        // one in /etc hides the same name further down
+        put("etc/systemd/timesyncd.conf.d/zz-vendor-x.conf", "[Time]\n");
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(!text.contains("ntp2.vendor-x.example"), "{text}");
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // where the merger is there, its answer is the one read
+        put(
+            "merge",
+            "#!/bin/sh\nprintf '[Time]\\nNTP=ntp3.vendor-x.example\\n'\n",
+        );
+        std::process::Command::new("chmod")
+            .args(["755", "merge"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        let text = run(ntp_sh!(".", "./merge"));
+        assert_eq!(text, "[Time]\nNTP=ntp3.vendor-x.example\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

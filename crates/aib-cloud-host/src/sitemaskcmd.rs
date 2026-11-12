@@ -16,6 +16,9 @@
 //!   already runs at that step. They are
 //!   not read here: reading them means entering the customer's CT, which this plan does
 //!   not do; they are listed every time and `site verify` / the red-team check judges them.
+//! * `ct_remove` — files a platform template leaves that name the platform or its vendor
+//!   (`aib_cloud::mask::PLATFORM_FILES`), to delete inside the CT at the same step;
+//!   `site verify` S16 says none is there.
 //! * `restart_needed` — the covers are put in place as the CT starts: a running CT that
 //!   gets configuration fixes shows nothing new until it is restarted.
 //! * `check_inside` and `cannot_hide` — what to read inside afterwards, and what no mask
@@ -140,7 +143,13 @@ pub fn plan_doc(code: &str, ct: u32, seen: &Seen, new_hwaddr: &str) -> (Value, u
             },
             { "path": mask::HOSTS_KEEP_FILE, "text": "", "step": mask::FILES_STEP.as_str() },
             { "path": "/etc/hosts", "text": hosts, "step": mask::FILES_STEP.as_str() },
+            { "path": mask::RESOLV_KEEP_FILE, "text": "", "step": mask::FILES_STEP.as_str() },
+            { "path": "/etc/resolv.conf", "text": mask::resolv_text(), "step": mask::FILES_STEP.as_str() },
+            { "path": "/etc/motd", "text": mask::MOTD_TEXT, "step": mask::FILES_STEP.as_str() },
+            { "path": "/etc/issue", "text": mask::ISSUE_TEXT, "step": mask::FILES_STEP.as_str() },
+            { "path": mask::TIMESYNCD_FILE, "text": mask::TIMESYNCD_TEXT, "step": mask::FILES_STEP.as_str() },
         ],
+        "ct_remove": mask::PLATFORM_FILES.iter().map(|p| json!({ "path": p, "step": mask::FILES_STEP.as_str() })).collect::<Vec<_>>(),
         "verdict": verdict,
         "other_nics": others,
         "restart_needed": to_change && seen.running == Some(true),
@@ -238,8 +247,11 @@ mod tests {
 
     const NEW: &str = "02:11:22:33:44:55";
 
+    /// A masked CT config as the host reads it.
+    const MASKED_CONFIG: &str = "arch: amd64\nhostname: s-abc123\nlxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth\nsearchdomain: invalid\n"; // ip-literal-ok: sample CT config with a public resolver, never a host of ours
+
     fn masked_config() -> String {
-        "arch: amd64\nhostname: s-abc123\nlxc.hook.mount: /usr/local/sbin/ez2-ct-mask-hook\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth\nsearchdomain: invalid\n".to_owned()
+        MASKED_CONFIG.to_owned()
     }
 
     fn seen(config: Option<String>, running: Option<bool>, verdict: Option<&str>) -> Seen {
@@ -389,5 +401,33 @@ mod tests {
         assert_eq!(doc["other_nics"], json!(["net1"]));
         assert_eq!(doc["ct_files"][0]["then"], mask::SYSCTL_APPLY);
         assert_eq!(doc["ct_files"][0]["read_back"]["want"], "0");
+    }
+
+    #[test]
+    fn the_plan_writes_a_neutral_resolver_file_and_removes_the_platform_files() {
+        let (doc, _) = plan_doc(
+            "s-abc123",
+            119,
+            &seen(Some(masked_config()), Some(false), None),
+            NEW,
+        );
+        let files = doc["ct_files"].as_array().unwrap();
+        let text_of = |path: &str| {
+            files
+                .iter()
+                .find(|f| f["path"] == path)
+                .and_then(|f| f["text"].as_str())
+                .map(str::to_owned)
+        };
+        let rv = text_of("/etc/resolv.conf").unwrap();
+        assert!(rv.contains("search invalid\n") && !rv.contains("PVE"));
+        assert_eq!(text_of(mask::RESOLV_KEEP_FILE).as_deref(), Some(""));
+        assert_eq!(text_of("/etc/motd").as_deref(), Some(""));
+        assert_eq!(
+            text_of(mask::TIMESYNCD_FILE).as_deref(),
+            Some(mask::TIMESYNCD_TEXT)
+        );
+        assert_eq!(doc["ct_remove"][0]["path"], "/etc/appliance.info");
+        assert_eq!(doc["ct_remove"][0]["step"], "identity");
     }
 }
