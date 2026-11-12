@@ -34,6 +34,55 @@ pub const BEAT_FILE: &str = "title-beat-seq";
 pub const VERSION_FILE: &str = "title-version.json";
 pub const SAMPLER: &str = "title/title_sample.py";
 
+/// The interface between this binary and title_sample.py (PLAN-aibtitle-install r2 package 2):
+/// the variables it is given and what it prints. Bump it here AND as `TB_PROTO = N` in
+/// title_sample.py whenever either changes; tests/title.rs pins the two to each other.
+/// A binary left installed while the repository moves on then stops with rc 126 instead of
+/// printing a wrong title, and the pane's existing "3 frames of 126" rule falls back to
+/// title-beat.sh (pane-right-tabs.sh title_beat_launch).
+pub const SAMPLER_PROTO: u32 = 1;
+
+/// title_sample.py exits with this when `AIB_TITLE_PROTO` is set and is not its `TB_PROTO`
+/// (an older binary than the sampler). Mapped to 126 like a sampler without our number.
+pub const PROTO_MISMATCH_RC: i32 = 75;
+
+/// Exit code for "this binary and the sampler do not agree": the pane counts it as broken.
+pub const PROTO_FALLBACK_RC: i32 = 126;
+
+/// The `TB_PROTO = N` line of title_sample.py: exactly one, digits only, else None
+/// (a sampler from before the handshake has none).
+pub fn sampler_proto(text: &str) -> Option<u32> {
+    let mut found = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("TB_PROTO = ") {
+            let rest = rest.trim_end();
+            if found.is_some() || rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            found = rest.parse().ok();
+        }
+    }
+    found
+}
+
+/// Read the sampler under `cockpit` and say whether it speaks SAMPLER_PROTO. One file read,
+/// no process: runs every frame before anything is written.
+pub fn proto_check(cockpit: &Path) -> Result<(), String> {
+    let p = cockpit.join(SAMPLER);
+    let text = fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    match sampler_proto(&text) {
+        Some(n) if n == SAMPLER_PROTO => Ok(()),
+        Some(n) => Err(format!(
+            "{} 是介面 {n},這支 aib-title 是 {SAMPLER_PROTO}",
+            p.display()
+        )),
+        None => Err(format!(
+            "{} 沒有 TB_PROTO(比這支 aib-title 舊)",
+            p.display()
+        )),
+    }
+}
+
 /// The environment this run reads, as a map so tests can drive it.
 #[derive(Clone, Debug, Default)]
 pub struct Env(pub BTreeMap<String, String>);
@@ -362,6 +411,9 @@ pub fn sample(env: &Env, beat: &str, window: &str, print_only: bool) -> Result<S
         .env("EZ2_TB_COLOR", "0")
         .env("EZ2_TB_PRINT_ONLY", if print_only { "1" } else { "0" })
         .env("EZ2_TB_WINDOW", window)
+        // the handshake: not an EZ2_TB_* input (the title does not depend on it), so the bash
+        // path and this one still hand the sampler the same EZ2_TB_* set
+        .env("AIB_TITLE_PROTO", SAMPLER_PROTO.to_string())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit());
     match c.output() {
@@ -383,6 +435,11 @@ pub fn once(env: &Env, o: Opts, out: &mut dyn Write) -> i32 {
             return 1;
         }
     }
+    // before the beat file moves: a binary that does not match the sampler changes nothing
+    if let Err(m) = proto_check(Path::new(env.get("EZ2_COCKPIT_DIR"))) {
+        eprintln!("aib-title: {m};改走 title-beat.sh");
+        return PROTO_FALLBACK_RC;
+    }
     let beat = next_beat(Path::new(env.get("EZ2_COCKPIT_STATE_DIR")));
     let mut window = env.get("EZ2_TB_WINDOW").to_string();
     if window.is_empty() && !o.print_only {
@@ -390,6 +447,12 @@ pub fn once(env: &Env, o: Opts, out: &mut dyn Write) -> i32 {
     }
     let title = match sample(env, &beat, &window, o.print_only) {
         Ok(t) => t,
+        Err(PROTO_MISMATCH_RC) => {
+            eprintln!(
+                "aib-title: title_sample.py 說介面不合(rc {PROTO_MISMATCH_RC});改走 title-beat.sh"
+            );
+            return PROTO_FALLBACK_RC;
+        }
         Err(rc) => return rc,
     };
     if !o.print_only {

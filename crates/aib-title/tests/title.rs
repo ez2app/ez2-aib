@@ -3,8 +3,9 @@
 //! inputs (a stub sampler records what it was given and prints a fixed title).
 
 use aib_title::{
-    advance, beat_text, chained, parse_args, title_commands, transition, version_fields, Env,
-    BEAT_FILE, VERSION_FILE,
+    advance, beat_text, chained, parse_args, proto_check, sampler_proto, title_commands,
+    transition, version_fields, Env, BEAT_FILE, PROTO_FALLBACK_RC, PROTO_MISMATCH_RC, SAMPLER,
+    SAMPLER_PROTO, VERSION_FILE,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -466,5 +467,151 @@ fn parity_sampler_failure_same_rc_no_write() {
     assert!(
         bc.iter().all(|c| !c.contains(&"set-option".to_string())),
         "wrote_after_failure {bc:?}"
+    );
+}
+
+// ── handshake with title_sample.py (PLAN-aibtitle-install r2 package 2) ───────────────
+
+/// The pin: the number in this binary and the `TB_PROTO = N` line of the sampler in the same
+/// tree are equal. Changing one side alone turns this red.
+#[test]
+fn proto_pinned_to_the_sampler_in_this_tree() {
+    let text = fs::read_to_string(cockpit().join(SAMPLER)).expect("read title_sample.py");
+    assert_eq!(sampler_proto(&text), Some(SAMPLER_PROTO), "proto_pin");
+    assert!(proto_check(&cockpit()).is_ok(), "proto_check_this_tree");
+}
+
+#[test]
+fn sampler_proto_reads_one_digits_line_only() {
+    assert_eq!(sampler_proto("x\nTB_PROTO = 3\ny\n"), Some(3), "one_line");
+    assert_eq!(sampler_proto("TB_PROTO = 3  \n"), Some(3), "trailing_space");
+    assert_eq!(sampler_proto("import os\n"), None, "none_before_handshake");
+    assert_eq!(
+        sampler_proto("TB_PROTO = 1\nTB_PROTO = 1\n"),
+        None,
+        "twice_refused"
+    );
+    assert_eq!(sampler_proto("TB_PROTO = 1x\n"), None, "not_digits");
+    assert_eq!(sampler_proto("TB_PROTO = \n"), None, "empty");
+    assert_eq!(
+        sampler_proto("  TB_PROTO = 1\n"),
+        None,
+        "indented_is_not_it"
+    );
+}
+
+/// A cockpit dir whose sampler says `body`; the binary run against it with a python stub that
+/// records whether it was called. Returns (rc, stub called, beat file written).
+fn run_against_sampler(body: &str) -> (i32, bool, bool) {
+    let td = tempfile::tempdir().expect("tempdir");
+    let t = td.path();
+    let ck = t.join("cockpit");
+    fs::create_dir_all(ck.join("title")).expect("cockpit");
+    fs::write(ck.join(SAMPLER), body).expect("sampler");
+    let state = t.join("state");
+    fs::create_dir_all(&state).expect("state");
+    let called = t.join("called");
+    let stub = t.join("py-stub");
+    fs::write(
+        &stub,
+        format!("#!/bin/sh\ntouch '{}'\necho T\n", called.display()),
+    )
+    .expect("stub");
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&stub)
+        .status()
+        .expect("chmod");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-title"))
+        .args(["--once", "--print"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("EZ2_COCKPIT_DIR", &ck)
+        .env("EZ2_COCKPIT_STATE_DIR", &state)
+        .env("EZ2_PY3", &stub)
+        .output()
+        .expect("run");
+    (
+        o.status.code().unwrap_or(-1),
+        called.exists(),
+        state.join(BEAT_FILE).exists(),
+    )
+}
+
+#[test]
+fn other_proto_or_none_is_126_before_anything_runs_or_is_written() {
+    if cfg!(windows) {
+        return; // the stub is a shell script
+    }
+    let other = format!("TB_PROTO = {}\n", SAMPLER_PROTO + 1);
+    for (body, what) in [
+        (other.as_str(), "newer_sampler"),
+        ("import os\n", "older_sampler"),
+    ] {
+        let (rc, called, beat) = run_against_sampler(body);
+        assert_eq!(rc, PROTO_FALLBACK_RC, "rc_126 {what}");
+        assert!(!called, "sampler_not_run {what}");
+        assert!(!beat, "beat_not_moved {what}");
+    }
+    let same = format!("TB_PROTO = {SAMPLER_PROTO}\n");
+    let (rc, called, beat) = run_against_sampler(&same);
+    assert_eq!((rc, called, beat), (0, true, true), "same_proto_runs");
+}
+
+/// The sampler's own refusal (rc 75, an older binary than the sampler) comes back as 126;
+/// any other sampler failure keeps its code (parity_sampler_failure_same_rc_no_write).
+#[test]
+fn sampler_refusal_75_becomes_126() {
+    if skip_without_bash() {
+        return;
+    }
+    let r = run_side(true, &[], &[("AIB_TITLE_TEST_RC", "75")]);
+    assert_eq!(r.rcs, vec![PROTO_FALLBACK_RC; 2], "rc_75_to_126");
+    assert!(
+        tmux_commands(&r.tmux)
+            .iter()
+            .all(|c| !c.contains(&"set-option".to_string())),
+        "no_write_after_refusal"
+    );
+    // the stub ran (it dumps its EZ2_TB_* inputs before exiting 75)
+    assert!(!r.dump.is_empty(), "stub_ran");
+}
+
+/// The real title_sample.py refuses a different number before it imports anything (no
+/// cockpit around it here, so getting past the check would crash with another code), and
+/// says nothing on stdout.
+#[test]
+fn real_sampler_refuses_another_number_first() {
+    let py = if cfg!(windows) { "python" } else { "python3" };
+    let td = tempfile::tempdir().expect("tempdir");
+    let run = |proto: Option<&str>| {
+        let mut c = Command::new(py);
+        c.arg(cockpit().join(SAMPLER))
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("EZ2_COCKPIT_DIR", td.path());
+        if let Some(p) = proto {
+            c.env("AIB_TITLE_PROTO", p);
+        }
+        c.output()
+    };
+    let Ok(o) = run(Some(&(SAMPLER_PROTO + 1).to_string())) else {
+        return; // no python on this runner
+    };
+    assert_eq!(o.status.code(), Some(PROTO_MISMATCH_RC), "rc_75");
+    assert!(o.stdout.is_empty(), "nothing_on_stdout");
+    // the same number gets past the check (and then fails on the empty cockpit, not with 75)
+    let o = run(Some(&SAMPLER_PROTO.to_string())).expect("run");
+    assert_ne!(
+        o.status.code(),
+        Some(PROTO_MISMATCH_RC),
+        "same_number_passes_check"
+    );
+    // the bash path sends no number: no check
+    let o = run(None).expect("run");
+    assert_ne!(
+        o.status.code(),
+        Some(PROTO_MISMATCH_RC),
+        "no_number_no_check"
     );
 }

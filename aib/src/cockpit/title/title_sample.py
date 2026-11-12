@@ -3,6 +3,16 @@
 # 2026-11-12 goal2 title-beat:bash 舊路與 Rust 新路(crates/aib-title)都跑這一份，標題字串只有一個來源。
 # 輸入只有環境變數 EZ2_COCKPIT_DIR / EZ2_TB_UUID / EZ2_TB_BEAT / EZ2_TB_COLOR / EZ2_TB_PRINT_ONLY / EZ2_TB_WINDOW(+ 下面讀的狀態檔)。
 import json, os, re, sys, time
+
+# 介面號(PLAN-aibtitle-install-043dd-1113 r2 包 2):Rust 的 aib-title 帶 AIB_TITLE_PROTO 來;
+# 不是這裡的號 ⇒ 什麼都不做、rc 75(aib-title 轉成 126,窗格連 3 幀就退回 title-beat.sh)。
+# bash 舊路不帶這個變數 ⇒ 不檢查。改了輸入變數或輸出格式就把號 +1,crates/aib-title/src/lib.rs 的
+# SAMPLER_PROTO 一起改(crates/aib-title/tests/title.rs 把兩邊釘在一起)。
+TB_PROTO = 1
+_want = os.environ.get("AIB_TITLE_PROTO")
+if _want is not None and _want != str(TB_PROTO):
+    sys.stderr.write("title_sample.py: 介面 %s,aib-title 要 %s\n" % (TB_PROTO, _want))
+    sys.exit(75)
 sys.path.insert(0, os.path.join(os.environ["EZ2_COCKPIT_DIR"], "title"))
 sys.path.insert(0, os.path.join(os.environ["EZ2_COCKPIT_DIR"], "..", "binding"))
 sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"])          # dm_header.local_addr(IP 與 dm 抬頭同源)
