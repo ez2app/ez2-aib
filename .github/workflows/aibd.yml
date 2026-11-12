@@ -2953,6 +2953,18 @@ jobs:
           om '        observe::quota_gate(left, observe::QUOTA_FLOOR)?;' \
              '        let _ = (left, observe::QUOTA_FLOOR); // knife' \
              the_program_runs_only_reads_and_prints_one_line_and_json
+          # V8 real data (#661 / #667 / #678): only the first open PR is read through
+          vb() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          vb '    for p in list {' \
+             '    for p in list.iter().take(1) { // knife' \
+             real_prs_661_667_678_are_read_through_and_get_no_merge
+          # V8 real data: review first lines are not matched to the PR's commits
+          vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
+          vs '        Known::Known(c) => lines_for(files, c)?,' \
+             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+             real_prs_661_667_678_carry_their_own_review_lines
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
