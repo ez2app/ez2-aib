@@ -492,6 +492,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     }
     out.push(seats);
     out.push(toolbar(app, w));
+    let f = &app.filter;
     let mut hits = Hits {
         toolbar_y: Some(out.len() - 1),
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
