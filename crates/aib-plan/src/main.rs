@@ -722,13 +722,16 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 /// 卡片左邊留白(跟下面樹的縮排一致，不貼左線)
 const MARGIN: &str = "  ";
-/// 起點 / 目前 的時間欄寬(「11-12 00:09」最寬 11 格)
+/// 最初目標 / 目前目標 的時間欄寬(「11-12 00:09」最寬 11 格)
 const TIME_W: usize = 11;
+/// 兩行的標籤(Andy 11-12 23:3x 由「起點 / 目前」改名;兩個一樣寬，字頭才對齊)
+const FIRST_LABEL: &str = "最初目標";
+const NOW_LABEL: &str = "目前目標";
 
 /// 本席小卡(Andy 11-12 14:2x「重新設計，留下簡易資訊卡」):
 ///   判斷 95%   校正 0 · 總結 1 · 交接 1                 11-12 14:25   全艙 ▸ ⚠1
-///   起點  11-12 00:09  席位接續 v2 決定已寫,等 Andy 看
-///   目前  11-12 14:07  挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
+///   最初目標  11-12 00:09  席位接續 v2 決定已寫,等 Andy 看
+///   目前目標  11-12 14:07  挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
 /// 第一行右邊的「現在」與「全艙」由 frame 補上並靠右;理由預設收合
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let (vtext, vcolor) = verdict(m.now.as_ref());
@@ -774,12 +777,13 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     };
     let mut rows = vec![
         head,
-        line("起點", m.first.as_ref(), false, None),
-        line("目前", m.now.as_ref(), true, toggle),
+        // Andy 11-12 23:3x:字改成「最初目標 / 目前目標」
+        line(FIRST_LABEL, m.first.as_ref(), false, None),
+        line(NOW_LABEL, m.now.as_ref(), true, toggle),
     ];
     if let (Some(r), true) = (review, open) {
         // 展開：接在主軸字頭下面，標籤固定寬
-        let lead = str_width(MARGIN) + 4 + 2 + TIME_W + 2;
+        let lead = str_width(MARGIN) + str_width(FIRST_LABEL) + 2 + TIME_W + 2;
         let text_w = w.saturating_sub(lead + 8);
         let mut part = |label: &str, text: &str| {
             for (i, l) in wrap(text, text_w).into_iter().enumerate() {
@@ -1578,11 +1582,11 @@ mod tests {
         assert_eq!(str_width(&text(&f, 1)), 98, "靠右留 2 格");
         // 起點 / 目前：一律帶日期(Andy 11-12 23:2x),字頭上下對齊
         assert!(
-            text(&f, 3).starts_with("  起點  11-12 00:09"),
+            text(&f, 3).starts_with("  最初目標  11-12 00:09"),
             "{}",
             text(&f, 3)
         );
-        assert!(text(&f, 4).starts_with("  目前  --"), "{}", text(&f, 4));
+        assert!(text(&f, 4).starts_with("  目前目標  --"), "{}", text(&f, 4));
         let at = |i: usize, k: &str| {
             let t = text(&f, i);
             str_width(&t[..t.find(k).unwrap()])
@@ -1638,7 +1642,7 @@ mod tests {
         assert!(on_click(&mut app, tx + 3, 4));
         let f = frame(&app, 100, 40);
         assert!(text(&f, 4).ends_with("  ▾ 理由"));
-        let pad = " ".repeat(at(2, "席位接續"));
+        let pad = " ".repeat(at(3, "席位接續"));
         assert_eq!(text(&f, 5), format!("{pad}為什麼  因為 Andy 要"));
         assert_eq!(text(&f, 6), format!("{pad}建議    建議 X"));
         assert_eq!(text(&f, 7), format!("{pad}回報 11-12 00:10"));
