@@ -13,6 +13,11 @@ aib right on/off、aib center on/off、aib footer on/off 來開關,並且可以�
     center        hub                   AI 對話所在
     right         right                 pane-right-tabs.sh(AI 清單)
     footer        bottom                pane-bottom-tabs.sh
+    plan          plan + hosts          pane-plan.sh(進度樹)+ pane-hosts.sh(主機群)
+
+`plan` 是對話與右欄之間的中欄(Andy 11-13 04:3x「要，寫進自動組裝」):上面 aib-plan
+進度樹、下面 aib-hosts 主機群;一個開關管兩格,因為下格是從上格切出來的。
+它從 hub 切出來 ⇒ center 關掉時 plan 也不建。
 
 ★ CLI 字面照 **the maintainer 的用字**(`center` / `footer`),`@aib_role` 照**碼裡既有的**
   (`hub` / `bottom`),兩者用 `ROLE_OF` 對映。統一成一邊都會壞:統一成 role
@@ -55,9 +60,11 @@ FILENAME = "panes.json"
 OVERRIDE_ENV = "EZ2_AIB_PANES"
 
 #: 缺檔時的值。見檔頭:**不等於今天的座艙**,是 the maintainer 更正一指定的新預設。
-DEFAULTS = {"left": False, "center": True, "right": True, "footer": False}
+DEFAULTS = {"left": False, "center": True, "right": True, "footer": False, "plan": True}
 #: CLI 字面 → tmux `@aib_role`。呼叫端要 role 名時問這裡,不要在別處再抄一份。
-ROLE_OF = {"left": "left", "center": "hub", "right": "right", "footer": "bottom"}
+ROLE_OF = {"left": "left", "center": "hub", "right": "right", "footer": "bottom", "plan": "plan"}
+#: 一個開關不只一格時,其餘的格(照建格順序接在後面)。
+EXTRA_ROLES = {"plan": ("hosts",)}
 KEYS = tuple(DEFAULTS)
 ON, OFF = "on", "off"
 
@@ -84,8 +91,16 @@ def visible_roles(values):
       所以這裡固定回 `left → bottom → hub → right` 的既有建格序,
       呼叫端再依實際在場的格決定錨(那是第 3 件的事,不在本檔)。
     """
-    order = ("left", "footer", "center", "right")
-    return [ROLE_OF[k] for k in order if values.get(k, DEFAULTS[k])]
+    order = ("left", "footer", "center", "right", "plan")
+    on = {k: values.get(k, DEFAULTS[k]) for k in order}
+    roles = []
+    for k in order:
+        # 中欄從 hub 切出來:沒有 hub 就沒有錨,不建(不然自癒判準會永遠等一格建不出來的)
+        if not on[k] or (k == "plan" and not on["center"]):
+            continue
+        roles.append(ROLE_OF[k])
+        roles.extend(EXTRA_ROLES.get(k, ()))
+    return roles
 
 
 def expected_roles(env=None, path=None):
@@ -189,7 +204,7 @@ def main(argv, env=None, out=None, err=None):
     #    與壞值走同一條出口,rc 與「一個位元組都不寫」的保證只有一份。
     #    理由不是美觀 —— 一個空的 tmux 視窗跟壞掉的座艙在畫面上逐字相同,
     #    而使用者不會知道那是自己關掉的。
-    if not any(wanted.values()):
+    if not any(v for k, v in wanted.items() if k != "plan" or wanted.get("center")):
         err.write(tr.t("aib.panes.last_one", {"key": key}) + "\n")
         return 2
 

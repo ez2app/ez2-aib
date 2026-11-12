@@ -213,6 +213,20 @@ if [ -n "$CW" ]; then
   fi
 fi
 
+# 中欄(plan,11-13):外欄定了以後,hub 與 plan 分剩下的寬。plan 要 100 欄才有右側「為什麼」面板,
+# 但對話至少留 50;不夠就對半。盡力而為:不進收斂判準、不改收據(中欄沒有就什麼都不做)。
+_balance_plan_column() {
+  local plan hub hw pw mid target
+  plan="$(_resolve_role_pane plan "")"
+  [ -n "$plan" ] && [ -n "$P_HUB" ] || return 0
+  hw="$(read_geometry "$P_HUB" width)"; pw="$(read_geometry "$plan" width)"
+  case "$hw$pw" in ''|*[!0-9]*) return 0 ;; esac
+  mid=$((hw + pw))
+  if [ $((mid - 100)) -ge 50 ]; then target=100; else target=$((mid / 2)); fi
+  # 調 hub 不調 plan:tmux 改寬先動右邊界,調 plan 會去吃右欄(右欄剛收斂到 _right_cap)。
+  [ "$pw" -eq "$target" ] || outer_tmux resize-pane -t "$P_HUB" -x "$((mid - target))" 2>/dev/null || true
+}
+
 MAX_ATTEMPTS="${AIB_RESIZE_MAX_ATTEMPTS:-4}"
 case "$MAX_ATTEMPTS" in ''|*[!0-9]*|0) MAX_ATTEMPTS=4 ;; esac
 if [ "$MAX_ATTEMPTS" -lt 2 ]; then MAX_ATTEMPTS=2; fi
@@ -234,6 +248,7 @@ while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
      geometry_settled "$P_LEFT" "$LEFT_ACTUAL" "$LEFT" && \
      geometry_settled "$P_RIGHT" "$RIGHT_ACTUAL" "$RIGHT"; then
     write_receipt ok "$ATTEMPT"
+    _balance_plan_column
     # 外欄幾何就緒後：左欄私訊+待審鎖 ≡，剩餘強制塞中間（開=回應+輸入／關=CLI）
     HERE_RESIZE="$(cd "$(dirname "$0")" && pwd)"
     EZ2_TMUX_SESSION="$S" EZ2_COCKPIT_STATE_DIR="$STATE_DIR" \

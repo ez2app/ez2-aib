@@ -946,7 +946,7 @@ fi
 #   對映住 panes.py 的 ROLE_OF 一處,這裡不重寫第二份。
 # ★ 攔在位置參數解析前:`left` 之類不是 provider,掉進去會被當 provider 報錯。
 case "${1:-}" in
-  left|center|right|footer|panes)
+  left|center|right|footer|plan|panes)
     exec "$T_PY3" "$HERE/panes.py" "$@"
     ;;
 esac

@@ -94,6 +94,15 @@ cockpit_pane_plan() {
   elif _plan_has bottom; then
     printf 'bottom|-|-|-|%s\n' "$C/pane-bottom-tabs.sh"
   fi
+  # 中欄(Andy 11-13):放在所有格之後,從 hub 往右切,才會夾在對話與右欄之間(有沒有左欄都一樣);
+  # 62% 讓 aib-plan 拿到 >= 100 欄(右側「為什麼」面板的門檻),下格主機群 14 列。
+  # panes.py 只在 center 開著時給 plan,這裡再擋一次 hub:錨不在就不印,免得 grow 跳過、自癒永遠等。
+  if _plan_has plan && _plan_has hub; then
+    printf 'plan|hub|h|62%%|%s\n' "$C/pane-plan.sh"
+    if _plan_has hosts; then
+      printf 'hosts|plan|v|14|%s\n' "$C/pane-hosts.sh"
+    fi
+  fi
   return 0
 }
 
@@ -582,6 +591,7 @@ _pane_id_of() {
     hub) printf '%s' "${P_HUB:-}" ;;
     right) printf '%s' "${P_RIGHT:-}" ;;
     bottom) printf '%s' "${P_BOTTOM:-}" ;;
+    plan) printf '%s' "${P_PLAN:-}" ;;
     *) printf '' ;;
   esac
 }
@@ -595,6 +605,7 @@ _assign_pane_role() {
     hub) P_HUB="$pane" ;;
     right) P_RIGHT="$pane" ;;
     bottom) P_BOTTOM="$pane" ;;
+    plan) P_PLAN="$pane" ;;
   esac
 }
 
@@ -602,7 +613,7 @@ grow_cockpit_panes() {
   # 從 plan 的初始格長出其餘格。冷啟動與自癒共用,避免兩條路徑漂移。
   # 預設只 hub+right;left/bottom 在 plan 裡才建。
   local root="$1" role anchor dir size script parent new
-  P_LEFT=""; P_HUB=""; P_RIGHT=""; P_BOTTOM=""
+  P_LEFT=""; P_HUB=""; P_RIGHT=""; P_BOTTOM=""; P_PLAN=""
   HUB_PLACEHOLDER_CMD="exec sleep 3600"
   while IFS='|' read -r role anchor dir size script; do
     [ -n "$role" ] || continue
@@ -647,6 +658,37 @@ grow_cockpit_panes() {
   done <<EOF
 $(cockpit_pane_plan)
 EOF
+}
+
+# 只缺中欄時原地補:別的格一格不多一格不少、hub 在、plan / hosts 缺(或只缺 hosts)才動手。
+# 回 0 = 補好了(且補完版面驗得過);非 0 = 不是這個形狀,交回原本的自癒判斷。
+_grow_missing_plan_column() {
+  local expected rows role others_want others_have
+  expected="$(cockpit_expected_roles)" || return 1
+  case " $(printf '%s ' $expected)" in *" plan "*) ;; *) return 1 ;; esac
+  rows="$(outer_tmux list-panes -t "$S:cockpit" -F '#{pane_id}|#{@aib_role}' 2>/dev/null)" || return 1
+  others_want="$(printf '%s\n' $expected | awk '$1 != "plan" && $1 != "hosts" && NF' | sort | tr '\n' ' ')"
+  others_have="$(printf '%s\n' "$rows" | awk -F '|' '$2 != "review" && $2 != "plan" && $2 != "hosts" && NF { print $2 }' | sort | tr '\n' ' ')"
+  [ "$others_want" = "$others_have" ] || return 1
+  P_HUB="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hub" { print $1; exit }')"
+  P_PLAN="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { print $1; exit }')"
+  [ -n "$P_HUB" ] || return 1
+  [ "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { n++ } END { print n+0 }')" -le 1 ] || return 1
+  [ "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { n++ } END { print n+0 }')" -eq 0 ] || return 1
+  while IFS='|' read -r role _ _ _ _; do
+    case "$role" in plan|hosts) ;; *) continue ;; esac
+    if [ "$role" = "plan" ] && [ -z "$P_PLAN" ]; then
+      P_PLAN="$(outer_tmux split-window -h -t "$P_HUB" -l 62% \
+        -P -F '#{pane_id}' "$(pane_command "$C/pane-plan.sh")")" || return 1
+      _assign_pane_role "$P_PLAN" plan
+    elif [ "$role" = "hosts" ] && [ -n "$P_PLAN" ]; then
+      _assign_pane_role "$(outer_tmux split-window -v -t "$P_PLAN" -l 14 \
+        -P -F '#{pane_id}' "$(pane_command "$C/pane-hosts.sh")")" hosts || return 1
+    fi
+  done <<EOF
+$(cockpit_pane_plan)
+EOF
+  validate_cockpit_layout
 }
 
 _cmd_for_root_role() {
@@ -698,6 +740,11 @@ else
   #    `|| _layout_rc=$?` 讓它成為 `||` 串列的左手邊(=被測試的),-e 因此不開火。
   _layout_rc=0
   validate_cockpit_layout || _layout_rc=$?
+  # 中欄(plan + hosts)是 11-13 才加進預設的。已經開著、有人在對話的座艙只缺這兩格時,
+  # 照下面的自癒會因為「hub 活著」拒絕重建、每次 ensure 都印一次拒絕 ⇒ 改成原地補格,不拆窗。
+  if [ "$_layout_rc" -eq 1 ] && _grow_missing_plan_column; then
+    _layout_rc=0
+  fi
   if [ "$_layout_rc" -eq 2 ]; then
     # 讀不到設定:**什麼都不做**,但一定出聲。不自癒的理由見 validate 的註解 ——
     # 自癒是破壞性的,不在一次失敗的量測上執行破壞性動作。

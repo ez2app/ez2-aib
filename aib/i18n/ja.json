@@ -397,7 +397,7 @@
   "aib.panes.status_path": "設定ファイル：{path}",
   "aib.panes.status_right": "右ペイン（AI 一覧）：{value}",
   "aib.panes.too_many_args": "余分な引数「{extra}」です。1 回に 1 つだけで、何も保存されていません",
-  "aib.panes.usage": "使い方：aib left|center|right|footer on|off ・ aib panes（現在値を表示）",
+  "aib.panes.usage": "使い方：aib left|center|right|footer|plan on|off ・ aib panes（現在値を表示）",
   "aib.profile.help.what": "profile = プロジェクト宣言ファイル(テストの実行方法を AIB に伝える)",
   "aib.profile.help.check": ".aib/verify.json を読み、形式とファイルを検証してから、コピー内で実際にテストを実行し、各アームが守ると宣言した製品ファイルを 1 つずつ 0 バイトに切り詰める",
   "aib.profile.help.explain": "宣言ファイルだけを読み、テストごとに入力が宣言されているか、単独で実行する必要があるかを表示する。コマンドは何も実行しない",
@@ -6005,5 +6005,8 @@
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
   "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)",
+  "aib.panes.status_plan": "進捗ペイン(進捗ツリー + ホスト群):{value}",
+  "aib.cockpit.plan_missing": "{name} が見つかりません(~/.ez2-aib/bin または PATH)。入れればこのペインが自動でつながります。不要なら:aib plan off",
+  "aib.cockpit.plan_exited": "{name} が終了しました(rc {rc})。5 秒後に再起動します。不要なら:aib plan off"
 }
