@@ -32,6 +32,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::mainline::{self, Mainline};
+use aib_plan::shadow::{self, Savings};
 
 fn epoch_now() -> i64 {
     SystemTime::now()
@@ -186,6 +187,11 @@ struct App {
     fleet_open: bool,
     /// 點「起點 / 目前」後的一句結果(跳到哪一項 / 樹上沒有),下一次按鍵或點擊前都留著
     jump_note: Option<String>,
+    /// 影子續跑省下的時間(目前目標下面那一行;None = 讀不到紀錄檔);檔案沒變就不重讀
+    shadow: Option<Savings>,
+    shadow_mtime: Option<SystemTime>,
+    /// 影子續跑明細展開了沒(預設收合)
+    shadow_open: bool,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -202,6 +208,8 @@ struct Hits {
     start_y: Option<usize>,
     /// 目前那一行「▸ 理由」從第幾格起(點那裡才開合;前面點了跳到樹上)
     toggle_x: Option<usize>,
+    /// 「影子續跑」那一行(點了開合省成功的明細)
+    shadow_y: Option<usize>,
     toolbar: String,
     tree_top: usize,
     tree_rows: Vec<usize>,
@@ -254,6 +262,10 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     }
     if h.fleet_y == Some(y) {
         app.fleet_open = !app.fleet_open;
+        return true;
+    }
+    if h.shadow_y == Some(y) {
+        app.shadow_open = !app.shadow_open;
         return true;
     }
     if h.toolbar_y == Some(y) {
@@ -818,6 +830,91 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     rows
 }
 
+/// 展開時最多列幾筆(新的在前);更舊的併成一行「另 N 筆」,紀錄檔裡全部都在
+const SHADOW_MAX: usize = 20;
+const SHADOW_LABEL: &str = "影子續跑";
+
+/// 影子續跑紀錄檔:跟 `aib test` 同一個位置(EZ2_VERIFY_SHADOW_DIR,沒設 = ~/.ez2-aib/verify-shadow)
+fn shadow_path() -> PathBuf {
+    std::env::var_os("EZ2_VERIFY_SHADOW_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".ez2-aib").join("verify-shadow"))
+        .join("test-stats.jsonl")
+}
+
+impl App {
+    /// 紀錄檔沒變(修改時間一樣)就不重讀;回傳有沒有換資料
+    fn load_shadow(&mut self, path: &Path) -> bool {
+        let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if m.is_some() && m == self.shadow_mtime {
+            return false;
+        }
+        let s = shadow::read(path);
+        let changed = s != self.shadow;
+        self.shadow = s;
+        self.shadow_mtime = m;
+        changed
+    }
+}
+
+/// 「影子續跑  共省 X(N 次)  ▸ 明細」;展開後每次省成功一行:時間、省多少、實跑 / 沿用支數
+fn shadow_rows(s: Option<&Savings>, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
+    let lead = format!("{MARGIN}{SHADOW_LABEL}  ");
+    let mut head = vec![Seg(lead.clone(), Some(Color::DarkGrey), false, false)];
+    let s = match s {
+        Some(s) if !s.saves.is_empty() => s,
+        _ => {
+            head.push(Seg(
+                "還沒有省到時間的紀錄".into(),
+                Some(Color::Grey),
+                false,
+                false,
+            ));
+            return vec![head];
+        }
+    };
+    let toggle = if open { "  ▾ 明細" } else { "  ▸ 明細" };
+    let text = format!("共省 {}({} 次)", shadow::dur(s.total_s), s.saves.len());
+    let room = w
+        .saturating_sub(str_width(&lead) + str_width(toggle))
+        .max(8);
+    head.push(Seg(fit(&text, room), Some(Color::Green), false, true));
+    head.push(Seg(toggle.into(), Some(Color::Cyan), false, true));
+    let mut rows = vec![head];
+    if open {
+        let pad = " ".repeat(str_width(&lead));
+        let line_w = w.saturating_sub(str_width(&pad)).max(8);
+        for e in s.saves.iter().take(SHADOW_MAX) {
+            let t = format!(
+                "{}  省 {}  實跑 {} · 沿用 {}",
+                mainline::stamp(e.at, now),
+                shadow::dur(e.saved_s),
+                e.ran,
+                e.reused
+            );
+            rows.push(vec![
+                seg(pad.clone()),
+                Seg(fit(&t, line_w), Some(Color::Grey), false, false),
+            ]);
+        }
+        if s.saves.len() > SHADOW_MAX {
+            rows.push(vec![
+                seg(pad.clone()),
+                Seg(
+                    fit(
+                        &format!("…另 {} 筆較舊的紀錄", s.saves.len() - SHADOW_MAX),
+                        line_w,
+                    ),
+                    Some(Color::DarkGrey),
+                    false,
+                    false,
+                ),
+            ]);
+        }
+    }
+    rows
+}
+
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
     *app.hits.borrow_mut() = Hits::default();
@@ -843,7 +940,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
     let (mut mainline_y, mut fleet_y) = (None, None);
     let (mut start_y, mut toggle_x) = (None, None);
-    let mut sugg = None;
+    let (mut sugg, mut shadow_y) = (None, None);
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
         let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
@@ -910,6 +1007,14 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         });
         rows.insert(1, Vec::new());
         out.extend(rows);
+        // Andy 11-12 23:5x:目前目標下面再一行「影子續跑：共省多少時間」,省成功的逐筆記在它下面
+        shadow_y = Some(out.len());
+        out.extend(shadow_rows(
+            app.shadow.as_ref(),
+            app.now_secs,
+            w,
+            app.shadow_open,
+        ));
         if app.fleet_open {
             out.push(Vec::new());
             out.extend(fleet_rows(&app.fleet, app.now_secs, w));
@@ -930,6 +1035,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         sugg,
         start_y,
         toggle_x,
+        shadow_y,
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -1215,6 +1321,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
         }
         (KeyCode::Char('m'), _) => app.main_open = !app.main_open,
         (KeyCode::Char('f'), _) => app.fleet_open = !app.fleet_open,
+        (KeyCode::Char('v'), _) => app.shadow_open = !app.shadow_open,
         (KeyCode::Char('e'), _) => {
             app.open = app
                 .plan
@@ -1294,6 +1401,9 @@ fn main() {
         fleet: Vec::new(),
         fleet_open: false,
         jump_note: None,
+        shadow: None,
+        shadow_mtime: None,
+        shadow_open: false,
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     if args.seat.is_none() {
@@ -1303,6 +1413,7 @@ fn main() {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
     app.load(&args.data);
+    app.load_shadow(&shadow_path());
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
     if let Some(i) = index(&app.plan).by.get("SC") {
@@ -1427,6 +1538,9 @@ fn main() {
             if app.mtime != before {
                 dirty = true;
             }
+            if app.load_shadow(&shadow_path()) {
+                dirty = true;
+            }
             if let Some(seat) = &args.seat {
                 let now = epoch_now();
                 let m = Some(mainline::refresh(&state_dir(), seat, now));
@@ -1485,6 +1599,9 @@ mod tests {
             fleet: Vec::new(),
             fleet_open: false,
             jump_note: None,
+            shadow: None,
+            shadow_mtime: None,
+            shadow_open: false,
         }
     }
 
@@ -1599,8 +1716,11 @@ mod tests {
         };
         assert_eq!(at(3, "席位接續"), at(4, "還沒回報"));
         assert!(!text(&f, 4).contains('▸'), "沒有判斷內容就沒有開合");
-        assert!(text(&f, 5).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(6));
+        // Andy 11-12 23:5x:目前目標下面一行影子續跑;沒有紀錄檔就寫還沒有
+        assert_eq!(text(&f, 5), "  影子續跑  還沒有省到時間的紀錄");
+        assert_eq!(at(5, "還沒有"), at(4, "還沒回報"), "跟上面兩行同一欄起");
+        assert!(text(&f, 6).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(7));
 
         // 有判斷 ⇒ 百分比 + 顏色;校正 > 0 黃
         let review = |pct: u8| {
@@ -1639,7 +1759,8 @@ mod tests {
         let f = frame(&app, 100, 40);
         assert!(text(&f, 3).ends_with('…') && str_width(&text(&f, 3)) <= 100);
         assert!(text(&f, 4).ends_with("  ▸ 理由"), "預設收合");
-        assert!(text(&f, 5).is_empty());
+        assert!(text(&f, 5).starts_with("  影子續跑"));
+        assert!(text(&f, 6).is_empty());
         assert_eq!(app.hits.borrow().mainline_y, Some(4));
         // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
         // 點「▸ 理由」那幾格才開合(前面點了是跳到樹上)
@@ -1652,8 +1773,12 @@ mod tests {
         assert_eq!(text(&f, 5), format!("{pad}為什麼  因為 Andy 要"));
         assert_eq!(text(&f, 6), format!("{pad}建議    建議 X"));
         assert_eq!(text(&f, 7), format!("{pad}回報 11-12 00:10"));
-        assert!(text(&f, 8).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(9));
+        assert!(
+            text(&f, 8).starts_with("  影子續跑"),
+            "理由展開時接在理由後面"
+        );
+        assert!(text(&f, 9).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(10));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
@@ -1768,19 +1893,19 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).ends_with("全艙 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
-        assert!(text(&f, 5).is_empty(), "預設收合");
+        assert!(text(&f, 6).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▾"));
-        assert!(text(&f, 5).is_empty());
-        let a = text(&f, 6);
+        assert!(text(&f, 6).is_empty());
+        let a = text(&f, 7);
         assert!(
             a.starts_with("  @aaaaa  90%   校正1 總結0 交接0  01-01 08:00 主機發熱三條修法"),
             "{a}"
         );
         assert!(a.ends_with("⚠ 換題?"), "{a}");
-        let b = text(&f, 7);
+        let b = text(&f, 8);
         assert!(
             b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    還沒回報"),
             "{b}"
@@ -1791,7 +1916,7 @@ mod tests {
             str_width(&b[..b.find("校正").unwrap()]),
             "欄位對齊"
         );
-        assert!(text(&f, 8).is_empty());
+        assert!(text(&f, 9).is_empty());
         // 超過兩席 ⇒ 前兩席 + 其餘數量
         let drift = app.fleet[0].1.clone();
         for c in ["ccccc", "ddddd"] {
@@ -1851,6 +1976,63 @@ mod tests {
         assert_eq!(wrap("abc", 10), vec!["abc"]);
     }
 
+    /// Andy 11-12 23:5x:目前目標下面「影子續跑：共省多少」;點那行(或按 v)展開，每次省成功一行、新的在前
+    #[test]
+    fn shadow_row_totals_and_lists_each_save() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.now_secs = 1_794_460_800;
+        app.mainline = Some(Mainline::default());
+        let mut text = String::new();
+        // 25 次省成功(每次 10 分鐘,間隔一小時)+ 一列沒省到的
+        for i in 0..25 {
+            text.push_str(&format!(
+                "{{\"saved_s\": 600, \"ran\": {i}, \"reused\": 7, \"utc\": \"2026-11-0{}T{:02}:00:00Z\"}}\n",
+                1 + i / 24,
+                i % 24
+            ));
+        }
+        text.push_str(r#"{"saved_s": 0.0, "ran": 1, "reused": 0, "utc": "2026-11-09T00:00:00Z"}"#);
+        let dir = std::env::temp_dir().join(format!("aib-plan-shadow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test-stats.jsonl");
+        std::fs::write(&path, &text).unwrap();
+        assert!(app.load_shadow(&path), "第一次讀 = 換資料");
+        assert!(!app.load_shadow(&path), "檔案沒變不重讀");
+        let _ = std::fs::remove_dir_all(&dir);
+        let t = |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let f = frame(&app, 100, 60);
+        assert_eq!(t(&f, 5), "  影子續跑  共省 4 時 10 分(25 次)  ▸ 明細");
+        assert!(t(&f, 6).is_empty(), "預設收合");
+        assert_eq!(app.hits.borrow().shadow_y, Some(5));
+        assert!(on_click(&mut app, 4, 5));
+        let f = frame(&app, 100, 60);
+        assert!(t(&f, 5).ends_with("▾ 明細"));
+        // 新的在前:第 25 筆 = 11-02 00:00 UTC = 台北 08:00
+        assert_eq!(
+            t(&f, 6),
+            "            11-02 08:00  省 10 分 0 秒  實跑 24 · 沿用 7"
+        );
+        assert_eq!(
+            t(&f, 7),
+            "            11-02 07:00  省 10 分 0 秒  實跑 23 · 沿用 7"
+        );
+        assert_eq!(
+            t(&f, 25),
+            "            11-01 13:00  省 10 分 0 秒  實跑 5 · 沿用 7"
+        );
+        assert_eq!(t(&f, 26), "            …另 5 筆較舊的紀錄");
+        assert!(t(&f, 27).is_empty());
+        on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(!app.shadow_open, "v 收合");
+    }
+
     /// 043dd M1:讀不到資料檔(nodes 空)時，每個鍵、每種寬度都不能 panic
     #[test]
     fn empty_plan_survives_every_key_and_width() {
@@ -1870,6 +2052,7 @@ mod tests {
             KeyCode::Char('n'),
             KeyCode::Char('s'),
             KeyCode::Char('r'),
+            KeyCode::Char('v'),
             KeyCode::Char('['),
             KeyCode::Char(']'),
         ];
