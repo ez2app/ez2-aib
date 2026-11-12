@@ -87,11 +87,12 @@ pub fn is_new(log: &[Entry], cur: &Entry) -> bool {
         .is_none_or(|l| l.item != cur.item || l.started_at != cur.started_at)
 }
 
-/// 今天第一筆(seen 在台北今天);今天還沒有 ⇒ 用目前那筆
+/// 今天最早的一筆(seen 在台北今天);今天還沒有 ⇒ 用目前那筆
 pub fn first_today(log: &[Entry], cur: Option<&Entry>, now: i64) -> Option<Entry> {
     let ds = day_start(now);
     log.iter()
-        .find(|e| e.seen >= ds)
+        .filter(|e| e.seen >= ds)
+        .min_by_key(|e| e.seen)
         .cloned()
         .or_else(|| cur.cloned())
 }
@@ -104,10 +105,15 @@ pub fn refresh(state_root: &Path, seat: &str, now: i64) -> Mainline {
         }
         e
     });
+    // aib now 自己寫的歷史(seat_now.append_history,11-12 起);有這份就不再自己記
+    let hist_path = state_root
+        .join("seat-now")
+        .join(format!("{seat}.history.jsonl"));
+    let hist = std::fs::read_to_string(&hist_path).ok();
     let dir = state_root.join("aib-plan");
     let path = dir.join(format!("mainline-{seat}.jsonl"));
     let mut log = parse_log(&std::fs::read_to_string(&path).unwrap_or_default());
-    if let Some(c) = &cur {
+    if let Some(c) = cur.as_ref().filter(|_| hist.is_none()) {
         if is_new(&log, c) {
             if let Ok(line) = serde_json::to_string(c) {
                 use std::io::Write;
@@ -123,6 +129,8 @@ pub fn refresh(state_root: &Path, seat: &str, now: i64) -> Mainline {
             log.push(c.clone());
         }
     }
+    // 舊 aib 時期自己記的 + aib now 的歷史合在一起看，取今天最早那筆
+    log.extend(parse_log(hist.as_deref().unwrap_or_default()));
     Mainline {
         first: first_today(&log, cur.as_ref(), now),
         now: cur,
@@ -227,6 +235,47 @@ mod tests {
         let m = refresh(&dir, "s1", NOW);
         assert!(m.now.is_none());
         assert_eq!(m.first.unwrap().item, "做 X");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// aib now 有寫歷史 ⇒ 讀它、不再自己記;跟自己舊記的合併取今天最早
+    #[test]
+    fn prefers_aib_now_history_and_merges_old_log() {
+        let dir = std::env::temp_dir().join(format!("aib-plan-mh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("seat-now")).unwrap();
+        std::fs::create_dir_all(dir.join("aib-plan")).unwrap();
+        let ds = day_start(NOW);
+        std::fs::write(
+            dir.join("aib-plan/mainline-s2.jsonl"),
+            format!(
+                "{{\"item\":\"舊記的\",\"started_at\":{0},\"seen\":{0}}}\n",
+                ds + 540
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("seat-now/s2.history.jsonl"),
+            format!(
+                "{{\"item\":\"昨天\",\"started_at\":{0},\"seen\":{0}}}\n{{\"item\":\"後來\",\"started_at\":{1},\"seen\":{1}}}\n",
+                ds - 60,
+                ds + 3600
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("seat-now/s2.json"),
+            format!(
+                "{{\"item\":\"後來\",\"started_at\":{0},\"at\":{0}}}",
+                ds + 3600
+            ),
+        )
+        .unwrap();
+        let m = refresh(&dir, "s2", NOW);
+        assert_eq!(m.first.unwrap().item, "舊記的");
+        assert_eq!(m.now.unwrap().item, "後來");
+        let own = std::fs::read_to_string(dir.join("aib-plan/mainline-s2.jsonl")).unwrap();
+        assert_eq!(own.lines().count(), 1, "有 aib now 歷史就不再自己記");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
