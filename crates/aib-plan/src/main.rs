@@ -78,7 +78,8 @@ fn state_dir() -> PathBuf {
         .join("state")
 }
 
-const DM_EVERY: Duration = Duration::from_secs(30);
+/// 每 2 分鐘數一次:每席兩支 python,7 席 30 秒一次約佔一核 7%(043dd #726 L2,跟省熱目標相反)
+const DM_EVERY: Duration = Duration::from_secs(120);
 /// 數一次佇列超過這麼久就當它卡住:顯示「?」,不重起
 const DM_STUCK: Duration = Duration::from_secs(90);
 

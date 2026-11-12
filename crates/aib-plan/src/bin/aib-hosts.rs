@@ -82,6 +82,8 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.kind = Kind::Server;
         host.role = h["role"].as_str().unwrap_or("主機").to_string();
         host.poll = SERVER_POLL;
+        // 043dd #726 L3:正式 / 客戶主機預設不探(對方登入紀錄、頻率限制都看得到),hosts.json 寫 "poll": true 才探
+        host.watch = h["poll"].as_bool().unwrap_or(false);
         host.identity = h["identity"].as_str().map(str::to_string);
         host.tag = h["tag"].as_str().map(str::to_string);
         host.ci = h["ci"].as_bool().unwrap_or(false);
@@ -91,7 +93,7 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
 }
 
 const POLL: Duration = Duration::from_secs(20);
-const SERVER_POLL: Duration = Duration::from_secs(60);
+const SERVER_POLL: Duration = Duration::from_secs(300);
 /// 其他主機(Linux 或 mac):核數 + 平均負載，不碰租約
 const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
                              $(if [ -r /proc/loadavg ]; then echo \"{ $(cut -d' ' -f1-3 /proc/loadavg) }\"; \
@@ -161,8 +163,10 @@ struct Host {
     kind: Kind,
     /// 功能 / 種類(hosts.json 的 role;沒寫就照種類:測試 / Win 測試 / CI / 主機)
     role: String,
-    /// 多久問一次(測試機 20 秒、其他主機 60 秒)
+    /// 多久問一次(測試機 20 秒、其他主機 5 分鐘)
     poll: Duration,
+    /// 要不要探(其他主機預設不探)
+    watch: bool,
     identity: Option<String>,
     /// 銘牌(hosts.json 的 tag,例 "Ez2" = 賣給客戶的主機);沒寫就照種類 M / W / L / G
     tag: Option<String>,
@@ -191,6 +195,7 @@ impl Host {
             kind: Kind::Mac,
             role: "測試".into(),
             poll: POLL,
+            watch: true,
             identity: None,
             tag: None,
             ci: false,
@@ -374,6 +379,10 @@ fn ssh_run(p: &Probe, cmd: &str, jump: Option<&str>) -> std::io::Result<std::pro
         "BatchMode=yes",
         "-o",
         "ConnectTimeout=8",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=3",
     ]);
     if let Some(i) = &p.identity {
         c.args(["-i", i.as_str()]);
@@ -384,6 +393,14 @@ fn ssh_run(p: &Probe, cmd: &str, jump: Option<&str>) -> std::io::Result<std::pro
     c.args(["--", p.target.as_str(), cmd])
         .stdin(Stdio::null())
         .output()
+}
+
+/// a named exception to ADR 0005: `--once` is a one-shot print with no timer loop of its own;
+/// it waits at most until `end` for the probes, then draws whatever came back
+#[allow(clippy::disallowed_methods)]
+fn recv_until(rx: &mpsc::Receiver<(usize, Sample)>, end: Instant) -> Option<(usize, Sample)> {
+    rx.recv_timeout(end.saturating_duration_since(Instant::now()))
+        .ok()
 }
 
 fn ask(idx: usize, p: Probe, tx: mpsc::Sender<(usize, Sample)>) {
@@ -613,6 +630,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     let name = fit(&format!("{mark}{} {}", idx + 1, h.name), NAME_W - 1);
     let name_pad = " ".repeat(NAME_W.saturating_sub(w(&name)));
     let status = match s {
+        None if !h.watch => "不探(hosts.json 寫 \"poll\": true 才探)".to_string(),
         None => "讀取中…".to_string(),
         Some(s) if !s.online => format!("離線 {}", fit(&s.err, 30)),
         Some(Sample {
@@ -819,6 +837,7 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
         format!("{}{t}{}", " ".repeat(room / 2), " ".repeat(room - room / 2))
     };
     let stat = match s {
+        None if !h.watch => "不探".to_string(),
         None => "…".to_string(),
         Some(s) if !s.online => "離線".to_string(),
         Some(Sample {
@@ -1044,11 +1063,19 @@ fn main() {
     }
     let (tx, rx) = mpsc::channel::<(usize, Sample)>();
     if once {
-        for (i, h) in hosts.iter().enumerate() {
+        let mut waiting = 0;
+        for (i, h) in hosts.iter().enumerate().filter(|(_, h)| h.watch) {
             ask(i, h.probe(), tx.clone());
+            waiting += 1;
         }
         drop(tx);
-        for (i, s) in rx.iter() {
+        // 等到全部回來或 STUCK 到期;卡住的那台照「…」畫，不讓整支卡死(043dd #726 L1)
+        let end = Instant::now() + STUCK;
+        while waiting > 0 {
+            let Some((i, s)) = recv_until(&rx, end) else {
+                break;
+            };
+            waiting -= 1;
             if let Some(h) = hosts.get_mut(i) {
                 h.loads.push(s.load1);
                 h.last = Some(s);
@@ -1081,9 +1108,13 @@ fn main() {
         for (i, h) in hosts.iter_mut().enumerate() {
             let due = h.at.is_none_or(|a| a.elapsed() >= h.poll);
             match h.asked {
-                Some(a) if a.elapsed() >= STUCK => h.stuck = true,
+                // 卡住:標出來，並放掉這次詢問，下一輪照常再問(043dd #726 L1)
+                Some(a) if a.elapsed() >= STUCK => {
+                    h.stuck = true;
+                    h.asked = None;
+                }
                 Some(_) => {}
-                None if due => {
+                None if due && h.watch => {
                     h.asked = Some(Instant::now());
                     ask(i, h.probe(), tx.clone());
                 }
@@ -1369,9 +1400,9 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let mac = host("mini", None, false);
         let mut win = host("win", None, false);
         win.kind = Kind::Windows;
-        let mut lin = host("eu01", None, false);
+        let mut lin = host("srv-a", None, false);
         lin.kind = Kind::Server;
-        let mut ez2 = host("eu02", None, false);
+        let mut ez2 = host("srv-b", None, false);
         ez2.kind = Kind::Server;
         ez2.tag = Some("Ez2".into());
         let mut gh = host("gh", None, false);
@@ -1405,6 +1436,33 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             [("m", true), ("p", false), ("GitHub", true), ("srv1", false)]
         );
         assert_eq!(hs[3].tag.as_deref(), Some("Ez2"));
+    }
+
+    #[test]
+    fn other_servers_are_listed_but_not_probed_unless_poll_is_true() {
+        let hs = hosts_from_config(
+            r#"{"hosts":[{"name":"m","ssh":"m"}],
+                "servers":[{"name":"a","ssh":"x"},{"name":"b","ssh":"y","poll":true}]}"#,
+        );
+        let watch: Vec<(&str, bool)> = hs.iter().map(|h| (h.name.as_str(), h.watch)).collect();
+        assert_eq!(watch, [("m", true), ("a", false), ("b", true)]);
+        assert_eq!(hs[2].poll, SERVER_POLL);
+        assert!(
+            SERVER_POLL >= Duration::from_secs(300),
+            "其他主機最快 5 分鐘一次"
+        );
+        // 不探的那台在機箱與明細都寫「不探」,不是「…」
+        let row: String = tower(&hs[1], 1)[5]
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert!(row.contains("不探"), "{row}");
+        let detail: String = host_lines(&hs[1], 1, 100, 0, 0)
+            .iter()
+            .flatten()
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert!(detail.contains("不探"), "{detail}");
     }
 
     #[test]
