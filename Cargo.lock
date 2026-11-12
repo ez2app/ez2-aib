@@ -13,28 +13,28 @@ dependencies = [
 
 [[package]]
 name = "aib-cireuse"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-cloud"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-cloud-cli"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-cloud",
 ]
 
 [[package]]
 name = "aib-cloud-host"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-cloud",
  "serde_json",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "aib-consent"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "nix",
  "serde_json",
@@ -51,15 +51,24 @@ dependencies = [
 
 [[package]]
 name = "aib-core"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde",
  "thiserror",
 ]
 
 [[package]]
+name = "aib-drive"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-fixture-tree"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
  "signal-hook",
@@ -67,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "aib-flaky"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-cireuse",
  "serde_json",
@@ -75,15 +84,16 @@ dependencies = [
 
 [[package]]
 name = "aib-forkcount"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-procwatch",
+ "nix",
  "serde_json",
 ]
 
 [[package]]
 name = "aib-lease"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "base64",
  "serde_json",
@@ -92,16 +102,17 @@ dependencies = [
 
 [[package]]
 name = "aib-procwatch"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-sys",
  "libproc",
  "nix",
+ "sysinfo",
 ]
 
 [[package]]
 name = "aib-release"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
  "sha2",
@@ -109,14 +120,14 @@ dependencies = [
 
 [[package]]
 name = "aib-signlint"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-store"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
  "rusqlite",
@@ -128,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "aib-sys"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "libc",
  "thiserror",
@@ -137,11 +148,11 @@ dependencies = [
 
 [[package]]
 name = "aib-thermal"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 
 [[package]]
 name = "aib-xtask"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -151,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aibd"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
  "aib-store",
