@@ -17,6 +17,26 @@ pub struct Entry {
     pub started_at: i64,
     /// 這一筆最早被看到的時間(秒)
     pub seen: i64,
+    /// 判斷(aib now --track/--why/--idea);只有目前那筆讀得到，歷史不記
+    #[serde(default, skip_serializing)]
+    pub review: Option<Review>,
+}
+
+/// Andy 11-12 13:3x:每個階段完成都要回報 —— 有沒有偏離主軸、為什麼這麼做、主人沒想到的建議
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct Review {
+    /// "on" = 在主軸上、"off" = 偏離
+    pub track: String,
+    pub why: String,
+    pub idea: String,
+    #[serde(default)]
+    pub at: i64,
+}
+
+impl Review {
+    pub fn on_track(&self) -> bool {
+        self.track == "on"
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -72,6 +92,10 @@ pub fn read_now(state_root: &Path, seat: &str) -> Option<Entry> {
         item,
         started_at: v.get("started_at").and_then(|x| x.as_i64()).unwrap_or(at),
         seen: at,
+        review: v
+            .get("review")
+            .and_then(|r| serde_json::from_value::<Review>(r.clone()).ok())
+            .filter(|r| matches!(r.track.as_str(), "on" | "off")),
     })
 }
 
@@ -79,6 +103,15 @@ pub fn parse_log(text: &str) -> Vec<Entry> {
     text.lines()
         .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
         .collect()
+}
+
+/// tmux `show -wv @aib_seat` 的輸出 ⇒ 席碼(5 碼小寫十六進位);別的都不收
+pub fn seat_from_tmux(out: &str) -> Option<String> {
+    let s = out.trim();
+    (s.len() == 5
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then(|| s.to_string())
 }
 
 /// 這一筆要不要記：跟最後一筆的文字或開始時間不同才記
@@ -149,6 +182,7 @@ mod tests {
             item: item.into(),
             started_at,
             seen,
+            review: None,
         }
     }
 
@@ -235,6 +269,30 @@ mod tests {
         let m = refresh(&dir, "s1", NOW);
         assert!(m.now.is_none());
         assert_eq!(m.first.unwrap().item, "做 X");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seat_code_from_tmux_and_review_from_seat_now() {
+        assert_eq!(seat_from_tmux("a63ab\n").as_deref(), Some("a63ab"));
+        for bad in ["", "A63AB", "a63a", "a63abc", "../x1", "zzzzz"] {
+            assert!(seat_from_tmux(bad).is_none(), "{bad}");
+        }
+        let dir = std::env::temp_dir().join(format!("aib-plan-rv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("seat-now")).unwrap();
+        let j = |track: &str| {
+            format!("{{\"item\":\"做 A\",\"started_at\":1,\"at\":2,\"review\":{{\"track\":\"{track}\",\"why\":\"因為\",\"idea\":\"無\",\"at\":2}}}}")
+        };
+        std::fs::write(dir.join("seat-now/s3.json"), j("off")).unwrap();
+        let r = read_now(&dir, "s3").unwrap().review.unwrap();
+        assert!(!r.on_track());
+        assert_eq!((r.why.as_str(), r.idea.as_str()), ("因為", "無"));
+        std::fs::write(dir.join("seat-now/s3.json"), j("maybe")).unwrap();
+        assert!(
+            read_now(&dir, "s3").unwrap().review.is_none(),
+            "track 只收 on / off"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

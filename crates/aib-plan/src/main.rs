@@ -5,11 +5,11 @@
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
 //! - 有 --aib-root 時每 30 秒唯讀數一次各席 dm 佇列(待審 / 已讀未結);讀不到顯示「?」。
-//! - 有 --seat 時最上面兩行：本席一開始主軸 / 目前主軸(開始時間)/ 現在時間(台北),見 mainline.rs。
+//! - 有 --seat(沒帶就問 tmux 窗選項 @aib_seat)時最上面兩行：本席一開始主軸 / 目前主軸(開始時間)/ 現在時間(台北),見 mainline.rs。
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
-//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 ·
+//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 ·
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
@@ -38,6 +38,22 @@ fn epoch_now() -> i64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 這個窗格屬於哪一席:tmux show -wv -t $TMUX_PANE @aib_seat;不在 tmux / 讀不到 ⇒ None
+fn tmux_seat() -> Option<String> {
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let tmux = std::env::var("AIB_TMUX_BIN").unwrap_or_else(|_| "tmux".into());
+    let o = std::process::Command::new(tmux)
+        .args(["show", "-wv", "-t", &pane, "@aib_seat"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    mainline::seat_from_tmux(&String::from_utf8_lossy(&o.stdout))
 }
 
 /// <狀態根>/state:跟 aib 一樣先看 EZ2_AIB_STATE_ROOT
@@ -148,12 +164,16 @@ struct App {
     /// 最上面兩行(有 --seat 才有);now_secs = 畫的那一刻(台北時間由它算)
     mainline: Option<Mainline>,
     now_secs: i64,
+    /// 判斷內容展開了沒(預設收合)
+    main_open: bool,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
 #[derive(Default, Clone)]
 struct Hits {
     toolbar_y: Option<usize>,
+    /// 目前主軸那一行(點了開合判斷內容)
+    mainline_y: Option<usize>,
     toolbar: String,
     tree_top: usize,
     tree_rows: Vec<usize>,
@@ -177,6 +197,10 @@ const TOOLBAR_KEYS: [(&str, char); 10] = [
 /// 滑鼠點擊：工具列的字 = 按那個鍵;樹上的列 = 選取並展開 / 收合。回傳 false = 要離開。
 fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     let h = app.hits.borrow().clone();
+    if h.mainline_y == Some(y) {
+        app.main_open = !app.main_open;
+        return true;
+    }
     if h.toolbar_y == Some(y) {
         // 043dd incr3 L2:搜尋輸入中，點工具列不能把字打進搜尋框
         if app.typing.is_some() {
@@ -392,14 +416,45 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
-fn mainline_rows(m: &Mainline, now: i64) -> [Vec<Seg>; 2] {
+/// 判斷標籤(放在目前主軸左邊)與它的顏色
+fn verdict(e: Option<&mainline::Entry>) -> (&'static str, Color) {
+    match e.and_then(|e| e.review.as_ref()) {
+        Some(r) if r.on_track() => ("判斷:主軸內", Color::Green),
+        Some(_) => ("判斷:偏離", Color::Red),
+        None => ("判斷:未回報", Color::DarkGrey),
+    }
+}
+
+/// 照顯示寬度折行(中日韓字算兩格)
+fn wrap(s: &str, w: usize) -> Vec<String> {
+    let w = w.max(4);
+    let mut out = vec![String::new()];
+    let mut used = 0;
+    for ch in s.chars() {
+        let cw = str_width(ch.encode_utf8(&mut [0; 4]));
+        if used + cw > w {
+            out.push(String::new());
+            used = 0;
+        }
+        if let Some(l) = out.last_mut() {
+            l.push(ch);
+        }
+        used += cw;
+    }
+    out
+}
+
+/// 最上面：一開始主軸、目前主軸(左邊是判斷);有判斷內容 ⇒ 行尾 ▸ 可展開(預設收合),展開列出為什麼 / 建議
+fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let now_t = mainline::stamp(now, now);
-    let row = |label: &str, e: Option<&mainline::Entry>| -> Vec<Seg> {
+    let (vtext, vcolor) = verdict(m.now.as_ref());
+    let lead = str_width(vtext) + 1;
+    let body = |label: &str, e: Option<&mainline::Entry>| -> [Seg; 2] {
         let (start, item) = match e {
             Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
             None => ("—".to_string(), "(沒有回報 aib now)".to_string()),
         };
-        vec![
+        [
             Seg(
                 format!("{label}({start})/{now_t}："),
                 Some(Color::DarkGrey),
@@ -409,10 +464,43 @@ fn mainline_rows(m: &Mainline, now: i64) -> [Vec<Seg>; 2] {
             Seg(item, Some(Color::White), false, true),
         ]
     };
-    [
-        row("本席AI一開始主軸", m.first.as_ref()),
-        row("本席AI目前開發主軸", m.now.as_ref()),
-    ]
+    let mut first = vec![seg(" ".repeat(lead))];
+    first.extend(body("本席AI一開始主軸", m.first.as_ref()));
+    let mut cur = vec![Seg(format!("{vtext} "), Some(vcolor), false, true)];
+    cur.extend(body("本席AI目前開發主軸", m.now.as_ref()));
+    let review = m.now.as_ref().and_then(|e| e.review.as_ref());
+    if review.is_some() {
+        cur.push(Seg(
+            if open { " ▾" } else { " ▸" }.into(),
+            Some(Color::Cyan),
+            false,
+            true,
+        ));
+    }
+    let mut rows = vec![first, cur];
+    if let (Some(r), true) = (review, open) {
+        let pad = " ".repeat(lead + 2);
+        let text_w = w.saturating_sub(lead + 2);
+        let mut part = |label: &str, text: &str, color: Color| {
+            rows.push(vec![
+                seg(pad.clone()),
+                Seg(label.into(), Some(color), false, true),
+            ]);
+            for l in wrap(text, text_w) {
+                rows.push(vec![
+                    seg(pad.clone()),
+                    Seg(l, Some(Color::White), false, false),
+                ]);
+            }
+        };
+        part(
+            &format!("為什麼這麼做(回報 {}):", mainline::stamp(r.at, now)),
+            &r.why,
+            Color::Yellow,
+        );
+        part("有什麼是你沒想到、我建議的:", &r.idea, Color::Yellow);
+    }
+    rows
 }
 
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
@@ -436,8 +524,13 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     }
     // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
     // Andy 11-12 13:1x:最上面兩行 = 本席一開始主軸 / 目前開發主軸(開始時間)/現在時間
+    // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
+    let mut mainline_y = None;
     if let Some(m) = &app.mainline {
-        out.extend(mainline_rows(m, app.now_secs));
+        out.push(Vec::new());
+        let rows = mainline_rows(m, app.now_secs, w, app.main_open);
+        mainline_y = Some(out.len() + 1);
+        out.extend(rows);
     }
     // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
     out.push(Vec::new());
@@ -446,6 +539,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     let mut hits = Hits {
         toolbar_y: Some(out.len() - 1),
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
+        mainline_y,
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -724,6 +818,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
                 app.open.insert(id);
             }
         }
+        (KeyCode::Char('m'), _) => app.main_open = !app.main_open,
         (KeyCode::Char('e'), _) => {
             app.open = app
                 .plan
@@ -777,7 +872,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
 }
 
 fn main() {
-    let args = match parse_args() {
+    let mut args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}");
@@ -799,7 +894,12 @@ fn main() {
         hits: Default::default(),
         mainline: None,
         now_secs: epoch_now(),
+        main_open: false,
     };
+    // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
+    if args.seat.is_none() {
+        args.seat = tmux_seat();
+    }
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
@@ -975,6 +1075,7 @@ mod tests {
             hits: Default::default(),
             mainline: None,
             now_secs: 0,
+            main_open: false,
         }
     }
 
@@ -989,25 +1090,89 @@ mod tests {
         let now = 1_794_460_800; // 台北 11-12
         let ds = mainline::day_start(now);
         app.now_secs = now;
+        let entry = |item: &str, review| mainline::Entry {
+            item: item.into(),
+            started_at: ds + 540,
+            seen: ds + 540,
+            review,
+        };
         app.mainline = Some(Mainline {
-            first: Some(mainline::Entry {
-                item: "席位接續".into(),
-                started_at: ds + 540,
-                seen: ds + 540,
-            }),
+            first: Some(entry("席位接續", None)),
             now: None,
         });
         let f = frame(&app, 100, 40);
-        let text = |i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let text =
+            |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        // Andy 13:3x:最上面空一行
+        assert!(text(&f, 0).is_empty());
         assert!(
-            text(0).starts_with("本席AI一開始主軸(00:09)/"),
+            text(&f, 1)
+                .trim_start()
+                .starts_with("本席AI一開始主軸(00:09)/"),
             "{}",
-            text(0)
+            text(&f, 1)
         );
-        assert!(text(0).ends_with("席位接續"));
-        assert!(text(1).starts_with("本席AI目前開發主軸(—)/"), "{}", text(1));
-        assert!(text(2).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(3));
+        assert!(text(&f, 1).ends_with("席位接續"));
+        assert!(
+            text(&f, 2).starts_with("判斷:未回報 本席AI目前開發主軸(—)/"),
+            "{}",
+            text(&f, 2)
+        );
+        assert!(!text(&f, 2).contains('▸'), "沒有判斷內容就沒有開合");
+        assert!(text(&f, 3).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(4));
+        // 兩行的主軸字頭對齊(第一行左邊補判斷標籤的寬度)
+        assert_eq!(
+            str_width(&text(&f, 1)[..text(&f, 1).find('本').unwrap()]),
+            str_width("判斷:未回報 ")
+        );
+
+        // 有判斷 ⇒ 偏離標紅、行尾 ▸,預設收合
+        app.mainline = Some(Mainline {
+            first: Some(entry("席位接續", None)),
+            now: Some(entry(
+                "做 B",
+                Some(mainline::Review {
+                    track: "off".into(),
+                    why: "因為 Andy 要".into(),
+                    idea: "建議 X".into(),
+                    at: ds + 600,
+                }),
+            )),
+        });
+        let f = frame(&app, 100, 40);
+        let cur = &f[2];
+        assert_eq!(cur[0].0, "判斷:偏離 ");
+        assert_eq!(cur[0].1, Some(Color::Red));
+        assert!(text(&f, 2).ends_with(" ▸"));
+        assert!(text(&f, 3).is_empty());
+        let y = app.hits.borrow().mainline_y;
+        assert_eq!(y, Some(2));
+        // 點那一行 ⇒ 展開;再按 m ⇒ 收合
+        assert!(on_click(&mut app, 3, 2));
+        let f = frame(&app, 100, 40);
+        assert!(text(&f, 2).ends_with(" ▾"));
+        assert!(
+            text(&f, 3).contains("為什麼這麼做(回報 00:10)"),
+            "{}",
+            text(&f, 3)
+        );
+        assert!(text(&f, 4).contains("因為 Andy 要"));
+        assert!(text(&f, 5).contains("有什麼是你沒想到、我建議的"));
+        assert!(text(&f, 6).contains("建議 X"));
+        assert!(text(&f, 7).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(8));
+        on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        );
+        assert!(!app.main_open);
+    }
+
+    #[test]
+    fn wrap_breaks_on_display_width() {
+        assert_eq!(wrap("一二三四五", 4), vec!["一二", "三四", "五"]);
+        assert_eq!(wrap("abc", 10), vec!["abc"]);
     }
 
     /// 043dd M1:讀不到資料檔(nodes 空)時，每個鍵、每種寬度都不能 panic
