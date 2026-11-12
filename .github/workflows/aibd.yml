@@ -748,6 +748,13 @@ jobs:
           ck create.rs '    now_state == CreateState::Creating && now_record.0.is_none() && now_record.1 == my_created_at' \
              '    now_state == CreateState::Creating && now_record.1 == my_created_at // knife: holder not checked' \
              a_late_worker_takes_only_its_own_unheld_attempt
+          # create: Unknown for too long is never told to us (c477a liveness N1)
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS * 100 // knife' \
+             unknown_for_too_long_tells_us
+          ck create.rs '    v == Verdict::Unknown && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS' \
+             '    v != Verdict::Ready && now.saturating_sub(created_at) > UNKNOWN_ALERT_SECS // knife' \
+             only_unknown_alerts
           # ---- B1 (customer opens a site) and site removal: the pure rules (4542e 11-11)
           # opening a site: a probe that could not tell is read as not done
           ck sitecreate.rs '            (Probe::Unknown, _) => return Next::Stop("probe_unknown", *step),' \
