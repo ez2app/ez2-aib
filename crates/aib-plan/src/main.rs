@@ -2103,6 +2103,11 @@ mod tests {
         std::fs::write(&path, rows.join("\n")).unwrap();
         assert!(app.load_fixes(&path), "第一次讀 = 換資料");
         assert!(!app.load_fixes(&path), "檔案沒變不重讀");
+        // 真的沒重讀(不是讀了剛好一樣):清掉記憶體裡的，修改時間沒變就不會補回來
+        let kept = app.fixes.take();
+        assert!(!app.load_fixes(&path), "修改時間沒變 ⇒ 不碰檔案");
+        assert!(app.fixes.is_none());
+        app.fixes = kept;
         let _ = std::fs::remove_dir_all(&dir);
         app.graft_shadow();
         app.graft_shadow();
