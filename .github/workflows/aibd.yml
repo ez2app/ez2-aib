@@ -1421,8 +1421,8 @@ jobs:
              '                { let _ = (call_ok, now); Ok::<(), &str>(()) } // knife' \
              a_vendor_still_saying_activated_after_the_call_stops_the_work_there
           # what was seen while the site ran is replaced by "unreadable" once it is stopped
-          hk siteremovecmd.rs '        if seen.licences.is_some() || carried.licences_left.is_none() {' \
-             '        if true { // knife' \
+          hk siteremovecmd.rs '        } else if carried.licences_left.is_none() {' \
+             '        } else if true { // knife' \
              without_the_persons_word_what_can_be_given_back_is_and_the_rest_is_recorded
           # a seat given back is listed as left because the plugin cleared its key
           hk siteremovecmd.rs "                    .any(|g| l.split(':').next() == Some(*g))" \
