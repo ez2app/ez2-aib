@@ -1588,7 +1588,7 @@ mod tests {
             rec("TXT", "example.com", "hello", false, "ez2:site:s-other1"),
         ] {
             assert_eq!(
-                pick(&[other.clone()]),
+                pick(core::slice::from_ref(&other)),
                 (Target::Origin(ORIGIN), Some(ENTRY_SKIPPED_NAME_IN_USE)),
                 "{other:?}"
             );
