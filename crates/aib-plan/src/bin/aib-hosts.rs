@@ -16,7 +16,10 @@
 
 use crossterm::{
     cursor, event,
-    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, MouseButton, MouseEventKind,
+    },
     execute, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal,
@@ -1065,6 +1068,7 @@ fn restore() {
     let _ = terminal::disable_raw_mode();
     let _ = execute!(
         std::io::stdout(),
+        DisableBracketedPaste,
         DisableMouseCapture,
         cursor::Show,
         terminal::LeaveAlternateScreen
@@ -1142,6 +1146,9 @@ fn main() {
         out,
         terminal::EnterAlternateScreen,
         EnableMouseCapture,
+        // Andy 11-13:截圖拖進窗格 ⇒ 路徑被當按鍵打進來,/var/folders/9q/… 的 q 把電池關掉。
+        // 開括號貼上後整段變成一個 Event::Paste,落到下面的 `_ => {}` 丟掉,不當按鍵。
+        EnableBracketedPaste,
         cursor::Hide
     );
     std::panic::set_hook(Box::new(|i| {

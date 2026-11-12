@@ -18,8 +18,8 @@ use aib_plan::{
 use crossterm::{
     cursor,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
     },
     execute, queue,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
@@ -1068,6 +1068,19 @@ fn draw(app: &App) -> io::Result<()> {
     o.flush()
 }
 
+/// 貼上(括號貼上,整段一個事件)。Andy 11-13:把截圖拖進窗格 ⇒ 終端機把檔案路徑當成輸入打進來,
+/// 路徑裡的 `q`(例:/var/folders/9q/…)被當成「離開」、數字被當成快捷鍵。
+/// 打搜尋字時貼上的字進搜尋框(去掉換行等控制字);其餘時候整段丟掉,絕不當按鍵。
+fn on_paste(app: &mut App, text: &str) -> bool {
+    match app.typing.as_mut() {
+        Some(buf) => {
+            buf.extend(text.chars().filter(|c| !c.is_control()));
+            true
+        }
+        None => false,
+    }
+}
+
 fn on_key(app: &mut App, k: KeyEvent) -> bool {
     app.jump_note = None;
     if let Some(buf) = app.typing.as_mut() {
@@ -1253,6 +1266,7 @@ fn main() {
         if std::thread::current().name() == Some("main") {
             let _ = execute!(
                 io::stdout(),
+                DisableBracketedPaste,
                 DisableMouseCapture,
                 cursor::Show,
                 terminal::LeaveAlternateScreen
@@ -1270,7 +1284,8 @@ fn main() {
         o,
         terminal::EnterAlternateScreen,
         cursor::Hide,
-        EnableMouseCapture
+        EnableMouseCapture,
+        EnableBracketedPaste
     );
     let mut last_check = Instant::now();
     let mut last_age_draw = Instant::now();
@@ -1287,6 +1302,11 @@ fn main() {
                         break;
                     }
                     dirty = true;
+                }
+                Ok(Event::Paste(t)) => {
+                    if on_paste(&mut app, &t) {
+                        dirty = true;
+                    }
                 }
                 Ok(Event::Mouse(m)) => {
                     let (x, y) = (m.column as usize, m.row as usize);
@@ -1368,6 +1388,7 @@ fn main() {
     }
     let _ = execute!(
         o,
+        DisableBracketedPaste,
         DisableMouseCapture,
         cursor::Show,
         terminal::LeaveAlternateScreen
@@ -1744,6 +1765,24 @@ mod tests {
         for w in 0..12 {
             let _ = frame(&app, w, 20);
         }
+    }
+
+    /// 拖進來的檔案路徑(整段貼上)不是按鍵:沒在打字就丟掉,在打字就進搜尋框
+    #[test]
+    fn a_pasted_path_is_never_keys() {
+        // Andy 11-13:截圖拖進窗格 ⇒ 路徑整段貼上;裡面的 q / 數字不能當按鍵
+        let mut app = empty_app();
+        let before = (app.open.clone(), app.sel, app.filter.q.clone());
+        let path = "/var/folders/9q/x/截圖 2026-11-12 下午5.12.23.png";
+        assert!(!on_paste(&mut app, path), "not typing: dropped, no redraw");
+        assert_eq!((app.open.clone(), app.sel, app.filter.q.clone()), before);
+        app.typing = Some("ab".into());
+        assert!(on_paste(&mut app, "c\nd\te"));
+        assert_eq!(
+            app.typing.as_deref(),
+            Some("abcde"),
+            "control chars dropped"
+        );
     }
 
     /// 點樹上的列 = 選取 + 展開 / 收合;點工具列「e 全開」= 全部展開;點空白不出錯
