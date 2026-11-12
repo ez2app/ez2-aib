@@ -2948,6 +2948,8 @@
   "aib.now.help.why": "왜 이렇게 했는지(한 줄; 단계 완료 후 넘길 때 필수)",
   "aib.now.help.idea": "주인이 생각 못 했을 제안(없으면 \"없음\"; 단계 완료 후 넘길 때 필수)",
   "aib.now.review_bad": "--track / --why / --idea 는 함께 줘야 함; --track 은 0~100 일치도; --why / --idea 는 비울 수 없음",
+  "aib.now.help.goal": "이 단계가 맞는 목표: 기대값 표 A1, A4b… 또는 개발 계획 E1, E6…; 잡무(dm 답장, 인계, 리뷰)는 none 과 --why",
+  "aib.now.goal_bad": "--goal 은 A<숫자>(소문자 접미 가능, 예 A4b), E<숫자>, 또는 none; none 은 --why 로 어떤 잡무인지",
   "aib.now.auto_new": "이전 항목과 거의 완전히 달라 새 주축으로 보고 시작 시간을 지금으로 했습니다(표현만 바꿨다면 --started 'MM-DD HH:MM' 로 고치기)",
   "aib.nowgate.review": "aib-now-gate: @{code} 이 단계를 마쳤지만(단계 모두 완료, 또는 답변 / 결정 대기) 아직 \"판단\"을 보고하지 않았습니다. 넘기기 전에:\n  aib now \"<항목>\" <n/m> --state <reply|decide> --track 0~100 --why \"왜 이렇게 했는지\" --idea \"주인이 생각 못 했을 제안(없으면 없음)\"\n현재: {line}",
   "aib.now.help.state": "busy = 작업 중(기본) / reply = 답장 대기(다른 자리의 답장이나 결과물) / decide = 당신의 결정 대기",

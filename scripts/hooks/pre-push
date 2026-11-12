@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Pre-push for this repo: the private hide-words knife (E6 L3, scripts/check-hide-words.py).
+#
+# Install once per clone (worktrees share it; run from the main checkout):
+#   ln -s ../../scripts/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+# If a pre-push is already there, call this file from it instead of replacing it.
+#
+# No private list on this machine => the checker prints one line and passes.
+# A hit => rc 1 and the push stops. The checker missing from both the tree being
+# pushed and the main checkout => stop loudly: a hook that silently does nothing
+# is worse than one that blocks.
+TOP=$(git rev-parse --show-toplevel) || exit 1
+MAIN_TOP=$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P) || exit 1
+CHECK=""
+for c in "$TOP/scripts/check-hide-words.py" "$MAIN_TOP/scripts/check-hide-words.py"; do
+  if [ -r "$c" ]; then CHECK=$c; break; fi
+done
+if [ -z "$CHECK" ]; then
+  echo "✖ pre-push 找不到 scripts/check-hide-words.py(找過 $TOP 與 $MAIN_TOP),擋下這次 push" >&2
+  exit 1
+fi
+PY=/usr/bin/python3
+[ -x "$PY" ] || PY=python3
+exec "$PY" -I "$CHECK" --pre-push "$@"

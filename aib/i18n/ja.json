@@ -2948,6 +2948,8 @@
   "aib.now.help.why": "なぜこうしたか(一行;段階完了で返すときは必須)",
   "aib.now.help.idea": "オーナーが思いつかなかった提案(なければ「なし」;段階完了で返すときは必須)",
   "aib.now.review_bad": "--track / --why / --idea は三つ一緒に指定;--track は 0~100 の一致度;--why / --idea は空にできない",
+  "aib.now.help.goal": "この段階が対応する目標:期待値表 A1、A4b… または 開発計画 E1、E6…;雑務(dm 返信、引き継ぎ、レビュー)は none と --why",
+  "aib.now.goal_bad": "--goal は A<数字>(小文字の枝番可、例 A4b)、E<数字>、または none;none には --why で雑務の内容を",
   "aib.now.auto_new": "前の項目とほぼ別物 ⇒ 新しい主軸として開始時刻を今にしました(言い換えだけなら --started 'MM-DD HH:MM' で訂正)",
   "aib.nowgate.review": "aib-now-gate:@{code} は段階を終えました(全ステップ完了、または返答待ち / 判断待ち)が、「判定」をまだ報告していません。返す前に:\n  aib now \"<項目>\" <n/m> --state <reply|decide> --track 0~100 --why \"なぜこうしたか\" --idea \"オーナーが思いつかなかった提案(なければ なし)\"\n現在:{line}",
   "aib.now.help.state": "busy = 作業中(既定)/ reply = 返事待ち(他のシートからの返信や納品待ち)/ decide = あなたの判断待ち",
