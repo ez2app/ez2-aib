@@ -1879,6 +1879,10 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # host-neutral plugin: the health screen's filter is not added (E6 S6)
+          hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
+             "add_filter('knife_not_this_hook', function (\$info) {" \
+             the_health_filter_names_no_platform
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \

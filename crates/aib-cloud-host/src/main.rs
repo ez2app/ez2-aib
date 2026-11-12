@@ -55,6 +55,8 @@ mod customercmd;
 #[cfg(unix)]
 mod edgecmd;
 #[cfg(unix)]
+mod hostneutral;
+#[cfg(unix)]
 mod leakwordscmd;
 #[cfg(unix)]
 mod loginlink;
