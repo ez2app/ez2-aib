@@ -20,8 +20,10 @@
 //!   [`BRAND_WORDS`] (the same test `brandscan` applies to internal names, where the
 //!   whole-word list does not count).
 //!
-//! Exit status: 0 not hidden or clean; 1 dirty; 3 incomplete (a place not read); 2 the
-//! check could not be made (arguments, the record).
+//! Exit status: 0 not hidden or clean; 1 dirty (a judged place that was read shows a brand
+//! word — even when another place was not read; the places not read are still listed); 3
+//! incomplete (a place not read and no judged hit); 2 the check could not be made
+//! (arguments, the record).
 
 use std::fs;
 
@@ -197,7 +199,7 @@ pub fn report(code: &str, result: &Scan, why: Option<&str>, as_json: bool) -> (u
     let (rc, missing, hits): (u8, Vec<Place>, Vec<Hit>) = match result {
         Scan::NotHidden => (0, Vec::new(), Vec::new()),
         Scan::Clean { listed } => (0, Vec::new(), listed.clone()),
-        Scan::Dirty { hits } => (1, Vec::new(), hits.clone()),
+        Scan::Dirty { hits, missing } => (1, missing.clone(), hits.clone()),
         Scan::Incomplete { missing, hits } => (3, missing.clone(), hits.clone()),
     };
     let missing_words: Vec<&str> = missing.iter().map(|p| p.as_str()).collect();
@@ -348,8 +350,15 @@ mod tests {
                 .unwrap()
                 .push(json!("ops@EZ2.example.test"));
             let (r, _) = check(&mut fake(a), &record("hidden"), "site2").unwrap();
-            let Scan::Incomplete { hits, .. } = r else {
-                panic!("{key}")
+            // a judged hit is dirty although B4 / B6–B9 are not read; a hit only in an
+            // internal name leaves it incomplete (2240e L1)
+            let hits = match r {
+                Scan::Dirty { hits, missing } if place != Place::InternalName => {
+                    assert_eq!(missing, NOT_READ.to_vec(), "{key}");
+                    hits
+                }
+                Scan::Incomplete { hits, .. } if place == Place::InternalName => hits,
+                other => panic!("{key}: {other:?}"),
             };
             assert_eq!(hits.len(), 1, "{key}");
             assert_eq!(hits[0].place, place, "{key}");
@@ -358,8 +367,8 @@ mod tests {
         let mut a = neutral();
         a["mu"] = json!([{"file": "aib-loader.php", "header": ["Loader", "", "", "Ez2 team", ""]}]);
         let (r, _) = check(&mut fake(a), &record("hidden"), "site2").unwrap();
-        let Scan::Incomplete { hits, .. } = r else {
-            panic!()
+        let Scan::Dirty { hits, .. } = r else {
+            panic!("{r:?}")
         };
         let got: Vec<(Place, &str)> = hits.iter().map(|h| (h.place, h.word)).collect();
         assert_eq!(
@@ -431,7 +440,10 @@ mod tests {
         let (r, why) = check(&mut fake(a), &record("hidden"), "site2").unwrap();
         for as_json in [false, true] {
             let (rc, out) = report("s-abc123", &r, why.as_deref(), as_json);
-            assert_eq!(rc, 3);
+            // the brand word in the admin mail makes it dirty although B4 / B6–B9 are not
+            // read in this slice; those are still named (2240e L1)
+            assert_eq!(rc, 1, "{out}");
+            assert!(out.contains("dirty"), "{out}");
             assert!(!out.contains("ops@"), "{out}");
             assert!(out.contains("admin_mail"), "{out}");
             assert!(out.contains("health_path"), "{out}");
@@ -442,6 +454,7 @@ mod tests {
                 word: "ez2",
                 judged: true,
             }],
+            missing: Vec::new(),
         };
         assert_eq!(report("s-abc123", &dirty, None, false).0, 1);
         assert_eq!(

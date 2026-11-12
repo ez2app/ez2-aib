@@ -130,13 +130,17 @@ pub enum Scan {
         /// Hits in places that are listed only.
         listed: Vec<Hit>,
     },
-    /// A judged place shows a brand word.
+    /// A judged place shows a brand word. A judged hit is enough: the site is dirty even
+    /// when another place was not read (2240e L1: a hit must never read as "come back
+    /// later").
     Dirty {
         /// Every hit, judged or not.
         hits: Vec<Hit>,
+        /// The places not read, if any (the hit stands on its own; these are listed).
+        missing: Vec<Place>,
     },
-    /// A place was not read (absent or unreadable): the site is not shown clean. Hits
-    /// found in what was read are still given.
+    /// A place was not read (absent or unreadable) and no judged place that was read shows
+    /// a brand word: the site is not shown clean. Hits in internal names are still given.
     Incomplete {
         /// The places not read.
         missing: Vec<Place>,
@@ -216,11 +220,10 @@ pub fn scan(brand: Brand, seen: &[Seen<'_>]) -> Scan {
         .filter(|p| unreadable.contains(p) || !seen.iter().any(|s| s.place == *p))
         .collect();
     missing.dedup();
-    if !missing.is_empty() {
-        return Scan::Incomplete { missing, hits };
-    }
     if hits.iter().any(|h| h.judged) {
-        Scan::Dirty { hits }
+        Scan::Dirty { hits, missing }
+    } else if !missing.is_empty() {
+        Scan::Incomplete { missing, hits }
     } else {
         Scan::Clean { listed: hits }
     }
@@ -300,7 +303,8 @@ mod tests {
                         place,
                         word: "ez2",
                         judged: true
-                    }]
+                    }],
+                    missing: Vec::new(),
                 },
                 "{place:?}"
             );
@@ -383,17 +387,32 @@ mod tests {
                 hits: Vec::new()
             }
         );
-        // hits in what was read are still given, and incomplete wins over dirty
+        // a judged hit in what was read makes the site dirty even with a place not read;
+        // the place not read is still named (2240e L1)
         let mut v = with(Place::AdminMail, Some("ops@ez2.shop"));
+        v.retain(|s| s.place != Place::PageOutput);
+        assert_eq!(
+            scan(Brand::Hidden, &v),
+            Scan::Dirty {
+                hits: vec![Hit {
+                    place: Place::AdminMail,
+                    word: "ez2",
+                    judged: true
+                }],
+                missing: vec![Place::PageOutput],
+            }
+        );
+        // a hit only in an internal name, with a place not read, stays incomplete
+        let mut v = with(Place::InternalName, Some("ez2_cron"));
         v.retain(|s| s.place != Place::PageOutput);
         assert_eq!(
             scan(Brand::Hidden, &v),
             Scan::Incomplete {
                 missing: vec![Place::PageOutput],
                 hits: vec![Hit {
-                    place: Place::AdminMail,
+                    place: Place::InternalName,
                     word: "ez2",
-                    judged: true
+                    judged: false
                 }]
             }
         );

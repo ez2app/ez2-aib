@@ -2714,6 +2714,9 @@ jobs:
           # brand scan: a site whose brand is shown is scanned anyway
           ck brandscan.rs '    if brand == Brand::Shown {' '    if brand == Brand::Shown && false { // knife' \
              a_shown_site_is_not_scanned
+          # brand scan (2240e L1): a judged hit with a place not read reads as incomplete, not dirty
+          ck brandscan.rs '    if hits.iter().any(|h| h.judged) {' '    if missing.is_empty() && hits.iter().any(|h| h.judged) { // knife' \
+             a_place_not_read_is_incomplete_never_clean
           # E7 (Andy 11-12): no traffic notice is ever sent
           ck quota.rs '    (!already_sent.iter().any(|s| *s >= top)).then_some(top)' \
              '    (!already_sent.iter().any(|s| *s >= top) && false).then_some(top) // knife' \
@@ -3454,7 +3457,7 @@ jobs:
              a_bad_record_or_a_site_without_software_is_not_checked
           hk brandcheckcmd.rs '                Place::PluginHeader,' '                Place::InternalName, // knife' \
              each_place_read_is_scanned
-          hk brandcheckcmd.rs '        Scan::Dirty { hits } => (1,' '        Scan::Dirty { hits } => (0,' \
+          hk brandcheckcmd.rs '        Scan::Dirty { hits, missing } => (1,' '        Scan::Dirty { hits, missing } => (0, // knife' \
              the_report_names_places_and_words_never_what_was_read
           # host-neutral plugin: the health screen's filter is not added (E6 S6)
           hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
