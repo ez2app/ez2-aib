@@ -697,19 +697,28 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             false,
         )];
         if !app.fleet.is_empty() {
-            let hints = app
+            // Andy 14:3x:⚠ 直接寫席碼(最多兩席，其餘 +N),不展開就知道看誰
+            let hints: Vec<&str> = app
                 .fleet
                 .iter()
                 .filter(|(_, f)| mainline::drift_hint(f))
-                .count();
+                .map(|(c, _)| c.as_str())
+                .collect();
             tail.push(Seg(
                 format!("   全艙 {}", if app.fleet_open { "▾" } else { "▸" }),
                 Some(Color::Cyan),
                 false,
                 true,
             ));
-            if hints > 0 {
-                tail.push(Seg(format!(" ⚠{hints}"), Some(Color::Yellow), false, true));
+            if !hints.is_empty() {
+                let mut t = format!(
+                    " ⚠ {}",
+                    hints.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+                );
+                if hints.len() > 2 {
+                    t.push_str(&format!(" +{}", hints.len() - 2));
+                }
+                tail.push(Seg(t, Some(Color::Yellow), false, true));
             }
             fleet_y = Some(out.len());
         }
@@ -1431,7 +1440,7 @@ mod tests {
         let text =
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
-        assert!(text(&f, 1).contains("全艙 ▸ ⚠1"), "{}", text(&f, 1));
+        assert!(text(&f, 1).ends_with("全艙 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
         assert!(text(&f, 4).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
@@ -1456,6 +1465,13 @@ mod tests {
             "欄位對齊"
         );
         assert!(text(&f, 7).is_empty());
+        // 超過兩席 ⇒ 前兩席 + 其餘數量
+        let drift = app.fleet[0].1.clone();
+        for c in ["ccccc", "ddddd"] {
+            app.fleet.push((c.into(), drift.clone()));
+        }
+        let f = frame(&app, 160, 40);
+        assert!(text(&f, 1).ends_with("⚠ aaaaa ccccc +1"), "{}", text(&f, 1));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
