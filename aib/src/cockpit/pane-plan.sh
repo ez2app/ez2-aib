@@ -5,6 +5,8 @@
 # 找程式順序:$AIB_PLAN_BIN / $AIB_HOSTS_BIN → ~/.ez2-aib/bin/<名> → PATH。
 # 找不到不退出(格子會被 tmux 收掉,自癒又重建,變成閃爍迴圈):印一行四語提示、每 30 秒再找一次。
 # 進度樹帶 --seat(見 _seat);人換席位窗,3 秒內換成那一席。測試可用 AIB_PLAN_SEAT 指定。
+# 程式是背景子行程(才能邊跑邊看換席):SIGINT 對它是忽略的 ⇒ 只靠 raw mode 把 ^C 當按鍵讀;
+# aib-plan / aib-hosts 都是 raw mode TUI。換成不是 raw 的程式時 Ctrl-C 不會停它,用 q。
 # 程式結束(按 q、當掉)也一樣:印 rc、5 秒後重開。不要這一欄 ⇒ aib plan off。
 . "$(dirname "$0")/cockpit-env.sh"
 NAME="${1:-aib-plan}"
@@ -43,7 +45,9 @@ _seat() {
   [ "$NAME" = aib-plan ] || return 0
   [ -n "${AIB_PLAN_SEAT:-}" ] && { printf '%s' "$AIB_PLAN_SEAT"; return 0; }
   local sock="${EZ2_AIHUB_SOCKET:-}" rows wid seat f
-  [ -n "$sock" ] && rows="$(tmux -S "$sock" list-windows -a \
+  # EZ2_AIHUB_SOCKET 是 -L 的名字(aihub / aihub-<艙>,同 cockpit-full.sh 的 hub_tmux);帶斜線才當 socket 路徑
+  local sflag=-L; case "$sock" in */*) sflag=-S ;; esac
+  [ -n "$sock" ] && rows="$(tmux "$sflag" "$sock" list-windows -a \
     -F '#{session_attached} #{window_active} #{window_id} #{@aib_seat}' 2>/dev/null)"
   # 1) 人正在看的那一窗:窗選項有值就用
   read -r wid seat <<EOF2
@@ -64,9 +68,18 @@ EOF2
   return 0
 }
 
-_seat_of_file() {  # 席碼 = 席位檔 session_uuid 末 5 碼
+_seat_of_file() {  # 席碼 = 席位檔 session_uuid 末 5 碼(sed,不每 3 秒起 python)
   [ -f "$1" ] || return 0
-  "$EZ2_PY3" -c 'import json,sys;u=(json.load(open(sys.argv[1])).get("session_uuid") or "");print(u[-5:] if len(u)>=5 else "")' "$1" 2>/dev/null
+  local u
+  u="$(sed -n 's/.*"session_uuid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1)"
+  [ "${#u}" -ge 5 ] && printf '%s' "${u: -5}"
+  return 0
+}
+
+# 換席時是從外面收掉 TUI(SIGTERM):它來不及把終端機還原,下一個會把 raw / 替代畫面當原狀存起來 ⇒ 先還原
+_tty_reset() {
+  stty sane <&3 2>/dev/null
+  printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1049l\033[?25h'
 }
 
 # Ctrl-C 只該停掉裡面的程式,不該連包裝一起收掉(格子沒了 ⇒ 自癒卡住,審查 M1)
@@ -92,7 +105,7 @@ while :; do
     fi
   done
   wait "$child"; rc=$?
-  [ "$switched" = 1 ] && continue
+  if [ "$switched" = 1 ]; then _tty_reset; continue; fi
   _msg aib.cockpit.plan_exited "name=$NAME" "rc=$rc"
   sleep 5
 done

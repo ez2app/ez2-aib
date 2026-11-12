@@ -210,9 +210,9 @@ write_receipt() {
 # 中欄至少 42(上面 MAX_SIDE 的算式就是這樣假設的)+ 兩條垂直框線。
 # ★ 只在 client 寬讀得到時判;讀不到不判(讀不到 ≠ 太窄)。印一行、exit 0、收據 too_narrow。
 if [ -n "$CW" ]; then
+  # 進度欄不算進 NEED:它是可以縮的(_balance_plan_column 窄時對半),算進來會讓 ~120 欄終端整個
+  # 判 too_narrow、連右欄上限都不調(重開 09-22 右欄被擠掉那條路,增量審 M2)
   NEED=$((LEFT + RIGHT + 42 + 2))
-  # 有進度欄:中間是兩格(對話 + 進度),再加進度欄的保底寬與一條框線(審查 L1)
-  [ -z "$(_resolve_role_pane plan "")" ] || NEED=$((NEED + 50 + 1))
   if [ "$CW" -lt "$NEED" ]; then
     BOTTOM_ACTUAL=unknown; LEFT_ACTUAL=unknown; RIGHT_ACTUAL=unknown
     write_receipt too_narrow 0

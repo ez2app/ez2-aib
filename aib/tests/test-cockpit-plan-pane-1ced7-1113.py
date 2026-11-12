@@ -241,9 +241,11 @@ _grow_missing_plan_column; echo "rc=$?"
         src = _read(os.path.join(C, "pane-plan.sh"))
         funcs = "".join(m.group(0) for m in re.finditer(r"^_seat(?:_of_file)?\(\) \{[^\n]*\n.*?^\}\n", src, re.M | re.S))
         self.assertEqual(funcs.count("() {"), 2, "抽不到 _seat / _seat_of_file")
-        script = 'tmux() { cat "$T/wins"; }\nNAME=aib-plan\n' + funcs + "_seat\n"
+        # 假 tmux 只認 -L <名> list-windows(EZ2_AIHUB_SOCKET 是 -L 名字;增量審 M1:舊的 -S 測試照樣綠)
+        script = ('tmux() { [ "$1 $2 $3" = "-L aihub-t list-windows" ] || return 1; cat "$T/wins"; }\n'
+                  "NAME=aib-plan\n" + funcs + "_seat\n")
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                           env=dict(os.environ, T=self.tmp, EZ2_PY3=sys.executable, EZ2_AIHUB_SOCKET="/x",
+                           env=dict(os.environ, T=self.tmp, EZ2_PY3=sys.executable, EZ2_AIHUB_SOCKET="aihub-t",
                                     EZ2_AIB_INSTANCE_HOME=home))
         return r.stdout.strip()
 
