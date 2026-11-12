@@ -13,8 +13,15 @@
 //! **opening** record (an opening that began and has not ended holds what it will open
 //! with). Removed sites are not read at all. Counted per resource the plan enforces and
 //! the starting tier names — CPU (the sum of the sites' `cpulimit`, as [`arc::held`]) and
-//! memory. Disk is added up and shown, not judged: a new site's disk size is not in
-//! [`Limits`] and no number for it is written down (待 Andy 定).
+//! memory. Disk is added up and shown, not judged: a record that names no size counts at
+//! the starting size [`site::START_DISK_GB`] (Andy 11-12: 10 GB).
+//!
+//! Also here, the other two numbers of the plan Andy set on 11-12, as decisions only (who
+//! is told, and how, is the caller's): **traffic** — 5 TB a month, a notice at 80, 95 and
+//! 100 %, each once, and the site is never cut off ([`traffic_notice`]); **mail** — 1,000
+//! a site a month free, one notice past it, and mail is never held back ([`mail_notice`],
+//! [`mail_held_back`]). The notices are codes ([`traffic_code`], [`MAIL_OVER_FREE`]); the
+//! customer's words for them are not written here.
 //!
 //! No I/O: the host reads the records and hands them in.
 //!
@@ -29,8 +36,9 @@
 //!   missing `ct`, `ip` or `hosts` is unreadable and, since openings without a tenant count
 //!   against everyone, makes every customer `quota_unknown` (the safe side). To be tested
 //!   with the records B2 really writes when the two meet.
-//! * Disk is read from the record's top-level `disk_gb` only; a size kept anywhere else is
-//!   shown as 0. It is shown, not judged.
+//! * Disk is read from the record's top-level `disk_gb` only; a record without one counts
+//!   at [`site::START_DISK_GB`], whatever the container really has. It is shown, not
+//!   judged.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -118,7 +126,7 @@ fn disk_of(rec: &Value) -> u32 {
     rec.get("disk_gb")
         .and_then(Value::as_u64)
         .and_then(|n| u32::try_from(n).ok())
-        .unwrap_or(0)
+        .unwrap_or(site::START_DISK_GB)
 }
 
 /// Count what `tenant` holds. `live`: the live records (a record that names no tenant is
@@ -232,6 +240,64 @@ pub fn judge(tenant: Option<&str>, live: Option<&[Value]>, opening: Option<&[Val
             short,
         }
     }
+}
+
+// ---------------------------------------------------------------- E7 traffic and mail (Andy 11-12)
+
+/// Traffic a month the plan comes with, in GB (5 TB, as [`arc::PLAN`]'s bytes).
+pub const TRAFFIC_PLAN_GB: u64 = 5000;
+/// The shares of [`TRAFFIC_PLAN_GB`], in percent, at which the customer is told, once each
+/// a month. Rising order.
+pub const TRAFFIC_NOTICE_PCT: [u8; 3] = [80, 95, 100];
+/// Mail a site may send a calendar month before the customer is told.
+pub const MAIL_FREE_PER_SITE_MONTH: u64 = 1000;
+/// The code of the notice for mail past [`MAIL_FREE_PER_SITE_MONTH`].
+pub const MAIL_OVER_FREE: &str = "mail_over_free";
+
+/// The code of the traffic notice at `pct` (`traffic_80`, `traffic_95`, `traffic_100`);
+/// `None` for a share that is not one of [`TRAFFIC_NOTICE_PCT`].
+pub fn traffic_code(pct: u8) -> Option<&'static str> {
+    match pct {
+        80 => Some("traffic_80"),
+        95 => Some("traffic_95"),
+        100 => Some("traffic_100"),
+        _ => None,
+    }
+}
+
+/// The traffic notice to send now, if any: the highest share of the plan `used_gb` has
+/// reached, when no notice at it or above it was sent this month (`already_sent`, the
+/// shares sent since the month began). A month that jumps past two shares at once gets
+/// the higher one only; nothing lower is sent after a higher one. Past 100 % there is
+/// nothing more to send, and nothing is cut off ([`traffic_cut_off`]).
+pub fn traffic_notice(used_gb: u64, already_sent: &[u8]) -> Option<u8> {
+    let pct = used_gb.saturating_mul(100) / TRAFFIC_PLAN_GB;
+    let top = TRAFFIC_NOTICE_PCT
+        .iter()
+        .copied()
+        .filter(|t| pct >= u64::from(*t))
+        .max()?;
+    (!already_sent.iter().any(|s| *s >= top)).then_some(top)
+}
+
+/// Whether a site is cut off for its traffic: never, for now (Andy 11-12: "到 100% 不斷線、
+/// 只通知(之後再定超量)").
+pub fn traffic_cut_off(used_gb: u64) -> bool {
+    let _ = used_gb;
+    false
+}
+
+/// Whether to tell the customer about a site's mail now: once a month, when more than
+/// [`MAIL_FREE_PER_SITE_MONTH`] went out and no notice was sent yet.
+pub fn mail_notice(sent_this_month: u64, already_noticed: bool) -> bool {
+    sent_this_month > MAIL_FREE_PER_SITE_MONTH && !already_noticed
+}
+
+/// Whether a site's mail is held back for its count: never (Andy 11-12: "超過先通知、
+/// 不擋信").
+pub fn mail_held_back(sent_this_month: u64) -> bool {
+    let _ = sent_this_month;
+    false
 }
 
 #[cfg(test)]
@@ -388,5 +454,61 @@ mod tests {
             judge(Some("acme"), Some(&l), Some(&[])).stop(),
             Some("quota_exceeded")
         );
+    }
+
+    #[test]
+    fn crossing_80_then_95_sends_each_once() {
+        assert_eq!(TRAFFIC_PLAN_GB * 1_000_000_000, arc::PLAN.traffic_bytes);
+        assert_eq!(traffic_notice(3999, &[]), None);
+        assert_eq!(traffic_notice(4000, &[]), Some(80));
+        assert_eq!(traffic_notice(4500, &[80]), None);
+        assert_eq!(traffic_notice(4750, &[80]), Some(95));
+        assert_eq!(traffic_notice(4800, &[80, 95]), None);
+        // a jump past both: the higher one only, and the lower one never after it
+        assert_eq!(traffic_notice(4800, &[]), Some(95));
+        assert_eq!(traffic_notice(4900, &[95]), None);
+        assert_eq!(traffic_code(80), Some("traffic_80"));
+        assert_eq!(traffic_code(95), Some("traffic_95"));
+        assert_eq!(traffic_code(50), None);
+    }
+
+    #[test]
+    fn over_100_still_only_notices() {
+        assert_eq!(traffic_notice(5000, &[80, 95]), Some(100));
+        assert_eq!(traffic_code(100), Some("traffic_100"));
+        for used in [5000, 7500, 50_000, u64::MAX] {
+            assert_eq!(traffic_notice(used, &[80, 95, 100]), None);
+            assert!(!traffic_cut_off(used));
+        }
+        assert_eq!(traffic_notice(u64::MAX, &[]), Some(100));
+    }
+
+    #[test]
+    fn mail_over_1000_notices_once_never_blocks() {
+        assert!(!mail_notice(1000, false));
+        assert!(mail_notice(1001, false));
+        assert!(!mail_notice(1001, true));
+        assert!(!mail_notice(250_000, true));
+        for sent in [0, 1000, 1001, 250_000, u64::MAX] {
+            assert!(!mail_held_back(sent));
+        }
+        assert_eq!(MAIL_OVER_FREE, "mail_over_free");
+    }
+
+    #[test]
+    fn a_new_site_starts_at_10_gb() {
+        assert_eq!(site::START_DISK_GB, 10);
+        // an opening and a live site whose records name no disk count at the start size;
+        // a size the record names is used as it is
+        let mut sized = live("s1", "acme", 1024, 200);
+        sized["disk_gb"] = json!(40);
+        let Ok(c) = count(
+            "acme",
+            &[live("s2", "acme", 1024, 200), sized],
+            &[opening("s3")],
+        ) else {
+            panic!("count")
+        };
+        assert_eq!(c.held.disk_gb, 40 + 2 * site::START_DISK_GB);
     }
 }
