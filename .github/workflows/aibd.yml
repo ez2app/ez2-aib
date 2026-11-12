@@ -491,6 +491,14 @@ jobs:
           ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
              '        None => {} // knife' \
              a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # edge block: the live block stops stripping Server / Via / X-Powered-By (E6 C1, S3)
+          ck site.rs 'import ez2_whitelabel\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\tencode zstd gzip' \
+             'import ez2_whitelabel\n\tencode zstd gzip' \
+             a_site_block_strips_server_headers
+          # edge block: the quarantine page stops stripping them (E6 C1, S3)
+          ck quarantine.rs '\t# ez2:quarantined\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n' \
+             '\t# ez2:quarantined\n' \
+             a_quarantined_block_strips_them_too
           # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
           ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
              '        let unprintable = false; // knife' \
@@ -1527,6 +1535,14 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # E7 (Andy 11-12): no traffic notice is ever sent
+          ck quota.rs '    (!already_sent.iter().any(|s| *s >= top)).then_some(top)' \
+             '    (!already_sent.iter().any(|s| *s >= top) && false).then_some(top) // knife' \
+             crossing_80_then_95_sends_each_once
+          # E7 (Andy 11-12「超過先通知、不擋信」): mail past the free count is held back
+          ck quota.rs 'pub fn mail_held_back(sent_this_month: u64) -> bool {' \
+             'pub fn mail_held_back(sent_this_month: u64) -> bool { if sent_this_month > MAIL_FREE_PER_SITE_MONTH { return true; } // knife' \
+             mail_over_1000_notices_once_never_blocks
           # E11 (Andy 11-11「可以彈出提示，同意後關閉」): a gone process reads as running
           ck op.rs '        Liveness::Gone => Progress::Gone,' \
              '        Liveness::Gone => Progress::Running, // knife' \
@@ -1855,6 +1871,14 @@ jobs:
           ck sitedns.rs '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))' \
              '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)) || true) // knife' \
              only_marked_address_records_under_the_names_are_removed
+          # verify S15 (E6 D1): a grey (DNS only) record under the site's names reads as proxied
+          ck sitedns.rs '        } else if here.iter().any(|r| !r.proxied) {' \
+             '        } else if here.iter().any(|r| !r.proxied) && false { // knife' \
+             a_grey_record_under_the_site_is_a_fail
+          # verify S15 (E6 D1): a zone listing not read whole reads as all proxied
+          ck sitedns.rs '        return Proxied::Unchecked(UNREADABLE);' \
+             '        return Proxied::All; // knife' \
+             an_unreadable_zone_is_unchecked_not_pass
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -1973,6 +1997,17 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # site leakcheck: a hide word in an answer is not looked for (E6 S9)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
+             a_leak_word_in_any_answer_is_a_leak
+          # site leakcheck: an answer that could not be read counts as a pass (E6 S9)
+          hk leakcheckcmd.rs '        return (State::Unread, why);' '        return (State::Pass, why); // knife' \
+             an_unreadable_probe_is_not_a_pass
+          # site leakcheck: a failed check's host word is only looked for when it did not fail (c477a S9 L1)
+          hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
+             '    if unread.is_none() && hide.is_some_and(|h| h.hide(&seen).1 > 0) { // knife' \
+             a_failed_check_that_names_the_host_is_a_leak
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
@@ -3020,6 +3055,10 @@ jobs:
           hk siteverify.rs '    state != SiteState::Quarantined' \
              '    state != SiteState::Quarantined || true // knife' \
              s14_is_not_run_in_a_quarantined_container
+          # verify S15 (c477a S11 M1): a customer's status asks Cloudflare with our key
+          hk siteverify.rs '    if audience == Audience::Operator {' \
+             '    if audience == Audience::Operator || true { // knife' \
+             a_customer_status_asks_cloudflare_nothing
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs

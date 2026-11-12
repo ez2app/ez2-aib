@@ -433,6 +433,37 @@ pub fn remove_marked(
 /// A delete was not answered as done, or a marked record is still listed after it.
 pub const DNS_NOT_REMOVED: &str = "dns_not_removed";
 
+/// `site verify` S15 (E6 D1): whether every address record under the site's names goes
+/// through Cloudflare's proxy, judged by [`sitedns::proxied`]. Reads only: the zones of the
+/// customer's accounts and the zone's records, two of the calls [`sitedns::allowed`] lists,
+/// each with its ledger line like every call here. Anything that keeps it from reading the
+/// whole zone is an error, which verify reports as unchecked, never as a pass. One zone
+/// per site, the zone of its first name: a site with a name outside it (a second domain
+/// on another zone) is [`sitedns::MULTI_ZONE`] without its records being read.
+/// Only `site verify` calls this; a customer's status never does (c477a, S11 M1).
+pub fn proxied_names(
+    runner: &mut impl Runner,
+    paths: &HostPaths,
+    spec: &SiteSpec,
+    record: &Value,
+) -> Result<sitedns::Proxied, String> {
+    let text = fs::read_to_string(&paths.cloudflare)
+        .map_err(|e| format!("{KEY_UNSET}: {}: {}", paths.cloudflare.display(), e.kind()))?;
+    let (creds, _) = creds_from(&text)?;
+    let domain = spec.hosts.first().cloned().ok_or("the site has no name")?;
+    let accounts = customer_accounts(paths, record)?;
+    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code);
+    let zones = customer_zones(&mut cf, &accounts, &domain)?;
+    let zone = sitedns::pick_zone(&domain, Some(accounts.as_slice()), Some(zones.as_slice()))
+        .map_err(|w| format!("{w}: {domain}"))?;
+    let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
+    if names.iter().any(|n| !sitedns::in_zone(n, &zone.name)) {
+        return Ok(sitedns::Proxied::Unchecked(sitedns::MULTI_ZONE));
+    }
+    let all = listing(&mut cf, &zone.id)?;
+    Ok(sitedns::proxied(&names, all.as_deref()))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -972,5 +1003,58 @@ mod tests {
             "{c}"
         );
         assert_eq!(c.lines().filter(|l| l.starts_with("data")).count(), 1);
+    }
+
+    #[test]
+    fn s15_reads_the_zone_and_writes_nothing() {
+        let root = scratch("s15");
+        let mut p = paths(&root);
+        let mut cf = FakeCf::new();
+        cf.records.push(json!({"id": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", "type": "A", "name": DOMAIN, "content": ORIGIN, "proxied": true, "comment": null}));
+        assert_eq!(
+            proxied_names(&mut cf, &p, &spec(), &opening()),
+            Ok(sitedns::Proxied::All)
+        );
+        cf.records[1]["proxied"] = json!(false);
+        assert_eq!(
+            proxied_names(&mut cf, &p, &spec(), &opening()),
+            Ok(sitedns::Proxied::Grey(vec![DOMAIN.to_owned()]))
+        );
+        // only listings were asked for
+        assert_eq!((cf.adds(), cf.deletes()), (0, 0));
+        assert!(cf.fed.iter().all(|c| c.contains("request = \"GET\"")));
+        // the account's zones cannot be listed: an error, which verify shows as unchecked
+        cf.zones_http = 403;
+        let err = proxied_names(&mut cf, &p, &spec(), &opening()).unwrap_err();
+        assert!(err.starts_with(sitedns::ACCESS_REVOKED), "{err}");
+        // no key on the host: nothing is asked
+        cf.zones_http = 200;
+        let asked = cf.fed.len();
+        p.cloudflare = root.join("nosuch.env");
+        let err = proxied_names(&mut cf, &p, &spec(), &opening()).unwrap_err();
+        assert!(err.starts_with(KEY_UNSET), "{err}");
+        assert_eq!(cf.fed.len(), asked);
+        // a second domain on another zone: unchecked, and that zone is not listed
+        p.cloudflare = root.join("cloudflare.env");
+        let two = SiteSpec::new(
+            CODE,
+            131,
+            41,
+            &[DOMAIN, "shop.example.org"],
+            true,
+            "zh_TW",
+            aib_cloud::site::Limits::START,
+        )
+        .unwrap();
+        let listed = cf.fed.iter().filter(|c| c.contains("/dns_records")).count();
+        assert_eq!(
+            proxied_names(&mut cf, &p, &two, &opening()),
+            Ok(sitedns::Proxied::Unchecked(sitedns::MULTI_ZONE))
+        );
+        assert_eq!(
+            cf.fed.iter().filter(|c| c.contains("/dns_records")).count(),
+            listed
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -376,7 +376,7 @@ fn rules(f: &Facts) -> Found {
 /// Refuse an output file inside a git work tree: the values are host information and must
 /// not land where a commit can pick them up (33e28 #656 L1). Looks from the file's directory
 /// up for a `.git` (directory or file).
-fn inside_git_tree(out: &Path) -> bool {
+pub(crate) fn inside_git_tree(out: &Path) -> bool {
     let dir = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
@@ -497,7 +497,7 @@ fn render(rules: &[Rule], unread: &[String]) -> String {
 }
 
 /// Write `text` to `out` as 0600: a new temporary file next to it, then a rename.
-fn write_private(out: &str, text: &str) -> Result<(), String> {
+pub(crate) fn write_private(out: &str, text: &str) -> Result<(), String> {
     let tmp = format!("{out}.tmp-{}", std::process::id());
     let res = fs::OpenOptions::new()
         .write(true)
