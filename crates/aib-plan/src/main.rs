@@ -433,6 +433,11 @@ fn shadow_path() -> PathBuf {
         .join("test-stats.jsonl")
 }
 
+/// 項目名稱快取(沿用池反查結果)
+fn shadow_cache() -> PathBuf {
+    state_dir().join("aib-plan").join("shadow-names.json")
+}
+
 /// 右上角的字:「影子續跑 17時45分」;沒有省成功的紀錄 ⇒ 不顯示
 fn shadow_badge(s: Option<&Savings>) -> Option<String> {
     let s = s.filter(|s| !s.saves.is_empty())?;
@@ -444,12 +449,25 @@ fn shadow_badge(s: Option<&Savings>) -> Option<String> {
 
 impl App {
     /// 紀錄檔沒變(修改時間一樣)就不重讀;回傳有沒有換資料
-    fn load_shadow(&mut self, path: &Path) -> bool {
+    fn load_shadow(&mut self, path: &Path, cache: &Path) -> bool {
         let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         if m.is_some() && m == self.shadow_mtime {
             return false;
         }
-        let s = shadow::read(path);
+        let mut s = shadow::read(path);
+        // 項目名稱：從同目錄沿用池反查(很大)⇒ 快取，key = 這份紀錄檔的修改時間 + 大小
+        if let (Some(s), Some(dir)) = (s.as_mut(), path.parent()) {
+            let meta = std::fs::metadata(path).ok();
+            let key = format!(
+                "{}:{}",
+                meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs()),
+                meta.map_or(0, |m| m.len())
+            );
+            shadow::name_runs_cached(dir, cache, &key, s);
+        }
         let changed = s != self.shadow;
         self.shadow = s;
         self.shadow_mtime = m;
@@ -490,12 +508,15 @@ impl App {
                         id: format!("shadow-{}", i + 1),
                         parent: Some(SHADOW_ID.into()),
                         kind: "shadow".into(),
+                        // Andy 11-13 00:0x:每項要帶出是哪件工作(查不到就照實說)
                         title: format!(
-                            "{} 省 {}",
+                            "{} 省 {} · {}",
                             mainline::stamp(e.at, self.now_secs),
-                            shadow::dur(e.saved_s)
+                            shadow::dur(e.saved_s),
+                            e.name.as_deref().unwrap_or("沒記到是哪件")
                         ),
                         why: Some(format!("實跑 {} 支、沿用 {} 支", e.ran, e.reused)),
+                        owner: e.seat().map(str::to_string),
                         ..Node::default()
                     });
                 }
@@ -1427,7 +1448,7 @@ fn main() {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
     app.load(&args.data);
-    app.load_shadow(&shadow_path());
+    app.load_shadow(&shadow_path(), &shadow_cache());
     app.graft_shadow();
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
@@ -1552,7 +1573,7 @@ fn main() {
             app.load(&args.data);
             // 進度資料重讀會蓋掉接上去的影子續跑分支 ⇒ 兩邊任一換了都重接
             let plan_changed = app.mtime != before;
-            if app.load_shadow(&shadow_path()) || plan_changed {
+            if app.load_shadow(&shadow_path(), &shadow_cache()) || plan_changed {
                 app.graft_shadow();
                 dirty = true;
             }
@@ -2006,8 +2027,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test-stats.jsonl");
         std::fs::write(&path, &text).unwrap();
-        assert!(app.load_shadow(&path), "第一次讀 = 換資料");
-        assert!(!app.load_shadow(&path), "檔案沒變不重讀");
+        let cache = dir.join("names.json");
+        assert!(app.load_shadow(&path, &cache), "第一次讀 = 換資料");
+        assert!(!app.load_shadow(&path, &cache), "檔案沒變不重讀");
+        assert!(cache.exists(), "名稱快取寫在給的位置");
         let _ = std::fs::remove_dir_all(&dir);
         app.graft_shadow();
         app.graft_shadow();
@@ -2022,9 +2045,9 @@ mod tests {
             titles,
             vec![
                 ("shadow", "影子續跑(共省 30 分 0 秒,3 次)"),
-                ("shadow-1", "11-01 10:00 省 10 分 0 秒"),
-                ("shadow-2", "11-01 09:00 省 10 分 0 秒"),
-                ("shadow-3", "11-01 08:00 省 10 分 0 秒"),
+                ("shadow-1", "11-01 10:00 省 10 分 0 秒 · 沒記到是哪件"),
+                ("shadow-2", "11-01 09:00 省 10 分 0 秒 · 沒記到是哪件"),
+                ("shadow-3", "11-01 08:00 省 10 分 0 秒 · 沒記到是哪件"),
             ],
             "接兩次不重複;新的在前"
         );
