@@ -1494,10 +1494,18 @@ jobs:
           ck restoreimport.rs '        .any(|l| l.split_whitespace().any(|field| field == name));' \
              '        .any(|l| l.split_whitespace().any(|field| field.starts_with(name))); // knife' \
              the_plugin_must_list_the_backup
-          # restore import: any line that mentions a complete restore counts (B3 slice 4)
-          ck restoreimport.rs '    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {' \
-             '    if output.lines().any(|l| l.contains("Restore complete")) { // knife' \
+          # restore import: an Error line next to a Success line is let through (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    if said(WP_CLI_ERROR) || !said(WP_CLI_SUCCESS) {' \
+             '    if !said(WP_CLI_SUCCESS) { // knife' \
              only_the_plugins_own_complete_line_counts
+          # restore import: a Success line not at the start of its line counts (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.contains(prefix)); // knife' \
+             only_the_plugins_own_complete_line_counts
+          # restore import: only English words are read, so a zh_TW site is taken as failed (c477a slice 4 L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.is_ascii() && l.trim_start().starts_with(prefix)); // knife' \
+             a_site_in_another_language_is_not_taken_as_failed
           # restore gate: a name that only starts with another site's is told as that site's (B3 slice 4, c477a slice 3 r2 N1)
           ck restoregate.rs "    !d.is_empty() && slug == d.replace('.', \"-\")" \
              "    !d.is_empty() && slug.starts_with(&d.replace('.', \"-\")) // knife" \
@@ -2764,6 +2772,34 @@ jobs:
           hk restorestepscmd.rs '                .put_scheduler_back(&rec)' \
              '                .put_scheduler_back(&rec).or(Ok::<bool, String>(false)) // knife' \
              a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot
+          # restore wiring: the import runs in the site's language, not C (c477a slice 4 L1)
+          hk restorestepscmd.rs '    v.extend(restoreimport::IMPORT_ENV.iter().map(|e| (*e).to_owned()));' \
+             '    // knife: no IMPORT_ENV' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: wp prints colours (c477a slice 4 N1)
+          hk restorestepscmd.rs '    v.push("--no-color".into());' \
+             '    // knife: colours on' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: a plugin zip not as SHA256SUMS says is installed (B3 slice 5)
+          hk restorestepscmd.rs '            if !got.eq_ignore_ascii_case(want) {' \
+             '            if !got.eq_ignore_ascii_case(want) && false { // knife' \
+             a_plugin_zip_not_as_summed_is_not_installed
+          # restore wiring: an import that ends with 1 but printed Success: is taken as done (c477a slice 4 L1)
+          hk restorestepscmd.rs '        self.run.run(&restore_argv)' \
+             '        self.run.run(&restore_argv).or_else(|e| Ok(format!("Success: {e}"))) // knife' \
+             an_import_that_does_not_end_with_0_fails_and_is_rolled_back
+          # restore wiring: an accept that differs goes on (B3 slice 5; Andy 11-12: keep)
+          hk restorestepscmd.rs '            1 => Err(format!("accept_differ: {}", doc["strict"])),' \
+             '            1 => Ok(()), // knife' \
+             an_accept_that_differs_keeps_the_site
+          # restore wiring: a push lands on a path the site's user could have put a link at (c477a rwire2 L1)
+          hk restorestepscmd.rs '        let file = format!("{dir}/{name}");' \
+             '        let file = format!("/tmp/ez2-{name}"); // knife' \
+             nothing_is_pushed_where_the_site_could_have_put_a_link
+          # restore wiring: a big site's import progress past the cap is a failure (c477a rwire2 L2)
+          hk restorestepscmd.rs '        let keep_tail = Self::is_import(argv);' \
+             '        let keep_tail = false; // knife' \
+             an_import_that_says_more_than_is_read_and_ends_with_success_is_done
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
