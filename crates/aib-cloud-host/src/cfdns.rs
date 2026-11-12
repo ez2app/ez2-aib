@@ -9,7 +9,7 @@
 //!   host's own address the records point at. The key is handed to `curl` on its standard
 //!   input (`curl -K -`): it is never in an argument list, never printed, never in the
 //!   ledger, the record or an error.
-//! * **Only four calls.** Every call is written out and checked by
+//! * **Only the allowed calls.** Every call is written out and checked by
 //!   [`aib_cloud::sitedns::allowed`] before it is made; one that is not on the list is
 //!   refused here and nothing leaves the host.
 //! * **One ledger line per call** ([`CF_LEDGER`]): when, which site, the method and path,
@@ -159,7 +159,7 @@ impl<'a, R: Runner> Cf<'a, R> {
         if !sitedns::allowed(call.method(), &call.path(), body) {
             self.ledger_line(&mut file, call, json!("refused"))?;
             return Err(format!(
-                "{}: {} {} is not one of the four calls",
+                "{}: {} {} is not one of the allowed calls",
                 sitedns::CALL_NOT_ALLOWED,
                 call.method(),
                 call.path()
@@ -200,7 +200,7 @@ fn success(answer: &Value) -> bool {
 }
 
 /// The customer's Cloudflare accounts, from the opening record's customer and their roster.
-fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, String> {
+pub(crate) fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, String> {
     let unknown = |why: String| format!("{}: {why}", sitedns::OWNER_UNKNOWN);
     let tenant = record_tenant(record)
         .ok_or_else(|| unknown("the opening record names no customer".to_owned()))?;
@@ -227,7 +227,7 @@ fn customer_accounts(paths: &HostPaths, record: &Value) -> Result<Vec<String>, S
 }
 
 /// Every zone the customer's accounts have under the names a zone of `domain` may have.
-fn customer_zones<R: Runner>(
+pub(crate) fn customer_zones<R: Runner>(
     cf: &mut Cf<'_, R>,
     accounts: &[String],
     domain: &str,
@@ -258,7 +258,7 @@ fn customer_zones<R: Runner>(
 // a named exception to ADR 0005: a short wait between two reads of Cloudflare's listing,
 // in a one-shot host command that has no timer loop of its own
 #[allow(clippy::disallowed_methods)]
-fn listing<R: Runner>(
+pub(crate) fn listing<R: Runner>(
     cf: &mut Cf<'_, R>,
     zone: &str,
 ) -> Result<Option<Vec<sitedns::Record>>, String> {

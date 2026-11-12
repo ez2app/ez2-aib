@@ -1870,6 +1870,28 @@ jobs:
           ck sitedns.rs '        if here.iter().any(|r| r.comment != mark) {' \
              '        if here.iter().any(|r| r.comment != mark) && false { // knife' \
              a_name_answered_elsewhere_is_left_alone
+          # E6 S12 adopt (4542e): a record pointing elsewhere is edited
+          ck sitedns.rs '                _ if r.kind != "A" || r.content != origin => Adopt::Elsewhere,' \
+             '                _ if r.kind != "A" || (r.content != origin && false) => Adopt::Elsewhere, // knife' \
+             adopting_edits_only_a_records_to_this_host
+          # E6 S12 adopt: a proxied, marked record is edited again
+          ck sitedns.rs '                Some(_) if r.proxied => Adopt::Unchanged,' \
+             '                Some(_) if r.proxied && false => Adopt::Unchanged, // knife' \
+             adopting_edits_only_a_records_to_this_host
+          # E6 S12 adopt: an SSL mode that is not full lets the adopt through
+          ck sitedns.rs '    ssl?;' '    let _ = ssl; // knife' \
+             adopt_needs_full_ssl_and_a_challenge_the_proxy_passes
+          # E6 S12 adopt: an Edge proved by TLS-ALPN alone lets the adopt through
+          ck sitedns.rs '            Some(["tls-alpn-01"]) => return Err(ACME_ALPN_ONLY),' \
+             '            Some(["tls-alpn-01"]) => {} // knife' \
+             adopt_needs_full_ssl_and_a_challenge_the_proxy_passes
+          # E6 S12 adopt: an edit that is not proxied is let through
+          ck sitedns.rs '        && m.get("proxied") == Some(&Value::Bool(true))' \
+             '        && (m.get("proxied") == Some(&Value::Bool(true)) || true) // knife' \
+             an_adopting_edit_is_allowed_only_proxied_and_marked
+          # E6 S12 adopt: a policy that turns HTTP-01 off is not seen
+          ck sitedns.rs '                if !off("http") {' '                if !off("http") || true { // knife' \
+             the_edges_challenges_are_read_from_its_merged_config
           # B5 DNS: a record with the mark counts as done whatever it points at
           ck sitedns.rs '            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,' \
              '            [ours] if ours.comment == mark => continue, // knife' \
@@ -2263,6 +2285,20 @@ jobs:
           # site restore --switch: the move to another CT number is not written (ebb36 incr. L1)
           hk probe.rs '    rec["ct_since"] = json!(aib_cloud::fresh::utc_stamp(now));' '    let _ = now; // knife' \
              a_switch_writes_when_the_site_took_the_ct_number
+          # E6 S12 site dns --adopt (4542e): the apply edits nothing, the grey record stays grey
+          hk sitednscmd.rs '    for e in &edits {' '    for e in edits.iter().take(0) { // knife' \
+             adopt_apply_makes_a_grey_record_proxied_and_marked
+          # E6 S12: the same three rules seen from the command (the rules live in aib-cloud)
+          sdk() { python3 -I scripts/knife.py crates/aib-cloud/src/sitedns.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-cloud-host --locked "$3"; }
+          sdk '                _ if r.kind != "A" || r.content != origin => Adopt::Elsewhere,' \
+             '                _ if r.kind != "A" || (r.content != origin && false) => Adopt::Elsewhere, // knife' \
+             adopt_apply_leaves_a_record_pointing_elsewhere_alone
+          sdk '    ssl?;' '    let _ = ssl; // knife' \
+             adopt_plan_stops_when_ssl_is_flexible_or_off
+          sdk '                Some(_) if r.proxied => Adopt::Unchanged,' \
+             '                Some(_) if r.proxied && false => Adopt::Unchanged, // knife' \
+             adopt_rerun_on_a_proxied_marked_record_changes_nothing
           # site verify: "nothing was checked" exits like "warnings only" (c477a, seg. 3 M1)
           hk siteverify.rs '            Ok(3)' '            Ok(2) // knife' \
              nothing_checked_is_exit_3_never_2
