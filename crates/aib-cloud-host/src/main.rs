@@ -7,6 +7,7 @@
 //! aib-cloud-host probe one   <tcp|dns|icmp> <ip> <port>      (internal: runs inside a CT netns)
 //! aib-cloud-host probe netns                                  (internal: prints the netns inode)
 //! aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]
+//! aib-cloud-host site scan <domain> [--records dir] [--opened dir]   (official checksums, runnable / dot files under uploads, PHP changed in 7 days, administrators against the opening record; read-only, changes nothing)
 //! aib-cloud-host site quarantine <code> --reason <r> --plan   (also: unquarantine, quarantine-archive; plan only)
 //! aib-cloud-host site create <domain> --plan [--blank] [--tenant <id>]   (numbers, title, first administrators, the customer's quota and the ten steps of opening a site; plan only)
 //! aib-cloud-host site create <domain> --apply <plan.json> [--tenant <id>]   (B1: recompute the plan under the host lock, same hash, then the clone only; undone on failure)
@@ -86,6 +87,8 @@ mod sitemaskcmd;
 mod siteremovecmd;
 #[cfg(unix)]
 mod siteremovelic;
+#[cfg(unix)]
+mod sitescancmd;
 #[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]

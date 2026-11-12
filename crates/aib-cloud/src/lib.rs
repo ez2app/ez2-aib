@@ -56,6 +56,7 @@ pub mod restoreimport;
 pub mod restoresteps;
 pub mod robot;
 pub mod roster;
+pub mod scan;
 pub mod share;
 pub mod site;
 pub mod sitecreate;
