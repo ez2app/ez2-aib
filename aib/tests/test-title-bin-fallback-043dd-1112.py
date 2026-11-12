@@ -9,6 +9,7 @@ H3 二進位壞兩次好一次輪流 ⇒ 連續次數歸零，不退回
 H4 AIB_TITLE_BIN 給相對路徑 ⇒ 不認，全走 title-beat.sh
 H5 AIB_TITLE_BEAT 有設 ⇒ 就算 ~/.ez2-aib/bin 有 aib-title 也走 title-beat.sh
 H6 沒設 AIB_TITLE_BIN ⇒ 找到 ~/.ez2-aib/bin/aib-title 就用
+H7 二進位第 1 幀把自己刪掉 ⇒ 第 2 幀起走 title-beat.sh(127 不計，靠每幀的 -x 檢查;a63ab 增量審 L1)
 """
 import os
 import shutil
@@ -127,6 +128,12 @@ class TitleBinFallback(unittest.TestCase):
         exe(self.t / "home" / ".ez2-aib" / "bin" / "aib-title", 'echo bin >> "$CALL_LOG"\n')
         calls, out, _ = self.run_pane({})
         self.assertEqual(calls, ["bin"] * 6, f"FAIL: H6 default {calls} {out}")
+
+    def test_h7_removed_binary_falls_back_next_frame(self):
+        b = exe(self.bins / "aib-title", 'rm -f "$0"\necho bin >> "$CALL_LOG"\n')
+        calls, out, _ = self.run_pane({"AIB_TITLE_BIN": str(b)})
+        self.assertEqual(calls, ["bin"] + ["bash"] * 5, f"FAIL: H7 removed {calls} {out}")
+        self.assertIn("END bin=[]", out, "FAIL: H7 bin_cleared")
 
 
 if __name__ == "__main__":
