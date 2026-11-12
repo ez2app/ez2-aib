@@ -92,6 +92,12 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.ci = h["ci"].as_bool().unwrap_or(false);
         out.push(host);
     }
+    // 終端機字型有 Nerd Font 才畫得出商標字;沒寫就用字母(別人的終端機不會變方框)
+    if v["icons"].as_str() == Some("nerd") {
+        for h in &mut out {
+            h.nerd = true;
+        }
+    }
     out
 }
 
@@ -176,6 +182,8 @@ struct Host {
     /// 能跑 CI(GitHub 出問題時接手 CI 格的機器;hosts.json 的 "ci": true,GitHub 本身也是)
     ci: bool,
     jump_fallback: Option<String>,
+    /// 銘牌畫真的商標字(Nerd Font;hosts.json 頂層 "icons": "nerd",Andy 11-12 23:3x)
+    nerd: bool,
     asked: Option<Instant>,
     /// 還沒回來的詢問數(上限 MAX_INFLIGHT)
     inflight: u8,
@@ -205,6 +213,7 @@ impl Host {
             tag: None,
             ci: false,
             jump_fallback: None,
+            nerd: false,
             asked: None,
             inflight: 0,
             stuck: false,
@@ -944,16 +953,31 @@ fn badge(h: &Host) -> (String, Color) {
             if t == "Ez2" { EZ2_BADGE } else { kind_color(h) },
         ),
         None => {
-            let l = match h.kind {
-                Kind::Mac => "M",
-                Kind::Windows => "W",
-                Kind::Server => "L",
-                Kind::GitHub => "G",
+            let l = if h.nerd {
+                // Nerd Font(Font Awesome)商標字:Apple / Windows / Linux(Tux)/ GitHub;
+                // 字型把它畫得比一格寬，後面留一格空白免得壓到下一個字
+                match h.kind {
+                    Kind::Mac => "\u{f179} ",
+                    Kind::Windows => "\u{f17a} ",
+                    Kind::Server => "\u{f17c} ",
+                    Kind::GitHub => "\u{f09b} ",
+                }
+            } else {
+                match h.kind {
+                    Kind::Mac => "M",
+                    Kind::Windows => "W",
+                    Kind::Server => "L",
+                    Kind::GitHub => "G",
+                }
             };
             (l.to_string(), kind_color(h))
         }
     };
-    let t = if h.ci { format!("{base}-CI") } else { base };
+    let t = match (h.ci, h.nerd && h.tag.is_none()) {
+        (true, true) => format!("{base}CI"),
+        (true, false) => format!("{base}-CI"),
+        (false, _) => base.trim_end().to_string(),
+    };
     (fit(&t, 6), c)
 }
 
@@ -964,13 +988,15 @@ fn per_row(width: usize) -> usize {
 
 /// 互動畫面：沒有打開的 ⇒ 機箱格;有打開的 ⇒ 那台的明細(點任一處返回)
 fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
+    let legend = if hosts.iter().any(|h| h.nerd) {
+        "  框:\u{f179} Mac · \u{f17a} Win · \u{f17c} Linux · \u{f09b} GitHub · CI 能接 CI · Ez2 客戶主機"
+    } else {
+        "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機"
+    };
     let mut lines: Vec<Line> = vec![
         vec![
             (format!("主機群 {}(台北)", taipei_clock(t)), Color::White),
-            (
-                "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機".into(),
-                Color::DarkGrey,
-            ),
+            (legend.into(), Color::DarkGrey),
         ],
         vec![(
             "燈:連線 · 租約(綠空 黃租 紫沒租約在跑)· 點機箱看明細(1–9 也可)".into(),
@@ -1443,6 +1469,15 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!(top(&lin).trim(), "┌L─────┐");
         assert_eq!(top(&gh).trim(), "┌G-CI──┐");
         assert_eq!(top(&mac_ci).trim(), "┌M-CI──┐");
+        // hosts.json "icons": "nerd" ⇒ 商標字 + 一格空白;CI 直接接在後面
+        let mut nerd_ci = host("andymini", None, false);
+        nerd_ci.ci = true;
+        nerd_ci.nerd = true;
+        assert_eq!(badge(&nerd_ci).0, "\u{f179} CI");
+        let mut nerd_win = host("w", None, false);
+        nerd_win.kind = Kind::Windows;
+        nerd_win.nerd = true;
+        assert_eq!(badge(&nerd_win).0, "\u{f17a}");
         ez2.ci = true;
         assert_eq!(top(&ez2).trim(), "┌Ez2-CI┐", "最長剛好 6 格");
         ez2.ci = false;
