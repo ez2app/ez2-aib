@@ -8,11 +8,11 @@
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
-//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · / 搜尋 · r 清除篩選 ·
+//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 ·
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
-    bar, chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Plan, PASS,
+    chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Plan, PASS,
 };
 use crossterm::{
     cursor,
@@ -275,75 +275,6 @@ fn status_color(s: Option<&str>) -> Option<Color> {
     }
 }
 
-/// 頂部標籤欄寬(「最落後」三個字 + 空白),每行標籤對齊、值從同一欄開始
-const LABEL_W: usize = 9;
-
-fn label(t: &str) -> Seg {
-    Seg(pad(t, LABEL_W), None, false, true)
-}
-
-/// 「期望」一行 + 「最落後」一行:期望 = id 為 E 的大項目各狀態幾項;最落後 = 完成度最低的三個大項目(名字取冒號前)
-fn goal_lines(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Vec<Seg>> {
-    let mut out = Vec::new();
-    let kids = &ix.kids[root];
-    if let Some(&e) = kids.iter().find(|&&k| p.nodes[k].id == "E") {
-        let (mut ok, mut bad, mut open) = (0, 0, 0);
-        for &k in &ix.kids[e] {
-            match p.nodes[k].status.as_deref() {
-                Some(PASS) => ok += 1,
-                Some("實查不通過") => bad += 1,
-                _ => open += 1,
-            }
-        }
-        out.push(vec![
-            label("期望"),
-            Seg(format!("✓ 通過 {ok}"), Some(Color::Green), false, false),
-            Seg(
-                format!("     ✗ 不通過 {bad}"),
-                Some(Color::Red),
-                false,
-                false,
-            ),
-            Seg(
-                format!("     ? 未驗 {open}"),
-                Some(Color::DarkGrey),
-                false,
-                false,
-            ),
-            Seg(
-                format!("     共 {} 項", ix.kids[e].len()),
-                Some(Color::DarkGrey),
-                false,
-                false,
-            ),
-        ]);
-    }
-    let mut g: Vec<(u32, String)> = kids
-        .iter()
-        .filter(|&&k| p.nodes[k].id != "E")
-        .map(|&k| {
-            let t = &p.nodes[k].title;
-            let short = t.split([':', ':']).next().unwrap_or(t).to_string();
-            (pct(tally(p, ix, k)), short)
-        })
-        .collect();
-    g.sort();
-    if !g.is_empty() {
-        let mut line = vec![label("最落後")];
-        for (i, (v, t)) in g.iter().take(3).enumerate() {
-            let col = if *v < 40 { Color::Red } else { Color::Yellow };
-            if i > 0 {
-                line.push(seg("     "));
-            }
-            line.push(seg(format!("{t} ")));
-            line.push(Seg(format!("{v}%"), Some(col), false, true));
-        }
-        out.push(line);
-    }
-    out
-}
-
-/// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
 /// 工具列：開著的篩選是彩色實心 ●、關著的是灰色空心 ○;寬度不夠就把間距縮小，不讓後面的鍵被切掉。
 fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     let f = &app.filter;
@@ -437,6 +368,7 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     out
 }
 
+/// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
     *app.hits.borrow_mut() = Hits::default();
@@ -452,65 +384,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     }
     let p = &app.plan;
     let ix = index(p);
-    let Some(root) = ix.root else {
+    if ix.root.is_none() {
         out.push(vec![seg("進度資料是空的")]);
         return out;
-    };
-    let all = tally(p, &ix, root);
-    // Andy 11-12 10:2x:頂部太擠、看不出進度 ⇒ 三行:總進度 / 你的期望 + 最落後的大項目 / 只列有信的席
-    out.push(vec![
-        label("進度"),
-        Seg(bar(pct(all), 20), Some(Color::Green), false, false),
-        Seg(format!(" {}%", pct(all)), None, false, true),
-        Seg(
-            format!("     {} / {} 項實查通過", all.0, all.1),
-            None,
-            false,
-            false,
-        ),
-        Seg(
-            format!("     艙 {} · {}", p.cabin, p.asof),
-            Some(Color::DarkGrey),
-            false,
-            false,
-        ),
-    ]);
-    // Andy 11-12 11:1x:行與行太擠 ⇒ 頂部每一行之間空一行
-    out.push(Vec::new());
-    for l in goal_lines(p, &ix, root) {
-        out.push(l);
-        out.push(Vec::new());
     }
-    let mut seats = Vec::new();
-    for s in app.cabin_seats() {
-        let d = app.dm_txt(Some(&s));
-        if d.is_empty() {
-            continue;
-        }
-        let col = if d.contains('✉') {
-            Some(Color::Red)
-        } else {
-            Some(Color::Yellow)
-        };
-        seats.push(Seg(format!("{s}{d}     "), col, false, false));
-    }
-    if seats.is_empty() {
-        seats.push(Seg(
-            "信:全部結了 ✓".into(),
-            Some(Color::DarkGrey),
-            false,
-            false,
-        ));
-    } else {
-        seats.insert(0, label("信"));
-        seats.push(Seg(
-            "✉ 待審  ◌ 已讀未結".into(),
-            Some(Color::DarkGrey),
-            false,
-            false,
-        ));
-    }
-    out.push(seats);
+    // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
     out.push(toolbar(app, w));
     let f = &app.filter;
     let mut hits = Hits {
@@ -828,7 +706,6 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
             let i = cyc.iter().position(|s| *s == app.filter.seat).unwrap_or(0);
             app.filter.seat = cyc[(i + 1) % cyc.len()].clone();
         }
-        (KeyCode::Char('/'), _) => app.typing = Some(app.filter.q.clone()),
         (KeyCode::Char('r'), _) => app.filter = Filter::default(),
         (KeyCode::Char('['), _) => {
             app.show_tree = !app.show_tree;
@@ -1064,48 +941,6 @@ mod tests {
     }
 
     /// 043dd L2:極窄寬度(--once --width 5)不下溢
-    #[test]
-    fn header_says_expectations_and_the_three_furthest_behind() {
-        let p = parse(
-            r#"{"cabin":"9320","nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
-            {"id":"E","parent":"V","kind":"group","title":"你的期望"},
-            {"id":"E1","parent":"E","kind":"task","title":"A1","status":"實查不通過"},
-            {"id":"E2","parent":"E","kind":"task","title":"A2","status":"未驗"},
-            {"id":"E3","parent":"E","kind":"task","title":"A3","status":"實查通過"},
-            {"id":"G1","parent":"V","kind":"group","title":"跨平台核心:Windows 與 mac"},
-            {"id":"T1","parent":"G1","kind":"task","title":"t","status":"未驗"},
-            {"id":"G2","parent":"V","kind":"group","title":"自動推進:事件完成"},
-            {"id":"T2","parent":"G2","kind":"task","title":"t","status":"實查通過"}]}"#,
-        )
-        .expect("sample parses");
-        let mut app = empty_app();
-        app.plan = p;
-        app.err = None;
-        let f = frame(&app, 97, 30);
-        let line = |i: usize| f[i].iter().map(|s| s.0.as_str()).collect::<String>();
-        assert!(line(0).contains("項實查通過"), "{}", line(0));
-        assert!(line(1).is_empty(), "a blank row between header rows");
-        let l1 = line(2);
-        assert!(l1.starts_with("期望"), "{l1}");
-        assert!(
-            l1.contains("通過 1") && l1.contains("不通過 1") && l1.contains("未驗 1"),
-            "{l1}"
-        );
-        assert!(l1.contains("共 3 項"), "{l1}");
-        // 最落後排前面,名字取冒號前,期望本身不列
-        let l2 = line(4);
-        assert!(l2.starts_with("最落後"), "{l2}");
-        let a = l2.find("跨平台核心 0%").expect("weakest first");
-        let b = l2.find("自動推進 100%").expect("then the next");
-        assert!(a < b, "{l2}");
-        assert!(!l2.contains("Windows"), "{l2}");
-        // 標籤欄對齊:三行的值從同一欄開始
-        for i in [0, 2, 4] {
-            let first = &f[i][0].0;
-            assert_eq!(str_width(first), LABEL_W, "row {i}: {first:?}");
-        }
-    }
-
     #[test]
     fn narrow_width_does_not_underflow() {
         let p = parse(
