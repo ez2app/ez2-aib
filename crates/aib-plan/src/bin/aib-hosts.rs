@@ -53,6 +53,10 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         let mut host = Host::new(&format!("{name}={ssh}"));
         if h["os"].as_str() == Some("windows") {
             host.kind = Kind::Windows;
+            host.role = "Win 測試".into();
+        }
+        if let Some(r) = h["role"].as_str() {
+            host.role = r.to_string();
         }
         host.identity = h["identity"].as_str().map(str::to_string);
         host.jump_fallback = h["jump_fallback"].as_str().map(str::to_string);
@@ -63,12 +67,30 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
     if let Some(repo) = v["github_repo"].as_str() {
         let mut g = Host::new(&format!("GitHub={repo}"));
         g.kind = Kind::GitHub;
+        g.role = "CI".into();
         out.push(g);
+    }
+    // Andy 11-12 15:0x「把所有能 ssh 的主機全列出」:servers 只看負載(唯讀)
+    for h in v["servers"].as_array().into_iter().flatten() {
+        let (Some(name), Some(ssh)) = (h["name"].as_str(), h["ssh"].as_str()) else {
+            continue;
+        };
+        let mut host = Host::new(&format!("{name}={ssh}"));
+        host.kind = Kind::Server;
+        host.role = h["role"].as_str().unwrap_or("主機").to_string();
+        host.poll = SERVER_POLL;
+        host.identity = h["identity"].as_str().map(str::to_string);
+        out.push(host);
     }
     out
 }
 
 const POLL: Duration = Duration::from_secs(20);
+const SERVER_POLL: Duration = Duration::from_secs(60);
+/// 其他主機(Linux 或 mac):核數 + 平均負載，不碰租約
+const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
+                             $(if [ -r /proc/loadavg ]; then echo \"{ $(cut -d' ' -f1-3 /proc/loadavg) }\"; \
+                             else sysctl -n vm.loadavg; fi)";
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
@@ -95,6 +117,8 @@ enum Kind {
     Windows,
     /// GitHub Actions(CI 執行機):看執行中 / 排隊中的工作
     GitHub,
+    /// 其他能 ssh 的主機(正式站、代管雲、跳板…):只讀負載，每 60 秒
+    Server,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -111,8 +135,10 @@ struct Sample {
     load5: f64,
     /// 效能核數(Apple 晶片);讀不到 = 0,改用 ncpu
     perf: f64,
-    /// 這台沒有 aib 租約系統(Windows)
+    /// 這台沒有 aib 租約系統(Windows、其他主機)
     no_lease: bool,
+    /// 其他主機(不是測試機)
+    server: bool,
     /// GitHub:(執行中, 排隊中)
     gh: Option<(u32, u32)>,
     /// GitHub 的工作(owner = 分支、what = 工作流程名、since = 建立時間、priority = 排隊中)
@@ -128,6 +154,10 @@ struct Host {
     at: Option<Instant>,
     loads: Vec<f64>,
     kind: Kind,
+    /// 功能 / 種類(hosts.json 的 role;沒寫就照種類:測試 / Win 測試 / CI / 主機)
+    role: String,
+    /// 多久問一次(測試機 20 秒、其他主機 60 秒)
+    poll: Duration,
     identity: Option<String>,
     jump_fallback: Option<String>,
     asked: Option<Instant>,
@@ -150,6 +180,8 @@ impl Host {
             at: None,
             loads: Vec::new(),
             kind: Kind::Mac,
+            role: "測試".into(),
+            poll: POLL,
             identity: None,
             jump_fallback: None,
             asked: None,
@@ -364,10 +396,10 @@ fn ask(idx: usize, p: Probe, tx: mpsc::Sender<(usize, Sample)>) {
                 .stdin(Stdio::null())
                 .output(),
             k => {
-                let cmd = if k == Kind::Windows {
-                    WIN_REMOTE
-                } else {
-                    REMOTE
+                let cmd = match k {
+                    Kind::Windows => WIN_REMOTE,
+                    Kind::Server => SERVER_REMOTE,
+                    _ => REMOTE,
                 };
                 match ssh_run(&p, cmd, None) {
                     Ok(o) if o.status.code() == Some(255) && p.jump_fallback.is_some() => {
@@ -387,6 +419,12 @@ fn ask(idx: usize, p: Probe, tx: mpsc::Sender<(usize, Sample)>) {
                     Kind::GitHub => parse_gh(&out, o.status.success(), &err),
                     Kind::Windows => parse_win(&out, o.status.success(), &err),
                     Kind::Mac => parse_sample(&out, o.status.success(), &err),
+                    Kind::Server => {
+                        let mut s = parse_sample(&out, o.status.success(), &err);
+                        s.no_lease = true;
+                        s.server = true;
+                        s
+                    }
                 }
             }
             Err(e) => Sample {
@@ -432,7 +470,15 @@ fn fit(s: &str, max: usize) -> String {
 /// 算法同 aib-lease hosts:max(load1, load5 × 0.8) / 效能核
 const UNLEASED_BUSY_RATIO: f64 = 0.8;
 
+fn load_ratio(s: &Sample) -> Option<f64> {
+    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    (s.online && cores > 0.0).then(|| s.load1.max(s.load5 * 0.8) / cores)
+}
+
 fn unleased_busy(s: &Sample) -> bool {
+    if s.server {
+        return false;
+    }
     let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
     s.online && !s.held && cores > 0.0 && s.load1.max(s.load5 * 0.8) / cores > UNLEASED_BUSY_RATIO
 }
@@ -564,6 +610,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
         Some(Sample {
             gh: Some((r, _)), ..
         }) => format!("跑 {r} · 還有空位"),
+        Some(s) if s.server => "運作中(只看負載)".to_string(),
         Some(s) if unleased_busy(s) => "沒租約在跑 不可用".to_string(),
         Some(s) if s.no_lease => "空機 可用(沒有租約系統)".to_string(),
         Some(s) if !s.held => "空機 可用".to_string(),
@@ -661,47 +708,179 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
 
 /// 整張畫面，和每一行屬於哪一台(點擊用)。
 fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Option<usize>>) {
-    frame_h(hosts, width, tick, t, usize::MAX)
+    list_frame(hosts, width, tick, t)
 }
 
-/// 窗格放不下每台 3 行(Andy 11-12 14:5x 加了 GitHub / Windows 後 14 行高只看得到 4 台)⇒
-/// 每台縮成 1 行(名字、電池、狀態),點開的那台照樣展開
-fn frame_h(
-    hosts: &[Host],
-    width: usize,
-    tick: u64,
-    t: i64,
-    height: usize,
-) -> (Vec<Line>, Vec<Option<usize>>) {
-    let compact = 2 + 3 * hosts.len() > height;
-    let clock = {
-        // 台北時間(UTC+8),不依賴本機時區
-        let s = (t + 8 * 3600).rem_euclid(86400);
-        format!("{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
-    };
+/// 每台 3 行的清單(`--once` 與測試用;互動畫面改用 `screen` 的機箱格)
+fn list_frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Option<usize>>) {
     let mut lines: Vec<Line> = vec![
-        vec![
-            (format!("測試機 {clock}(台北)"), Color::White),
-            (
-                "  綠 空機 · 紫 沒租約在跑 · GitHub 紅 = 排隊中 · 租約剩餘 黃綠→黃→橘→深橘→紅 · 空殼 離線 · 點電池(或按 1–9)看誰在跑、誰在排隊 · q 離開"
-                    .into(),
-                Color::DarkGrey,
-            ),
-        ],
-        Vec::new(), // Andy:標題和第一顆電池之間空一行
+        vec![(format!("主機群 {}(台北)", taipei_clock(t)), Color::White)],
+        Vec::new(),
     ];
     let mut owner: Vec<Option<usize>> = vec![None, None];
     for (i, h) in hosts.iter().enumerate() {
-        let mut ls = host_lines(h, i, width, tick, t);
-        if compact && !h.open {
-            ls.truncate(1);
-        }
-        for l in ls {
+        for l in host_lines(h, i, width, tick, t) {
             lines.push(l);
             owner.push(Some(i));
         }
     }
     (lines, owner)
+}
+
+/// 台北時間(UTC+8),不依賴本機時區
+fn taipei_clock(t: i64) -> String {
+    let s = (t + 8 * 3600).rem_euclid(86400);
+    format!("{:02}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
+}
+
+/// 主機群(Andy 11-12 15:0x):每台一個直立小機箱，預設收合;點一台(或按 1–9)看明細，再點返回。
+/// 機箱 6 行 × CELL 格：名字 / 頂 / 負載上半 / 負載下半 / 底(兩顆燈：連線、租約)/ 功能 + 負載
+const CELL: usize = 10;
+const TOWER_H: usize = 6;
+const LEVELS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+fn kind_color(h: &Host) -> Color {
+    match h.kind {
+        Kind::Mac => Color::White,
+        Kind::Windows => Color::Blue,
+        Kind::GitHub => Color::Magenta,
+        Kind::Server => Color::Cyan,
+    }
+}
+
+/// 機箱的負載比例:GitHub 有排隊 = 滿、只有執行中 = 半;其他 = 每核負載
+fn tower_ratio(s: &Sample) -> Option<f64> {
+    match s.gh {
+        Some((_, q)) if q > 0 => Some(1.0),
+        Some((r, _)) => Some(if r > 0 { 0.5 } else { 0.0 }),
+        None => load_ratio(s),
+    }
+}
+
+/// 一台的機箱(每行剛好 CELL 格)
+fn tower(h: &Host, idx: usize) -> Vec<Line> {
+    let s = h.last.as_ref();
+    let online = s.is_some_and(|s| s.online);
+    let ratio = s.and_then(tower_ratio);
+    let fill_c = match ratio {
+        Some(r) if r > 0.8 => Color::Red,
+        Some(r) if r > 0.5 => Color::Yellow,
+        Some(_) => Color::Green,
+        None => Color::DarkGrey,
+    };
+    let level = ratio.map_or(0, |r| (r.clamp(0.0, 1.0) * 16.0).round() as usize);
+    let (top, low) = if online && ratio.is_some() {
+        (
+            LEVELS[level.saturating_sub(8).min(8)].to_string().repeat(6),
+            LEVELS[level.min(8)].to_string().repeat(6),
+        )
+    } else {
+        ("░░░░░░".to_string(), "░░░░░░".to_string())
+    };
+    let led_net = match s {
+        None => ('○', Color::DarkGrey),
+        Some(s) if s.online => ('●', Color::Green),
+        Some(_) => ('●', Color::Red),
+    };
+    let led_use = match s {
+        None => ('○', Color::DarkGrey),
+        Some(s) if !s.online => ('○', Color::DarkGrey),
+        Some(Sample {
+            gh: Some((_, q)), ..
+        }) => ('●', if *q > 0 { Color::Red } else { Color::Green }),
+        Some(s) if unleased_busy(s) => ('●', Color::Magenta),
+        Some(s) if s.server || s.no_lease => ('○', Color::DarkGrey),
+        Some(s) if s.held => ('●', Color::Yellow),
+        Some(_) => ('●', Color::Green),
+    };
+    let edge = if online {
+        kind_color(h)
+    } else {
+        Color::DarkGrey
+    };
+    let pad = |t: String| {
+        let t = fit(&t, CELL - 1);
+        let n = CELL.saturating_sub(w(&t));
+        format!("{t}{}", " ".repeat(n))
+    };
+    let stat = match s {
+        None => "…".to_string(),
+        Some(s) if !s.online => "離線".to_string(),
+        Some(Sample {
+            gh: Some((r, q)), ..
+        }) => format!("{r}跑{q}排"),
+        Some(_) => ratio.map_or("—".into(), |r| format!("{:.0}%", r * 100.0)),
+    };
+    let num = if idx < 9 {
+        format!("{}", idx + 1)
+    } else {
+        " ".into()
+    };
+    vec![
+        vec![(pad(format!("{num}{}", h.name)), kind_color(h))],
+        vec![("┌──────┐  ".into(), edge)],
+        vec![("│".into(), edge), (top, fill_c), ("│  ".into(), edge)],
+        vec![("│".into(), edge), (low, fill_c), ("│  ".into(), edge)],
+        vec![
+            ("└".into(), edge),
+            (led_net.0.to_string(), led_net.1),
+            (led_use.0.to_string(), led_use.1),
+            ("────┘  ".into(), edge),
+        ],
+        vec![(pad(format!("{} {stat}", h.role)), Color::DarkGrey)],
+    ]
+}
+
+/// 一排放幾台
+fn per_row(width: usize) -> usize {
+    (width / CELL).max(1)
+}
+
+/// 互動畫面：沒有打開的 ⇒ 機箱格;有打開的 ⇒ 那台的明細(點任一處返回)
+fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
+    let mut lines: Vec<Line> = vec![
+        vec![
+            (format!("主機群 {}(台北)", taipei_clock(t)), Color::White),
+            (
+                "  燈:連線 · 租約(綠空 黃租 紫沒租約在跑)· 白測試 藍Win 紫CI 青主機 · 點機箱看明細 · q 離開"
+                    .into(),
+                Color::DarkGrey,
+            ),
+        ],
+        Vec::new(),
+    ];
+    if let Some((i, h)) = hosts.iter().enumerate().find(|(_, h)| h.open) {
+        lines.push(vec![(
+            format!("◀ 返回(點任一處)  {} · {}", h.name, h.role),
+            Color::Cyan,
+        )]);
+        lines.extend(host_lines(h, i, width, tick, t));
+        return lines;
+    }
+    if hosts.is_empty() {
+        lines.push(vec![(
+            format!("沒有主機設定:{}", config_path().display()),
+            Color::DarkGrey,
+        )]);
+        return lines;
+    }
+    let all: Vec<(usize, &Host)> = hosts.iter().enumerate().collect();
+    for chunk in all.chunks(per_row(width)) {
+        let towers: Vec<Vec<Line>> = chunk.iter().map(|(i, h)| tower(h, *i)).collect();
+        for r in 0..TOWER_H {
+            lines.push(towers.iter().flat_map(|tw| tw[r].clone()).collect());
+        }
+    }
+    lines
+}
+
+/// 點到哪一台(機箱格模式);明細模式點哪都回 None(呼叫端收起)
+fn hit(hosts: &[Host], width: usize, x: usize, y: usize) -> Option<usize> {
+    if y < 2 || hosts.iter().any(|h| h.open) || x / CELL >= per_row(width) {
+        return None;
+    }
+    let i = (y - 2) / TOWER_H * per_row(width) + x / CELL;
+    (i < hosts.len()).then_some(i)
 }
 
 fn draw(o: &mut impl Write, lines: &[Line], width: usize, height: usize) -> std::io::Result<()> {
@@ -810,7 +989,7 @@ fn main() {
     loop {
         let t0 = Instant::now();
         for (i, h) in hosts.iter_mut().enumerate() {
-            let due = h.at.is_none_or(|a| a.elapsed() >= POLL);
+            let due = h.at.is_none_or(|a| a.elapsed() >= h.poll);
             match h.asked {
                 Some(a) if a.elapsed() >= STUCK => h.stuck = true,
                 Some(_) => {}
@@ -836,7 +1015,7 @@ fn main() {
             }
         }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
-        let (lines, owner) = frame_h(&hosts, cw as usize, tick, now(), ch as usize);
+        let lines = screen(&hosts, cw as usize, tick, now());
         if draw(&mut out, &lines, cw as usize, ch as usize).is_err() {
             break;
         }
@@ -852,17 +1031,21 @@ fn main() {
                 KeyCode::Char('q') => break,
                 KeyCode::Char(c @ '1'..='9') => {
                     let i = c as usize - '1' as usize;
+                    let was = hosts.get(i).is_some_and(|h| h.open);
+                    hosts.iter_mut().for_each(|h| h.open = false);
                     if let Some(h) = hosts.get_mut(i) {
-                        h.open = !h.open;
+                        h.open = !was;
                     }
                 }
                 _ => {}
             },
             Ok(Event::Mouse(m)) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(Some(i)) = owner.get(m.row as usize) {
-                    if let Some(h) = hosts.get_mut(*i) {
-                        h.open = !h.open;
-                    }
+                let (cw, _) = terminal::size().unwrap_or((100, 20));
+                if hosts.iter().any(|h| h.open) {
+                    hosts.iter_mut().for_each(|h| h.open = false);
+                } else if let Some(i) = hit(&hosts, cw as usize, m.column as usize, m.row as usize)
+                {
+                    hosts[i].open = true;
                 }
             }
             _ => {}
@@ -1090,24 +1273,54 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert!(!parse_gh("not json", false, "HTTP 502").online);
     }
 
-    /// Andy 11-12 14:5x:6 台 × 3 行放不下 14 行窗格 ⇒ 每台 1 行，點開的那台照樣展開
+    /// Andy 11-12 15:0x:主機群 —— 每台一個直立機箱(預設收合),真實負載、功能;點了看明細，再點返回
     #[test]
-    fn a_short_pane_shows_one_line_per_machine() {
-        let mut hs: Vec<Host> = (0..6)
+    fn the_fleet_is_a_grid_of_towers_and_a_click_opens_one() {
+        let mut hs: Vec<Host> = (0..12)
             .map(|i| host(&format!("h{i}"), Some(parse_sample(HELD, true, "")), false))
             .collect();
-        let (lines, owner) = frame_h(&hs, 100, 0, 1500, 14);
-        assert_eq!(lines.len(), 2 + 6, "{}", lines.len());
-        assert_eq!(
-            owner[2..],
-            [Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)]
+        hs[11].kind = Kind::Server;
+        hs[11].role = "正式站".into();
+        hs[11].last = Some(Sample {
+            online: true,
+            server: true,
+            no_lease: true,
+            ncpu: 8.0,
+            load1: 2.0,
+            load5: 2.0,
+            ..Sample::default()
+        });
+        let l = screen(&hs, 102, 0, 1500);
+        assert!(text(&l[0]).starts_with("主機群 "), "{}", text(&l[0]));
+        assert_eq!(l.len(), 2 + 2 * TOWER_H, "102 格一排 10 台,12 台兩排");
+        for (r, row) in l.iter().enumerate().skip(2) {
+            assert!(w(&text(row)) <= 102, "row {r} too wide");
+        }
+        assert!(text(&l[2]).starts_with("1h0"));
+        // HELD:10 核負載 5.1 ⇒ 51%,黃
+        assert!(text(&l[7]).starts_with("測試 51%"), "{}", text(&l[7]));
+        // 第二排第二台 = 主機,2/8 = 25%
+        assert!(
+            text(&l[8 + TOWER_H - 1]).contains("正式站 25%"),
+            "{}",
+            text(&l[13])
         );
-        hs[2].open = true;
-        let (lines, owner) = frame_h(&hs, 100, 0, 1500, 14);
-        assert!(lines.len() > 2 + 6 && owner.iter().filter(|o| **o == Some(2)).count() > 1);
-        // 放得下 ⇒ 每台 3 行照舊
-        hs[2].open = false;
-        assert_eq!(frame_h(&hs, 100, 0, 1500, 40).0.len(), 2 + 18);
+        // 點第二排第 2 台 ⇒ 打開 h11;明細模式點哪都不是機箱
+        assert_eq!(hit(&hs, 102, 12, 2 + TOWER_H + 3), Some(11));
+        assert_eq!(hit(&hs, 102, 25, 2 + TOWER_H + 3), None, "第二排只有 2 台");
+        assert_eq!(hit(&hs, 102, 3, 1), None, "標題列");
+        hs[11].open = true;
+        let d = screen(&hs, 102, 0, 1500);
+        assert!(text(&d[2]).contains("返回") && text(&d[2]).contains("正式站"));
+        assert!(d.iter().any(|x| text(x).contains("運作中(只看負載)")));
+        assert_eq!(hit(&hs, 102, 12, 9), None);
+        // 離線的機箱是灰的空殼
+        let off = Host {
+            last: Some(parse_sample("", false, "timed out")),
+            ..hs[0].clone()
+        };
+        assert!(text(&tower(&off, 0)[5]).contains("離線"));
+        assert!(text(&tower(&off, 0)[2]).contains("░"));
     }
 
     #[test]
