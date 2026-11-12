@@ -22,6 +22,14 @@
 //!   Without `--pick` rc 0 whenever the file could be read.
 //! - Nothing here takes, queues or releases a lease: picking and acquiring are not one step,
 //!   so a race is still settled by `acquire` (rc 4 ⇒ ask again).
+//! - Load (a63ab host-pick, Andy 11-12 12:4x「先查看目前測試機現況，挑選最快可用的」): the
+//!   same ssh also prints `AIBLOAD` lines (performance cores, `hw.ncpu`, `vm.loadavg`). Load per
+//!   performance core (max of load1, load5 × 0.8) over 1.0 is hot: `--pick` takes a free machine
+//!   that is not hot first, a hot one only when every free one is hot. Unknown load is unknown,
+//!   never 0. `recommended` / `ranking` order every usable machine by: not hot first, then the
+//!   minutes until a run could start (holder's estimate, else expiry, past it 0 and `late`, plus
+//!   15 per queued run), then config order. `jump_fallback` is tried only when the direct ssh
+//!   fails at the network (rc 255).
 //! - When none is free, `soonest` names the busy machine that should come free first: by the
 //!   holder's own estimate (`acquire --expect S`) when it gave one, else by its lease expiry.
 //! - `aib-lease run --any-host [--kind K]` (see [`resolve_any_host`]) runs on the first free
@@ -44,6 +52,8 @@ pub struct HostCfg {
     pub name: String,
     pub ssh: String,
     pub jump: Option<String>,
+    /// Tried only when the direct path fails at the network (ssh rc 255); `jump` is always used.
+    pub jump_fallback: Option<String>,
     pub os: String,
     pub order: i64,
     /// What this machine takes; `None` ⇒ everything.
@@ -85,6 +95,10 @@ pub struct HostView {
     pub queue_first: Option<String>,
     /// Why offline / unreadable, short.
     pub why: Option<String>,
+    /// Performance cores (`hw.perflevel0.physicalcpu`), else all cores (`hw.ncpu`).
+    pub cores: Option<f64>,
+    pub load1: Option<f64>,
+    pub load5: Option<f64>,
 }
 
 pub const RC_PICKED: u8 = 0;
@@ -109,7 +123,11 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
         let name = get("name").ok_or(format!("hosts[{i}]: name is required"))?;
         let ssh = get("ssh").unwrap_or_else(|| name.clone());
         let jump = get("jump");
-        for s in std::iter::once(&ssh).chain(jump.iter()) {
+        let jump_fallback = get("jump_fallback");
+        for s in std::iter::once(&ssh)
+            .chain(jump.iter())
+            .chain(jump_fallback.iter())
+        {
             if !is_plain_host(s) {
                 return Err(format!("hosts[{i}] {name}: ssh / jump {s:?} must not be empty, start with '-' or hold spaces"));
             }
@@ -133,6 +151,7 @@ pub fn parse_config(text: &str) -> Result<Vec<HostCfg>, String> {
             name,
             ssh,
             jump,
+            jump_fallback,
             os: get("os").unwrap_or_else(|| "mac".into()),
             order: h.get("order").and_then(Value::as_i64).unwrap_or(i64::MAX),
             kinds,
@@ -169,7 +188,11 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         queue_len: 0,
         queue_first: None,
         why: None,
+        cores: None,
+        load1: None,
+        load5: None,
     };
+    read_load(&mut v, stdout);
     // the tool's JSON starts a line; a login banner may hold '{' inside a line (a63ab N1)
     let start = if stdout.starts_with('{') {
         Some(0)
@@ -269,7 +292,9 @@ pub fn soonest<'a>(views: &[&'a HostView]) -> Option<&'a HostView> {
 
 /// The first free machine in order (views are already in config order), or why none.
 pub fn pick<'a>(views: &[&'a HostView]) -> (Option<&'a str>, u8) {
-    if let Some(v) = views.iter().find(|v| v.state == State::Free) {
+    // a free machine that is not hot first; a hot one only when every free one is hot
+    let free = || views.iter().filter(|v| v.state == State::Free);
+    if let Some(v) = free().find(|v| !is_hot(v)).or_else(|| free().next()) {
         return (Some(v.name.as_str()), RC_PICKED);
     }
     let reachable = views
@@ -290,16 +315,116 @@ pub fn view_json(v: &HostView) -> Value {
         "name": v.name, "state": v.state.name(), "owner": v.owner, "what": v.what,
         "expiry_epoch": v.expiry_epoch, "expect_end_epoch": v.expect_end_epoch,
         "queue_len": v.queue_len, "queue_first": v.queue_first,
-        "why": v.why,
+        "why": v.why, "cores": v.cores, "load1": v.load1, "load5": v.load5,
+        "load_per_core": load_ratio(v), "hot": is_hot(v),
     })
 }
 
 /// The command each machine runs: the 1.x reader, with the team's PATH in front.
 pub fn remote_status_command() -> String {
-    format!("PATH=\"{DEFAULT_REMOTE_PATH}:$PATH\" aib lease status --json")
+    // load first (one `AIBLOAD <key> <value>` line each, empty value when sysctl has none),
+    // then the lease JSON last so its exit status is the command's
+    format!(
+        "for k in hw.perflevel0.physicalcpu hw.ncpu vm.loadavg; do printf 'AIBLOAD %s %s\\n' \"$k\" \"$(sysctl -n \"$k\" 2>/dev/null)\"; done; PATH=\"{DEFAULT_REMOTE_PATH}:$PATH\" aib lease status --json"
+    )
+}
+
+/// The `AIBLOAD` lines ⇒ cores and load. Missing or unparsable stays `None` (never 0).
+pub fn read_load(v: &mut HostView, stdout: &str) {
+    let (mut perf, mut all) = (None, None);
+    for l in stdout.lines() {
+        let Some(rest) = l.strip_prefix("AIBLOAD ") else {
+            continue;
+        };
+        let (k, val) = rest.split_once(' ').unwrap_or((rest, ""));
+        let num = |s: &str| {
+            s.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite() && *n > 0.0)
+        };
+        match k {
+            "hw.perflevel0.physicalcpu" => perf = num(val),
+            "hw.ncpu" => all = num(val),
+            "vm.loadavg" => {
+                let n: Vec<f64> = val
+                    .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+                    .split_whitespace()
+                    .filter_map(|x| x.parse::<f64>().ok())
+                    .filter(|x| x.is_finite() && *x >= 0.0)
+                    .collect();
+                if n.len() >= 2 {
+                    v.load1 = Some(n[0]);
+                    v.load5 = Some(n[1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    v.cores = perf.or(all);
+}
+
+/// Load per performance core (max of load1 and load5 × 0.8, so one quiet second is not
+/// enough); `None` when any part is unknown.
+pub fn load_ratio(v: &HostView) -> Option<f64> {
+    let l = v.load1?.max(v.load5? * 0.8);
+    Some(l / v.cores?)
+}
+
+/// Above 1.0 per performance core: the machine is hot (HOST-PITS P6, c477a L2).
+pub const HOT_RATIO: f64 = 1.0;
+
+/// Minutes counted for each run waiting in a queue (no per-run estimate yet).
+pub const PER_QUEUED_MIN: f64 = 15.0;
+
+pub fn is_hot(v: &HostView) -> bool {
+    load_ratio(v).is_some_and(|r| r > HOT_RATIO)
+}
+
+/// Minutes until a run could start here: free 0; queued / busy = what is left of the holder
+/// (its own estimate, else its expiry; past it counts 0 and `late`) + `per_queued` for each
+/// one waiting. `None` for a machine that cannot be used (offline / unreadable).
+pub fn eta_min(v: &HostView, now: f64, per_queued: f64) -> Option<(f64, bool)> {
+    let wait = v.queue_len as f64 * per_queued;
+    match v.state {
+        State::Free => Some((0.0, false)),
+        State::Queued => Some((wait, false)),
+        State::Busy => {
+            let end = v.expect_end_epoch.or(v.expiry_epoch)?;
+            let left = (end - now) / 60.0;
+            Some((left.max(0.0) + wait, left < 0.0))
+        }
+        State::Unreadable | State::Offline => None,
+    }
+}
+
+/// Usable machines best first: not hot before hot (whatever the eta), then the soonest
+/// start, then config order. Offline / unreadable are left out.
+pub fn rank<'a>(
+    views: &[&'a HostView],
+    now: f64,
+    per_queued: f64,
+) -> Vec<(&'a HostView, f64, bool)> {
+    let mut r: Vec<(usize, &HostView, f64, bool)> = views
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| eta_min(v, now, per_queued).map(|(e, late)| (i, *v, e, late)))
+        .collect();
+    r.sort_by(|a, b| {
+        is_hot(a.1)
+            .cmp(&is_hot(b.1))
+            .then(a.2.total_cmp(&b.2))
+            .then(a.0.cmp(&b.0))
+    });
+    r.into_iter().map(|(_, v, e, late)| (v, e, late)).collect()
 }
 
 pub fn ssh_args(h: &HostCfg) -> Vec<String> {
+    ssh_args_via(h, h.jump.as_deref())
+}
+
+/// The ssh arguments through `jump` (none ⇒ direct).
+pub fn ssh_args_via(h: &HostCfg, jump: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = [
         "-o",
         "ForwardAgent=no",
@@ -308,7 +433,7 @@ pub fn ssh_args(h: &HostCfg) -> Vec<String> {
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=10",
+        "ConnectTimeout=20",
         "-o",
         "ServerAliveInterval=10",
         "-o",
@@ -317,9 +442,9 @@ pub fn ssh_args(h: &HostCfg) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    if let Some(j) = &h.jump {
+    if let Some(j) = jump {
         a.push("-J".into());
-        a.push(j.clone());
+        a.push(j.to_string());
     }
     a.push("--".into());
     a.push(h.ssh.clone());
@@ -328,11 +453,20 @@ pub fn ssh_args(h: &HostCfg) -> Vec<String> {
 }
 
 fn ask(h: &HostCfg) -> HostView {
-    let o = Command::new("ssh")
-        .args(ssh_args(h))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
+    let run = |jump: Option<&str>| {
+        Command::new("ssh")
+            .args(ssh_args_via(h, jump))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    };
+    let mut o = run(h.jump.as_deref());
+    // only a network failure (rc 255) goes round by the fallback jump; a wrong answer does not
+    if let (Ok(first), Some(fb)) = (&o, h.jump_fallback.as_deref()) {
+        if first.status.code() == Some(255) {
+            o = run(Some(fb));
+        }
+    }
     match o {
         Ok(o) => view(
             &h.name,
@@ -398,6 +532,33 @@ pub fn report(
 ) -> (Value, u8) {
     let el = eligible(views, cfg, ok);
     let (picked, rc) = pick(&el);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let ranked = rank(&el, now, PER_QUEUED_MIN);
+    let best = ranked.first();
+    let ranking: Vec<Value> = ranked
+        .iter()
+        .map(|(v, e, late)| {
+            json!({"name": v.name, "eta_min": (e * 10.0).round() / 10.0, "late": late,
+                   "hot": is_hot(v), "state": v.state.name()})
+        })
+        .collect();
+    let why = best.map(|(v, e, late)| {
+        let mut w = if *e == 0.0 {
+            format!("{} 現在就能開跑", v.name)
+        } else {
+            format!("{} 最快，約 {:.0} 分鐘後能開跑", v.name, e)
+        };
+        if *late {
+            w.push_str("(持有者已超過自己估的時間，低可信)");
+        }
+        if is_hot(v) {
+            w.push_str("(每台都過負載門檻，仍挑最快的)");
+        }
+        w
+    });
     let soon = picked.is_none().then(|| soonest(&el)).flatten();
     let hint = soon
         .and_then(|v| cfg.iter().find(|h| h.name == v.name))
@@ -414,7 +575,11 @@ pub fn report(
     (
         json!({"result": "hosts", "file": path.display().to_string(), "hosts": hosts,
                "eligible": el.len(), "pick": picked, "soonest": soon.map(|v| v.name.clone()),
-               "queue_hint": hint}),
+               "queue_hint": hint,
+               "recommended": best.map(|(v, _, _)| v.name.clone()),
+               "recommended_eta_min": best.map(|(_, e, _)| (e * 10.0).round() / 10.0),
+               "can_start_now": picked.is_some(),
+               "why": why, "ranking": ranking}),
         rc,
     )
 }
@@ -741,6 +906,7 @@ mod tests {
             name: name.into(),
             ssh: name.into(),
             jump: None,
+            jump_fallback: None,
             os: os.into(),
             order: 1,
             kinds: kinds.map(|k| k.iter().map(|s| s.to_string()).collect()),
@@ -882,6 +1048,7 @@ mod tests {
             name: "mini".into(),
             ssh: "u@mini".into(),
             jump: Some("j".into()),
+            jump_fallback: None,
             os: "mac".into(),
             order: 1,
             kinds: None,
@@ -919,6 +1086,7 @@ mod tests {
             name: "a".into(),
             ssh: "u@a".into(),
             jump: Some("j".into()),
+            jump_fallback: None,
             os: "mac".into(),
             order: 1,
             kinds: None,
@@ -929,7 +1097,7 @@ mod tests {
             "ForwardAgent=no",
             "ClearAllForwardings=yes",
             "BatchMode=yes",
-            "ConnectTimeout=10",
+            "ConnectTimeout=20",
         ] {
             assert!(j.contains(o), "{j}");
         }
@@ -937,5 +1105,99 @@ mod tests {
         assert_eq!(a[dd + 1], "u@a");
         assert!(a[dd + 2].ends_with("aib lease status --json"));
         assert!(a.iter().position(|x| x == "-J").unwrap() < dd);
+    }
+
+    // a63ab host-pick: load lines before the lease JSON; missing values stay unknown
+    fn loaded(perf: &str, ncpu: &str, avg: &str) -> String {
+        format!("AIBLOAD hw.perflevel0.physicalcpu {perf}\nAIBLOAD hw.ncpu {ncpu}\nAIBLOAD vm.loadavg {avg}\n{FREE}")
+    }
+
+    #[test]
+    fn load_lines_are_read_and_the_lease_answer_still_counts() {
+        let v = view("a", Some(0), &loaded("6", "10", "{ 7.50 4.00 3.00 }"));
+        assert_eq!(v.state, State::Free, "load lines do not hide the JSON");
+        assert_eq!(
+            (v.cores, v.load1, v.load5),
+            (Some(6.0), Some(7.5), Some(4.0))
+        );
+        assert!(is_hot(&v), "7.5 on 6 performance cores is over 1.0");
+        let intel = view("b", Some(0), &loaded("", "8", "{ 2.00 2.00 2.00 }"));
+        assert_eq!(intel.cores, Some(8.0), "no performance level ⇒ all cores");
+        assert!(!is_hot(&intel));
+        let blind = view("c", Some(0), &loaded("", "", "{ 30.0 30.0 30.0 }"));
+        assert_eq!(load_ratio(&blind), None, "no core count ⇒ unknown, never 0");
+        assert!(!is_hot(&blind));
+        // a quiet second after a long busy spell: load5 keeps it hot
+        assert!(is_hot(&view(
+            "d",
+            Some(0),
+            &loaded("6", "10", "{ 1.00 9.00 9.00 }")
+        )));
+        // an answer with only load lines and no JSON is not free
+        let only = "AIBLOAD hw.ncpu 10\nAIBLOAD vm.loadavg { 1.0 1.0 1.0 }\n";
+        assert_ne!(view("e", Some(0), only).state, State::Free);
+        assert_ne!(view("f", Some(0), "").state, State::Free);
+    }
+
+    #[test]
+    fn a_hot_free_machine_is_picked_only_when_every_free_one_is_hot() {
+        let named = |n: &str, out: String| view(n, Some(0), &out);
+        let hot = named("hot", loaded("6", "10", "{ 9.0 9.0 9.0 }"));
+        let cool = named("cool", loaded("6", "10", "{ 1.0 1.0 1.0 }"));
+        assert_eq!(pick(&[&hot, &cool]), (Some("cool"), RC_PICKED));
+        assert_eq!(
+            pick(&[&hot]),
+            (Some("hot"), RC_PICKED),
+            "only hot ones ⇒ still picked"
+        );
+    }
+
+    #[test]
+    fn rank_puts_cool_before_hot_then_the_soonest_start() {
+        let now = 10_000.0;
+        let busy = |n: &str, end: f64, q: usize, avg: &str| HostView {
+            state: State::Busy,
+            expiry_epoch: Some(end),
+            queue_len: q,
+            ..view(n, Some(0), &loaded("6", "10", avg))
+        };
+        let a = busy("a", now + 30.0 * 60.0, 0, "{ 1.0 1.0 1.0 }"); // 30 min
+        let b = busy("b", now + 5.0 * 60.0, 2, "{ 1.0 1.0 1.0 }"); // 5 + 2 × 15 = 35
+        let c = busy("c", now + 60.0, 0, "{ 9.0 9.0 9.0 }"); // 1 min but hot
+        let d = HostView {
+            state: State::Offline,
+            ..a.clone()
+        };
+        let r = rank(&[&a, &b, &c, &d], now, PER_QUEUED_MIN);
+        let names: Vec<_> = r.iter().map(|(v, _, _)| v.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"], "offline left out, hot last");
+        assert_eq!(r[1].1, 35.0);
+        // a holder past its own estimate: 0 minutes left, marked late
+        let late = HostView {
+            expect_end_epoch: Some(now - 120.0),
+            ..a.clone()
+        };
+        assert_eq!(eta_min(&late, now, PER_QUEUED_MIN), Some((0.0, true)));
+    }
+
+    #[test]
+    fn the_fallback_jump_is_read_and_checked_like_the_others() {
+        let c = parse_config(r#"{"hosts": [{"name": "a", "jump_fallback": "j"}]}"#).unwrap();
+        assert_eq!(c[0].jump_fallback.as_deref(), Some("j"));
+        assert!(c[0].jump.is_none(), "fallback is not the always-on jump");
+        assert!(parse_config(r#"{"hosts": [{"name": "a", "jump_fallback": "-oX"}]}"#).is_err());
+        let a = ssh_args_via(&c[0], Some("j"));
+        assert!(a.windows(2).any(|w| w == ["-J", "j"]));
+        assert!(!ssh_args(&c[0]).iter().any(|x| x == "-J"), "direct first");
+    }
+
+    #[test]
+    fn the_remote_command_ends_with_the_lease_status() {
+        let c = remote_status_command();
+        assert!(c.contains("hw.perflevel0.physicalcpu") && c.contains("vm.loadavg"));
+        assert!(
+            c.trim_end().ends_with("aib lease status --json"),
+            "its rc is the command's"
+        );
     }
 }
