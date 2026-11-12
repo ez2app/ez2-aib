@@ -1750,6 +1750,22 @@ jobs:
           hk sitelive.rs '    if marked {' \
              '    if marked || true { // knife' \
              health_needs_200_and_the_site_s_own_mark
+          # e1a 11-12: health takes a 401 with the mark from the REST address
+          hk sitelive.rs '    if !matches!(status, Some(200 | 401)) {' \
+             '    if !matches!(status, Some(200)) { // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
+          # e1a 11-12: the backup plugin and its extension stay on a new site
+          hk siteidentity.rs '            .run(&wp(spec, &["plugin", "uninstall", slug, "--deactivate"]))' \
+             '            .run(&wp(spec, &["plugin", "status", slug])) // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: a plugin still there after the uninstall is taken as gone
+          hk siteidentity.rs '            return Err(format!("identity_not_set: plugin {slug} is still there"));' \
+             '            let _ = slug; // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: health asks the REST address, not the front page
+          hk sitelive.rs '    let url = format!("https://{host}/wp-json/");' \
+             '    let url = format!("https://{host}/"); // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
           # B4 health: a record already there for the code is written over
           hk sitelive.rs '        Ok(there) if there == text => {}' \
              '        Ok(there) if there == text || true => {} // knife' \
@@ -2781,6 +2797,18 @@ jobs:
           om '        observe::quota_gate(left, observe::QUOTA_FLOOR)?;' \
              '        let _ = (left, observe::QUOTA_FLOOR); // knife' \
              the_program_runs_only_reads_and_prints_one_line_and_json
+          # V8 real data (#661 / #667 / #678): only the first open PR is read through
+          vb() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          vb '    for p in list {' \
+             '    for p in list.iter().take(1) { // knife' \
+             real_prs_661_667_678_are_read_through_and_get_no_merge
+          # V8 real data: review first lines are not matched to the PR's commits
+          vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
+          vs '        Known::Known(c) => lines_for(files, c)?,' \
+             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+             real_prs_661_667_678_carry_their_own_review_lines
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

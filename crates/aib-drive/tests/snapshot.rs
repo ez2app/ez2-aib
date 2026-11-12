@@ -652,3 +652,86 @@ fn a_broken_note_about_a_commit_of_the_pr_is_no_snapshot() {
     let s = snap(gh678(), &d).unwrap();
     assert_eq!(s.prs[0].reviews.len(), 1);
 }
+
+/// GitHub as recorded in tests/fixtures/v8: a path is served from
+/// `<path with / ? & = as _>.json`.
+struct Dir(PathBuf);
+
+impl Read for Dir {
+    fn get(&self, path: &str) -> Result<Value, String> {
+        let k: String = path
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '?' | '&' | '=') {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let text = std::fs::read_to_string(self.0.join(format!("{k}.json")))
+            .map_err(|_| format!("404 {path}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))
+    }
+}
+
+/// V8 with real data (043dd V8 L1): #661 / #667 / #678 as GitHub had them on
+/// 11-11 and their four review first lines. Each PR carries exactly the
+/// lines about its own commits: #661 the failed full review at 0c327b35 and
+/// the passing increment at d4bafde2; #667 and #678 one pass at their head.
+/// Still no merge in v0.
+#[test]
+fn real_prs_661_667_678_carry_their_own_review_lines() {
+    let d = pending_with(
+        "v8",
+        &[
+            ("REVIEW-661-consent-run-2240e-0c327b35.md", "結論: 不通過 頭: 0c327b358846842e54e843380f57a0617bbe0ae6 H/M/L/N: 0/2/3/4 範圍: 增量 35c384b90ec8043de2f3cf6a1521ec2d842ab912..0c327b358846842e54e843380f57a0617bbe0ae6"),
+            ("REVIEW-661-r2-2240e-d4bafde2.md", "結論: 通過 頭: d4bafde28b279252c5b5916da30f63395aaa4143 H/M/L/N: 0/0/1/0 範圍: 增量 0c327b358846842e54e843380f57a0617bbe0ae6..d4bafde28b279252c5b5916da30f63395aaa4143"),
+            ("REVIEW-667-unixonly-2240e-cca3249e.md", "結論: 通過 頭: cca3249e502694a89becbd48f7db31b072b9098f H/M/L/N: 0/0/0/0 範圍: 增量 347e16c045eed58b07b87884817a7a045fe66992..cca3249e502694a89becbd48f7db31b072b9098f(讀碼，待 CI)"),
+            ("REVIEW-678-release-tempdir-2240e-7bcb6ee0.md", REV678),
+        ],
+    );
+    let prev = BTreeMap::new();
+    let seats: Vec<String> = SEATS.iter().map(|s| (*s).to_owned()).collect();
+    let s = build(
+        &Dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v8")),
+        &Inputs {
+            repo: R,
+            roles: roles(),
+            pending: &d,
+            prev_heads: &prev,
+            queue: &quiet(),
+            seats: &seats,
+        },
+    )
+    .unwrap();
+    let got: Vec<(u64, Vec<(String, bool)>)> = s
+        .prs
+        .iter()
+        .map(|p| {
+            let mut r: Vec<(String, bool)> = p
+                .reviews
+                .iter()
+                .map(|l| (l.head[..8].to_owned(), l.pass))
+                .collect();
+            r.sort();
+            (p.number, r)
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (
+                661,
+                vec![("0c327b35".into(), false), ("d4bafde2".into(), true)]
+            ),
+            (667, vec![("cca3249e".into(), true)]),
+            (678, vec![("7bcb6ee0".into(), true)]),
+        ]
+    );
+    let out = decide(&s);
+    assert!(
+        !out.iter().any(|i| matches!(i, Intent::Merge { .. })),
+        "{out:?}"
+    );
+}
