@@ -20,7 +20,11 @@
 //! login = the address before `@`) are made with a random password each, set through the
 //! program's standard input — never an argument, never a log line — and kept on the host
 //! only, root-readable ([`SECRETS`]`/<code>.admin.<login>`, 0600). The installer's own
-//! administrator is removed. The site's notice address is the customer's when the opening
+//! administrator is removed. The plugins a new site must not carry ([`NOT_ON_NEW_SITES`]:
+//! the template's backup plugin and its Google Drive extension, which tells its vendor the
+//! site's address and administrator address — Andy: new sites carry no backup plugin;
+//! f1fae found both active on e1a 11-12) are deactivated and deleted first, before any
+//! address changes, and must be gone after. The site's notice address is the customer's when the opening
 //! record carries one, else the first administrator's (the template's is ours). The
 //! must-load plugin of the one-time login is put in place and read back
 //! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
@@ -535,6 +539,35 @@ fn user_id(runner: &mut impl Runner, spec: &SiteSpec, login: &str) -> Option<Str
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Plugins a new site must not carry, removed by the identity step (extension first).
+pub const NOT_ON_NEW_SITES: [&str; 2] = [
+    "all-in-one-wp-migration-gdrive-extension",
+    "all-in-one-wp-migration",
+];
+
+/// Deactivate and delete every plugin of [`NOT_ON_NEW_SITES`] the site has; each must be
+/// gone after.
+fn remove_unwanted_plugins(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
+    for slug in NOT_ON_NEW_SITES {
+        if runner
+            .run(&wp(spec, &["plugin", "is-installed", slug]))
+            .is_err()
+        {
+            continue;
+        }
+        runner
+            .run(&wp(spec, &["plugin", "uninstall", slug, "--deactivate"]))
+            .map_err(|e| format!("identity_failed: remove plugin {slug}: {e}"))?;
+        if runner
+            .run(&wp(spec, &["plugin", "is-installed", slug]))
+            .is_ok()
+        {
+            return Err(format!("identity_not_set: plugin {slug} is still there"));
+        }
+    }
+    Ok(())
+}
+
 /// The identity: keys and salts anew, address and title, the first administrators with
 /// their own passwords, the installer's administrator gone, the notice address.
 pub fn identity_step(
@@ -549,6 +582,7 @@ pub fn identity_step(
     runner
         .run(&wp(spec, &["config", "shuffle-salts"]))
         .map_err(|e| format!("identity_failed: shuffle-salts: {e}"))?;
+    remove_unwanted_plugins(runner, spec)?;
     for (key, value) in [("siteurl", &url), ("home", &url), ("blogname", &title)] {
         runner
             .run(&wp(spec, &["option", "update", key, value]))
@@ -752,6 +786,10 @@ mod tests {
         garble: bool,
         /// a command (joined argv contains it) that fails
         broken: Option<&'static str>,
+        /// installed plugins (the template's backup plugin and its extension)
+        plugins: Vec<String>,
+        /// an uninstall that says it worked but leaves the plugin
+        sticky_plugin: bool,
     }
 
     impl Site {
@@ -770,6 +808,8 @@ mod tests {
                 files: Default::default(),
                 garble: false,
                 broken: None,
+                plugins: NOT_ON_NEW_SITES.iter().map(|p| (*p).to_owned()).collect(),
+                sticky_plugin: false,
             }
         }
         /// the arguments after the site software's `--path=`
@@ -870,6 +910,19 @@ mod tests {
                 ["user", "delete", login, ..] => {
                     self.users.retain(|u| u != login);
                     self.emails.remove(*login);
+                    Ok(String::new())
+                }
+                ["plugin", "is-installed", slug] => {
+                    if self.plugins.iter().any(|p| p == slug) {
+                        Ok(String::new())
+                    } else {
+                        Err("not installed".to_owned())
+                    }
+                }
+                ["plugin", "uninstall", slug, "--deactivate"] => {
+                    if !self.sticky_plugin {
+                        self.plugins.retain(|p| p != slug);
+                    }
                     Ok(String::new())
                 }
                 _ => Ok(String::new()),
@@ -1213,6 +1266,49 @@ mod tests {
         identity_step(&mut site, &paths, &spec(true), &mut record).unwrap();
         assert_eq!(site.options["admin_email"], "ops@example.test");
         assert_eq!(record["admin_email_from"], "site_admins");
+    }
+
+    /// The template's backup plugin and its Google Drive extension (which tells its vendor
+    /// the site's addresses) are deactivated and deleted, the extension first, before any
+    /// address changes; a site without them is left alone; one that stays is refused
+    /// (f1fae, e1a 11-12).
+    #[test]
+    fn the_backup_plugin_and_its_extension_are_removed_before_the_address() {
+        let paths = scratch("identity-plugins");
+        let mut site = Site::new();
+        identity_step(&mut site, &paths, &spec(true), &mut json!({})).unwrap();
+        assert!(site.plugins.is_empty(), "{:?}", site.plugins);
+        let at = |what: &str| site.calls.iter().position(|c| c.contains(what)).unwrap();
+        assert!(
+            at("plugin uninstall all-in-one-wp-migration-gdrive-extension")
+                < at("plugin uninstall all-in-one-wp-migration --deactivate")
+        );
+        assert!(
+            at("plugin uninstall all-in-one-wp-migration --deactivate")
+                < at("option update siteurl")
+        );
+        // a site without them: nothing is uninstalled
+        let mut site = Site::new();
+        site.plugins.clear();
+        identity_step(
+            &mut site,
+            &scratch("identity-plugins2"),
+            &spec(true),
+            &mut json!({}),
+        )
+        .unwrap();
+        assert!(!site.calls.iter().any(|c| c.contains("plugin uninstall")));
+        // one that stays after the uninstall is refused
+        let mut site = Site::new();
+        site.sticky_plugin = true;
+        let err = identity_step(
+            &mut site,
+            &scratch("identity-plugins3"),
+            &spec(true),
+            &mut json!({}),
+        )
+        .unwrap_err();
+        assert!(err.contains("is still there"), "{err}");
     }
 
     #[test]

@@ -59,6 +59,7 @@ pub mod roster;
 pub mod scan;
 pub mod share;
 pub mod site;
+pub mod siteabandon;
 pub mod sitecreate;
 pub mod sitedefaults;
 pub mod sitedns;

@@ -1651,13 +1651,13 @@ jobs:
           ck sitedns.rs '    let accounts = accounts.filter(|a| !a.is_empty()).ok_or(OWNER_UNKNOWN)?;' \
              '    let accounts = accounts.unwrap_or(&[]); // knife' \
              a_roster_without_accounts_cannot_tell
-          # B5 DNS: a call off the list of four is let through
+          # B5 DNS: a call off the list of five is let through
           ck sitedns.rs '        _ => false,' '        _ => true, // knife' \
-             only_the_four_calls_are_allowed
-          # B5 DNS (ebb36 L1): a delete of any record by its id goes back on the list
-          ck sitedns.rs '        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),' \
-             $'        ("POST", ["", "zones", z, "dns_records"], None, Some(b)) => valid_id(z) && add_body_ok(b),\n        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r), // knife' \
-             only_the_four_calls_are_allowed
+             only_the_five_calls_are_allowed
+          # abandon (4542e): a delete of something that is not one record by its id is let through
+          ck sitedns.rs '        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),' \
+             '        ("DELETE", ["", "zones", z, "dns_records", ..], None, None) => valid_id(z), // knife' \
+             only_the_five_calls_are_allowed
           # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
           ck sitedns.rs '        && m["type"] == "A"' \
              '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
@@ -1717,6 +1717,50 @@ jobs:
           ck roster.rs '        if out.iter().any(|x| x == id) {' \
              '        if out.iter().any(|x| x == id) && false { // knife' \
              the_customers_cloudflare_accounts_are_read_strictly
+          # abandon (4542e): a site is abandoned
+          ck siteabandon.rs '        Some(true) => return Some(ALREADY_A_SITE),' \
+             '        Some(true) => {} // knife' \
+             a_site_is_never_abandoned
+          # abandon: an opening of another code or domain is abandoned
+          ck siteabandon.rs '    if !g.opening_matches {' \
+             '    if !g.opening_matches && false { // knife' \
+             only_the_opening_of_this_code_and_domain
+          # abandon: a live site's container is destroyed
+          ck siteabandon.rs '        Some(true) => return Some(CT_OF_A_SITE),' \
+             '        Some(true) => {} // knife' \
+             only_a_container_named_for_the_code_and_no_sites
+          # abandon: a container under another name is destroyed
+          ck siteabandon.rs '        Some(Some(h)) if h != code => Some(CT_NOT_THIS_OPENING),' \
+             '        Some(Some(h)) if h != code && false => Some(CT_NOT_THIS_OPENING), // knife' \
+             only_a_container_named_for_the_code_and_no_sites
+          # abandon: a container that could not be looked at counts as none
+          ck siteabandon.rs '        None => Some(PROBE_UNKNOWN),' \
+             '        None => None, // knife' \
+             anything_in_doubt_stops_everything
+          # abandon: one probe not read goes on with the others
+          ck siteabandon.rs '    if probes.contains(&Probe::Unknown) {' \
+             '    if probes.contains(&Probe::Unknown) && false { // knife' \
+             anything_in_doubt_stops_everything
+          # abandon: a short list of probes goes on
+          ck siteabandon.rs '    if probes.len() != STEPS.len() {' \
+             '    if probes.len() != STEPS.len() && false { // knife' \
+             anything_in_doubt_stops_everything
+          # abandon DNS: a record without this site's mark can be deleted
+          ck sitedns.rs '        && r.comment == dns_marker(code))' \
+             '        && !r.comment.is_empty()) // knife' \
+             only_a_listed_record_with_this_sites_mark_can_be_deleted
+          # abandon DNS: a mail or text record can be deleted
+          ck sitedns.rs '        && DNS_ADDRESS_TYPES.contains(&r.kind.as_str())' \
+             '        && (DNS_ADDRESS_TYPES.contains(&r.kind.as_str()) || true) // knife' \
+             only_a_listed_record_with_this_sites_mark_can_be_deleted
+          # abandon DNS: unmarked records are on the list to remove
+          ck sitedns.rs '        .filter(|r| r.comment == mark)' \
+             '        .filter(|r| r.comment == mark || true) // knife' \
+             only_marked_address_records_under_the_names_are_removed
+          # abandon DNS: marked records under other names are on the list to remove
+          ck sitedns.rs '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)))' \
+             '        .filter(|r| names.iter().any(|n| same_name(&r.name, n)) || true) // knife' \
+             only_marked_address_records_under_the_names_are_removed
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -2665,6 +2709,22 @@ jobs:
           hk sitelive.rs '    if marked {' \
              '    if marked || true { // knife' \
              health_needs_200_and_the_site_s_own_mark
+          # e1a 11-12: health takes a 401 with the mark from the REST address
+          hk sitelive.rs '    if !matches!(status, Some(200 | 401)) {' \
+             '    if !matches!(status, Some(200)) { // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
+          # e1a 11-12: the backup plugin and its extension stay on a new site
+          hk siteidentity.rs '            .run(&wp(spec, &["plugin", "uninstall", slug, "--deactivate"]))' \
+             '            .run(&wp(spec, &["plugin", "status", slug])) // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: a plugin still there after the uninstall is taken as gone
+          hk siteidentity.rs '            return Err(format!("identity_not_set: plugin {slug} is still there"));' \
+             '            let _ = slug; // knife' \
+             the_backup_plugin_and_its_extension_are_removed_before_the_address
+          # e1a 11-12: health asks the REST address, not the front page
+          hk sitelive.rs '    let url = format!("https://{host}/wp-json/");' \
+             '    let url = format!("https://{host}/"); // knife' \
+             health_asks_the_rest_address_and_takes_401_with_the_mark
           # B4 health: a record already there for the code is written over
           hk sitelive.rs '        Ok(there) if there == text => {}' \
              '        Ok(there) if there == text || true => {} // knife' \
@@ -2952,6 +3012,10 @@ jobs:
           hk sitecreatecmd.rs '    } else if platform.is_none() {' \
              '    } else if platform.is_none() && false {' \
              the_platform_s_own_domains_are_not_opened
+          # E1 audit #5: an opening a person carried on to the end (--continue) still reads as stopped
+          hk sitecreaterun.rs '    if opened {' \
+             '    if opened && false { // knife' \
+             a_stop_carried_on_by_a_person_reads_as_open
           # E1 (33e28 N2): a unit started after its ask stopped waiting takes the ask up
           hk sitecreaterun.rs '        (Some("waiting"), "stopped") => {' \
              '        (Some("waiting"), "never") => { // knife' \
@@ -2983,6 +3047,118 @@ jobs:
           hk sitecreatecmd.rs '        if let Some(i) = at(CreateStep::Edge) {' \
              '        if let Some(i) = at(CreateStep::Health) { // knife' \
              an_unreadable_entry_stops_at_the_entry_step
+          # abandon (4542e): a name outside the customer's zone is removed under it
+          hk cfdns.rs '    if !names.iter().all(|n| sitedns::in_zone(n, &zone.name)) {' \
+             '    if !names.iter().all(|n| sitedns::in_zone(n, &zone.name)) && false { // knife' \
+             a_name_outside_the_zone_removes_nothing
+          # abandon: a delete answered but not done counts as removed
+          hk cfdns.rs '    if left.is_empty() {' \
+             '    if left.is_empty() || true { // knife' \
+             a_delete_that_does_not_take_is_not_removed
+          # abandon: a snapshot's hostname is taken for the container's
+          hk siteabandon.rs "        .take_while(|l| !l.starts_with('['))" \
+             '        .take_while(|_| true) // knife' \
+             the_hostname_is_the_main_sections
+          # abandon: the step destroys the container without looking at its name again
+          hk siteabandon.rs '        Some(Some(c)) if hostname(&c) == code => {}' \
+             '        Some(Some(c)) if hostname(&c) == code || true => {} // knife' \
+             the_container_is_looked_at_again_right_before_it_goes
+          # abandon: a container still there after the destroy counts as gone
+          hk siteabandon.rs '        (Ok(_), _) => Err(format!("CT {ct} still answers after pct destroy")),' \
+             '        (Ok(_), _) => Ok(()), // knife' \
+             a_container_that_is_still_there_after_destroy_stops
+          # abandon: the firewall file is left
+          hk siteabandon.rs '    match fs::remove_file(&fw) {' \
+             '    match Ok::<(), std::io::Error>(()) { // knife' \
+             applied_everything_goes_and_the_record_moves_to_the_abandoned
+          # abandon: the site's passwords are left
+          hk siteabandon.rs '            AbandonStep::Secrets => crate::siteidentity::drop_admin_secrets(&paths.secrets, code),' \
+             '            AbandonStep::Secrets => Ok(()), // knife' \
+             applied_everything_goes_and_the_record_moves_to_the_abandoned
+          # abandon: the record is removed without being kept among the abandoned
+          hk siteabandon.rs '    write_record(&to, code, record)?;' \
+             '    let _ = (&to, record); // knife' \
+             applied_everything_goes_and_the_record_moves_to_the_abandoned
+          # abandon: a step is done without the record saying so
+          hk siteabandon.rs $'            list.push(json!(step.as_str()));\n        }\n        write_record(&paths.creating' \
+             $'            let _ = (list, step); // knife\n        }\n        write_record(&paths.creating' \
+             a_stop_half_way_is_written_and_a_new_plan_carries_on
+          # abandon: DNS removed once counts as never touched
+          hk siteabandon.rs '    touched && rec["abandon"]["dns_removed"] != true' \
+             '    touched // knife' \
+             dns_already_removed_is_done
+          # abandon: an opening that was adding its DNS has none to remove
+          hk siteabandon.rs '    let touched = dns.get("adding").is_some() || dns.get("done").is_some();' \
+             '    let touched = dns.get("done").is_some(); // knife' \
+             a_half_opening_plans_the_container_first_and_every_step
+          # abandon: an opened site's record is not a site
+          hk siteabandon.rs '        (Some(a), Some(b)) => Some(a || b),' \
+             '        (Some(a), Some(_)) => Some(a), // knife' \
+             a_site_is_never_abandoned
+          # abandon: the opening of another domain is abandoned
+          hk siteabandon.rs '            && hosts(r).first().map(String::as_str) == Some(domain)' \
+             '            && !hosts(r).is_empty() // knife' \
+             the_opening_must_be_of_this_domain
+          # abandon: an unfinished operation on the domain is gone round
+          hk siteabandon.rs '        _ if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) => Some(UNFINISHED_OPERATION),' \
+             '        _ if seen.unfinished.as_ref().is_some_and(|u| !u.is_empty()) && false => Some(UNFINISHED_OPERATION), // knife' \
+             what_cannot_be_read_stops_everything
+          # abandon: a journal not read counts as nothing unfinished
+          hk siteabandon.rs '        _ if seen.unfinished.is_none() => Some(JOURNAL_UNREADABLE),' \
+             '        _ if seen.unfinished.is_none() && false => Some(JOURNAL_UNREADABLE), // knife' \
+             what_cannot_be_read_stops_everything
+          # abandon: a plan the host no longer matches is applied
+          hk siteabandon.rs '    if doc.get("plan_sha256").and_then(Value::as_str) != Some(g.sha.as_str()) || doc != g.plan {' \
+             '    if g.sha.is_empty() && g.plan.is_null() { // knife' \
+             a_host_that_changed_after_the_plan_is_left_alone
+          # abandon: a plan that says stop is applied
+          hk siteabandon.rs '    if doc["next"] != "run" {' \
+             '    if doc["next"] != "run" && false { // knife' \
+             a_container_under_another_name_or_of_a_site_is_not_touched
+          # abandon: steps found done are done again
+          hk siteabandon.rs '        .filter(|(_, p)| *p == Probe::NotDone)' \
+             '        .filter(|(_, p)| *p == Probe::NotDone || true) // knife' \
+             applied_everything_goes_and_the_record_moves_to_the_abandoned
+          # abandon: an abandoned opening's numbers are given again
+          hk sitecreatecmd.rs '    out.extend(read_records(&crate::siteabandon::abandoned_dir(creating))?);' \
+             '    out.extend(Vec::<Value>::new()); let _ = creating; // knife' \
+             an_abandoned_openings_numbers_are_never_given_again
+          # abandon: an abandoned opening's code is given again
+          hk sitecreaterun.rs '        &abandoned,' \
+             '        &abandoned.join("none"), // knife' \
+             an_abandoned_openings_code_stays_given
+          # abandon L1 (c477a): the customer's own opening still going is taken down under it
+          hk siteabandon.rs '        _ if seen.customer_ask == Some(Some("opening")) => Some(CUSTOMER_RUN_GOING),' \
+             '        _ if seen.customer_ask == Some(Some("opening")) => None, // knife' \
+             a_customer_opening_still_going_is_not_abandoned
+          # abandon L1: an ask not read counts as none
+          hk siteabandon.rs '        _ if seen.customer_ask.is_none() => Some(siteabandon::PROBE_UNKNOWN),' \
+             '        _ if seen.customer_ask.is_none() => None, // knife' \
+             an_ask_that_cannot_be_read_stops
+          # abandon L1: the look at the ask answers "none" whatever it found
+          hk siteabandon.rs '        customer_ask: crate::sitecreaterun::ask_now(asks, code, crate::probe::unix_now()).ok(),' \
+             '        customer_ask: crate::sitecreaterun::ask_now(asks, code, crate::probe::unix_now()).ok().map(|_| None), // knife' \
+             a_customer_opening_still_going_is_not_abandoned
+          # abandon L1: an ask that cannot be read is told as none
+          hk sitecreaterun.rs '    let ask: Value = serde_json::from_str(&text).map_err(|_| ())?;' \
+             '    let Ok(ask) = serde_json::from_str::<Value>(&text) else { return Ok(None) }; // knife' \
+             an_ask_is_seen_opening_or_not_told
+          # abandon L1: the abandon leaves the customer's ask as it was (the call stays, on no ask)
+          hk siteabandon.rs '    crate::sitecreaterun::stop_ask_abandoned(asks, code, crate::probe::unix_now())?;' \
+             '    crate::sitecreaterun::stop_ask_abandoned(asks, "s-zzzzzz", crate::probe::unix_now())?; // knife' \
+             the_customers_ask_is_stopped_as_abandoned_and_kept
+          # abandon L1: the ask is not marked stopped
+          hk sitecreaterun.rs '    obj.insert("state".to_owned(), json!("stopped"));' \
+             '    obj.insert("state".to_owned(), json!("running")); // knife' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
+          # abandon L1: the ask does not say why
+          hk sitecreaterun.rs '    obj.insert("why".to_owned(), json!("abandoned"));' \
+             '    obj.insert("why".to_owned(), json!("start_late")); // knife' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
+          # abandon L1: the ask is removed, and its code with it
+          hk sitecreaterun.rs $'    // kept, not removed: the code stays given\n    rewrite_ask(&places.asked, code, &ask)\n' \
+             $'    // kept, not removed: the code stays given\n    rewrite_ask(&places.asked, code, &ask).and_then(|()| fs::remove_file(places.asked.join(format!("{code}.json"))).map_err(|e| e.to_string())) // knife\n' \
+             an_abandoned_ask_is_stopped_kept_and_its_code_given
           # E1 e1a 11-12: the limits step gives net0 a locally administered address
           hk sitecreatecmd.rs '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {' \
              '    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) && false { // knife' \
@@ -3859,6 +4035,102 @@ jobs:
           sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
              '                let _ = e; // knife' \
              a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+      # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock, backoff, quota):
+      # each guard, broken on purpose, must turn its own test red. K1 / K4 (never executes, never
+      # writes outside the state root): aib-drive has no executor and no write call to break; the
+      # end-to-end test with fake gh / aib on PATH checks every program call is a read, and the
+      # quota-read knives run against it.
+      - name: aib-drive observe knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ok() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe "$3"; }
+          # once while paused runs anyway
+          ok '        return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));' \
+             '        let _ = paths; // knife' \
+             a_round_while_paused_is_refused_and_writes_nothing
+          # --watch ignores the pause file
+          ok '        if paths.pause.exists() {' \
+             '        if false && paths.pause.exists() { // knife' \
+             watch_marks_the_pause_and_the_resume_once_each
+          # the journal is rewritten, not appended
+          ok '        .append(true)' \
+             '        .write(true).truncate(true) // knife' \
+             two_rounds_append_two_lines_and_decide_the_same
+          # EZ2_AIB_STATE_ROOT is ignored
+          ok '    if let Some(r) = env_root.filter(|r| !r.is_empty()) {' \
+             '    if let Some(r) = env_root.filter(|r| r.is_empty() && !r.is_empty()) { // knife' \
+             the_state_root_is_the_env_root_or_the_home_default
+          # EZ2_AIB_HOME is ignored (two roots, two locks)
+          ok '    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {' \
+             '    if let Some(h) = aib_home.filter(|h| h.is_empty() && !h.is_empty()) { // knife' \
+             the_state_root_is_the_env_root_or_the_home_default
+          # a held lock is taken over
+          ok '    match f.try_lock() {' \
+             '    match Ok::<(), TryLockError>(()).or(f.try_lock()) { // knife' \
+             a_second_observe_is_refused_with_the_holders_pid
+          # the backoff has no cap
+          ok '            return cap;' \
+             '            return d; // knife' \
+             failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
+          # failures are not counted
+          ok '            failures.saturating_add(1)' \
+             '            failures.saturating_mul(0) // knife' \
+             failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
+          # the reason of a failed snapshot is dropped
+          ok '        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),' \
+             '        Err(e) => (Some(clean(&e, 0)), prev.clone(), Vec::new()), // knife' \
+             a_failed_snapshot_is_recorded_with_its_reason
+          # outside text keeps its control characters
+          ok '            if c.is_control() || is_format(c) {' \
+             '            if is_format(c) { // knife' \
+             outside_text_is_cleaned_and_cut
+          # a right-to-left override is kept
+          ok '            | '"'"'\u{202a}'"'"'..='"'"'\u{202e}'"'"'' \
+             '            | '"'"'\u{202a}'"'"'..='"'"'\u{202d}'"'"' // knife' \
+             format_characters_are_cleaned_too
+          # --interval has no floor
+          ok '    if d < MIN_INTERVAL {' \
+             '    if d < Duration::ZERO { // knife' \
+             an_interval_under_60_seconds_is_refused
+          # a last line longer than the first read is never found
+          ok '        if want >= len {' \
+             '        if true { // knife' \
+             the_last_heads_are_read_from_the_end_of_a_long_journal
+          # the holder's pid is read from the locked file (unreadable on Windows)
+          ok '            let who = std::fs::read_to_string(pid).unwrap_or_default();' \
+             '            let who = std::fs::read_to_string(path).unwrap_or_default(); // knife' \
+             a_second_observe_is_refused_with_the_holders_pid
+          # a round runs below the quota floor
+          ok '        Ok(n) if n >= floor => Ok(()),' \
+             '        Ok(n) if n >= floor.min(1) => Ok(()), // knife' \
+             a_round_needs_the_quota_floor_left
+          # the quota read becomes another call
+          ob() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          ob '    vec!["api".to_owned(), "rate_limit".to_owned()]' \
+             '    vec!["api".to_owned(), "graphql".to_owned()] // knife' \
+             the_program_runs_only_reads_and_prints_one_line_and_json
+          # the program skips the quota gate
+          om() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          om '        observe::quota_gate(left, observe::QUOTA_FLOOR)?;' \
+             '        let _ = (left, observe::QUOTA_FLOOR); // knife' \
+             the_program_runs_only_reads_and_prints_one_line_and_json
+          # V8 real data (#661 / #667 / #678): only the first open PR is read through
+          vb() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test observe_bin "$3"; }
+          vb '    for p in list {' \
+             '    for p in list.iter().take(1) { // knife' \
+             real_prs_661_667_678_are_read_through_and_get_no_merge
+          # V8 real data: review first lines are not matched to the PR's commits
+          vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
+          vs '        Known::Known(c) => lines_for(files, c)?,' \
+             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+             real_prs_661_667_678_carry_their_own_review_lines
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

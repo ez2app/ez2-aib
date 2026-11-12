@@ -25,12 +25,14 @@
 //! after as it did before (the removal's rule: an answer that cannot be had is not "the
 //! same").
 //!
-//! **Health.** From the entry, by the site's own name: the answer must be 200 and carry the
-//! site's own mark — the link header the site software sends for its own address
-//! (`<https://<name>/wp-json/>`), which only a site whose address the identity step set
-//! sends. The mark comes from the site software's REST address: a site whose REST links
-//! are turned off (a security plugin) or that still uses plain links (`?rest_route=`) answers
-//! 200 without it and is kept for a person; the template has both on. Then the opening
+//! **Health.** From the entry, by the site's own name, the site software's REST address
+//! (`https://<name>/wp-json/`) is asked: the answer must be 200, or 401 when a plugin asks
+//! visitors to sign in first, and carry the site's own mark — the link header the site
+//! software sends for its own address (`<https://<name>/wp-json/>`), which only a site whose
+//! address the identity step set sends. The front page is not asked: the template has a
+//! plugin that takes the link header off pages (e1a 11-12: 200 with no link at all), while
+//! the REST address still sends it. A site that still uses plain links (`?rest_route=`)
+//! answers without the mark and is kept for a person. Then the opening
 //! becomes a site: the record is written as a full record
 //! ([`aib_cloud::site::record`]), the site is added to the export list, and the opening
 //! record moves to `sites-opened/<code>.json` (root only): the licences left for a person,
@@ -440,15 +442,15 @@ pub fn edge_step(
 
 // ------------------------------------------------------------------ health
 
-/// Does the answer (status line and headers, as `curl -D -` prints them) say 200 with the
-/// site's own mark for `host`?
+/// Does the answer of the REST address (status line and headers, as `curl -D -` prints
+/// them) say 200, or 401 (sign in first), with the site's own mark for `host`?
 pub fn health_answer(headers: &str, host: &str) -> Result<(), String> {
     let status = headers
         .lines()
         .find(|l| l.starts_with("HTTP/"))
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok());
-    if status != Some(200) {
+    if !matches!(status, Some(200 | 401)) {
         return Err(format!(
             "health: {host} answered {}",
             status.map_or("nothing".to_owned(), |c| c.to_string())
@@ -463,7 +465,7 @@ pub fn health_answer(headers: &str, host: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "health: {host} answered 200 without its own mark {mark}"
+            "health: {host} answered without its own mark {mark}"
         ))
     }
 }
@@ -559,7 +561,7 @@ pub fn health_step(
     let created_at = started_at(opening);
     let host = first_host(spec)?;
     let resolve = format!("{host}:443:127.0.0.1");
-    let url = format!("https://{host}/");
+    let url = format!("https://{host}/wp-json/");
     // The entry gets the site's certificate a while after it reloads (audit 11-12 #3):
     // the site is asked again at a fixed pause, about three minutes in all, before the
     // step stops on the last answer.
@@ -1207,6 +1209,35 @@ mod tests {
         let code = ok.replace("HTTP/2 200", "HTTP/2 503");
         assert!(health_answer(&code, "b4.example.test").is_err());
         assert!(health_answer("", "b4.example.test").is_err());
+        // a page with no link header at all (the template's plugin takes it off pages)
+        let bare = "HTTP/2 200 \r\ncontent-type: text/html\r\n";
+        assert!(health_answer(bare, "b4.example.test").is_err());
+    }
+
+    /// e1a 11-12: the REST address of a site whose plugin asks visitors to sign in first
+    /// answers 401 and still carries the mark — that site is up; a 403 or a 401 without the
+    /// mark is not, and the address asked is the REST address, not the front page.
+    #[test]
+    fn health_asks_the_rest_address_and_takes_401_with_the_mark() {
+        let signin = "HTTP/2 401 \r\ncontent-type: application/json\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n";
+        assert!(health_answer(signin, "b4.example.test").is_ok());
+        assert!(health_answer(&signin.replace(" 401 ", " 403 "), "b4.example.test").is_err());
+        let unmarked = "HTTP/2 401 \r\ncontent-type: application/json\r\n";
+        assert!(health_answer(unmarked, "b4.example.test").is_err());
+        let paths = scratch("health-rest");
+        let s = spec();
+        let mut h = host(|argv: &[String]| {
+            if argv.iter().any(|a| a == "https://b4.example.test/wp-json/") {
+                Ok(
+                    "HTTP/2 401\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            } else {
+                Ok("HTTP/2 200\r\ncontent-type: text/html\r\n".to_owned())
+            }
+        });
+        health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap();
+        assert!(paths.records.join("s-b4test.json").exists());
     }
 
     #[test]
