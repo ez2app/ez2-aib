@@ -3,8 +3,33 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## 0.2.0-preview.3 — unreleased
+## Unreleased
 
+- macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
+  `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
+  `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
+  as variables, so a process started with a cleared environment (`env -i`) looked like one
+  without the session marker and was let go as "not ours" instead of being reported
+  (#614 CI). A failed read keeps the candidate (unreadable or other coalition).
+- macOS known limit: if aibd crashes while a program is held before exec, the next start can
+  see `AlreadyRunning` for up to `HOLD_LIMIT` (5 s), since the held child keeps copies of
+  `aibd.lock` and the listening socket until it execs (ADR 0004). The hold now ends at an
+  absolute deadline, so a signal no longer extends it.
+
+## 0.2.0-preview.5 — 2026-11-12
+
+(preview.3 and preview.4 were never split out here; this section covers everything since
+preview.2.)
+
+- A macOS stop no longer holds the slot for an unreadable candidate that is in another
+  coalition (a launchd-started XPC helper such as DockHelper, whose environment macOS will not
+  show us). Candidates are classified by a pure `classify()`; one that is readable in both
+  coalitions and different is listed as `other_coalition` in the stop record and let go; one
+  that cannot be placed still gives `candidates_unreadable` and holds the slot (#618).
+- `aibd ctl seat open <name> -- <absolute-program> [args...]`: seat create + session start in
+  one step. The program is resolved first, so a bad argv leaves no seat; a session start that
+  fails after the seat was made prints `{"seat": …, "session": null}` and the server's error,
+  so `session start <seat-id>` can be retried (#630).
 - `ErrorCode::ALL` can no longer drift from the enum unnoticed (a63ab 11-10; a merge once
   turned two edits to `25` into a 26-entry array). New `ErrorCode::ordinal()` is an exhaustive
   match, so a new code does not build until it is numbered; build-time checks fail when a

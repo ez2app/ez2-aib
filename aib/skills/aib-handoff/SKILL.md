@@ -41,6 +41,12 @@ aib summary template --out /private/tmp/sum-<席碼>.json        # 過得了格�
 aib summary write --file /private/tmp/sum-<席碼>.json
 ```
 
+第一次寫總結常被擋的幾件事(11-12 實跑踩過,維護者同意寫進來):
+- **先整理才能總結**:這一輪沒跑過 `aib memory tidy collect → apply`,`aib summary write` 會擋下並提示「這一輪還沒整理記憶;先跑 aib memory tidy collect → apply,再寫總結」。
+- **`--seat` 寫完整地址 `<艙位碼>/<席碼>`**(例 `abcd/12345`),只寫席碼會被拒。在席裡跑可以不帶 `--seat`。
+- **證據有數字就配 `evidence_command`**:`evidence` 裡有頭碼、PR 號、百分比、日期等數字,同一項要加 `evidence_command`(能重跑出那個數字的指令),不然整份不寫。
+- **席位記憶有行數上限**:整理草稿的席位記憶段超過上限會被擋;過時的交接段直接刪掉再 apply。
+
 整理或總結失敗**不擋交接三步**(交接檔與收據會記下本輪整理 / 總結有沒有做),但**不能跳過**(維護者 10-24):
 `aib handoff verify` 第 2 項(人格卡)、第 6 項(總結要寫進第二大腦)、第 9 項(遺漏回顧)沒做完一律紅,
 交接檔寫「沒做」也不算。時間不夠先交接三步,接著一定補 `aib summary write` 與整理,直到 verify 全綠。

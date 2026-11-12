@@ -35,7 +35,7 @@ class HostIpTailscale(unittest.TestCase):
         self.bin = self.td / "bin"
         fake(self.bin / "ipconfig", '[ "$2" = en0 ] && echo %s; exit 0' % LAN_IP)
         self.app = self.td / "Tailscale.app" / "Contents" / "MacOS" / "Tailscale"
-        self.ts = 'if [ "$1" = ip ]; then [ "$2" = -4 ] || echo fd7a:115c::1; echo %s; fi' % TS_IP
+        self.ts = 'if [ "$1" = ip ]; then [ "$2" = -4 ] || echo fd00::1; echo %s; fi' % TS_IP
 
     def tearDown(self):
         shutil.rmtree(self.td, ignore_errors=True)

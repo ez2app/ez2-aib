@@ -317,7 +317,7 @@ class Keys(unittest.TestCase):
         self.assertTrue(GF.request_refresh(root, now=1000 + GF.PING_GAP_S - 1, ping=M))
         self.assertTrue(GF.request_refresh(root, now=1000 + 2 * GF.PING_GAP_S, ping=M))
         import chat_roster as CR
-        for u in ("wss://relay.example", "wss://relay.example:443/x", "wss://8.8.8.8"):
+        for u in ("wss://relay.example", "wss://relay.example:443/x", "wss://8.8.8.8"):  # ip-literal-ok: a global address (well-known resolver); documentation ranges are not global
             self.assertTrue(CR.public_relay_ok(u), u)
         for u in ("wss://localhost", "wss://127.0.0.1", "wss://10.1.2.3", "wss://192.168.1.120", "wss://169.254.1.1",
                   "wss://[::1]", "wss://intranet", "wss://nas.local", "ws://relay.example", "wss://a b", "wss://x.internal"):
