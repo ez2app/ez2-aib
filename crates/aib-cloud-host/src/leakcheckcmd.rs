@@ -377,7 +377,7 @@ fn expect(id: &str, text: &str, spec: &SiteSpec) -> Option<bool> {
             let mem_kb = lines()
                 .find_map(|l| l.strip_prefix("MemTotal:"))
                 .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())?;
-            let cpu_lines = lines().last()?.parse::<u64>().ok()?;
+            let cpu_lines = lines().next_back()?.parse::<u64>().ok()?;
             Some(
                 mem_kb <= u64::from(spec.limits.memory_mb) * 1024
                     && cpu_lines == u64::from(spec.limits.cores) + 1,
@@ -458,6 +458,8 @@ impl State {
 pub struct Judged {
     id: &'static str,
     item: u8,
+    /// The `INSIDE_EXPECT` row it answers, if any.
+    inside: Option<&'static str>,
     state: State,
     why: &'static str,
     answer: Answer,
@@ -522,6 +524,7 @@ pub fn check(
             Judged {
                 id: p.id,
                 item: p.item,
+                inside: p.inside,
                 state,
                 why,
                 answer,
@@ -577,7 +580,7 @@ pub fn report(
                 Ok((t, rc)) => (Value::from(t.as_str()), Value::from(*rc)),
                 Err(_) => (Value::Null, Value::Null),
             };
-            json!({ "id": j.id, "item": j.item, "state": j.state.word(), "why": j.why, "rc": rc, "answer": text })
+            json!({ "id": j.id, "item": j.item, "inside_expect": j.inside, "state": j.state.word(), "why": j.why, "rc": rc, "answer": text })
         }).collect::<Vec<_>>(),
         "not_here": NOT_HERE,
     });
