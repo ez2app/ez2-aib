@@ -46,6 +46,8 @@ struct Snap {
     at: i64,
     rows: Vec<Row>,
     err: Option<String>,
+    /// 不致命但要讓人知道(git fetch 失敗 ⇒ 衝突 / 合併涵蓋用的是舊 origin;1ced7 #734 L1)
+    warn: Option<String>,
 }
 
 /// 跨快照的快取:git 範圍展開(頭不變、範圍不變就不重算)、上次 fetch 時間
@@ -128,7 +130,10 @@ fn merged_base(repo: &Path, p: &Pr, cache: &mut Cache) -> HashSet<String> {
                 let quiet = from_base
                     && run("git", &["show", "--remerge-diff", "--format=", m], repo)
                         .is_ok_and(|d| d.trim().is_empty());
-                cache.sets.insert(key, quiet.then(HashSet::new));
+                // 只快取乾淨的:不乾淨可能只是本機 origin 還沒追上(1ced7 #734 L2),fetch 後要能重判
+                if quiet {
+                    cache.sets.insert(key, Some(HashSet::new()));
+                }
                 quiet
             }
         };
@@ -184,11 +189,16 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
                 at: t,
                 rows: vec![],
                 err: Some(e),
+                warn: None,
             }
         }
     };
-    if t - cache.fetched >= FETCH_EVERY && run("git", &["fetch", "-q", "origin"], &o.repo).is_ok() {
-        cache.fetched = t;
+    let mut warn = None;
+    if t - cache.fetched >= FETCH_EVERY {
+        match run("git", &["fetch", "-q", "origin"], &o.repo) {
+            Ok(_) => cache.fetched = t,
+            Err(e) => warn = Some(format!("git fetch 失敗，衝突 / 涵蓋照舊 origin 判:{e}")),
+        }
     }
     let by_branch: HashMap<&str, u32> = gh.iter().map(|p| (p.branch.as_str(), p.number)).collect();
     let picked: Vec<&Pr> = gh
@@ -221,9 +231,7 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
     let mut rows = Vec::new();
     for p in picked {
         let mut p = p.clone();
-        if let Some(m) = local_mergeable(&o.repo, &p) {
-            p.mergeable = m.to_string();
-        }
+        p.mergeable = prs::pick_mergeable(&p.mergeable, local_mergeable(&o.repo, &p));
         let p = &p;
         let mine_reviews: Vec<(Review, Option<HashSet<String>>)> = reviews
             .iter()
@@ -268,6 +276,7 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
         at: t,
         rows,
         err: None,
+        warn,
     }
 }
 
@@ -300,6 +309,9 @@ fn lines(s: &Snap, o: &Opt, width: usize, t: i64) -> Vec<(String, Color)> {
     ));
     if let Some(e) = &s.err {
         out.push((fit(&format!("讀不到:{e}"), width), Color::Red));
+    }
+    if let Some(w) = &s.warn {
+        out.push((fit(w, width), Color::Yellow));
     }
     for r in &s.rows {
         let tail = match r.stacked_on {
@@ -435,6 +447,7 @@ fn main() {
                         at: now(),
                         rows: vec![],
                         err: Some("cache_poisoned".into()),
+                        warn: None,
                     },
                 };
                 let _ = tx2.send(s);

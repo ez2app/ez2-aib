@@ -237,6 +237,16 @@ pub enum Cover {
 
 /// `merged_main`:只把 main(或被疊那張)接進來的合併 commit —— remerge-diff 0 行 ⇒ 不用再審
 /// (f1fae 規則 merge-only 不重審;c477a 11-13:不然每次接 main 都冒一排假缺審)。
+/// 衝突以「任一邊說衝突」為準(1ced7 #734 L1):本機 origin 舊時試合會乾淨，不能蓋掉 gh 的 CONFLICTING;
+/// gh 回 UNKNOWN / MERGEABLE 時才用本機試合結果(c477a 11-13:gh 常回 UNKNOWN)。
+pub fn pick_mergeable(gh: &str, local: Option<&str>) -> String {
+    match (gh, local) {
+        ("CONFLICTING", _) => gh.to_string(),
+        (_, Some(l)) => l.to_string(),
+        _ => gh.to_string(),
+    }
+}
+
 pub fn coverage(
     pr: &Pr,
     reviews: &[(Review, Option<HashSet<String>>)],
@@ -290,7 +300,7 @@ pub fn coverage(
 /// 收據判定。認三種寫法:
 /// - remote-crate-run:`HEAD <40>` … `FMT-OK` `CLIPPY-OK` `TEST-OK` … `HEAD-END <40>`
 /// - FALLBACK:`HEAD <40>` + `RC stepNN=0 fmt|clippy|test…`
-/// - 1ced7 式:`head <40> want <40>` + `fmt_rc=0` `clippy_rc=0` `test1_rc=0`
+/// - 1ced7 式:`head <40> want <40>` + `fmt_rc=0` `clippy_rc=0` `test1_rc=0`(`clippy_ws_rc` / `test_ws_rc` 也算)
 ///
 /// 頭不對、任何一步非 0、缺 fmt / clippy / test 任何一項 ⇒ 不算。
 #[derive(Debug, Clone, PartialEq)]
@@ -339,8 +349,9 @@ pub fn judge_receipt(text: &str, head: &str) -> Option<Receipt> {
                 if v != "0" {
                     return Some(Receipt::Bad(format!("{k} rc={v}")));
                 }
-                fmt |= k == "fmt";
-                clippy |= k == "clippy";
+                // clippy_ws_rc / fmt_all_rc 這類加尾巴的也算(1ced7 #734 L3)
+                fmt |= k.starts_with("fmt");
+                clippy |= k.starts_with("clippy");
                 test |= k.starts_with("test");
             }
         }
@@ -754,6 +765,20 @@ mod tests {
     }
 
     #[test]
+    fn either_side_saying_conflict_wins() {
+        assert_eq!(
+            pick_mergeable("CONFLICTING", Some("MERGEABLE")),
+            "CONFLICTING"
+        );
+        assert_eq!(
+            pick_mergeable("UNKNOWN", Some("CONFLICTING")),
+            "CONFLICTING"
+        );
+        assert_eq!(pick_mergeable("UNKNOWN", Some("MERGEABLE")), "MERGEABLE");
+        assert_eq!(pick_mergeable("UNKNOWN", None), "UNKNOWN");
+    }
+
+    #[test]
     fn a_receipt_counts_only_for_this_head_and_all_steps() {
         let rcr = format!("HEAD {H}\nFMT-OK\nCLIPPY-OK\nWINCLIPPY-OK\ntest result: FAILED. 0 passed; 1 failed\nTEST-OK\nKNIVES-OK\nHEAD-END {H}\nEND x");
         assert_eq!(
@@ -778,6 +803,13 @@ mod tests {
         );
         assert_eq!(judge_receipt(&t, H), Some(Receipt::Ok));
         let t_bad = format!("head {H} want {H}\nfmt_rc=0\nclippy_rc=0\ntest1_rc=101");
+        // 1ced7 #693 新收據:clippy_ws_rc / test_ws_rc
+        let t_ws = format!("head {H} want {H}\nfmt_rc=0\nclippy_ws_rc=0\ntest_ws_rc=0");
+        assert_eq!(
+            judge_receipt(&t_ws, H),
+            Some(Receipt::Ok),
+            "加尾巴的 rc 名也認"
+        );
         assert!(matches!(judge_receipt(&t_bad, H), Some(Receipt::Bad(_))));
         let lack = format!("HEAD {H}\nFMT-OK\nCLIPPY-OK");
         assert_eq!(
