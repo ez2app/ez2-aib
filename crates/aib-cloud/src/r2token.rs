@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn r4_ip_rules() {
         for bad in [
-            "2a01:4f9:4b:134f::2",
+            "2001:db8:a:abcd::2",
             "0.0.0.0",
             "0.1.2.3", // ip-literal-ok: reserved-range boundary sample
             "127.0.0.1",

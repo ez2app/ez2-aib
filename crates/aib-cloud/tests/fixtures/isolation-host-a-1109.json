@@ -1,5 +1,5 @@
 {
- "plan_fnv": "6c7f2bafbe0a2fdb",
+ "plan_fnv": "35a8aa32c6ef8971",
  "host": "203.0.113.90",
  "results": [
   {
@@ -24,7 +24,7 @@
    "id": "edge-101-egress6-443",
    "from": "ct:101",
    "kind": "tcp",
-   "ip": "2606:4700:4700::1111",
+   "ip": "2001:db8::443",
    "port": 443,
    "open": false,
    "ms": 24
@@ -150,7 +150,7 @@
    "id": "host-egress6-443",
    "from": "host",
    "kind": "tcp",
-   "ip": "2606:4700:4700::1111",
+   "ip": "2001:db8::443",
    "port": 443,
    "open": true,
    "ms": 19
@@ -303,7 +303,7 @@
    "id": "site-110-egress6-443",
    "from": "ct:110",
    "kind": "tcp",
-   "ip": "2606:4700:4700::1111",
+   "ip": "2001:db8::443",
    "port": 443,
    "open": false,
    "ms": 24
@@ -474,7 +474,7 @@
    "id": "site-112-egress6-443",
    "from": "ct:112",
    "kind": "tcp",
-   "ip": "2606:4700:4700::1111",
+   "ip": "2001:db8::443",
    "port": 443,
    "open": false,
    "ms": 24

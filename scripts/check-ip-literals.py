@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Every IPv4 literal in the repo must sit in an allowed range (public repo hygiene).
+"""Every IP literal in the repo must sit in an allowed range (public repo hygiene).
 
 This repo is public, so a real host address must never land in code, tests,
 fixtures or docs. The rule is an allow-list, on purpose: it names only the
@@ -12,12 +12,22 @@ Allowed (f1fae 11-11):
     100.64.0.0/24 only (a sample slice of 100.64/10; the rest of that range
     is where tailnet addresses live, so it stays outside, c477a 11-11 M1),
     192.0.2/24, 198.51.100/24, 203.0.113/24 (documentation), 255.x (masks)
+    IPv6: ::, ::1, fe80::/10, fd00::/64 only (a sample slice of the unique-local
+    fc00::/7; the rest of it is where tailnet addresses live), ff00::/8,
+    2001:db8::/32 (documentation),
+    ::ffff:a.b.c.d / ::ffff:x:y when the IPv4 inside is allowed
 Not read as an address:
     four numbers that are part of something longer (v1.2.3.4, 1.2.3.4.5,
     1.2.3.4-rc1, a1.2.3.4), any number above 255, non-ASCII digits, and
     numbers inside an SVG path attribute (d="..."), which minified icons
     write as d="M4 2.3.3.5".
-Also read (ebb36 L1): a dotted address after a dot or an underscore
+    IPv6: only a form with "::" or all eight groups, and at least three groups
+    written (so a Python slice a[2::2] or a line number ::141 is not one) --
+    two are enough when the first group is written and the form is a network
+    (followed by /len), ends in "::", or has a full four-digit group (c477a
+    L1: provider prefixes are usually written that short); a
+    form followed by a dotted IPv4 is read through its IPv4 part.
+Also read (ebb36 L1): an address after a dot or an underscore
     (static.A.B.C.D.<domain>, x_A.B.C.D), and the dashed form reverse names
     use (A-B-C-D.<domain>, ec2-A-B-C-D.<domain>) when a dot and a letter follow.
 Kept on purpose (a test that needs a public or reserved address, a
@@ -32,6 +42,7 @@ address of ours (c477a N2).
 Prints `test ip_literals ... ok` or `test ip_literals ... FAILED` (the form
 scripts/knife.py reads) and exits 1 on any address outside the list.
 """
+import ipaddress
 import os
 import re
 import subprocess
@@ -72,6 +83,37 @@ def allowed(o):
     )
 
 
+IPV6 = re.compile(
+    # a dot or an underscore in front is read through (host.2a00:..., x_2a00:..., ebb36 L1)
+    # unless a hex digit stands before it
+    r"(?<![0-9A-Za-z:])(?<![0-9A-Fa-f][._])"
+    r"([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})"
+    r"(?![0-9A-Za-z_:]|\.[0-9])"
+)
+NETS6 = [ipaddress.ip_network(n) for n in ("fe80::/10", "fd00::/64", "ff00::/8", "2001:db8::/32")]
+
+
+def v6_outside(s, network=False):
+    """The IPv6 literal s when it is one and outside the list, else None.
+    network: the text goes on with /len right after s."""
+    if "::" not in s and s.count(":") != 7:
+        return None
+    groups = [g for g in s.split(":") if g]
+    short_ok = not s.startswith(":") and (network or s.endswith("::") or any(len(g) == 4 for g in groups))
+    need = 2 if short_ok else 3
+    if len(groups) < need:
+        return None
+    try:
+        a = ipaddress.IPv6Address(s)
+    except ValueError:
+        return None
+    if a.is_unspecified or a.is_loopback or any(a in n for n in NETS6):
+        return None
+    if a.ipv4_mapped is not None and allowed(tuple(a.ipv4_mapped.packed)):
+        return None
+    return s
+
+
 def scan_text(text):
     """Yield (line_no, literal, marked) for every IPv4 literal outside the list."""
     for n, line in enumerate(text.splitlines(), 1):
@@ -83,6 +125,11 @@ def scan_text(text):
             if max(o) > 255 or allowed(o):
                 continue
             yield n, m.group(0), MARKER in line
+        for m in IPV6.finditer(line):
+            if any(a <= m.start() < b for a, b in svg):
+                continue
+            if v6_outside(m.group(1), re.match(r"/[0-9]", line[m.end():]) is not None):
+                yield n, m.group(1), MARKER in line
 
 
 def tracked_files(root):
@@ -105,7 +152,7 @@ def check(root):
     for m in marked:
         print(f"  kept ({MARKER}): {m}")
     for b in bad:
-        print(f"::error::{b} is outside the allowed IPv4 ranges (use 192.0.2.x / 198.51.100.x / 203.0.113.x)")
+        print(f"::error::{b} is outside the allowed ranges (use 192.0.2.x / 198.51.100.x / 203.0.113.x, or 2001:db8::/32 for IPv6)")
     print(f"ip_literals: {len(bad)} outside the list, {len(marked)} kept with {MARKER}")
     print(f"test ip_literals ... {'FAILED' if bad else 'ok'}")
     return 1 if bad else 0
@@ -130,6 +177,16 @@ SELF = [
     ("public 1.1.1.1 # ip-literal-ok: well-known resolver", 0),
     ("v1.2.3.4 1.2.3.4.5 1.2.3.4-rc1 a1.2.3.4 999.1.1.1", 0),
     ("1.2.3.4-", 1),  # ip-literal-ok
+    ("2001:db8::1 [2001:db8:4b::2]:443 ::1 :: fe80::1%eth0 fd00::1 ff02::1", 0),
+    ("fd12:3456::1 fc00::5 fd00:0:0:1::1", 3),  # unique-local outside the fd00::/64 sample; ip-literal-ok
+    ("2a00:1::/32 2a00:1:: 2a00::1", 3),  # two groups: a network, a trailing ::, a full group; ip-literal-ok
+    ("a[1::2] x[10::5] 2001:db8::/32 fd00::/64", 0),  # short slices stay unread; sample networks pass
+    ("::ffff:127.0.0.1 ::ffff:7f00:1 ::ffff:10.0.0.1", 0),
+    ("argv[2::2] a[1::2] see ::141 and ::1:1455 BC:24:11:AA:BB:CC 12:34:56", 0),
+    ("2001:db9::1", 1),  # just past the documentation range; ip-literal-ok
+    ("dns6 2606:4700:4700::1111", 1),  # ip-literal-ok
+    ("1:2:3:4:5:6:7:8", 1),  # all eight groups; ip-literal-ok
+    ("::ffff:8.8.8.8", 1),  # the IPv4 inside is read; ip-literal-ok
     ("\uff11.2.3.4", 0),  # fullwidth digit is not ASCII
     ('<path d="M12 4.1 2.3.3.5 1.7z"/>', 0),  # SVG path data
     ('<path d="M1 2"/> 8.8.4.4 data-d="8.8.4.4"', 2),  # outside d="", or in another attribute; ip-literal-ok
@@ -138,6 +195,7 @@ SELF = [
     ("ec2-8-8-4-4.compute.example.net 8-8-4-4.ip.example.net", 2),  # dashed reverse names; ip-literal-ok
     ("1.2.3.4.5.6 v2.1.2.3.4 2026-11-11-12.log 1-2-3-4-5.x 10-0-0-1.example.net", 0),
     ("1-2-3-4-5.x", 0),  # a longer dashed run at the start of a line
+    ("host.2a00:1:2::1 x_2a00:1:2::1", 2),  # IPv6 after a dot or underscore, ebb36 L1; ip-literal-ok
 ]
 
 
