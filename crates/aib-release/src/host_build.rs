@@ -393,6 +393,33 @@ impl GitCli {
     }
 }
 
+impl GitCli {
+    /// When this clone last fetched: the time of its `FETCH_HEAD` (seconds since the epoch),
+    /// or None when it never fetched or git cannot say. Printed next to a verdict judged
+    /// against the local origin/main, so a stale snapshot shows (binsync).
+    pub fn fetched_at(&self) -> Option<u64> {
+        let out = self
+            .git(&[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "FETCH_HEAD",
+            ])
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        std::fs::metadata(p)
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+    }
+}
+
 impl Git for GitCli {
     fn resolve(&self, r: &str) -> Result<String, String> {
         if r.starts_with('-') {
