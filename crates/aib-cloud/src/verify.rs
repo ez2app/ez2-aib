@@ -1622,7 +1622,7 @@ mod tests {
     /// 4.5 r4 section 14.1 #6 (c477a's list): the passive mask checks.
     #[test]
     fn s10_to_s13_and_h15_the_site_is_masked() {
-        const CT: &str = "arch: amd64\ncores: 2\nhostname: site2\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nunprivileged: 1\n";
+        const CT: &str = "arch: amd64\ncores: 2\nhostname: site2\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nunprivileged: 1\n"; // ip-literal-ok: sample CT config with a public resolver, never a host of ours
         let hook = crate::mask::HOOK_LINE;
         let masked = alloc::format!("{CT}{hook}\n");
         let ok = crate::mask::result_ok(212);
@@ -1669,14 +1669,14 @@ mod tests {
         let neutral = alloc::format!("{CT}searchdomain: {SEARCH_DOMAIN}\n");
         assert_eq!(s11_resolver(Some(&neutral)).outcome, Outcome::Green);
         assert_eq!(
-            s11_resolver(Some(&swap(&neutral, "nameserver: 1.1.1.1\n", ""))).outcome,
+            s11_resolver(Some(&swap(&neutral, "nameserver: 1.1.1.1\n", ""))).outcome, // ip-literal-ok: well-known public resolver, never a host of ours
             Outcome::Red("host_resolver")
         );
         assert_eq!(
             s11_resolver(Some(&swap(
                 &neutral,
-                "nameserver: 1.1.1.1\n",
-                "nameserver: 100.100.100.100\n"
+                "nameserver: 1.1.1.1\n", // ip-literal-ok: well-known public resolver, never a host of ours
+                "nameserver: 100.100.100.100\n" // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
             )))
             .outcome,
             Outcome::Red("host_resolver")
