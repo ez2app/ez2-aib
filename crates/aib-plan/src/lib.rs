@@ -76,6 +76,9 @@ pub struct Filter {
     pub only_open: bool,
     pub only_ext: bool,
     pub orphan: bool,
+    /// 非艦長畫面固定的席(逗號清單,--only-seat):只決定看得到哪些節點,不算「篩選中」
+    /// ⇒ 收合照常、建議 / 影子續跑 / 自動審修分支裡本席的項目也看得到(a9136 自審 H1 / M1)
+    pub pin: String,
 }
 
 impl Filter {
@@ -149,8 +152,17 @@ pub fn pct((ok, tot): (u32, u32)) -> u32 {
     (ok * 100 + tot / 2).checked_div(tot).unwrap_or(0)
 }
 
+/// 席清單(逗號分隔)裡有任一席負責或協作這個節點
+pub fn seat_hit(list: &str, n: &Node) -> bool {
+    list.split(',')
+        .any(|s| n.owner.as_deref() == Some(s) || n.with.iter().any(|w| w == s))
+}
+
 fn matches(n: &Node, f: &Filter) -> bool {
     if !(n.kind == "task" || n.kind == "ext") {
+        return false;
+    }
+    if !f.pin.is_empty() && !seat_hit(&f.pin, n) {
         return false;
     }
     if !f.q.is_empty() {
@@ -167,12 +179,7 @@ fn matches(n: &Node, f: &Filter) -> bool {
         }
     }
     // 席可以是逗號清單(非艦長畫面固定本席 + 分身繼承的席,例 519d0,a63ab):任一席負責或協作就留
-    if !f.seat.is_empty()
-        && !f
-            .seat
-            .split(',')
-            .any(|s| n.owner.as_deref() == Some(s) || n.with.iter().any(|w| w == s))
-    {
+    if !f.seat.is_empty() && !seat_hit(&f.seat, n) {
         return false;
     }
     if f.only_open && n.status.as_deref() == Some(PASS) {
@@ -188,12 +195,19 @@ fn matches(n: &Node, f: &Filter) -> bool {
 }
 
 /// 依展開集合與篩選攤平成要畫的列。篩選時命中的節點連同祖先都顯示、全部展開。
+/// 只有固定席(pin、沒有其他篩選):有負責人的節點(任何種類)屬這幾席才留,連同祖先;收合照展開集合。
 pub fn flatten(p: &Plan, ix: &Index, open: &HashSet<String>, f: &Filter) -> Vec<Row> {
     let filtering = f.active();
+    let pinned = !f.pin.is_empty();
     let mut vis: HashSet<usize> = HashSet::new();
-    if filtering {
+    if filtering || pinned {
         for (i, n) in p.nodes.iter().enumerate() {
-            if matches(n, f) {
+            let hit = if filtering {
+                matches(n, f)
+            } else {
+                seat_hit(&f.pin, n)
+            };
+            if hit {
                 let mut cur = Some(i);
                 let mut guard = 0;
                 while let Some(c) = cur {
@@ -215,7 +229,7 @@ pub fn flatten(p: &Plan, ix: &Index, open: &HashSet<String>, f: &Filter) -> Vec<
     let mut stack = vec![(root, 0usize)];
     let mut seen = HashSet::new();
     while let Some((i, d)) = stack.pop() {
-        if !seen.insert(i) || (filtering && !vis.contains(&i)) {
+        if !seen.insert(i) || ((filtering || pinned) && !vis.contains(&i)) {
             continue;
         }
         rows.push(Row { idx: i, depth: d });
