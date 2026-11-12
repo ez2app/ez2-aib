@@ -2581,6 +2581,14 @@ jobs:
           hk restorestepscmd.rs '            1 => Err(format!("accept_differ: {}", doc["strict"])),' \
              '            1 => Ok(()), // knife' \
              an_accept_that_differs_keeps_the_site
+          # restore wiring: a push lands on a path the site's user could have put a link at (c477a rwire2 L1)
+          hk restorestepscmd.rs '        let file = format!("{dir}/{name}");' \
+             '        let file = format!("/tmp/ez2-{name}"); // knife' \
+             nothing_is_pushed_where_the_site_could_have_put_a_link
+          # restore wiring: a big site's import progress past the cap is a failure (c477a rwire2 L2)
+          hk restorestepscmd.rs '        let keep_tail = Self::is_import(argv);' \
+             '        let keep_tail = false; // knife' \
+             an_import_that_says_more_than_is_read_and_ends_with_success_is_done
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \

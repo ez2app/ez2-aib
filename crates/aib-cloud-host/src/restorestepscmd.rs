@@ -837,13 +837,18 @@ pub struct HostRestorer {
 /// The real runner of the restore's commands: what a command prints is read up to
 /// [`crate::sitecreatecmd::CT_OUT_MAX`] (more is a failure; it comes from inside the
 /// customer's container), anything but exit 0 is an error, and each kind of command has
-/// its time.
+/// its time. The import alone may say more: its progress on a big site is long, so only
+/// its last [`crate::sitecreatecmd::CT_OUT_MAX`] bytes are kept and read (c477a rwire2 L2).
 pub struct RestoreRunner;
 
 impl RestoreRunner {
+    fn is_import(argv: &[String]) -> bool {
+        let has = |w: &str| argv.iter().any(|a| a == w);
+        has("ai1wm") && has("restore")
+    }
     fn seconds(argv: &[String]) -> u64 {
         let has = |w: &str| argv.iter().any(|a| a == w);
-        if has("ai1wm") && has("restore") {
+        if Self::is_import(argv) {
             4 * 3600
         } else if argv.get(1).is_some_and(|a| a == "push") || has("sha256sum") {
             3600
@@ -858,14 +863,53 @@ impl crate::sitecreatecmd::Runner for RestoreRunner {
         let (program, args) = argv.split_first().ok_or("an empty command")?;
         let mut cmd = Command::new(program);
         cmd.args(args);
-        match crate::probe::run_capture_bounded(
-            &mut cmd,
-            Duration::from_secs(Self::seconds(argv)),
-            crate::sitecreatecmd::CT_OUT_MAX,
-        )? {
+        let time = Duration::from_secs(Self::seconds(argv));
+        let keep_tail = Self::is_import(argv);
+        if keep_tail {
+            return crate::probe::run_capture_tail(
+                &mut cmd,
+                time,
+                crate::sitecreatecmd::CT_OUT_MAX,
+            );
+        }
+        match crate::probe::run_capture_bounded(&mut cmd, time, crate::sitecreatecmd::CT_OUT_MAX)? {
             (out, false) => Ok(out),
             (_, true) => Err(format!("{program}: said more than is read")),
         }
+    }
+}
+
+impl HostRestorer {
+    /// `from` pushed into a new folder from [`STAGE_TEMPLATE`] and then given, file and
+    /// folder, to the site's user: root writes only where nobody else can, and whatever is
+    /// done with the file afterwards is done as the site's user. Returns the folder; the
+    /// file is `<folder>/<name>`. Whatever went wrong, the folder does not stay.
+    fn staged(&mut self, from: &Path, name: &str, perms: &str) -> Result<String, String> {
+        let said = self
+            .run
+            .run(&root_argv(self.ct, &["mktemp", "-d", STAGE_TEMPLATE]))?;
+        let dir = stage_dir(&said)?;
+        let file = format!("{dir}/{name}");
+        let owner = format!("{0}:{0}", self.code);
+        let put = self
+            .run
+            .run(&push_argv(self.ct, from, &file, perms))
+            .and_then(|_| {
+                // the file first, then its folder; -h: a link is never followed
+                self.run.run(&root_argv(
+                    self.ct,
+                    &["chown", "-h", &owner, "--", &file, &dir],
+                ))
+            });
+        if let Err(e) = put {
+            let _ = self.unstage(&dir);
+            return Err(e);
+        }
+        Ok(dir)
+    }
+
+    fn unstage(&mut self, dir: &str) -> Result<String, String> {
+        self.run.run(&root_argv(self.ct, &["rm", "-rf", "--", dir]))
     }
 }
 
@@ -890,21 +934,45 @@ fn wp_argv(ct: u32, code: &str, args: &[&str]) -> Vec<String> {
     v
 }
 
-/// `pct push` of a host file into the container, owned by the site's user.
-fn push_argv(ct: u32, from: &Path, to: &str, code: &str, perms: &str) -> Vec<String> {
+/// `pct push` of a host file into the container as the container's root. `pct push`
+/// opens its target as root, following a link and truncating what is there (f1fae read
+/// pve-container's pct.pm, 11-12), so its target is only ever inside a folder from
+/// [`STAGE_TEMPLATE`] (c477a rwire2 L1).
+fn push_argv(ct: u32, from: &Path, to: &str, perms: &str) -> Vec<String> {
     vec![
         "pct".into(),
         "push".into(),
         ct.to_string(),
         from.to_string_lossy().into_owned(),
         to.to_owned(),
-        "--user".into(),
-        code.to_owned(),
-        "--group".into(),
-        code.to_owned(),
         "--perms".into(),
         perms.to_owned(),
     ]
+}
+
+/// A command run as the container's root.
+fn root_argv(ct: u32, args: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = vec!["pct".into(), "exec".into(), ct.to_string(), "--".into()];
+    v.extend(args.iter().map(|a| (*a).to_owned()));
+    v
+}
+
+/// Where a file pushed into a container lands first: a folder root makes with a random
+/// name (0700, root's) in a folder the site's user cannot write. It is on the container's
+/// disk, not `/run` (a memory file system a backup of several GB would fill).
+const STAGE_TEMPLATE: &str = "/var/lib/ez2-stage-XXXXXXXX";
+
+/// The folder `mktemp -d` [`STAGE_TEMPLATE`] said it made, or why it is not one.
+fn stage_dir(said: &str) -> Result<String, String> {
+    let dir = said.trim();
+    let prefix = STAGE_TEMPLATE.trim_end_matches('X');
+    let random = dir.strip_prefix(prefix).unwrap_or_default();
+    if random.len() != STAGE_TEMPLATE.len() - prefix.len()
+        || !random.bytes().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(format!("stage_dir: mktemp said {dir:?}"));
+    }
+    Ok(dir.to_owned())
 }
 
 /// The SHA-256 a `SHA256SUMS` file gives `name` (`<hex>  <name>` or `<hex> *<name>`).
@@ -1099,25 +1167,15 @@ impl RestoreHost for HostRestorer {
             zips.push((name, path));
         }
         for (name, path) in &zips {
-            let inside = format!("/tmp/ez2-{name}");
-            self.run
-                .run(&push_argv(self.ct, path, &inside, &self.code, "0600"))?;
+            let dir = self.staged(path, name, "0600")?;
+            let inside = format!("{dir}/{name}");
             let installed = self.run.run(&wp_argv(
                 self.ct,
                 &self.code,
                 &["plugin", "install", &inside, "--force", "--activate"],
             ));
             // the zip goes whether the install worked or not
-            let removed = self.run.run(&[
-                "pct".to_owned(),
-                "exec".to_owned(),
-                self.ct.to_string(),
-                "--".to_owned(),
-                "rm".to_owned(),
-                "-f".to_owned(),
-                "--".to_owned(),
-                inside.clone(),
-            ]);
+            let removed = self.unstage(&dir);
             installed?;
             removed?;
         }
@@ -1135,13 +1193,21 @@ impl RestoreHost for HostRestorer {
             .ok_or("the step record names no backup")?;
         let name = plain_name(&name)?;
         let to = format!("/var/www/{}/wp-content/ai1wm-backups/{name}", self.code);
-        self.run.run(&push_argv(
+        let from = self.downloads.join(name);
+        let dir = self.staged(&from, name, "0640")?;
+        // moved in as the site's user, never by root: -T renames onto `to` itself (a link
+        // there is replaced, not followed) and -f takes the place of one from a run
+        // before (c477a rwire2 L1, N3)
+        let staged = format!("{dir}/{name}");
+        let moved = self.run.run(&root_argv(
             self.ct,
-            &self.downloads.join(name),
-            &to,
-            &self.code,
-            "0640",
-        ))?;
+            &[
+                "sudo", "-u", &self.code, "mv", "-f", "-T", "--", &staged, &to,
+            ],
+        ));
+        let removed = self.unstage(&dir);
+        moved?;
+        removed?;
         self.run
             .run(&wp_argv(self.ct, &self.code, &["ai1wm", "list-backups"]))
     }
@@ -2507,9 +2573,14 @@ mod tests {
         }
     }
 
+    /// The folder a made-up `mktemp -d` says it made.
+    const STAGED: &str = "/var/lib/ez2-stage-Ab3dE5gH";
+
     /// What a zh_TW site answers: the plugin's words are Chinese, WP-CLI's prefixes are not.
     fn zh_tw(line: &str) -> Result<String, String> {
-        Ok(if line.starts_with("sha256sum ") {
+        Ok(if line.ends_with(&format!(" mktemp -d {STAGE_TEMPLATE}")) {
+            format!("{STAGED}\n")
+        } else if line.starts_with("sha256sum ") {
             let hex = if line.ends_with("unlimited-extension.zip") {
                 ZIP_B
             } else {
@@ -2549,26 +2620,136 @@ mod tests {
                     .display()
             ),
         ];
+        let mktemp = format!("pct exec 119 -- mktemp -d {STAGE_TEMPLATE}");
+        let rm = format!("pct exec 119 -- rm -rf -- {STAGED}");
         for plugin in restoreimport::IMPORT_PLUGINS {
-            let inside = format!("/tmp/ez2-{plugin}.zip");
+            let inside = format!("{STAGED}/{plugin}.zip");
+            want.push(mktemp.clone());
             want.push(format!(
-                "pct push 119 {} {inside} --user site9 --group site9 --perms 0600",
+                "pct push 119 {} {inside} --perms 0600",
                 p.join(format!("{plugin}.zip")).display()
             ));
+            want.push(format!(
+                "pct exec 119 -- chown -h site9:site9 -- {inside} {STAGED}"
+            ));
             want.push(format!("{wp} plugin install {inside} --force --activate"));
-            want.push(format!("pct exec 119 -- rm -f -- {inside}"));
+            want.push(rm.clone());
         }
         want.push(format!("{wp} plugin list --status=active --field=name"));
+        let staged = format!("{STAGED}/{NAME}");
+        want.push(mktemp.clone());
         want.push(format!(
-            "pct push 119 {} /var/www/site9/wp-content/ai1wm-backups/{NAME} --user site9 --group site9 --perms 0640",
+            "pct push 119 {} {staged} --perms 0640",
             dl.join(NAME).display()
         ));
+        want.push(format!(
+            "pct exec 119 -- chown -h site9:site9 -- {staged} {STAGED}"
+        ));
+        want.push(format!(
+            "pct exec 119 -- sudo -u site9 mv -f -T -- {staged} /var/www/site9/wp-content/ai1wm-backups/{NAME}"
+        ));
+        want.push(rm.clone());
         want.push(format!("{wp} ai1wm list-backups"));
         want.push(format!("{wp} ai1wm restore {NAME} --yes"));
         assert_eq!(*asked.borrow(), want);
         // nothing of the vendor's is reached from the container
         assert!(asked.borrow().iter().all(|l| !l.contains("http")));
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn nothing_is_pushed_where_the_site_could_have_put_a_link() {
+        // pct push opens its target as root and follows a link there (f1fae, pct.pm): every
+        // target is in the folder root has just made with a random name, none is guessable
+        let (mut host, asked, d) = wired_host("wirepush", zh_tw);
+        let rec = with_backup(&STEPS[..3]);
+        assert_eq!(import_backup(&mut host, &rec), Ok(()));
+        let pushes: Vec<String> = asked
+            .borrow()
+            .iter()
+            .filter(|l| l.starts_with("pct push "))
+            .cloned()
+            .collect();
+        assert_eq!(pushes.len(), restoreimport::IMPORT_PLUGINS.len() + 1);
+        for l in &pushes {
+            let target = l.split(' ').nth(4).unwrap_or_default();
+            assert!(target.starts_with(&format!("{STAGED}/")), "{l}");
+            assert!(!l.contains(" --user "), "{l}");
+        }
+        // and nothing as root writes into the site's folders
+        for l in asked.borrow().iter() {
+            if l.contains("/var/www/") && !l.contains(" sudo -u site9 ") {
+                panic!("root near the site's files: {l}");
+            }
+        }
+        // a mktemp that says something else is not trusted with a push
+        for said in ["/tmp/ez2-x\n", "/var/lib/ez2-stage-../../x\n", ""] {
+            let (mut host, asked, d2) = wired_host("wirepushbad", move |line| {
+                if line.contains(" mktemp ") {
+                    Ok(said.to_owned())
+                } else {
+                    zh_tw(line)
+                }
+            });
+            assert!(host.place_backup(&rec).is_err());
+            assert!(asked.borrow().iter().all(|l| !l.starts_with("pct push ")));
+            let _ = fs::remove_dir_all(&d2);
+        }
+        // a push that failed leaves no folder behind
+        let (mut host, asked, d3) = wired_host("wirepushfail", |line| {
+            if line.starts_with("pct push ") {
+                Err("\"pct\" exited exit status: 1".to_owned())
+            } else {
+                zh_tw(line)
+            }
+        });
+        assert!(host.place_backup(&rec).is_err());
+        assert_eq!(
+            asked.borrow().last().cloned(),
+            Some(format!("pct exec 119 -- rm -rf -- {STAGED}"))
+        );
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&d3);
+    }
+
+    #[test]
+    fn an_import_that_says_more_than_is_read_and_ends_with_success_is_done() {
+        // the real runner, on a command it takes for the import (`ai1wm restore` among its
+        // words; sh takes them as $0 and $1): 200 KB of progress, then WP-CLI's Success:
+        let progress = "head -c 200000 /dev/zero | tr '\\0' p; echo";
+        let mut real = RestoreRunner;
+        let run = |real: &mut RestoreRunner, last: &str| {
+            crate::sitecreatecmd::Runner::run(
+                real,
+                &[
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    format!("{progress}; echo '{last}'"),
+                    "ai1wm".to_owned(),
+                    "restore".to_owned(),
+                ],
+            )
+        };
+        let said = run(&mut real, "Success: 還原完成。").unwrap();
+        assert!(
+            said.len() <= crate::sitecreatecmd::CT_OUT_MAX,
+            "{}",
+            said.len()
+        );
+        assert!(said.ends_with("Success: 還原完成。\n"));
+        assert_eq!(restoreimport::import_finished(&said), Ok(()));
+        // the same much ending with Error: is not done
+        let said = run(&mut real, "Error: 還原失敗。").unwrap();
+        assert_eq!(
+            restoreimport::import_finished(&said),
+            Err("import_not_confirmed")
+        );
+        // another command saying that much is still a failure
+        let other = crate::sitecreatecmd::Runner::run(
+            &mut real,
+            &["sh".to_owned(), "-c".to_owned(), progress.to_owned()],
+        );
+        assert!(other.is_err());
     }
 
     #[test]
