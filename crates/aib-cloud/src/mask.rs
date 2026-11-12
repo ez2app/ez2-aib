@@ -415,8 +415,11 @@ pub const ISSUE_TEXT: &str = "\\S\n";
 /// provider's own (an address that names who runs the network).
 pub const PUBLIC_NTP: &str = "pool.ntp.org";
 
-/// The time service's drop-in inside a site CT.
-pub const TIMESYNCD_FILE: &str = "/etc/systemd/timesyncd.conf.d/90-ez2-mask.conf";
+/// The time service's drop-in inside a site CT. systemd reads the drop-ins of
+/// `/usr/lib`, `/usr/local/lib`, `/run` and `/etc` together, sorted by file name (one in
+/// `/etc` hides one of the same name elsewhere), so ours is named to sort last: a
+/// template's `95-*.conf` under `/usr/lib` does not undo it (c477a S1 L1).
+pub const TIMESYNCD_FILE: &str = "/etc/systemd/timesyncd.conf.d/99-ez2-mask.conf";
 
 /// The text of [`TIMESYNCD_FILE`]: both lists emptied first (an empty value resets a list
 /// that an earlier file set), then the public pool.
@@ -934,12 +937,13 @@ mod tests {
         // resolv.conf: the neutral search domain and resolver, no platform block, and the
         // file that keeps the platform from writing its own
         let rv = resolv_text();
-        assert!(rv.contains("\nsearch invalid\n") && rv.contains("\nnameserver 1.1.1.1\n"));
+        assert!(rv.contains("\nsearch invalid\n"));
+        assert!(rv.contains(&alloc::format!("\nnameserver {NEUTRAL_RESOLVER}\n")));
         assert_eq!(RESOLV_KEEP_FILE, "/etc/.pve-ignore.resolv.conf");
         assert!(MOTD_TEXT.is_empty());
         assert_eq!(ISSUE_TEXT, "\\S\n");
         assert!(ntp_is_public(TIMESYNCD_TEXT));
-        assert!(TIMESYNCD_FILE.starts_with("/etc/systemd/timesyncd.conf.d/"));
+        assert!(TIMESYNCD_FILE.starts_with("/etc/systemd/timesyncd.conf.d/99-"));
         for text in [
             rv.as_str(),
             MOTD_TEXT,

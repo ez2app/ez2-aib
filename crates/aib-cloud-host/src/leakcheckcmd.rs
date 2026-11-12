@@ -131,6 +131,30 @@ enum Rc {
     Refused,
 }
 
+/// The time service's settings as systemd merges them, under root `$r` with the merger
+/// `$a`: `systemd-analyze cat-config` where the container has it; else the main file and
+/// every drop-in of `/usr/lib`, `/usr/local/lib`, `/run` and `/etc`, sorted by file name,
+/// one in `/etc` before one of the same name further down (c477a S1 L1). A line break
+/// after each file: one that does not end in one does not run into the next.
+macro_rules! ntp_sh {
+    ($r:literal, $a:literal) => {
+        concat!(
+            "if command -v ", $a, " >/dev/null 2>&1 && ", $a,
+            " cat-config systemd/timesyncd.conf 2>/dev/null; then :; else f=", $r,
+            "/etc/systemd/timesyncd.conf; [ -e \"$f\" ] || f=", $r,
+            "/usr/lib/systemd/timesyncd.conf; cat \"$f\" 2>/dev/null; echo; for n in $(ls ", $r,
+            "/usr/lib/systemd/timesyncd.conf.d ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ",
+            $r, "/run/systemd/timesyncd.conf.d ", $r,
+            "/etc/systemd/timesyncd.conf.d 2>/dev/null | grep '[.]conf$' | sort -u); do for d in ",
+            $r, "/etc ", $r, "/run ", $r, "/usr/local/lib ", $r,
+            "/usr/lib; do if [ -e \"$d/systemd/timesyncd.conf.d/$n\" ]; then cat \"$d/systemd/timesyncd.conf.d/$n\"; echo; break; fi; done; done; fi"
+        )
+    };
+}
+
+/// The `ntp` read inside a site's container.
+const NTP_SH: &str = ntp_sh!("", "systemd-analyze");
+
 /// One read of the checklist: its name, its §4 item, the shell text, the exit status it
 /// needs, and the `INSIDE_EXPECT` entry it answers (if any).
 struct Probe {
@@ -264,7 +288,7 @@ const PROBES: &[Probe] = &[
     Probe {
         id: "ntp",
         item: 13,
-        sh: "cat /etc/systemd/timesyncd.conf /etc/systemd/timesyncd.conf.d/*.conf 2>/dev/null",
+        sh: NTP_SH,
         rc: Rc::Any,
         inside: Some("/etc/systemd/timesyncd.conf and its drop-ins"),
     },
@@ -1150,6 +1174,73 @@ mod tests {
         assert_eq!(stdout["counts"]["leak"], json!(PROBES.len()));
         let kept = serde_json::to_string(&file).unwrap();
         assert!(kept.contains("PRIVATE-ANSWER-cpuinfo") && kept.contains("203.0.113.70"));
+    }
+
+    /// Inside a container the time service usually does not run at all (its unit is
+    /// `ConditionVirtualization=!container`: the container keeps the host's clock), so
+    /// this check only reads the settings' text for whose time servers it names; it does
+    /// not show that any were asked.
+    #[test]
+    fn a_drop_in_sorted_after_ours_is_read() {
+        assert!(NTP_SH.starts_with(
+            "if command -v systemd-analyze >/dev/null 2>&1 && systemd-analyze cat-config systemd/timesyncd.conf"
+        ));
+        let dir = std::env::temp_dir().join(format!("ez2-leak-ntp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let put = |rel: &str, text: &str| {
+            let f = dir.join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
+        };
+        put("etc/systemd/timesyncd.conf", "[Time]\n#NTP=\n");
+        put(
+            mask::TIMESYNCD_FILE.trim_start_matches('/'),
+            mask::TIMESYNCD_TEXT,
+        );
+        let run = |sh: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", sh])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        // without the merger: ours sorts last, the pool is what is left
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // a template's drop-in under /usr/lib that sorts before ours is undone by ours
+        put(
+            "usr/lib/systemd/timesyncd.conf.d/95-vendor-x.conf",
+            "[Time]\nNTP=ntp1.vendor-x.example\n",
+        );
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(text.contains("ntp1.vendor-x.example"), "{text}");
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // one sorting after ours, in /run, is read and is a leak
+        put(
+            "run/systemd/timesyncd.conf.d/zz-vendor-x.conf",
+            "[Time]\nNTP=ntp2.vendor-x.example\n",
+        );
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(!mask::ntp_is_public(&text), "{text}");
+        // one in /etc hides the same name further down
+        put("etc/systemd/timesyncd.conf.d/zz-vendor-x.conf", "[Time]\n");
+        let text = run(ntp_sh!(".", "ez2-no-such-merger"));
+        assert!(!text.contains("ntp2.vendor-x.example"), "{text}");
+        assert!(mask::ntp_is_public(&text), "{text}");
+        // where the merger is there, its answer is the one read
+        put(
+            "merge",
+            "#!/bin/sh\nprintf '[Time]\\nNTP=ntp3.vendor-x.example\\n'\n",
+        );
+        std::process::Command::new("chmod")
+            .args(["755", "merge"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        let text = run(ntp_sh!(".", "./merge"));
+        assert_eq!(text, "[Time]\nNTP=ntp3.vendor-x.example\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
