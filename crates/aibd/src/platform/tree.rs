@@ -483,6 +483,14 @@ fn classify(
     }
 }
 
+/// Does a candidate's environment carry `want` (our session marker)? An
+/// empty read is `None`, not "no": a cleared environment (`env -i`) and one
+/// macOS would not show look the same, and both keep the candidate
+/// (unreadable or other coalition), never let it go as not ours.
+fn marked_of(env: &[Vec<u8>], want: &str) -> Option<bool> {
+    (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()))
+}
+
 /// A late-exec candidate's environment. On macOS it is read by aib-sys and
 /// cut at its real end: sysinfo reads the apple strings after it as
 /// variables, so a cleared environment (`env -i`) looked like one without
@@ -1288,8 +1296,7 @@ impl TreeHandle {
                 continue;
             };
             let env = candidate_env(pid, p);
-            let marked =
-                (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()));
+            let marked = marked_of(&env, &want);
             let comm = p.name().to_string_lossy().into_owned();
             match classify(marked, self.coalition, || coalition_of(pid)) {
                 Candidate::Ours => {
@@ -1481,6 +1488,77 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DECISION-614-l2-knife (043dd + Codex, a9136 11-12): from a whole
+    /// KERN_PROCARGS2 answer to the classification, on every platform. A
+    /// cleared environment followed by the apple strings is unreadable, never
+    /// "not ours"; knife L2a (an empty read counted as "no marker") turns it
+    /// red whatever the OS or the fork watcher does. This does not prove which
+    /// reader `candidate_env` uses (that is the real `env -i` test below and
+    /// knife L2 where sysinfo misreads), nor sysctl or pid races.
+    #[test]
+    fn a_cleared_environment_with_apple_strings_is_unreadable_not_ours() {
+        let want = format!("{SESSION_ENV}=s-1");
+        let class = |body: &[u8], session: Option<u64>, coalition: Result<u64, SysError>| {
+            let mut b = 2_i32.to_ne_bytes().to_vec();
+            b.extend_from_slice(body);
+            let env: Vec<Vec<u8>> = aib_sys::procargs::environ(&b)
+                .unwrap_or_default()
+                .into_iter()
+                .map(<[u8]>::to_vec)
+                .collect();
+            classify(marked_of(&env, &want), session, || coalition)
+        };
+        let cleared = b"/bin/sleep\0\0\0\0/bin/sleep\x0030\0\0\0\0\0ptr_munge=\0\0main_stack=\0";
+        assert_eq!(class(cleared, Some(7), Ok(7)), Candidate::Unreadable);
+        assert_eq!(class(cleared, Some(7), Ok(9)), Candidate::OtherCoalition);
+        let ours = format!("/bin/sleep\0\0/bin/sleep\x0030\0{want}\0HOME=/h\0\0\0ptr_munge=\0");
+        assert_eq!(class(ours.as_bytes(), Some(7), Ok(7)), Candidate::Ours);
+        let other = b"/bin/sleep\0\0/bin/sleep\x0030\0HOME=/h\0\0\0ptr_munge=\0";
+        assert_eq!(class(other, Some(7), Ok(7)), Candidate::NotOurs);
+        // the buffer stops after the arguments (macOS 27, another process)
+        let cut = b"/bin/sleep\0\0/bin/sleep\x0030\0";
+        assert_eq!(class(cut, Some(7), Ok(7)), Candidate::Unreadable);
+    }
+
+    /// Knife L2 probe (run with --ignored by the knife step only): does
+    /// sysinfo read a cleared environment as variables on this machine? When
+    /// it does not (macOS 27 shows no environment of another process at all),
+    /// knife L2 cannot bite here and is skipped by name, not counted as bitten.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "probe for knife L2, run by the knife step"]
+    fn probe_sysinfo_reads_a_cleared_environment_as_variables() {
+        let mut child = Command::new("/usr/bin/env")
+            .args(["-i", "/bin/sleep", "5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        let env = loop {
+            let mut sys = new_system().unwrap();
+            refresh(&mut sys, true);
+            if let Some(p) = sys.process(Pid::from_u32(pid)) {
+                if p.name().to_string_lossy() == "sleep" {
+                    break p.environ().len();
+                }
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "env -i never became sleep"
+            );
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            env > 0,
+            "sysinfo reads the cleared environment correctly here"
+        );
+    }
 
     /// 043dd #614 L2, made deterministic (a9136 11-12): a late-exec candidate
     /// started with a cleared environment reads as an empty environment, so it

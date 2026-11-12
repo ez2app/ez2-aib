@@ -2567,15 +2567,29 @@ jobs:
             '        Err(_) => Missing::Gone,' \
             --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
             -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
-          # 043dd #614 L2: back to sysinfo's environ on macOS (apple strings read as variables) must
-          # turn the cleared-environment read red. Not the grandchild test: it reaches this read only
-          # when the fork watcher missed the middle process (a9136 11-12: the knife missed on a Mac
-          # where the watcher saw it), so a knife there would be red or green by chance.
+          # L2a (DECISION-614-l2-knife-a9136-1112, 043dd + Codex): an empty read counted as
+          # "no marker" lets a cleared environment go as not ours. Deterministic: synthetic
+          # KERN_PROCARGS2, so it bites on every OS whatever the fork watcher saw.
           python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '    (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()))' \
+            '    Some(env.iter().any(|e| e.as_slice() == want.as_bytes())) // knife' \
+            --expect-fail a_cleared_environment_with_apple_strings_is_unreadable_not_ours \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_with_apple_strings_is_unreadable_not_ours
+          # L2 (043dd #614): back to sysinfo's environ must turn the real `env -i` read red.
+          # It can only bite where sysinfo misreads a cleared environment (seen on macos-26);
+          # macOS 27 shows no environment of another process at all, so sysinfo reads it right.
+          # Decided by capability, not by version: on a miss, the probe says whether sysinfo
+          # misreads here. Misreads and missed = fail; reads right = named SKIP (not a bite).
+          if ! python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
             '        aib_sys::Macos.environ(pid).unwrap_or_default()' \
             '        { let _ = pid; p.environ().iter().map(|e| e.as_encoded_bytes().to_vec()).collect() } // knife' \
             --expect-fail a_cleared_environment_reads_as_empty_not_as_apple_strings \
-            -- cargo test -p aibd --locked --lib a_cleared_environment_reads_as_empty_not_as_apple_strings
+            -- cargo test -p aibd --locked --lib a_cleared_environment_reads_as_empty_not_as_apple_strings; then
+            if cargo test -p aibd --locked --lib probe_sysinfo_reads_a_cleared_environment_as_variables -- --ignored; then
+              echo "knife L2 missed although sysinfo misreads a cleared environment here"; exit 1
+            fi
+            echo "KNIFE L2: SKIP (named) sysinfo reads a cleared environment correctly on this macOS; the reader knife cannot bite here"
+          fi
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
