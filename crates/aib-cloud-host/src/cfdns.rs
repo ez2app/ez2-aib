@@ -6,7 +6,13 @@
 //!
 //! * **The key.** [`CLOUDFLARE_ENV`] (root only), the same file and names as the
 //!   hand-run DNS tools: `CF_AUTH_EMAIL`, `CF_GLOBAL_KEY`, and `CF_ORIGIN_IPV4`, the
-//!   host's own address the records point at. The key is handed to `curl` on its standard
+//!   host's own address the records point at. Optional `CF_ENTRY_NAME` (E6 S5): when it is
+//!   set, each record is a CNAME to that one name instead of an A record to the address,
+//!   and an add is checked against exactly that name ([`aib_cloud::sitedns::allowed_with`]).
+//!   It is off unless the host sets it. A customer zone in another Cloudflare account than
+//!   the entry name gets error 1014 from Cloudflare (PLAN-e6 question 15): confirm the
+//!   account first, or go through Cloudflare for SaaS, before setting it for such a zone.
+//!   The key is handed to `curl` on its standard
 //!   input (`curl -K -`): it is never in an argument list, never printed, never in the
 //!   ledger, the record or an error.
 //! * **Only four calls.** Every call is written out and checked by
@@ -28,7 +34,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use aib_cloud::site::{record_tenant, SiteSpec};
-use aib_cloud::sitedns::{self, CfCall, DnsPlan, Zone};
+use aib_cloud::sitedns::{self, CfCall, DnsPlan, Target, Zone};
 use serde_json::{json, Value};
 
 use crate::sitecreatecmd::{HostPaths, Runner};
@@ -48,6 +54,8 @@ const LISTING_TRIES: u32 = 3;
 const LISTING_WAIT: Duration = Duration::from_secs(1);
 /// The key is missing from the host or is not a key.
 pub const KEY_UNSET: &str = "cloudflare_key_unset";
+/// The setting naming the one entry name the records point at as CNAMEs (E6 S5).
+pub const ENTRY_KEY: &str = "CF_ENTRY_NAME";
 
 /// The key. Not `Debug`, not `Display`: it is only ever written into curl's input.
 pub struct Creds {
@@ -118,6 +126,8 @@ pub struct Cf<'a, R: Runner> {
     creds: Creds,
     ledger: &'a Path,
     site: &'a str,
+    /// The host's entry name, when set: an add may then be a CNAME to it.
+    entry: Option<String>,
 }
 
 impl<'a, R: Runner> Cf<'a, R> {
@@ -127,7 +137,14 @@ impl<'a, R: Runner> Cf<'a, R> {
             creds,
             ledger,
             site,
+            entry: None,
         }
+    }
+
+    /// The host's entry name (E6 S5): the one name a CNAME add may point at.
+    pub fn with_entry(mut self, entry: Option<String>) -> Self {
+        self.entry = entry;
+        self
     }
 
     fn ledger_line(
@@ -156,7 +173,7 @@ impl<'a, R: Runner> Cf<'a, R> {
             fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let mut file = open_ledger(self.ledger)?;
-        if !sitedns::allowed(call.method(), &call.path(), body) {
+        if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) {
             self.ledger_line(&mut file, call, json!("refused"))?;
             return Err(format!(
                 "{}: {} {} is not one of the four calls",
@@ -305,15 +322,32 @@ pub fn dns_step(
     let text = fs::read_to_string(&paths.cloudflare)
         .map_err(|e| format!("{KEY_UNSET}: {}: {}", paths.cloudflare.display(), e.kind()))?;
     let (creds, origin) = creds_from(&text)?;
-    let origin = origin.filter(|o| sitedns::valid_origin(o)).ok_or_else(|| {
-        format!(
-            "{}: CF_ORIGIN_IPV4 is not set or not a public address",
-            sitedns::ORIGIN_UNSET
-        )
-    })?;
+    let entry = env_get(&text, ENTRY_KEY);
+    if entry
+        .as_deref()
+        .is_some_and(|e| !aib_cloud::edge::valid_domain(e))
+    {
+        return Err(format!(
+            "{}: {ENTRY_KEY} is not a domain name",
+            sitedns::ENTRY_UNSET
+        ));
+    }
+    let origin = match entry {
+        Some(_) => String::new(),
+        None => origin.filter(|o| sitedns::valid_origin(o)).ok_or_else(|| {
+            format!(
+                "{}: CF_ORIGIN_IPV4 is not set or not a public address",
+                sitedns::ORIGIN_UNSET
+            )
+        })?,
+    };
+    let target = match entry.as_deref() {
+        Some(e) => Target::Entry(e),
+        None => Target::Origin(&origin),
+    };
     let domain = spec.hosts.first().cloned().ok_or("the site has no name")?;
     let accounts = customer_accounts(paths, record)?;
-    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code);
+    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(entry.clone());
     let zones = customer_zones(&mut cf, &accounts, &domain)?;
     let zone = sitedns::pick_zone(&domain, Some(accounts.as_slice()), Some(zones.as_slice()))
         .map_err(|w| format!("{w}: {domain}"))?;
@@ -329,7 +363,7 @@ pub fn dns_step(
     sitedns::ssl_mode(&ssl).map_err(|w| format!("{w}: the SSL mode of {}", zone.name))?;
     let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
     let before = listing(&mut cf, &zone.id)?;
-    let add = match sitedns::plan(&zone.name, &names, before.as_deref(), &spec.code, &origin) {
+    let add = match sitedns::plan_to(&zone.name, &names, before.as_deref(), &spec.code, target) {
         DnsPlan::Done => Vec::new(),
         DnsPlan::Stop(w) => return Err(format!("{w}: {} in zone {}", names.join(","), zone.name)),
         DnsPlan::Add(list) => list,
@@ -356,7 +390,8 @@ pub fn dns_step(
             }
         }
         let after = listing(&mut cf, &zone.id)?;
-        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done
+        if sitedns::plan_to(&zone.name, &names, after.as_deref(), &spec.code, target)
+            != DnsPlan::Done
         {
             return Err(format!(
                 "{}: {} did not read back as written in zone {}",
@@ -756,6 +791,76 @@ mod tests {
         .unwrap_err();
         assert!(err.starts_with(sitedns::NAME_OUTSIDE_ZONE), "{err}");
         assert_eq!(cf.deletes(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// E6 S5: the host's entry name is a setting; tests use a documentation name.
+    const ENTRY: &str = "entry.example.net";
+
+    #[test]
+    fn a_sites_marked_cname_is_removed_and_no_other() {
+        let root = scratch("rmcname");
+        let p = paths(&root);
+        let mut cf = marked_zone();
+        let mark = format!("ez2:site:{CODE}");
+        cf.records.extend([
+            json!({"id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5", "type": "CNAME", "name": www(), "content": ENTRY, "proxied": true, "comment": mark}),
+            json!({"id": "c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6", "type": "CNAME", "name": www(), "content": ENTRY, "proxied": true, "comment": "ez2:site:s-other1"}),
+            json!({"id": "c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7", "type": "CNAME", "name": DOMAIN, "content": "elsewhere.example.net", "proxied": false, "comment": null}),
+        ]);
+        let w = www();
+        remove_marked(&mut cf, &p, CODE, DOMAIN, &[DOMAIN, &w], &opening()).unwrap();
+        // this site's A, AAAA and CNAME go; another site's and the unmarked CNAME stay
+        assert_eq!(cf.deletes(), 3);
+        let ids: Vec<&str> = cf
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.contains(&"c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5"),
+            "{ids:?}"
+        );
+        assert!(ids.contains(&"c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6"), "{ids:?}");
+        assert!(ids.contains(&"c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7"), "{ids:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_host_with_an_entry_name_adds_cnames_to_it() {
+        let root = scratch("entry");
+        let p = paths(&root);
+        // the entry name set and no address at all: the address is not needed
+        fs::write(
+            &p.cloudflare,
+            format!("CF_AUTH_EMAIL=\"ops@example.test\"\nexport CF_GLOBAL_KEY={KEY}\nCF_ENTRY_NAME={ENTRY}\n"),
+        )
+        .unwrap();
+        let mut cf = FakeCf::new();
+        let mut rec = opening();
+        dns_step(&mut cf, &p, &spec(), &mut rec).unwrap();
+        assert_eq!(cf.adds(), 1);
+        let added = cf.records.last().unwrap();
+        assert_eq!(added["type"], "CNAME");
+        assert_eq!(added["name"], DOMAIN);
+        assert_eq!(added["content"], ENTRY);
+        assert_eq!(added["proxied"], true);
+        assert_eq!(added["comment"], format!("ez2:site:{CODE}"));
+        assert!(rec["dns"]["done"].is_u64());
+        assert!(ledger(&p).iter().all(|l| l["outcome"] == 200));
+        // asked again: nothing more
+        dns_step(&mut cf, &p, &spec(), &mut rec).unwrap();
+        assert_eq!(cf.adds(), 1);
+        // an entry setting that is not a name asks nothing
+        fs::write(
+            &p.cloudflare,
+            format!("CF_AUTH_EMAIL=\"ops@example.test\"\nexport CF_GLOBAL_KEY={KEY}\nCF_ENTRY_NAME=not_a_name\n"),
+        )
+        .unwrap();
+        let mut fresh = FakeCf::new();
+        let e = dns_step(&mut fresh, &p, &spec(), &mut opening()).unwrap_err();
+        assert!(e.starts_with(sitedns::ENTRY_UNSET), "{e}");
+        assert!(fresh.fed.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
