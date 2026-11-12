@@ -98,6 +98,8 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// 掃沿用池，替每次省成功找出那一批測的工作樹(時間範圍 = 結束前花掉的秒數再往前 2 分、往後 1 分)
 pub fn name_runs(pool_dir: &Path, s: &mut Savings) {
+    // 先清掉舊名稱：重掃時沿用池不見了，不能留著上一次(可能已過時)的結果
+    s.saves.iter_mut().for_each(|e| e.name = None);
     let mut runs: HashMap<String, Vec<(i64, String)>> = HashMap::new();
     for repo in s
         .saves
