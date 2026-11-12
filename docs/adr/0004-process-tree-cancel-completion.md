@@ -463,3 +463,14 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 records. A child that the watcher reads after that point, and that has already exited, sets
 the flag too late for this stop: the narrow rule is used once. This needs a fork and an
 exit right at the moment of the stop, so it is rare. It is stated, not handled.
+
+**Known limit (#614 Pro 13 11-12, DECISION-614-held-lock).** While a child is held
+(between fork and exec) it has copies of every fd aibd has open, `aibd.lock` and the
+listening socket included; `FD_CLOEXEC` closes them only at exec. If aibd crashes while a
+child is held, the next start sees `AlreadyRunning` until that child execs or gives up,
+at most `HOLD_LIMIT` (5 s): with two children held at once, the later one holds the
+earlier one's go writer, so neither sees EOF before the limit (043dd). The child waits
+against an absolute monotonic deadline, so a signal does not extend it (Codex). Tests that
+run several daemons in one process run one at a time (`seat_sessions.rs`). Follow-up:
+close the lock and the listener in the child before it waits (`spawn_held` takes the fds),
+and one held spawn at a time.

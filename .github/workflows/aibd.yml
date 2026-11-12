@@ -3930,8 +3930,8 @@ jobs:
           set -eu
           # H1 the child does not wait for the go byte: the program runs while held
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            $'    let mut go = [0u8; 1];\n    loop {' \
-            $'    let mut go = [0u8; 1];\n    if go.len() == 1 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    loop {' \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
           # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held

@@ -127,7 +127,16 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     let mut go = [0u8; 1];
+    // Codex (DECISION-614-held-lock): an absolute deadline, so a signal that
+    // interrupts `poll` does not start a new HOLD_LIMIT; only the time left is
+    // waited for. CLOCK_MONOTONIC: `clock_gettime` is async-signal-safe.
+    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));
     loop {
+        let left = deadline.saturating_sub(monotonic_ms());
+        if left <= 0 {
+            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+        }
+        let left = libc::c_int::try_from(left).unwrap_or(HOLD_LIMIT);
         let mut fds = libc::pollfd {
             fd: go_r,
             events: libc::POLLIN,
@@ -135,9 +144,9 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
         };
         // SAFETY: `fds` is one live, writable `pollfd`; `poll` reads and
         // writes only that one entry.
-        let ready = unsafe { libc::poll(&mut fds, 1, HOLD_LIMIT) };
+        let ready = unsafe { libc::poll(&mut fds, 1, left) };
         if ready == 0 {
-            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+            continue; // the deadline check above returns ETIMEDOUT
         }
         if ready < 0 {
             let e = std::io::Error::last_os_error();
@@ -159,6 +168,19 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
             }
         }
     }
+}
+
+/// Milliseconds on the monotonic clock (for the child's deadline only).
+fn monotonic_ms() -> i64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live, writable timespec; CLOCK_MONOTONIC always exists.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    i64::from(ts.tv_sec)
+        .saturating_mul(1000)
+        .saturating_add(i64::from(ts.tv_nsec) / 1_000_000)
 }
 
 #[cfg(test)]
