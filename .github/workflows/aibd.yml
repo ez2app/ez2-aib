@@ -1774,6 +1774,10 @@ jobs:
           hk siteidentity.rs '        .map_err(|e| format!("identity_unchecked: {FORCED_2FA_MU}: {e}"))?;' \
              '        .unwrap_or_else(|_| "no".to_owned()); // knife' \
              two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (33e28 L1): a dangling link in the forced file's place is taken as gone
+          hk siteidentity.rs '                "if test -e \"$1\" || test -L \"$1\"; then echo yes; else echo no; fi",' \
+             '                "if test -e \"$1\"; then echo yes; else echo no; fi", // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
           # no forced 2FA (c477a L1): an answer that is neither yes nor no is taken as no
           hk siteidentity.rs '    match out.trim() {' \
              '    match if out.trim() == "yes" { "yes" } else { "no" } { // knife' \

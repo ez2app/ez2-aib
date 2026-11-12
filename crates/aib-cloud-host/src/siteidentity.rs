@@ -566,7 +566,7 @@ fn mu_dir(spec: &SiteSpec) -> String {
 }
 
 /// Whether the forced two-factor file is in the must-use folder: the container answers
-/// `yes` or `no`; a failed ask or any other answer is not taken as "not there" (c477a L1
+/// `yes` or `no` (a dangling link counts as there: 33e28 L1); a failed ask or any other answer is not taken as "not there" (c477a L1
 /// on 126907cc, as f1fae's urgent sign r2).
 fn mu_forced_present(
     runner: &mut impl Runner,
@@ -579,7 +579,7 @@ fn mu_forced_present(
             &[
                 "sh",
                 "-c",
-                "if test -e \"$1\"; then echo yes; else echo no; fi",
+                "if test -e \"$1\" || test -L \"$1\"; then echo yes; else echo no; fi",
                 "sh",
                 file,
             ],
@@ -851,6 +851,8 @@ mod tests {
         sticky_mu: bool,
         /// the container's answer to "is the forced file there", when not yes / no
         mu_answer: Option<&'static str>,
+        /// the forced file is a link whose target is gone (test -e says no)
+        mu_link: bool,
         /// active plugins (the template's two-factor ones)
         active: Vec<String>,
         /// a deactivate that says it worked but leaves the plugin active
@@ -875,6 +877,7 @@ mod tests {
                 mu_forced: true,
                 sticky_mu: false,
                 mu_answer: None,
+                mu_link: false,
                 active: TWO_FACTOR_OFF.iter().map(|p| (*p).to_owned()).collect(),
                 sticky_active: false,
             }
@@ -899,10 +902,12 @@ mod tests {
                         if let Some(answer) = self.mu_answer {
                             return Ok(answer.to_owned());
                         }
-                        return Ok(if self.mu_forced { "yes\n" } else { "no\n" }.to_owned());
+                        let there = self.mu_forced || (self.mu_link && line.contains(" test -L "));
+                        return Ok(if there { "yes\n" } else { "no\n" }.to_owned());
                     }
                     if line.contains(" mv ") && !self.sticky_mu {
                         self.mu_forced = false;
+                        self.mu_link = false;
                     }
                     return Ok(String::new());
                 }
@@ -1376,6 +1381,15 @@ mod tests {
             "{err}"
         );
         assert!(!site.calls.iter().any(|c| c.contains(" mv ")));
+        // a dangling link in its place is moved aside too (33e28 L1)
+        let mut site = Site::new();
+        site.mu_forced = false;
+        site.mu_link = true;
+        identity_step(&mut site, &scratch("no2fa9"), &spec(true), &mut json!({})).unwrap();
+        assert!(site
+            .calls
+            .iter()
+            .any(|c| c.contains(" mv ") && c.contains(FORCED_2FA_MU)));
         // an answer that is neither yes nor no stops too
         let mut site = Site::new();
         site.mu_answer = Some("");
