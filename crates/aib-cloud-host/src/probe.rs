@@ -404,6 +404,71 @@ pub(crate) fn run_capture_bounded(
     Ok((String::from_utf8_lossy(&buf).into_owned(), false))
 }
 
+/// [`run_capture_bounded`] for a child that may rightly say a lot (a restore's progress):
+/// all of its standard output is read, only the last `keep` bytes of it are kept, and
+/// saying more is not a failure (c477a rwire2 L2). Anything but exit 0 is an error, and so
+/// is the time running out (its whole process group is then killed). Standard error is not
+/// read at all.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_capture_tail(
+    cmd: &mut Command,
+    timeout: Duration,
+    keep: usize,
+) -> Result<String, String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        if let Some(mut p) = pipe {
+            let mut chunk = [0u8; 16 * 1024];
+            while let Ok(n @ 1..) = p.read(&mut chunk) {
+                tail.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                // drop the front only now and then, not on every read
+                if tail.len() > keep.saturating_mul(2) {
+                    let cut = tail.len().saturating_sub(keep);
+                    tail.drain(..cut);
+                }
+            }
+        }
+        let cut = tail.len().saturating_sub(keep);
+        tail.drain(..cut);
+        tail
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        crate::opstop::tick(); // E11: run_capture_tail
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    if !reader.is_finished() {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{:?}: timeout", cmd.get_program()));
+    }
+    let tail = reader.join().unwrap_or_default();
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status =
+        wait_with_timeout(&mut child, left).map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    kill_group(child.id());
+    if !status.success() {
+        return Err(format!("{:?} exited {status}", cmd.get_program()));
+    }
+    Ok(String::from_utf8_lossy(&tail).into_owned())
+}
+
 /// [`run_capture_bounded`] that also hands the child `input` on its standard input (and
 /// closes it): for what must never be in an argument list, such as a password. More than
 /// `max_bytes` of output is a failure, not a cut answer: a program that says more than it

@@ -748,6 +748,10 @@ jobs:
           ck mask.rs '        "model name" => Some(CPU_MODEL.into()),' \
              '        "model name" => Some(value.into()), // knife' \
              the_machine_is_not_named_in_cpuinfo
+          # mask: the platform template's appliance file is not on the list to remove (E6 S1)
+          ck mask.rs 'pub const PLATFORM_FILES: &[&str] = &["/etc/appliance.info"];' \
+             'pub const PLATFORM_FILES: &[&str] = &[]; // knife' \
+             no_platform_file_stays
           # mask: under /sys something nobody named is left readable
           ck mask.rs '            step.cover.push(path);' \
              '            step.descend.push(path); // knife' \
@@ -1494,10 +1498,18 @@ jobs:
           ck restoreimport.rs '        .any(|l| l.split_whitespace().any(|field| field == name));' \
              '        .any(|l| l.split_whitespace().any(|field| field.starts_with(name))); // knife' \
              the_plugin_must_list_the_backup
-          # restore import: any line that mentions a complete restore counts (B3 slice 4)
-          ck restoreimport.rs '    if output.lines().any(|l| l.trim() == RESTORE_COMPLETE) {' \
-             '    if output.lines().any(|l| l.contains("Restore complete")) { // knife' \
+          # restore import: an Error line next to a Success line is let through (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    if said(WP_CLI_ERROR) || !said(WP_CLI_SUCCESS) {' \
+             '    if !said(WP_CLI_SUCCESS) { // knife' \
              only_the_plugins_own_complete_line_counts
+          # restore import: a Success line not at the start of its line counts (B3 slice 4, c477a L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.contains(prefix)); // knife' \
+             only_the_plugins_own_complete_line_counts
+          # restore import: only English words are read, so a zh_TW site is taken as failed (c477a slice 4 L1)
+          ck restoreimport.rs '    let said = |prefix: &str| output.lines().any(|l| l.trim_start().starts_with(prefix));' \
+             '    let said = |prefix: &str| output.lines().any(|l| l.is_ascii() && l.trim_start().starts_with(prefix)); // knife' \
+             a_site_in_another_language_is_not_taken_as_failed
           # restore gate: a name that only starts with another site's is told as that site's (B3 slice 4, c477a slice 3 r2 N1)
           ck restoregate.rs "    !d.is_empty() && slug == d.replace('.', \"-\")" \
              "    !d.is_empty() && slug.starts_with(&d.replace('.', \"-\")) // knife" \
@@ -1623,6 +1635,30 @@ jobs:
           ck verify.rs '        if !line.bytes().all(|b| b.is_ascii_digit()) {' \
              '        if !line.bytes().all(|b| b.is_ascii_digit()) && false { // knife' \
              s14_what_cannot_be_read_is_unknown_never_green
+          # S17 (E6 S7, 4542e 11-12): server_tokens off counts only straight inside http
+          ck verify.rs '                        } else if (path == MAIN && stack.len() == 1 && stack[0] == "http")' \
+             '                        } else if (path == MAIN && !stack.is_empty()) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: no http-level server_tokens off is red
+          ck verify.rs '    file.map(|_| off_at_http && !other)' \
+             '    file.map(|_| (off_at_http || true) && !other) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: a PHP-FPM with expose_php On is red
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if (php.contains(&Some(true)) && false) || pool_on => Outcome::Red("expose_php_on"), // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17: no PHP-FPM, or one whose setting was not read, is unknown, never green
+          ck verify.rs '        _ if !in_pools || php.is_empty() || php.iter().any(Option::is_none) => {' \
+             '        _ if !in_pools && false => { // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17 (c477a S7 N1): a pool that turns expose_php on is red, though php-fpm -i says Off
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if php.contains(&Some(true)) || (pool_on && false) => Outcome::Red("expose_php_on"), // knife' \
+             a_pool_that_turns_expose_php_on_is_flagged
+          # S17: a listing cut before its end line is unknown, never green
+          ck verify.rs '    if lines[last].trim() != S17_END || at > last {' \
+             '    if at > last { // knife' \
+             s17_what_cannot_be_read_is_unknown_never_green
           # site scan (4542e 11-11, E10 cat. 9): read-only scan of one site; each rule out turns its test red
           ck scan.rs '        if other > self {' '        if other > self && false { // knife' \
              the_scan_is_its_worst_check
@@ -1838,13 +1874,13 @@ jobs:
           ck sitedns.rs '        ("DELETE", ["", "zones", z, "dns_records", r], None, None) => valid_id(z) && valid_id(r),' \
              '        ("DELETE", ["", "zones", z, "dns_records", ..], None, None) => valid_id(z), // knife' \
              only_the_five_calls_are_allowed
-          # B5 DNS (ebb36 L1): an add of a CNAME or an AAAA is let through
-          ck sitedns.rs '        && m["type"] == "A"' \
-             '        && (m["type"] == "A" || m["type"] == "CNAME" || m["type"] == "AAAA") // knife' \
+          # B5 DNS (ebb36 L1): an add of an AAAA is let through
+          ck sitedns.rs '            Some("A") => m["content"].as_str().is_some_and(valid_origin),' \
+             '            Some("A" | "AAAA") => m["content"].as_str().is_some_and(valid_origin), // knife' \
              an_add_must_carry_a_sites_mark_and_be_proxied
           # B5 DNS (ebb36 L1): an add to anything but a public address is let through
-          ck sitedns.rs '        && m["content"].as_str().is_some_and(valid_origin)' \
-             '        && m["content"].is_string() // knife' \
+          ck sitedns.rs '            Some("A") => m["content"].as_str().is_some_and(valid_origin),' \
+             '            Some("A") => m["content"].is_string(), // knife' \
              an_add_must_carry_a_sites_mark_and_be_proxied
           # B5 DNS (ebb36 L2): a name outside the zone is added under it
           ck sitedns.rs '    if !names.iter().all(|n| in_zone(n, zone)) {' \
@@ -1863,9 +1899,37 @@ jobs:
              '        if here.iter().any(|r| r.comment != mark) && false { // knife' \
              a_name_answered_elsewhere_is_left_alone
           # B5 DNS: a record with the mark counts as done whatever it points at
-          ck sitedns.rs '            [ours] if ours.kind == "A" && ours.content == origin && ours.proxied => continue,' \
+          ck sitedns.rs '            [ours] if target.is(ours) && ours.proxied => continue,' \
              '            [ours] if ours.comment == mark => continue, // knife' \
              this_sites_record_is_the_step_done
+          # E6 S5 (4542e): a CNAME to the host's entry name is not let through
+          ck sitedns.rs '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry),' \
+             '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry) && false, // knife' \
+             the_add_is_a_cname_to_the_entry
+          # E6 S5: a CNAME to any name is let through
+          ck sitedns.rs '            Some("CNAME") => m["content"].as_str().is_some_and(to_entry),' \
+             '            Some("CNAME") => m["content"].as_str().is_some_and(|c| !c.is_empty() || to_entry(c)), // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5: this site's CNAME pointing elsewhere counts as the step done
+          ck sitedns.rs '                (r.kind == "CNAME" && same_name(&r.content, name))' \
+             '                (r.kind == "CNAME" && !name.is_empty()) // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5: an entry name that is one of the site's own names is used
+          ck sitedns.rs '        if !crate::edge::valid_domain(name) || names.iter().any(|n| same_name(n, name)) {' \
+             '        if !crate::edge::valid_domain(name) { // knife' \
+             a_cname_elsewhere_is_refused
+          # E6 S5 (c477a L1): a zone in another account than the entry gets the CNAME (1014)
+          ck sitedns.rs '    if entry_account != Some(zone.account.as_str()) {' \
+             '    if entry_account != Some(zone.account.as_str()) && false { // knife' \
+             a_zone_in_another_account_falls_back_to_a
+          # E6 S5 (c477a L1): no entry account set still lets the CNAME be judged
+          ck sitedns.rs '    if !entry_account.is_some_and(valid_id) {' \
+             '    if !entry_account.is_some_and(valid_id) && false { // knife' \
+             no_entry_account_means_no_cname
+          # E6 S5 (c477a N1): a name with a TXT / MX that is not the site's gets a CNAME
+          ck sitedns.rs '    if records.iter().any(in_use) {' \
+             '    if records.iter().any(in_use) && false { // knife' \
+             a_name_in_use_falls_back_to_a
           # B5 DNS: a wildcard that answers for the name today is passed over
           ck sitedns.rs '            .any(|r| wildcard_covers(&r.name, name))' \
              '            .any(|r| wildcard_covers(&r.name, name) && false) // knife' \
@@ -1961,6 +2025,30 @@ jobs:
           ck sitedns.rs '        return Proxied::Unchecked(UNREADABLE);' \
              '        return Proxied::All; // knife' \
              an_unreadable_zone_is_unchecked_not_pass
+          # 80 / 443 only from Cloudflare (E6 C3, S4): an empty list goes through, as if it let everyone in
+          ck cfonly.rs '    if out.is_empty() {' \
+             '    if out.is_empty() && false { // knife' \
+             a_malformed_range_list_is_refused
+          # 80 / 443 only from Cloudflare (E6 C3, S4): 0.0.0.0/0 is not refused by name
+          ck cfonly.rs '        if line == "0.0.0.0/0" {' \
+             '        if line == "0.0.0.0/0" && false { // knife' \
+             a_malformed_range_list_is_refused
+          # 80 / 443 only from Cloudflare (E6 C3, S4): the accept rule loses its source set
+          ck cfonly.rs '    "IN ACCEPT -source +guest/ez2-cloudflare-v4 -p tcp -dport 80,443 -log nolog",' \
+             '    "IN ACCEPT -p tcp -dport 80,443 -log nolog", // knife' \
+             only_cloudflare_ranges_are_let_in
+          # 80 / 443 only from Cloudflare (E6 C3, S4): another rule before ours reads back as fine
+          ck cfonly.rs '    if rules.get(..2) != Some(&RULES[..]) {' \
+             '    if rules.get(..2) != Some(&RULES[..]) && false { // knife' \
+             only_cloudflare_ranges_are_let_in
+          # 80 / 443 only from Cloudflare (E6 C3, S4): an extra range on disk reads back as fine
+          ck cfonly.rs '            for h in have.iter().filter(|h| !want_s.contains(h)) {' \
+             '            for h in have.iter().filter(|h| !want_s.contains(h) && false) { // knife' \
+             a_read_back_set_must_match_exactly
+          # 80 / 443 only from Cloudflare (E6 C3, S4; c477a M1): a card of the edge without the firewall reads back as fine
+          ck cfonly.rs '        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),' \
+             '        Outcome::Red("fw_not_on_card") => {} // knife' \
+             every_card_of_the_edge_must_carry_the_firewall
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -2079,6 +2167,22 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # host-neutral plugin: the health screen's filter is not added (E6 S6)
+          hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
+             "add_filter('knife_not_this_hook', function (\$info) {" \
+             the_health_filter_names_no_platform
+          # host-neutral plugin: PHP's name for the machine is a word even where it is the
+          # site's code, so the site's own paths go (c477a S6 L1)
+          hk hostneutral.rs "    if (\$node !== '' && strcasecmp(\$node, \$site) !== 0) { \$words[] = \$node; }" \
+             "    if (\$node !== '') { \$words[] = \$node; }" \
+             a_row_holding_the_site_code_stays
+          # operations: a customer key's operation line goes back on standard error (E6 S2)
+          hk opstore.rs '    if approval == BY_CUSTOMER_KEY {' '    if approval == BY_CUSTOMER_KEY && false { // knife' \
+             a_customer_key_reply_carries_no_operation_lines
+          # operations: a customer key's progress error (a host path) goes back on stderr (c477a S2 L1)
+          # (the field stays read: RUSTFLAGS has -D warnings)
+          hk opstop.rs '            &c.approval,' '            &c.approval.replace("customer", "knife"), // knife' \
+             a_customer_key_progress_error_stays_off_stderr
           # site leakcheck: a hide word in an answer is not looked for (E6 S9)
           hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
              '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) && false { // knife' \
@@ -2090,6 +2194,10 @@ jobs:
           hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
              '    if unread.is_none() && hide.is_some_and(|h| h.hide(&seen).1 > 0) { // knife' \
              a_failed_check_that_names_the_host_is_a_leak
+          # site leakcheck: the time service's drop-ins under /usr/lib are not read (c477a S1 L1)
+          hk leakcheckcmd.rs '            "/usr/lib/systemd/timesyncd.conf.d ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ",' \
+             '            "/nowhere ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ", // knife' \
+             a_drop_in_sorted_after_ours_is_read
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
@@ -2764,6 +2872,34 @@ jobs:
           hk restorestepscmd.rs '                .put_scheduler_back(&rec)' \
              '                .put_scheduler_back(&rec).or(Ok::<bool, String>(false)) // knife' \
              a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot
+          # restore wiring: the import runs in the site's language, not C (c477a slice 4 L1)
+          hk restorestepscmd.rs '    v.extend(restoreimport::IMPORT_ENV.iter().map(|e| (*e).to_owned()));' \
+             '    // knife: no IMPORT_ENV' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: wp prints colours (c477a slice 4 N1)
+          hk restorestepscmd.rs '    v.push("--no-color".into());' \
+             '    // knife: colours on' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: a plugin zip not as SHA256SUMS says is installed (B3 slice 5)
+          hk restorestepscmd.rs '            if !got.eq_ignore_ascii_case(want) {' \
+             '            if !got.eq_ignore_ascii_case(want) && false { // knife' \
+             a_plugin_zip_not_as_summed_is_not_installed
+          # restore wiring: an import that ends with 1 but printed Success: is taken as done (c477a slice 4 L1)
+          hk restorestepscmd.rs '        self.run.run(&restore_argv)' \
+             '        self.run.run(&restore_argv).or_else(|e| Ok(format!("Success: {e}"))) // knife' \
+             an_import_that_does_not_end_with_0_fails_and_is_rolled_back
+          # restore wiring: an accept that differs goes on (B3 slice 5; Andy 11-12: keep)
+          hk restorestepscmd.rs '            1 => Err(format!("accept_differ: {}", doc["strict"])),' \
+             '            1 => Ok(()), // knife' \
+             an_accept_that_differs_keeps_the_site
+          # restore wiring: a push lands on a path the site's user could have put a link at (c477a rwire2 L1)
+          hk restorestepscmd.rs '        let file = format!("{dir}/{name}");' \
+             '        let file = format!("/tmp/ez2-{name}"); // knife' \
+             nothing_is_pushed_where_the_site_could_have_put_a_link
+          # restore wiring: a big site's import progress past the cap is a failure (c477a rwire2 L2)
+          hk restorestepscmd.rs '        let keep_tail = Self::is_import(argv);' \
+             '        let keep_tail = false; // knife' \
+             an_import_that_says_more_than_is_read_and_ends_with_success_is_done
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
@@ -3177,6 +3313,10 @@ jobs:
           hk siteverify.rs '    if audience == Audience::Operator {' \
              '    if audience == Audience::Operator || true { // knife' \
              a_customer_status_asks_cloudflare_nothing
+          # verify S17 (c477a S7 L1): not in a customer's status until the template is rebuilt
+          hk siteverify.rs '    if audience == Audience::Operator && s14_runs_in(state) {' \
+             '    if s14_runs_in(state) { // knife' \
+             a_site_with_no_readable_record_is_red_not_skipped
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
@@ -3307,8 +3447,8 @@ jobs:
              '        (Some("waiting"), "never") => { // knife' \
              a_run_started_too_late_does_not_take_its_ask
           # B5 DNS (4542e): a call off the list of five goes out
-          hk cfdns.rs '        if !sitedns::allowed(call.method(), &call.path(), body) {' \
-             '        if !sitedns::allowed(call.method(), &call.path(), body) && false { // knife' \
+          hk cfdns.rs '        if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) {' \
+             '        if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) && false { // knife' \
              a_call_off_the_list_is_refused_and_written_down
           # B5 DNS: a call made leaves no ledger line
           hk cfdns.rs '        self.ledger_line(&mut file, call, json!(http))?;' \
@@ -3319,9 +3459,19 @@ jobs:
              '        let _ = &paths.creating; // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
           # B5 DNS: an add that does not read back counts as done
-          hk cfdns.rs '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done' \
-             '        if sitedns::plan(&zone.name, &names, after.as_deref(), &spec.code, &origin) != DnsPlan::Done && false // knife' \
+          hk cfdns.rs '        if read_back != DnsPlan::Done {' \
+             '        if read_back != DnsPlan::Done && false { // knife' \
              an_add_that_does_not_read_back_is_not_done_and_was_journaled
+          # E6 S5 (4542e): the host's entry name is not handed to the call check
+          hk cfdns.rs '    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(entry.clone());' \
+             '    let mut cf = Cf::new(runner, creds, &paths.cf_ledger, &spec.code).with_entry(None); // knife' \
+             a_host_with_an_entry_name_adds_cnames_to_it
+          # E6 S5: removing a site leaves its marked CNAME behind
+          python3 -I scripts/knife.py crates/aib-cloud/src/siteremove.rs \
+            'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "CNAME"];' \
+            'pub const DNS_ADDRESS_TYPES: [&str; 3] = ["A", "AAAA", "AAAA"]; // knife' \
+            --expect-fail a_sites_marked_cname_is_removed_and_no_other \
+            -- cargo test -p aib-cloud-host --locked a_sites_marked_cname_is_removed_and_no_other
           # B5 DNS: a roster file that is another customer's is used
           hk cfdns.rs '    if roster.tenant_id != tenant {' '    if roster.tenant_id != tenant && false { // knife' \
              a_customer_without_accounts_cannot_be_told
@@ -3608,6 +3758,14 @@ jobs:
           hk customercmd.rs '        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {' \
              '        if sites.iter().any(|(code, _)| code == site) { // knife' \
              a_site_just_opened_answers_status_with_its_opened_view
+          # edge cf-only (E6 C3, S4): a fetched list that fails the check is swapped for the built-in one
+          hk edgecmd.rs '        cfonly::parse_ranges(&text).map_err(|e| format!("{}: {e}", cfonly::SOURCE_URL))?' \
+             '        cfonly::parse_ranges(&text).or_else(|_| Ok::<_, String>(known.clone()))? // knife' \
+             a_bad_or_missing_fetch_is_refused_not_replaced
+          # edge cf-only (E6 C3, S4; c477a L1): a fetched list that differs from the built-in one gives steps without --accept-diff
+          hk edgecmd.rs '    if needs_ack && !opts.accept_diff {' \
+             '    if needs_ack && !opts.accept_diff && false { // knife' \
+             a_changed_list_needs_accept_diff
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
