@@ -270,9 +270,16 @@ fn status_color(s: Option<&str>) -> Option<Color> {
     }
 }
 
-/// 第二行:「你的期望」(id 為 E 的大項目)各狀態幾項 + 最落後的三個大項目(名字取冒號前)
-fn goal_line(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Seg> {
-    let mut line = Vec::new();
+/// 頂部標籤欄寬(「最落後」三個字 + 空白),每行標籤對齊、值從同一欄開始
+const LABEL_W: usize = 9;
+
+fn label(t: &str) -> Seg {
+    Seg(pad(t, LABEL_W), None, false, true)
+}
+
+/// 「期望」一行 + 「最落後」一行:期望 = id 為 E 的大項目各狀態幾項;最落後 = 完成度最低的三個大項目(名字取冒號前)
+fn goal_lines(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Vec<Seg>> {
+    let mut out = Vec::new();
     let kids = &ix.kids[root];
     if let Some(&e) = kids.iter().find(|&&k| p.nodes[k].id == "E") {
         let (mut ok, mut bad, mut open) = (0, 0, 0);
@@ -283,16 +290,28 @@ fn goal_line(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Seg> {
                 _ => open += 1,
             }
         }
-        line.push(Seg(
-            format!("你的期望 {} 項 ", ix.kids[e].len()),
-            None,
-            false,
-            true,
-        ));
-        line.push(Seg(format!("✓{ok} "), Some(Color::Green), false, false));
-        line.push(Seg(format!("✗{bad} "), Some(Color::Red), false, false));
-        line.push(Seg(format!("?{open}"), Some(Color::DarkGrey), false, false));
-        line.push(Seg("   ".into(), None, false, false));
+        out.push(vec![
+            label("期望"),
+            Seg(format!("✓ 通過 {ok}"), Some(Color::Green), false, false),
+            Seg(
+                format!("     ✗ 不通過 {bad}"),
+                Some(Color::Red),
+                false,
+                false,
+            ),
+            Seg(
+                format!("     ? 未驗 {open}"),
+                Some(Color::DarkGrey),
+                false,
+                false,
+            ),
+            Seg(
+                format!("     共 {} 項", ix.kids[e].len()),
+                Some(Color::DarkGrey),
+                false,
+                false,
+            ),
+        ]);
     }
     let mut g: Vec<(u32, String)> = kids
         .iter()
@@ -305,18 +324,18 @@ fn goal_line(p: &Plan, ix: &aib_plan::Index, root: usize) -> Vec<Seg> {
         .collect();
     g.sort();
     if !g.is_empty() {
-        line.push(Seg("最落後:".into(), Some(Color::DarkGrey), false, false));
+        let mut line = vec![label("最落後")];
         for (i, (v, t)) in g.iter().take(3).enumerate() {
             let col = if *v < 40 { Color::Red } else { Color::Yellow };
-            line.push(Seg(
-                format!("{}{t} {v}%", if i > 0 { " · " } else { "" }),
-                Some(col),
-                false,
-                false,
-            ));
+            if i > 0 {
+                line.push(seg("     "));
+            }
+            line.push(seg(format!("{t} ")));
+            line.push(Seg(format!("{v}%"), Some(col), false, true));
         }
+        out.push(line);
     }
-    line
+    out
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
@@ -342,17 +361,23 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     let all = tally(p, &ix, root);
     // Andy 11-12 10:2x:頂部太擠、看不出進度 ⇒ 三行:總進度 / 你的期望 + 最落後的大項目 / 只列有信的席
     out.push(vec![
-        Seg(format!("艙 {}  ", p.cabin), None, false, true),
-        Seg(bar(pct(all), 24), Some(Color::Green), false, false),
+        label("進度"),
+        Seg(bar(pct(all), 20), Some(Color::Green), false, false),
         Seg(format!(" {}%", pct(all)), None, false, true),
         Seg(
-            format!("  {}/{} 項實查通過  · {}", all.0, all.1, p.asof),
+            format!("     {} / {} 項實查通過", all.0, all.1),
+            None,
+            false,
+            false,
+        ),
+        Seg(
+            format!("     艙 {} · {}", p.cabin, p.asof),
             Some(Color::DarkGrey),
             false,
             false,
         ),
     ]);
-    out.push(goal_line(p, &ix, root));
+    out.extend(goal_lines(p, &ix, root));
     let mut seats = Vec::new();
     for s in app.cabin_seats() {
         let d = app.dm_txt(Some(&s));
@@ -364,7 +389,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         } else {
             Some(Color::Yellow)
         };
-        seats.push(Seg(format!("{s}{d}   "), col, false, false));
+        seats.push(Seg(format!("{s}{d}     "), col, false, false));
     }
     if seats.is_empty() {
         seats.push(Seg(
@@ -374,9 +399,9 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             false,
         ));
     } else {
-        seats.insert(0, Seg("信:".into(), Some(Color::DarkGrey), false, false));
+        seats.insert(0, label("信"));
         seats.push(Seg(
-            "(✉ 待審 · ◌ 已讀未結)".into(),
+            "✉ 待審  ◌ 已讀未結".into(),
             Some(Color::DarkGrey),
             false,
             false,
@@ -387,7 +412,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     let on = |b: bool, s: &str| format!("{}{s}", if b { "●" } else { "○" });
     out.push(vec![Seg(
         format!(
-            "[ {}  ] {}  │ {} {} {} 席:{} │ /搜尋{} │ e 全開 c 全收 r 清除 q 離開",
+            "{}   {}      {}   {}   {}   席:{}      /搜尋{}      e 全開   c 全收   r 清除   q 離開",
             if app.show_tree { "◀樹" } else { "▶樹" },
             if app.show_side {
                 "為什麼▶"
@@ -984,16 +1009,24 @@ mod tests {
         let line = |i: usize| f[i].iter().map(|s| s.0.as_str()).collect::<String>();
         assert!(line(0).contains("項實查通過"), "{}", line(0));
         let l1 = line(1);
-        assert!(l1.contains("你的期望 3 項"), "{l1}");
+        assert!(l1.starts_with("期望"), "{l1}");
         assert!(
-            l1.contains("✓1") && l1.contains("✗1") && l1.contains("?1"),
+            l1.contains("通過 1") && l1.contains("不通過 1") && l1.contains("未驗 1"),
             "{l1}"
         );
+        assert!(l1.contains("共 3 項"), "{l1}");
         // 最落後排前面,名字取冒號前,期望本身不列
-        let a = l1.find("跨平台核心 0%").expect("weakest first");
-        let b = l1.find("自動推進 100%").expect("then the next");
-        assert!(a < b, "{l1}");
-        assert!(!l1.contains("Windows"), "{l1}");
+        let l2 = line(2);
+        assert!(l2.starts_with("最落後"), "{l2}");
+        let a = l2.find("跨平台核心 0%").expect("weakest first");
+        let b = l2.find("自動推進 100%").expect("then the next");
+        assert!(a < b, "{l2}");
+        assert!(!l2.contains("Windows"), "{l2}");
+        // 標籤欄對齊:三行的值從同一欄開始
+        for i in 0..3 {
+            let first = &f[i][0].0;
+            assert_eq!(str_width(first), LABEL_W, "row {i}: {first:?}");
+        }
     }
 
     #[test]
