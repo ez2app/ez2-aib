@@ -9,8 +9,9 @@
 //! runs it. A site whose names span two zones is unchecked (`multi_zone`). One check enters a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
 //! customer's plugins and theme, each with a time limit and a cap on what is read; S17
-//! reads nginx's whole configuration and each PHP-FPM's `expose_php` (E6 S7). Nothing is
-//! run inside a quarantined container: S14 and S17 are left out for one.
+//! reads nginx's whole configuration and each PHP-FPM's `expose_php` (E6 S7), for
+//! `site verify` only, not a customer's status. Nothing is run inside a quarantined
+//! container: S14 and S17 are left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -102,8 +103,11 @@ pub(crate) fn s14_check(
 
 /// S17 for one site (E6 S7): whether nginx and PHP-FPM name their versions in the site's
 /// answers, read inside its container and judged by
-/// `aib_cloud::verify::s17_no_version_banner`. A customer's status shows it too: what it
-/// reads is the site's own software, nothing of the host.
+/// `aib_cloud::verify::s17_no_version_banner`. For `site verify` only, as S15 is (c477a
+/// S7 L1): most sites were made from a template that does not turn these off yet, so a
+/// customer would see a red check they cannot fix themselves. Whether to show it to
+/// customers is f1fae's / Andy's call once the template is rebuilt and the older sites
+/// are brought up to it.
 pub(crate) fn s17_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
     let listing = runner
         .run(&in_ct(ct, &["sh", "-c", verify::S17_SCRIPT]))
@@ -461,8 +465,9 @@ fn site_checks_for(
             verify::WP_CRON_OVERDUE_RED,
         ));
     }
-    // S17 enters the container too: not a quarantined one
-    if s14_runs_in(state) {
+    // S17 enters the container too: not a quarantined one. `site verify` only for now (see
+    // s17_check): never a customer's status
+    if audience == Audience::Operator && s14_runs_in(state) {
         results.push(s17_check(&mut CtReader, spec.ct));
     }
     // S15 reads Cloudflare only, so it is looked at for a quarantined site too; never for
@@ -714,8 +719,10 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        // S00–S06, S10–S14 and S17; S15 asks Cloudflare, for `site verify` only
-        assert_eq!(r.len(), 12, "S00–S06, S10–S14 and S17");
+        // S00–S06 and S10–S14; S15 asks Cloudflare and S17 is not yet shown to customers,
+        // both for `site verify` only (c477a S7 L1)
+        assert_eq!(r.len(), 11, "S00–S06 and S10–S14");
+        assert!(r.iter().all(|x| x.id != "S17"), "{r:?}");
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");

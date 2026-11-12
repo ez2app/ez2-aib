@@ -785,20 +785,28 @@ pub fn s13_no_ipv6(pct_config: Option<&str>) -> CheckResult {
 pub const S17_END: &str = "ez2-s17-end";
 /// What [`S17_SCRIPT`] prints before each PHP-FPM's `expose_php` line.
 pub const S17_PHP: &str = "ez2-s17-php";
+/// What [`S17_SCRIPT`] prints before the `expose_php` lines of the PHP-FPM pools.
+pub const S17_POOL: &str = "ez2-s17-pool";
 /// What [`S17_SCRIPT`] prints before nginx's whole configuration.
 pub const S17_NGINX: &str = "ez2-s17-nginx";
 
 /// Run inside a site's CT as `sh -c S17_SCRIPT` (E6 S7): for each PHP-FPM, [`S17_PHP`] and
-/// the `expose_php` line of its settings; then [`S17_NGINX`] and nginx's whole
-/// configuration (`nginx -T`, which also checks it); then [`S17_END`]. A configuration
-/// nginx does not accept stops it before the end line.
-pub const S17_SCRIPT: &str = "for f in /usr/sbin/php-fpm*; do [ -x \"$f\" ] || continue; echo ez2-s17-php; \"$f\" -i 2>/dev/null | grep -iE '^expose_php[[:space:]]*=>'; done; t=$(nginx -T 2>/dev/null) || exit 1; echo ez2-s17-nginx; printf '%s\\n' \"$t\"; echo ez2-s17-end";
+/// the `expose_php` line of its settings; then [`S17_POOL`] and every pool's own
+/// `php_value` / `php_admin_value` / `php_flag` / `php_admin_flag` for `expose_php`, which
+/// `php-fpm -i` does not show (c477a S7 N1); then [`S17_NGINX`] and nginx's whole
+/// configuration (`nginx -T`, which also checks it); then [`S17_END`]. A pool file that
+/// cannot be read, or a configuration nginx does not accept, stops it before the end line.
+pub const S17_SCRIPT: &str = "for f in /usr/sbin/php-fpm*; do [ -x \"$f\" ] || continue; echo ez2-s17-php; \"$f\" -i 2>/dev/null | grep -iE '^expose_php[[:space:]]*=>'; done; echo ez2-s17-pool; for f in /etc/php/*/fpm/pool.d/*.conf; do [ -e \"$f\" ] || continue; grep -hiE '^[[:space:]]*php_(admin_)?(value|flag)\\[expose_php\\]' \"$f\" || [ $? -eq 1 ] || exit 1; done; t=$(nginx -T 2>/dev/null) || exit 1; echo ez2-s17-nginx; printf '%s\\n' \"$t\"; echo ez2-s17-end";
 
 /// The two settings a site template is to carry so a new site starts with S17 green
 /// (E6 S7). Written into the template when it is next rebuilt; nothing here writes it.
-pub const S17_TEMPLATE_LINES: [&str; 2] = [
+/// The third is not judged by S17 (c477a S7 N2): nginx's stock `fastcgi_params` hands PHP
+/// `SERVER_SOFTWARE nginx/<version>`, which `server_tokens off` does not change, and the
+/// site software can show it to the site's owner.
+pub const S17_TEMPLATE_LINES: [&str; 3] = [
     "/etc/nginx/nginx.conf, inside http { }: server_tokens off;",
     "/etc/php/<version>/fpm/conf.d/99-ez2-hide.ini: expose_php = Off",
+    "/etc/nginx/fastcgi_params (and fastcgi.conf): SERVER_SOFTWARE without the version, e.g. fastcgi_param SERVER_SOFTWARE nginx; (not judged by S17)",
 ];
 
 /// Whether nginx's configuration (`nginx -T` output) turns the version off for every
@@ -869,11 +877,21 @@ pub fn s17_no_version_banner(listing: Option<&str>) -> CheckResult {
     if lines[last].trim() != S17_END || at > last {
         return result("S17", Outcome::Unknown("unparsed"));
     }
-    // each PHP-FPM: its marker, then one expose_php line
+    // each PHP-FPM: its marker, then one expose_php line; then the pools' own settings
     let mut php: Vec<Option<bool>> = Vec::new();
+    let (mut in_pools, mut pool_on) = (false, false);
     for l in &lines[..at] {
         let l = l.trim();
-        if l == S17_PHP {
+        if l == S17_POOL {
+            in_pools = true;
+        } else if in_pools {
+            let value = l.split_once('=').map_or("", |(_, v)| v.trim());
+            match value.trim_matches('"').to_ascii_lowercase().as_str() {
+                "off" | "0" | "false" | "no" => {}
+                "on" | "1" | "true" | "yes" => pool_on = true,
+                _ => return result("S17", Outcome::Unknown("unparsed")),
+            }
+        } else if l == S17_PHP {
             php.push(None);
         } else if let Some(seen) = php.last_mut() {
             let value = l.split("=>").nth(1).map(str::trim).unwrap_or("");
@@ -887,9 +905,11 @@ pub fn s17_no_version_banner(listing: Option<&str>) -> CheckResult {
     let dump = lines[at + 1..last].join("\n");
     let outcome = match nginx_tokens_off(&dump) {
         None => Outcome::Unknown("unparsed"),
-        _ if php.is_empty() || php.iter().any(Option::is_none) => Outcome::Unknown("unparsed"),
+        _ if !in_pools || php.is_empty() || php.iter().any(Option::is_none) => {
+            Outcome::Unknown("unparsed")
+        }
         Some(false) => Outcome::Red("server_tokens_on"),
-        Some(true) if php.contains(&Some(true)) => Outcome::Red("expose_php_on"),
+        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),
         Some(true) => Outcome::Green,
     };
     result("S17", outcome)
@@ -1737,10 +1757,21 @@ mod tests {
     /// 4.5 r4 section 14.1 #6 (c477a's list): the passive mask checks.
     /// E6 S7: what S17 is given, as [`S17_SCRIPT`] prints it.
     fn s17_listing(php: &[&str], nginx: &str) -> String {
+        s17_listing_pools(php, &[], nginx)
+    }
+
+    /// The same, with the pools' own `expose_php` lines.
+    fn s17_listing_pools(php: &[&str], pools: &[&str], nginx: &str) -> String {
         let mut out = String::new();
         for p in php {
             out.push_str(S17_PHP);
             out.push('\n');
+            out.push_str(p);
+            out.push('\n');
+        }
+        out.push_str(S17_POOL);
+        out.push('\n');
+        for p in pools {
             out.push_str(p);
             out.push('\n');
         }
@@ -1804,6 +1835,40 @@ mod tests {
         // a PHP-FPM whose setting was not read, or none at all: unknown, not green
         assert_eq!(s17(&[""]), Outcome::Unknown("unparsed"));
         assert_eq!(s17(&[]), Outcome::Unknown("unparsed"));
+    }
+
+    #[test]
+    fn a_pool_that_turns_expose_php_on_is_flagged() {
+        let nginx = alloc::format!("{MAIN_HEAD}\nhttp {{\n    server_tokens off;\n}}");
+        let s17 = |pools: &[&str]| {
+            s17_no_version_banner(Some(&s17_listing_pools(&[PHP_OFF], pools, &nginx))).outcome
+        };
+        assert_eq!(s17(&[]), Outcome::Green);
+        assert_eq!(s17(&["php_admin_value[expose_php] = Off"]), Outcome::Green);
+        // php-fpm -i says Off, but a pool turns it back on
+        for on in [
+            "php_admin_value[expose_php] = On",
+            "php_value[expose_php] = 1",
+            "  php_admin_flag[expose_php] = on",
+            "php_flag[expose_php]=yes",
+        ] {
+            assert_eq!(
+                s17(&["php_admin_value[expose_php] = off", on]),
+                Outcome::Red("expose_php_on"),
+                "{on}"
+            );
+        }
+        // a value not understood is unknown; no pool part at all is unknown
+        assert_eq!(
+            s17(&["php_admin_value[expose_php] = maybe"]),
+            Outcome::Unknown("unparsed")
+        );
+        let no_pools = alloc::format!("{S17_PHP}\n{PHP_OFF}\n{S17_NGINX}\n{nginx}\n{S17_END}\n");
+        assert_eq!(
+            s17_no_version_banner(Some(&no_pools)).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert!(S17_SCRIPT.contains(S17_POOL) && S17_SCRIPT.contains("pool.d"));
     }
 
     #[test]

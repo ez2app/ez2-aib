@@ -1550,13 +1550,17 @@ jobs:
              '    file.map(|_| (off_at_http || true) && !other) // knife' \
              a_template_without_server_tokens_off_is_flagged
           # S17: a PHP-FPM with expose_php On is red
-          ck verify.rs '        Some(true) if php.contains(&Some(true)) => Outcome::Red("expose_php_on"),' \
-             '        Some(true) if php.contains(&Some(true)) && false => Outcome::Red("expose_php_on"), // knife' \
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if (php.contains(&Some(true)) && false) || pool_on => Outcome::Red("expose_php_on"), // knife' \
              a_php_that_names_its_version_is_flagged
           # S17: no PHP-FPM, or one whose setting was not read, is unknown, never green
-          ck verify.rs '        _ if php.is_empty() || php.iter().any(Option::is_none) => Outcome::Unknown("unparsed"),' \
-             '        _ if false => Outcome::Unknown("unparsed"), // knife' \
+          ck verify.rs '        _ if !in_pools || php.is_empty() || php.iter().any(Option::is_none) => {' \
+             '        _ if !in_pools && false => { // knife' \
              a_php_that_names_its_version_is_flagged
+          # S17 (c477a S7 N1): a pool that turns expose_php on is red, though php-fpm -i says Off
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if php.contains(&Some(true)) || (pool_on && false) => Outcome::Red("expose_php_on"), // knife' \
+             a_pool_that_turns_expose_php_on_is_flagged
           # S17: a listing cut before its end line is unknown, never green
           ck verify.rs '    if lines[last].trim() != S17_END || at > last {' \
              '    if at > last { // knife' \
@@ -2985,6 +2989,10 @@ jobs:
           hk siteverify.rs '    if audience == Audience::Operator {' \
              '    if audience == Audience::Operator || true { // knife' \
              a_customer_status_asks_cloudflare_nothing
+          # verify S17 (c477a S7 L1): not in a customer's status until the template is rebuilt
+          hk siteverify.rs '    if audience == Audience::Operator && s14_runs_in(state) {' \
+             '    if s14_runs_in(state) { // knife' \
+             a_site_with_no_readable_record_is_red_not_skipped
           # site scan (4542e 11-11): a command that does not only read never runs; the site is the one record naming the domain
           hk sitescancmd.rs '    if !read_only(argv) {' '    if !read_only(argv) && false { // knife' \
              a_command_that_would_change_something_is_refused_before_it_runs
