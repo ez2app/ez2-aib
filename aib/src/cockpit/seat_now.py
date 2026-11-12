@@ -328,7 +328,7 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     elif not new and isinstance(prev.get("review"), dict) and prev.get("started_at") == rec["started_at"]:
         rec["review"] = prev["review"]
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
-    if prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
+    if review or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
         append_history(d, code, rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -360,7 +360,18 @@ def auto_new(prev, item):
     return similarity(prev.get("item"), item) < AUTO_NEW_BELOW
 
 
-TRACK_VALUES = ("on", "off")
+ON_TRACK_MIN = 70   # 主軸符合度 ≥ 70% 算在主軸上;低於 = 偏離(aib-plan 同一個門檻)
+
+
+def parse_track(text):
+    """--track:主軸符合度 0~100(可帶 %);舊寫法 on = 100、off = 0。其他 ⇒ None。"""
+    t = str(text or "").strip().lower().rstrip("%").strip()
+    if t in ("on", "off"):
+        return 100 if t == "on" else 0
+    if not t.isdigit():
+        return None
+    n = int(t)
+    return n if 0 <= n <= 100 else None
 REVIEW_MAX = 400   # 判斷的為什麼 / 建議放在進度畫面可展開的那幾行，比主項目寬鬆
 
 
@@ -396,9 +407,10 @@ def parse_review(track, why, idea):
     if track is None and why is None and idea is None:
         return None, True
     why, idea = _clean_review(why), _clean_review(idea)
-    if track not in TRACK_VALUES or not why or not idea:
+    pct = parse_track(track)
+    if pct is None or not why or not idea:
         return None, False
-    return {"track": track, "why": why, "idea": idea}, True
+    return {"track": pct, "why": why, "idea": idea}, True
 
 
 HISTORY_SUFFIX = ".history.jsonl"
@@ -411,12 +423,14 @@ def history_path(code, state_root=None):
 
 
 def append_history(d, code, rec):
-    """主項目換了(文字或啟動時間不同)就記一行 {"item","started_at","seen"}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
+    """主項目換了(文字或啟動時間不同)或回報了判斷就記一行 {"item","started_at","seen"[,"track"]}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
     讀者:aib-plan 最上面「本席AI一開始主軸 / 目前開發主軸」(crates/aib-plan/src/mainline.rs,同格式)。
     超過 HISTORY_MAX_BYTES 只留最後 HISTORY_KEEP 行。寫失敗不影響 aib now 本身。"""
     path = os.path.join(d, code + HISTORY_SUFFIX)
-    line = json.dumps({"item": rec["item"], "started_at": rec["started_at"], "seen": rec["at"]},
-                      ensure_ascii=False)
+    row = {"item": rec["item"], "started_at": rec["started_at"], "seen": rec["at"]}
+    if isinstance(rec.get("review"), dict) and rec["review"].get("at") == rec["at"]:
+        row["track"] = rec["review"].get("track")   # 這次有回報判斷 ⇒ 記符合度(aib-plan 算校正次數)
+    line = json.dumps(row, ensure_ascii=False)
     try:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -956,7 +970,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--started", metavar="'MM-DD HH:MM'", help=T("aib.now.help.started"))
     ap.add_argument("--state", choices=SETTABLE_STATES, default="busy",
                     help=T("aib.now.help.state"))
-    ap.add_argument("--track", choices=TRACK_VALUES, default=None, help=T("aib.now.help.track"))
+    ap.add_argument("--track", metavar="0-100", default=None, help=T("aib.now.help.track"))
     ap.add_argument("--why", default=None, help=T("aib.now.help.why"))
     ap.add_argument("--idea", default=None, help=T("aib.now.help.idea"))
     ap.add_argument("--seat", metavar="SEAT", default="",

@@ -6,7 +6,7 @@
 只改步數 / 狀態不加;太大只留最後 HISTORY_KEEP 行;寫不進去不擋 aib now。
 讀者:crates/aib-plan/src/mainline.rs(同欄位)。
 
-判斷(Andy 11-12 13:3x):aib now --track on|off --why --idea 記進 seat-now/<席>.json 的 review;
+判斷(Andy 11-12 13:3x):aib now --track 0~100 --why --idea 記進 seat-now/<席>.json 的 review;
 階段完成(步數做滿 /【等回應】/【等你決定】)交回時，本回合沒回報判斷 ⇒ aib-now-gate 擋。
 """
 import json
@@ -90,10 +90,17 @@ class Review(unittest.TestCase):
         return seat_now.read("c0de1", state_root=self.root)
 
     def test_flags_store_review_and_carry_within_same_mainline(self):
-        rc, e = self.now("做 A", "4/4", "--state", "reply", "--track", "on", "--why", "因為 X", "--idea", "無")
+        rc, e = self.now("做 A", "4/4", "--state", "reply", "--track", "85%", "--why", "因為 X", "--idea", "無")
         self.assertEqual(rc, 0, e)
         r = self.rec()["review"]
-        self.assertEqual((r["track"], r["why"], r["idea"]), ("on", "因為 X", "無"))
+        self.assertEqual((r["track"], r["why"], r["idea"]), (85, "因為 X", "無"))
+        hist = [json.loads(x) for x in open(seat_now.history_path("c0de1", state_root=self.root), encoding="utf-8")]
+        self.assertEqual(hist[-1]["track"], 85, "回報判斷 ⇒ 歷史記符合度")
+        n = len(hist)
+        self.now("做 A", "4/4", "--track", "40", "--why", "w", "--idea", "i")   # 同主軸再回報 ⇒ 也記一行
+        hist = [json.loads(x) for x in open(seat_now.history_path("c0de1", state_root=self.root), encoding="utf-8")]
+        self.assertEqual((len(hist), hist[-1]["track"]), (n + 1, 40))
+        self.now("做 A", "4/4", "--track", "85", "--why", "因為 X", "--idea", "無")
         self.assertGreater(r["at"], 0)
         self.assertEqual(self.now("做 A", "4/4")[0], 0)          # 同主軸再更新 ⇒ 沿用判斷
         self.assertEqual(self.rec()["review"]["why"], "因為 X")
@@ -101,8 +108,9 @@ class Review(unittest.TestCase):
         self.assertNotIn("review", self.rec())
 
     def test_partial_or_blank_review_is_refused(self):
-        for argv in (["--track", "on"], ["--track", "on", "--why", "x", "--idea", "  "],
-                     ["--why", "x", "--idea", "y"]):
+        for argv in (["--track", "80"], ["--track", "80", "--why", "x", "--idea", "  "],
+                     ["--why", "x", "--idea", "y"], ["--track", "101", "--why", "x", "--idea", "y"],
+                     ["--track", "-1", "--why", "x", "--idea", "y"], ["--track", "高", "--why", "x", "--idea", "y"]):
             rc, e = self.now("做 A", "1/2", *argv)
             self.assertEqual(rc, 2, argv)
         self.assertIsNone(self.rec())
@@ -130,6 +138,12 @@ class Review(unittest.TestCase):
         self.assertEqual(seat_now.similarity("", ""), 1.0)
         self.assertFalse(seat_now.auto_new({"idle": True, "item": "x"}, "完全不同"))
         self.assertFalse(seat_now.auto_new({}, "完全不同"))
+
+    def test_parse_track(self):
+        self.assertEqual([seat_now.parse_track(x) for x in ("0", "70", "100", "85%", " 9 ", "on", "off")],
+                         [0, 70, 100, 85, 9, 100, 0])
+        for bad in ("101", "-5", "", None, "7.5", "x"):
+            self.assertIsNone(seat_now.parse_track(bad), bad)
 
     def test_stage_done(self):
         self.assertTrue(seat_now.stage_done({"steps_done": 3, "steps_total": 3, "state": "busy"}))
@@ -178,7 +192,7 @@ class GateReview(unittest.TestCase):
         self.assertIn("--idea", r.stderr)
 
     def test_stage_done_with_review_passes(self):
-        self.write(4, 4, "reply", review={"track": "off", "why": "x", "idea": "y"})
+        self.write(4, 4, "reply", review={"track": 30, "why": "x", "idea": "y"})
         r = self.stop()
         self.assertEqual(r.returncode, 0, r.stderr)
 
