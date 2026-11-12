@@ -1,11 +1,14 @@
 //! `aib-plan`:艙進度樹，放在 tmux 中間窗格(左對話 / 中進度樹 / 右 AI 欄)。
 //!
-//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--once [--width N]]
+//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]]
 //!
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
 //! - 有 --aib-root 時每 30 秒唯讀數一次各席 dm 佇列(待審 / 已讀未結);讀不到顯示「?」。
 //! - 有 --seat(沒帶就問 tmux 窗選項 @aib_seat)時最上面兩行：本席一開始主軸 / 目前主軸(開始時間)/ 現在時間(台北),見 mainline.rs。
+//! - --only-seat(Andy 11-13 非艦長畫面):樹固定只留這幾席的節點(與上層);s(鍵盤或點工具列)不輪替、
+//!   r 清除也留著;全艙那一列不畫;建議 / 影子續跑只算這幾席。逗號分隔或重複帶(分身繼承:519d0,a63ab)。
+//!   沒帶 --seat 時,最上面兩行主軸用清單第一席。艦長畫面不帶這個旗標。
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
@@ -44,6 +47,9 @@ fn epoch_now() -> i64 {
 
 /// 本艙每一席(進度資料的席位表)的主軸;只讀
 fn fleet_of(app: &App, now: i64) -> Vec<(String, Mainline)> {
+    if !app.pin.is_empty() {
+        return Vec::new(); // 非艦長畫面:全艙那一列不畫
+    }
     let root = state_dir();
     let mut seats = app.cabin_seats();
     seats.sort();
@@ -89,6 +95,7 @@ struct Args {
     data: PathBuf,
     aib_root: Option<PathBuf>,
     seat: Option<String>,
+    only_seat: Vec<String>,
     once: bool,
     width: usize,
 }
@@ -98,6 +105,15 @@ fn home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default()
+}
+
+/// --only-seat 的值:逗號分隔、去空白;空的或有空項 ⇒ 錯(不靜默變成「全部」)
+fn seat_list(v: &str) -> Result<Vec<String>, String> {
+    let out: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+    if out.iter().any(|s| s.is_empty()) {
+        return Err("bad_value: --only-seat".into());
+    }
+    Ok(out)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -110,6 +126,7 @@ fn parse_args() -> Result<Args, String> {
             .join("data.json"),
         aib_root: None,
         seat: None,
+        only_seat: Vec::new(),
         once: false,
         width: 120,
     };
@@ -119,6 +136,10 @@ fn parse_args() -> Result<Args, String> {
             "--data" => a.data = it.next().ok_or("missing_value: --data")?.into(),
             "--aib-root" => a.aib_root = Some(it.next().ok_or("missing_value: --aib-root")?.into()),
             "--seat" => a.seat = Some(it.next().ok_or("missing_value: --seat")?),
+            "--only-seat" => {
+                let v = it.next().ok_or("missing_value: --only-seat")?;
+                a.only_seat.extend(seat_list(&v)?);
+            }
             "--once" => a.once = true,
             "--width" => {
                 a.width = it
@@ -127,7 +148,7 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or("bad_value: --width")?
             }
             "-h" | "--help" => return Err(
-                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--once [--width N]]"
+                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]]"
                     .into(),
             ),
             other => return Err(format!("unknown_arg: {other}")),
@@ -194,6 +215,8 @@ struct App {
     /// 自動審修紀錄(樹上「自動審修」分支，接在影子續跑下方);檔案沒變就不重讀
     fixes: Option<Fixes>,
     fixes_mtime: Option<SystemTime>,
+    /// --only-seat:樹固定只留這幾席(非艦長畫面);空 = 艦長畫面,s 照常輪替
+    pin: Vec<String>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -399,11 +422,18 @@ fn shown_title(p: &Plan, counts: Option<(usize, usize, usize)>, idx: usize) -> S
     }
 }
 
-fn suggestions(plan: &Plan) -> Option<(usize, usize, usize)> {
+/// pin 不空(非艦長畫面)⇒ 只算這幾席負責或協作的建議,數字才對得上畫面上的樹
+fn suggestions(plan: &Plan, pin: &[String]) -> Option<(usize, usize, usize)> {
+    let mine = |n: &Node| {
+        pin.is_empty()
+            || pin
+                .iter()
+                .any(|p| n.owner.as_deref() == Some(p.as_str()) || n.with.iter().any(|w| w == p))
+    };
     let items: Vec<&Node> = plan
         .nodes
         .iter()
-        .filter(|n| n.kind == "suggestion")
+        .filter(|n| n.kind == "suggestion" && mine(n))
         .collect();
     let parent = items.first()?.parent.as_deref()?;
     let at = plan.nodes.iter().position(|n| n.id == parent)?;
@@ -416,7 +446,7 @@ fn suggestions(plan: &Plan) -> Option<(usize, usize, usize)> {
 
 /// 點右上角「建議 N」:跳到建議分支並展開，看得到每一項
 fn jump_to_suggestions(app: &mut App) -> bool {
-    let Some((idx, _, open)) = suggestions(&app.plan) else {
+    let Some((idx, _, open)) = suggestions(&app.plan, &app.pin) else {
         return true;
     };
     app.jump_note = Some(format!("跳到:建議(還沒完成 {open} 項)"));
@@ -460,6 +490,14 @@ fn shadow_badge(s: Option<&Savings>) -> Option<String> {
 
 impl App {
     /// 紀錄檔沒變(修改時間一樣)就不重讀;回傳有沒有換資料
+    /// 清除篩選後的樣子:非艦長畫面仍固定在本席
+    fn base_filter(&self) -> Filter {
+        Filter {
+            seat: self.pin.join(","),
+            ..Filter::default()
+        }
+    }
+
     fn load_shadow(&mut self, path: &Path, cache: &Path) -> bool {
         let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         if m.is_some() && m == self.shadow_mtime {
@@ -480,6 +518,10 @@ impl App {
             shadow::name_runs_cached(dir, cache, &key, s);
         }
         let changed = s != self.shadow;
+        // 非艦長畫面:影子續跑只算這幾席省的(右上角、樹上分支、跳轉的次數都從這份算)
+        if let Some(s) = s.as_mut() {
+            pin_saves(s, &self.pin);
+        }
         self.shadow = s;
         self.shadow_mtime = m;
         changed
@@ -598,6 +640,16 @@ impl App {
     }
 }
 
+/// 非艦長畫面(pin 不空):影子續跑只留這幾席省的,總時間跟著重算;艦長畫面原樣
+fn pin_saves(s: &mut Savings, pin: &[String]) {
+    if pin.is_empty() {
+        return;
+    }
+    s.saves
+        .retain(|e| e.seat().is_some_and(|x| pin.iter().any(|p| p == x)));
+    s.total_s = s.saves.iter().map(|e| e.saved_s).sum();
+}
+
 /// 點右上角「影子續跑」:跳到樹上的影子續跑分支並展開
 fn jump_to_shadow(app: &mut App) -> bool {
     let Some(idx) = app.plan.nodes.iter().position(|n| n.id == SHADOW_ID) else {
@@ -627,7 +679,7 @@ fn select(app: &mut App, idx: usize) {
         .iter()
         .any(|r| r.idx == idx)
     {
-        app.filter = Filter::default();
+        app.filter = app.base_filter();
     }
 }
 
@@ -719,6 +771,8 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     let grey = Some(Color::DarkGrey);
     let seat = if f.seat.is_empty() {
         "席:全部(s)".to_string()
+    } else if !app.pin.is_empty() {
+        format!("席:{}(固定)", app.pin.join(","))
     } else {
         format!("席:{}", f.seat)
     };
@@ -1031,7 +1085,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     }
     let p = &app.plan;
-    let sugg_counts = suggestions(p);
+    let sugg_counts = suggestions(p, &app.pin);
     let ix = index(p);
     if ix.root.is_none() {
         out.push(vec![seg("進度資料是空的")]);
@@ -1445,6 +1499,8 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
         (KeyCode::Char('o'), _) => app.filter.only_open = !app.filter.only_open,
         (KeyCode::Char('x'), _) => app.filter.only_ext = !app.filter.only_ext,
         (KeyCode::Char('n'), _) => app.filter.orphan = !app.filter.orphan,
+        // 非艦長畫面固定本席:鍵盤 s 與點工具列「席」(on_click 送 s)都停在這裡
+        (KeyCode::Char('s'), _) if !app.pin.is_empty() => {}
         (KeyCode::Char('s'), _) => {
             let mut owners: Vec<String> = app
                 .plan
@@ -1459,7 +1515,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
             let i = cyc.iter().position(|s| *s == app.filter.seat).unwrap_or(0);
             app.filter.seat = cyc[(i + 1) % cyc.len()].clone();
         }
-        (KeyCode::Char('r'), _) => app.filter = Filter::default(),
+        (KeyCode::Char('r'), _) => app.filter = app.base_filter(),
         (KeyCode::Char('['), _) => {
             app.show_tree = !app.show_tree;
             if !app.show_tree {
@@ -1508,11 +1564,15 @@ fn main() {
         shadow_mtime: None,
         fixes: None,
         fixes_mtime: None,
+        pin: Vec::new(),
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
+    // --only-seat 沒帶 --seat:最上面兩行主軸也用同一席(清單第一席)
     if args.seat.is_none() {
-        args.seat = tmux_seat();
+        args.seat = args.only_seat.first().cloned().or_else(tmux_seat);
     }
+    app.pin = args.only_seat.clone();
+    app.filter = app.base_filter();
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
@@ -1713,6 +1773,7 @@ mod tests {
             shadow_mtime: None,
             fixes: None,
             fixes_mtime: None,
+            pin: Vec::new(),
         }
     }
 
@@ -1777,6 +1838,105 @@ mod tests {
         let f = frame(&app, 120, 30);
         assert!(!text(&f, 1).contains("建議"));
         assert!(app.hits.borrow().sugg.is_none());
+    }
+
+    /// Andy 11-13 非艦長畫面(519d0 意見 1–5):--only-seat 固定本席(可多席);鍵盤 s 與點工具列「席」都不輪替、
+    /// r 不清掉;全艙那一列不畫;建議徽章與影子續跑只算這幾席
+    #[test]
+    fn only_seat_pins_the_tree_to_those_seats() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"cabin":"dab9","seats":{"a9136":{"cabin":"dab9"},"043dd":{"cabin":"dab9"}},
+              "nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+              {"id":"A","parent":"V","kind":"task","title":"本席的","owner":"a9136"},
+              {"id":"B","parent":"V","kind":"task","title":"別席的","owner":"043dd"},
+              {"id":"C","parent":"V","kind":"task","title":"分身繼承的","owner":"a63ab"},
+              {"id":"S","parent":"V","kind":"group","title":"建議"},
+              {"id":"S1","parent":"S","kind":"suggestion","title":"一","owner":"a9136","status":"實查通過"},
+              {"id":"S2","parent":"S","kind":"suggestion","title":"二","owner":"043dd"},
+              {"id":"S3","parent":"S","kind":"suggestion","title":"三","owner":"043dd"}]}"#,
+        )
+        .expect("sample parses");
+        app.open.insert("V".into());
+        app.pin = seat_list("a9136, a63ab").expect("list");
+        app.filter = app.base_filter();
+        let ids = |app: &App| -> Vec<String> {
+            let ix = index(&app.plan);
+            flatten(&app.plan, &ix, &app.open, &app.filter)
+                .iter()
+                .map(|r| app.plan.nodes[r.idx].id.clone())
+                .collect()
+        };
+        let want = ["V", "A", "C", "S"];
+        assert_eq!(ids(&app), want, "only the pinned seats' nodes and parents");
+        // 鍵盤 s、r
+        for k in ['s', 's', 'r'] {
+            assert!(on_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(k), KeyModifiers::NONE)
+            ));
+            assert_eq!(app.filter.seat, "a9136,a63ab", "{k} keeps the pinned seats");
+            assert_eq!(ids(&app), want, "{k} does not show another seat");
+        }
+        // 滑鼠點工具列「席」(on_click 找字 ⇒ 送 s)
+        let _ = frame(&app, 140, 30);
+        let h = app.hits.borrow().clone();
+        let ty = h.toolbar_y.expect("toolbar");
+        assert!(h.toolbar.contains("席:a9136,a63ab(固定)"), "{}", h.toolbar);
+        let sx = str_width(&h.toolbar[..h.toolbar.find("席:").expect("seat item")]);
+        assert!(on_click(&mut app, sx + 1, ty));
+        assert_eq!(
+            app.filter.seat, "a9136,a63ab",
+            "a click on 席 keeps the pinned seats"
+        );
+        // 全艙那一列不畫;建議只算本席(1 項,做完 1)
+        assert!(fleet_of(&app, 0).is_empty(), "no fleet row on a seat view");
+        assert_eq!(
+            suggestions(&app.plan, &app.pin).map(|t| (t.1, t.2)),
+            Some((1, 0))
+        );
+        app.mainline = Some(Mainline::default());
+        let f = frame(&app, 140, 30);
+        let top: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert!(top.contains("建議 ✓1/!0"), "{top}");
+        // 影子續跑只留本席省的
+        let save = |name: &str, saved_s: f64| shadow::Save {
+            at: 0,
+            saved_s,
+            ran: 1,
+            reused: 1,
+            with_s: 1.0,
+            repo: String::new(),
+            name: Some(name.into()),
+        };
+        let mut sv = Savings {
+            total_s: 30.0,
+            saves: vec![save("wt-a9136", 10.0), save("wt-043dd", 20.0)],
+        };
+        pin_saves(&mut sv, &app.pin);
+        assert_eq!((sv.saves.len(), sv.total_s), (1, 10.0));
+        // 艦長畫面(沒有 pin):s 照常輪到別席、全艙與建議照全部算
+        app.pin.clear();
+        app.filter = app.base_filter();
+        assert_eq!(ids(&app), ["V", "A", "B", "C", "S"]);
+        assert!(on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)
+        ));
+        assert_ne!(app.filter.seat, "", "s cycles to a seat when not pinned");
+        assert_eq!(
+            fleet_of(&app, 0).len(),
+            2,
+            "the captain view has the fleet row"
+        );
+        assert_eq!(
+            suggestions(&app.plan, &app.pin).map(|t| (t.1, t.2)),
+            Some((1, 2))
+        );
+        // 參數:空項是錯,不靜默變全部
+        assert!(seat_list("a9136,").is_err());
+        assert!(seat_list("").is_err());
     }
 
     /// Andy 11-12 13:1x:有 --seat ⇒ 最上面兩行是一開始 / 目前主軸，下一行空白，再來才是選單;點選單照樣對得到

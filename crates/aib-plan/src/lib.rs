@@ -166,9 +166,12 @@ fn matches(n: &Node, f: &Filter) -> bool {
             return false;
         }
     }
+    // 席可以是逗號清單(非艦長畫面固定本席 + 分身繼承的席,例 519d0,a63ab):任一席負責或協作就留
     if !f.seat.is_empty()
-        && n.owner.as_deref() != Some(f.seat.as_str())
-        && !n.with.iter().any(|w| w == &f.seat)
+        && !f
+            .seat
+            .split(',')
+            .any(|s| n.owner.as_deref() == Some(s) || n.with.iter().any(|w| w == s))
     {
         return false;
     }
