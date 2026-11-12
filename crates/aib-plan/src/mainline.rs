@@ -17,32 +17,72 @@ pub struct Entry {
     pub started_at: i64,
     /// 這一筆最早被看到的時間(秒)
     pub seen: i64,
-    /// 判斷(aib now --track/--why/--idea);只有目前那筆讀得到，歷史不記
+    /// 判斷(aib now --track/--why/--idea);只有目前那筆讀得到
     #[serde(default, skip_serializing)]
     pub review: Option<Review>,
+    /// 歷史那一行回報的主軸符合度(aib now 回報判斷時才有;算校正次數用)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<u8>,
+}
+
+/// 主軸符合度 ≥ 這個算在主軸上(aib now ON_TRACK_MIN 同一個門檻)
+pub const ON_TRACK_MIN: u8 = 70;
+
+/// aib now 的 --track:0~100 數字;舊寫法 "on" = 100、"off" = 0;其他不收
+pub fn track_of(v: &serde_json::Value) -> Option<u8> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().filter(|x| *x <= 100).map(|x| x as u8),
+        serde_json::Value::String(s) if s == "on" => Some(100),
+        serde_json::Value::String(s) if s == "off" => Some(0),
+        _ => None,
+    }
 }
 
 /// Andy 11-12 13:3x:每個階段完成都要回報 —— 有沒有偏離主軸、為什麼這麼做、主人沒想到的建議
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Review {
-    /// "on" = 在主軸上、"off" = 偏離
-    pub track: String,
+    /// 跟主軸的符合度 0~100(Andy 11-12 13:4x:用百分比)
+    pub pct: u8,
     pub why: String,
     pub idea: String,
-    #[serde(default)]
     pub at: i64,
 }
 
 impl Review {
     pub fn on_track(&self) -> bool {
-        self.track == "on"
+        self.pct >= ON_TRACK_MIN
     }
+
+    fn from_json(v: &serde_json::Value) -> Option<Review> {
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Review {
+            pct: track_of(v.get("track")?)?,
+            why: s("why")?,
+            idea: s("idea")?,
+            at: v.get("at").and_then(|x| x.as_i64()).unwrap_or(0),
+        })
+    }
+}
+
+/// 校正次數(Andy 11-12 13:4x):今天回報的符合度從「偏離」(< ON_TRACK_MIN)回到主軸上(≥)幾次
+pub fn corrections(log: &[Entry], now: i64) -> u32 {
+    let ds = day_start(now);
+    let mut rows: Vec<&Entry> = log
+        .iter()
+        .filter(|e| e.seen >= ds && e.track.is_some())
+        .collect();
+    rows.sort_by_key(|e| e.seen);
+    rows.windows(2)
+        .filter(|w| w[0].track < Some(ON_TRACK_MIN) && w[1].track >= Some(ON_TRACK_MIN))
+        .count() as u32
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mainline {
     pub first: Option<Entry>,
     pub now: Option<Entry>,
+    /// 今天的校正次數(見 corrections)
+    pub corrections: u32,
 }
 
 /// 台北今天 00:00 的 epoch 秒
@@ -88,16 +128,19 @@ pub fn read_now(state_root: &Path, seat: &str) -> Option<Entry> {
         item,
         started_at: v.get("started_at").and_then(|x| x.as_i64()).unwrap_or(at),
         seen: at,
-        review: v
-            .get("review")
-            .and_then(|r| serde_json::from_value::<Review>(r.clone()).ok())
-            .filter(|r| matches!(r.track.as_str(), "on" | "off")),
+        review: v.get("review").and_then(Review::from_json),
+        track: None,
     })
 }
 
 pub fn parse_log(text: &str) -> Vec<Entry> {
     text.lines()
-        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            let mut e = serde_json::from_value::<Entry>(v.clone()).ok()?;
+            e.track = v.get("track").and_then(track_of);
+            Some(e)
+        })
         .collect()
 }
 
@@ -147,6 +190,7 @@ pub fn peek(state_root: &Path, seat: &str, now: i64) -> Mainline {
     ));
     Mainline {
         first: first_today(&log, cur.as_ref(), now),
+        corrections: corrections(&log, now),
         now: cur,
     }
 }
@@ -219,6 +263,7 @@ pub fn refresh(state_root: &Path, seat: &str, now: i64) -> Mainline {
     log.extend(parse_log(hist.as_deref().unwrap_or_default()));
     Mainline {
         first: first_today(&log, cur.as_ref(), now),
+        corrections: corrections(&log, now),
         now: cur,
     }
 }
@@ -236,6 +281,7 @@ mod tests {
             started_at,
             seen,
             review: None,
+            track: None,
         }
     }
 
@@ -336,17 +382,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("seat-now")).unwrap();
         let j = |track: &str| {
-            format!("{{\"item\":\"做 A\",\"started_at\":1,\"at\":2,\"review\":{{\"track\":\"{track}\",\"why\":\"因為\",\"idea\":\"無\",\"at\":2}}}}")
+            format!("{{\"item\":\"做 A\",\"started_at\":1,\"at\":2,\"review\":{{\"track\":{track},\"why\":\"因為\",\"idea\":\"無\",\"at\":2}}}}")
         };
-        std::fs::write(dir.join("seat-now/s3.json"), j("off")).unwrap();
+        std::fs::write(dir.join("seat-now/s3.json"), j("65")).unwrap();
         let r = read_now(&dir, "s3").unwrap().review.unwrap();
-        assert!(!r.on_track());
+        assert_eq!(r.pct, 65);
+        assert!(!r.on_track(), "70 以下算偏離");
         assert_eq!((r.why.as_str(), r.idea.as_str()), ("因為", "無"));
-        std::fs::write(dir.join("seat-now/s3.json"), j("maybe")).unwrap();
-        assert!(
-            read_now(&dir, "s3").unwrap().review.is_none(),
-            "track 只收 on / off"
+        std::fs::write(dir.join("seat-now/s3.json"), j("\"on\"")).unwrap();
+        assert_eq!(
+            read_now(&dir, "s3").unwrap().review.unwrap().pct,
+            100,
+            "舊寫法 on = 100"
         );
+        for bad in ["101", "-1", "\"maybe\"", "null"] {
+            std::fs::write(dir.join("seat-now/s3.json"), j(bad)).unwrap();
+            assert!(read_now(&dir, "s3").unwrap().review.is_none(), "{bad}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -354,13 +406,14 @@ mod tests {
     fn drift_hint_flags_on_track_claims_with_a_different_topic() {
         let rv = |track: &str| {
             Some(Review {
-                track: track.into(),
+                pct: if track == "on" { 90 } else { 30 },
                 why: "w".into(),
                 idea: "i".into(),
                 at: 0,
             })
         };
         let m = |first: &str, now: &str, track: &str| Mainline {
+            corrections: 0,
             first: Some(e(first, 1, 1)),
             now: Some(Entry {
                 review: rv(track),
@@ -380,6 +433,7 @@ mod tests {
             "on"
         )));
         let same_start = Mainline {
+            corrections: 0,
             first: Some(e("A 主題", 2, 2)),
             now: Some(Entry {
                 review: rv("on"),
@@ -387,6 +441,36 @@ mod tests {
             }),
         };
         assert!(!drift_hint(&same_start), "同一個主軸(開始時間相同)只是改字");
+    }
+
+    #[test]
+    fn corrections_count_returns_to_the_mainline_today() {
+        let ds = day_start(NOW);
+        let t = |seen: i64, track: Option<u8>| Entry {
+            track,
+            ..e("x", 1, seen)
+        };
+        let log = parse_log(&format!(
+            "{{\"item\":\"x\",\"started_at\":1,\"seen\":{},\"track\":40}}\n{{\"item\":\"x\",\"started_at\":1,\"seen\":{},\"track\":\"on\"}}\n",
+            ds + 10,
+            ds + 20
+        ));
+        assert_eq!(log[0].track, Some(40));
+        assert_eq!(log[1].track, Some(100));
+        assert_eq!(corrections(&log, NOW), 1);
+        let log = vec![
+            t(ds - 100, Some(10)), // 昨天：不算
+            t(ds + 1, Some(90)),
+            t(ds + 2, None), // 只換主軸、沒回報：跳過
+            t(ds + 3, Some(50)),
+            t(ds + 4, Some(80)), // 1
+            t(ds + 5, Some(60)),
+            t(ds + 6, Some(69)),
+            t(ds + 7, Some(70)), // 2
+            t(ds + 8, Some(100)),
+        ];
+        assert_eq!(corrections(&log, NOW), 2);
+        assert_eq!(corrections(&[], NOW), 0);
     }
 
     #[test]

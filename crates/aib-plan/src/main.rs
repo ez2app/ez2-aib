@@ -439,13 +439,31 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
-/// 判斷標籤(放在目前主軸左邊)與它的顏色
-fn verdict(e: Option<&mainline::Entry>) -> (&'static str, Color) {
+/// 判斷(Andy 11-12 13:4x:用百分比)= 跟主軸的符合度;≥70 綠、40~69 黃、<40 紅、沒回報灰
+fn verdict(e: Option<&mainline::Entry>) -> (String, Color) {
     match e.and_then(|e| e.review.as_ref()) {
-        Some(r) if r.on_track() => ("判斷:主軸內", Color::Green),
-        Some(_) => ("判斷:偏離", Color::Red),
-        None => ("判斷:未回報", Color::DarkGrey),
+        Some(r) => (
+            format!("判斷 {}%", r.pct),
+            if r.on_track() {
+                Color::Green
+            } else if r.pct >= 40 {
+                Color::Yellow
+            } else {
+                Color::Red
+            },
+        ),
+        None => ("判斷 —".to_string(), Color::DarkGrey),
     }
+}
+
+/// 左欄固定寬(「判斷 100%」+ 一格),兩行主軸字頭對齊、校正次數排在百分比正下方
+const VERDICT_W: usize = 10;
+
+fn left(text: &str) -> String {
+    format!(
+        "{text}{}",
+        " ".repeat(VERDICT_W.saturating_sub(str_width(text)))
+    )
 }
 
 /// 全艙判斷：每席一行 —— @席 判斷 一開始(時)：… → 目前(時)：…;自稱主軸內但字面換題 ⇒ ⚠ 換題?
@@ -460,7 +478,13 @@ fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
             let (v, c) = verdict(m.now.as_ref());
             let mut row = vec![
                 seg(format!("  @{code} ")),
-                Seg(format!("{v} "), Some(c), false, true),
+                Seg(left(&v), Some(c), false, true),
+                Seg(
+                    format!("校正{} ", m.corrections),
+                    Some(Color::DarkGrey),
+                    false,
+                    false,
+                ),
                 Seg(
                     format!("一開始{} → ", item(m.first.as_ref())),
                     Some(Color::DarkGrey),
@@ -505,7 +529,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let now_t = mainline::stamp(now, now);
     let (vtext, vcolor) = verdict(m.now.as_ref());
-    let lead = str_width(vtext) + 1;
+    let lead = VERDICT_W;
     let body = |label: &str, e: Option<&mainline::Entry>| -> [Seg; 2] {
         let (start, item) = match e {
             Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
@@ -523,7 +547,7 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     };
     let mut first = vec![seg(" ".repeat(lead))];
     first.extend(body("本席AI一開始主軸", m.first.as_ref()));
-    let mut cur = vec![Seg(format!("{vtext} "), Some(vcolor), false, true)];
+    let mut cur = vec![Seg(left(&vtext), Some(vcolor), false, true)];
     cur.extend(body("本席AI目前開發主軸", m.now.as_ref()));
     let review = m.now.as_ref().and_then(|e| e.review.as_ref());
     if review.is_some() {
@@ -534,7 +558,18 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
             true,
         ));
     }
-    let mut rows = vec![first, cur];
+    // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
+    let fix = vec![Seg(
+        left(&format!("校正 {} 次", m.corrections)),
+        Some(if m.corrections > 0 {
+            Color::Yellow
+        } else {
+            Color::DarkGrey
+        }),
+        false,
+        false,
+    )];
+    let mut rows = vec![first, cur, fix];
     if let (Some(r), true) = (review, open) {
         let pad = " ".repeat(lead + 2);
         let text_w = w.saturating_sub(lead + 2);
@@ -1186,10 +1221,11 @@ mod tests {
             started_at: ds + 540,
             seen: ds + 540,
             review,
+            track: None,
         };
         app.mainline = Some(Mainline {
             first: Some(entry("席位接續", None)),
-            now: None,
+            ..Default::default()
         });
         let f = frame(&app, 100, 40);
         let text =
@@ -1205,54 +1241,67 @@ mod tests {
         );
         assert!(text(&f, 1).ends_with("席位接續"));
         assert!(
-            text(&f, 2).starts_with("判斷:未回報 本席AI目前開發主軸(—)/"),
+            text(&f, 2).starts_with(&format!("{}本席AI目前開發主軸(—)/", left("判斷 —"))),
             "{}",
             text(&f, 2)
         );
         assert!(!text(&f, 2).contains('▸'), "沒有判斷內容就沒有開合");
-        assert!(text(&f, 3).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(4));
-        // 兩行的主軸字頭對齊(第一行左邊補判斷標籤的寬度)
-        assert_eq!(
-            str_width(&text(&f, 1)[..text(&f, 1).find('本').unwrap()]),
-            str_width("判斷:未回報 ")
-        );
+        // Andy 13:4x:百分比正下方是校正次數
+        assert_eq!(text(&f, 3), left("校正 0 次"));
+        assert!(text(&f, 4).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(5));
+        // 兩行的主軸字頭對齊
+        for i in [1, 2] {
+            assert_eq!(
+                str_width(&text(&f, i)[..text(&f, i).find('本').unwrap()]),
+                VERDICT_W
+            );
+        }
 
-        // 有判斷 ⇒ 偏離標紅、行尾 ▸,預設收合
-        app.mainline = Some(Mainline {
-            first: Some(entry("席位接續", None)),
-            now: Some(entry(
-                "做 B",
-                Some(mainline::Review {
-                    track: "off".into(),
-                    why: "因為 Andy 要".into(),
-                    idea: "建議 X".into(),
-                    at: ds + 600,
-                }),
-            )),
-        });
+        // 有判斷 ⇒ 百分比 + 顏色、行尾 ▸,預設收合
+        let review = |pct: u8| {
+            Some(mainline::Review {
+                pct,
+                why: "因為 Andy 要".into(),
+                idea: "建議 X".into(),
+                at: ds + 600,
+            })
+        };
+        for (pct, color) in [
+            (85, Color::Green),
+            (70, Color::Green),
+            (69, Color::Yellow),
+            (39, Color::Red),
+        ] {
+            app.mainline = Some(Mainline {
+                first: Some(entry("席位接續", None)),
+                now: Some(entry("做 B", review(pct))),
+                corrections: 2,
+            });
+            let f = frame(&app, 100, 40);
+            assert_eq!(f[2][0].0.trim_end(), format!("判斷 {pct}%"));
+            assert_eq!(f[2][0].1, Some(color), "{pct}");
+            assert_eq!(text(&f, 3), left("校正 2 次"));
+        }
         let f = frame(&app, 100, 40);
-        let cur = &f[2];
-        assert_eq!(cur[0].0, "判斷:偏離 ");
-        assert_eq!(cur[0].1, Some(Color::Red));
         assert!(text(&f, 2).ends_with(" ▸"));
-        assert!(text(&f, 3).is_empty());
-        let y = app.hits.borrow().mainline_y;
-        assert_eq!(y, Some(2));
+        assert!(text(&f, 4).is_empty());
+        assert_eq!(app.hits.borrow().mainline_y, Some(2));
         // 點那一行 ⇒ 展開;再按 m ⇒ 收合
         assert!(on_click(&mut app, 3, 2));
         let f = frame(&app, 100, 40);
         assert!(text(&f, 2).ends_with(" ▾"));
+        assert_eq!(text(&f, 3), left("校正 2 次"));
         assert!(
-            text(&f, 3).contains("為什麼這麼做(回報 11-12 00:10)"),
+            text(&f, 4).contains("為什麼這麼做(回報 11-12 00:10)"),
             "{}",
-            text(&f, 3)
+            text(&f, 4)
         );
-        assert!(text(&f, 4).contains("因為 Andy 要"));
-        assert!(text(&f, 5).contains("有什麼是你沒想到、我建議的"));
-        assert!(text(&f, 6).contains("建議 X"));
-        assert!(text(&f, 7).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(8));
+        assert!(text(&f, 5).contains("因為 Andy 要"));
+        assert!(text(&f, 6).contains("有什麼是你沒想到、我建議的"));
+        assert!(text(&f, 7).contains("建議 X"));
+        assert!(text(&f, 8).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(9));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
@@ -1270,27 +1319,29 @@ mod tests {
                 .unwrap();
         let now = 1_794_460_800;
         app.now_secs = now;
-        let en = |item: &str, st: i64, track: Option<&str>| mainline::Entry {
+        let en = |item: &str, st: i64, pct: Option<u8>| mainline::Entry {
             item: item.into(),
             started_at: st,
             seen: st,
-            review: track.map(|t| mainline::Review {
-                track: t.into(),
+            review: pct.map(|pct| mainline::Review {
+                pct,
                 why: "w".into(),
                 idea: "i".into(),
                 at: st,
             }),
+            track: None,
         };
         app.mainline = Some(Mainline {
             first: Some(en("席位接續 v2 決定", 1, None)),
-            now: None,
+            ..Default::default()
         });
         app.fleet = vec![
             (
                 "aaaaa".into(),
                 Mainline {
                     first: Some(en("席位接續 v2 決定", 1, None)),
-                    now: Some(en("主機發熱三條修法", 2, Some("on"))),
+                    now: Some(en("主機發熱三條修法", 2, Some(90))),
+                    corrections: 1,
                 },
             ),
             ("bbbbb".into(), Mainline::default()),
@@ -1299,21 +1350,21 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙判斷 ▸ ⚠1"), "{}", text(&f, 1));
-        assert!(text(&f, 3).is_empty(), "預設收合");
+        assert!(text(&f, 4).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙判斷 ▾"));
-        let a = text(&f, 3);
-        assert!(a.starts_with("  @aaaaa 判斷:主軸內 一開始"), "{a}");
+        let a = text(&f, 4);
+        assert!(a.starts_with("  @aaaaa 判斷 90%  校正1 一開始"), "{a}");
         assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
         assert!(
-            text(&f, 4).starts_with("  @bbbbb 判斷:未回報"),
+            text(&f, 5).starts_with(&format!("  @bbbbb {}校正0 ", left("判斷 —"))),
             "{}",
-            text(&f, 4)
+            text(&f, 5)
         );
-        assert!(!text(&f, 4).contains('⚠'));
-        assert!(text(&f, 5).is_empty());
+        assert!(!text(&f, 5).contains('⚠'));
+        assert!(text(&f, 6).is_empty());
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
