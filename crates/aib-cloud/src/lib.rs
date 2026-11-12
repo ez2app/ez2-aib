@@ -42,6 +42,7 @@ extern crate alloc;
 extern crate std;
 pub mod arc;
 pub mod backup;
+pub mod cfonly;
 pub mod client;
 pub mod create;
 pub mod customer;

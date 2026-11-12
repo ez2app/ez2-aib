@@ -2948,6 +2948,8 @@
   "aib.now.help.why": "為什麼要這麼做(一句;階段完成交回時必填)",
   "aib.now.help.idea": "有什麼是主人沒想到、你建議的(沒有就寫「無」;階段完成交回時必填)",
   "aib.now.review_bad": "--track / --why / --idea 要三個一起給,--track 是 0~100 的符合度,--why / --idea 不能空白",
+  "aib.now.help.goal": "這一階段對應的目標:期望值表 A1、A4b… 或 開發計畫 E1、E6…;雜務(回 dm、交接、審查)寫 none 並配 --why",
+  "aib.now.goal_bad": "--goal 要寫 A<數字>(可帶小寫尾碼，例 A4b)、E<數字>,或 none;none 要配 --why 說是什麼雜務",
   "aib.now.auto_new": "主項目跟上一筆幾乎完全不同 ⇒ 當成新主軸，開始時間從現在算(只是改字就加 --started 'MM-DD HH:MM' 更正)",
   "aib.nowgate.review": "aib-now-gate:@{code} 這一階段完成了(步數做滿或【等回應】/【等你決定】),但還沒回報「判斷」。交回前補一行:\n  aib now \"<主項目>\" <n/m> --state <reply|decide> --track 0~100 --why \"為什麼要這麼做\" --idea \"有什麼是主人沒想到、你建議的(沒有寫 無)\"\n現在:{line}",
   "aib.now.help.state": "busy = 忙碌中(預設)/ reply = 等回應(等別席回信或交件)/ decide = 等你決定",
