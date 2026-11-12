@@ -84,6 +84,9 @@ pub struct Mainline {
     pub now: Option<Entry>,
     /// 今天的校正次數(見 corrections)
     pub corrections: u32,
+    /// 今天寫了幾次「給主人的總結」(aib summary)、做了幾次交接(aib handoff 收據)
+    pub summaries: u32,
+    pub handoffs: u32,
 }
 
 /// 台北今天 00:00 的 epoch 秒
@@ -170,6 +173,39 @@ pub fn first_today(log: &[Entry], cur: Option<&Entry>, now: i64) -> Option<Entry
         .or_else(|| cur.cloned())
 }
 
+/// 今天(台北)的總結次數與交接次數。只讀，讀不到就是 0。
+/// - 總結 = `<狀態根>/pending/to-maintainer-from-<席>-*.txt`(aib summary 每次寫一份),看檔案修改時間
+/// - 交接 = `<狀態根>/state/handoff/<席>.receipts.jsonl` 每行一張收據，看 ts
+pub fn day_counts(state_root: &Path, seat: &str, now: i64) -> (u32, u32) {
+    let ds = day_start(now);
+    let prefix = format!("to-maintainer-from-{seat}-");
+    let summaries = state_root
+        .parent()
+        .map(|r| r.join("pending"))
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .map(|it| {
+            it.filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .filter_map(|e| e.metadata().ok()?.modified().ok())
+                .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .filter(|d| d.as_secs() as i64 >= ds)
+                .count() as u32
+        })
+        .unwrap_or(0);
+    let handoffs = std::fs::read_to_string(
+        state_root
+            .join("handoff")
+            .join(format!("{seat}.receipts.jsonl")),
+    )
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+    .filter_map(|v| v.get("ts").and_then(|t| t.as_f64()))
+    .filter(|t| *t as i64 >= ds)
+    .count() as u32;
+    (summaries, handoffs)
+}
+
 /// 別席：只讀(不替別席記任何東西)。aib now 歷史 + aib-plan 舊記(有就讀)取今天最早
 pub fn peek(state_root: &Path, seat: &str, now: i64) -> Mainline {
     let cur = read_now(state_root, seat);
@@ -189,9 +225,12 @@ pub fn peek(state_root: &Path, seat: &str, now: i64) -> Mainline {
         )
         .unwrap_or_default(),
     ));
+    let (summaries, handoffs) = day_counts(state_root, seat, now);
     Mainline {
         first: first_today(&log, cur.as_ref(), now),
         corrections: corrections(&log, now),
+        summaries,
+        handoffs,
         now: cur,
     }
 }
@@ -262,9 +301,12 @@ pub fn refresh(state_root: &Path, seat: &str, now: i64) -> Mainline {
     }
     // 舊 aib 時期自己記的 + aib now 的歷史合在一起看，取今天最早那筆
     log.extend(parse_log(hist.as_deref().unwrap_or_default()));
+    let (summaries, handoffs) = day_counts(state_root, seat, now);
     Mainline {
         first: first_today(&log, cur.as_ref(), now),
         corrections: corrections(&log, now),
+        summaries,
+        handoffs,
         now: cur,
     }
 }
@@ -415,6 +457,8 @@ mod tests {
         };
         let m = |first: &str, now: &str, track: &str| Mainline {
             corrections: 0,
+            summaries: 0,
+            handoffs: 0,
             first: Some(e(first, 1, 1)),
             now: Some(Entry {
                 review: rv(track),
@@ -435,6 +479,8 @@ mod tests {
         )));
         let same_start = Mainline {
             corrections: 0,
+            summaries: 0,
+            handoffs: 0,
             first: Some(e("A 主題", 2, 2)),
             now: Some(Entry {
                 review: rv("on"),
@@ -472,6 +518,42 @@ mod tests {
         ];
         assert_eq!(corrections(&log, NOW), 2);
         assert_eq!(corrections(&[], NOW), 0);
+    }
+
+    #[test]
+    fn day_counts_summaries_and_handoffs_today() {
+        let root = std::env::temp_dir().join(format!("aib-plan-dc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let state = root.join("state");
+        std::fs::create_dir_all(state.join("handoff")).unwrap();
+        std::fs::create_dir_all(root.join("pending")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let ds = day_start(now);
+        std::fs::write(
+            state.join("handoff/s5.receipts.jsonl"),
+            format!(
+                "{{\"ts\": {}}}\n{{\"ts\": {}.5}}\nbad\n{{\"ts\": {}}}\n",
+                ds - 10,
+                ds + 1,
+                now
+            ),
+        )
+        .unwrap();
+        for f in [
+            "to-maintainer-from-s5-1112-1.txt",
+            "to-maintainer-from-s5-1112-2.txt",
+            "to-maintainer-from-s55-x.txt",
+            "SUMMARY-1d-s5.md",
+        ] {
+            std::fs::write(root.join("pending").join(f), "x").unwrap();
+        }
+        // 剛寫的檔 = 今天;交接 3 張裡 1 張是昨天、1 行壞的
+        assert_eq!(day_counts(&state, "s5", now), (2, 2));
+        assert_eq!(day_counts(&state, "zz", now), (0, 0));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

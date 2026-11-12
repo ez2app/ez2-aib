@@ -456,13 +456,16 @@ fn verdict(e: Option<&mainline::Entry>) -> (String, Color) {
     }
 }
 
-/// 左欄固定寬(「判斷 100%」+ 一格),兩行主軸字頭對齊、校正次數排在百分比正下方
-const VERDICT_W: usize = 10;
+/// 左欄固定寬：兩個小格(各 CELL_W),兩行主軸字頭對齊
+///   判斷 90%  總結 1 次
+///   校正 0 次 交接 1 次
+const CELL_W: usize = 11;
+const VERDICT_W: usize = CELL_W * 2;
 
-fn left(text: &str) -> String {
+fn cell(text: &str) -> String {
     format!(
         "{text}{}",
-        " ".repeat(VERDICT_W.saturating_sub(str_width(text)))
+        " ".repeat(CELL_W.saturating_sub(str_width(text)))
     )
 }
 
@@ -478,9 +481,12 @@ fn fleet_rows(fleet: &[(String, Mainline)], now: i64) -> Vec<Vec<Seg>> {
             let (v, c) = verdict(m.now.as_ref());
             let mut row = vec![
                 seg(format!("  @{code} ")),
-                Seg(left(&v), Some(c), false, true),
+                Seg(cell(&v), Some(c), false, true),
                 Seg(
-                    format!("校正{} ", m.corrections),
+                    format!(
+                        "校正{} 總結{} 交接{} ",
+                        m.corrections, m.summaries, m.handoffs
+                    ),
                     Some(Color::DarkGrey),
                     false,
                     false,
@@ -557,9 +563,22 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
         ]
     };
     let sep = || Seg(SEP.into(), Some(Color::DarkGrey), false, false);
+    let count = |label: &str, n: u32, warn: bool| {
+        Seg(
+            cell(&format!("{label} {n} 次")),
+            Some(if warn && n > 0 {
+                Color::Yellow
+            } else {
+                Color::DarkGrey
+            }),
+            false,
+            false,
+        )
+    };
     let mut first = vec![
         seg(MARGIN),
-        Seg(left(&vtext), Some(vcolor), false, true),
+        Seg(cell(&vtext), Some(vcolor), false, true),
+        count("總結", m.summaries, false),
         sep(),
     ];
     first.extend(body(labels[0], m.first.as_ref()));
@@ -572,16 +591,8 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     // 百分比正下方：校正次數(今天從偏離拉回主軸幾次)
     let mut cur = vec![
         seg(MARGIN),
-        Seg(
-            left(&format!("校正 {} 次", m.corrections)),
-            Some(if m.corrections > 0 {
-                Color::Yellow
-            } else {
-                Color::DarkGrey
-            }),
-            false,
-            false,
-        ),
+        count("校正", m.corrections, true),
+        count("交接", m.handoffs, false),
         sep(),
     ];
     cur.extend(body(labels[1], m.now.as_ref()));
@@ -1264,9 +1275,12 @@ mod tests {
         // Andy 13:3x:最上面空一行
         assert!(text(&f, 0).is_empty());
         // Andy 13:5x:左邊留白 + 固定寬判斷欄 + 分隔線;判斷在上、校正在正下方
-        let col = |t: &str| format!("{MARGIN}{}{SEP}", left(t));
+        let col = |a: &str, b: &str| format!("{MARGIN}{}{}{SEP}", cell(a), cell(b));
         assert!(
-            text(&f, 1).starts_with(&format!("{}起點 11-12 00:09  席位接續", col("判斷 —"))),
+            text(&f, 1).starts_with(&format!(
+                "{}起點 11-12 00:09  席位接續",
+                col("判斷 —", "總結 0 次")
+            )),
             "{}",
             text(&f, 1)
         );
@@ -1276,7 +1290,10 @@ mod tests {
             text(&f, 1)
         );
         assert!(
-            text(&f, 2).starts_with(&format!("{}目前 --  (還沒回報 aib now)", col("校正 0 次"))),
+            text(&f, 2).starts_with(&format!(
+                "{}目前 --  (還沒回報 aib now)",
+                col("校正 0 次", "交接 0 次")
+            )),
             "{}",
             text(&f, 2)
         );
@@ -1311,12 +1328,16 @@ mod tests {
                 first: Some(entry("席位接續", None)),
                 now: Some(entry("做 B", review(pct))),
                 corrections: 2,
+                summaries: 3,
+                handoffs: 1,
             });
             let f = frame(&app, 100, 40);
             assert_eq!(f[1][1].0.trim_end(), format!("判斷 {pct}%"));
             assert_eq!(f[1][1].1, Some(color), "{pct}");
             assert_eq!(f[2][1].0.trim_end(), "校正 2 次");
             assert_eq!(f[2][1].1, Some(Color::Yellow));
+            assert_eq!(f[1][2].0.trim_end(), "總結 3 次");
+            assert_eq!(f[2][2].0.trim_end(), "交接 1 次");
         }
         let f = frame(&app, 100, 40);
         assert!(text(&f, 2).ends_with(" ▸"));
@@ -1376,6 +1397,7 @@ mod tests {
                     first: Some(en("席位接續 v2 決定", 1, None)),
                     now: Some(en("主機發熱三條修法", 2, Some(90))),
                     corrections: 1,
+                    ..Default::default()
                 },
             ),
             ("bbbbb".into(), Mainline::default()),
@@ -1390,10 +1412,13 @@ mod tests {
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▾"));
         let a = text(&f, 3);
-        assert!(a.starts_with("  @aaaaa 判斷 90%  校正1 起點 "), "{a}");
+        assert!(
+            a.starts_with("  @aaaaa 判斷 90%  校正1 總結0 交接0 起點 "),
+            "{a}"
+        );
         assert!(a.contains("→ 目前") && a.ends_with("⚠ 換題?"), "{a}");
         assert!(
-            text(&f, 4).starts_with(&format!("  @bbbbb {}校正0 ", left("判斷 —"))),
+            text(&f, 4).starts_with(&format!("  @bbbbb {}校正0 總結0 交接0 ", cell("判斷 —"))),
             "{}",
             text(&f, 4)
         );
