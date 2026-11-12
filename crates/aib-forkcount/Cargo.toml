@@ -11,5 +11,9 @@ publish = false
 aib-procwatch = { path = "../aib-procwatch" }
 serde_json = "1"
 
+[target.'cfg(unix)'.dependencies]
+# getuid for the goal-2 fixture shim: it must not fork (it sits on the measured path)
+nix = { version = "0.31.3", features = ["user"] }
+
 [lints]
 workspace = true
