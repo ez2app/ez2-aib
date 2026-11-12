@@ -17,6 +17,8 @@ pub enum Cell {
     Fail,
     Running,
     Skip,
+    /// 被取消(macOS 75 分上限、換頭)— 不是程式紅;有同頭收據(FALLBACK)就算過(c477a 11-13)
+    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +99,8 @@ fn parse_check(c: &serde_json::Value) -> Check {
         (_, _, "PENDING" | "EXPECTED") => Cell::Running,
         ("COMPLETED", "SUCCESS" | "NEUTRAL", _) => Cell::Pass,
         ("COMPLETED", "SKIPPED", _) => Cell::Skip,
-        ("COMPLETED", _, _) => Cell::Fail, // FAILURE / CANCELLED / TIMED_OUT / ACTION_REQUIRED
+        ("COMPLETED", "CANCELLED", _) => Cell::Cancel,
+        ("COMPLETED", _, _) => Cell::Fail, // FAILURE / TIMED_OUT / ACTION_REQUIRED
         _ => Cell::Running,
     };
     Check {
@@ -232,7 +235,13 @@ pub enum Cover {
     Rejected(String),
 }
 
-pub fn coverage(pr: &Pr, reviews: &[(Review, Option<HashSet<String>>)]) -> Cover {
+/// `merged_main`:只把 main(或被疊那張)接進來的合併 commit —— remerge-diff 0 行 ⇒ 不用再審
+/// (f1fae 規則 merge-only 不重審;c477a 11-13:不然每次接 main 都冒一排假缺審)。
+pub fn coverage(
+    pr: &Pr,
+    reviews: &[(Review, Option<HashSet<String>>)],
+    merged_main: &HashSet<String>,
+) -> Cover {
     if pr.commits.is_empty() {
         return Cover::Unknown("gh 沒給 commit 清單".into());
     }
@@ -242,7 +251,12 @@ pub fn coverage(pr: &Pr, reviews: &[(Review, Option<HashSet<String>>)]) -> Cover
             return Cover::Rejected(r.file.clone());
         }
     }
-    let mut covered: HashSet<&str> = HashSet::new();
+    let mut covered: HashSet<&str> = pr
+        .commits
+        .iter()
+        .filter(|c| merged_main.contains(*c))
+        .map(String::as_str)
+        .collect();
     let mut unknown = None;
     for (r, set) in reviews {
         if !r.pass {
@@ -428,7 +442,23 @@ pub fn next_step(
     if !red.is_empty() {
         return (Who::Me, format!("CI 紅:{}", red.join(", ")));
     }
-    if !receipts.iter().any(|(_, r)| *r == Receipt::Ok) {
+    let ok_receipt = receipts.iter().any(|(_, r)| *r == Receipt::Ok);
+    let cancelled: Vec<&str> = pr
+        .checks
+        .iter()
+        .filter(|c| c.cell == Cell::Cancel)
+        .map(|c| c.name.as_str())
+        .collect();
+    if !cancelled.is_empty() && !ok_receipt {
+        return (
+            Who::Me,
+            format!(
+                "CI 取消:{},重跑或補同頭 FALLBACK 收據",
+                cancelled.join(", ")
+            ),
+        );
+    }
+    if !ok_receipt {
         return match receipts.first() {
             Some((f, Receipt::Bad(why))) => (Who::Me, format!("收據不算({why}):{f}")),
             _ => (Who::Me, "跑同頭收據(本機沒有這個頭的收據)".into()),
@@ -525,11 +555,16 @@ pub fn facts(r: &Row) -> String {
             Cell::Fail => 1,
             Cell::Running => 2,
             Cell::Skip => 3,
+            Cell::Cancel => 4,
         })
         .or_default() += 1;
     }
     let g = |k| n.get(&k).copied().unwrap_or(0);
-    let ci = format!("CI {}✓ {}✗ {}…", g(0), g(1), g(2));
+    let ci = if g(4) > 0 {
+        format!("CI {}✓ {}✗ {}… {}⊘", g(0), g(1), g(2), g(4))
+    } else {
+        format!("CI {}✓ {}✗ {}…", g(0), g(1), g(2))
+    };
     let w = match &r.watch {
         Some(h) if *h == r.pr.head => "守望 ✓",
         Some(_) => "守望 舊頭",
@@ -566,6 +601,10 @@ mod tests {
         Some(cs.iter().map(|c| c.to_string()).collect())
     }
 
+    fn none() -> HashSet<String> {
+        HashSet::new()
+    }
+
     fn rv(head: &str, pass: bool) -> Review {
         Review {
             file: format!("REVIEW-{}.md", &head[..8]),
@@ -594,11 +633,11 @@ mod tests {
             [
                 Cell::Running,
                 Cell::Pass,
-                Cell::Fail,
+                Cell::Cancel,
                 Cell::Skip,
                 Cell::Running
             ],
-            "取消算紅、略過不算"
+            "取消另算、略過不算"
         );
         assert_eq!(p.checks[4].name, "legacy");
         assert_eq!(p.checks[0].started, Some(1_794_522_071));
@@ -663,42 +702,53 @@ mod tests {
     #[test]
     fn every_commit_needs_a_passing_review() {
         let p = pr();
+        let n = none();
         // 只審到 C1 ⇒ 缺 H
-        let got = coverage(&p, &[(rv(C1, true), all(&[C1]))]);
+        let got = coverage(&p, &[(rv(C1, true), all(&[C1]))], &n);
         assert_eq!(got, Cover::Missing(vec![H.into()]));
         // 兩份湊滿 ⇒ 全涵蓋
-        assert_eq!(
-            coverage(&p, &[(rv(C1, true), all(&[C1])), (rv(H, true), all(&[H]))]),
-            Cover::All
-        );
+        let two = [(rv(C1, true), all(&[C1])), (rv(H, true), all(&[H]))];
+        assert_eq!(coverage(&p, &two, &n), Cover::All);
         // 範圍展不開 + 有缺 ⇒ 判不出來，不當成缺也不當成齊
-        assert!(matches!(
-            coverage(&p, &[(rv(C1, true), all(&[C1])), (rv(H, true), None)]),
-            Cover::Unknown(_)
-        ));
-        // 現在的頭被判不通過 ⇒ 不通過(就算舊的稿涵蓋了)
-        assert!(
-            matches!(
-                coverage(
-                    &p,
-                    &[(rv(H, true), all(&[C1, H])), (rv(H, false), all(&[C1, H]))]
-                ),
-                Cover::All
-            ),
-            "同頭有通過的稿就不算被擋"
-        );
-        assert!(matches!(
-            coverage(&p, &[(rv(H, false), all(&[C1, H]))]),
-            Cover::Rejected(_)
-        ));
+        let unk = [(rv(C1, true), all(&[C1])), (rv(H, true), None)];
+        assert!(matches!(coverage(&p, &unk, &n), Cover::Unknown(_)));
+        // 同頭有通過的稿就不算被擋
+        let both = [(rv(H, true), all(&[C1, H])), (rv(H, false), all(&[C1, H]))];
+        assert_eq!(coverage(&p, &both, &n), Cover::All);
+        // 現在的頭只有不通過的稿 ⇒ 不通過
+        let rej = [(rv(H, false), all(&[C1, H]))];
+        assert!(matches!(coverage(&p, &rej, &n), Cover::Rejected(_)));
         // 不通過的稿不算涵蓋
-        assert_eq!(
-            coverage(&p, &[(rv(C1, false), all(&[C1])), (rv(H, true), all(&[H]))]),
-            Cover::Missing(vec![C1.into()])
-        );
+        let mixed = [(rv(C1, false), all(&[C1])), (rv(H, true), all(&[H]))];
+        assert_eq!(coverage(&p, &mixed, &n), Cover::Missing(vec![C1.into()]));
+        // 只接 main 的合併 commit 不用審(c477a 11-13)
+        let only_c1 = [(rv(C1, true), all(&[C1]))];
+        let merged: HashSet<String> = [H.to_string()].into();
+        assert_eq!(coverage(&p, &only_c1, &merged), Cover::All);
         let mut empty = pr();
         empty.commits.clear();
-        assert!(matches!(coverage(&empty, &[]), Cover::Unknown(_)));
+        assert!(matches!(coverage(&empty, &[], &n), Cover::Unknown(_)));
+    }
+
+    #[test]
+    fn a_cancelled_cell_passes_only_with_a_same_head_receipt() {
+        let now = 1_794_523_000;
+        let mut p = pr();
+        p.checks.push(Check {
+            name: "rust (macos-latest)".into(),
+            cell: Cell::Cancel,
+            started: None,
+        });
+        let ok = vec![("RECEIPT-FALLBACK".to_string(), Receipt::Ok)];
+        let (who, t) = next_step(&p, &Cover::All, &[], Some(H), None, now);
+        assert_eq!(who, Who::Me);
+        assert!(t.starts_with("CI 取消:rust (macos-latest)"), "{t}");
+        assert_eq!(
+            next_step(&p, &Cover::All, &ok, Some(H), None, now).0,
+            Who::Clear
+        );
+        let r = build_row(p, Cover::All, ok, Some(H.into()), None, now);
+        assert!(facts(&r).contains("1⊘"), "{}", facts(&r));
     }
 
     #[test]

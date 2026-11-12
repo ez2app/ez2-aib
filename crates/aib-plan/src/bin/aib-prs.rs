@@ -11,7 +11,7 @@
 //! - 每 60 秒在背景執行緒拿一次快照(上一次還沒回來就不再開);畫面節奏靠 event::poll(ADR 0005,不 sleep)。
 //! - 審查稿只讀首行;收據只讀檔名含頭 8 碼的檔。
 
-use aib_plan::prs::{self, Cover, Pr, Receipt, Review, Row, Who};
+use aib_plan::prs::{self, Pr, Receipt, Review, Row, Who};
 use aib_plan::{fit, pad, str_width};
 use crossterm::{
     cursor,
@@ -98,6 +98,70 @@ fn rev_set(repo: &Path, b: &str, not: &str, cache: &mut Cache) -> Option<HashSet
     v
 }
 
+/// 這張 PR 裡「只把 base 接進來」的合併 commit:第二個父在 origin/<base> 上、remerge-diff 0 行
+/// (f1fae 規則 merge-only 不重審;c477a 11-13)。結果照合併 commit 快取(內容不會變)。
+fn merged_base(repo: &Path, p: &Pr, cache: &mut Cache) -> HashSet<String> {
+    let base = format!("origin/{}", p.base);
+    let Ok(list) = run(
+        "git",
+        &["rev-list", "--merges", "--parents", &p.head, "--not", &base],
+        repo,
+    ) else {
+        return HashSet::new();
+    };
+    let mut out = HashSet::new();
+    for l in list.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let (Some(m), Some(p2)) = (w.first(), w.get(2)) else {
+            continue;
+        };
+        let key = format!("merge:{m}");
+        let clean = match cache.sets.get(&key) {
+            Some(v) => v.is_some(),
+            None => {
+                let from_base = Command::new("git")
+                    .args(["merge-base", "--is-ancestor", p2, &base])
+                    .current_dir(repo)
+                    .stdin(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                let quiet = from_base
+                    && run("git", &["show", "--remerge-diff", "--format=", m], repo)
+                        .is_ok_and(|d| d.trim().is_empty());
+                cache.sets.insert(key, quiet.then(HashSet::new));
+                quiet
+            }
+        };
+        if clean {
+            out.insert(m.to_string());
+        }
+    }
+    out
+}
+
+/// 本機試合:`git merge-tree --write-tree`(不加 --quiet:c477a 踩過 --quiet 真衝突也回 0)。
+/// rc 0 = 乾淨、1 = 衝突、其他(物件不在)= 判不出來，沿用 gh 的 mergeable(gh 常回 UNKNOWN)
+fn local_mergeable(repo: &Path, p: &Pr) -> Option<&'static str> {
+    let st = Command::new("git")
+        .args([
+            "merge-tree",
+            "--write-tree",
+            &format!("origin/{}", p.base),
+            &p.head,
+        ])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    match st.code() {
+        Some(0) => Some("MERGEABLE"),
+        Some(1) => Some("CONFLICTING"),
+        _ => None,
+    }
+}
+
 fn first_line(p: &Path) -> Option<String> {
     let f = std::fs::File::open(p).ok()?;
     std::io::BufReader::new(f).lines().next()?.ok()
@@ -156,6 +220,11 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
     let watch = prs::watches(&ps);
     let mut rows = Vec::new();
     for p in picked {
+        let mut p = p.clone();
+        if let Some(m) = local_mergeable(&o.repo, &p) {
+            p.mergeable = m.to_string();
+        }
+        let p = &p;
         let mine_reviews: Vec<(Review, Option<HashSet<String>>)> = reviews
             .iter()
             .filter(|r| p.commits.contains(&r.head))
@@ -167,14 +236,18 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
                 (r.clone(), set)
             })
             .collect();
-        let cover = prs::coverage(p, &mine_reviews);
+        let merged = merged_base(&o.repo, p, cache);
+        let cover = prs::coverage(p, &mine_reviews, &merged);
         let short = &p.head[..p.head.len().min(8)];
         let mut receipts: Vec<(String, Receipt)> = receipt_files
             .iter()
             .filter(|(n, _)| !short.is_empty() && n.contains(short))
             .filter_map(|(n, path)| {
                 let text = std::fs::read_to_string(path).ok()?;
-                prs::judge_receipt(&text, &p.head).map(|r| (n.clone(), r))
+                // 檔名有頭 8 碼、內容卻不認得 ⇒ 標格式不明，不當成沒有(c477a 11-13)
+                let r = prs::judge_receipt(&text, &p.head)
+                    .unwrap_or_else(|| Receipt::Bad("格式不明".into()));
+                Some((n.clone(), r))
             })
             .collect();
         receipts.sort_by_key(|(_, r)| *r != Receipt::Ok);
