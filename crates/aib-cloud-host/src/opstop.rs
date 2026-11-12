@@ -154,6 +154,11 @@ struct Current {
     rec: Value,
     last: u64,
     every: u64,
+    /// Who approved the operation: a progress file that cannot be written is told the way
+    /// [`opstore::tell`] tells (a customer's key: the host's log, never their stderr).
+    approval: String,
+    /// Where the last write that failed was told (`None`: every write so far went in).
+    told: Option<opstore::Told>,
 }
 
 thread_local! {
@@ -169,17 +174,31 @@ fn put(path: &Path, rec: &Value) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn write_current(c: &Current) {
+fn write_current(c: &mut Current) {
     if let Err(e) = put(&c.path, &c.rec) {
         // a progress file that cannot be written does not stop the work; status then
-        // reads the journal's running line and the host lock instead
-        eprintln!("progress: {e}");
+        // reads the journal's running line and the host lock instead. The error names a
+        // host path: for a customer's key it goes to the host's log only (c477a S2 L1)
+        let ops_dir = c.path.parent().unwrap_or(Path::new("."));
+        c.told = Some(opstore::tell_in(
+            ops_dir,
+            &c.approval,
+            &format!("progress: {e}"),
+        ));
     }
 }
 
 /// Start the progress of `op_id`, run by process `pid`, at `now`; it writes at least every
 /// `every` seconds from here on. Called once the journal says `running`.
-pub fn begin(dir: &Path, op_id: &str, place: &opstore::LockPaths, pid: u32, now: u64, every: u64) {
+pub fn begin(
+    dir: &Path,
+    op_id: &str,
+    place: &opstore::LockPaths,
+    pid: u32,
+    now: u64,
+    every: u64,
+    approval: &str,
+) {
     let Ok(path) = progress_path(dir, op_id) else {
         return;
     };
@@ -198,13 +217,15 @@ pub fn begin(dir: &Path, op_id: &str, place: &opstore::LockPaths, pid: u32, now:
         "step_at": now,
         "updated_at": now,
     });
-    let c = Current {
+    let mut c = Current {
         path,
         rec,
         last: now,
         every,
+        approval: approval.to_owned(),
+        told: None,
     };
-    write_current(&c);
+    write_current(&mut c);
     CURRENT.with(|cur| *cur.borrow_mut() = Some(c));
 }
 
@@ -242,6 +263,12 @@ pub fn tick_at(now: u64) {
             }
         }
     });
+}
+
+/// Where the running operation's last failed progress write was told.
+#[cfg(test)]
+fn last_told() -> Option<opstore::Told> {
+    CURRENT.with(|cur| cur.borrow().as_ref().and_then(|c| c.told))
 }
 
 /// The operation in this thread has ended; the file stays for `op status` until
@@ -874,7 +901,7 @@ mod tests {
     fn a_long_step_still_writes_its_progress() {
         let p = place("beat");
         tree(&p);
-        begin(&p.ops, OP, &p.lock, MAIN, 1000, 30);
+        begin(&p.ops, OP, &p.lock, MAIN, 1000, 30, opstore::BY_LOCAL_ROOT);
         let read = || read_progress(&p.ops, OP).unwrap();
         let r = read();
         assert_eq!(r["step"], "running");
@@ -915,12 +942,47 @@ mod tests {
         let _ = fs::remove_dir_all(&p.root);
     }
 
+    /// A customer's key: a progress file that cannot be written names a host path, so it
+    /// is told to the host's log, not on the standard error the customer reads (c477a S2 L1).
+    #[test]
+    fn a_customer_key_progress_error_stays_off_stderr() {
+        let p = place("beat-customer");
+        tree(&p);
+        // the file cannot be written: a folder stands where its temporary copy goes
+        fs::create_dir_all(p.ops.join(format!("{OP}{PROGRESS_SUFFIX}.tmp"))).unwrap();
+        begin(
+            &p.ops,
+            OP,
+            &p.lock,
+            MAIN,
+            1000,
+            30,
+            opstore::BY_CUSTOMER_KEY,
+        );
+        assert_eq!(last_told(), Some(opstore::Told::Log));
+        step_at("install", 1001);
+        assert_eq!(last_told(), Some(opstore::Told::Log));
+        let notes = fs::read_to_string(p.ops.join(opstore::NOTES)).unwrap();
+        assert_eq!(notes.matches("progress: ").count(), 2, "{notes}");
+        end();
+        // root on the host still reads it on stderr, and nothing is logged for it
+        let q = place("beat-root");
+        tree(&q);
+        fs::create_dir_all(q.ops.join(format!("{OP}{PROGRESS_SUFFIX}.tmp"))).unwrap();
+        begin(&q.ops, OP, &q.lock, MAIN, 1000, 30, opstore::BY_LOCAL_ROOT);
+        assert_eq!(last_told(), Some(opstore::Told::Stderr));
+        assert!(!q.ops.join(opstore::NOTES).exists());
+        end();
+        let _ = fs::remove_dir_all(&p.root);
+        let _ = fs::remove_dir_all(&q.root);
+    }
+
     /// E11 (1) on a real child: the wait loops write while the child runs.
     #[test]
     fn waiting_on_a_child_keeps_the_progress_fresh() {
         let p = place("waits");
         proc_with(&p, MAIN, "S", SHELL, SHELL, 500);
-        begin(&p.ops, OP, &p.lock, MAIN, 0, 0);
+        begin(&p.ops, OP, &p.lock, MAIN, 0, 0, opstore::BY_LOCAL_ROOT);
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 0.2"]);
         crate::probe::run_capture(&mut cmd, Duration::from_secs(5)).unwrap();
@@ -928,7 +990,7 @@ mod tests {
             .as_u64()
             .unwrap();
         assert!(after_capture > 0, "run_capture's wait wrote");
-        begin(&p.ops, OP, &p.lock, MAIN, 0, 0);
+        begin(&p.ops, OP, &p.lock, MAIN, 0, 0, opstore::BY_LOCAL_ROOT);
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 0.2"]);
         crate::probe::run_bounded_input(&mut cmd, Duration::from_secs(5), 1024, b"").unwrap();
@@ -936,7 +998,7 @@ mod tests {
             .as_u64()
             .unwrap();
         assert!(after_bounded > 0, "run_bounded_input's wait wrote");
-        begin(&p.ops, OP, &p.lock, MAIN, 0, 0);
+        begin(&p.ops, OP, &p.lock, MAIN, 0, 0, opstore::BY_LOCAL_ROOT);
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 0.2"]);
         crate::probe::run_capture_bounded(&mut cmd, Duration::from_secs(5), 1024).unwrap();

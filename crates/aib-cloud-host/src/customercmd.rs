@@ -55,8 +55,8 @@ const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const FIREWALL_DIR: &str = "/etc/pve/firewall";
 /// The host's own list of words a site's log must not carry out (its addresses, the
 /// provider's name): one per line, root's, kept on the host and never in this repository.
-const HIDE_WORDS: &str = "/etc/ez2-cloud/hide-words";
-const HOSTNAME: &str = "/etc/hostname";
+pub(crate) const HIDE_WORDS: &str = "/etc/ez2-cloud/hide-words";
+pub(crate) const HOSTNAME: &str = "/etc/hostname";
 
 /// What of the host is hidden from a site's log (`aib_cloud::svc::HostHide`), from the
 /// host's short name (`/etc/hostname`), its full name (`hostname -f`, when it answers)
@@ -64,7 +64,7 @@ const HOSTNAME: &str = "/etc/hostname";
 /// read, or the list exists but could not be: a log that might name the host is not sent
 /// (E6). Without the full name the short one still does (33e28 L3); a host without a
 /// list only hides its names, the CT's number and its own paths.
-fn host_hide(
+pub(crate) fn host_hide(
     hostname: Option<&str>,
     full: Option<&str>,
     list: Result<Option<&str>, ()>,
@@ -483,7 +483,10 @@ fn answer_tenant_with(
                     held.0 += u64::from(spec.limits.cpulimit_x100);
                     held.1 += u64::from(spec.limits.memory_mb);
                 }
-                held.2 += rec.get("disk_gb").and_then(Value::as_u64).unwrap_or(0);
+                held.2 += rec
+                    .get("disk_gb")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::from(aib_cloud::site::START_DISK_GB));
             }
             let plan = aib_cloud::arc::PLAN;
             println!(

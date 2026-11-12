@@ -404,6 +404,71 @@ pub(crate) fn run_capture_bounded(
     Ok((String::from_utf8_lossy(&buf).into_owned(), false))
 }
 
+/// [`run_capture_bounded`] for a child that may rightly say a lot (a restore's progress):
+/// all of its standard output is read, only the last `keep` bytes of it are kept, and
+/// saying more is not a failure (c477a rwire2 L2). Anything but exit 0 is an error, and so
+/// is the time running out (its whole process group is then killed). Standard error is not
+/// read at all.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_capture_tail(
+    cmd: &mut Command,
+    timeout: Duration,
+    keep: usize,
+) -> Result<String, String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        if let Some(mut p) = pipe {
+            let mut chunk = [0u8; 16 * 1024];
+            while let Ok(n @ 1..) = p.read(&mut chunk) {
+                tail.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                // drop the front only now and then, not on every read
+                if tail.len() > keep.saturating_mul(2) {
+                    let cut = tail.len().saturating_sub(keep);
+                    tail.drain(..cut);
+                }
+            }
+        }
+        let cut = tail.len().saturating_sub(keep);
+        tail.drain(..cut);
+        tail
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        crate::opstop::tick(); // E11: run_capture_tail
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    if !reader.is_finished() {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{:?}: timeout", cmd.get_program()));
+    }
+    let tail = reader.join().unwrap_or_default();
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status =
+        wait_with_timeout(&mut child, left).map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    kill_group(child.id());
+    if !status.success() {
+        return Err(format!("{:?} exited {status}", cmd.get_program()));
+    }
+    Ok(String::from_utf8_lossy(&tail).into_owned())
+}
+
 /// [`run_capture_bounded`] that also hands the child `input` on its standard input (and
 /// closes it): for what must never be in an argument list, such as a password. More than
 /// `max_bytes` of output is a failure, not a cut answer: a program that says more than it
@@ -1415,6 +1480,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
             Some("mask") => crate::sitemaskcmd::cmd(&args[2..]),
+            Some("leakcheck") => crate::leakcheckcmd::cmd(&args[2..]),
             Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
             Some("login-link") => crate::loginlink::cmd(&args[2..]),
             Some("quarantine") => {
@@ -1429,7 +1495,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | scan <domain> | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | login-link <domain> [--login <user>] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | scan <domain> | usage [--json] | mask <code> --plan | leakcheck <code> --out <file> | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | login-link <domain> [--login <user>] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
@@ -1534,42 +1600,42 @@ mod tests {
 
     #[test]
     fn h1_whitelist_refuses_each_defect() {
-        let good = cell("host-egress-dns", "host", "dns", "1.1.1.1", 53, "open");
+        let good = cell("host-egress-dns", "host", "dns", "192.0.2.53", 53, "open");
         assert_eq!(validate_plan(&json!([good.clone()])).unwrap().len(), 1);
         let bad = [
             ("empty", json!([])),
             ("not array", json!({})),
             (
                 "id uppercase",
-                json!([cell("X", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("X", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "id leading dash",
-                json!([cell("-a", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("-a", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct:0",
-                json!([cell("a", "ct:0", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:0", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct leading zero",
-                json!([cell("a", "ct:010", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:010", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct too long",
-                json!([cell("a", "ct:1234567890", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:1234567890", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "from garbage",
-                json!([cell("a", "host;id", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host;id", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "kind",
-                json!([cell("a", "host", "udp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "udp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ip shell",
-                json!([cell("a", "host", "tcp", "1.1.1.1; rm -rf /", 80, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53; rm -rf /", 80, "open")]),
             ),
             (
                 "ip hostname",
@@ -1577,27 +1643,27 @@ mod tests {
             ),
             (
                 "port range",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 70000, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 70000, "open")]),
             ),
             (
                 "port string",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": "80", "expect": "open"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": "80", "expect": "open"}]),
             ),
             (
                 "icmp with port",
-                json!([cell("a", "host", "icmp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "icmp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "tcp port 0",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 0, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 0, "open")]),
             ),
             (
                 "expect",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 80, "maybe")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 80, "maybe")]),
             ),
             (
                 "unknown key",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": 80, "expect": "open", "cmd": "x"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": 80, "expect": "open", "cmd": "x"}]),
             ),
             ("duplicate", json!([good.clone(), good.clone()])),
         ];
@@ -1619,7 +1685,7 @@ mod tests {
             "v6",
             "ct:101",
             "tcp",
-            "2606:4700:4700::1111",
+            "2001:db8::443",
             443,
             "blocked"
         )]))
@@ -1633,9 +1699,9 @@ mod tests {
             {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
             {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
             {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
-            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
+            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "192.0.2.53", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
+        assert_eq!(plan_fingerprint(&plan), "473e1dd2dde568f2");
     }
 
     #[test]
@@ -1758,7 +1824,7 @@ mod tests {
             "host must be an ip"
         );
         assert!(
-            parse_run(&["--host".into(), "1.1.1.1".into()]).is_err(),
+            parse_run(&["--host".into(), "192.0.2.53".into()]).is_err(),
             "plan required"
         );
     }

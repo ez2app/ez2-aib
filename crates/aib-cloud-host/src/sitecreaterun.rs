@@ -193,6 +193,45 @@ fn ask_state(places: &Places, ask: &Value, now: u64) -> &'static str {
     }
 }
 
+/// The customer's ask under `code` as an abandon sees it ([`crate::siteabandon`]): `None`
+/// when there is none, else its state now (`opening` while its run is waited for or still
+/// going). `Err` when it is there and cannot be read: an ask unread might be an opening.
+pub(crate) fn ask_now(places: &Places, code: &str, now: u64) -> Result<Option<&'static str>, ()> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let ask: Value = serde_json::from_str(&text).map_err(|_| ())?;
+    if ask.get("site").and_then(Value::as_str) != Some(code) {
+        return Err(());
+    }
+    Ok(Some(ask_state(places, &ask, now)))
+}
+
+/// The ask of an abandoned opening, stopped with `why: abandoned` (c477a abandon L1). It is
+/// kept, not removed: the code it holds stays given ([`codes_given`]). No ask is nothing to
+/// do; one that cannot be read is an error.
+pub(crate) fn stop_ask_abandoned(places: &Places, code: &str, now: u64) -> Result<(), String> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut ask: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let obj = ask
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: not an ask", path.display()))?;
+    obj.insert("state".to_owned(), json!("stopped"));
+    obj.insert("why".to_owned(), json!("abandoned"));
+    obj.insert("at".to_owned(), json!(now));
+    // kept, not removed: the code stays given
+    rewrite_ask(&places.asked, code, &ask)
+}
+
 fn first_host(rec: &Value) -> Option<&str> {
     rec.get("hosts")?.as_str()?.split(',').next().map(str::trim)
 }
@@ -232,10 +271,12 @@ fn opening_of(
 /// Every code given: live, removed and opening sites, and every ask.
 fn codes_given(places: &Places) -> Option<Vec<String>> {
     let mut out = Vec::new();
+    let abandoned = crate::siteabandon::abandoned_dir(&places.creating);
     for dir in [
         &places.records,
         &places.removed,
         &places.creating,
+        &abandoned,
         &places.asked,
     ] {
         for r in sitecreatecmd::read_records(dir)? {
@@ -381,7 +422,7 @@ fn step_after(done: Option<&str>) -> Option<&'static str> {
 /// What a customer sees of their opening under `code`: `None` unless there is an ask of
 /// theirs under it. `state` is `opening`, `open` or `stopped`; `step_done` is the last step
 /// done (none before the clone); `stopped_at` the step it stopped at, when it stopped and
-/// that is known.
+/// that is known. An opening that was abandoned adds `why: abandoned` and its `domain`.
 pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<Value> {
     if !aib_cloud::site::valid_code(code) {
         return None;
@@ -411,6 +452,11 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
     if kept.is_some() && state == "opening" {
         state = "stopped";
     }
+    // an opening that got to the end is open, whatever its ask still says: a person's
+    // `--continue` after a stop ends it without writing the ask again (E1 audit #5)
+    if opened {
+        state = "open";
+    }
     let stopped_at = (state == "stopped").then(|| {
         kept.or_else(|| {
             ask.get("stopped_at")
@@ -419,12 +465,20 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
         })
         .or_else(|| step_after(step_done.as_deref()).map(str::to_owned))
     });
-    Some(json!({
+    let mut view = json!({
         "site": code,
         "state": state,
         "step_done": step_done,
         "stopped_at": stopped_at.flatten(),
-    }))
+    });
+    // an opening we abandoned says so, with the domain it was for: the customer's side
+    // words it (HUMAN-PASTE-4542e-1111 21, Andy 11-12 12:1x). No other stop says why.
+    let gave_up = ask.get("why").and_then(Value::as_str) == Some("abandoned");
+    if gave_up && state == "stopped" {
+        view["why"] = json!("abandoned");
+        view["domain"] = ask.get("domain").cloned().unwrap_or(Value::Null);
+    }
+    Some(view)
 }
 
 /// How long after it opened a site's `status` answers that it opened, with what the
@@ -743,6 +797,63 @@ mod tests {
                 boot_id: d.join("boot_id"),
             },
         }
+    }
+
+    /// An abandoned opening's code is never given again, though nothing holds it.
+    #[test]
+    fn an_abandoned_openings_code_stays_given() {
+        let places = scratch("abandoned");
+        let gone = crate::siteabandon::abandoned_dir(&places.creating);
+        sitecreatecmd::write_record(&gone, "s-gone01", &json!({"site": "s-gone01"})).unwrap();
+        let taken = codes_given(&places).unwrap();
+        assert!(taken.iter().any(|c| c == "s-gone01"));
+        let _ = fs::remove_dir_all(places.asked.parent().unwrap());
+    }
+
+    /// An abandoned opening's ask reads stopped, why abandoned, and is kept: its code stays
+    /// given.
+    #[test]
+    fn an_abandoned_ask_is_stopped_kept_and_its_code_given() {
+        let p = scratch("askgone");
+        let ask = json!({"site": "s-gone02", "domain": "gone.example.test", "tenant_id": "t-aaa",
+            "state": "running", "holder": null, "asked_at": NOW});
+        write_new_ask(&p.asked, "s-gone02", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-gone02", NOW), Ok(Some("stopped")));
+        // stopped but not abandoned: no why, no domain
+        let before = progress(&p, "t-aaa", "s-gone02", NOW + 1).unwrap();
+        assert_eq!(before["state"], "stopped");
+        assert!(before.get("why").is_none() && before.get("domain").is_none());
+        stop_ask_abandoned(&p, "s-gone02", NOW + 5).unwrap();
+        let kept = read_json(&p.asked.join("s-gone02.json")).unwrap();
+        assert_eq!(kept["state"], "stopped");
+        assert_eq!(kept["why"], "abandoned");
+        assert_eq!(kept["domain"], "gone.example.test");
+        assert!(codes_given(&p).unwrap().iter().any(|c| c == "s-gone02"));
+        let told = progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap();
+        assert_eq!(told["state"], "stopped");
+        // the customer's side words it (HUMAN-PASTE-4542e-1111 21): why, and for which domain
+        assert_eq!(told["why"], "abandoned");
+        assert_eq!(told["domain"], "gone.example.test");
+        // no ask: nothing to stop, nothing to tell
+        stop_ask_abandoned(&p, "s-none01", NOW).unwrap();
+        assert_eq!(ask_now(&p, "s-none01", NOW), Ok(None));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
+    }
+
+    /// An ask waited for is an opening; one that cannot be read is not told.
+    #[test]
+    fn an_ask_is_seen_opening_or_not_told() {
+        let p = scratch("asknow");
+        let ask = json!({"site": "s-wait01", "domain": "wait.example.test", "state": "waiting", "asked_at": NOW});
+        write_new_ask(&p.asked, "s-wait01", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-wait01", NOW + 1), Ok(Some("opening")));
+        assert_eq!(
+            ask_now(&p, "s-wait01", NOW + START_GRACE_S + 1),
+            Ok(Some("stopped"))
+        );
+        fs::write(p.asked.join("s-bad001.json"), "{").unwrap();
+        assert_eq!(ask_now(&p, "s-bad001", NOW), Err(()));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
     }
 
     /// A process `pid` started at `start` in the scratch `/proc`.
@@ -1245,6 +1356,49 @@ mod tests {
         let mut again = fake(&p);
         assert!(ran(&p, &code, &mut again).is_err());
         assert!(again.calls.is_empty());
+    }
+
+    /// Stopped on a failure, then carried on to the end by a person (`--continue`, which
+    /// does not write the ask): the customer sees it open, not stopped (E1 audit #5).
+    #[test]
+    fn a_stop_carried_on_by_a_person_reads_as_open() {
+        let p = scratch("run-continued");
+        let code = asked(&p);
+        let mut steps = fake(&p);
+        steps.carry = vec![Err("license_unknown: the key is not taken".to_owned())];
+        steps.reach = Some("identity");
+        assert_eq!(ran(&p, &code, &mut steps), Ok("stopped"));
+        assert_eq!(ask_on(&p, &code)["state"], "stopped");
+        // the person's --continue: the opening record becomes the opened one
+        fs::rename(
+            p.creating.join(format!("{code}.json")),
+            p.opened.join(format!("{code}.json")),
+        )
+        .unwrap();
+        let seen = progress(&p, T, &code, NOW + 20).unwrap();
+        assert_eq!(seen["state"], "open");
+        assert_eq!(seen["step_done"], "health");
+        assert_eq!(seen["stopped_at"], Value::Null);
+        // an ask that reads as anything else (failed, a word unknown) is open too
+        let mut ask = ask_on(&p, &code);
+        ask["state"] = json!("failed");
+        rewrite_ask(&p.asked, &code, &ask).unwrap();
+        assert_eq!(progress(&p, T, &code, NOW + 20).unwrap()["state"], "open");
+    }
+
+    /// Stopped and not carried on yet: still stopped, at the step it stopped at.
+    #[test]
+    fn a_stop_not_carried_on_yet_still_reads_as_stopped() {
+        let p = scratch("run-not-continued");
+        let code = asked(&p);
+        let mut steps = fake(&p);
+        steps.carry = vec![Err("license_unknown: the key is not taken".to_owned())];
+        steps.reach = Some("identity");
+        assert_eq!(ran(&p, &code, &mut steps), Ok("stopped"));
+        let seen = progress(&p, T, &code, NOW + 20).unwrap();
+        assert_eq!(seen["state"], "stopped");
+        assert_eq!(seen["step_done"], "identity");
+        assert_eq!(seen["stopped_at"], "licenses");
     }
 
     /// A step kept for a person shows where it stopped, from the opening record.

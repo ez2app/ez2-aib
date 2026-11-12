@@ -160,7 +160,7 @@ class Profile(Base):
     def test_r2_name_country(self):
         self.on()
         self.assertEqual(self.b.cli("name", "Andy Lin").returncode, 0)
-        self.assertEqual(self.b.cli("name", "IP:1.2.3.4/6ddf/x").returncode, 2)
+        self.assertEqual(self.b.cli("name", "IP:192.0.2.4/6ddf/x").returncode, 2)
         self.assertEqual(self.b.cli("country", "jp").returncode, 0)
         self.assertEqual(self.b.cli("country", "JPN").returncode, 2)
         prof = json.loads((self.b.chat / "profile.json").read_text())

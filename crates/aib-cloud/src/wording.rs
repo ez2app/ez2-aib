@@ -103,6 +103,50 @@ pub fn opened(code: &str, domain: &str, login: &str, second: Option<&str>) -> St
     )
 }
 
+/// What fills sentences 17 to 21 in (a site's code, a domain), made plain
+/// ([`crate::svc::plain`]) first: nothing in it acts on the terminal.
+fn filled(word: &str) -> String {
+    crate::svc::plain(word)
+}
+
+// Sentences 17 to 21 of `HUMAN-PASTE-4542e-1111.md` (sections 開站(補) and 放棄開站;
+// final: Andy 11-12 12:1x 「照這版定稿」), word for word. Do not rephrase one here: a
+// change goes through that file first.
+
+/// Sentence 17: `site create` answered `opening`: the customer's opening has started.
+pub fn opening(code: &str, domain: &str) -> String {
+    let (code, domain) = (filled(code), filled(domain));
+    format!(
+        "已開始開新網站 {domain},站碼 {code}。大約需要幾分鐘,可以用「site {code} status」看進度。"
+    )
+}
+
+/// Sentence 18: `site create` was refused `already_opening` and the opening is the customer's own:
+/// the host gives its code only then. Anyone else's opening is [`DOMAIN_TAKEN`] (13).
+pub fn already_opening(code: &str, domain: &str) -> String {
+    let (code, domain) = (filled(code), filled(domain));
+    format!("{domain} 已經在開站中(站碼 {code}),不需要重送;可以用「site {code} status」看進度。")
+}
+
+/// Sentences 13 and 19: `domain_taken`, and `already_opening` for someone else's opening (no code
+/// of the customer's own in the answer). Sentence 19 is sentence 13; it is not written
+/// twice.
+pub const DOMAIN_TAKEN: &str = "這個網域已經綁在一個網站上,不能重複綁定。";
+
+/// Sentence 20: a site just opened whose answer names no administrator to log in with: the login
+/// comes separately. An answer naming one is the opened screen ([`opened`]).
+pub fn opened_without_login(code: &str, domain: &str) -> String {
+    let (code, domain) = (filled(code), filled(domain));
+    format!("新網站已開好。站碼:{code} 網址:https://{domain} 管理員登入方式會另外提供給您。")
+}
+
+/// Sentence 21: `site <code> status` of an opening we abandoned (stopped, what it had made
+/// cleared away; `why: abandoned`).
+pub fn abandoned(domain: &str) -> String {
+    let domain = filled(domain);
+    format!("{domain} 這次開站沒有完成,我們已經把做到一半的部分清掉了。您可以重新開站;若需要協助,請與您的服務窗口聯絡。")
+}
+
 /// Why a request was not sent.
 pub fn not_sent(why: NotSent) -> &'static str {
     match why {
@@ -351,6 +395,24 @@ mod tests {
             "{text}"
         );
         assert!(text.contains(":o\\x07ps("), "{text}");
+    }
+
+    /// Sentences 17 to 21: what fills them in is made plain, nothing acts on the terminal.
+    /// (Their words are pinned whole by `aib-cloud-cli`'s tests, where they are shown.)
+    #[test]
+    fn the_opening_sentences_show_nothing_that_acts_on_the_terminal() {
+        let (code, domain) = ("s\u{1b}c", "a\u{1b}[2Jb\u{202e}.example.test");
+        for text in [
+            opening(code, domain),
+            already_opening(code, domain),
+            opened_without_login(code, domain),
+            abandoned(domain),
+        ] {
+            assert!(!text.chars().any(char::is_control), "{text}");
+            assert!(!text.contains('\u{202e}'), "{text}");
+            assert!(text.contains("a\\x1b[2Jb"), "{text}");
+        }
+        assert!(opening(code, domain).contains("site s\\x1bc status"));
     }
 
     /// c477a N1 / N2: an empty second login, or the first one again, is no second one.

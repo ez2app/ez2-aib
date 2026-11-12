@@ -279,12 +279,14 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
 
 /// The resolver a site CT is given when its configuration names none (without one, the CT
 /// inherits the host's). Neutral: it names nobody's network.
-pub const NEUTRAL_RESOLVER: &str = "1.1.1.1";
+pub const NEUTRAL_RESOLVER: &str = "1.1.1.1"; // ip-literal-ok: well-known public resolver, never a host of ours
 
 /// Whether a CT's `nameserver` value names only public resolvers: every address in it
-/// IPv4, and none private, loopback, link-local, shared (100.64.0.0/10, where a tailnet's
-/// own resolver lives), unspecified, broadcast, multicast, reserved (240.0.0.0/4),
-/// documentation or benchmarking (c477a, ct-mask2 N4). A private one is the host's resolver or our
+/// IPv4, and none private, loopback, link-local, shared, unspecified, broadcast, multicast,
+/// reserved, documentation or benchmarking (c477a, ct-mask2 N4).
+/// Shared is 100.64.0.0/10, where a tailnet's own resolver lives. (ip-literal-ok: range name, never a host of ours)
+/// Reserved is 240.0.0.0/4. (ip-literal-ok: range name, never a host of ours)
+/// A private one is the host's resolver or our
 /// network's (it would show in the CT's `resolv.conf`); IPv6 is not given to a site CT.
 /// An empty value is not neutral (c477a, ct-mask2 N1).
 pub fn resolver_is_neutral(value: &str) -> bool {
@@ -296,7 +298,7 @@ pub fn resolver_is_neutral(value: &str) -> bool {
         };
         let [a, b, ..] = ip.octets();
         let shared = a == 100 && (64..128).contains(&b);
-        // reserved (240.0.0.0/4, the broadcast address in it) and benchmarking (198.18.0.0/15)
+        // reserved (240.0.0.0/4, the broadcast address in it) and benchmarking (198.18.0.0/15) (ip-literal-ok: range name / boundary sample, never a host of ours)
         let special = a >= 240 || (a == 198 && (b & 0xFE) == 18);
         if ip.is_private()
             || ip.is_loopback()
@@ -383,6 +385,75 @@ pub fn hosts_text(hostname: &str) -> Option<String> {
             "# written by aib-cloud-host; see aib_cloud::mask\n127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n::1\tlocalhost ip6-localhost ip6-loopback\n"
         )
     })
+}
+
+/// Inside the CT: present (empty), the platform leaves `/etc/resolv.conf` alone at each
+/// start instead of writing its own block around the resolver lines — a block that names
+/// the platform, and carried the host's search domain on 11-12 (f1fae's baseline, item 8).
+pub const RESOLV_KEEP_FILE: &str = "/etc/.pve-ignore.resolv.conf";
+
+/// The `/etc/resolv.conf` a site CT is given: the neutral search domain and the neutral
+/// resolver, nothing else.
+pub fn resolv_text() -> String {
+    alloc::format!(
+        "# written by aib-cloud-host; see aib_cloud::mask\nsearch {}\nnameserver {NEUTRAL_RESOLVER}\n",
+        crate::verify::SEARCH_DOMAIN
+    )
+}
+
+/// Files a platform template leaves inside a CT that name the platform or its vendor
+/// (the appliance file names the template's maker). Removed while a site is opened
+/// ([`FILES_STEP`]); `site verify` S16 says none is there.
+pub const PLATFORM_FILES: &[&str] = &["/etc/appliance.info"];
+
+/// `/etc/motd` of a site CT: empty (a template's own says whose template it is).
+pub const MOTD_TEXT: &str = "";
+
+/// `/etc/issue` of a site CT: only the system's own name (`\S`: the login prompt shows
+/// the operating system's pretty name).
+pub const ISSUE_TEXT: &str = "\\S\n";
+
+/// Time servers a site CT may ask: the public pool only, never the host's or the
+/// provider's own (an address that names who runs the network).
+pub const PUBLIC_NTP: &str = "pool.ntp.org";
+
+/// The time service's drop-in inside a site CT. systemd reads the drop-ins of
+/// `/usr/lib`, `/usr/local/lib`, `/run` and `/etc` together, sorted by file name (one in
+/// `/etc` hides one of the same name elsewhere), so ours is named to sort last: a
+/// template's `95-*.conf` under `/usr/lib` does not undo it (c477a S1 L1).
+pub const TIMESYNCD_FILE: &str = "/etc/systemd/timesyncd.conf.d/99-ez2-mask.conf";
+
+/// The text of [`TIMESYNCD_FILE`]: both lists emptied first (an empty value resets a list
+/// that an earlier file set), then the public pool.
+pub const TIMESYNCD_TEXT: &str = "# installed by aib-cloud-host; see aib_cloud::mask\n[Time]\nNTP=\nNTP=pool.ntp.org\nFallbackNTP=\nFallbackNTP=pool.ntp.org\n";
+
+/// Whether the time servers that the time service's files, read in order (the main file,
+/// then its drop-ins), leave in effect are all public: every `NTP=` and `FallbackNTP=`
+/// name is [`PUBLIC_NTP`] or one of its sub-pools. An empty value empties that list; an
+/// empty list leaves the system's own defaults, which are public.
+pub fn ntp_is_public(text: &str) -> bool {
+    let mut ntp: Vec<&str> = Vec::new();
+    let mut fallback: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let list = match key.trim() {
+            "NTP" => &mut ntp,
+            "FallbackNTP" => &mut fallback,
+            _ => continue,
+        };
+        if value.trim().is_empty() {
+            list.clear();
+        } else {
+            list.extend(value.split_whitespace());
+        }
+    }
+    let public = |n: &&str| {
+        let n = n.to_ascii_lowercase();
+        n == PUBLIC_NTP || n.ends_with(".pool.ntp.org")
+    };
+    ntp.iter().chain(fallback.iter()).all(public)
 }
 
 /// A hardware address for a site CT out of six random bytes: unicast and locally
@@ -517,7 +588,7 @@ pub const INSIDE_EXPECT: &[(&str, &str)] = &[
     ("/proc/cmdline", "empty"),
     (
         "/etc/resolv.conf",
-        "search invalid; the resolver of the CT's configuration",
+        "search invalid; the resolver of the CT's configuration; no platform block",
     ),
     (
         "/etc/hosts",
@@ -531,6 +602,13 @@ pub const INSIDE_EXPECT: &[(&str, &str)] = &[
     ("unshare -Ur true", "refused"),
     ("dmesg", "refused"),
     ("ip -6 addr show scope global", "nothing"),
+    ("/etc/appliance.info", "missing"),
+    ("/etc/motd", "missing or empty"),
+    ("/etc/issue", "only the system's own name (\\S)"),
+    (
+        "/etc/systemd/timesyncd.conf and its drop-ins",
+        "only the public pool (pool.ntp.org) in effect",
+    ),
 ];
 
 /// What stays readable however the CT is masked, said so nobody claims otherwise.
@@ -770,7 +848,7 @@ mod tests {
         let c = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,bridge=vmbr1,hwaddr=06:AA:BB:CC:DD:EE,ip=10.77.0.9/24,gw=10.77.0.1,type=veth"),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         assert_eq!(config_fixes(&c, NEW), Ok(Vec::new()));
@@ -807,7 +885,7 @@ mod tests {
             let mut lines: Vec<(&str, &str)> =
                 hooks.iter().map(|h| ("lxc.hook.mount", *h)).collect();
             lines.push(("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"));
-            lines.push(("nameserver", "1.1.1.1"));
+            lines.push(("nameserver", "1.1.1.1")); // ip-literal-ok: well-known public resolver, never a host of ours
             lines.push(("searchdomain", "invalid"));
             let fixes = config_fixes(&cfg(&lines), NEW).unwrap();
             assert_eq!(fixes.len(), 1, "{hooks:?}");
@@ -823,7 +901,7 @@ mod tests {
                 "net0",
                 "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24,gw6=fe80::1",
             ),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         let f = config_fixes(&v6, NEW).unwrap();
@@ -835,7 +913,7 @@ mod tests {
         let bare = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,ip=10.77.0.9/24"),
-            ("nameserver", "1.1.1.1"),
+            ("nameserver", "1.1.1.1"), // ip-literal-ok: well-known public resolver, never a host of ours
             ("searchdomain", "invalid"),
         ]);
         assert_eq!(
@@ -858,24 +936,71 @@ mod tests {
         }
         assert_eq!(CONFIG_STEP.as_str(), "limits");
         assert_eq!(FILES_STEP.as_str(), "identity");
+        // resolv.conf: the neutral search domain and resolver, no platform block, and the
+        // file that keeps the platform from writing its own
+        let rv = resolv_text();
+        assert!(rv.contains("\nsearch invalid\n"));
+        assert!(rv.contains(&alloc::format!("\nnameserver {NEUTRAL_RESOLVER}\n")));
+        assert_eq!(RESOLV_KEEP_FILE, "/etc/.pve-ignore.resolv.conf");
+        assert!(MOTD_TEXT.is_empty());
+        assert_eq!(ISSUE_TEXT, "\\S\n");
+        assert!(ntp_is_public(TIMESYNCD_TEXT));
+        assert!(TIMESYNCD_FILE.starts_with("/etc/systemd/timesyncd.conf.d/99-"));
+        for text in [
+            rv.as_str(),
+            MOTD_TEXT,
+            ISSUE_TEXT,
+            TIMESYNCD_TEXT,
+            SYSCTL_TEXT,
+            h.as_str(),
+        ] {
+            for word in ["PVE", "ts.net", "tail", "vendor-x"] {
+                assert!(!text.contains(word), "{word} in {text:?}");
+            }
+        }
+        assert_eq!(PLATFORM_FILES, ["/etc/appliance.info"]);
+    }
+
+    #[test]
+    fn the_search_domain_and_the_time_servers_stay_neutral() {
+        // a resolv.conf the platform wrote names it; ours does not
+        assert!(!resolv_text().contains("PVE"));
+        assert!(resolv_text()
+            .lines()
+            .filter(|l| l.starts_with("search"))
+            .eq(["search invalid"]));
+        // the time servers in effect, in file order: an empty value resets the list
+        let main = "[Time]\nNTP=ntp1.vendor-x.example\nFallbackNTP=ntp.vendor-x.example\n";
+        assert!(!ntp_is_public(main));
+        assert!(ntp_is_public(&alloc::format!("{main}{TIMESYNCD_TEXT}")));
+        assert!(!ntp_is_public(&alloc::format!("{TIMESYNCD_TEXT}{main}")));
+        assert!(ntp_is_public("#NTP=ntp.vendor-x.example\n"));
+        assert!(ntp_is_public(
+            "NTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org\n"
+        ));
+        assert!(!ntp_is_public("NTP=pool.ntp.org.vendor-x.example\n"));
     }
 
     #[test]
     fn a_resolver_of_ours_or_the_hosts_is_not_neutral() {
-        for good in ["1.1.1.1", "1.1.1.1 9.9.9.9", "8.8.8.8"] {
+        for good in [
+            "1.1.1.1",         // ip-literal-ok: well-known public resolver, never a host of ours
+            "1.1.1.1 9.9.9.9", // ip-literal-ok: well-known public resolver, never a host of ours
+            "8.8.8.8",         // ip-literal-ok: well-known public resolver, never a host of ours
+        ] {
             assert!(resolver_is_neutral(good), "{good}");
         }
         for bad in [
             "",
             "10.77.0.1",
-            "100.100.100.100",
+            "100.100.100.100", // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
             "100.64.0.1",
             "192.168.1.1",
             "172.16.0.1",
             "127.0.0.53",
             "169.254.1.1",
-            "1.1.1.1 10.77.0.1",
-            "2606:4700:4700::1111",
+            "1.1.1.1 10.77.0.1", // ip-literal-ok: well-known public resolver, never a host of ours
+            "2606:4700:4700::1111", // ip-literal-ok: well-known public resolver, never a host of ours
             "0.0.0.0",
             "dns.example",
         ] {
@@ -884,7 +1009,7 @@ mod tests {
         let c = cfg(&[
             ("lxc.hook.mount", HOOK),
             ("net0", "name=eth0,hwaddr=02:00:00:00:00:01,ip=10.77.0.9/24"),
-            ("nameserver", "100.100.100.100"),
+            ("nameserver", "100.100.100.100"), // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
             ("searchdomain", "invalid"),
         ]);
         let f = config_fixes(&c, NEW).unwrap();
@@ -921,19 +1046,24 @@ mod tests {
     fn a_resolver_that_is_no_public_host_is_not_neutral() {
         for bad in [
             "255.255.255.255",
-            "224.0.0.251",
-            "239.1.1.1",
-            "240.0.0.1",
-            "250.1.2.3",
+            "224.0.0.251", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "239.1.1.1",   // ip-literal-ok: range name / boundary sample, never a host of ours
+            "240.0.0.1",   // ip-literal-ok: range name / boundary sample, never a host of ours
+            "250.1.2.3",   // ip-literal-ok: range name / boundary sample, never a host of ours
             "192.0.2.53",
             "198.51.100.1",
             "203.0.113.9",
-            "198.18.0.1",
-            "198.19.255.254",
+            "198.18.0.1", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "198.19.255.254", // ip-literal-ok: range name / boundary sample, never a host of ours
         ] {
             assert!(!resolver_is_neutral(bad), "{bad}");
         }
-        for good in ["198.17.0.1", "198.20.0.1", "223.255.255.1", "9.9.9.9"] {
+        for good in [
+            "198.17.0.1",    // ip-literal-ok: range name / boundary sample, never a host of ours
+            "198.20.0.1",    // ip-literal-ok: range name / boundary sample, never a host of ours
+            "223.255.255.1", // ip-literal-ok: range name / boundary sample, never a host of ours
+            "9.9.9.9",       // ip-literal-ok: range name / boundary sample, never a host of ours
+        ] {
             assert!(resolver_is_neutral(good), "{good}");
         }
     }
