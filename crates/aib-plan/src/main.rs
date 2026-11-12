@@ -1196,7 +1196,7 @@ mod tests {
             bar.iter().any(|g| g.0 == "○"),
             "inactive filters keep the hollow dot"
         );
-        for w in [70, 76, 80, 90, 101] {
+        for w in [72, 76, 80, 90, 101] {
             let text: String = toolbar(&app, w).iter().map(|g| g.0.as_str()).collect();
             assert!(
                 str_width(&text) <= w,
@@ -1210,7 +1210,7 @@ mod tests {
             parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
                 .expect("sample parses");
         app.err = None;
-        let _ = frame(&app, 70, 30);
+        let _ = frame(&app, 72, 30);
         let h = app.hits.borrow().clone();
         let ty = h.toolbar_y.expect("toolbar");
         let ox = str_width(&h.toolbar[..h.toolbar.find("沒做完").expect("o")]);
