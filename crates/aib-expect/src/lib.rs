@@ -29,6 +29,8 @@
 //! - Read-only towards everything else: no merge, push, dm or approval. What
 //!   it suggests is not an authorisation and is never itself an event.
 
+pub mod goalcheck;
+
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

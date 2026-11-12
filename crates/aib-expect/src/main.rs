@@ -4,6 +4,8 @@
 //! aib-expect show  --project <uid> [--short | --json] [--ai-order A5,A4b --why "<reason>"]
 //! aib-expect event --project <uid> --kind <session-start|pr-merged|release|order-closed|now-done>
 //!                  --seat <seat> [--pr <n>]
+//! aib-expect check-goal --project <uid> --seat <seat> --now-dir <dir> [--json]
+//!                  (always offline; see goalcheck.rs: rc 0 ok, 4 missing/unknown, 5 reminder)
 //! common:          [--state-root <dir>] [--repo <owner/name>] [--offline] [--now <epoch>]
 //! ```
 //!
@@ -13,7 +15,7 @@
 //! reads none (every PR-bound row is then unverified).
 //!
 //! Exit: 0 done; 2 bad arguments; 3 the goals cannot be used (the code is
-//! printed; `event` still records it).
+//! printed; `event` still records it); `check-goal` also 4 / 5.
 
 use aib_expect as ex;
 use std::collections::BTreeMap;
@@ -35,15 +37,16 @@ const VALUED: &[&str] = &[
     "--kind",
     "--seat",
     "--pr",
+    "--now-dir",
 ];
 const SWITCHES: &[&str] = &["--short", "--json", "--offline"];
 
 fn parse(argv: &[String]) -> Result<Args, String> {
     let mut it = argv.iter();
     let cmd = it.next().cloned().unwrap_or_default();
-    if cmd != "show" && cmd != "event" {
+    if !["show", "event", "check-goal"].contains(&cmd.as_str()) {
         return Err(
-            "usage: aib-expect show|event --project <uid> … (see --help in the source header)"
+            "usage: aib-expect show|event|check-goal --project <uid> … (see the source header)"
                 .to_owned(),
         );
     }
@@ -92,7 +95,8 @@ fn run(a: &Args) -> Result<u8, String> {
         (Ok(g), Ok(e)) => ex::prs_of(g, e, now),
         _ => Default::default(),
     };
-    let snap = if on("--offline") {
+    // check-goal runs in the Stop hook: never a network call
+    let snap = if on("--offline") || a.cmd == "check-goal" {
         ex::Snapshot {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
         }
@@ -131,6 +135,37 @@ fn run(a: &Args) -> Result<u8, String> {
             return Ok(3);
         }
     };
+    if a.cmd == "check-goal" {
+        let seat = get("--seat").ok_or("--seat is required")?;
+        let dir = get("--now-dir").ok_or("--now-dir is required")?;
+        let evidence = match evidence {
+            Ok(e) => e,
+            Err(e) => {
+                println!("{e}");
+                return Ok(3);
+            }
+        };
+        let (stage, history) = match ex::goalcheck::read_seat(std::path::Path::new(dir), seat) {
+            Ok(x) => x,
+            Err(e) if e.starts_with("bad seat code") => return Err(e),
+            Err(e) => {
+                println!("expect_now_unreadable: {e}");
+                return Ok(3);
+            }
+        };
+        let report = ex::compare(&goals, &evidence, &snap, now);
+        let v = ex::goalcheck::check(&evidence, &report, stage.as_ref(), &history);
+        if on("--json") {
+            println!("{}", v.to_json());
+        } else if v.codes.is_empty() {
+            println!("ok {}", v.goal.as_deref().unwrap_or(""));
+        } else {
+            for c in &v.codes {
+                println!("{c} {}", v.goal.as_deref().unwrap_or("-"));
+            }
+        }
+        return Ok(v.rc());
+    }
     let evidence = evidence.map_err(|e| e.to_string())?;
     let report = ex::compare(&goals, &evidence, &snap, now);
     let ai = match get("--ai-order") {
