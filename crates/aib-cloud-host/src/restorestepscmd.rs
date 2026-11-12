@@ -47,6 +47,15 @@
 //!   site's language and are not read; c477a slice 4 L1). `df` and `mysqladmin` run
 //!   with `LC_ALL=C`, so their words are the ones read; the import runs with
 //!   [`restoreimport::IMPORT_ENV`].
+//! * Wired on the real host (B3 slice 5): the import plugins are installed from the host's
+//!   own copy ([`PLUGINS_DIR`], each zip checked against its `SHA256SUMS` before any is
+//!   installed, `--force --activate`, never fetched from the vendor inside the customer's
+//!   container), the backup is pushed from [`DOWNLOADS_DIR`] to where the plugin finds it,
+//!   the restore runs as the site's user with [`restoreimport::IMPORT_ENV`] and
+//!   `--no-color`, and the accept step compares the restored site with the downloaded
+//!   backup as `restore verify` does; a difference keeps the site for a person. The
+//!   download, the restore point, the tidying and the roll-back are not: [`HostRestorer`]
+//!   still says it is not wired, so nothing runs yet.
 //! * The command is `site restore-wpress`, not `site restore`: that one brings a whole
 //!   container back from the host's own archive, a different thing.
 
@@ -798,12 +807,123 @@ fn db_uptime(out: &str) -> Option<u64> {
     rest.split_whitespace().next()?.parse().ok()
 }
 
-/// The real host. Its steps are not wired yet: [`RestoreHost::wired`] is false.
+/// Where the import plugins are kept on the host (root only, B3 slice 5, Andy 11-12 14:5x):
+/// one zip per plugin of [`restoreimport::IMPORT_PLUGINS`], `<plugin>.zip`, and a
+/// `SHA256SUMS` naming each. Put there and kept up to date by a host order; the import
+/// installs from it and never reaches the plugin's vendor from the customer's container.
+pub const PLUGINS_DIR: &str = "/var/lib/ez2-cloud/wp-plugins";
+/// Where a site's downloaded backups are kept: `<this>/<site code>/<backup name>`.
+pub const DOWNLOADS_DIR: &str = "/var/lib/ez2-cloud/restores-dl";
+/// Administrators the restore adds on purpose, which the accept step allows. The tidying
+/// step adds none yet (it is not wired); when it does, it writes how many into the record.
+pub const ACCEPT_USERS_EXTRA: u64 = 0;
+
+/// The real host. Its steps are not all wired yet: [`RestoreHost::wired`] is false.
 pub struct HostRestorer {
     pub records: PathBuf,
     /// The site records: `<site code>.json` each.
     pub sites: PathBuf,
     pub ct: u32,
+    /// The site's code: its user and its folder in the container.
+    pub code: String,
+    /// [`PLUGINS_DIR`].
+    pub plugins: PathBuf,
+    /// This site's downloads: [`DOWNLOADS_DIR`]`/<code>`.
+    pub downloads: PathBuf,
+    /// How a command is run. Tests put a made-up one here.
+    pub run: Box<dyn crate::sitecreatecmd::Runner>,
+}
+
+/// The real runner of the restore's commands: what a command prints is read up to
+/// [`crate::sitecreatecmd::CT_OUT_MAX`] (more is a failure; it comes from inside the
+/// customer's container), anything but exit 0 is an error, and each kind of command has
+/// its time.
+pub struct RestoreRunner;
+
+impl RestoreRunner {
+    fn seconds(argv: &[String]) -> u64 {
+        let has = |w: &str| argv.iter().any(|a| a == w);
+        if has("ai1wm") && has("restore") {
+            4 * 3600
+        } else if argv.get(1).is_some_and(|a| a == "push") || has("sha256sum") {
+            3600
+        } else {
+            600
+        }
+    }
+}
+
+impl crate::sitecreatecmd::Runner for RestoreRunner {
+    fn run(&mut self, argv: &[String]) -> Result<String, String> {
+        let (program, args) = argv.split_first().ok_or("an empty command")?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        match crate::probe::run_capture_bounded(
+            &mut cmd,
+            Duration::from_secs(Self::seconds(argv)),
+            crate::sitecreatecmd::CT_OUT_MAX,
+        )? {
+            (out, false) => Ok(out),
+            (_, true) => Err(format!("{program}: said more than is read")),
+        }
+    }
+}
+
+/// `wp` as the site's user inside its container, in the C locale, without colours (a
+/// colour code before `Success:` would hide it; c477a slice 4 N1).
+fn wp_argv(ct: u32, code: &str, args: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = vec![
+        "pct".into(),
+        "exec".into(),
+        ct.to_string(),
+        "--".into(),
+        "sudo".into(),
+        "-u".into(),
+        code.to_owned(),
+        "env".into(),
+    ];
+    v.extend(restoreimport::IMPORT_ENV.iter().map(|e| (*e).to_owned()));
+    v.push("wp".into());
+    v.push(format!("--path=/var/www/{code}"));
+    v.push("--no-color".into());
+    v.extend(args.iter().map(|a| (*a).to_owned()));
+    v
+}
+
+/// `pct push` of a host file into the container, owned by the site's user.
+fn push_argv(ct: u32, from: &Path, to: &str, code: &str, perms: &str) -> Vec<String> {
+    vec![
+        "pct".into(),
+        "push".into(),
+        ct.to_string(),
+        from.to_string_lossy().into_owned(),
+        to.to_owned(),
+        "--user".into(),
+        code.to_owned(),
+        "--group".into(),
+        code.to_owned(),
+        "--perms".into(),
+        perms.to_owned(),
+    ]
+}
+
+/// The SHA-256 a `SHA256SUMS` file gives `name` (`<hex>  <name>` or `<hex> *<name>`).
+fn sum_of<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
+    sums.lines().find_map(|l| {
+        let (hex, file) = l.trim_end().split_once(char::is_whitespace)?;
+        let file = file.trim_start();
+        let file = file.strip_prefix('*').unwrap_or(file);
+        (file == name && hex.len() == 64 && hex.bytes().all(|c| c.is_ascii_hexdigit()))
+            .then_some(hex)
+    })
+}
+
+/// A backup's name as a file name: no folder in it, not hidden.
+fn plain_name(name: &str) -> Result<&str, String> {
+    if name.is_empty() || name.starts_with('.') || name.contains('/') || name.contains('\0') {
+        return Err(format!("the backup's name {name:?} is not a file name"));
+    }
+    Ok(name)
 }
 
 fn write_whole(path: &Path, text: &str) -> Result<(), String> {
@@ -955,13 +1075,86 @@ impl RestoreHost for HostRestorer {
             .and_then(|out| df_room(&out))
     }
     fn update_import_plugins(&mut self, _rec: &Record) -> Result<String, String> {
-        Err(NOT_WIRED.to_owned())
+        // every zip is checked against SHA256SUMS before any is installed
+        let sums_file = self.plugins.join("SHA256SUMS");
+        let sums = fs::read_to_string(&sums_file)
+            .map_err(|e| format!("import_plugin_source: {}: {e}", sums_file.display()))?;
+        let mut zips = Vec::new();
+        for plugin in restoreimport::IMPORT_PLUGINS {
+            let name = format!("{plugin}.zip");
+            let want = sum_of(&sums, &name)
+                .ok_or_else(|| format!("import_plugin_source: {name} is not in SHA256SUMS"))?;
+            let path = self.plugins.join(&name);
+            let said = self.run.run(&[
+                "sha256sum".to_owned(),
+                "--".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ])?;
+            let got = said.split_whitespace().next().unwrap_or_default();
+            if !got.eq_ignore_ascii_case(want) {
+                return Err(format!(
+                    "import_plugin_sha_mismatch: {name} is not the one SHA256SUMS names; nothing was installed"
+                ));
+            }
+            zips.push((name, path));
+        }
+        for (name, path) in &zips {
+            let inside = format!("/tmp/ez2-{name}");
+            self.run
+                .run(&push_argv(self.ct, path, &inside, &self.code, "0600"))?;
+            let installed = self.run.run(&wp_argv(
+                self.ct,
+                &self.code,
+                &["plugin", "install", &inside, "--force", "--activate"],
+            ));
+            // the zip goes whether the install worked or not
+            let removed = self.run.run(&[
+                "pct".to_owned(),
+                "exec".to_owned(),
+                self.ct.to_string(),
+                "--".to_owned(),
+                "rm".to_owned(),
+                "-f".to_owned(),
+                "--".to_owned(),
+                inside.clone(),
+            ]);
+            installed?;
+            removed?;
+        }
+        self.run.run(&wp_argv(
+            self.ct,
+            &self.code,
+            &["plugin", "list", "--status=active", "--field=name"],
+        ))
     }
-    fn place_backup(&mut self, _rec: &Record) -> Result<String, String> {
-        Err(NOT_WIRED.to_owned())
+    fn place_backup(&mut self, rec: &Record) -> Result<String, String> {
+        let name = rec
+            .backup
+            .as_ref()
+            .map(|b| b.name.clone())
+            .ok_or("the step record names no backup")?;
+        let name = plain_name(&name)?;
+        let to = format!("/var/www/{}/wp-content/ai1wm-backups/{name}", self.code);
+        self.run.run(&push_argv(
+            self.ct,
+            &self.downloads.join(name),
+            &to,
+            &self.code,
+            "0640",
+        ))?;
+        self.run
+            .run(&wp_argv(self.ct, &self.code, &["ai1wm", "list-backups"]))
     }
-    fn import(&mut self, _rec: &Record) -> Result<String, String> {
-        Err(NOT_WIRED.to_owned())
+    fn import(&mut self, rec: &Record) -> Result<String, String> {
+        let name = rec
+            .backup
+            .as_ref()
+            .map(|b| b.name.clone())
+            .ok_or("the step record names no backup")?;
+        let name = plain_name(&name)?;
+        let restore_argv = wp_argv(self.ct, &self.code, &["ai1wm", "restore", name, "--yes"]);
+        // anything but exit 0 is an error, whatever it printed (c477a slice 4 L1)
+        self.run.run(&restore_argv)
     }
     fn sibling_domains(&mut self, site: &str) -> Result<Vec<String>, String> {
         let read = |path: &Path| -> Result<Value, String> {
@@ -994,8 +1187,11 @@ impl RestoreHost for HostRestorer {
         out.sort();
         Ok(out)
     }
-    fn run_step(&mut self, _step: RestoreStep, _rec: &Record) -> Result<(), String> {
-        Err(NOT_WIRED.to_owned())
+    fn run_step(&mut self, step: RestoreStep, rec: &Record) -> Result<(), String> {
+        match step {
+            RestoreStep::Accept => self.accept(rec),
+            _ => Err(NOT_WIRED.to_owned()),
+        }
     }
     fn put_scheduler_back(&mut self, rec: &Record) -> Result<bool, String> {
         let spec = crate::quarantinecmd::load_spec(&rec.site, &self.sites.to_string_lossy())?;
@@ -1024,6 +1220,37 @@ impl RestoreHost for HostRestorer {
         fs::File::open(&self.records)
             .and_then(|d| d.sync_all())
             .map_err(|e| format!("{}: {e}", self.records.display()))
+    }
+}
+
+impl HostRestorer {
+    /// The accept step: the restored site against what the downloaded backup says it
+    /// holds (`restore verify`'s reading and rules). A match goes on; a difference, or
+    /// anything that cannot be told, is a failure, and a failure here keeps the site as it
+    /// is for a person ([`restoresteps::after_failure`]): nothing is taken back
+    /// automatically after the tidying (Andy 11-12 14:5x).
+    fn accept(&mut self, rec: &Record) -> Result<(), String> {
+        let name = rec
+            .backup
+            .as_ref()
+            .map(|b| b.name.clone())
+            .ok_or("the step record names no backup")?;
+        let path = self.downloads.join(plain_name(&name)?);
+        let file = fs::File::open(&path)
+            .map_err(|e| format!("accept_unknown: {}: {e}", path.display()))?;
+        let read = crate::restorecmd::read_archive(std::io::BufReader::new(file));
+        let run = &mut self.run;
+        let site = crate::restorecmd::ask_site(
+            &mut |argv: &[String]| run.run(argv).ok(),
+            self.ct,
+            &self.code,
+        );
+        let (doc, rc) = crate::restorecmd::verify_doc(&self.code, &read, &site, ACCEPT_USERS_EXTRA);
+        match rc {
+            0 => Ok(()),
+            1 => Err(format!("accept_differ: {}", doc["strict"])),
+            _ => Err(format!("accept_unknown: {}", doc["reason"])),
+        }
     }
 }
 
@@ -1087,6 +1314,10 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         records: PathBuf::from(RECORDS),
         sites: PathBuf::from(SITE_RECORDS),
         ct: spec.ct,
+        code: spec.code.clone(),
+        plugins: PathBuf::from(PLUGINS_DIR),
+        downloads: Path::new(DOWNLOADS_DIR).join(&spec.code),
+        run: Box::new(RestoreRunner),
     };
     match (plan_only, file) {
         (true, None) => {
@@ -1476,11 +1707,7 @@ mod tests {
         );
         assert_eq!(Record::from_json(&r.to_json()), Ok(r));
         let d = scratch("record");
-        let mut host = HostRestorer {
-            records: d.join("restores"),
-            sites: d.join("sites"),
-            ct: 119,
-        };
+        let mut host = host_at(d.join("restores"), d.join("sites"), 119);
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
         host.write_record(&r).unwrap();
         assert_eq!(host.read_record("site9"), Ok(Some(r)));
@@ -1682,11 +1909,7 @@ mod tests {
         let records = d.join("restores");
         fs::create_dir_all(&records).unwrap();
         fs::write(records.join("site8.json"), "{not json").unwrap();
-        let mut host = HostRestorer {
-            records,
-            sites: PathBuf::new(),
-            ct: 119,
-        };
+        let mut host = host_at(records, PathBuf::new(), 119);
         assert!(host.others("site9").is_err());
     }
 
@@ -1736,11 +1959,7 @@ mod tests {
         fs::create_dir_all(&records).unwrap();
         let r = record("site9", "www.example.com", &STEPS[..2], None, false);
         fs::write(records.join("site8.json"), r.to_json().to_string()).unwrap();
-        let mut host = HostRestorer {
-            records,
-            sites: PathBuf::new(),
-            ct: 119,
-        };
+        let mut host = host_at(records, PathBuf::new(), 119);
         let err = host.read_record("site8").unwrap_err();
         assert!(err.contains("is of site9, not of site8"), "{err}");
         assert!(host.others("site7").is_err());
@@ -1821,11 +2040,7 @@ mod tests {
     #[test]
     fn an_abandoned_record_is_kept_aside_on_the_host() {
         let d = scratch("aside");
-        let mut host = HostRestorer {
-            records: d.join("restores"),
-            sites: d.join("sites"),
-            ct: 119,
-        };
+        let mut host = host_at(d.join("restores"), d.join("sites"), 119);
         let mut r = interrupted();
         host.write_record(&r).unwrap();
         r.closed = Some((Close::Abandoned, OP.to_owned()));
@@ -2184,11 +2399,7 @@ mod tests {
         rec("site8", 118, "example.shop,shop.example.net", Some("t1"));
         rec("site7", 117, "other.shop", Some("t2"));
         rec("site6", 116, "nobody.shop", None);
-        let mut host = HostRestorer {
-            records: d.join("restores"),
-            sites: sites.clone(),
-            ct: 119,
-        };
+        let mut host = host_at(d.join("restores"), sites.clone(), 119);
         assert_eq!(
             host.sibling_domains("site9"),
             Ok(vec![
@@ -2203,5 +2414,267 @@ mod tests {
         );
         fs::write(sites.join("site5.json"), "{not json").unwrap();
         assert!(host.sibling_domains("site9").is_err());
+    }
+
+    // ------------------------------------------------------------ B3 slice 5: the wiring
+
+    type Asked = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
+    /// A host whose commands are answered by `answer` from the command line, each one kept.
+    type Answer = Box<dyn FnMut(&str) -> Result<String, String>>;
+
+    struct Script {
+        asked: Asked,
+        answer: Answer,
+    }
+
+    impl crate::sitecreatecmd::Runner for Script {
+        fn run(&mut self, argv: &[String]) -> Result<String, String> {
+            let line = argv.join(" ");
+            self.asked.borrow_mut().push(line.clone());
+            (self.answer)(&line)
+        }
+    }
+
+    fn scripted(
+        answer: impl FnMut(&str) -> Result<String, String> + 'static,
+    ) -> (Box<dyn crate::sitecreatecmd::Runner>, Asked) {
+        let asked = Asked::default();
+        (
+            Box::new(Script {
+                asked: asked.clone(),
+                answer: Box::new(answer),
+            }),
+            asked,
+        )
+    }
+
+    fn host_at(records: PathBuf, sites: PathBuf, ct: u32) -> HostRestorer {
+        HostRestorer {
+            records,
+            sites,
+            ct,
+            code: "site9".to_owned(),
+            plugins: PathBuf::new(),
+            downloads: PathBuf::new(),
+            run: scripted(|_| Err("no command in this test".to_owned())).0,
+        }
+    }
+
+    const ZIP_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ZIP_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const ACTIVE: &str =
+        "akismet\nall-in-one-wp-migration\nall-in-one-wp-migration-unlimited-extension\n";
+
+    /// A host with the plugin zips summed and a downloaded backup, answering as a site
+    /// whose language is zh_TW does.
+    fn wired_host(
+        name: &str,
+        answer: impl FnMut(&str) -> Result<String, String> + 'static,
+    ) -> (HostRestorer, Asked, PathBuf) {
+        let d = scratch(name);
+        let plugins = d.join("wp-plugins");
+        let downloads = d.join("restores-dl").join("site9");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(
+            plugins.join("SHA256SUMS"),
+            format!("{ZIP_A}  all-in-one-wp-migration.zip\n{ZIP_B} *all-in-one-wp-migration-unlimited-extension.zip\n"),
+        )
+        .unwrap();
+        fs::write(downloads.join(NAME), crate::restorecmd::tests::good()).unwrap();
+        let (run, asked) = scripted(answer);
+        let host = HostRestorer {
+            records: d.join("restores"),
+            sites: d.join("sites"),
+            ct: 119,
+            code: "site9".to_owned(),
+            plugins,
+            downloads,
+            run,
+        };
+        (host, asked, d)
+    }
+
+    fn with_backup(done: &[RestoreStep]) -> Record {
+        Record {
+            backup: Some(Backup {
+                name: NAME.to_owned(),
+                size: 4096,
+                sha256: Some(SHA.to_owned()),
+            }),
+            ..record("site9", "www.example.com", done, None, false)
+        }
+    }
+
+    /// What a zh_TW site answers: the plugin's words are Chinese, WP-CLI's prefixes are not.
+    fn zh_tw(line: &str) -> Result<String, String> {
+        Ok(if line.starts_with("sha256sum ") {
+            let hex = if line.ends_with("unlimited-extension.zip") {
+                ZIP_B
+            } else {
+                ZIP_A
+            };
+            format!("{hex}  {}\n", line.rsplit(' ').next().unwrap())
+        } else if line.contains(" plugin install ") {
+            "正在安裝外掛…\nSuccess: Installed 1 of 1 plugins.\n".to_owned()
+        } else if line.contains(" plugin list --status=active ") {
+            ACTIVE.to_owned()
+        } else if line.ends_with(" ai1wm list-backups") {
+            format!("+------+\n| {NAME} | 2026-11-01 | 4 KB |\n+------+\n")
+        } else if line.contains(" ai1wm restore ") {
+            "正在還原備份…\nSuccess: 還原完成。\n".to_owned()
+        } else {
+            String::new()
+        })
+    }
+
+    #[test]
+    fn the_import_runs_these_commands_word_for_word() {
+        let (mut host, asked, d) = wired_host("wire", zh_tw);
+        let rec = with_backup(&STEPS[..3]);
+        // a zh_TW site: WP-CLI's Success: decides, the plugin's words are not read
+        assert_eq!(import_backup(&mut host, &rec), Ok(()));
+        let p = d.join("wp-plugins");
+        let dl = d.join("restores-dl").join("site9");
+        let wp = "pct exec 119 -- sudo -u site9 env LC_ALL=C LANG=C LANGUAGE=C wp --path=/var/www/site9 --no-color";
+        let mut want = vec![
+            format!(
+                "sha256sum -- {}",
+                p.join("all-in-one-wp-migration.zip").display()
+            ),
+            format!(
+                "sha256sum -- {}",
+                p.join("all-in-one-wp-migration-unlimited-extension.zip")
+                    .display()
+            ),
+        ];
+        for plugin in restoreimport::IMPORT_PLUGINS {
+            let inside = format!("/tmp/ez2-{plugin}.zip");
+            want.push(format!(
+                "pct push 119 {} {inside} --user site9 --group site9 --perms 0600",
+                p.join(format!("{plugin}.zip")).display()
+            ));
+            want.push(format!("{wp} plugin install {inside} --force --activate"));
+            want.push(format!("pct exec 119 -- rm -f -- {inside}"));
+        }
+        want.push(format!("{wp} plugin list --status=active --field=name"));
+        want.push(format!(
+            "pct push 119 {} /var/www/site9/wp-content/ai1wm-backups/{NAME} --user site9 --group site9 --perms 0640",
+            dl.join(NAME).display()
+        ));
+        want.push(format!("{wp} ai1wm list-backups"));
+        want.push(format!("{wp} ai1wm restore {NAME} --yes"));
+        assert_eq!(*asked.borrow(), want);
+        // nothing of the vendor's is reached from the container
+        assert!(asked.borrow().iter().all(|l| !l.contains("http")));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_plugin_zip_not_as_summed_is_not_installed() {
+        let (mut host, asked, d) = wired_host("wiresha", |line| {
+            if line.starts_with("sha256sum ") && line.ends_with("unlimited-extension.zip") {
+                Ok(format!("{ZIP_A}  x\n"))
+            } else {
+                zh_tw(line)
+            }
+        });
+        let rec = with_backup(&STEPS[..3]);
+        let err = host.update_import_plugins(&rec).unwrap_err();
+        assert!(err.starts_with("import_plugin_sha_mismatch"), "{err}");
+        assert!(
+            asked.borrow().iter().all(|l| l.starts_with("sha256sum ")),
+            "{:?}",
+            asked.borrow()
+        );
+        // a zip SHA256SUMS does not name is not installed either
+        fs::write(
+            d.join("wp-plugins").join("SHA256SUMS"),
+            format!("{ZIP_A}  all-in-one-wp-migration.zip\n"),
+        )
+        .unwrap();
+        let err = host.update_import_plugins(&rec).unwrap_err();
+        assert!(err.starts_with("import_plugin_source"), "{err}");
+        assert!(asked.borrow().iter().all(|l| !l.starts_with("pct ")));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_import_that_does_not_end_with_0_fails_and_is_rolled_back() {
+        // it printed Success: and still ended with 1: an error
+        let (mut host, _asked, d) = wired_host("wirerc", |line| {
+            if line.contains(" ai1wm restore ") {
+                Err("\"pct\" exited exit status: 1".to_owned())
+            } else {
+                zh_tw(line)
+            }
+        });
+        let rec = with_backup(&STEPS[..3]);
+        assert!(host.import(&rec).is_err());
+        assert!(import_backup(&mut host, &rec).is_err());
+        assert_eq!(
+            restoresteps::after_failure(RestoreStep::Import),
+            AfterFailure::RollBack
+        );
+        // carried out: the failure is written down and the roll-back is asked for
+        let err = carry_out(&mut host, rec, RestoreStep::Import).unwrap_err();
+        assert!(err.starts_with("import failed:"), "{err}");
+        assert!(err.contains("cleaning up after it failed too"), "{err}");
+        let kept = host.read_record("site9").unwrap().unwrap();
+        assert_eq!(kept.failed.map(|(s, _)| s), Some(RestoreStep::Import));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The restored site's answers to `restore verify`'s questions, with these counts.
+    fn site_says(counts: &'static str) -> impl FnMut(&str) -> Result<String, String> {
+        move |line| {
+            Ok(if line.contains(" eval ") {
+                counts.to_owned()
+            } else if line.contains(" plugin list --field=name") {
+                "x\nakismet\n".to_owned()
+            } else if line.contains(" theme list --field=name") {
+                "twentytwentyfive\n".to_owned()
+            } else if line.contains(" sh -c ") {
+                crate::restorecmd::tests::NO_UPLOADS.to_owned()
+            } else {
+                return Err(format!("not asked in this test: {line}"));
+            })
+        }
+    }
+
+    #[test]
+    fn an_accept_that_differs_keeps_the_site() {
+        // the site holds what the backup says: accepted
+        let (mut host, _asked, d) =
+            wired_host("acceptok", site_says(crate::restorecmd::tests::SAME));
+        let rec = with_backup(&STEPS[..5]);
+        assert_eq!(host.run_step(RestoreStep::Accept, &rec), Ok(()));
+        let _ = fs::remove_dir_all(&d);
+        // a page lost: a difference, the site kept as it is for a person
+        let lost = "P\tpost\tpublish\t1\nU\t1\nEND\n";
+        let (mut host, asked, d) = wired_host("acceptdiffer", site_says(lost));
+        let err = host.run_step(RestoreStep::Accept, &rec).unwrap_err();
+        assert!(err.starts_with("accept_differ"), "{err}");
+        assert_eq!(
+            restoresteps::after_failure(RestoreStep::Accept),
+            AfterFailure::Keep
+        );
+        let err = carry_out(&mut host, rec.clone(), RestoreStep::Accept).unwrap_err();
+        assert!(err.contains("kept as it is for a person"), "{err}");
+        let kept = host.read_record("site9").unwrap().unwrap();
+        assert_eq!(kept.failed.map(|(s, _)| s), Some(RestoreStep::Accept));
+        assert!(!kept.cleaned_up);
+        // nothing was taken back, and the site was only read
+        assert!(asked
+            .borrow()
+            .iter()
+            .all(|l| l.starts_with("pct exec 119 -- sudo -u site9 ")));
+        // an answer that cannot be read is not a pass either
+        let (mut host, _asked, d2) = wired_host("acceptunknown", site_says("garbage\n"));
+        let err = host.run_step(RestoreStep::Accept, &rec).unwrap_err();
+        assert!(err.starts_with("accept_unknown"), "{err}");
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&d2);
     }
 }

@@ -2561,6 +2561,26 @@ jobs:
           hk restorestepscmd.rs '                .put_scheduler_back(&rec)' \
              '                .put_scheduler_back(&rec).or(Ok::<bool, String>(false)) // knife' \
              a_restore_puts_the_scheduler_back_before_tidying_and_keeps_the_site_if_it_cannot
+          # restore wiring: the import runs in the site's language, not C (c477a slice 4 L1)
+          hk restorestepscmd.rs '    v.extend(restoreimport::IMPORT_ENV.iter().map(|e| (*e).to_owned()));' \
+             '    // knife: no IMPORT_ENV' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: wp prints colours (c477a slice 4 N1)
+          hk restorestepscmd.rs '    v.push("--no-color".into());' \
+             '    // knife: colours on' \
+             the_import_runs_these_commands_word_for_word
+          # restore wiring: a plugin zip not as SHA256SUMS says is installed (B3 slice 5)
+          hk restorestepscmd.rs '            if !got.eq_ignore_ascii_case(want) {' \
+             '            if !got.eq_ignore_ascii_case(want) && false { // knife' \
+             a_plugin_zip_not_as_summed_is_not_installed
+          # restore wiring: an import that ends with 1 but printed Success: is taken as done (c477a slice 4 L1)
+          hk restorestepscmd.rs '        self.run.run(&restore_argv)' \
+             '        self.run.run(&restore_argv).or_else(|e| Ok(format!("Success: {e}"))) // knife' \
+             an_import_that_does_not_end_with_0_fails_and_is_rolled_back
+          # restore wiring: an accept that differs goes on (B3 slice 5; Andy 11-12: keep)
+          hk restorestepscmd.rs '            1 => Err(format!("accept_differ: {}", doc["strict"])),' \
+             '            1 => Ok(()), // knife' \
+             an_accept_that_differs_keeps_the_site
           # site create --plan: a guest list that could not be read counts as empty (4542e 11-11)
           hk sitecreatecmd.rs '        let ids = list.and_then(guest_ids).ok_or("numbers_unknown")?;' \
              '        let ids = list.and_then(guest_ids).unwrap_or_default(); // knife' \
