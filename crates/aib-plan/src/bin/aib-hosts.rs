@@ -287,7 +287,7 @@ fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
     let top_avg = out.lines().any(|l| l.trim() == "AIB_TOPAVG");
     let rest: String = out
         .lines()
-        .filter(|l| !l.starts_with("AIB_TOP ") && l.trim() != "AIB_TOPAVG")
+        .filter(|l| !l.starts_with("AIB_TOP "))
         .collect::<Vec<_>>()
         .join("\n");
     let out = rest.as_str();
@@ -2036,6 +2036,22 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         // 前 5 名那幾列不能混進負載數字
         assert_eq!((s.ncpu, s.load1, s.load5), (10.0, 5.10, 4.28));
         assert_eq!(s.perf, 0.0, "pid 不能被當成效能核數");
+        assert!(!s.top_avg, "mac 的 %CPU 是現在的");
+        let linux = parse_sample(
+            "AIB_HOSTS_SYS 4 { 3.5 3.0 2.0 }\nAIB_TOPAVG\nAIB_TOP 9 80.0 10:00 www Thu Nov 12 13:20:01 2026 php-fpm",
+            true,
+            "",
+        );
+        assert!(linux.top_avg && linux.top.len() == 1, "{linux:?}");
+        assert_eq!((linux.ncpu, linux.load1), (4.0, 3.5));
+        let l: Vec<String> = host_lines(&host("srv", Some(linux), true), 0, 160, 0, 0)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            l.iter().any(|x| x.contains("(Linux:整段平均，不是現在)")),
+            "{l:?}"
+        );
         assert_eq!(s.owner, "4542e", "租約 JSON 照讀");
         assert_eq!(s.top.len(), 2, "壞列跳過");
         assert_eq!(
@@ -2134,6 +2150,11 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         // 遠端給的啟動時間有怪字 ⇒ 不產腳本
         pr.start = "Thu Nov 12 13:20:01 2026'; rm -rf ~".into();
         assert!(sign_script("a", &p, &pr, "/r").is_none());
+        pr.start = "Thu Nov 12 13:20:01 2026'".into();
+        assert!(
+            sign_script("a", &p, &pr, "/r").is_none(),
+            "單引號一個都不行"
+        );
         pr.start.clear();
         assert!(sign_script("a", &p, &pr, "/r").is_none());
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
