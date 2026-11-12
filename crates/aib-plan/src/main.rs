@@ -897,12 +897,14 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             sugg = Some((out.len(), x0, x0 + str_width(&tail[k].0) - 3));
         }
         rows[0].extend(tail);
-        mainline_y = Some(out.len() + 2);
-        start_y = Some(out.len() + 1);
+        // Andy 11-12 23:2x「起點這行應該與上面那行多一個空格」⇒ 判斷那行與起點之間空一行
+        mainline_y = Some(out.len() + 3);
+        start_y = Some(out.len() + 2);
         toggle_x = rows[2].last().filter(|g| g.0.contains("理由")).map(|_| {
             str_width(&rows[2].iter().map(|g| g.0.as_str()).collect::<String>())
                 - str_width("  ▸ 理由")
         });
+        rows.insert(1, Vec::new());
         out.extend(rows);
         if app.fleet_open {
             out.push(Vec::new());
@@ -1576,19 +1578,19 @@ mod tests {
         assert_eq!(str_width(&text(&f, 1)), 98, "靠右留 2 格");
         // 起點 / 目前：一律帶日期(Andy 11-12 23:2x),字頭上下對齊
         assert!(
-            text(&f, 2).starts_with("  起點  11-12 00:09"),
+            text(&f, 3).starts_with("  起點  11-12 00:09"),
             "{}",
-            text(&f, 2)
+            text(&f, 3)
         );
-        assert!(text(&f, 3).starts_with("  目前  --"), "{}", text(&f, 3));
+        assert!(text(&f, 4).starts_with("  目前  --"), "{}", text(&f, 4));
         let at = |i: usize, k: &str| {
             let t = text(&f, i);
             str_width(&t[..t.find(k).unwrap()])
         };
-        assert_eq!(at(2, "席位接續"), at(3, "還沒回報"));
-        assert!(!text(&f, 3).contains('▸'), "沒有判斷內容就沒有開合");
-        assert!(text(&f, 4).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(5));
+        assert_eq!(at(3, "席位接續"), at(4, "還沒回報"));
+        assert!(!text(&f, 4).contains('▸'), "沒有判斷內容就沒有開合");
+        assert!(text(&f, 5).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(6));
 
         // 有判斷 ⇒ 百分比 + 顏色;校正 > 0 黃
         let review = |pct: u8| {
@@ -1625,23 +1627,23 @@ mod tests {
             ..Default::default()
         });
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 2).ends_with('…') && str_width(&text(&f, 2)) <= 100);
-        assert!(text(&f, 3).ends_with("  ▸ 理由"), "預設收合");
-        assert!(text(&f, 4).is_empty());
-        assert_eq!(app.hits.borrow().mainline_y, Some(3));
+        assert!(text(&f, 3).ends_with('…') && str_width(&text(&f, 3)) <= 100);
+        assert!(text(&f, 4).ends_with("  ▸ 理由"), "預設收合");
+        assert!(text(&f, 5).is_empty());
+        assert_eq!(app.hits.borrow().mainline_y, Some(4));
         // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
         // 點「▸ 理由」那幾格才開合(前面點了是跳到樹上)
         let tx = app.hits.borrow().toggle_x.unwrap();
-        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 3)));
-        assert!(on_click(&mut app, tx + 3, 3));
+        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 4)));
+        assert!(on_click(&mut app, tx + 3, 4));
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 3).ends_with("  ▾ 理由"));
+        assert!(text(&f, 4).ends_with("  ▾ 理由"));
         let pad = " ".repeat(at(2, "席位接續"));
-        assert_eq!(text(&f, 4), format!("{pad}為什麼  因為 Andy 要"));
-        assert_eq!(text(&f, 5), format!("{pad}建議    建議 X"));
-        assert_eq!(text(&f, 6), format!("{pad}回報 11-12 00:10"));
-        assert!(text(&f, 7).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(8));
+        assert_eq!(text(&f, 5), format!("{pad}為什麼  因為 Andy 要"));
+        assert_eq!(text(&f, 6), format!("{pad}建議    建議 X"));
+        assert_eq!(text(&f, 7), format!("{pad}回報 11-12 00:10"));
+        assert!(text(&f, 8).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(9));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
@@ -1756,19 +1758,19 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).ends_with("全艙 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
-        assert!(text(&f, 4).is_empty(), "預設收合");
+        assert!(text(&f, 5).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▾"));
-        assert!(text(&f, 4).is_empty());
-        let a = text(&f, 5);
+        assert!(text(&f, 5).is_empty());
+        let a = text(&f, 6);
         assert!(
             a.starts_with("  @aaaaa  90%   校正1 總結0 交接0  01-01 08:00 主機發熱三條修法"),
             "{a}"
         );
         assert!(a.ends_with("⚠ 換題?"), "{a}");
-        let b = text(&f, 6);
+        let b = text(&f, 7);
         assert!(
             b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    還沒回報"),
             "{b}"
@@ -1779,7 +1781,7 @@ mod tests {
             str_width(&b[..b.find("校正").unwrap()]),
             "欄位對齊"
         );
-        assert!(text(&f, 7).is_empty());
+        assert!(text(&f, 8).is_empty());
         // 超過兩席 ⇒ 前兩席 + 其餘數量
         let drift = app.fleet[0].1.clone();
         for c in ["ccccc", "ddddd"] {
