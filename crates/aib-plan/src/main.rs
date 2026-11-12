@@ -985,8 +985,9 @@ fn main() {
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
-    app.fleet = fleet_of(&app, app.now_secs);
     app.load(&args.data);
+    // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
+    app.fleet = fleet_of(&app, app.now_secs);
     if let Some(i) = index(&app.plan).by.get("SC") {
         app.sel = *i;
     }
