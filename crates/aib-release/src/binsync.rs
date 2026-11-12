@@ -275,7 +275,15 @@ fn sweep(dest: &Path, name: &str, now: u64) -> Result<(usize, usize), Outcome> {
         };
         let what = rest.split('-').next().unwrap_or("");
         if matches!(what, "back" | "fwd") {
-            let to = dest.join(format!("{name}.rescued-{what}-{now}-{rescued}"));
+            // never over an earlier rescue (two runs in the same second, 33e28 N1)
+            let mut k = 0;
+            let to = loop {
+                let t = dest.join(format!("{name}.rescued-{what}-{now}-{rescued}-{k}"));
+                if fs::symlink_metadata(&t).is_err() {
+                    break t;
+                }
+                k += 1;
+            };
             put(&e.path(), &to)?;
             rescued += 1;
         } else {
@@ -575,6 +583,14 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
     // or .prev would become a copy of the tool and the real previous version would be lost
     // (§18 review M2); only the ledger is written
     if matches!(&current, Slot::File(b) if sha256_hex(b) == sha) {
+        // the bytes are right; the mode may not be (33e28 N2)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = fs::set_permissions(&target_path, fs::Permissions::from_mode(0o755)) {
+                return err("io", format!("{}: {e}", target_path.display()));
+            }
+        }
         let entry = ledger_entry(
             req,
             &candidate,
@@ -681,7 +697,23 @@ pub fn rollback(
                 format!("{} is {} for {}", pp.display(), t.name, t.target),
             )
         }
-        Err(e) => return refuse("prev_not_this_tool", e),
+        // an unmarked .prev (a hand copy from before build info) is taken back only when the
+        // ledger says this very file is the one binsync moved there (33e28 L1: otherwise the
+        // first rollback after the first install is always refused)
+        Err(e) => {
+            let moved = read_ledger(dest)
+                .ok()
+                .and_then(|l| l.get(name)?.get("prev_sha256")?.as_str().map(str::to_owned));
+            if moved.as_deref() != Some(sha256_hex(&prev).as_str()) {
+                return refuse(
+                    "prev_not_this_tool",
+                    format!(
+                        "{e}; and the ledger does not name {} as the file it moved there",
+                        pp.display()
+                    ),
+                );
+            }
+        }
     }
     let staged_prev = match stage(dest, name, "back", &prev, now, true) {
         Ok(p) => p,

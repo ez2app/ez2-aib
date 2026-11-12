@@ -578,3 +578,73 @@ fn unused_reasons_are_shown_and_the_ledger_is_not_executable() {
         assert_eq!(mode & 0o777, 0o644, "ledger_0644");
     }
 }
+
+/// 33e28 L1: the first install moves an unmarked hand copy to .prev; rolling back to it works
+/// because the ledger names that file, and an unmarked .prev the ledger does not name is refused.
+#[test]
+fn rollback_to_the_hand_copy_the_first_install_moved() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    fs::write(dest.join("aib-title"), b"an old hand-copied build").unwrap();
+    let mut r = req(dest, good(B));
+    r.allow_unknown_current = Some("hand copy from 11-12".into());
+    assert_eq!(install(&MAIN, &r).verdict, Verdict::Ok);
+    let out = rollback(
+        dest,
+        "aib-title",
+        "x",
+        "B draws wrong",
+        "macos",
+        "aarch64",
+        5,
+    );
+    assert_eq!(out.verdict, Verdict::Ok, "{:?}", out.to_json());
+    assert_eq!(
+        fs::read(dest.join("aib-title")).unwrap(),
+        b"an old hand-copied build",
+        "back_to_hand_copy"
+    );
+    // forward again, then replace .prev with an unmarked file nobody recorded
+    rollback(
+        dest,
+        "aib-title",
+        "x",
+        "forward again",
+        "macos",
+        "aarch64",
+        6,
+    );
+    fs::write(dest.join("aib-title.prev"), b"something else").unwrap();
+    assert_eq!(
+        rollback(dest, "aib-title", "x", "try it", "macos", "aarch64", 7).code,
+        "prev_not_this_tool",
+        "unrecorded_unmarked_refused"
+    );
+    assert_eq!(
+        fs::read(dest.join("aib-title")).unwrap(),
+        good(B),
+        "untouched"
+    );
+}
+
+/// 33e28 N1: a rescue never overwrites an earlier one from the same second.
+#[test]
+fn rescues_in_the_same_second_do_not_collide() {
+    let td = tempfile::tempdir().unwrap();
+    let dest = td.path();
+    for bytes in [good(A), good(C)] {
+        fs::write(dest.join(".aib-title.tmp-back-1-2-x"), &bytes).unwrap();
+        let mut r = req(dest, good(B));
+        r.now = 42;
+        install(&MAIN, &r);
+    }
+    let kept: BTreeSet<Vec<u8>> = names(dest)
+        .into_iter()
+        .filter(|n| n.starts_with("aib-title.rescued-"))
+        .map(|n| fs::read(dest.join(n)).unwrap())
+        .collect();
+    assert!(
+        kept.contains(&good(A)) && kept.contains(&good(C)),
+        "both_kept"
+    );
+}
