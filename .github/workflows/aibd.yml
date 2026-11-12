@@ -1878,6 +1878,13 @@ jobs:
           ck sitedns.rs '                Some(_) if r.proxied => Adopt::Unchanged,' \
              '                Some(_) if r.proxied && false => Adopt::Unchanged, // knife' \
              adopting_edits_only_a_records_to_this_host
+          # E6 S12 adopt (c477a M1): an empty old comment becomes the bare mark, so site remove deletes it
+          ck sitedns.rs '        ADOPTED_TAIL' '        return mark; // knife' \
+             an_adopted_comment_is_never_the_bare_mark_so_site_remove_keeps_it
+          # E6 S12 adopt (c477a L1): a grey record already marked for this site is marked twice
+          ck sitedns.rs '    if marked_by(old) == Some(code) {' \
+             '    if marked_by(old) == Some(code) && false { // knife' \
+             adopting_a_grey_record_already_marked_for_this_site_keeps_its_comment
           # E6 S12 adopt: an SSL mode that is not full lets the adopt through
           ck sitedns.rs '    ssl?;' '    let _ = ssl; // knife' \
              adopt_needs_full_ssl_and_a_challenge_the_proxy_passes

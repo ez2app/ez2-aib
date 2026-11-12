@@ -300,19 +300,30 @@ pub fn marked_by(comment: &str) -> Option<&str> {
     crate::site::valid_code(code).then_some(code)
 }
 
+/// What follows the mark on an adopted record whose old comment was empty, so an adopted
+/// record's comment is never the bare mark and `site remove` ([`delete_of`]) leaves it.
+pub const ADOPTED_TAIL: &str = "adopted";
+
 /// The comment an adopted record gets: the site's mark, then its old comment (control
-/// characters made spaces), cut to [`COMMENT_MAX`] characters.
+/// characters made spaces) or [`ADOPTED_TAIL`] when there was none, cut to
+/// [`COMMENT_MAX`] characters. Never the bare mark, so adopted records outlive the site.
+/// A comment already carrying this site's mark is kept as it is (not marked twice).
 pub fn adopted_comment(code: &str, old: &str) -> String {
+    let old = old.trim();
+    if marked_by(old) == Some(code) {
+        return String::from(old);
+    }
     let mark = dns_marker(code);
     let old: String = old
-        .trim()
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    if old.is_empty() {
-        return mark;
-    }
-    format!("{mark} {old}").chars().take(COMMENT_MAX).collect()
+    let tail = if old.is_empty() {
+        ADOPTED_TAIL
+    } else {
+        old.as_str()
+    };
+    format!("{mark} {tail}").chars().take(COMMENT_MAX).collect()
 }
 
 /// An adopting edit of one listed record. Its fields are private: it is made by [`adopt`]
@@ -1649,10 +1660,43 @@ mod tests {
                 &Adopt::OtherSite
             ]
         );
-        assert_eq!(adopted_comment(code, ""), mark);
         assert_eq!(
             adopted_comment(code, &"y".repeat(200)).chars().count(),
             COMMENT_MAX
+        );
+    }
+
+    #[test]
+    fn an_adopted_comment_is_never_the_bare_mark_so_site_remove_keeps_it() {
+        let code = "s-adopt1";
+        let mark = dns_marker(code);
+        for old in ["", "  ", "made by hand"] {
+            let c = adopted_comment(code, old);
+            assert_ne!(c, mark, "{old:?}");
+            assert_eq!(marked_by(&c), Some(code));
+            let r = Record {
+                id: String::from("r1"),
+                kind: String::from("A"),
+                name: String::from("shop.example.com"),
+                content: String::from("192.0.2.10"),
+                proxied: true,
+                comment: c,
+            };
+            assert!(delete_of("z1", &r, code).is_none(), "{old:?}");
+        }
+        assert_eq!(adopted_comment(code, ""), format!("{mark} {ADOPTED_TAIL}"));
+    }
+
+    #[test]
+    fn adopting_a_grey_record_already_marked_for_this_site_keeps_its_comment() {
+        let code = "s-adopt1";
+        let mark = dns_marker(code);
+        assert_eq!(adopted_comment(code, &mark), mark);
+        let kept = format!("{mark} made by hand");
+        assert_eq!(adopted_comment(code, &kept), kept);
+        assert_eq!(
+            adopted_comment(code, "ez2:site:s-other x"),
+            format!("{mark} ez2:site:s-other x")
         );
     }
 }
