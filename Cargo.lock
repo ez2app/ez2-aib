@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "aib-expect"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "aib-drive",
  "serde_json",
