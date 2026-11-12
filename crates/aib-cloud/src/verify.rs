@@ -15,7 +15,7 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! Passive host checks: H01–H10, H12–H15. Passive site checks: S01–S06, S10–S13 (the mask) and S14 (the
+//! Passive host checks: H01–H10, H12–H15. Passive site checks: S01–S06, S10–S13 and S16 (the mask) and S14 (the
 //! site software's scheduled events run: f1fae's ten-category map, class 6). Still to come:
 //! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
 //! the `--active` checks.
@@ -778,6 +778,44 @@ pub fn s13_no_ipv6(pct_config: Option<&str>) -> CheckResult {
         Outcome::Green
     };
     result("S13", outcome)
+}
+
+/// The last line of what [`S16_SCRIPT`] prints: the listing ran to its end.
+pub const S16_END: &str = "ez2-s16-end";
+
+/// Run inside a site's CT as `sh -c S16_SCRIPT sh <file>…` with
+/// [`crate::mask::PLATFORM_FILES`]: prints each one that is there, then [`S16_END`].
+/// Reads nothing but whether a name exists.
+pub const S16_SCRIPT: &str =
+    "for f in \"$@\"; do if [ -e \"$f\" ] || [ -L \"$f\" ]; then printf '%s\\n' \"$f\"; fi; done; echo ez2-s16-end";
+
+/// S16: no file a platform template leaves that names the platform or its vendor
+/// ([`crate::mask::PLATFORM_FILES`]) is inside the CT. `listing` is what [`S16_SCRIPT`]
+/// printed; `None` when it could not be run. A listing without its end line is unknown;
+/// a name the script was not asked about is unknown too.
+pub fn s16_no_platform_file(listing: Option<&str>) -> CheckResult {
+    let Some(text) = listing else {
+        return result("S16", Outcome::Unknown("unread"));
+    };
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.pop() != Some(S16_END) {
+        return result("S16", Outcome::Unknown("unparsed"));
+    }
+    let outcome = if lines
+        .iter()
+        .any(|l| !crate::mask::PLATFORM_FILES.contains(l))
+    {
+        Outcome::Unknown("unparsed")
+    } else if lines.is_empty() {
+        Outcome::Green
+    } else {
+        Outcome::Red("platform_file")
+    };
+    result("S16", outcome)
 }
 
 /// H15: the kernel log is not readable from inside a container
@@ -1620,6 +1658,30 @@ mod tests {
     }
 
     /// 4.5 r4 section 14.1 #6 (c477a's list): the passive mask checks.
+    #[test]
+    fn no_platform_file_stays() {
+        let end = alloc::format!("{S16_END}\n");
+        assert_eq!(s16_no_platform_file(Some(&end)).outcome, Outcome::Green);
+        assert_eq!(
+            s16_no_platform_file(Some(&alloc::format!("/etc/appliance.info\n{end}"))).outcome,
+            Outcome::Red("platform_file")
+        );
+        // not read, cut before its end, or a name nobody asked about: unknown, not green
+        assert_eq!(
+            s16_no_platform_file(None).outcome,
+            Outcome::Unknown("unread")
+        );
+        assert_eq!(
+            s16_no_platform_file(Some("/etc/appliance.info\n")).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert_eq!(
+            s16_no_platform_file(Some(&alloc::format!("/etc/vendor-x.info\n{end}"))).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert!(S16_SCRIPT.ends_with(S16_END));
+    }
+
     #[test]
     fn s10_to_s13_and_h15_the_site_is_masked() {
         const CT: &str = "arch: amd64\ncores: 2\nhostname: site2\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nunprivileged: 1\n"; // ip-literal-ok: sample CT config with a public resolver, never a host of ours
