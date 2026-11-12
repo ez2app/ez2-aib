@@ -58,6 +58,12 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// The disk a new site starts with, in GiB (Andy 11-12 13:07: 10 GB, was 20). Shown, not
+/// judged: [`crate::quota`] counts a record that names no `disk_gb` at this size. The size
+/// a new container really gets is the template's (CT 900), a host setting this code does
+/// not write.
+pub const START_DISK_GB: u32 = 10;
+
 /// Resource limits of one site CT. The numbers are **guarantees for the test tier**
 /// (§23: the customer-facing plan ceiling is shown, not reserved); every field is bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]

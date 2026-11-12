@@ -447,7 +447,10 @@ fn answer_tenant_with(
                     held.0 += u64::from(spec.limits.cpulimit_x100);
                     held.1 += u64::from(spec.limits.memory_mb);
                 }
-                held.2 += rec.get("disk_gb").and_then(Value::as_u64).unwrap_or(0);
+                held.2 += rec
+                    .get("disk_gb")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::from(aib_cloud::site::START_DISK_GB));
             }
             let plan = aib_cloud::arc::PLAN;
             println!(

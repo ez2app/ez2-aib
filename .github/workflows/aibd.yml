@@ -1445,6 +1445,14 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # E7 (Andy 11-12): no traffic notice is ever sent
+          ck quota.rs '    (!already_sent.iter().any(|s| *s >= top)).then_some(top)' \
+             '    (!already_sent.iter().any(|s| *s >= top) && false).then_some(top) // knife' \
+             crossing_80_then_95_sends_each_once
+          # E7 (Andy 11-12「超過先通知、不擋信」): mail past the free count is held back
+          ck quota.rs 'pub fn mail_held_back(sent_this_month: u64) -> bool {' \
+             'pub fn mail_held_back(sent_this_month: u64) -> bool { if sent_this_month > MAIL_FREE_PER_SITE_MONTH { return true; } // knife' \
+             mail_over_1000_notices_once_never_blocks
           # E11 (Andy 11-11「可以彈出提示，同意後關閉」): a gone process reads as running
           ck op.rs '        Liveness::Gone => Progress::Gone,' \
              '        Liveness::Gone => Progress::Running, // knife' \
