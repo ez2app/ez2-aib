@@ -809,12 +809,14 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     } else {
         Color::DarkGrey
     };
-    let gap = " ".repeat(CELL - 8);
+    // Andy 11-12 20:4x:全置中 —— 框(8 格)左右各空 2 格，名字與功能行在格子裡置中
+    let side = " ".repeat((CELL - 8) / 2);
+    let gap = " ".repeat(CELL - 8 - side.len());
     let (badge, badge_c) = badge(h);
     let pad = |t: String| {
         let t = fit(&t, CELL - 1);
-        let n = CELL.saturating_sub(w(&t));
-        format!("{t}{}", " ".repeat(n))
+        let room = CELL.saturating_sub(w(&t));
+        format!("{}{t}{}", " ".repeat(room / 2), " ".repeat(room - room / 2))
     };
     let stat = match s {
         None => "…".to_string(),
@@ -833,14 +835,22 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
         vec![(pad(format!("{num}{}", h.name)), kind_color(h))],
         // Andy 11-12 20:3x:上緣框線放銘牌，左角右邊一格起(┌M─────┐ / ┌Ez2───┐)
         vec![
-            ("┌".into(), edge),
+            (format!("{side}┌"), edge),
             (badge.clone(), badge_c),
             (format!("{}┐{gap}", "─".repeat(6 - w(&badge))), edge),
         ],
-        vec![("│".into(), edge), (top, fill_c), (format!("│{gap}"), edge)],
-        vec![("│".into(), edge), (low, fill_c), (format!("│{gap}"), edge)],
         vec![
-            ("└".into(), edge),
+            (format!("{side}│"), edge),
+            (top, fill_c),
+            (format!("│{gap}"), edge),
+        ],
+        vec![
+            (format!("{side}│"), edge),
+            (low, fill_c),
+            (format!("│{gap}"), edge),
+        ],
+        vec![
+            (format!("{side}└"), edge),
             (led_net.0.to_string(), led_net.1),
             (led_use.0.to_string(), led_use.1),
             (format!("────┘{gap}"), edge),
@@ -920,19 +930,30 @@ fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
     let all: Vec<(usize, &Host)> = hosts.iter().enumerate().collect();
     for chunk in all.chunks(per_row(width)) {
         let towers: Vec<Vec<Line>> = chunk.iter().map(|(i, h)| tower(h, *i)).collect();
+        let lead = (" ".repeat(grid_off(width)), Color::White);
         for r in 0..TOWER_H {
-            lines.push(towers.iter().flat_map(|tw| tw[r].clone()).collect());
+            lines.push(
+                std::iter::once(lead.clone())
+                    .chain(towers.iter().flat_map(|tw| tw[r].clone()))
+                    .collect(),
+            );
         }
     }
     lines
 }
 
+/// 整排在窗格裡置中：左邊空幾格
+fn grid_off(width: usize) -> usize {
+    width.saturating_sub(per_row(width) * CELL) / 2
+}
+
 /// 點到哪一台(機箱格模式);明細模式點哪都回 None(呼叫端收起)
 fn hit(hosts: &[Host], width: usize, x: usize, y: usize) -> Option<usize> {
-    if y < 2 || hosts.iter().any(|h| h.open) || x / CELL >= per_row(width) {
+    let off = grid_off(width);
+    if y < 2 || hosts.iter().any(|h| h.open) || x < off || (x - off) / CELL >= per_row(width) {
         return None;
     }
-    let i = (y - 2) / TOWER_H * per_row(width) + x / CELL;
+    let i = (y - 2) / TOWER_H * per_row(width) + (x - off) / CELL;
     (i < hosts.len()).then_some(i)
 }
 
@@ -1355,15 +1376,15 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         mac_ci.ci = true;
         let top = |h: &Host| text(&tower(h, 0)[1]);
         // 左角右邊一格起;框線寬不變
-        assert_eq!(top(&mac).trim_end(), "┌M─────┐");
-        assert_eq!(top(&win).trim_end(), "┌W─────┐");
-        assert_eq!(top(&lin).trim_end(), "┌L─────┐");
-        assert_eq!(top(&gh).trim_end(), "┌G-CI──┐");
-        assert_eq!(top(&mac_ci).trim_end(), "┌M-CI──┐");
+        assert_eq!(top(&mac).trim(), "┌M─────┐");
+        assert_eq!(top(&win).trim(), "┌W─────┐");
+        assert_eq!(top(&lin).trim(), "┌L─────┐");
+        assert_eq!(top(&gh).trim(), "┌G-CI──┐");
+        assert_eq!(top(&mac_ci).trim(), "┌M-CI──┐");
         ez2.ci = true;
-        assert_eq!(top(&ez2).trim_end(), "┌Ez2-CI┐", "最長剛好 6 格");
+        assert_eq!(top(&ez2).trim(), "┌Ez2-CI┐", "最長剛好 6 格");
         ez2.ci = false;
-        assert_eq!(top(&ez2).trim_end(), "┌Ez2───┐");
+        assert_eq!(top(&ez2).trim(), "┌Ez2───┐");
         assert_eq!(w(&top(&ez2)), CELL);
         // Ez2 用反白記號色，其他照種類色
         assert_eq!(tower(&ez2, 0)[1][1].1, EZ2_BADGE);
@@ -1406,13 +1427,28 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         for (r, row) in l.iter().enumerate().skip(2) {
             assert!(w(&text(row)) <= 102, "row {r} too wide");
         }
-        assert!(text(&l[2]).starts_with("① h0"), "{}", text(&l[2]));
-        // 第 10 台起沒有編號(只有 1–9 能按)
+        // Andy 20:4x 全置中:102 格放 8 台 = 96 格，左邊空 3 格;框在格子裡左右各空 2 格
+        let off = grid_off(102);
+        assert_eq!(off, 3);
+        let col = |line: &Line, c: usize| {
+            text(line)
+                .chars()
+                .skip(off + c * CELL)
+                .take(CELL)
+                .collect::<String>()
+        };
+        assert_eq!(col(&l[3], 0), "  ┌M─────┐  ", "框置中");
+        assert_eq!(col(&l[2], 0).trim(), "① h0");
         assert!(
-            text(&l[2 + TOWER_H]).starts_with("⑨ h8   ") && text(&l[2 + TOWER_H]).contains("   h9")
+            col(&l[2], 0).starts_with("   "),
+            "名字置中:{:?}",
+            col(&l[2], 0)
         );
-        // HELD:10 核負載 5.1 ⇒ 51%,黃
-        assert!(text(&l[7]).starts_with("測試 51%"), "{}", text(&l[7]));
+        // 第 10 台起沒有編號(只有 1–9 能按)
+        assert_eq!(col(&l[2 + TOWER_H], 0).trim(), "⑨ h8");
+        assert_eq!(col(&l[2 + TOWER_H], 1).trim(), "h9");
+        // HELD:10 核負載 5.1 ⇒ 51%,黃(置中)
+        assert_eq!(col(&l[7], 0).trim(), "測試 51%");
         // 第二排第四台 = 主機,2/8 = 25%
         assert!(
             text(&l[8 + TOWER_H - 1]).contains("正式站 25%"),
@@ -1420,9 +1456,11 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             text(&l[13])
         );
         // 點第二排第 4 台 ⇒ 打開 h11;明細模式點哪都不是機箱
-        assert_eq!(hit(&hs, 102, 3 * CELL + 2, 2 + TOWER_H + 3), Some(11));
+        assert_eq!(hit(&hs, 102, off + 3 * CELL + 2, 2 + TOWER_H + 3), Some(11));
+        assert_eq!(hit(&hs, 102, off - 1, 3), None, "左邊空白不是機箱");
+        assert_eq!(hit(&hs, 102, off, 3), Some(0));
         assert_eq!(
-            hit(&hs, 102, 4 * CELL + 2, 2 + TOWER_H + 3),
+            hit(&hs, 102, off + 4 * CELL + 2, 2 + TOWER_H + 3),
             None,
             "第二排只有 4 台"
         );

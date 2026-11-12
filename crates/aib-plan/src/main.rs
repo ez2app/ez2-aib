@@ -183,6 +183,8 @@ struct App {
     /// 全艙判斷(本艙每一席的一開始 / 目前主軸 + 判斷);展開了沒(預設收合)
     fleet: Vec<(String, Mainline)>,
     fleet_open: bool,
+    /// 點「起點 / 目前」後的一句結果(跳到哪一項 / 樹上沒有),下一次按鍵或點擊前都留著
+    jump_note: Option<String>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -220,6 +222,7 @@ const TOOLBAR_KEYS: [(&str, char); 10] = [
 /// 滑鼠點擊：工具列的字 = 按那個鍵;樹上的列 = 選取並展開 / 收合。回傳 false = 要離開。
 fn on_click(app: &mut App, x: usize, y: usize) -> bool {
     let h = app.hits.borrow().clone();
+    app.jump_note = None;
     // Andy 11-12 14:5x:點「起點 / 目前」帶到下方樹上對應的項目;點的當下才比對，主軸換了就跳到新的
     if h.start_y == Some(y) {
         let item = app
@@ -285,7 +288,7 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
 }
 
 /// 主軸那句話最像樹上哪一項:相鄰兩字重疊(以較短的一邊為分母)+ 同一個 #PR 號加分;太不像就不跳
-fn best_node(plan: &Plan, item: &str) -> Option<usize> {
+fn best_node(plan: &Plan, item: &str) -> Option<(usize, f64)> {
     fn grams(s: &str) -> HashSet<(char, char)> {
         let cs: Vec<char> = s
             .chars()
@@ -319,14 +322,37 @@ fn best_node(plan: &Plan, item: &str) -> Option<usize> {
             best = Some((score, i));
         }
     }
-    best.filter(|(s, _)| *s >= 0.25).map(|(_, i)| i)
+    best.filter(|(s, _)| *s >= 0.25)
+        .map(|(s, i)| (i, s.min(1.0)))
 }
 
 /// 跳到那一項：展開祖先、選它;被篩選藏起來就清掉篩選。找不到對應的就不動
 fn jump_to(app: &mut App, item: Option<&str>) -> bool {
-    let Some(idx) = item.and_then(|t| best_node(&app.plan, t)) else {
+    // Andy 11-12 20:4x「點下去也沒有跳到對應的項目」:跳了要說跳到哪、多像;樹上沒有就直說
+    let Some((idx, score)) = item.and_then(|t| best_node(&app.plan, t)) else {
+        app.jump_note = item.map(|t| {
+            format!(
+                "樹上沒有對應「{}」的項目(進度樹資料 {})",
+                fit(t, 30),
+                if app.plan.asof.is_empty() {
+                    "沒寫時間"
+                } else {
+                    app.plan.asof.as_str()
+                }
+            )
+        });
         return true;
     };
+    app.jump_note = Some(format!(
+        "跳到:{}(相似 {:.0}%{})",
+        fit(&app.plan.nodes[idx].title, 40),
+        score * 100.0,
+        if score < 0.5 {
+            ",不太像，樹可能還沒更新"
+        } else {
+            ""
+        }
+    ));
     let ix = index(&app.plan);
     let mut cur = app.plan.nodes[idx].parent.clone();
     while let Some(pid) = cur {
@@ -804,8 +830,11 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             out.extend(fleet_rows(&app.fleet, app.now_secs, w));
         }
     }
-    // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
-    out.push(Vec::new());
+    // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行(點了起點 / 目前 ⇒ 這行寫跳到哪)
+    out.push(match &app.jump_note {
+        Some(n) => vec![Seg(format!("  {n}"), Some(Color::Yellow), false, false)],
+        None => Vec::new(),
+    });
     out.push(toolbar(app, w));
     let f = &app.filter;
     let mut hits = Hits {
@@ -1039,6 +1068,7 @@ fn draw(app: &App) -> io::Result<()> {
 }
 
 fn on_key(app: &mut App, k: KeyEvent) -> bool {
+    app.jump_note = None;
     if let Some(buf) = app.typing.as_mut() {
         match k.code {
             KeyCode::Enter => {
@@ -1176,6 +1206,7 @@ fn main() {
         main_open: false,
         fleet: Vec::new(),
         fleet_open: false,
+        jump_note: None,
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     if args.seat.is_none() {
@@ -1366,6 +1397,7 @@ mod tests {
             main_open: false,
             fleet: Vec::new(),
             fleet_open: false,
+            jump_note: None,
         }
     }
 
@@ -1510,6 +1542,15 @@ mod tests {
         };
         assert!(on_click(&mut app, 5, sy));
         assert_eq!(app.plan.nodes[app.sel].id, "S");
+        assert!(app
+            .jump_note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("跳到:席位接續 v2")));
+        let f = frame(&app, 100, 40);
+        assert!(
+            (0..8).any(|y| text(&f, y).contains("跳到:席位接續 v2")),
+            "畫面上看得到跳到哪"
+        );
         assert!(app.open.contains("V") && app.open.contains("G"), "祖先展開");
         assert!(on_click(&mut app, 5, my));
         assert_eq!(app.plan.nodes[app.sel].id, "H");
@@ -1521,6 +1562,10 @@ mod tests {
         app.mainline.as_mut().unwrap().now = Some(e("吃午餐"));
         assert!(on_click(&mut app, 5, my));
         assert_eq!(app.plan.nodes[app.sel].id, "P");
+        assert!(app
+            .jump_note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("樹上沒有對應「吃午餐」")));
     }
 
     /// Andy 11-12 13:4x:全艙判斷(f 或點)—— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
