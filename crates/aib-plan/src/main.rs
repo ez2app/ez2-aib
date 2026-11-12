@@ -160,9 +160,15 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
             return true;
         }
         for (tok, key) in TOOLBAR_KEYS {
-            if let Some(pos) = h.toolbar.find(tok) {
+            let tight = tok.replacen(' ', "", 1);
+            let found = h
+                .toolbar
+                .find(tok)
+                .map(|p| (p, str_width(tok)))
+                .or_else(|| h.toolbar.find(&tight).map(|p| (p, str_width(&tight))));
+            if let Some((pos, tw)) = found {
                 let start = str_width(&h.toolbar[..pos]);
-                let end = start + str_width(tok);
+                let end = start + tw;
                 // ●/○ 開關圖示也算在那一顆裡
                 if x + 1 >= start && x < end {
                     return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
@@ -391,6 +397,20 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     } else {
         (1, 2)
     };
+    // 最窄還放不下:鍵字母和字之間不留空格(「o沒做完」),滑鼠點擊兩種寫法都認
+    let tight = body + n + bigs > w;
+    let items: Vec<(String, Option<bool>, bool)> = items
+        .into_iter()
+        .map(|(t, o, wide)| {
+            let t = match t.char_indices().nth(1) {
+                Some((i, ' ')) if tight && t.is_char_boundary(i) => {
+                    format!("{}{}", &t[..i], &t[i + 1..])
+                }
+                _ => t,
+            };
+            (t, o, wide)
+        })
+        .collect();
     let mut out = Vec::new();
     for (i, (t, o, wide)) in items.into_iter().enumerate() {
         if i > 0 {
@@ -1115,7 +1135,7 @@ mod tests {
         app.plan = p;
         app.err = None;
         app.open.insert("V".into());
-        let _ = frame(&app, 80, 30);
+        let _ = frame(&app, 100, 30);
         let h = app.hits.borrow().clone();
         let gy = h.tree_top
             + h.tree_rows
@@ -1171,14 +1191,23 @@ mod tests {
             bar.iter().any(|g| g.0 == "○"),
             "inactive filters keep the hollow dot"
         );
-        for w in [80, 90, 101] {
+        for w in [76, 80, 90, 101] {
             let text: String = toolbar(&app, w).iter().map(|g| g.0.as_str()).collect();
             assert!(
                 str_width(&text) <= w,
                 "toolbar fits {w}: {}",
                 str_width(&text)
             );
-            assert!(text.ends_with("q 離開"));
+            assert!(text.ends_with("離開"), "q stays on screen at {w}");
         }
+        // 緊湊寫法也點得到
+        let _ = frame(&app, 76, 30);
+        let h = app.hits.borrow().clone();
+        let ty = h.toolbar_y.expect("toolbar");
+        let ox = str_width(&h.toolbar[..h.toolbar.find("o沒做完").expect("tight o")]);
+        assert!(on_click(&mut app, ox, ty));
+        assert!(!app.filter.only_open, "click on tight o toggles it off");
+        let qx = str_width(&h.toolbar[..h.toolbar.find("q離開").expect("tight q")]);
+        assert!(!on_click(&mut app, qx, ty), "tight q quits");
     }
 }
