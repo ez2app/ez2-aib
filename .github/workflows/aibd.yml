@@ -4541,11 +4541,11 @@ jobs:
              a_goal_added_after_the_stage_started_is_late
           # KG5 a PR the evidence binds only to other goals is not flagged
           gk '        !bound.is_empty() && !bound.contains(&goal)' \
-             '        false // knife' \
+             '        !bound.is_empty() && !bound.contains(&goal) && false // knife' \
              a_pr_bound_to_other_goals_only_is_a_mismatch
           # KG6 missing / unknown come back as a reminder (rc 5), so the gate can never block them
           gk '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) {' \
-             '        if false { // knife' \
+             '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) && false { // knife' \
              no_record_or_no_goal_is_missing_and_may_block
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
