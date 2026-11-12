@@ -1359,8 +1359,9 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 60: these knives took ~41 min inside the macOS rust cell (11-12); own job so they run beside it (a63ab / a9136 11-12 23:5x)
-    timeout-minutes: 60
+    # 90: ~41 min inside the macOS rust cell (11-12), 51.5 min as its own job on #732 run 43273505548 (cache
+    # restore + compile included); 60 left under 9 min of room (c477a 11-13, f1fae FALLBACK #732)
+    timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
     env:
@@ -3237,8 +3238,9 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 60: these knives took ~29 min inside the macOS rust cell (11-12); own job so they run beside it (a63ab / a9136 11-12 23:5x)
-    timeout-minutes: 60
+    # 90: ~29 min inside the macOS rust cell (11-12), but as its own job on #732 run 43273505548 it was cancelled at
+    # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
+    timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
     env:
