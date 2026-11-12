@@ -1541,6 +1541,26 @@ jobs:
           ck verify.rs '        if !line.bytes().all(|b| b.is_ascii_digit()) {' \
              '        if !line.bytes().all(|b| b.is_ascii_digit()) && false { // knife' \
              s14_what_cannot_be_read_is_unknown_never_green
+          # S17 (E6 S7, 4542e 11-12): server_tokens off counts only straight inside http
+          ck verify.rs '                        } else if (path == MAIN && stack.len() == 1 && stack[0] == "http")' \
+             '                        } else if (path == MAIN && !stack.is_empty()) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: no http-level server_tokens off is red
+          ck verify.rs '    file.map(|_| off_at_http && !other)' \
+             '    file.map(|_| (off_at_http || true) && !other) // knife' \
+             a_template_without_server_tokens_off_is_flagged
+          # S17: a PHP-FPM with expose_php On is red
+          ck verify.rs '        Some(true) if php.contains(&Some(true)) => Outcome::Red("expose_php_on"),' \
+             '        Some(true) if php.contains(&Some(true)) && false => Outcome::Red("expose_php_on"), // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17: no PHP-FPM, or one whose setting was not read, is unknown, never green
+          ck verify.rs '        _ if php.is_empty() || php.iter().any(Option::is_none) => Outcome::Unknown("unparsed"),' \
+             '        _ if false => Outcome::Unknown("unparsed"), // knife' \
+             a_php_that_names_its_version_is_flagged
+          # S17: a listing cut before its end line is unknown, never green
+          ck verify.rs '    if lines[last].trim() != S17_END || at > last {' \
+             '    if at > last { // knife' \
+             s17_what_cannot_be_read_is_unknown_never_green
           # site scan (4542e 11-11, E10 cat. 9): read-only scan of one site; each rule out turns its test red
           ck scan.rs '        if other > self {' '        if other > self && false { // knife' \
              the_scan_is_its_worst_check

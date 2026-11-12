@@ -8,8 +8,9 @@
 //! under the site's names goes through the proxy; a customer's status (`customer`) never
 //! runs it. A site whose names span two zones is unchecked (`multi_zone`). One check enters a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
-//! customer's plugins and theme, each with a time limit and a cap on what is read. Nothing
-//! is run inside a quarantined container: S14 is left out for one.
+//! customer's plugins and theme, each with a time limit and a cap on what is read; S17
+//! reads nginx's whole configuration and each PHP-FPM's `expose_php` (E6 S7). Nothing is
+//! run inside a quarantined container: S14 and S17 are left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -97,6 +98,17 @@ pub(crate) fn s14_check(
         .ok();
     let events = runner.run(&wp(spec, &CRON_LIST)).ok();
     verify::s14_wp_cron(now, red_after, shown.as_deref(), events.as_deref())
+}
+
+/// S17 for one site (E6 S7): whether nginx and PHP-FPM name their versions in the site's
+/// answers, read inside its container and judged by
+/// `aib_cloud::verify::s17_no_version_banner`. A customer's status shows it too: what it
+/// reads is the site's own software, nothing of the host.
+pub(crate) fn s17_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
+    let listing = runner
+        .run(&in_ct(ct, &["sh", "-c", verify::S17_SCRIPT]))
+        .ok();
+    verify::s17_no_version_banner(listing.as_deref())
 }
 
 /// S15 (E6 D1): every address record under the site's names is proxied at Cloudflare, so a
@@ -449,6 +461,10 @@ fn site_checks_for(
             verify::WP_CRON_OVERDUE_RED,
         ));
     }
+    // S17 enters the container too: not a quarantined one
+    if s14_runs_in(state) {
+        results.push(s17_check(&mut CtReader, spec.ct));
+    }
     // S15 reads Cloudflare only, so it is looked at for a quarantined site too; never for
     // a customer's status
     let mut grey = Vec::new();
@@ -594,6 +610,9 @@ fn run(args: &[String]) -> Result<u8, String> {
         for (code, names) in &grey {
             eprintln!("S15 {code} not proxied: {}", names.join(" "));
         }
+        if s17_red_anywhere(&sites) {
+            eprintln!("{}", s17_template_hint());
+        }
         eprintln!(
             "{} checks on the host and {} site(s): exit {exit}",
             all.len(),
@@ -601,6 +620,25 @@ fn run(args: &[String]) -> Result<u8, String> {
         );
     }
     Ok(exit)
+}
+
+/// Whether any site's S17 is red: `site verify` then prints [`s17_template_hint`].
+fn s17_red_anywhere(sites: &[(String, Vec<CheckResult>)]) -> bool {
+    sites
+        .iter()
+        .flat_map(|(_, r)| r)
+        .any(|r| r.id == "S17" && matches!(r.outcome, Outcome::Red(_)))
+}
+
+/// What the site template is to carry so new sites start with S17 green (E6 S7): a plan
+/// for when the template is next rebuilt. Nothing here writes it; an existing site is
+/// changed by its own reviewed approval, not by this.
+fn s17_template_hint() -> String {
+    format!(
+        "S17 plan for site template CT {} (next rebuild, not written here):\n  {}",
+        aib_cloud::site::TEMPLATE_CT,
+        verify::S17_TEMPLATE_LINES.join("\n  ")
+    )
 }
 
 #[cfg(test)]
@@ -676,7 +714,8 @@ mod tests {
         let ok = dir.join("site2.json");
         fs::write(&ok, full).unwrap();
         let (_, _, r) = site_checks(&ok);
-        assert_eq!(r.len(), 11);
+        // S00–S06, S10–S14 and S17; S15 asks Cloudflare, for `site verify` only
+        assert_eq!(r.len(), 12, "S00–S06, S10–S14 and S17");
         // a site's checks are what a customer's status is made of (`customer` reads
         // site_checks): the host's H14 is never among them (f1fae, #642)
         assert!(r.iter().all(|x| x.id.starts_with('S')), "{r:?}");
@@ -752,6 +791,55 @@ mod tests {
             };
             answer.map(str::to_owned).map_err(|()| "failed".to_owned())
         }
+    }
+
+    #[test]
+    fn s17_reads_nginx_and_php_inside_the_container() {
+        struct Sh(Result<String, ()>, Vec<Vec<String>>);
+        impl Runner for Sh {
+            fn run(&mut self, argv: &[String]) -> Result<String, String> {
+                self.1.push(argv.to_vec());
+                self.0.clone().map_err(|()| "failed".to_owned())
+            }
+        }
+        let good = format!(
+            "{}\nexpose_php => Off => Off\n{}\n# configuration file /etc/nginx/nginx.conf:\nhttp {{\n    server_tokens off;\n}}\n{}\n",
+            verify::S17_PHP,
+            verify::S17_NGINX,
+            verify::S17_END
+        );
+        let mut ct = Sh(Ok(good.clone()), Vec::new());
+        assert_eq!(s17_check(&mut ct, 131).outcome, Outcome::Green);
+        assert_eq!(
+            ct.1[0],
+            ["pct", "exec", "131", "--", "sh", "-c", verify::S17_SCRIPT]
+        );
+        ct.0 = Ok(good.replace("expose_php => Off => Off", "expose_php => On => On"));
+        assert_eq!(
+            s17_check(&mut ct, 131).outcome,
+            Outcome::Red("expose_php_on")
+        );
+        ct.0 = Err(());
+        assert_eq!(s17_check(&mut ct, 131).outcome, Outcome::Unknown("unread"));
+        // only a red S17 brings the template plan, which names the template CT
+        let red = [(
+            "site2".to_owned(),
+            vec![s17_check(
+                &mut Sh(
+                    Ok(good.replace("server_tokens off", "server_tokens on")),
+                    Vec::new(),
+                ),
+                131,
+            )],
+        )];
+        assert!(s17_red_anywhere(&red));
+        assert!(!s17_red_anywhere(&[(
+            "site2".to_owned(),
+            vec![s17_check(&mut Sh(Ok(good), Vec::new()), 131)]
+        )]));
+        let hint = s17_template_hint();
+        assert!(hint.contains("server_tokens off;") && hint.contains("expose_php = Off"));
+        assert!(hint.contains(&aib_cloud::site::TEMPLATE_CT.to_string()));
     }
 
     fn spec() -> aib_cloud::site::SiteSpec {
