@@ -361,6 +361,9 @@ fn cf_paths(record_path: &std::path::Path) -> crate::sitecreatecmd::HostPaths {
     paths
 }
 
+/// One site's checks: its code, its CT, the results, and the names S15 found not proxied.
+type SiteChecks = (String, Option<u32>, Vec<CheckResult>, Vec<String>);
+
 /// [`site_checks`] for `audience`, with the names S15 found not proxied. `cf` and
 /// `cf_paths` are what S15 asks Cloudflare through.
 fn site_checks_for(
@@ -368,7 +371,7 @@ fn site_checks_for(
     audience: Audience,
     cf: &mut impl Runner,
     cf_paths: &crate::sitecreatecmd::HostPaths,
-) -> (String, Option<u32>, Vec<CheckResult>, Vec<String>) {
+) -> SiteChecks {
     let name = record_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -536,7 +539,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
 
     let mut host = host_checks(now, &thin_pool);
-    let named: Vec<(String, Option<u32>, Vec<CheckResult>, Vec<String>)> = paths
+    let named: Vec<SiteChecks> = paths
         .iter()
         .map(|p| {
             site_checks_for(
