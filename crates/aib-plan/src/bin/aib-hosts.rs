@@ -177,6 +177,8 @@ struct Host {
     ci: bool,
     jump_fallback: Option<String>,
     asked: Option<Instant>,
+    /// 還沒回來的詢問數(上限 MAX_INFLIGHT)
+    inflight: u8,
     stuck: bool,
     open: bool,
 }
@@ -204,6 +206,7 @@ impl Host {
             ci: false,
             jump_fallback: None,
             asked: None,
+            inflight: 0,
             stuck: false,
             open: false,
         }
@@ -404,6 +407,46 @@ fn ssh_run(p: &Probe, cmd: &str, jump: Option<&str>) -> std::io::Result<std::pro
 fn recv_until(rx: &mpsc::Receiver<(usize, Sample)>, end: Instant) -> Option<(usize, Sample)> {
     rx.recv_timeout(end.saturating_duration_since(Instant::now()))
         .ok()
+}
+
+/// 一台最多同時幾支詢問：卡住後再問一次;第二次也卡住就等舊的回來(043dd #726 增量 L1,
+/// 遠端指令卡住但連線活著時 keepalive 照答，ssh 不會自己結束)
+const MAX_INFLIGHT: u8 = 2;
+
+/// 這一輪要不要問這台(主迴圈與測試共用);要問就記下時間與在途數
+fn should_ask(h: &mut Host, stuck_after: Duration) -> bool {
+    if let Some(a) = h.asked {
+        if a.elapsed() < stuck_after {
+            return false;
+        }
+        h.stuck = true;
+        if h.inflight >= MAX_INFLIGHT {
+            return false;
+        }
+        h.asked = None;
+    }
+    let due = h.at.is_none_or(|a| a.elapsed() >= h.poll);
+    if !(due && h.watch && h.inflight < MAX_INFLIGHT) {
+        return false;
+    }
+    h.asked = Some(Instant::now());
+    h.inflight += 1;
+    true
+}
+
+/// 收到一台的回覆(不論是哪一次詢問的)
+fn record(h: &mut Host, s: Sample) {
+    if s.online {
+        h.loads.push(s.load1);
+        if h.loads.len() > 30 {
+            h.loads.remove(0);
+        }
+    }
+    h.last = Some(s);
+    h.at = Some(Instant::now());
+    h.asked = None;
+    h.stuck = false;
+    h.inflight = h.inflight.saturating_sub(1);
 }
 
 fn ask(idx: usize, p: Probe, tx: mpsc::Sender<(usize, Sample)>) {
@@ -1109,33 +1152,13 @@ fn main() {
     loop {
         let t0 = Instant::now();
         for (i, h) in hosts.iter_mut().enumerate() {
-            let due = h.at.is_none_or(|a| a.elapsed() >= h.poll);
-            match h.asked {
-                // 卡住:標出來，並放掉這次詢問，下一輪照常再問(043dd #726 L1)
-                Some(a) if a.elapsed() >= STUCK => {
-                    h.stuck = true;
-                    h.asked = None;
-                }
-                Some(_) => {}
-                None if due && h.watch => {
-                    h.asked = Some(Instant::now());
-                    ask(i, h.probe(), tx.clone());
-                }
-                None => {}
+            if should_ask(h, STUCK) {
+                ask(i, h.probe(), tx.clone());
             }
         }
         while let Ok((i, s)) = rx.try_recv() {
             if let Some(h) = hosts.get_mut(i) {
-                if s.online {
-                    h.loads.push(s.load1);
-                    if h.loads.len() > 30 {
-                        h.loads.remove(0);
-                    }
-                }
-                h.last = Some(s);
-                h.at = Some(Instant::now());
-                h.asked = None;
-                h.stuck = false;
+                record(h, s);
             }
         }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
@@ -1439,6 +1462,32 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             [("m", true), ("p", false), ("GitHub", true), ("srv1", false)]
         );
         assert_eq!(hs[3].tag.as_deref(), Some("Ez2"));
+    }
+
+    #[test]
+    fn a_stuck_host_is_asked_again_once_then_waits_for_an_answer() {
+        let mut h = host("m", None, false);
+        assert!(should_ask(&mut h, Duration::ZERO), "第一次問");
+        assert!(should_ask(&mut h, Duration::ZERO), "卡住後再問一次");
+        assert!(h.stuck);
+        assert!(
+            !should_ask(&mut h, Duration::ZERO),
+            "兩支都在途就不再起新的"
+        );
+        assert!(!should_ask(&mut h, Duration::ZERO));
+        assert_eq!(h.inflight, MAX_INFLIGHT);
+        // 舊的那支回來了:不再標卡住，在途少一支
+        let s = Sample {
+            online: true,
+            ..Sample::default()
+        };
+        record(&mut h, s);
+        assert!(!h.stuck);
+        assert_eq!(h.inflight, MAX_INFLIGHT - 1);
+        // 還沒卡住(門檻很長)就不重問
+        h.at = None;
+        assert!(should_ask(&mut h, Duration::from_secs(3600)));
+        assert!(!should_ask(&mut h, Duration::from_secs(3600)));
     }
 
     #[test]
