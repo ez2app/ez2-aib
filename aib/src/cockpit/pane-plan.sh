@@ -69,6 +69,7 @@ EOF2
 }
 
 _seat_of_file() {  # 席碼 = 席位檔 session_uuid 末 5 碼(sed,不每 3 秒起 python)
+  # 假設全檔只有一個 "session_uuid" 鍵(席位檔是平的一層 JSON;有第二個時取第一個)
   [ -f "$1" ] || return 0
   local u
   u="$(sed -n 's/.*"session_uuid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1)"
@@ -106,6 +107,7 @@ while :; do
   done
   wait "$child"; rc=$?
   if [ "$switched" = 1 ]; then _tty_reset; continue; fi
+  _tty_reset                         # 當掉的程式也可能沒還原 raw mode / 替代畫面
   _msg aib.cockpit.plan_exited "name=$NAME" "rc=$rc"
   sleep 5
 done
