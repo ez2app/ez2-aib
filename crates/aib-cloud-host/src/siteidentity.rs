@@ -565,11 +565,40 @@ fn mu_dir(spec: &SiteSpec) -> String {
     format!("/var/www/{}/wp-content/mu-plugins", spec.code)
 }
 
+/// Whether the forced two-factor file is in the must-use folder: the container answers
+/// `yes` or `no`; a failed ask or any other answer is not taken as "not there" (c477a L1
+/// on 126907cc, as f1fae's urgent sign r2).
+fn mu_forced_present(
+    runner: &mut impl Runner,
+    spec: &SiteSpec,
+    file: &str,
+) -> Result<bool, String> {
+    let out = runner
+        .run(&in_ct(
+            spec.ct,
+            &[
+                "sh",
+                "-c",
+                "if test -e \"$1\"; then echo yes; else echo no; fi",
+                "sh",
+                file,
+            ],
+        ))
+        .map_err(|e| format!("identity_unchecked: {FORCED_2FA_MU}: {e}"))?;
+    match out.trim() {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        other => Err(format!(
+            "identity_unchecked: {FORCED_2FA_MU}: answer {other:?}"
+        )),
+    }
+}
+
 /// The forced two-factor file moved aside (to [`SITE_OFF`], with the time), and gone from
 /// the must-use folder after; the two-factor plugins deactivated and not active after.
 fn two_factor_not_forced(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
     let file = format!("{}/{FORCED_2FA_MU}", mu_dir(spec));
-    if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {
+    if mu_forced_present(runner, spec, &file)? {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -579,7 +608,7 @@ fn two_factor_not_forced(runner: &mut impl Runner, spec: &SiteSpec) -> Result<()
             .run(&in_ct(spec.ct, &["mkdir", "-p", SITE_OFF]))
             .and_then(|_| runner.run(&in_ct(spec.ct, &["mv", &file, &to])))
             .map_err(|e| format!("identity_failed: move {FORCED_2FA_MU} aside: {e}"))?;
-        if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {
+        if mu_forced_present(runner, spec, &file)? {
             return Err(format!(
                 "identity_not_set: {FORCED_2FA_MU} is still a must-use file"
             ));
@@ -820,6 +849,8 @@ mod tests {
         mu_forced: bool,
         /// a move that says it worked but leaves the forced two-factor file
         sticky_mu: bool,
+        /// the container's answer to "is the forced file there", when not yes / no
+        mu_answer: Option<&'static str>,
         /// active plugins (the template's two-factor ones)
         active: Vec<String>,
         /// a deactivate that says it worked but leaves the plugin active
@@ -843,6 +874,7 @@ mod tests {
                 sticky_plugin: false,
                 mu_forced: true,
                 sticky_mu: false,
+                mu_answer: None,
                 active: TWO_FACTOR_OFF.iter().map(|p| (*p).to_owned()).collect(),
                 sticky_active: false,
             }
@@ -864,11 +896,10 @@ mod tests {
             let Some(a) = Self::wp_args(argv) else {
                 if line.contains(FORCED_2FA_MU) {
                     if line.contains(" test -e ") {
-                        return if self.mu_forced {
-                            Ok(String::new())
-                        } else {
-                            Err("absent".to_owned())
-                        };
+                        if let Some(answer) = self.mu_answer {
+                            return Ok(answer.to_owned());
+                        }
+                        return Ok(if self.mu_forced { "yes\n" } else { "no\n" }.to_owned());
                     }
                     if line.contains(" mv ") && !self.sticky_mu {
                         self.mu_forced = false;
@@ -1291,8 +1322,12 @@ mod tests {
         let at = |what: &str| site.calls.iter().position(|c| c.contains(what)).unwrap();
         let mv = at(&format!(" mv /var/www/s-b3test/wp-content/mu-plugins/{FORCED_2FA_MU} {SITE_OFF}/{FORCED_2FA_MU}."));
         assert!(mv < at("option update siteurl"));
-        assert!(at("plugin deactivate two-factor-provider-webauthn") < at("option update siteurl"));
-        assert!(at("plugin deactivate two-factor") < at("option update siteurl"));
+        let ends = |what: &str| site.calls.iter().position(|c| c.ends_with(what)).unwrap();
+        assert!(
+            ends("plugin deactivate two-factor-provider-webauthn") < at("option update siteurl")
+        );
+        // the core plugin's own line (not the webauthn one it is a prefix of)
+        assert!(ends("plugin deactivate two-factor") < at("option update siteurl"));
         assert!(!site
             .calls
             .iter()
@@ -1331,6 +1366,22 @@ mod tests {
             err.starts_with("identity_failed: deactivate plugin two-factor-provider-webauthn"),
             "{err}"
         );
+        // a failed ask for the forced file stops, it is not taken as "not there"
+        let mut site = Site::new();
+        site.broken = Some(" test -e ");
+        let err =
+            identity_step(&mut site, &scratch("no2fa7"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(
+            err.starts_with(&format!("identity_unchecked: {FORCED_2FA_MU}")),
+            "{err}"
+        );
+        assert!(!site.calls.iter().any(|c| c.contains(" mv ")));
+        // an answer that is neither yes nor no stops too
+        let mut site = Site::new();
+        site.mu_answer = Some("");
+        let err =
+            identity_step(&mut site, &scratch("no2fa8"), &spec(true), &mut json!({})).unwrap_err();
+        assert!(err.contains("answer"), "{err}");
         // the active list that cannot be read stops, it is not taken as empty
         let mut site = Site::new();
         site.broken = Some("plugin list --status=active");

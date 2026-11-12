@@ -1767,8 +1767,16 @@ jobs:
              '            .and_then(|_| runner.run(&in_ct(spec.ct, &["cp", &file, &to]))) // knife' \
              two_factor_sign_in_is_not_forced_on_a_new_site
           # no forced 2FA: a forced file still there after the move is taken as gone
-          hk siteidentity.rs '        if runner.run(&in_ct(spec.ct, &["test", "-e", &file])).is_ok() {' \
+          hk siteidentity.rs '        if mu_forced_present(runner, spec, &file)? {' \
              '        if false { // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (c477a L1): a failed ask for the forced file is taken as "not there"
+          hk siteidentity.rs '        .map_err(|e| format!("identity_unchecked: {FORCED_2FA_MU}: {e}"))?;' \
+             '        .unwrap_or_else(|_| "no".to_owned()); // knife' \
+             two_factor_sign_in_is_not_forced_on_a_new_site
+          # no forced 2FA (c477a L1): an answer that is neither yes nor no is taken as no
+          hk siteidentity.rs '    match out.trim() {' \
+             '    match if out.trim() == "yes" { "yes" } else { "no" } { // knife' \
              two_factor_sign_in_is_not_forced_on_a_new_site
           # no forced 2FA: the two-factor plugins are not deactivated
           hk siteidentity.rs '            .run(&wp(spec, &["plugin", "deactivate", slug]))' \
