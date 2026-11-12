@@ -56,6 +56,48 @@ pub struct Opts {
     pub dry: bool,
 }
 
+/// The commit this binary was built from (40 hex, or `unknown`) and whether the sources had
+/// uncommitted changes (`build.rs`), in the one shape `aib-release host-build` already reads
+/// (`aib_release::host_build::parse_info`). One literal, so the bytes sit together in the file.
+pub const BUILD_INFO: &str = concat!(
+    "aib-build-info version=",
+    env!("CARGO_PKG_VERSION"),
+    " commit=",
+    env!("AIB_TITLE_COMMIT"),
+    " dirty=",
+    env!("AIB_TITLE_DIRTY"),
+    ";"
+);
+
+/// Which tool and which target the file is (PLAN-aibtitle-install r2, Codex H): the build-info
+/// mark alone is the same in every tool, so another tool's binary would pass a check that only
+/// reads BUILD_INFO. A separate line keeps BUILD_INFO in the shape host-build reads.
+pub const TOOL_INFO: &str = concat!(
+    "aib-tool-info name=aib-title target=",
+    env!("AIB_TITLE_TARGET"),
+    ";"
+);
+
+/// `aib-title --version`: `aib-title <version> <os>-<arch>`.
+pub fn version_line() -> String {
+    format!(
+        "aib-title {} {}-{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
+/// The two read-only commands, each only as the sole argument: `--version` (one line) and
+/// `build-info` (BUILD_INFO, then TOOL_INFO). Anything else is the heartbeat (`parse_args`).
+pub fn info_command(args: &[String]) -> Option<String> {
+    match args {
+        [a] if a == "--version" => Some(version_line()),
+        [a] if a == "build-info" => Some(format!("{BUILD_INFO}\n{TOOL_INFO}")),
+        _ => None,
+    }
+}
+
 /// Parse the bash flags (`--once`, `--print`, `--dry-run`). `--loop` / `--install` stay in
 /// title-beat.sh. Err = the usage line, exit 2.
 pub fn parse_args(args: &[String], env: &Env) -> Result<Opts, String> {
