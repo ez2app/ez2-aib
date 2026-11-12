@@ -540,6 +540,9 @@ fn fit(s: &str, max: usize) -> String {
     o
 }
 
+/// 機箱與明細負載轉紅的門檻(每效能核)
+const RED_RATIO: f64 = 0.8;
+
 /// 負載的分母：效能核(Apple 晶片);讀不到 = 全部核數。機箱、明細、火花線都用它，
 /// 不然 Pro 13(4 效能核 / 8 核)機箱紅、明細卻寫「6.7/8 核」看起來沒滿(Andy 11-13 05:2x)。
 fn cores(s: &Sample) -> f64 {
@@ -729,8 +732,9 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
             format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
         }
     });
-    // 紅的門檻跟機箱一樣：每效能核 > 0.8
-    let lcol = if s.and_then(load_ratio).is_some_and(|r| r > 0.8) {
+    // 紅的門檻跟機箱一樣：每效能核 > RED_RATIO。數字寫 load1、顏色看 max(load1, load5×0.8),
+    // 剛降載時會「2.0/4」卻還紅，跟機箱同步，不是錯
+    let lcol = if s.and_then(load_ratio).is_some_and(|r| r > RED_RATIO) {
         Color::Red
     } else {
         Color::Blue
@@ -743,6 +747,10 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     // 每台收起時固定 3 行(Andy 11-12 07:2x「離線的主機跟其他主機的高度間距要一致」):
     // 第 2 行負載(離線 / 讀取中寫「負載 —」),第 3 行在做什麼 / 空機 / 離線原因。
     if online {
+        // 窄窗格先丟最舊的取樣：draw 從右邊截，不留尾就會截掉最新的(loads 往尾端加)
+        let keep = room.saturating_sub(w(&load));
+        let n = spark.chars().count();
+        let spark: String = spark.chars().skip(n.saturating_sub(keep)).collect();
         out.push(vec![pad(), (load, Color::DarkGrey), (spark, lcol)]);
     } else {
         out.push(vec![pad(), ("負載 —".into(), Color::DarkGrey)]);
@@ -856,7 +864,7 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     let online = s.is_some_and(|s| s.online);
     let ratio = s.and_then(tower_ratio);
     let fill_c = match ratio {
-        Some(r) if r > 0.8 => Color::Red,
+        Some(r) if r > RED_RATIO => Color::Red,
         Some(r) if r > 0.5 => Color::Yellow,
         Some(_) => Color::Green,
         None => Color::DarkGrey,
@@ -1333,6 +1341,16 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             text(&l[1])
         );
         assert_eq!(l[1][2].1, Color::Red, "0.89 / 效能核 > 0.8 ⇒ 紅");
+        // 窄窗格:30 點取樣只留放得下的最新幾點，整行不超寬
+        let mut many = host("x", Some(run.clone()), false);
+        many.loads = (0..30).map(f64::from).collect();
+        let l = host_lines(&many, 0, 60, 0, 0);
+        assert!(w(&text(&l[1])) <= 60, "{}", text(&l[1]));
+        assert!(
+            text(&l[1]).ends_with('█'),
+            "最新一點(29)要留著:{}",
+            text(&l[1])
+        );
         // 同一台安靜 ⇒ 空機;讀不到效能核就用全部核數
         let quiet = parse_sample(
             &format!("{free}AIB_HOSTS_SYS 16 {{ 5.0 5.0 5.0 }} 8"),
