@@ -3,6 +3,19 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
+## Unreleased
+
+- macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
+  `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
+  `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
+  as variables, so a process started with a cleared environment (`env -i`) looked like one
+  without the session marker and was let go as "not ours" instead of being reported
+  (#614 CI). A failed read keeps the candidate (unreadable or other coalition).
+- macOS known limit: if aibd crashes while a program is held before exec, the next start can
+  see `AlreadyRunning` for up to `HOLD_LIMIT` (5 s), since the held child keeps copies of
+  `aibd.lock` and the listening socket until it execs (ADR 0004). The hold now ends at an
+  absolute deadline, so a signal no longer extends it.
+
 ## 0.2.0-preview.5 — 2026-11-12
 
 (preview.3 and preview.4 were never split out here; this section covers everything since
