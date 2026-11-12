@@ -138,14 +138,13 @@ struct Hits {
 }
 
 /// 工具列上的字 → 對應的鍵
-const TOOLBAR_KEYS: [(&str, char); 11] = [
+const TOOLBAR_KEYS: [(&str, char); 10] = [
     ("樹", '['),
     ("為什麼", ']'),
     ("o 沒做完", 'o'),
     ("x 延伸", 'x'),
     ("n 沒人負責", 'n'),
     ("席:", 's'),
-    ("/搜尋", '/'),
     ("e 全開", 'e'),
     ("c 全收", 'c'),
     ("r 清除", 'r'),
@@ -377,7 +376,12 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             false,
         ),
     ]);
-    out.extend(goal_lines(p, &ix, root));
+    // Andy 11-12 11:1x:行與行太擠 ⇒ 頂部每一行之間空一行
+    out.push(Vec::new());
+    for l in goal_lines(p, &ix, root) {
+        out.push(l);
+        out.push(Vec::new());
+    }
     let mut seats = Vec::new();
     for s in app.cabin_seats() {
         let d = app.dm_txt(Some(&s));
@@ -412,7 +416,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     let on = |b: bool, s: &str| format!("{}{s}", if b { "●" } else { "○" });
     out.push(vec![Seg(
         format!(
-            "{}   {}      {}   {}   {}   席:{}      /搜尋{}      e 全開   c 全收   r 清除   q 離開",
+            "{}   {}      {}   {}   {}   席:{}{}      e 全開   c 全收   r 清除   q 離開",
             if app.show_tree { "◀樹" } else { "▶樹" },
             if app.show_side {
                 "為什麼▶"
@@ -1008,7 +1012,8 @@ mod tests {
         let f = frame(&app, 97, 30);
         let line = |i: usize| f[i].iter().map(|s| s.0.as_str()).collect::<String>();
         assert!(line(0).contains("項實查通過"), "{}", line(0));
-        let l1 = line(1);
+        assert!(line(1).is_empty(), "a blank row between header rows");
+        let l1 = line(2);
         assert!(l1.starts_with("期望"), "{l1}");
         assert!(
             l1.contains("通過 1") && l1.contains("不通過 1") && l1.contains("未驗 1"),
@@ -1016,14 +1021,14 @@ mod tests {
         );
         assert!(l1.contains("共 3 項"), "{l1}");
         // 最落後排前面,名字取冒號前,期望本身不列
-        let l2 = line(2);
+        let l2 = line(4);
         assert!(l2.starts_with("最落後"), "{l2}");
         let a = l2.find("跨平台核心 0%").expect("weakest first");
         let b = l2.find("自動推進 100%").expect("then the next");
         assert!(a < b, "{l2}");
         assert!(!l2.contains("Windows"), "{l2}");
         // 標籤欄對齊:三行的值從同一欄開始
-        for i in 0..3 {
+        for i in [0, 2, 4] {
             let first = &f[i][0].0;
             assert_eq!(str_width(first), LABEL_W, "row {i}: {first:?}");
         }
