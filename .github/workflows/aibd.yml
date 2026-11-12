@@ -1102,6 +1102,10 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+          # T5 (#644 / #675) every trial's scratch repository gets the same name
+          tk '            .suffix(".git")' \
+             '            .suffix(".git").rand_bytes(0) // knife: one name for all' \
+             trials_made_at_once_each_get_their_own_scratch
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
