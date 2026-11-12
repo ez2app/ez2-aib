@@ -38,10 +38,12 @@
 //! arguments and sends nothing.
 //!
 //! The host answers in codes. What is shown is the sentence `aib_cloud::wording` has for
-//! each code (zh-TW, final wording); a code it does not know is not shown. `sites`,
-//! `usage` and a customer key's refusals have no final wording yet: the host's document,
-//! or the refusal's code alone, is shown as it is. `--raw` shows the host's answer as it
-//! came, for scripts.
+//! each code (zh-TW, final wording); a code it does not know is not shown. Opening a site
+//! has its sentences (`opening`, `already_opening`, `domain_taken`, an opened site with no
+//! administrator named, an abandoned opening: HUMAN-PASTE-4542e-1111 17 to 21, Andy 11-12
+//! 12:1x). `sites`, `usage` and a customer key's other refusals have no final wording yet:
+//! the host's document, or the refusal's code alone, is shown as it is. `--raw` shows the
+//! host's answer as it came, for scripts.
 //!
 //! Exit status: the host's own for an answered request (see `aib-cloud-host customer`);
 //! 2 the request or a flag was refused here and nothing was sent; 3 the host could not
@@ -270,8 +272,20 @@ fn ssh_program_for(windows: bool, system_root: Option<OsString>) -> PathBuf {
 /// What is shown for a customer key's answer.
 fn owner_answer(owner: OwnerRequest<'_>, code: u8, out: &str, err: &str) -> String {
     match (refusal(err), owner) {
+        // opening a site (HUMAN-PASTE-4542e-1111 17 to 19, Andy 11-12 12:1x): the
+        // customer's own opening of that domain names its code (18); anyone else's, or a
+        // domain in use, is sentence 13 and names nothing
+        (Some("already_opening"), OwnerRequest::Create { name, .. }) if code == 2 => {
+            match aib_cloud::customer::opening_code_of(out) {
+                Some(own) => format!("{}\n", wording::already_opening(&own, name)),
+                None => format!("{}\n", wording::DOMAIN_TAKEN),
+            }
+        }
+        (Some("domain_taken"), OwnerRequest::Create { .. }) if code == 2 => {
+            format!("{}\n", wording::DOMAIN_TAKEN)
+        }
         // no final wording for these yet: the code alone, after the document when there
-        // is one (`already_opening` gives the customer's own opening back)
+        // is one
         (Some(word), _) if code == 2 => format!("{}{word}\n", shown(out)),
         // a site still opening: how far it got, the host's fixed words as they are
         (
@@ -291,12 +305,31 @@ fn owner_answer(owner: OwnerRequest<'_>, code: u8, out: &str, err: &str) -> Stri
                     o.admins.get(1).map(String::as_str)
                 )
             ),
-            None => shown(out),
+            // abandoned (21), or opened with no administrator named (20); otherwise
+            // how far it got, the host's fixed words as they are
+            None => {
+                if let Some(domain) = aib_cloud::customer::abandoned_domain_of(out) {
+                    format!("{}\n", wording::abandoned(&domain))
+                } else if let Some((site, domain)) =
+                    aib_cloud::customer::opened_without_login_of(out)
+                {
+                    format!("{}\n", wording::opened_without_login(&site, &domain))
+                } else {
+                    shown(out)
+                }
+            }
         },
         (_, OwnerRequest::Site { request, .. }) => {
             format!("{}\n", wording::reply(request, code, out, err))
         }
         (_, OwnerRequest::Sites | OwnerRequest::Usage) => shown(out),
+        // the opening started (17): its code, the domain as asked
+        (_, OwnerRequest::Create { name, .. }) if code == 0 => {
+            match aib_cloud::customer::opening_code_of(out) {
+                Some(started) => format!("{}\n", wording::opening(&started, name)),
+                None => shown(out),
+            }
+        }
         // the host's document until the sentences are final; without one, the host's
         // own word (`unavailable`)
         (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
@@ -601,18 +634,31 @@ mod tests {
             blank: false,
         };
         let opening = "{\"site\":\"s-abc123\",\"state\":\"opening\"}\n";
-        assert_eq!(owner_answer(create, 0, opening, ""), opening);
+        assert_eq!(
+            owner_answer(create, 0, opening, ""),
+            format!("{}\n", wording::opening("s-abc123", "www.example.com"))
+        );
+        // an answer of another shape is shown as it came
+        assert_eq!(owner_answer(create, 0, "{}\n", ""), "{}\n");
         assert_eq!(
             owner_answer(create, 3, "", "unavailable\n"),
             "unavailable\n"
         );
         assert_eq!(
             owner_answer(create, 2, opening, "refused: already_opening\n"),
-            format!("{opening}already_opening\n")
+            format!(
+                "{}\n",
+                wording::already_opening("s-abc123", "www.example.com")
+            )
         );
         assert_eq!(
             owner_answer(create, 2, "", "refused: domain_taken\n"),
-            "domain_taken\n"
+            format!("{}\n", wording::DOMAIN_TAKEN)
+        );
+        // a refusal with no sentence yet is still its code alone
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: quota_exceeded\n"),
+            "quota_exceeded\n"
         );
         let status = OwnerRequest::Site {
             site: "s-abc123",
@@ -644,6 +690,56 @@ mod tests {
             owner_answer(status, 0, "{\"exit\":0,\"checks\":[]}", ""),
             "{\"exit\":0,\"checks\":[]}"
         );
+    }
+
+    /// HUMAN-PASTE-4542e-1111 sentences 17 to 21 (final: Andy 11-12 12:1x 「照這版定稿」),
+    /// word for word as the customer reads them: only the code and the domain are filled in.
+    #[test]
+    fn the_opening_sentences_are_the_final_wording_word_for_word() {
+        let create = OwnerRequest::Create {
+            name: "shop.example.test",
+            blank: false,
+        };
+        let own = "{\"site\":\"s-abc123\",\"state\":\"opening\"}\n";
+        // 17 opening
+        assert_eq!(
+            owner_answer(create, 0, own, ""),
+            "已開始開新網站 shop.example.test,站碼 s-abc123。大約需要幾分鐘,可以用「site s-abc123 status」看進度。\n"
+        );
+        // 18 already_opening, the customer's own opening
+        assert_eq!(
+            owner_answer(create, 2, own, "refused: already_opening\n"),
+            "shop.example.test 已經在開站中(站碼 s-abc123),不需要重送;可以用「site s-abc123 status」看進度。\n"
+        );
+        // 18 for someone else's opening is sentence 13, with no code
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: already_opening\n"),
+            "這個網域已經綁在一個網站上,不能重複綁定。\n"
+        );
+        // 19 domain_taken is sentence 13
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: domain_taken\n"),
+            "這個網域已經綁在一個網站上,不能重複綁定。\n"
+        );
+        let status = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::Status,
+        };
+        // 20 opened, no administrator named
+        let unnamed = "{\"site\":\"s-abc123\",\"state\":\"open\",\"step_done\":\"health\",\"stopped_at\":null,\"domain\":\"shop.example.test\",\"admins\":[]}\n";
+        assert_eq!(
+            owner_answer(status, 0, unnamed, ""),
+            "新網站已開好。站碼:s-abc123 網址:https://shop.example.test 管理員登入方式會另外提供給您。\n"
+        );
+        // 21 abandoned
+        let gone = "{\"site\":\"s-abc123\",\"state\":\"stopped\",\"step_done\":\"clone\",\"stopped_at\":\"edge\",\"why\":\"abandoned\",\"domain\":\"shop.example.test\"}\n";
+        assert_eq!(
+            owner_answer(status, 0, gone, ""),
+            "shop.example.test 這次開站沒有完成,我們已經把做到一半的部分清掉了。您可以重新開站;若需要協助,請與您的服務窗口聯絡。\n"
+        );
+        // any other stop is still how far it got, as the host said it
+        let stopped = gone.replace(",\"why\":\"abandoned\"", "");
+        assert_eq!(owner_answer(status, 0, &stopped, ""), stopped);
     }
 
     #[test]
