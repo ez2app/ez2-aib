@@ -1883,7 +1883,8 @@ jobs:
           hk opstore.rs '    if approval == BY_CUSTOMER_KEY {' '    if approval == BY_CUSTOMER_KEY && false { // knife' \
              a_customer_key_reply_carries_no_operation_lines
           # operations: a customer key's progress error (a host path) goes back on stderr (c477a S2 L1)
-          hk opstop.rs '            &c.approval,' '            opstore::BY_LOCAL_ROOT, // knife' \
+          # (the field stays read: RUSTFLAGS has -D warnings)
+          hk opstop.rs '            &c.approval,' '            &c.approval.replace("customer", "knife"), // knife' \
              a_customer_key_progress_error_stays_off_stderr
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
