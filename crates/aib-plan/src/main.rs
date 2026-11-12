@@ -473,25 +473,6 @@ fn metric(label: &str, n: u32, warn: bool) -> [Seg; 2] {
     ]
 }
 
-/// 照顯示寬度截斷，超過補「…」
-fn fit(s: &str, w: usize) -> String {
-    if str_width(s) <= w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in s.chars() {
-        let cw = str_width(ch.encode_utf8(&mut [0; 4]));
-        if used + cw + 1 > w {
-            break;
-        }
-        out.push(ch);
-        used += cw;
-    }
-    out.push('…');
-    out
-}
-
 /// 今天只寫 時:分,不是今天才帶 月-日(卡片第一行右邊已有完整日期)
 fn short_stamp(t: i64, now: i64) -> String {
     let full = mainline::stamp(t, now);
