@@ -812,10 +812,10 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
         }) => format!("{r}跑{q}排"),
         Some(_) => ratio.map_or("—".into(), |r| format!("{:.0}%", r * 100.0)),
     };
-    let num = if idx < 9 {
-        format!("{}", idx + 1)
-    } else {
-        " ".into()
+    // Andy 11-12 20:2x:數字加圓框、後面空一格(① lin-macmini);1–9 對應按鍵，第 10 台起不編號
+    let num = match char::from_u32(0x2460 + idx as u32) {
+        Some(c) if idx < 9 => format!("{c} "),
+        _ => "  ".into(),
     };
     vec![
         vec![(pad(format!("{num}{}", h.name)), kind_color(h))],
@@ -1304,7 +1304,11 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         for (r, row) in l.iter().enumerate().skip(2) {
             assert!(w(&text(row)) <= 102, "row {r} too wide");
         }
-        assert!(text(&l[2]).starts_with("1h0"));
+        assert!(text(&l[2]).starts_with("① h0"), "{}", text(&l[2]));
+        // 第 10 台起沒有編號(只有 1–9 能按)
+        assert!(
+            text(&l[2 + TOWER_H]).starts_with("⑨ h8   ") && text(&l[2 + TOWER_H]).contains("   h9")
+        );
         // HELD:10 核負載 5.1 ⇒ 51%,黃
         assert!(text(&l[7]).starts_with("測試 51%"), "{}", text(&l[7]));
         // 第二排第四台 = 主機,2/8 = 25%
