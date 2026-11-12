@@ -9,7 +9,7 @@
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
-//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · j 開合全艙判斷 ·
+//! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · f 開合全艙判斷 ·
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
@@ -898,7 +898,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
             }
         }
         (KeyCode::Char('m'), _) => app.main_open = !app.main_open,
-        (KeyCode::Char('j'), _) => app.fleet_open = !app.fleet_open,
+        (KeyCode::Char('f'), _) => app.fleet_open = !app.fleet_open,
         (KeyCode::Char('e'), _) => {
             app.open = app
                 .plan
@@ -1259,7 +1259,7 @@ mod tests {
         assert!(!app.main_open);
     }
 
-    /// Andy 11-12 13:4x:全艙判斷 —— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
+    /// Andy 11-12 13:4x:全艙判斷(f 或點)—— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
     #[test]
     fn fleet_rows_toggle_and_flag_topic_change() {
         let mut app = empty_app();
@@ -1315,7 +1315,7 @@ mod tests {
         assert!(text(&f, 5).is_empty());
         on_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
         );
         assert!(!app.fleet_open);
     }
