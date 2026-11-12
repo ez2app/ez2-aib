@@ -597,7 +597,12 @@ pub fn install(git: &dyn Git, req: &Install) -> Outcome {
             &tool,
             &rep.main,
             "same",
-            Value::Null,
+            // .prev did not change: keep naming what binsync moved there, or a rollback to an
+            // unmarked hand copy is refused after a re-run (33e28 incr L1)
+            read_ledger(&req.dest)
+                .ok()
+                .and_then(|l| l.get(&req.name)?.get("prev_sha256").cloned())
+                .unwrap_or(Value::Null),
             &base,
         );
         return match write_ledger(&req.dest, &req.name, entry, req.now) {

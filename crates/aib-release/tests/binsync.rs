@@ -589,6 +589,10 @@ fn rollback_to_the_hand_copy_the_first_install_moved() {
     let mut r = req(dest, good(B));
     r.allow_unknown_current = Some("hand copy from 11-12".into());
     assert_eq!(install(&MAIN, &r).verdict, Verdict::Ok);
+    // the same file again (a re-run) must not forget which file .prev is (33e28 incr L1)
+    let mut again = req(dest, good(B));
+    again.now = 4;
+    assert_eq!(install(&MAIN, &again).code, "same", "rerun_same");
     let out = rollback(
         dest,
         "aib-title",
