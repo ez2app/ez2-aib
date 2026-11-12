@@ -1,10 +1,11 @@
 //! `aib-plan`:艙進度樹，放在 tmux 中間窗格(左對話 / 中進度樹 / 右 AI 欄)。
 //!
-//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--once [--width N]]
+//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--once [--width N]]
 //!
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
 //! - 有 --aib-root 時每 30 秒唯讀數一次各席 dm 佇列(待審 / 已讀未結);讀不到顯示「?」。
+//! - 有 --seat 時最上面兩行：本席一開始主軸 / 目前主軸(開始時間)/ 現在時間(台北),見 mainline.rs。
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
@@ -30,6 +31,23 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
+use aib_plan::mainline::{self, Mainline};
+
+fn epoch_now() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// <狀態根>/state:跟 aib 一樣先看 EZ2_AIB_STATE_ROOT
+fn state_dir() -> PathBuf {
+    std::env::var_os("EZ2_AIB_STATE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".ez2-aib"))
+        .join("state")
+}
+
 const DM_EVERY: Duration = Duration::from_secs(30);
 /// 數一次佇列超過這麼久就當它卡住:顯示「?」,不重起
 const DM_STUCK: Duration = Duration::from_secs(90);
@@ -37,6 +55,7 @@ const DM_STUCK: Duration = Duration::from_secs(90);
 struct Args {
     data: PathBuf,
     aib_root: Option<PathBuf>,
+    seat: Option<String>,
     once: bool,
     width: usize,
 }
@@ -57,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
             .join("cabin-plan")
             .join("data.json"),
         aib_root: None,
+        seat: None,
         once: false,
         width: 120,
     };
@@ -65,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
         match x.as_str() {
             "--data" => a.data = it.next().ok_or("missing_value: --data")?.into(),
             "--aib-root" => a.aib_root = Some(it.next().ok_or("missing_value: --aib-root")?.into()),
+            "--seat" => a.seat = Some(it.next().ok_or("missing_value: --seat")?),
             "--once" => a.once = true,
             "--width" => {
                 a.width = it
@@ -72,11 +93,10 @@ fn parse_args() -> Result<Args, String> {
                     .and_then(|v| v.parse().ok())
                     .ok_or("bad_value: --width")?
             }
-            "-h" | "--help" => {
-                return Err(
-                    "usage: aib-plan [--data FILE] [--aib-root DIR] [--once [--width N]]".into(),
-                )
-            }
+            "-h" | "--help" => return Err(
+                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--once [--width N]]"
+                    .into(),
+            ),
             other => return Err(format!("unknown_arg: {other}")),
         }
     }
@@ -125,6 +145,9 @@ struct App {
     dm_at: Option<Instant>,
     /// 上一次畫面的點擊對照(滑鼠用);frame() 寫入
     hits: std::cell::RefCell<Hits>,
+    /// 最上面兩行(有 --seat 才有);now_secs = 畫的那一刻(台北時間由它算)
+    mainline: Option<Mainline>,
+    now_secs: i64,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -369,6 +392,29 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
+fn mainline_rows(m: &Mainline, now: i64) -> [Vec<Seg>; 2] {
+    let now_t = mainline::stamp(now, now);
+    let row = |label: &str, e: Option<&mainline::Entry>| -> Vec<Seg> {
+        let (start, item) = match e {
+            Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
+            None => ("—".to_string(), "(沒有回報 aib now)".to_string()),
+        };
+        vec![
+            Seg(
+                format!("{label}({start})/{now_t}："),
+                Some(Color::DarkGrey),
+                false,
+                false,
+            ),
+            Seg(item, Some(Color::White), false, true),
+        ]
+    };
+    [
+        row("本席AI一開始主軸", m.first.as_ref()),
+        row("本席AI目前開發主軸", m.now.as_ref()),
+    ]
+}
+
 fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // 043dd incr3 L1:錯誤畫面 / 空資料提早 return 時不能沿用上一張畫面的點擊對照
     *app.hits.borrow_mut() = Hits::default();
@@ -389,6 +435,10 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     }
     // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
+    // Andy 11-12 13:1x:最上面兩行 = 本席一開始主軸 / 目前開發主軸(開始時間)/現在時間
+    if let Some(m) = &app.mainline {
+        out.extend(mainline_rows(m, app.now_secs));
+    }
     // Andy 11-12 12:4x:選單緊貼最上面太壓迫 ⇒ 上面空一行
     out.push(Vec::new());
     out.push(toolbar(app, w));
@@ -747,7 +797,12 @@ fn main() {
         dm: DmMap::new(),
         dm_at: None,
         hits: Default::default(),
+        mainline: None,
+        now_secs: epoch_now(),
     };
+    if let Some(seat) = &args.seat {
+        app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
+    }
     app.load(&args.data);
     if let Some(i) = index(&app.plan).by.get("SC") {
         app.sel = *i;
@@ -871,6 +926,16 @@ fn main() {
             if app.mtime != before {
                 dirty = true;
             }
+            if let Some(seat) = &args.seat {
+                let now = epoch_now();
+                let m = Some(mainline::refresh(&state_dir(), seat, now));
+                // 現在時間只到分：換分鐘或主軸變了才重畫
+                if m != app.mainline || now / 60 != app.now_secs / 60 {
+                    dirty = true;
+                }
+                app.mainline = m;
+                app.now_secs = now;
+            }
             last_check = Instant::now();
         }
         // 「幾秒前數的」只要每 30 秒重畫一次，不用每 2 秒整頁重畫(省熱)
@@ -908,7 +973,41 @@ mod tests {
             dm: DmMap::new(),
             dm_at: None,
             hits: Default::default(),
+            mainline: None,
+            now_secs: 0,
         }
+    }
+
+    /// Andy 11-12 13:1x:有 --seat ⇒ 最上面兩行是一開始 / 目前主軸，下一行空白，再來才是選單;點選單照樣對得到
+    #[test]
+    fn mainline_rows_sit_above_the_menu() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        let now = 1_794_460_800; // 台北 11-12
+        let ds = mainline::day_start(now);
+        app.now_secs = now;
+        app.mainline = Some(Mainline {
+            first: Some(mainline::Entry {
+                item: "席位接續".into(),
+                started_at: ds + 540,
+                seen: ds + 540,
+            }),
+            now: None,
+        });
+        let f = frame(&app, 100, 40);
+        let text = |i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        assert!(
+            text(0).starts_with("本席AI一開始主軸(00:09)/"),
+            "{}",
+            text(0)
+        );
+        assert!(text(0).ends_with("席位接續"));
+        assert!(text(1).starts_with("本席AI目前開發主軸(—)/"), "{}", text(1));
+        assert!(text(2).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(3));
     }
 
     /// 043dd M1:讀不到資料檔(nodes 空)時，每個鍵、每種寬度都不能 panic
