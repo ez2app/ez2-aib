@@ -1145,3 +1145,239 @@ fn a_merged_prs_runs_are_still_its_own() {
         json!({"event": "pull_request", "head_branch": "feat/x", "pull_requests": [{"number": 8}]});
     assert!(!run_counts(&r, &other));
 }
+
+// ---------- a log without the Running line: the test's own panic location ----------
+
+/// The shape of the #640 / #648 logs: libtest's "Running" line is not in the job log.
+fn no_running(test: &str, panic_line: &str) -> String {
+    format!(
+        "2026-11-09T02:53:17.2Z test {test} ... FAILED\n\
+         2026-11-09T02:53:17.3Z failures:\n\
+         2026-11-09T02:53:17.3Z ---- {test} stdout ----\n\
+         2026-11-09T02:53:17.3Z {panic_line}\n"
+    )
+}
+
+#[test]
+fn a_panic_in_an_integration_test_file_names_its_binary() {
+    let log = no_running(
+        "g1_instant_programs_give_their_slot_back",
+        "thread 'g1_instant_programs_give_their_slot_back' (32019) panicked at crates/aibd/tests/sessions.rs:1769:5:",
+    );
+    assert_eq!(
+        parse_log(&log).fingerprints,
+        vec!["rs:sessions::g1_instant_programs_give_their_slot_back"]
+    );
+    // a binary named with "-" in the file, an older panic line without the thread id,
+    // and a Windows path
+    let log = no_running(
+        "opens",
+        "thread 'opens' panicked at crates\\store\\tests\\db-open.rs:3:9:",
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:db_open::opens"]);
+}
+
+#[test]
+fn a_panic_in_the_tests_own_module_names_its_crate() {
+    for (test, path) in [
+        (
+            "platform::tests::second_instance_lock",
+            "crates/aibd/src/platform.rs",
+        ),
+        ("probe::tests::h3_tcp", "crates/aibd/src/probe/mod.rs"),
+        ("probe::tests::h3_tcp", "crates/aibd/src/probe/tests.rs"),
+        ("tests::top", "crates/aibd/src/lib.rs"),
+        ("tests::top", "crates/aibd/src/main.rs"),
+    ] {
+        let log = no_running(
+            test,
+            &format!("thread '{test}' (1) panicked at {path}:1:1:"),
+        );
+        assert_eq!(
+            parse_log(&log).fingerprints,
+            vec![format!("rs:@crates/aibd::{test}")],
+            "{path}"
+        );
+    }
+    let log = no_running(
+        "tests::cli",
+        "thread 'tests::cli' (1) panicked at crates/aibd/src/bin/aib-ctl.rs:9:5:",
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:aib_ctl::tests::cli"]);
+}
+
+#[test]
+fn a_panic_that_cannot_tell_stays_unknown() {
+    for (test, path) in [
+        // another module's file: maybe another crate's code the test called
+        ("platform::tests::lock", "crates/core/src/db.rs"),
+        ("lock", "crates/aibd/src/platform.rs"),
+        // a helper shared by several test binaries
+        ("lock", "crates/aibd/tests/common/mod.rs"),
+        // outside the repo / the root crate / not a path we can place
+        ("lock", "/rustc/0a1b2c/library/core/src/option.rs"),
+        ("lock", "C:\\a\\crates\\aibd\\tests\\x.rs"),
+        ("lock", "src/lib.rs"),
+        ("lock", "crates/aibd/../x/tests/x.rs"),
+    ] {
+        let log = no_running(
+            test,
+            &format!("thread '{test}' (1) panicked at {path}:1:1:"),
+        );
+        assert_eq!(
+            parse_log(&log).fingerprints,
+            vec![format!("rs:?::{test}")],
+            "{path}"
+        );
+    }
+    // another thread's panic is not the test's
+    let log = no_running(
+        "lock",
+        "thread '<unnamed>' panicked at crates/aibd/tests/x.rs:1:1:",
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:?::lock"]);
+    // no panic line at all
+    assert_eq!(
+        parse_log("test lock ... FAILED\n").fingerprints,
+        vec!["rs:?::lock"]
+    );
+}
+
+#[test]
+fn a_test_whose_panics_disagree_stays_unknown() {
+    let log = format!(
+        "{}thread 'lock' (1) panicked at crates/aibd/tests/y.rs:2:2:\n",
+        no_running(
+            "lock",
+            "thread 'lock' (1) panicked at crates/aibd/tests/x.rs:1:1:"
+        )
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:?::lock"]);
+    // the same place twice is still that place
+    let log = format!(
+        "{}thread 'lock' (1) panicked at crates/aibd/tests/x.rs:9:9:\n",
+        no_running(
+            "lock",
+            "thread 'lock' (1) panicked at crates/aibd/tests/x.rs:1:1:"
+        )
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:x::lock"]);
+}
+
+#[test]
+fn the_running_line_still_wins_over_the_panic() {
+    let log = format!(
+        "     Running tests/store.rs (target/debug/deps/store-0a1b2c3d)\n{}",
+        no_running(
+            "lock",
+            "thread 'lock' (1) panicked at crates/aibd/tests/x.rs:1:1:"
+        )
+    );
+    assert_eq!(parse_log(&log).fingerprints, vec!["rs:store::lock"]);
+}
+
+#[test]
+fn a_binary_from_the_panic_is_judged_like_one_from_the_running_line() {
+    // the same test as RS_RED, without the Running line: same fingerprint, so the
+    // Running-line precedent on another head counts
+    let p = prior("other", "rs:store::opens_twice");
+    let log = no_running(
+        "opens_twice",
+        "thread 'opens_twice' (7) panicked at crates/store/tests/store.rs:3:5:",
+    );
+    for (path, verdict) in [
+        ("crates/core/src/lib.rs", "unclassified"),
+        ("crates/other/src/lib.rs", "suspected_flaky"),
+    ] {
+        let mut f = rust_facts(&[path], Some(rust_map_fixture()));
+        f.attempts[0].log = Some(log.clone());
+        let (v, r) = one(&f, &p);
+        assert_eq!(v, verdict, "{path}: {r}");
+    }
+}
+
+#[test]
+fn a_crate_from_the_panic_uses_that_crates_closure() {
+    let fp = "rs:@crates/store::tests::opens_twice";
+    let p = prior("other", fp);
+    let log = no_running(
+        "tests::opens_twice",
+        "thread 'tests::opens_twice' (7) panicked at crates/store/src/lib.rs:3:5:",
+    );
+    for (path, overlap) in [
+        ("crates/store/src/lib.rs", true),
+        ("crates/core/src/lib.rs", true),
+        ("crates/other/src/lib.rs", false),
+    ] {
+        let mut f = rust_facts(&[path], Some(rust_map_fixture()));
+        f.attempts[0].log = Some(log.clone());
+        let (v, r) = one(&f, &p);
+        if overlap {
+            assert_eq!(r, format!("impact_overlap: {fp}"), "{path}");
+        } else {
+            assert_eq!(v, "suspected_flaky", "{path}: {r}");
+        }
+    }
+    // a crate dir that is not a crate at head cannot be judged
+    let mut f = rust_facts(&["README.md"], Some(rust_map_fixture()));
+    f.attempts[0].log = Some(no_running(
+        "tests::x",
+        "thread 'tests::x' (7) panicked at crates/gone/src/lib.rs:3:5:",
+    ));
+    let (_, r) = one(&f, &prior("other", "rs:@crates/gone::tests::x"));
+    assert!(
+        r.starts_with("impact_unknown: rs:@crates/gone::tests::x"),
+        "{r}"
+    );
+}
+
+// knife: a panic in a crate's root file names that crate, but the test may live in a crate
+// that uses it (ebb36 #666 M1): an integration test of store panics inside core's lib.rs
+#[test]
+fn a_crate_from_the_panic_counts_the_crates_that_use_it() {
+    let fp = "rs:@crates/core::lock";
+    let p = prior("other", fp);
+    let log = no_running(
+        "lock",
+        "thread 'lock' (1) panicked at crates/core/src/lib.rs:40:9:",
+    );
+    for (path, overlap) in [
+        // store depends on core: the test may be store's
+        ("crates/store/src/lib.rs", true),
+        ("crates/store/tests/store.rs", true),
+        ("crates/core/src/lib.rs", true),
+        // nothing depends on other, and other is not core's dependency
+        ("crates/other/src/lib.rs", false),
+    ] {
+        let mut f = rust_facts(&[path], Some(rust_map_fixture()));
+        f.attempts[0].log = Some(log.clone());
+        let (v, r) = one(&f, &p);
+        if overlap {
+            assert_eq!(r, format!("impact_overlap: {fp}"), "{path}");
+        } else {
+            assert_eq!(v, "suspected_flaky", "{path}: {r}");
+        }
+    }
+}
+
+// ---------- offline: a log that was not recorded is said, not swallowed ----------
+
+/// FileSource (--offline DIR) prefixes every error with "offline".
+struct Offline(Map);
+
+impl Source for Offline {
+    fn get(&self, path: &str) -> Result<String, String> {
+        self.0.get(path).map_err(|e| format!("offline: {e}"))
+    }
+}
+
+#[test]
+fn offline_a_log_that_was_not_recorded_is_an_error() {
+    let mut m = gh_map(1);
+    m.0.remove("repos/o/r/actions/jobs/10/logs");
+    let e = gather(&Offline(m), R, Some(7), "").expect_err("log not recorded");
+    assert_eq!(e, "offline: not recorded: repos/o/r/actions/jobs/10/logs");
+    // recorded: the same gather goes through
+    let f = gather(&Offline(gh_map(1)), R, Some(7), "").expect("gather");
+    assert_eq!(f.attempts[0].log.as_deref(), Some(PY_RED));
+}
