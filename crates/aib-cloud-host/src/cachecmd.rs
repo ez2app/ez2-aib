@@ -612,7 +612,11 @@ mod tests {
             approval: String::new(),
         };
         assert_eq!(
-            wait_left(&[other.clone()], "domain:shop.example.com", t + 1),
+            wait_left(
+                core::slice::from_ref(&other),
+                "domain:shop.example.com",
+                t + 1
+            ),
             None
         );
         assert_eq!(
