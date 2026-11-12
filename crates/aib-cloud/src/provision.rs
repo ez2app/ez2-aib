@@ -40,6 +40,11 @@
 //! id); it is not a cryptographic hash and must not be the only thing an approval is
 //! bound to — the caller hashes [`Plan::to_json`] together with the target host.
 //!
+//! Two things are the reader's job, because a parsed JSON value no longer shows them: an
+//! object with the same key twice must be refused when the file is read (the second would
+//! silently win), and digests in a spec are written in hex — a base64 digest is long
+//! enough to be taken for key material by `P11`.
+//!
 //! What [`lint`] refuses (every finding carries a stable code):
 //! * `P01` wrong shape or version; `P10` a key this version does not know (typos, and the
 //!   `status` lines of a hand-kept ledger).
@@ -400,7 +405,9 @@ fn placeholders(text: &str) -> Result<Vec<&str>, String> {
         };
         let name = &after[..end];
         if !valid_var_name(name) {
-            return Err(format!("{{{{{name}}}}} is not a variable name"));
+            // {:?}: the text between the braces is whatever the spec holds, and this
+            // message goes to a terminal
+            return Err(format!("{name:?} between {{{{ }}}} is not a variable name"));
         }
         names.push(name);
         rest = &after[end + 2..];
@@ -408,12 +415,33 @@ fn placeholders(text: &str) -> Result<Vec<&str>, String> {
     Ok(names)
 }
 
+/// Fill in the variables in one pass over `text`: what a value contains is never read
+/// again, so a value cannot combine with the text after it into a second placeholder.
+/// Anything [`placeholders`] would refuse is copied as it stands (lint has refused it).
 fn render(text: &str, vars: &[(String, String)]) -> String {
-    let mut out = text.to_owned();
-    for (name, value) in vars {
-        let needle = format!("{{{{{name}}}}}");
-        out = out.replace(&needle, value);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let known = after.find("}}").and_then(|end| {
+            let name = &after[..end];
+            vars.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, value)| (end, value))
+        });
+        match known {
+            Some((end, value)) => {
+                out.push_str(&rest[..start]);
+                out.push_str(value);
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str(&rest[..start + 2]);
+                rest = after;
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -820,33 +848,55 @@ fn parse_step(v: &Value, index: usize, out: &mut Vec<Finding>) -> Option<Step> {
     })
 }
 
-/// Every piece of text in a step, with `true` for text that a shell will read.
-fn step_texts(step: &Step) -> Vec<(&str, bool)> {
-    fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, bool)>) {
+/// How a piece of a step's text is used.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// Read by a person (title, instructions, expectations, paths in words).
+    Prose,
+    /// One argument of a command.
+    Argv,
+    /// A shell line.
+    Shell,
+}
+
+/// A value that names the root directory however it is spelled: `/`, `//`, `/.`, `/./`.
+/// Inside a shell line `chown -R x {{dir}}/*` with such a value reaches everything.
+fn is_root(value: &str) -> bool {
+    value.starts_with('/') && value.bytes().all(|c| c == b'/' || c == b'.')
+}
+
+/// A path that walks upwards (`/var/..`, `../x`): where it ends is not what it says.
+fn walks_up(value: &str) -> bool {
+    value.split('/').any(|segment| segment == "..")
+}
+
+/// Every piece of text in a step, with how it is used.
+fn step_texts(step: &Step) -> Vec<(&str, Use)> {
+    fn command<'a>(c: &'a Command, texts: &mut Vec<(&'a str, Use)>) {
         match c {
             Command::Argv(args) => {
                 for a in args {
                     if let Arg::Text(t) = a {
-                        texts.push((t, false));
+                        texts.push((t, Use::Argv));
                     }
                 }
             }
             Command::Shell { sh, why } => {
-                texts.push((sh, true));
-                texts.push((why, false));
+                texts.push((sh, Use::Shell));
+                texts.push((why, Use::Prose));
             }
         }
     }
-    let mut texts: Vec<(&str, bool)> = Vec::new();
-    texts.push((&step.title, false));
+    let mut texts: Vec<(&str, Use)> = Vec::new();
+    texts.push((&step.title, Use::Prose));
     for c in &step.apply {
         command(c, &mut texts);
     }
-    texts.extend(step.instructions.iter().map(|t| (t.as_str(), false)));
+    texts.extend(step.instructions.iter().map(|t| (t.as_str(), Use::Prose)));
     for v in &step.verify {
         command(&v.run, &mut texts);
         if let Expect::Eq(s) | Expect::Contains(s) = &v.expect {
-            texts.push((s, false));
+            texts.push((s, Use::Prose));
         }
     }
     match &step.recovery {
@@ -855,11 +905,11 @@ fn step_texts(step: &Step) -> Vec<(&str, bool)> {
                 command(c, &mut texts);
             }
         }
-        Recovery::Rescue(path) | Recovery::Unsupported(path) => texts.push((path, false)),
+        Recovery::Rescue(path) | Recovery::Unsupported(path) => texts.push((path, Use::Prose)),
         Recovery::None => {}
     }
     for t in [&step.destroys, &step.consent].into_iter().flatten() {
-        texts.push((t, false));
+        texts.push((t, Use::Prose));
     }
     texts
 }
@@ -908,7 +958,9 @@ fn parse_vars(v: Option<&Value>, out: &mut Vec<Finding>) -> Vec<(String, String)
                     continue;
                 }
                 let text = match value {
-                    Value::String(s) if !s.contains("{{") => s.clone(),
+                    // an empty value is a variable somebody forgot to fill in: `{{dir}}/cache`
+                    // would quietly become `/cache`
+                    Value::String(s) if !s.is_empty() && !s.contains("{{") => s.clone(),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     _ => {
@@ -921,6 +973,12 @@ fn parse_vars(v: Option<&Value>, out: &mut Vec<Finding>) -> Vec<(String, String)
                         continue;
                     }
                 };
+                if text.chars().any(char::is_control) {
+                    out.push(top(
+                        "P11",
+                        format!("variable {name}: control character in the value"),
+                    ));
+                }
                 if looks_secret(&text) {
                     out.push(top(
                         "P11",
@@ -945,13 +1003,19 @@ fn check_texts(
         step: step.id.as_str(),
         out,
     };
-    for (text, in_shell) in step_texts(step) {
+    for (text, used) in step_texts(step) {
         match placeholders(text) {
             Ok(names) => {
                 for name in names {
                     match vars.iter().find(|(n, _)| n == name) {
                         None => sink.add("P07", format!("{{{{{name}}}}} is not defined in vars")),
-                        Some((_, value)) if in_shell && !shell_plain(value) => sink.add(
+                        // a value that starts with '-' is read as an option by whatever
+                        // program receives it
+                        Some((_, value)) if used != Use::Prose && value.starts_with('-') => sink.add(
+                            "P07",
+                            format!("{{{{{name}}}}}: a value that starts with '-' would be read as an option"),
+                        ),
+                        Some((_, value)) if used == Use::Shell && (!shell_plain(value) || is_root(value) || walks_up(value)) => sink.add(
                             "P07",
                             format!("{{{{{name}}}}} is used in a shell command but its value is not plain"),
                         ),
@@ -973,6 +1037,15 @@ fn check_texts(
             sink.add(
                 "P11",
                 "text looks like a secret written out; use {\"secret\": \"name\"}".to_owned(),
+            );
+        }
+        // a plan is shown to the person who approves it: an escape sequence in a title or
+        // a command could repaint the terminal and hide the line that says what is destroyed
+        let unprintable = text.chars().any(char::is_control);
+        if unprintable {
+            sink.add(
+                "P11",
+                "control character in text (a plan must print as it reads)".to_owned(),
             );
         }
     }
@@ -1042,6 +1115,7 @@ pub fn lint(spec: &Value) -> Result<Spec, Vec<Finding>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     steps: Vec<Step>,
+    assumed: Vec<Step>,
     id: String,
 }
 
@@ -1051,7 +1125,15 @@ impl Plan {
         &self.steps
     }
 
-    /// 16 hex digits over the rendered steps. An identifier, not a security hash.
+    /// Steps left out by `--from` that a step in the plan depends on, directly or
+    /// through another left-out step, in run order. A plan that starts later does not
+    /// trust them: whoever runs it runs their `verify` first and stops if one fails.
+    pub fn assumed(&self) -> &[Step] {
+        &self.assumed
+    }
+
+    /// 16 hex digits over the plan as [`Plan::to_json`] prints it (steps, their
+    /// `requires`, and the assumed steps). An identifier, not a security hash.
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1067,7 +1149,11 @@ impl Plan {
 
     /// The plan as JSON: `{"plan_id", "steps": [...]}`. Secrets appear as references.
     pub fn to_json(&self) -> Value {
-        json!({ "plan_id": self.id, "steps": steps_json(&self.steps) })
+        json!({
+            "plan_id": self.id,
+            "assumed": steps_json(&self.assumed),
+            "steps": steps_json(&self.steps),
+        })
     }
 }
 
@@ -1125,6 +1211,7 @@ fn steps_json(steps: &[Step]) -> Value {
                     "level": s.level.as_str(),
                     "kind": s.kind.as_str(),
                     "title": s.title,
+                    "requires": s.requires,
                     "apply": commands(&s.apply),
                     "instructions": s.instructions,
                     "verify": verify,
@@ -1195,7 +1282,8 @@ fn render_step(s: &Step, vars: &[(String, String)]) -> Step {
 
 /// Order the steps and fill in the variables. With `from`, the plan starts at that step
 /// (in run order); an unknown id is refused. Starting later does **not** mean the earlier
-/// steps are trusted: whoever runs the plan re-verifies what the first step requires.
+/// steps are trusted: the skipped steps the plan depends on are listed in
+/// [`Plan::assumed`], to be verified before the first step runs.
 pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
     let mut start = 0;
     if let Some(from) = from {
@@ -1205,12 +1293,29 @@ pub fn plan(spec: &Spec, from: Option<&str>) -> Result<Plan, Finding> {
             .position(|&i| spec.steps[i].id == from)
             .ok_or_else(|| top("P09", format!("--from names unknown step {from:?}")))?;
     }
-    let steps: Vec<Step> = spec.order[start..]
+    let (skipped, included) = spec.order.split_at(start);
+    // what the included steps need from the skipped ones, through any chain of requires:
+    // walk the skipped steps backwards so that a needed step marks its own needs
+    let mut needed: BTreeSet<&str> = included
+        .iter()
+        .flat_map(|&i| spec.steps[i].requires.iter().map(String::as_str))
+        .collect();
+    let mut assumed: Vec<Step> = Vec::new();
+    for &i in skipped.iter().rev() {
+        let step = &spec.steps[i];
+        if needed.contains(step.id.as_str()) {
+            needed.extend(step.requires.iter().map(String::as_str));
+            assumed.push(render_step(step, &spec.vars));
+        }
+    }
+    assumed.reverse();
+    let steps: Vec<Step> = included
         .iter()
         .map(|&i| render_step(&spec.steps[i], &spec.vars))
         .collect();
-    let id = crate::isolation::fnv1a64(steps_json(&steps).to_string().as_bytes());
-    Ok(Plan { steps, id })
+    let body = json!({ "assumed": steps_json(&assumed), "steps": steps_json(&steps) });
+    let id = crate::isolation::fnv1a64(body.to_string().as_bytes());
+    Ok(Plan { steps, assumed, id })
 }
 
 #[cfg(test)]
@@ -1301,6 +1406,99 @@ mod tests {
         assert_eq!(args.len(), 3);
     }
 
+    /// Values that would change what a command means (review of #619, M1): empty, an
+    /// option, and the root directory inside a shell line.
+    #[test]
+    fn variable_values_that_change_the_command_are_refused() {
+        let argv = json!([["rm", "-r", "{{dir}}"]]);
+        let sh = json!([{ "sh": "rm -rf {{dir}}/cache", "why": "glob" }]);
+        let with_dir = |apply: &Value, dir: &str| {
+            let mut v = with(1, "apply", apply.clone());
+            v["vars"]["dir"] = json!(dir);
+            v
+        };
+        for apply in [&argv, &sh] {
+            assert!(lint(&with_dir(apply, "/var/lib/x")).is_ok());
+            assert_eq!(codes(&with_dir(apply, "")), ["P01", "P07"]);
+            assert_eq!(codes(&with_dir(apply, "--no-preserve-root")), ["P07"]);
+        }
+        assert_eq!(codes(&with_dir(&sh, "/")), ["P07"]);
+        // as one whole argument the root directory is what the spec says, not an accident
+        assert!(lint(&with_dir(&argv, "/")).is_ok());
+    }
+
+    /// Review of the #619 stack (ebb36): L1 the root directory has more than one
+    /// spelling; N1 a value starting with '-' matters where a program reads it, not in a
+    /// title or a consent sentence.
+    #[test]
+    fn root_spellings_and_dashes_in_prose() {
+        let sh = json!([{ "sh": "chown -R www-data {{dir}}/*", "why": "glob" }]);
+        for dir in ["/", "//", "/.", "/./", "/..", "///"] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert_eq!(codes(&v), ["P07"], "{dir:?}");
+        }
+        for dir in ["/srv", "/srv/.", "/.well-known", "./x"] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert!(lint(&v).is_ok(), "{dir:?}");
+        }
+        let mut v = with(1, "title", json!("tier {{tier}}"));
+        v["vars"]["tier"] = json!("-pro");
+        assert!(lint(&v).is_ok());
+        let mut v = with(1, "apply", json!([["echo", "{{tier}}"]]));
+        v["vars"]["tier"] = json!("-pro");
+        assert_eq!(codes(&v), ["P07"]);
+    }
+
+    /// Review of #625 (ebb36): seg. 1 N1 a path that walks up, seg. 5 L1 control
+    /// characters in what an approver reads.
+    #[test]
+    fn upward_paths_and_control_characters() {
+        let sh = json!([{ "sh": "chown -R www-data {{dir}}/*", "why": "glob" }]);
+        for dir in ["/var/..", "/var/../", "../x", "/a/../.."] {
+            let mut v = with(1, "apply", sh.clone());
+            v["vars"]["dir"] = json!(dir);
+            assert_eq!(codes(&v), ["P07"], "{dir:?}");
+        }
+        let mut v = with(1, "apply", sh);
+        v["vars"]["dir"] = json!("/var/lib/..data");
+        assert!(lint(&v).is_ok());
+        // an escape sequence that would wipe the line above it
+        assert_eq!(
+            codes(&with(2, "destroys", json!("nothing\u{1b}[1A\u{1b}[2K"))),
+            ["P11"]
+        );
+        assert_eq!(codes(&with(1, "title", json!("two\nlines"))), ["P11"]);
+        let mut v = good();
+        v["vars"]["hostname"] = json!("host1\u{7}");
+        assert_eq!(codes(&v), ["P11"]);
+    }
+
+    /// ebb36 (#625 seg. 5 r2): a refused placeholder is quoted, not echoed.
+    #[test]
+    fn a_refused_placeholder_is_quoted_in_the_finding() {
+        let v = with(1, "apply", json!([["echo", "{{a\u{1b}[2K}}"]]));
+        let found = lint(&v).unwrap_err();
+        assert!(found.iter().any(|f| f.code == "P07"));
+        for f in &found {
+            assert!(!f.msg.contains('\u{1b}'), "{:?}", f.msg);
+        }
+    }
+
+    /// A value is never read again after it is filled in (review of #619, L2).
+    #[test]
+    fn render_is_one_pass() {
+        let vars = [
+            ("a".to_owned(), "x{".to_owned()),
+            ("b".to_owned(), "SECOND".to_owned()),
+        ];
+        assert_eq!(render("{{a}}{b}}", &vars), "x{{b}}");
+        assert_eq!(render("{{b}}-{{a}}-{{b}}", &vars), "SECOND-x{-SECOND");
+        assert_eq!(render("{{nope}} {{a", &vars), "{{nope}} {{a");
+        assert_eq!(render("plain", &vars), "plain");
+    }
+
     #[test]
     fn order_follows_requires_not_position() {
         let mut v = good();
@@ -1308,6 +1506,39 @@ mod tests {
         let plan = plan(&lint(&v).unwrap(), None).unwrap();
         let ids: Vec<&str> = plan.steps().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["B0.precheck", "B2.repo", "A.reinstall"]);
+    }
+
+    /// `--from` does not trust what it skips (review of #619, ebb36 M1): every skipped
+    /// step that a planned step depends on, however indirectly, is listed to be verified.
+    #[test]
+    fn from_lists_the_skipped_steps_it_depends_on() {
+        // A.reinstall requires B2.repo requires B0.precheck; add D, which nothing needs
+        let mut v = good();
+        let mut extra = v["steps"][0].clone();
+        extra["id"] = json!("D.unrelated");
+        v["steps"].as_array_mut().unwrap().insert(1, extra);
+        let spec = lint(&v).unwrap();
+        let ids = |steps: &[Step]| steps.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+
+        let all = plan(&spec, None).unwrap();
+        assert!(all.assumed().is_empty());
+        let last = plan(&spec, Some("A.reinstall")).unwrap();
+        assert_eq!(ids(last.steps()), ["A.reinstall"]);
+        // B2.repo directly, B0.precheck through it; D.unrelated is not needed
+        assert_eq!(ids(last.assumed()), ["B0.precheck", "B2.repo"]);
+        let json = last.to_json();
+        assert_eq!(json["assumed"][1]["id"], "B2.repo");
+        assert_eq!(
+            json["assumed"][0]["verify"][0]["run"],
+            json!(["hostname", "-f"])
+        );
+        assert_eq!(json["steps"][0]["requires"], json!(["B2.repo"]));
+        // the id covers requires: same steps, same order, another dependency
+        let mut w = v.clone();
+        w["steps"][3]["requires"] = json!(["B2.repo", "D.unrelated"]);
+        let other = plan(&lint(&w).unwrap(), None).unwrap();
+        assert_eq!(ids(other.steps()), ids(all.steps()));
+        assert_ne!(other.id(), all.id());
     }
 
     #[test]

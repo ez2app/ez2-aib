@@ -31,6 +31,14 @@ pub struct Stats {
     pub fork_events: u64,
     /// New descendants recorded (a lower bound of processes created).
     pub children_adopted: u64,
+    /// Children seen in a listing whose start time could not be read (they
+    /// had already exited). Kept, not watched, no identity check (a63ab
+    /// 11-10: they are forks the watcher saw, not a blind spot).
+    pub children_start_unknown: u64,
+    /// Children seen in a listing whose start time was refused (EPERM: still
+    /// running, not readable by us, e.g. setuid). Not counted, not watched;
+    /// reported so a caller can mark the run unverified (a9136 #624 L1).
+    pub children_start_denied: u64,
     /// Watches that could not be registered (process already gone, or refused).
     pub register_failures: u64,
     /// Child listings that failed (any error: permission, OS error, a list
@@ -58,6 +66,188 @@ pub struct Stats {
     pub fork_events_by_pid: BTreeMap<u32, u64>,
     /// Fork events per whole second since start.
     pub per_second: BTreeMap<u64, u64>,
+    /// Command line of each forking pid, read once at its first fork event
+    /// and shaped by [`argv_label`] (goal 2 prerequisite 1: `by_parent` only
+    /// says "bash", this says which bash). At most [`PARENT_ARGV_CAP`] pids.
+    pub parent_argv: BTreeMap<u32, String>,
+    /// Fork events whose pid got no `parent_argv` entry because the map was
+    /// full. Report only.
+    pub parent_argv_dropped: u64,
+}
+
+/// Most pids kept in [`Stats::parent_argv`].
+pub const PARENT_ARGV_CAP: usize = 4096;
+/// Longest [`argv_label`], in characters (before the trailing `…`).
+pub const ARGV_LABEL_MAX: usize = 256;
+/// Longest single word inside an [`argv_label`], in characters.
+pub const ARGV_WORD_MAX: usize = 80;
+
+/// Words that make a flag or a header name look like it carries a secret
+/// (matched without case, anywhere in the name).
+const SECRET_NAMES: &[&str] = &[
+    "token",
+    "key",
+    "secret",
+    "pass",
+    "auth",
+    "bearer",
+    "cookie",
+    "credential",
+    "session",
+];
+/// Starts of well-known tokens; a word starting with one is hidden whole.
+const TOKEN_PREFIXES: &[&str] = &[
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "sk-",
+    "AKIA",
+];
+/// Words after which the rest of a word is a credential (`Bearer x`).
+const SECRET_SCHEMES: &[&str] = &["bearer ", "basic ", "token "];
+
+fn names_secret(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    SECRET_NAMES.iter().any(|n| l.contains(n))
+}
+
+/// Whether the word after `flag` is its value and may be a secret:
+/// `-p` (mysql, sshpass) or a `-`/`--` flag whose name looks secret.
+fn flag_takes_secret(flag: &str) -> bool {
+    flag == "-p"
+        || (flag.starts_with('-')
+            && !flag.contains('=')
+            && names_secret(flag.trim_start_matches('-')))
+}
+
+/// One word with its secrets cut out (before the per-character pass, which
+/// still hides everything after `=`). Byte offsets come from ASCII-only
+/// searches, so every cut is on a character boundary.
+fn hide_secrets(word: &str) -> String {
+    if TOKEN_PREFIXES.iter().any(|t| word.starts_with(t)) {
+        return "…".to_owned();
+    }
+    // https://user:tok@host/… ⇒ https://…@host/…
+    if let Some(i) = word.find("://") {
+        let rest = &word[i + 3..];
+        if let Some(at) = rest.find('@') {
+            if !rest[..at].contains('/') {
+                return format!("{}…{}", &word[..i + 3], &rest[at..]);
+            }
+        }
+    }
+    // a header like `X-Api-Key: abc` or `Authorization: Basic abc`
+    if let Some(c) = word.find(':') {
+        if !word[c..].starts_with("://") && names_secret(&word[..c]) {
+            return format!("{}: …", &word[..c]);
+        }
+    }
+    let lower = word.to_ascii_lowercase();
+    for s in SECRET_SCHEMES {
+        if let Some(i) = lower.find(s) {
+            return format!("{}…", &word[..i + s.len()]);
+        }
+    }
+    word.to_owned()
+}
+
+/// A command line as one short, printable line for a measurement report:
+/// words joined by spaces; control, format and line / paragraph separator
+/// characters become `?`; secrets are replaced by `…` — the value after
+/// `=`, the word after a secret-looking flag (`--token x`, `-p x`), a URL's
+/// user and password, a header value whose name looks secret, what follows
+/// `Bearer ` / `Basic ` / `token `, and a word that starts like a known token;
+/// each word is cut at [`ARGV_WORD_MAX`] and the whole at
+/// [`ARGV_LABEL_MAX`] characters, a cut marked with `…`.
+/// An empty or unreadable command line is `?`.
+pub fn argv_label(argv: &[String]) -> String {
+    let mut out = String::new();
+    let mut n = 0usize;
+    let mut hide_next = false;
+    for raw in argv {
+        let word = if hide_next {
+            "…".to_owned()
+        } else {
+            hide_secrets(raw)
+        };
+        hide_next = flag_takes_secret(raw);
+        let mut w = String::new();
+        let mut cut = false;
+        for (wn, c) in word.chars().enumerate() {
+            if wn == ARGV_WORD_MAX {
+                cut = true;
+                break;
+            }
+            if c == '=' {
+                w.push_str("=…");
+                break;
+            }
+            w.push(if c.is_control() || is_format(c) {
+                '?'
+            } else {
+                c
+            });
+        }
+        if cut {
+            w.push('…');
+        }
+        if w.is_empty() {
+            continue;
+        }
+        for c in (if out.is_empty() { "" } else { " " })
+            .chars()
+            .chain(w.chars())
+        {
+            if n == ARGV_LABEL_MAX {
+                out.push('…');
+                return out;
+            }
+            out.push(c);
+            n += 1;
+        }
+    }
+    if out.is_empty() {
+        "?".to_owned()
+    } else {
+        out
+    }
+}
+
+/// Unicode format characters (bidi overrides, zero-width, tag characters)
+/// and the line / paragraph separators U+2028 / U+2029 that would make a
+/// label print differently from what it holds (or on two lines).
+fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
+        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F)
+}
+
+impl Stats {
+    /// Keep `label` as the command line of forking `pid` unless it already
+    /// has one; when [`PARENT_ARGV_CAP`] pids are kept, count a drop instead.
+    pub fn note_parent_argv(&mut self, pid: u32, label: Option<String>) {
+        if self.parent_argv.contains_key(&pid) {
+            return;
+        }
+        match label {
+            Some(l) if self.parent_argv.len() < PARENT_ARGV_CAP => {
+                self.parent_argv.insert(pid, l);
+            }
+            _ => self.parent_argv_dropped += 1,
+        }
+    }
+
+    /// Whether a fork by `pid` still needs its command line read.
+    pub fn wants_parent_argv(&self, pid: u32) -> bool {
+        !self.parent_argv.contains_key(&pid) && self.parent_argv.len() < PARENT_ARGV_CAP
+    }
 }
 
 /// Fault injection for the child listing (tests and `aib-forkcount
@@ -79,9 +269,66 @@ pub enum ListFault {
     HideOne,
 }
 
+/// Most trace events kept per watch; later ones are counted in
+/// [`Trace::dropped`] (a run with drops cannot explain its misses).
+pub const TRACE_CAP: usize = 200_000;
+
+/// One observation of the watcher, with the monotonic time it was made
+/// ([`uptime_ns`], the same clock in every process). Calibration only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceEvent {
+    pub t_ns: u64,
+    pub pid: u32,
+    pub kind: TraceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceKind {
+    /// `NOTE_FORK` of `pid` was read; `exited` = `NOTE_EXIT` came in the same
+    /// event, so `pid` had already exited when the event was read.
+    Fork { exited: bool },
+    /// `NOTE_EXIT` of `pid` was read (on its own).
+    Exit,
+    /// The children of `pid` were listed from `t_ns` to `end_ns`: the list,
+    /// or the aib-sys error tag.
+    List {
+        end_ns: u64,
+        result: Result<Vec<u32>, String>,
+    },
+    /// `child` was listed under `pid` but not recorded: its start time could
+    /// not be read (it had already exited), or it is older than `pid` (pid
+    /// reuse).
+    NotAdopted { child: u32, why: NotAdoptedWhy },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAdoptedWhy {
+    StartUnreadable,
+    /// the start time read was refused (EPERM): the child is alive
+    StartDenied,
+    OlderThanParent,
+}
+
+/// errno in libproc 0.15's error text (`"…, errno = N, message = …"`).
+pub fn errno_in(message: &str) -> Option<i32> {
+    let rest = message.split("errno = ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// What [`ForkWatch::trace`] returns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trace {
+    pub events: Vec<TraceEvent>,
+    /// events not kept because [`TRACE_CAP`] was reached
+    pub dropped: u64,
+    /// false when the watch was started without a trace
+    pub enabled: bool,
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{ListFault, Stats};
+    use super::{ListFault, NotAdoptedWhy, Stats, Trace, TraceEvent, TraceKind, TRACE_CAP};
     use aib_sys::{Macos, ProcessInfo, SysError};
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::{name, pidinfo};
@@ -98,11 +345,38 @@ mod imp {
         seen: BTreeMap<u32, u64>,
         /// adopted child -> the parent it was listed under
         parent_of: BTreeMap<u32, u32>,
+        /// listed child whose start time was unreadable -> its parent
+        start_unknown: BTreeMap<u32, u32>,
+        start_denied: std::collections::BTreeSet<u32>,
         stats: Stats,
         fault: Option<ListFault>,
         /// listings done so far (for `ListFault::Error` / `Incomplete`)
         listings: u64,
         hidden: Option<u32>,
+        trace: Trace,
+    }
+
+    impl Inner {
+        fn record(&mut self, t_ns: u64, pid: u32, kind: TraceKind) {
+            if !self.trace.enabled {
+                return;
+            }
+            if self.trace.events.len() >= TRACE_CAP {
+                self.trace.dropped += 1;
+            } else {
+                self.trace.events.push(TraceEvent { t_ns, pid, kind });
+            }
+        }
+    }
+
+    /// `CLOCK_UPTIME_RAW` in nanoseconds: monotonic, shared by every process
+    /// on the machine (so a child can stamp its own events on the same clock).
+    pub fn uptime_ns() -> Option<u64> {
+        let t = nix::time::clock_gettime(nix::time::ClockId::from_raw(nix::libc::CLOCK_UPTIME_RAW))
+            .ok()?;
+        let s = u64::try_from(t.tv_sec()).ok()?;
+        let n = u64::try_from(t.tv_nsec()).ok()?;
+        s.checked_mul(1_000_000_000)?.checked_add(n)
     }
 
     type Shared = Mutex<Inner>;
@@ -114,12 +388,61 @@ mod imp {
     /// Start time in seconds (`pbi_start_tvsec`, the same source sysinfo
     /// uses on macOS, so records compare equal).
     pub fn start_time(pid: u32) -> Option<u64> {
-        let info = pidinfo::<BSDInfo>(i32::try_from(pid).ok()?, 0).ok()?;
-        Some(info.pbi_start_tvsec)
+        match read_start(pid) {
+            StartRead::Known(s) => Some(s),
+            StartRead::Gone | StartRead::Denied => None,
+        }
+    }
+
+    /// A start time read, telling a refused read (EPERM, alive) apart from
+    /// every other failure (taken as exited: ESRCH, or a zombie).
+    enum StartRead {
+        Known(u64),
+        Gone,
+        Denied,
+    }
+
+    fn read_start(pid: u32) -> StartRead {
+        let Ok(p) = i32::try_from(pid) else {
+            return StartRead::Gone;
+        };
+        match pidinfo::<BSDInfo>(p, 0) {
+            Ok(info) => StartRead::Known(info.pbi_start_tvsec),
+            Err(m) if super::errno_in(&m) == Some(1) => StartRead::Denied,
+            Err(_) => StartRead::Gone,
+        }
     }
 
     pub fn program_name(pid: u32) -> Option<String> {
         name(i32::try_from(pid).ok()?).ok()
+    }
+
+    /// The command line of `pid` (`KERN_PROCARGS2` through sysinfo: no fork,
+    /// no `unsafe` here). `None` when the process is gone or refused.
+    pub fn program_argv(pid: u32) -> Option<Vec<String>> {
+        // sysinfo 0.40: `System::new` can fail; no reading = no argv ("?")
+        program_argv_with(&mut sysinfo::System::new().ok()?, pid)
+    }
+
+    /// [`program_argv`] with a `System` the caller keeps: the watch thread
+    /// builds one and reuses it, so a busy fork storm does not pay a new
+    /// `System` per forking pid on the thread that reads NOTE_FORK (a9136
+    /// #705 L2). A pid that is gone is dropped from `sys` (`remove_dead`), so
+    /// a reused pid never gets the old command line.
+    pub fn program_argv_with(sys: &mut sysinfo::System, pid: u32) -> Option<Vec<String>> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+        let p = Pid::from_u32(pid);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[p]),
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        let cmd = sys.process(p)?.cmd();
+        Some(
+            cmd.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        )
     }
 
     fn watch(kq: &Kqueue, pid: u32) -> bool {
@@ -134,8 +457,24 @@ mod imp {
         kq.kevent(&[ev], &mut [], None).is_ok()
     }
 
-    /// One child listing through aib-sys M3, with the injected fault if any.
+    /// [`list_children_raw`], recorded in the trace when it is on.
     fn list_children(sh: &Shared, ppid: u32) -> Result<Vec<u32>, SysError> {
+        let t0 = uptime_ns().unwrap_or(0);
+        let r = list_children_raw(sh, ppid);
+        let mut g = lock(sh);
+        if g.trace.enabled {
+            let end_ns = uptime_ns().unwrap_or(0);
+            let result = match &r {
+                Ok(k) => Ok(k.clone()),
+                Err(e) => Err(e.tag().to_owned()),
+            };
+            g.record(t0, ppid, TraceKind::List { end_ns, result });
+        }
+        r
+    }
+
+    /// One child listing through aib-sys M3, with the injected fault if any.
+    fn list_children_raw(sh: &Shared, ppid: u32) -> Result<Vec<u32>, SysError> {
         let (n, fault) = {
             let mut g = lock(sh);
             g.listings += 1;
@@ -198,10 +537,69 @@ mod imp {
                 if k == 0 || lock(sh).seen.contains_key(&k) {
                     continue;
                 }
-                let Some(ks) = start_time(k) else { continue };
+                let ks = match read_start(k) {
+                    StartRead::Known(ks) => Some(ks),
+                    StartRead::Gone => None,
+                    StartRead::Denied => {
+                        // Alive but not readable: not a fork we can name.
+                        let t = uptime_ns().unwrap_or(0);
+                        let mut g = lock(sh);
+                        g.record(
+                            t,
+                            p,
+                            TraceKind::NotAdopted {
+                                child: k,
+                                why: NotAdoptedWhy::StartDenied,
+                            },
+                        );
+                        if g.start_denied.insert(k) {
+                            g.stats.children_start_denied += 1;
+                        }
+                        continue;
+                    }
+                };
+                let Some(ks) = ks else {
+                    // It was in the list, so it was p's child; it exited
+                    // before its start time could be read. Keep it (counted,
+                    // marked start_unknown), never watch it: it is gone.
+                    let t = uptime_ns().unwrap_or(0);
+                    let mut g = lock(sh);
+                    g.record(
+                        t,
+                        p,
+                        TraceKind::NotAdopted {
+                            child: k,
+                            why: NotAdoptedWhy::StartUnreadable,
+                        },
+                    );
+                    let fresh = match g.start_unknown.entry(k) {
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert(p);
+                            true
+                        }
+                        std::collections::btree_map::Entry::Occupied(_) => false,
+                    };
+                    if fresh {
+                        g.stats.children_start_unknown += 1;
+                        drop(g);
+                        if p == parent {
+                            direct += 1;
+                        }
+                    }
+                    continue;
+                };
                 // A child cannot be older than its recorded parent; an older
                 // one means the parent pid was reused.
                 if pstart.is_some_and(|ps| ks < ps) {
+                    let t = uptime_ns().unwrap_or(0);
+                    lock(sh).record(
+                        t,
+                        p,
+                        TraceKind::NotAdopted {
+                            child: k,
+                            why: NotAdoptedWhy::OlderThanParent,
+                        },
+                    );
                     continue;
                 }
                 let ok = watch(kq, k);
@@ -236,6 +634,20 @@ mod imp {
         /// [`start`](Self::start) with a fault injected into the child
         /// listing (see [`ListFault`]).
         pub fn start_with(roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_full(roots, fault, false)
+        }
+
+        /// [`start_with`](Self::start_with) that also keeps a [`Trace`]
+        /// (calibration: every miss gets a timeline).
+        pub fn start_traced(roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_full(roots, fault, true)
+        }
+
+        fn start_full(
+            roots: &[u32],
+            fault: Option<ListFault>,
+            traced: bool,
+        ) -> std::io::Result<Self> {
             let kq = Arc::new(Kqueue::new().map_err(std::io::Error::from)?);
             let stop = KEvent::new(
                 STOP_IDENT,
@@ -250,10 +662,16 @@ mod imp {
             let sh = Arc::new(Mutex::new(Inner {
                 seen: BTreeMap::new(),
                 parent_of: BTreeMap::new(),
+                start_unknown: BTreeMap::new(),
+                start_denied: std::collections::BTreeSet::new(),
                 stats: Stats::default(),
                 fault,
                 listings: 0,
                 hidden: None,
+                trace: Trace {
+                    enabled: traced,
+                    ..Trace::default()
+                },
             }));
             let w = {
                 let (kq, sh) = (kq.clone(), sh.clone());
@@ -307,6 +725,20 @@ mod imp {
         pub fn adopted_parents(&self) -> BTreeMap<u32, u32> {
             lock(&self.sh).parent_of.clone()
         }
+
+        /// Children listed under a parent whose start time could not be read
+        /// (child -> parent). Not in [`adopted_parents`](Self::adopted_parents)
+        /// or [`snapshot`](Self::snapshot): there is no start time to check
+        /// identity with, so nothing may signal them.
+        pub fn start_unknown_parents(&self) -> BTreeMap<u32, u32> {
+            lock(&self.sh).start_unknown.clone()
+        }
+
+        /// The trace so far (empty and `enabled: false` unless started with
+        /// [`start_traced`](Self::start_traced)).
+        pub fn trace(&self) -> Trace {
+            lock(&self.sh).trace.clone()
+        }
     }
 
     fn run(kq: &Kqueue, sh: &Shared, t0: Instant) {
@@ -319,6 +751,8 @@ mod imp {
             0,
         );
         let mut buf = [blank; 64];
+        // one System for the whole watch (a9136 #705 L2); none ⇒ argv "?"
+        let mut sys = sysinfo::System::new().ok();
         loop {
             let n = match kq.kevent(&[], &mut buf, None) {
                 Ok(n) => n,
@@ -332,9 +766,23 @@ mod imp {
                         let Ok(pid) = u32::try_from(ev.ident()) else {
                             continue;
                         };
+                        let read_ns = uptime_ns().unwrap_or(0);
+                        let exited = ev.fflags().contains(FilterFlag::NOTE_EXIT);
                         let parent = program_name(pid).unwrap_or_else(|| "?".into());
+                        // read outside the lock (the guard of a one-line
+                        // `lock(sh)...then(..)` would live through the read)
+                        let want = lock(sh).stats.wants_parent_argv(pid);
+                        let argv = want.then(|| {
+                            super::argv_label(
+                                &sys.as_mut()
+                                    .and_then(|s| program_argv_with(s, pid))
+                                    .unwrap_or_default(),
+                            )
+                        });
                         {
                             let mut g = lock(sh);
+                            g.stats.note_parent_argv(pid, argv);
+                            g.record(read_ns, pid, TraceKind::Fork { exited });
                             g.stats.fork_events += 1;
                             *g.stats.fork_events_by_pid.entry(pid).or_default() += 1;
                             *g.stats.by_parent.entry(parent).or_default() += 1;
@@ -345,6 +793,12 @@ mod imp {
                         }
                         if adopt(kq, sh, pid) == 0 {
                             lock(sh).stats.fork_without_child += 1;
+                        }
+                    }
+                    Ok(EventFilter::EVFILT_PROC) if ev.fflags().contains(FilterFlag::NOTE_EXIT) => {
+                        if let Ok(pid) = u32::try_from(ev.ident()) {
+                            let t = uptime_ns().unwrap_or(0);
+                            lock(sh).record(t, pid, TraceKind::Exit);
                         }
                     }
                     _ => {}
@@ -381,13 +835,21 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use super::{ListFault, Stats};
+    use super::{ListFault, Stats, Trace};
+
+    pub fn uptime_ns() -> Option<u64> {
+        None
+    }
 
     pub fn start_time(_pid: u32) -> Option<u64> {
         None
     }
 
     pub fn program_name(_pid: u32) -> Option<String> {
+        None
+    }
+
+    pub fn program_argv(_pid: u32) -> Option<Vec<String>> {
         None
     }
 
@@ -413,12 +875,186 @@ mod imp {
         pub fn stats(&self) -> Stats {
             Stats::default()
         }
+        pub fn start_traced(_roots: &[u32], fault: Option<ListFault>) -> std::io::Result<Self> {
+            Self::start_with(&[], fault)
+        }
         pub fn adopted_parents(&self) -> std::collections::BTreeMap<u32, u32> {
             std::collections::BTreeMap::new()
+        }
+        pub fn start_unknown_parents(&self) -> std::collections::BTreeMap<u32, u32> {
+            std::collections::BTreeMap::new()
+        }
+        pub fn trace(&self) -> Trace {
+            Trace::default()
         }
         /// Stop watching (nothing to stop here).
         pub fn stop(self) {}
     }
 }
 
-pub use imp::{program_name, start_time, ForkWatch};
+pub use imp::{program_argv, program_name, start_time, uptime_ns, ForkWatch};
+
+#[cfg(test)]
+mod errno_tests {
+    use super::errno_in;
+
+    #[test]
+    fn errno_is_read_from_libproc_error_text() {
+        assert_eq!(
+            errno_in("return code = 0, errno = 1, message = 'Operation not permitted'"),
+            Some(1)
+        );
+        assert_eq!(
+            errno_in("return code = -1, errno = 3, message = 'No such process'"),
+            Some(3)
+        );
+        assert_eq!(
+            errno_in("Cannot request information about kernel task"),
+            None
+        );
+        assert_eq!(errno_in("errno = x"), None);
+    }
+
+    /// The text errno_in reads is libproc's real output, not a copy of it: a libproc
+    /// upgrade that changes the format turns this red instead of silently sending every
+    /// EPERM back to start_unknown (1ced7 #624 inc L1).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn libproc_error_text_carries_errno() {
+        use libproc::libproc::bsd_info::BSDInfo;
+        use libproc::libproc::proc_pid::pidinfo;
+        // no such pid: ESRCH (3)
+        let e = pidinfo::<BSDInfo>(i32::MAX, 0).unwrap_err();
+        assert_eq!(errno_in(&e), Some(3), "{e}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+mod argv_tests {
+    use super::{argv_label, Stats, ARGV_LABEL_MAX, ARGV_WORD_MAX, PARENT_ARGV_CAP};
+
+    fn v(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn label_joins_words_and_marks_empty() {
+        assert_eq!(
+            argv_label(&v(&["/bin/bash", "pane-tick.sh", "-x"])),
+            "/bin/bash pane-tick.sh -x"
+        );
+        assert_eq!(argv_label(&[]), "?", "reason: argv_empty_not_marked");
+        assert_eq!(
+            argv_label(&v(&["", ""])),
+            "?",
+            "reason: argv_empty_not_marked"
+        );
+    }
+
+    #[test]
+    fn label_hides_values_after_equals() {
+        let l = argv_label(&v(&["env", "TOKEN=s3cret", "--key=abc", "run"]));
+        assert_eq!(l, "env TOKEN=… --key=… run", "reason: argv_value_leaked");
+        assert!(!l.contains("s3cret"), "reason: argv_value_leaked {l}");
+    }
+
+    #[test]
+    fn label_hides_secrets_that_have_no_equals_sign() {
+        // a9136 #705 M1: header values, URL user / password, a flag's next word
+        for (argv, secret) in [
+            (
+                vec!["curl", "-H", "Authorization: Bearer ghx_s3cret"],
+                "s3cret",
+            ),
+            (vec!["curl", "-H", "X-Api-Key: s3cret"], "s3cret"),
+            (vec!["curl", "-u", "x", "-H", "Bearer s3cret"], "s3cret"),
+            (
+                vec!["git", "clone", "https://user:s3cret@github.com/o/r"],
+                "s3cret",
+            ),
+            (vec!["mysql", "-p", "s3cret", "db"], "s3cret"),
+            (vec!["aib", "--token", "s3cret"], "s3cret"),
+            (vec!["x", "--password", "s3cret"], "s3cret"),
+            (vec!["x", "--client-secret", "s3cret"], "s3cret"),
+            (vec!["gh", "ghp_s3cret"], "s3cret"),
+            (vec!["x", "Basic czNjcmV0"], "czNjcmV0"),
+        ] {
+            let l = argv_label(&v(&argv));
+            assert!(!l.contains(secret), "reason: argv_value_leaked {l}");
+        }
+        // the parts goal 2 needs stay readable
+        assert_eq!(
+            argv_label(&v(&["git", "clone", "https://user:s3cret@github.com/o/r"])),
+            "git clone https://…@github.com/o/r",
+            "reason: argv_url_host_lost"
+        );
+        assert_eq!(
+            argv_label(&v(&["bash", "title-beat.sh", "--once"])),
+            "bash title-beat.sh --once",
+            "reason: argv_plain_words_hidden"
+        );
+        assert_eq!(
+            argv_label(&v(&["aib", "--token", "s3cret", "run"])),
+            "aib --token … run",
+            "reason: argv_value_leaked"
+        );
+    }
+
+    #[test]
+    fn label_replaces_control_and_format_characters() {
+        let l = argv_label(&v(&[
+            "a\u{1b}[2Jb",
+            "c\u{202e}d",
+            "e\u{200b}f",
+            "g\u{e0041}h",
+            "i\u{2028}j\u{2029}k",
+        ]));
+        assert_eq!(
+            l, "a?[2Jb c?d e?f g?h i?j?k",
+            "reason: argv_unprintable_kept"
+        );
+    }
+
+    #[test]
+    fn label_cuts_long_words_and_long_lines() {
+        let long = "x".repeat(ARGV_WORD_MAX + 5);
+        let l = argv_label(&v(&[&long]));
+        assert_eq!(
+            l.chars().count(),
+            ARGV_WORD_MAX + 1,
+            "reason: argv_word_not_cut"
+        );
+        assert!(l.ends_with('…'));
+        let many: Vec<String> = (0..100).map(|i| format!("w{i:03}")).collect();
+        let l = argv_label(&many);
+        assert_eq!(
+            l.chars().count(),
+            ARGV_LABEL_MAX + 1,
+            "reason: argv_line_not_cut"
+        );
+        assert!(l.ends_with('…'));
+    }
+
+    #[test]
+    fn first_label_wins_and_the_cap_counts_drops() {
+        let mut s = Stats::default();
+        assert!(s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("first".into()));
+        assert!(!s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("second".into()));
+        assert_eq!(s.parent_argv[&7], "first", "reason: argv_overwritten");
+        assert_eq!(s.parent_argv_dropped, 0);
+        for p in 0..u32::try_from(PARENT_ARGV_CAP).unwrap() {
+            s.note_parent_argv(1000 + p, Some("x".into()));
+        }
+        assert_eq!(
+            s.parent_argv.len(),
+            PARENT_ARGV_CAP,
+            "reason: argv_cap_exceeded"
+        );
+        assert!(!s.wants_parent_argv(1));
+        s.note_parent_argv(1, None);
+        assert_eq!(s.parent_argv_dropped, 2, "reason: argv_drop_not_counted");
+    }
+}

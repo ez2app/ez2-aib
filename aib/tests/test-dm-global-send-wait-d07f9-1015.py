@@ -193,7 +193,7 @@ class Header(unittest.TestCase):
             self.assertIsNotNone(H.parse_sender("Andy(線上·已驗證)"))
         finally:
             H.EMIT_NEW_TAG = old
-        for bad in ("", "A/B", "x(y)", "IP:1.2.3.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
+        for bad in ("", "A/B", "x(y)", "IP:192.0.2.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
             with self.assertRaises(ValueError, msg=bad):
                 H.sender_side(bad, True)
 
@@ -225,7 +225,7 @@ class Header(unittest.TestCase):
 
     def test_h4_line_with_dm_header_parts(self):
         import dm_header
-        r = dm_header.party("8f366", "第二艦長", addr="100.114.152.121", cabin="931e")
+        r = dm_header.party("8f366", "第二艦長", addr="100.64.0.121", cabin="931e")
         receiver = dm_header._side(r)
         when = dm_header.format_when(1792045800)
         line = H.build(H.sender_side("Andy", True), receiver, when)

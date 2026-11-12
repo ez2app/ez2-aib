@@ -50,14 +50,14 @@ class Defaults(unittest.TestCase):
                          "MacBook Pro", "名字會公開 ⇒ 去掉主人名字")
         self.assertEqual(len(CB.default_name(run=fake_run({"ComputerName": "x" * 50}), platform="darwin")), 32)
         # 退主機名時也照樣去主人名字(default_name 對兩個候選同一套);期望值照同一套算,
-        #   否則主機名長得像「名字-Mac-Pro」的機器(例:Ez2-AL-Mac-Pro ⇒ Mac-Pro)會假紅(2240e 11-06)
+        #   否則主機名長得像「名字-Mac-Pro」的機器(例:Acme-AL-Mac-Pro ⇒ Mac-Pro)會假紅(2240e 11-06)
         host = socket.gethostname().split(".")[0]
         want = CR.GF.clean_display_name(CB.strip_owner_name(host)[:CR.GF.NAME_MAX].strip())
         self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"), want)
         self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), want)
         # 固定的主機名(不靠這台機器的名字):主人名字那段去掉
         import unittest.mock as M
-        with M.patch("socket.gethostname", return_value="Ez2-AL-Mac-Pro.local"):
+        with M.patch("socket.gethostname", return_value="Acme-AL-Mac-Pro.local"):
             self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), "Mac-Pro")
         with M.patch("socket.gethostname", return_value="buildbox"):
             self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"), "buildbox")
@@ -67,7 +67,7 @@ class Defaults(unittest.TestCase):
                  "王小明的iMac": "iMac", "太郎のMacBook Air": "MacBook Air", "철수의 MacBook": "MacBook",
                  "MacBook Pro de Andy": "MacBook Pro", "MacBook Pro von Anna": "MacBook Pro",
                  "andys-macbook-pro": "macbook-pro", "Andys-Mac-mini": "Mac-mini",
-                 "Mac Pro 13": "Mac Pro 13", "Studio": "Studio", "": ""}
+                 "Mac B": "Mac B", "Studio": "Studio", "": ""}
         for raw, want in cases.items():
             self.assertEqual(CB.strip_owner_name(raw), want, raw)
 
@@ -92,7 +92,7 @@ class Zero(unittest.TestCase):
         orig = (CB.default_name, CB.default_country, CB.venv_state)
         self.addCleanup(lambda: (setattr(CB, "default_name", orig[0]), setattr(CB, "default_country", orig[1]),
                                  setattr(CB, "venv_state", orig[2])))
-        CB.default_name = lambda env=None: "Mac Pro 13"
+        CB.default_name = lambda env=None: "Mac B"
         CB.default_country = lambda env=None: "TW"
         CB.venv_state = lambda env=None: "ok"
 
@@ -105,7 +105,7 @@ class Zero(unittest.TestCase):
     def test_z3_fill_and_publish_captain(self):
         out = self.run_zero()
         prof = CR.read_profile(self.env)
-        self.assertEqual((prof["display_name"], prof["country"], prof["public"]), ("Mac Pro 13", "TW", ["cfd04"]))
+        self.assertEqual((prof["display_name"], prof["country"], prof["public"]), ("Mac B", "TW", ["cfd04"]))
         self.assertIn("@cfd04", out)
         CR.set_profile("Andy", "JP", self.env)
         CR.set_public("cfd04", False, self.env)
@@ -132,7 +132,7 @@ class Zero(unittest.TestCase):
         shim.mkdir()
         (shim / "sitecustomize.py").write_text(
             "import sys\nsys.path.insert(0, %r)\nimport chat_bridge as CB\n"
-            "CB.default_name = lambda env=None: 'Mac Pro 13'\nCB.default_country = lambda env=None: 'TW'\n"
+            "CB.default_name = lambda env=None: 'Mac B'\nCB.default_country = lambda env=None: 'TW'\n"
             "CB.venv_state = lambda env=None: 'ok'\n" % str(COCKPIT))
         runner = self.td / "run.py"
         runner.write_text("import sys, chat_bridge\nsys.exit(chat_bridge.main(sys.argv[1:]))\n")
@@ -159,10 +159,10 @@ class Zero(unittest.TestCase):
         os.close(m)
         text = buf.decode("utf-8", "replace")
         self.assertEqual(p.returncode, 0, text)
-        self.assertIn("Mac Pro 13", text.split("[y/N]")[0])
+        self.assertIn("Mac B", text.split("[y/N]")[0])
         self.assertTrue(CB.is_enabled(self.env))
         prof = CR.read_profile(self.env)
-        self.assertEqual((prof["display_name"], prof["country"], prof["public"]), ("Mac Pro 13", "TW", ["cfd04"]))
+        self.assertEqual((prof["display_name"], prof["country"], prof["public"]), ("Mac B", "TW", ["cfd04"]))
 
 
 class Ready(unittest.TestCase):

@@ -58,6 +58,13 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// The disk a new site starts with, in Proxmox's `G`, which is GiB (Andy 11-12 13:07:
+/// "10 GB", was 20). Shown, not judged: [`crate::quota`] counts a record that names no
+/// `disk_gb` at this size. The size
+/// a new container really gets is the template's (CT 900), a host setting this code does
+/// not write.
+pub const START_DISK_GB: u32 = 10;
+
 /// Resource limits of one site CT. The numbers are **guarantees for the test tier**
 /// (§23: the customer-facing plan ceiling is shown, not reserved); every field is bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +89,17 @@ impl Limits {
         cores: 2,
         cpulimit_x100: 200,
         memory_mb: 2048,
+        swap_mb: 512,
+        pids_max: 2048,
+    };
+
+    /// What a new site starts with (Andy 11-10: "起步降到 1G、預期以 512、或更少記憶體運作"):
+    /// 1 GiB of memory, the rest as the test tier. Measured idle sites hold 150–200 MiB;
+    /// ARC raises the limit when a site really needs more.
+    pub const START: Limits = Limits {
+        cores: 2,
+        cpulimit_x100: 200,
+        memory_mb: 1024,
         swap_mb: 512,
         pids_max: 2048,
     };
@@ -179,11 +197,38 @@ impl SiteSpec {
 }
 const NET: &str = "10.77.0.";
 
+/// Words of the customer's request line (`site <code> …`, `site create`,
+/// `aib_cloud::customer`) and words kept for requests to come. None of them is a site's
+/// code or a customer's id, anywhere: in a request, in a record, in a roster, or out of
+/// the generator that names a new site. One table, read by all of them (f1fae, c477a,
+/// ebb36 11-11).
+///
+/// **Before a word is added**: read the host's site records and rosters for it. A record
+/// or a roster holding a code that is in this table is refused whole (33e28, #652 L1).
+pub const RESERVED_CODES: &[&str] = &[
+    "admin-link",
+    "backup",
+    "create",
+    "delete",
+    "domain",
+    "help",
+    "list",
+    "logs",
+    "php-reload",
+    "restart",
+    "rm",
+    "site",
+    "sites",
+    "status",
+    "usage",
+];
+
 /// Site code: 2–41 chars of `[a-z0-9.-]`, starting with a letter or digit (it becomes a hostname,
 /// a record file name and a Caddy marker, so nothing else is allowed).
 pub fn valid_code(code: &str) -> bool {
     let b = code.as_bytes();
-    (2..=41).contains(&b.len())
+    !RESERVED_CODES.contains(&code)
+        && (2..=41).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'.' || *c == b'-')
@@ -317,6 +362,12 @@ pub fn rootfs_is_own(value: &str, ct: u32) -> bool {
         name.strip_prefix(&alloc::format!("{kind}-{ct}-disk-"))
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
     })
+}
+
+/// Whether `value` is the path [`crate::mask::HOOK_LINE`] names — the only hook a site CT
+/// may carry. The line is one constant for installing, checking and restoring.
+pub fn mask_hook_ok(value: &str) -> bool {
+    crate::mask::HOOK_LINE.strip_prefix("lxc.hook.mount: ") == Some(value)
 }
 
 /// Keys a site CT's `pct config` may carry without being drift: what `desired()` declares,
@@ -474,6 +525,138 @@ pub fn spec_from_record(rec: &Value) -> Result<SiteSpec, Error> {
     Ok(spec)
 }
 
+/// One way a host record falls short of being a complete statement of what its CT must
+/// look like. [`spec_from_record`] is lenient on purpose (the 11-09 PoC records predate
+/// some fields and `site drift` must still read them); a check that is going to report
+/// "this site is as recorded" must not pass on values nobody recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordGap {
+    /// Stable code: `R01` required field missing or of the wrong type, `R02` a field
+    /// [`spec_from_record`] would fill with a default, `R03` a limit missing, `R04` a key
+    /// this version does not know (a different spelling of a known one included).
+    pub code: &'static str,
+    /// The key, `limits.<name>` for a limit.
+    pub key: String,
+}
+
+const RECORD_KEYS: &[&str] = &[
+    "tenant_id",
+    "disk_gb",
+    "site",
+    "ct",
+    "ip",
+    "hosts",
+    "wp",
+    "locale",
+    "created",
+    "ct_since",
+    "template",
+    "fw_group",
+    "ssh_port",
+    "limits",
+];
+const LIMIT_KEYS: &[&str] = &["cores", "cpulimit_x100", "memory_mb", "swap_mb", "pids_max"];
+
+/// Everything that keeps `rec` from being a complete record: fields that are missing,
+/// fields a lenient read would default, and keys nobody reads. Empty means
+/// [`spec_from_record`] uses no default for this record. `ssh_port` may be absent or
+/// `null` (a site without customer ssh).
+pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
+    let gap = |code: &'static str, key: &str| RecordGap {
+        code,
+        key: key.to_owned(),
+    };
+    let Some(obj) = rec.as_object() else {
+        return alloc::vec![gap("R01", "")];
+    };
+    let mut out = Vec::new();
+    for key in ["site", "ip", "hosts", "created"] {
+        if !obj.get(key).is_some_and(Value::is_string) {
+            out.push(gap("R01", key));
+        }
+    }
+    // "is the lenient read going to use this value as it stands" — so the same
+    // conversions it makes: a number that does not fit is defaulted there, a gap here
+    let fits_u32 = |v: &Value| v.as_u64().is_some_and(|n| u32::try_from(n).is_ok());
+    if !obj.get("ct").is_some_and(fits_u32) {
+        out.push(gap("R01", "ct"));
+    }
+    if !obj
+        .get("wp")
+        .is_some_and(|v| matches!(v.as_u64(), Some(0 | 1)))
+    {
+        out.push(gap("R02", "wp"));
+    }
+    if obj
+        .get("ssh_port")
+        .is_some_and(|v| !v.is_null() && !v.as_u64().is_some_and(|n| u16::try_from(n).is_ok()))
+    {
+        out.push(gap("R01", "ssh_port"));
+    }
+    for key in ["locale", "fw_group"] {
+        if !obj.get(key).is_some_and(Value::is_string) {
+            out.push(gap("R02", key));
+        }
+    }
+    match obj.get("limits").and_then(Value::as_object) {
+        None => out.push(gap("R02", "limits")),
+        Some(limits) => {
+            for key in LIMIT_KEYS {
+                if !limits.get(*key).is_some_and(fits_u32) {
+                    out.push(gap("R03", &alloc::format!("limits.{key}")));
+                }
+            }
+            for key in limits.keys() {
+                if !LIMIT_KEYS.contains(&key.as_str()) {
+                    out.push(gap("R04", &alloc::format!("limits.{key}")));
+                }
+            }
+        }
+    }
+    // optional, but of the right kind when present
+    if obj
+        .get("tenant_id")
+        .is_some_and(|v| !v.as_str().is_some_and(valid_code))
+    {
+        out.push(gap("R01", "tenant_id"));
+    }
+    if obj
+        .get("disk_gb")
+        .is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1024).contains(&n)))
+    {
+        out.push(gap("R01", "disk_gb"));
+    }
+    for key in obj.keys() {
+        if !RECORD_KEYS.contains(&key.as_str()) {
+            out.push(gap("R04", key));
+        }
+    }
+    out
+}
+
+/// The customer a site belongs to: the record's `tenant_id` (Ez2.PAGE's name for it; the
+/// two products are to share one account). A record that names none belongs to **no**
+/// tenant: there is no falling back to the site's own code, or a tenant id that happened to
+/// equal a site code would own that site. The id is an opaque code, never the customer's name.
+pub fn record_tenant(rec: &Value) -> Option<&str> {
+    rec.get("tenant_id")?.as_str().filter(|o| valid_code(o))
+}
+
+/// [`spec_from_record`] for callers that must not accept a defaulted value: any
+/// [`RecordGap`] is an error.
+pub fn spec_from_record_strict(rec: &Value) -> Result<SiteSpec, Error> {
+    let gaps = record_gaps(rec);
+    if let Some(first) = gaps.first() {
+        return Err(Error::Observed(alloc::format!(
+            "record incomplete: {} {} ({} gap(s) in all)",
+            first.code,
+            first.key,
+            gaps.len()
+        )));
+    }
+    spec_from_record(rec)
+}
+
 /// One step of `site create`, as an argument list (never a shell string).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -602,6 +785,7 @@ pub fn drift(
             got: idmaps.join(" | "),
         });
     }
+    let mask_hooks = obs.iter().filter(|(k, _)| k == "lxc.hook.mount").count();
     for (k, v) in &obs {
         // rootfs must be this CT's own volume (c477a #585 L3: another CT's volume = two sites on one disk)
         if k == "rootfs" && !rootfs_is_own(v, spec.ct) {
@@ -614,6 +798,11 @@ pub fn drift(
                 ),
                 got: v.clone(),
             });
+            continue;
+        }
+        // the mask's own hook and no other: this key with exactly the wrapper's path, once
+        // (33e28). Any other hook, another path, or a second line stays drift below.
+        if k == "lxc.hook.mount" && mask_hook_ok(v) && mask_hooks == 1 {
             continue;
         }
         if !config_key_allowed(k) {
@@ -662,6 +851,48 @@ pub fn drift(
     Ok(out)
 }
 
+/// The keys the limits step of `site create` sets (`pct set` and the pids line).
+pub const LIMITS_STEP_KEYS: [&str; 7] = [
+    "cores",
+    "cpulimit",
+    "lxc.cgroup2.pids.max",
+    "memory",
+    "net0",
+    "onboot",
+    "swap",
+];
+
+/// What the limits step must have left: every key of [`LIMITS_STEP_KEYS`] as [`desired`] has
+/// it (`net0` without the MAC and type, like [`drift`]). Only those keys: the rest of a
+/// fresh clone is the template's and is checked by [`drift`] once the site is open.
+pub fn limits_differ(spec: &SiteSpec, observed_pct_config: &str) -> Result<Vec<Drift>, Error> {
+    let obs = parse_pct_config(observed_pct_config)?;
+    let mut out = Vec::new();
+    for (k, want) in desired(spec) {
+        if !LIMITS_STEP_KEYS.contains(&k) {
+            continue;
+        }
+        let got = obs
+            .iter()
+            .find(|(ok, _)| ok == k)
+            .map_or("<missing>", |(_, v)| v.as_str());
+        let same = if k == "net0" {
+            net0_canonical(got) == net0_canonical(&want)
+        } else {
+            got == want
+        };
+        if !same {
+            out.push(Drift {
+                ct: spec.ct,
+                key: k.to_owned(),
+                want,
+                got: got.to_owned(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- Edge block, suspend / resume, blue-green restore (P2)
 // The Edge Caddyfile keeps one block per site, tagged `# site:<code>` on the line before the
 // host line and closed by a `}` at column 0. These functions render the three shapes a block
@@ -674,10 +905,13 @@ pub fn caddy_marker(code: &str) -> String {
 }
 
 /// The normal block: proxy to the site CT at `upstream_ip` (the spec's own IP, or the new CT's
-/// during a blue-green restore). Carries the white-label import (WL-1).
+/// during a blue-green restore). Carries the white-label import (WL-1) and, on its own,
+/// strips what names the server (E6 C1): `Server` / `Via` / `X-Powered-By` from every
+/// response, and the CT's `Server` / `X-Powered-By` before they are copied out, so a block
+/// does not depend on the hand-kept snippet on the Edge to stay quiet.
 pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\tencode zstd gzip\n\treverse_proxy {ip}:80 {{\n\t\theader_up X-Real-IP {{remote_host}}\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\tencode zstd gzip\n\treverse_proxy {ip}:80 {{\n\t\theader_up X-Real-IP {{remote_host}}\n\t\theader_down -Server\n\t\theader_down -X-Powered-By\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
         ip = upstream_ip
@@ -689,7 +923,7 @@ pub fn caddy_block_upstream(spec: &SiteSpec, upstream_ip: &str) -> String {
 /// customer-facing text Andy decides (§14 P2), this only wires it.
 pub fn caddy_block_suspended(spec: &SiteSpec, page_path: &str) -> String {
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:suspended\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:suspended\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\theader Cache-Control \"no-store\"\n\theader Retry-After \"3600\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
         dir = page_path.rsplit_once('/').map_or("/srv/errors", |(d, _)| d),
@@ -882,7 +1116,7 @@ mod tests {
             "site2",
             112,
             12,
-            &["eu02-site2.ez2.site"],
+            &["site2.example.net"],
             true,
             "zh_TW",
             Limits::TEST_TIER,
@@ -890,7 +1124,33 @@ mod tests {
         .unwrap()
     }
 
-    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
+    #[test]
+    fn the_limits_step_is_checked_on_its_own_keys() {
+        let spec = site2();
+        let mut wanted = String::new();
+        for (k, v) in desired(&spec) {
+            wanted.push_str(&alloc::format!("{k}: {v}\n"));
+        }
+        assert_eq!(limits_differ(&spec, &wanted).unwrap(), Vec::new());
+        // the template's own keys are not this step's
+        let other = wanted.replace("hostname: site2", "hostname: template");
+        assert_eq!(limits_differ(&spec, &other).unwrap(), Vec::new());
+        let low = wanted.replace("memory: ", "memory: 1");
+        let d = limits_differ(&spec, &low).unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].key, "memory");
+        let no_pids: String = wanted
+            .lines()
+            .filter(|l| !l.starts_with("lxc.cgroup2.pids.max"))
+            .map(|l| alloc::format!("{l}\n"))
+            .collect();
+        let d = limits_differ(&spec, &no_pids).unwrap();
+        assert_eq!(d[0].key, "lxc.cgroup2.pids.max");
+        assert_eq!(d[0].got, "<missing>");
+        assert!(limits_differ(&spec, "").is_err());
+    }
+
+    const CT112: &str = "arch: amd64\ncores: 2\ncpulimit: 2\nfeatures: nesting=1\nhostname: site2\nlxc.cgroup2.pids.max: 2048\nmemory: 2048\nnameserver: 192.0.2.53\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nonboot: 1\nostype: debian\nrootfs: local-lvm:vm-112-disk-0,size=16G\nswap: 512\nunprivileged: 1\n";
 
     #[test]
     fn s1_spec_refuses_each_bad_input() {
@@ -960,7 +1220,7 @@ mod tests {
             SiteSpec::new("site2", 112, 12, &["a.b"], true, "zh TW", ok).is_err(),
             "locale"
         );
-        assert!(site2().hosts == ["eu02-site2.ez2.site"]);
+        assert!(site2().hosts == ["site2.example.net"]);
         assert_eq!(site2().ip(), "10.77.0.12");
     }
 
@@ -1091,7 +1351,7 @@ mod tests {
     fn s4_record_round_trip_and_poc_record_gets_test_tier() {
         let rec = record(&site2(), "2026-11-09T03:33:11Z");
         assert_eq!(spec_from_record(&rec).unwrap(), site2());
-        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
+        let poc = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v1"});
         assert_eq!(spec_from_record(&poc).unwrap(), site2());
         assert!(spec_from_record(&json!({"site":"site2"})).is_err());
         assert!(spec_from_record(
@@ -1209,6 +1469,26 @@ mod tests {
             let d = keys(drift(&site2(), &alloc::format!("{CT112}{extra}"), Some(&fw)).unwrap());
             assert_eq!(d, [extra.split(':').next().unwrap()], "{extra}");
         }
+        // the mask's hook is the one hook that is not drift: that key, that path, once (33e28)
+        let hook = crate::mask::HOOK_LINE;
+        assert_eq!(
+            drift(&site2(), &alloc::format!("{CT112}{hook}\n"), Some(&fw)).unwrap(),
+            Vec::<Drift>::new()
+        );
+        for other in [
+            alloc::format!("{hook}x\n"),
+            alloc::format!("{hook} --more\n"),
+            alloc::format!("{hook}\n{hook}\n"),
+            alloc::format!("{hook}\nlxc.hook.mount: /x\n"),
+            hook.replace("lxc.hook.mount", "lxc.hook.pre-start") + "\n",
+            hook.replace("lxc.hook.mount", "lxc.hook.start-host") + "\n",
+        ] {
+            let d = keys(drift(&site2(), &alloc::format!("{CT112}{other}"), Some(&fw)).unwrap());
+            assert!(
+                !d.is_empty() && d.iter().all(|k| k.starts_with("lxc.hook.")),
+                "{other}"
+            );
+        }
         // …while PVE's own identity keys and the declared idmap are not
         let benign = alloc::format!(
             "{CT112}description: customer site\nsearchdomain: ez2.site\ntags: ez2\nlxc.idmap: u 0 165536 65536\nlxc.idmap: g 0 165536 65536\n"
@@ -1310,12 +1590,46 @@ mod tests {
         assert!(drift(&site2(), "garbage", Some(&fw)).is_err());
     }
 
+    /// E6 C1: what a visitor gets back must not name the server. Each shape strips
+    /// `Server` / `Via` / `X-Powered-By` itself (the whitelabel snippet is hand-kept on the
+    /// Edge), and the live block also drops the CT's own before Caddy copies them out.
+    #[test]
+    fn a_site_block_strips_server_headers() {
+        const STRIP: &str = "\theader {\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}\n";
+        let sp = site2();
+        let up = caddy_block_upstream(&sp, &sp.ip());
+        assert_eq!(up.matches(STRIP).count(), 1, "{up}");
+        let proxy = up
+            .split_once("\treverse_proxy ")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        assert!(
+            proxy.contains("\t\theader_down -Server\n")
+                && proxy.contains("\t\theader_down -X-Powered-By\n"),
+            "{up}"
+        );
+        let sus = caddy_block_suspended(&sp, "/srv/errors/suspended.html");
+        assert_eq!(sus.matches(STRIP).count(), 1, "{sus}");
+        // still one block each: the nested braces do not close it early
+        for block in [&up, &sus] {
+            let file = alloc::format!("{block}\n# site:other\nother.example {{\n}}\n");
+            assert_eq!(
+                crate::quarantine::caddy_block_text(&file, "site2").unwrap(),
+                block.as_str()
+            );
+        }
+        assert!(
+            caddy_block_is_suspended(&caddy_swap_block(&up, "site2", &sus).unwrap(), "site2")
+                .unwrap()
+        );
+    }
+
     #[test]
     fn s7_caddy_blocks_and_swap() {
         let sp = site2();
         let up = caddy_block_upstream(&sp, &sp.ip());
         assert!(
-            up.starts_with("# site:site2\neu02-site2.ez2.site {\n\timport ez2_whitelabel\n"),
+            up.starts_with("# site:site2\nsite2.example.net {\n\timport ez2_whitelabel\n"),
             "{up}"
         );
         assert!(up.contains("reverse_proxy 10.77.0.12:80 {") && up.ends_with("}\n"));
@@ -1391,7 +1705,7 @@ mod tests {
             .any(|a| a == "name=eth0,bridge=vmbr1,ip=10.77.0.22/24,gw=10.77.0.1,firewall=1"));
         assert!(p[1].argv.contains(&"--cpulimit".to_string()));
         assert_eq!(p[2].argv, ["pct", "start", "212"]);
-        assert!(p[3].argv.iter().any(|a| a == "Host: eu02-site2.ez2.site"));
+        assert!(p[3].argv.iter().any(|a| a == "Host: site2.example.net"));
         for st in &p {
             for a in &st.argv {
                 assert!(!a.contains(';') && !a.contains('|'), "{a}");
@@ -1474,9 +1788,9 @@ mod tests {
         assert_eq!(rec["fw_group"], "ez2-site-v2");
         assert_eq!(rec["ssh_port"], 2112);
         assert_eq!(spec_from_record(&rec).unwrap(), full);
-        // the real EU02 records after NET-1 / SSH-1
-        let eu02 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"eu02-site2.ez2.site","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
-        assert_eq!(spec_from_record(&eu02).unwrap(), full);
+        // the real host A records after NET-1 / SSH-1
+        let host_a = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(spec_from_record(&host_a).unwrap(), full);
         assert!(spec_from_record(
             &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","ssh_port":22})
         )
@@ -1485,5 +1799,143 @@ mod tests {
             &json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"a.b","fw_group":"other"})
         )
         .is_err());
+    }
+
+    fn gaps(rec: &Value) -> Vec<(&'static str, String)> {
+        record_gaps(rec)
+            .into_iter()
+            .map(|g| (g.code, g.key))
+            .collect()
+    }
+
+    #[test]
+    fn a_record_written_by_this_crate_has_no_gaps() {
+        let rec = record(&site2(), "2026-11-10T01:00:00Z");
+        assert_eq!(gaps(&rec), []);
+        assert_eq!(spec_from_record_strict(&rec).unwrap(), site2());
+    }
+
+    #[test]
+    fn the_three_shapes_found_on_the_first_host() {
+        // site2: written by the bash PoC, no limits at all. The lenient read fills in the
+        // test tier; the strict one says so.
+        let site2 = json!({"site":"site2","ct":112,"ip":"10.77.0.12","hosts":"site2.example.net","wp":1,"locale":"zh_TW","created":"2026-11-09T03:33:11Z","template":900,"fw_group":"ez2-site-v2","ssh_port":2112});
+        assert_eq!(gaps(&site2), [("R02", "limits".to_owned())]);
+        assert!(spec_from_record(&site2).is_ok());
+        assert!(spec_from_record_strict(&site2).is_err());
+        // site3: another spelling (`cpulimit`, in cores) and two limits missing. A lenient
+        // read ignores the unknown key and defaults the rest.
+        let mut site3 = site2.clone();
+        site3["limits"] = json!({"cpulimit": 2, "memory_mb": 2048, "pids_max": 2048});
+        assert_eq!(
+            gaps(&site3),
+            [
+                ("R03", "limits.cores".to_owned()),
+                ("R03", "limits.cpulimit_x100".to_owned()),
+                ("R03", "limits.swap_mb".to_owned()),
+                ("R04", "limits.cpulimit".to_owned()),
+            ]
+        );
+        // site1: the full form.
+        let mut site1 = site2.clone();
+        site1["limits"] =
+            json!({"cores":2,"cpulimit_x100":200,"memory_mb":2048,"swap_mb":512,"pids_max":2048});
+        assert_eq!(gaps(&site1), []);
+    }
+
+    #[test]
+    fn tenant_and_disk_are_optional_but_typed() {
+        let mut r = record(&site2(), "2026-11-10T01:00:00Z");
+        // no tenant named: no tenant, and never the site's own code
+        assert_eq!(record_tenant(&r), None);
+        r["tenant_id"] = json!("site2");
+        assert_eq!(record_tenant(&r), Some("site2"));
+        r["tenant_id"] = json!("t-3k9f2a");
+        r["disk_gb"] = json!(16);
+        assert_eq!(gaps(&r), []);
+        assert_eq!(record_tenant(&r), Some("t-3k9f2a"));
+        r["tenant_id"] = json!("Not A Code");
+        r["disk_gb"] = json!(0);
+        assert_eq!(
+            gaps(&r),
+            [
+                ("R01", "tenant_id".to_owned()),
+                ("R01", "disk_gb".to_owned())
+            ]
+        );
+        assert_eq!(record_tenant(&r), None);
+        Limits::START.validate().unwrap();
+        assert_eq!(Limits::START.memory_mb, 1024);
+    }
+
+    #[test]
+    fn record_gaps_by_kind() {
+        let full = record(&site2(), "2026-11-10T01:00:00Z");
+        let without = |key: &str| {
+            let mut r = full.clone();
+            r.as_object_mut().unwrap().remove(key);
+            r
+        };
+        assert_eq!(gaps(&json!([])), [("R01", String::new())]);
+        for key in ["site", "ct", "ip", "hosts", "created"] {
+            assert_eq!(gaps(&without(key)), [("R01", key.to_owned())], "{key}");
+        }
+        for key in ["wp", "locale", "fw_group", "limits"] {
+            assert_eq!(gaps(&without(key)), [("R02", key.to_owned())], "{key}");
+        }
+        // no customer ssh is a complete statement, absent or null
+        assert_eq!(gaps(&without("ssh_port")), []);
+        let mut r = full.clone();
+        r["ssh_port"] = Value::Null;
+        assert_eq!(gaps(&r), []);
+        // wrong types are gaps too, and unknown keys are reported
+        let mut r = full.clone();
+        r["ct"] = json!("112");
+        r["limits"]["cores"] = json!("2");
+        r["state"] = json!("active");
+        assert_eq!(
+            gaps(&r),
+            [
+                ("R01", "ct".to_owned()),
+                ("R03", "limits.cores".to_owned()),
+                ("R04", "state".to_owned()),
+            ]
+        );
+    }
+
+    /// A value the lenient read would replace with a default is a gap, whatever its JSON
+    /// type says (review of #623 segment 2, f1fae M1 / L1 / L2).
+    #[test]
+    fn values_the_lenient_read_would_not_use_are_gaps() {
+        let full = record(&site2(), "2026-11-10T01:00:00Z");
+        // 2^32 does not fit a limit: spec_from_record would fall back to the test tier
+        let mut r = full.clone();
+        r["limits"]["memory_mb"] = json!(4_294_967_296_u64);
+        assert_eq!(gaps(&r), [("R03", "limits.memory_mb".to_owned())]);
+        assert!(spec_from_record_strict(&r).is_err());
+        assert_eq!(spec_from_record(&r).unwrap().limits.memory_mb, 2048);
+        let mut r = full.clone();
+        r["limits"]["memory_mb"] = json!(4_294_967_295_u64);
+        assert_eq!(gaps(&r), []);
+        // wp is 0 or 1; anything else reads as "not WordPress" without saying so
+        for (wp, want) in [
+            (json!(0), 0),
+            (json!(1), 0),
+            (json!(2), 1),
+            (json!(true), 1),
+        ] {
+            let mut r = full.clone();
+            r["wp"] = wp;
+            assert_eq!(gaps(&r).len(), want, "{}", r["wp"]);
+        }
+        // a port that is not a port
+        for port in [json!("2112"), json!(70_000), json!(-1)] {
+            let mut r = full.clone();
+            r["ssh_port"] = port;
+            assert_eq!(gaps(&r), [("R01", "ssh_port".to_owned())]);
+        }
+        let mut r = full.clone();
+        r["ct"] = json!(4_294_967_296_u64);
+        assert_eq!(gaps(&r), [("R01", "ct".to_owned())]);
     }
 }

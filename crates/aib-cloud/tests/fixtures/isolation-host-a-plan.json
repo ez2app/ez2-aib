@@ -3,7 +3,7 @@
     "id": "edge-101-egress-22",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -11,7 +11,7 @@
     "id": "edge-101-egress-443",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -19,7 +19,7 @@
     "id": "edge-101-egress6-443",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },
@@ -51,7 +51,7 @@
     "id": "edge-101-to-hostpub-22",
     "from": "ct:101",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 22,
     "expect": "blocked"
   },
@@ -59,7 +59,7 @@
     "id": "edge-101-to-tailnet",
     "from": "ct:101",
     "kind": "icmp",
-    "ip": "100.120.222.46",
+    "ip": "100.64.0.46",
     "port": 0,
     "expect": "blocked"
   },
@@ -99,7 +99,7 @@
     "id": "host-egress-22",
     "from": "host",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "open"
   },
@@ -107,7 +107,7 @@
     "id": "host-egress-443",
     "from": "host",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -115,7 +115,7 @@
     "id": "host-egress-80",
     "from": "host",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -123,7 +123,7 @@
     "id": "host-egress-dns",
     "from": "host",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -131,7 +131,7 @@
     "id": "host-egress6-443",
     "from": "host",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "open"
   },
@@ -147,7 +147,7 @@
     "id": "host-tailnet-icmp",
     "from": "host",
     "kind": "icmp",
-    "ip": "100.120.222.46",
+    "ip": "100.64.0.46",
     "port": 0,
     "expect": "open"
   },
@@ -187,7 +187,7 @@
     "id": "host-to-hostpub-22",
     "from": "host",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 22,
     "expect": "open"
   },
@@ -195,7 +195,7 @@
     "id": "host-to-hostpub-8006",
     "from": "host",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 8006,
     "expect": "open"
   },
@@ -203,7 +203,7 @@
     "id": "host-to-peerhost-22",
     "from": "host",
     "kind": "tcp",
-    "ip": "136.243.105.110",
+    "ip": "203.0.113.110",
     "port": 22,
     "expect": "open"
   },
@@ -211,7 +211,7 @@
     "id": "public-host-22",
     "from": "external",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 22,
     "expect": "open"
   },
@@ -219,7 +219,7 @@
     "id": "public-host-443",
     "from": "external",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 443,
     "expect": "open"
   },
@@ -227,7 +227,7 @@
     "id": "public-host-8006",
     "from": "external",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 8006,
     "expect": "blocked"
   },
@@ -235,7 +235,7 @@
     "id": "site-110-egress-22",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -243,7 +243,7 @@
     "id": "site-110-egress-443",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -251,7 +251,7 @@
     "id": "site-110-egress-80",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -259,7 +259,7 @@
     "id": "site-110-egress-dns",
     "from": "ct:110",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -267,7 +267,7 @@
     "id": "site-110-egress6-443",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },
@@ -331,7 +331,7 @@
     "id": "site-110-to-hostpub-22",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 22,
     "expect": "blocked"
   },
@@ -339,7 +339,7 @@
     "id": "site-110-to-hostpub-8006",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 8006,
     "expect": "blocked"
   },
@@ -347,7 +347,7 @@
     "id": "site-110-to-peerhost-22",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "136.243.105.110",
+    "ip": "203.0.113.110",
     "port": 22,
     "expect": "blocked"
   },
@@ -355,7 +355,7 @@
     "id": "site-110-to-peerhost-443",
     "from": "ct:110",
     "kind": "tcp",
-    "ip": "136.243.105.110",
+    "ip": "203.0.113.110",
     "port": 443,
     "expect": "observe"
   },
@@ -379,7 +379,7 @@
     "id": "site-110-to-tailnet",
     "from": "ct:110",
     "kind": "icmp",
-    "ip": "100.120.222.46",
+    "ip": "100.64.0.46",
     "port": 0,
     "expect": "blocked"
   },
@@ -387,7 +387,7 @@
     "id": "site-112-egress-22",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 22,
     "expect": "blocked"
   },
@@ -395,7 +395,7 @@
     "id": "site-112-egress-443",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "140.82.121.4",
+    "ip": "192.0.2.44",
     "port": 443,
     "expect": "open"
   },
@@ -403,7 +403,7 @@
     "id": "site-112-egress-80",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "151.101.2.132",
+    "ip": "192.0.2.80",
     "port": 80,
     "expect": "open"
   },
@@ -411,7 +411,7 @@
     "id": "site-112-egress-dns",
     "from": "ct:112",
     "kind": "dns",
-    "ip": "1.1.1.1",
+    "ip": "192.0.2.53",
     "port": 53,
     "expect": "open"
   },
@@ -419,7 +419,7 @@
     "id": "site-112-egress6-443",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "2606:4700:4700::1111",
+    "ip": "2001:db8::443",
     "port": 443,
     "expect": "blocked"
   },
@@ -483,7 +483,7 @@
     "id": "site-112-to-hostpub-22",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 22,
     "expect": "blocked"
   },
@@ -491,7 +491,7 @@
     "id": "site-112-to-hostpub-8006",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "135.181.75.90",
+    "ip": "203.0.113.90",
     "port": 8006,
     "expect": "blocked"
   },
@@ -499,7 +499,7 @@
     "id": "site-112-to-peerhost-22",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "136.243.105.110",
+    "ip": "203.0.113.110",
     "port": 22,
     "expect": "blocked"
   },
@@ -507,7 +507,7 @@
     "id": "site-112-to-peerhost-443",
     "from": "ct:112",
     "kind": "tcp",
-    "ip": "136.243.105.110",
+    "ip": "203.0.113.110",
     "port": 443,
     "expect": "observe"
   },
@@ -531,7 +531,7 @@
     "id": "site-112-to-tailnet",
     "from": "ct:112",
     "kind": "icmp",
-    "ip": "100.120.222.46",
+    "ip": "100.64.0.46",
     "port": 0,
     "expect": "blocked"
   }

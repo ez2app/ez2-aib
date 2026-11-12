@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! EU02's real topology (11-09): the matrix this crate derives for it, and the receipt for
-//! the probe report recorded on the host. `tests/fixtures/isolation-eu02-*.json` are the
+//! Host A's real topology (11-09): the matrix this crate derives for it, and the receipt for
+//! the probe report recorded on the host. `tests/fixtures/isolation-host-a-*.json` are the
 //! acceptance evidence for 4.4.1 §5 / M0 item 4. Run with `-- --nocapture` and
 //! `AIB_CLOUD_PRINT_PLAN=1` to print the probe plan for the host-side runner.
 
@@ -10,27 +10,27 @@ use aib_cloud::isolation::{
 use std::fs;
 use std::path::Path;
 
-const HOST_PUBLIC: &str = "135.181.75.90";
+const HOST_PUBLIC: &str = "203.0.113.90";
 
-/// EU02 on 11-09: Edge CT 101, site CTs 110 (ez2.work + eu02-site1) and 112 (eu02-site2),
-/// Tailscale on, EU01 as the peer host, IPv6 on the host only.
-fn eu02() -> Topology {
+/// host A on 11-09: Edge CT 101, site CTs 110 (example.org + hosta-site1) and 112 (hosta-site2),
+/// Tailscale on, host B as the peer host, IPv6 on the host only.
+fn host_a() -> Topology {
     Topology {
         host_internal: Ip::parse("10.77.0.1").expect("ip"),
         host_public: Ip::parse(HOST_PUBLIC).expect("ip"),
-        tailnet: Some(Ip::parse("100.120.222.46").expect("ip")),
-        peer_host: Some(Ip::parse("136.243.105.110").expect("ip")), // EU01
+        tailnet: Some(Ip::parse("100.64.0.46").expect("ip")),
+        peer_host: Some(Ip::parse("203.0.113.110").expect("ip")), // host B
         edge: Ct::new(101, "10.77.0.2").expect("ct"),
         sites: vec![
             Ct::new(110, "10.77.0.10").expect("ct"),
             Ct::new(112, "10.77.0.12").expect("ct"),
         ],
         internet: InternetTargets {
-            dns: Ip::parse("1.1.1.1").expect("ip"),
-            http: Ip::parse("151.101.2.132").expect("ip"), // deb.debian.org
-            https: Ip::parse("140.82.121.4").expect("ip"), // github.com
-            ssh: Ip::parse("140.82.121.4").expect("ip"),   // github.com sshd
-            https6: Some(Ip6::parse("2606:4700:4700::1111").expect("ip6")), // Cloudflare DNS over HTTPS
+            dns: Ip::parse("192.0.2.53").expect("ip"),
+            http: Ip::parse("192.0.2.80").expect("ip"), // stands in for a package mirror
+            https: Ip::parse("192.0.2.44").expect("ip"), // stands in for a git host
+            ssh: Ip::parse("192.0.2.44").expect("ip"),  // stands in for a git host sshd
+            https6: Some(Ip6::parse("2001:db8::443").expect("ip6")), // stands in for a DNS-over-HTTPS resolver
         },
     }
 }
@@ -46,8 +46,8 @@ fn fixture(name: &str) -> serde_json::Value {
 }
 
 #[test]
-fn eu02_plan_prints_when_asked() {
-    let cells = matrix(&eu02()).expect("matrix");
+fn host_a_plan_prints_when_asked() {
+    let cells = matrix(&host_a()).expect("matrix");
     let plan = probe_plan(&cells);
     if std::env::var("AIB_CLOUD_PRINT_PLAN").is_ok() {
         println!(
@@ -59,22 +59,22 @@ fn eu02_plan_prints_when_asked() {
     let n = plan.as_array().expect("array").len();
     assert!(n >= 66, "{n} cells");
     // the plan the runner is given must be exactly the one judge() will accept
-    let committed = fixture("isolation-eu02-plan.json");
+    let committed = fixture("isolation-host-a-plan.json");
     assert_eq!(
         committed, plan,
-        "tests/fixtures/isolation-eu02-plan.json is stale: regenerate with AIB_CLOUD_PRINT_PLAN=1"
+        "tests/fixtures/isolation-host-a-plan.json is stale: regenerate with AIB_CLOUD_PRINT_PLAN=1"
     );
 }
 
 #[test]
-fn eu02_recorded_report_passes() {
-    let report = fixture("isolation-eu02-1109.json");
-    let cells = matrix(&eu02()).expect("matrix");
-    // external cells were measured from EU01 and merged in, so they are required here
+fn host_a_recorded_report_passes() {
+    let report = fixture("isolation-host-a-1109.json");
+    let cells = matrix(&host_a()).expect("matrix");
+    // external cells were measured from host B and merged in, so they are required here
     let rc = judge(&cells, HOST_PUBLIC, &report, true).expect("judge");
     assert!(
         rc.ok(),
-        "EU02 isolation receipt not clean: fail={:?} missing={:?}",
+        "host A isolation receipt not clean: fail={:?} missing={:?}",
         rc.fail,
         rc.missing
     );
@@ -94,10 +94,10 @@ fn eu02_recorded_report_passes() {
 }
 
 #[test]
-fn eu02_report_for_another_plan_is_refused() {
-    let mut report = fixture("isolation-eu02-1109.json");
+fn host_a_report_for_another_plan_is_refused() {
+    let mut report = fixture("isolation-host-a-1109.json");
     // a report recorded against a topology with one site fewer must not judge this matrix
     report["plan_fnv"] = serde_json::Value::String("0000000000000000".to_owned());
-    let cells = matrix(&eu02()).expect("matrix");
+    let cells = matrix(&host_a()).expect("matrix");
     assert!(judge(&cells, HOST_PUBLIC, &report, true).is_err());
 }

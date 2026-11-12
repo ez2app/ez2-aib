@@ -19,6 +19,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod error;
+pub mod firstline;
 pub mod ids;
 pub mod outcome;
 pub mod ports;
