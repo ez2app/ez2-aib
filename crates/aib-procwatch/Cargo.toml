@@ -14,6 +14,9 @@ publish = false
 aib-sys = { path = "../aib-sys" }
 libproc = "0.15.0"
 nix = { version = "0.31.3", features = ["event", "time"] }
+# goal 2 prerequisite 1: the forking parent's command line (same version and
+# features as aibd, so Cargo.lock gains no new package)
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 
 [lints]
 workspace = true
