@@ -93,18 +93,18 @@ const GENERIC_NAMES: &[&str] = &[
 
 /// Public resolvers anyone may use: naming one says nothing about this host.
 const PUBLIC_RESOLVERS: &[&str] = &[
-    "1.1.1.1",
-    "1.0.0.1",
-    "8.8.8.8",
-    "8.8.4.4",
-    "9.9.9.9",
-    "149.112.112.112",
-    "2606:4700:4700::1111",
-    "2606:4700:4700::1001",
-    "2001:4860:4860::8888",
-    "2001:4860:4860::8844",
-    "2620:fe::fe",
-    "2620:fe::9",
+    "1.1.1.1",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "1.0.0.1",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "8.8.8.8",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "8.8.4.4",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "9.9.9.9",              // ip-literal-ok: well-known public resolver, never a host of ours
+    "149.112.112.112",      // ip-literal-ok: well-known public resolver, never a host of ours
+    "2606:4700:4700::1111", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2606:4700:4700::1001", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2001:4860:4860::8888", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2001:4860:4860::8844", // ip-literal-ok: well-known public resolver, never a host of ours
+    "2620:fe::fe",          // ip-literal-ok: well-known public resolver, never a host of ours
+    "2620:fe::9",           // ip-literal-ok: well-known public resolver, never a host of ours
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -376,7 +376,7 @@ fn rules(f: &Facts) -> Found {
 /// Refuse an output file inside a git work tree: the values are host information and must
 /// not land where a commit can pick them up (33e28 #656 L1). Looks from the file's directory
 /// up for a `.git` (directory or file).
-fn inside_git_tree(out: &Path) -> bool {
+pub(crate) fn inside_git_tree(out: &Path) -> bool {
     let dir = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
@@ -497,7 +497,7 @@ fn render(rules: &[Rule], unread: &[String]) -> String {
 }
 
 /// Write `text` to `out` as 0600: a new temporary file next to it, then a rename.
-fn write_private(out: &str, text: &str) -> Result<(), String> {
+pub(crate) fn write_private(out: &str, text: &str) -> Result<(), String> {
     let tmp = format!("{out}.tmp-{}", std::process::id());
     let res = fs::OpenOptions::new()
         .write(true)
@@ -588,7 +588,7 @@ mod tests {
             ),
             addrs: Some(ADDRS.into()),
             resolv: Some(
-                "# from the provider\nsearch lab.example tail0.example.net\nnameserver 198.51.100.53\nnameserver 1.1.1.1\nnameserver 10.77.0.1\n"
+                "# from the provider\nsearch lab.example tail0.example.net\nnameserver 198.51.100.53\nnameserver 1.1.1.1\nnameserver 10.77.0.1\n"  // ip-literal-ok: a public resolver in the sample resolv.conf
                     .into(),
             ),
             cpuinfo: Some("processor\t: 0\nmodel name\t: Example   CPU 9000X 16-Core\n".into()),
@@ -666,7 +666,7 @@ mod tests {
             // the list's comment mark and line breaks never get into a value
             assert!(!v.contains('#') && !v.contains('\n'), "{v}");
         }
-        assert!(!all.contains(&"1.1.1.1"));
+        assert!(!all.contains(&"1.1.1.1")); // ip-literal-ok: well-known public resolver, never a host of ours
         assert!(!all
             .iter()
             .any(|v| v.contains("localhost") || v.contains("site2")));
@@ -691,7 +691,7 @@ mod tests {
         assert!(name_rule("node7.lan", "host name").is_some());
         assert_eq!(network("203.0.113.70".parse().unwrap(), 32), None);
         assert_eq!(network("203.0.113.70".parse().unwrap(), 4), None);
-        assert_eq!(class("100.128.0.1".parse().unwrap()), Class::Public);
+        assert_eq!(class("100.128.0.1".parse().unwrap()), Class::Public); // ip-literal-ok: first address past 100.64/10, the boundary under test
         assert_eq!(class("fd00::1".parse().unwrap()), Class::Private);
     }
 

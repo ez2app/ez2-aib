@@ -475,7 +475,7 @@ mod tests {
             "",
             "v0.2.0",
             "0.2",
-            "0.2.0.1",
+            "0.2.0.1", // ip-literal-ok: a four-part version, not an address
             "0.2.0-preview",
             "0.2.0-preview.",
             "0.2.0-preview.0",
