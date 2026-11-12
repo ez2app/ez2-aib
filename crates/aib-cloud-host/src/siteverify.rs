@@ -810,8 +810,9 @@ mod tests {
             }
         }
         let good = format!(
-            "{}\nexpose_php => Off => Off\n{}\n# configuration file /etc/nginx/nginx.conf:\nhttp {{\n    server_tokens off;\n}}\n{}\n",
+            "{}\nexpose_php => Off => Off\n{}\n{}\n# configuration file /etc/nginx/nginx.conf:\nhttp {{\n    server_tokens off;\n}}\n{}\n",
             verify::S17_PHP,
+            verify::S17_POOL,
             verify::S17_NGINX,
             verify::S17_END
         );
