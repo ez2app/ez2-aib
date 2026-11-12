@@ -486,6 +486,26 @@ fn last_run(runner: &mut impl Runner, spec: &SiteSpec) -> String {
     }
 }
 
+/// What the person who signs must see first among the due events (4542e 11-12, c477a M1):
+/// how many may change the site's version (the automatic update and the check that
+/// starts it), send mail, or publish scheduled posts.
+pub fn marked(by: &[(String, u32)]) -> (u32, u32, u32) {
+    let mut out = (0, 0, 0);
+    for (hook, n) in by {
+        let h = hook.to_ascii_lowercase();
+        if h == "wp_maybe_auto_update" || h == "wp_version_check" {
+            out.0 += n;
+        }
+        if h.contains("mail") {
+            out.1 += n;
+        }
+        if h == "publish_future_post" {
+            out.2 += n;
+        }
+    }
+    out
+}
+
 /// The lines `--check` and `--plan` show after the answer.
 fn details(runner: &mut impl Runner, spec: &SiteSpec, now: u64) -> Vec<String> {
     let mut lines = Vec::new();
@@ -500,6 +520,10 @@ fn details(runner: &mut impl Runner, spec: &SiteSpec, now: u64) -> Vec<String> {
             lines.push(format!(
                 "due {total} oldest_waiting_s={oldest} hooks: {}",
                 hooks.join(" ")
+            ));
+            let (update, mail, publish) = marked(&by);
+            lines.push(format!(
+                "marked update={update} mail={mail} publish={publish}"
             ));
         }
         None => lines.push("due unread".to_owned()),
@@ -650,38 +674,60 @@ pub fn apply<R: Runner>(
 
 // ------------------------------------------------------------------ command line
 
+#[derive(Debug, PartialEq, Eq)]
 enum Mode {
     Check,
     Plan,
     Apply,
 }
 
-/// `site scheduler <code> --check | --plan | --apply [--records dir]`.
-pub fn cmd(args: &[String]) -> Result<u8, String> {
+/// `<code>` and exactly one mode; `--records <dir>` may come once. Anything else is a
+/// usage error.
+fn parse(args: &[String]) -> Result<(String, Mode, Places), String> {
     let code = args
         .first()
-        .filter(|a| !a.starts_with("--"))
+        .filter(|a| !a.starts_with('-'))
         .ok_or("needs <code>")?
         .clone();
+    if !aib_cloud::site::valid_code(&code) {
+        return Err(format!("{code:?} is not a site code"));
+    }
     let mut mode = None;
     let mut places = Places::host();
+    let mut records = false;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let m = match a.as_str() {
             "--check" => Mode::Check,
             "--plan" => Mode::Plan,
             "--apply" => Mode::Apply,
-            "--records" => {
+            "--records" if !records => {
+                records = true;
                 places.records = PathBuf::from(it.next().ok_or("--records needs a folder")?);
                 continue;
             }
-            other => return Err(format!("unknown argument {other}")),
+            other => return Err(format!("unknown argument {other:?}")),
         };
         if mode.replace(m).is_some() {
             return Err("one of --check, --plan, --apply".to_owned());
         }
     }
     let mode = mode.ok_or("one of --check, --plan, --apply")?;
+    Ok((code, mode, places))
+}
+
+/// `site scheduler <code> --check | --plan | --apply [--records dir]`.
+pub fn cmd(args: &[String]) -> Result<u8, String> {
+    // a mistyped argument must never fall through to a mode (c477a L1 on the hand-written
+    // sheet: `--dryrun` became a real run): every usage error is 64, nothing read or run
+    let (code, mode, places) = match parse(args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("aib-cloud-host site scheduler: {e}");
+            eprintln!("usage: site scheduler <code> --check | --plan | --apply [--records dir]");
+            return Ok(64);
+        }
+    };
     let now = crate::probe::unix_now();
     let mut runner = crate::sitecreatecmd::HostRunner;
     let (rc, lines) = match mode {
@@ -1271,6 +1317,39 @@ mod tests {
         // a failed operation holds the site back until a person closes it
         let mut ct = Ct::in_place();
         assert!(apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW).is_err());
+    }
+
+    #[test]
+    fn version_mail_and_publishing_are_marked() {
+        let by = [
+            ("wp_version_check".to_owned(), 1),
+            ("wp_maybe_auto_update".to_owned(), 1),
+            ("fluentmail_do_daily_scheduled_tasks".to_owned(), 2),
+            ("publish_future_post".to_owned(), 3),
+            ("wp_update_plugins".to_owned(), 1),
+        ];
+        assert_eq!(marked(&by), (2, 2, 3));
+        assert_eq!(marked(&[]), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_usage_error_is_64_and_never_a_mode() {
+        let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        for bad in [
+            &[][..],
+            &["--apply"][..],
+            &[CODE][..],
+            &[CODE, "--dryrun"][..],
+            &[CODE, "--check", "--apply"][..],
+            &[CODE, "--apply", "-n"][..],
+            &[CODE, "--records", "a", "--records", "b", "--check"][..],
+            &["../x", "--check"][..],
+        ] {
+            assert!(parse(&a(bad)).is_err(), "{bad:?}");
+            assert_eq!(cmd(&a(bad)), Ok(64), "{bad:?}");
+        }
+        assert_eq!(parse(&a(&[CODE, "--plan"])).unwrap().1, Mode::Plan);
+        assert_eq!(parse(&a(&[CODE, "--records", "/r", "--apply"])).unwrap().1, Mode::Apply);
     }
 
     #[test]
