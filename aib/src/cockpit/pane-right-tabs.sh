@@ -364,6 +364,24 @@ except Exception:
 PANE_SELF_SCRIPT="$EZ2_COCKPIT_DIR/pane-right-tabs.sh"   # BF:碼換了自己重跑
 . "$EZ2_COCKPIT_DIR/pane-tick.sh"
 pane_tick_init
+# goal2 title-beat(2026-11-12,PLAN-goal2-titlebeat-abba §7):標題心跳改用 Rust 的 aib-title。
+#   title-beat.sh --once 每次 33 個 fork(一半是重新載入 cockpit-env.sh),每幀一次 = 閒置座艙 27% 的 fork。
+#   aib-title 一支做完同樣的事，標題字串仍由同一份 title/title_sample.py 算。
+#   找法只在這裡做一次、全用內建(零 fork):
+#     AIB_TITLE_BEAT 有設(測試替身)⇒ 舊路;AIB_TITLE_BIN 是可執行檔 ⇒ 用它;
+#     沒設 ⇒ ~/.ez2-aib/bin、~/.cargo/bin 的 aib-title(同 consent.py 找 aib-signlint 的順序,不走 PATH);
+#     都沒有(或 AIB_TITLE_BIN=off 這類不是執行檔的值)⇒ 舊路 title-beat.sh。
+TITLE_BIN=""
+if [ -z "${AIB_TITLE_BEAT:-}" ]; then
+  if [ -n "${AIB_TITLE_BIN+x}" ]; then
+    [ -f "$AIB_TITLE_BIN" ] && [ -x "$AIB_TITLE_BIN" ] && TITLE_BIN="$AIB_TITLE_BIN"
+  else
+    for _tb in "$HOME/.ez2-aib/bin/aib-title" "$HOME/.cargo/bin/aib-title"; do
+      if [ -f "$_tb" ] && [ -x "$_tb" ]; then TITLE_BIN="$_tb"; break; fi
+    done
+    unset _tb
+  fi
+fi
 # ★★ 視窗標題心跳(09-14,the maintainer「標題顯示不正確」):title-beat.sh --once 原本只掛在
 #   左欄(pane-left-fleet.sh)與下欄(pane-bottom-tabs.sh)的迴圈裡,而 09-05 起
 #   panes.py 預設只建 hub+right —— 於是預設座艙裡**沒有任何行程在更新標題**,
@@ -486,8 +504,13 @@ EOF
   if [ -n "${TITLE_BEAT_PID:-}" ] && kill -0 "$TITLE_BEAT_PID" 2>/dev/null; then
     :
   else
-    env -u TMUX bash "${AIB_TITLE_BEAT:-$EZ2_COCKPIT_DIR/title/title-beat.sh}" \
-      --once >/dev/null 2>&1 || true &
+    if [ -n "$TITLE_BIN" ]; then
+      # aib-title 自己拿掉 TMUX;單一指令放背景 = 1 個 fork
+      "$TITLE_BIN" --once >/dev/null 2>&1 &
+    else
+      env -u TMUX bash "${AIB_TITLE_BEAT:-$EZ2_COCKPIT_DIR/title/title-beat.sh}" \
+        --once >/dev/null 2>&1 || true &
+    fi
     TITLE_BEAT_PID=$!
   fi
   # 10-24(@044e0 本機效能):captains-ctl --sync 一次約 50 支行程,以前每幀(5 秒)跑 ⇒ 光這項每秒 10 支 exec。

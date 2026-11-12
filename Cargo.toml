@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aib-core", "crates/aib-store", "crates/aib-sys", "crates/aibd", "crates/aib-procwatch", "crates/aib-forkcount", "crates/aib-fixture-tree", "crates/aib-cloud", "crates/aib-cireuse", "crates/aib-release", "crates/aib-lease", "crates/aib-thermal", "crates/aib-flaky", "xtask", "crates/aib-cloud-host", "crates/aib-cloud-cli", "crates/aib-signlint", "crates/aib-consent", "crates/aib-drive"]
+members = ["crates/aib-core", "crates/aib-store", "crates/aib-sys", "crates/aibd", "crates/aib-procwatch", "crates/aib-forkcount", "crates/aib-fixture-tree", "crates/aib-cloud", "crates/aib-cireuse", "crates/aib-release", "crates/aib-lease", "crates/aib-thermal", "crates/aib-flaky", "xtask", "crates/aib-cloud-host", "crates/aib-cloud-cli", "crates/aib-signlint", "crates/aib-consent", "crates/aib-drive", "crates/aib-title"]
 
 [workspace.package]
 version = "0.2.0-preview.5"
