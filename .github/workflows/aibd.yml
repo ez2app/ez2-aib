@@ -442,6 +442,14 @@ jobs:
           ck quarantine.rs '        None => return refuse("no journal for the quarantine this record belongs to"),' \
              '        None => {} // knife' \
              a_stale_record_can_be_archived_when_the_host_is_fully_restored
+          # edge block: the live block stops stripping Server / Via / X-Powered-By (E6 C1, S3)
+          ck site.rs 'import ez2_whitelabel\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\tencode zstd gzip' \
+             'import ez2_whitelabel\n\tencode zstd gzip' \
+             a_site_block_strips_server_headers
+          # edge block: the quarantine page stops stripping them (E6 C1, S3)
+          ck quarantine.rs '\t# ez2:quarantined\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n' \
+             '\t# ez2:quarantined\n' \
+             a_quarantined_block_strips_them_too
           # provision: escape sequences reach the approver's terminal (ebb36, #625 seg. 5 L1)
           ck provision.rs '        let unprintable = text.chars().any(char::is_control);' \
              '        let unprintable = false; // knife' \
