@@ -68,6 +68,8 @@ mod loginlink;
 #[cfg(unix)]
 mod maskcmd;
 #[cfg(unix)]
+mod noticecmd;
+#[cfg(unix)]
 mod opstop;
 #[cfg(unix)]
 mod opstore;
