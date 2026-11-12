@@ -1387,7 +1387,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      # Read-only (043dd L1 on the split and on the key change): the rust job is the only one that
+      # saves aibd-macos-latest-<hash>. A knife job used to save under the same key, and whichever
+      # job saved first fixed that cache for all three, though a knife job's target is only part of
+      # the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
+      - uses: actions/cache/restore@v4
         if: env.RUN == 'true'
         with:
           path: |
@@ -1395,13 +1399,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          # Own key (043dd L1 on the split): sharing the rust job's key meant whichever job saved
-          # first fixed that cache for all three; a knife job's target is only part of the rust job's.
-          # Fall back to the rust job's cache when this job has none yet.
-          key: aibd-cloudknives-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            aibd-cloudknives-macos-latest-
-            aibd-macos-latest-
+          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
@@ -3270,7 +3269,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      # Read-only (043dd L1 on the split and on the key change): the rust job is the only one that
+      # saves aibd-macos-latest-<hash>. A knife job used to save under the same key, and whichever
+      # job saved first fixed that cache for all three, though a knife job's target is only part of
+      # the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
+      - uses: actions/cache/restore@v4
         if: env.RUN == 'true'
         with:
           path: |
@@ -3278,13 +3281,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          # Own key (043dd L1 on the split): sharing the rust job's key meant whichever job saved
-          # first fixed that cache for all three; a knife job's target is only part of the rust job's.
-          # Fall back to the rust job's cache when this job has none yet.
-          key: aibd-cloudhostknives-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            aibd-cloudhostknives-macos-latest-
-            aibd-macos-latest-
+          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
