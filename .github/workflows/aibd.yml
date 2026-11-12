@@ -4547,6 +4547,10 @@ jobs:
           gk '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) {' \
              '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) && false { // knife' \
              no_record_or_no_goal_is_missing_and_may_block
+          # KG7 (review 1ced7-1113 M1) check-goal reads PR heads over the network in the Stop hook
+          gk '    !offline && cmd != "check-goal"' \
+             '    !offline && !cmd.is_empty() // knife' \
+             check_goal_never_reads_pr_heads
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

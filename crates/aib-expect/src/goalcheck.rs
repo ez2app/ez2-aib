@@ -147,8 +147,10 @@ pub fn check(
         return v;
     };
     v.prs = prs_named(&st.item);
-    let Some(goal) = st.goal.as_deref().and_then(norm_goal) else {
-        v.codes.push(if st.goal.is_some() {
+    // an empty goal is no goal (review 1ced7-1113 L1)
+    let named = st.goal.as_deref().filter(|g| !g.trim().is_empty());
+    let Some(goal) = named.and_then(norm_goal) else {
+        v.codes.push(if named.is_some() {
             "goal_unknown"
         } else {
             "goal_missing"
@@ -240,7 +242,9 @@ pub fn read_seat(now_dir: &Path, seat: &str) -> Result<(Option<Stage>, Vec<Histo
         return Err(format!("bad seat code {seat:?}"));
     }
     let rec = now_dir.join(format!("{seat}.json"));
-    let stage = if rec.exists() {
+    // a stat that fails is unreadable (rc 3), not a missing record (review L4)
+    let there = |p: &Path| p.try_exists().map_err(|e| format!("{}: {e}", p.display()));
+    let stage = if there(&rec)? {
         let t = crate::read_capped(&rec, crate::MAX_CARD_BYTES)
             .map_err(|e| format!("{}: {e}", rec.display()))?;
         let v: Value = serde_json::from_str(&t).map_err(|e| format!("{}: {e}", rec.display()))?;
@@ -249,7 +253,7 @@ pub fn read_seat(now_dir: &Path, seat: &str) -> Result<(Option<Stage>, Vec<Histo
         None
     };
     let hist = now_dir.join(format!("{seat}.history.jsonl"));
-    let history = if hist.exists() {
+    let history = if there(&hist)? {
         let t = crate::read_capped(&hist, crate::MAX_CARD_BYTES)
             .map_err(|e| format!("{}: {e}", hist.display()))?;
         parse_history(&t)
@@ -257,6 +261,12 @@ pub fn read_seat(now_dir: &Path, seat: &str) -> Result<(Option<Stage>, Vec<Histo
         Vec::new()
     };
     Ok((stage, history))
+}
+
+/// Whether a command may read PR heads over the network. `check-goal` runs
+/// in the Stop hook and never does, `--offline` or not.
+pub fn reads_pr_heads(cmd: &str, offline: bool) -> bool {
+    !offline && cmd != "check-goal"
 }
 
 /// A seat code: 1-16 ASCII lowercase letters or digits (never a path).

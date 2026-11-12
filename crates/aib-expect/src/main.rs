@@ -96,7 +96,7 @@ fn run(a: &Args) -> Result<u8, String> {
         _ => Default::default(),
     };
     // check-goal runs in the Stop hook: never a network call
-    let snap = if on("--offline") || a.cmd == "check-goal" {
+    let snap = if !ex::goalcheck::reads_pr_heads(&a.cmd, on("--offline")) {
         ex::Snapshot {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
         }

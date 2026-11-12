@@ -205,3 +205,92 @@ fn the_record_is_read_from_the_now_folder() {
         );
     }
 }
+
+#[test]
+fn an_empty_goal_is_missing_not_unknown() {
+    let ev = log(&[]);
+    for g in ["", "   "] {
+        let v = judge(&ev, Some(&stage(Some(g), None)), &[]);
+        assert_eq!(
+            (v.codes.clone(), v.rc()),
+            (vec!["goal_missing"], 4),
+            "{g:?}"
+        );
+    }
+}
+
+#[test]
+fn check_goal_never_reads_pr_heads() {
+    assert!(!reads_pr_heads("check-goal", false));
+    assert!(!reads_pr_heads("check-goal", true));
+    assert!(reads_pr_heads("show", false));
+    assert!(!reads_pr_heads("show", true));
+}
+
+// ---- the command itself: rc 0 / 2 / 3 as the Stop hook sees them
+
+const UID: &str = "proj-00aa11bb22cc33dd";
+
+/// A state root with an approved card (goal A1) and a now folder.
+fn cli_root(tag: &str) -> Tmp {
+    let t = Tmp::new(tag);
+    let dir = t.0.join("projects").join(UID);
+    fs::create_dir_all(dir.join("approved")).unwrap();
+    fs::create_dir_all(t.0.join("now")).unwrap();
+    let goals = ["A1 Windows / mac 一併可用"];
+    let card = json!({"schema": "aib-project-card/v1", "project_uid": UID,
+        "layers": {"constitution": {"approved": true, "goals": goals, "red_lines": []}}});
+    fs::write(dir.join("card.json"), card.to_string()).unwrap();
+    let g: Vec<String> = goals.iter().map(|s| s.to_string()).collect();
+    fs::write(
+        dir.join("approved")
+            .join(format!("{}.json", const_sha(&g, &[]))),
+        json!({"goals": goals, "red_lines": []}).to_string(),
+    )
+    .unwrap();
+    t
+}
+
+fn run_cli(t: &Tmp, seat: &str) -> (i32, String) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_aib-expect"))
+        .args([
+            "check-goal",
+            "--project",
+            UID,
+            "--seat",
+            seat,
+            "--now",
+            "1794405000",
+        ])
+        .arg("--state-root")
+        .arg(&t.0)
+        .arg("--now-dir")
+        .arg(t.0.join("now"))
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn the_command_answers_ok_unreadable_and_bad_seat() {
+    let t = cli_root("cli");
+    let rec = t.0.join("now").join("1ced7.json");
+    fs::write(&rec, r#"{"item":"做 #693","started_at":100,"goal":"a1"}"#).unwrap();
+    assert_eq!(run_cli(&t, "1ced7"), (0, "ok A1\n".into()));
+    // no record at all: missing (rc 4)
+    assert_eq!(run_cli(&t, "2240e").0, 4);
+    // a record that cannot be read: rc 3, the hook lets it pass
+    fs::write(&rec, "[").unwrap();
+    let (rc, out) = run_cli(&t, "1ced7");
+    assert_eq!(rc, 3, "{out}");
+    assert!(out.starts_with("expect_now_unreadable"), "{out}");
+    // evidence that cannot be read: rc 3 too
+    fs::write(&rec, r#"{"item":"x","started_at":100,"goal":"A1"}"#).unwrap();
+    fs::create_dir_all(t.0.join("projects").join(UID).join("evidence.jsonl")).unwrap();
+    assert_eq!(run_cli(&t, "1ced7").0, 3);
+    // a seat code that is a path: usage error (rc 2), nothing read
+    assert_eq!(run_cli(&t, "../x").0, 2);
+}
