@@ -21,7 +21,8 @@ pub struct Entry {
     #[serde(skip)]
     pub review: Option<Review>,
     /// 歷史那一行回報的主軸符合度(aib now 回報判斷時才有;算校正次數用)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// (parse_log 自己讀:舊寫法 "on"/"off" 不能讓整行解析失敗)
+    #[serde(skip)]
     pub track: Option<u8>,
 }
 
