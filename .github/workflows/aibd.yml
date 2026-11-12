@@ -699,6 +699,10 @@ jobs:
           ck mask.rs '        "model name" => Some(CPU_MODEL.into()),' \
              '        "model name" => Some(value.into()), // knife' \
              the_machine_is_not_named_in_cpuinfo
+          # mask: the platform template's appliance file is not on the list to remove (E6 S1)
+          ck mask.rs 'pub const PLATFORM_FILES: &[&str] = &["/etc/appliance.info"];' \
+             'pub const PLATFORM_FILES: &[&str] = &[]; // knife' \
+             no_platform_file_stays
           # mask: under /sys something nobody named is left readable
           ck mask.rs '            step.cover.push(path);' \
              '            step.descend.push(path); // knife' \
@@ -1996,6 +2000,10 @@ jobs:
           hk leakcheckcmd.rs '    if hide.is_some_and(|h| h.hide(&seen).1 > 0) {' \
              '    if unread.is_none() && hide.is_some_and(|h| h.hide(&seen).1 > 0) { // knife' \
              a_failed_check_that_names_the_host_is_a_leak
+          # site leakcheck: the time service's drop-ins under /usr/lib are not read (c477a S1 L1)
+          hk leakcheckcmd.rs '            "/usr/lib/systemd/timesyncd.conf.d ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ",' \
+             '            "/nowhere ", $r, "/usr/local/lib/systemd/timesyncd.conf.d ", // knife' \
+             a_drop_in_sorted_after_ours_is_read
           # roster sudoers: the action is not reached (c477a, #648 N2)
           hk rostercmd.rs '        ["sudoers", files @ ..] if !files.is_empty() => return sudoers(files, records),' \
              '        ["sudoers", files @ ..] if false => return sudoers(files, records), // knife' \
