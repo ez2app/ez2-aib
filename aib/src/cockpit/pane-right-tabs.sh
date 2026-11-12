@@ -364,6 +364,67 @@ except Exception:
 PANE_SELF_SCRIPT="$EZ2_COCKPIT_DIR/pane-right-tabs.sh"   # BF:碼換了自己重跑
 . "$EZ2_COCKPIT_DIR/pane-tick.sh"
 pane_tick_init
+# goal2 title-beat(2026-11-12,PLAN-goal2-titlebeat-abba §7):標題心跳改用 Rust 的 aib-title。
+#   title-beat.sh --once 每次 33 個 fork(一半是重新載入 cockpit-env.sh),每幀一次 = 閒置座艙 27% 的 fork。
+#   aib-title 一支做完同樣的事，標題字串仍由同一份 title/title_sample.py 算。
+#   找法只在這裡做一次、全用內建(零 fork):
+#     AIB_TITLE_BEAT 有設(測試替身)⇒ 舊路;AIB_TITLE_BIN 是可執行檔 ⇒ 用它;
+#     沒設 ⇒ ~/.ez2-aib/bin、~/.cargo/bin 的 aib-title(同 consent.py 找 aib-signlint 的順序,不走 PATH);
+#     都沒有(或 AIB_TITLE_BIN=off 這類不是絕對路徑執行檔的值)⇒ 舊路 title-beat.sh。
+#   跑不起來(連 3 幀 rc 126 或 >128)或檔不見了 ⇒ 中途改走舊路，見 title_beat_launch。
+TITLE_BIN=""
+if [ -z "${AIB_TITLE_BEAT:-}" ]; then
+  if [ -n "${AIB_TITLE_BIN+x}" ]; then
+    # 只認絕對路徑(同 cockpit-env.sh 的路徑紀律;相對路徑會跟著窗格 cwd 變)
+    case "$AIB_TITLE_BIN" in
+      /*) [ -f "$AIB_TITLE_BIN" ] && [ -x "$AIB_TITLE_BIN" ] && TITLE_BIN="$AIB_TITLE_BIN" ;;
+    esac
+  else
+    for _tb in "$HOME/.ez2-aib/bin/aib-title" "$HOME/.cargo/bin/aib-title"; do
+      if [ -f "$_tb" ] && [ -x "$_tb" ]; then TITLE_BIN="$_tb"; break; fi
+    done
+    unset _tb
+  fi
+fi
+TITLE_BIN_FAILS=0
+TITLE_BEAT_IS_BIN=0
+# 起一次標題心跳(背景)。上一幀已結束才會叫到這裡(呼叫端先 kill -0)。
+# 11-12(a63ab 審 aib-title L1):二進位在、但跑不起來 —— exec 失敗 rc 126/127、被訊號殺 rc>128
+#   (例:cp 蓋過舊檔,macOS 簽章快取不符每次 rc 137)—— 標題會靜默凍住。所以先收上一幀的 rc:
+#   連 3 幀 rc 126 或 >128 就改走 title-beat.sh,並在 state 夾的 aib-title-fallback.log 與 stderr 各記一行。
+#   取樣本身失敗(rc 1..125)兩條路一樣會失敗，不算。wait 是內建、上一幀已結束 ⇒ 不卡、不多 fork。
+title_beat_launch() {
+  local _trc
+  if [ "$TITLE_BEAT_IS_BIN" = 1 ] && [ -n "${TITLE_BEAT_PID:-}" ]; then
+    wait "$TITLE_BEAT_PID" 2>/dev/null
+    _trc=$?
+    # 127 不算:wait 對「已不是子行程」也回 127,算進去會讓好好的二進位被換掉;刪檔改由下面的 -x 接
+    if [ "$_trc" = 126 ] || [ "$_trc" -gt 128 ]; then
+      TITLE_BIN_FAILS=$((TITLE_BIN_FAILS + 1))
+    else
+      TITLE_BIN_FAILS=0
+    fi
+    if [ "$TITLE_BIN_FAILS" -ge 3 ]; then
+      printf 'aib-title rc=%s 連 %s 次，改走 title-beat.sh(%s)\n' "$_trc" "$TITLE_BIN_FAILS" "$TITLE_BIN" \
+        >>"${EZ2_COCKPIT_STATE_DIR:-${TMPDIR:-/tmp}}/aib-title-fallback.log" 2>/dev/null || :
+      printf 'aib-title rc=%s 連 %s 次，改走 title-beat.sh(%s)\n' "$_trc" "$TITLE_BIN_FAILS" "$TITLE_BIN" >&2
+      TITLE_BIN=""
+    fi
+  fi
+  # 檔被刪 / 改成不可執行 ⇒ 這一幀就走舊路(test 是內建，零 fork)
+  [ -n "$TITLE_BIN" ] && { [ -f "$TITLE_BIN" ] && [ -x "$TITLE_BIN" ] || TITLE_BIN=""; }
+  if [ -n "$TITLE_BIN" ]; then
+    # aib-title 自己拿掉 TMUX;單一指令放背景 = 1 個 fork
+    "$TITLE_BIN" --once >/dev/null 2>&1 &
+    TITLE_BEAT_IS_BIN=1
+  else
+    env -u TMUX bash "${AIB_TITLE_BEAT:-$EZ2_COCKPIT_DIR/title/title-beat.sh}" \
+      --once >/dev/null 2>&1 || true &
+    TITLE_BEAT_IS_BIN=0
+  fi
+  TITLE_BEAT_PID=$!
+}
+# title_beat_launch end
 # ★★ 視窗標題心跳(09-14,the maintainer「標題顯示不正確」):title-beat.sh --once 原本只掛在
 #   左欄(pane-left-fleet.sh)與下欄(pane-bottom-tabs.sh)的迴圈裡,而 09-05 起
 #   panes.py 預設只建 hub+right —— 於是預設座艙裡**沒有任何行程在更新標題**,
@@ -486,9 +547,7 @@ EOF
   if [ -n "${TITLE_BEAT_PID:-}" ] && kill -0 "$TITLE_BEAT_PID" 2>/dev/null; then
     :
   else
-    env -u TMUX bash "${AIB_TITLE_BEAT:-$EZ2_COCKPIT_DIR/title/title-beat.sh}" \
-      --once >/dev/null 2>&1 || true &
-    TITLE_BEAT_PID=$!
+    title_beat_launch
   fi
   # 10-24(@044e0 本機效能):captains-ctl --sync 一次約 50 支行程,以前每幀(5 秒)跑 ⇒ 光這項每秒 10 支 exec。
   #   它是冪等回填(席位檔 → 窗選項,沒變不寫檔)⇒ 只在席位檔 / 席位夾比上次同步新,或滿 CAPTAINS_SYNC_MAX_S
