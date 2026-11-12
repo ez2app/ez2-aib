@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-cloud-host site verify [<code>] [--records dir] [--thin vg/pool] [--json]` — the
 //! passive half (4.4.1 §12; check list: c477a). Reads host files and runs read-only
-//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S14), hands what it saw to `aib_cloud::verify`, prints the
+//! commands with a timeout each (host H01–H10, H12–H15; per site S00–S06, S10–S14, S16), hands what it saw to `aib_cloud::verify`, prints the
 //! verdicts. Nothing here writes or opens a connection; `--active` checks are a later
-//! slice. One check enters a site's container: S14 asks its scheduler timer's state and
+//! slice. Two checks enter a site's container: S14 asks its scheduler timer's state and
 //! lists the site software's scheduled events as the site's own user, without the
-//! customer's plugins and theme, each with a time limit and a cap on what is read. Nothing
-//! is run inside a quarantined container: S14 is left out for one.
+//! customer's plugins and theme, each with a time limit and a cap on what is read; S16
+//! tests whether a platform template's own files are there (names only). Nothing is run
+//! inside a quarantined container: S14 and S16 are left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -94,6 +95,16 @@ pub(crate) fn s14_check(
         .ok();
     let events = runner.run(&wp(spec, &CRON_LIST)).ok();
     verify::s14_wp_cron(now, red_after, shown.as_deref(), events.as_deref())
+}
+
+/// S16 for one site: whether a file a platform template leaves (`mask::PLATFORM_FILES`)
+/// is inside its container, judged by `aib_cloud::verify::s16_no_platform_file`. Only
+/// names are tested; nothing is read.
+pub(crate) fn s16_check(runner: &mut impl Runner, ct: u32) -> CheckResult {
+    let mut args: Vec<&str> = vec!["sh", "-c", verify::S16_SCRIPT, "sh"];
+    args.extend(aib_cloud::mask::PLATFORM_FILES);
+    let listing = runner.run(&in_ct(ct, &args)).ok();
+    verify::s16_no_platform_file(listing.as_deref())
 }
 
 /// Run a read-only command; `None` when it could not be run, timed out or failed.
@@ -367,6 +378,8 @@ pub(crate) fn site_checks(
             crate::probe::unix_now(),
             verify::WP_CRON_OVERDUE_RED,
         ));
+        // S16 enters the container too: not a quarantined one
+        results.push(s16_check(&mut CtReader, spec.ct));
     }
     (name, Some(spec.ct), results)
 }
@@ -642,6 +655,41 @@ mod tests {
             };
             answer.map(str::to_owned).map_err(|()| "failed".to_owned())
         }
+    }
+
+    #[test]
+    fn s16_asks_only_whether_the_platform_files_are_there() {
+        struct Ls(Result<&'static str, ()>, Vec<Vec<String>>);
+        impl Runner for Ls {
+            fn run(&mut self, argv: &[String]) -> Result<String, String> {
+                self.1.push(argv.to_vec());
+                self.0.map(str::to_owned).map_err(|()| "failed".to_owned())
+            }
+        }
+        let mut ct = Ls(Ok("ez2-s16-end\n"), Vec::new());
+        assert_eq!(s16_check(&mut ct, 131).outcome, Outcome::Green);
+        let argv = &ct.1[0];
+        assert_eq!(
+            &argv[..8],
+            [
+                "pct",
+                "exec",
+                "131",
+                "--",
+                "sh",
+                "-c",
+                verify::S16_SCRIPT,
+                "sh"
+            ]
+        );
+        assert_eq!(&argv[8..], aib_cloud::mask::PLATFORM_FILES);
+        ct.0 = Ok("/etc/appliance.info\nez2-s16-end\n");
+        assert_eq!(
+            s16_check(&mut ct, 131).outcome,
+            Outcome::Red("platform_file")
+        );
+        ct.0 = Err(());
+        assert_eq!(s16_check(&mut ct, 131).outcome, Outcome::Unknown("unread"));
     }
 
     fn spec() -> aib_cloud::site::SiteSpec {

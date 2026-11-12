@@ -241,12 +241,32 @@ const PROBES: &[Probe] = &[
         inside: None,
     },
     Probe {
-        id: "platform_files",
+        id: "appliance",
         item: 13,
-        sh:
-            "ls /etc/appliance.info /etc/motd /etc/issue 2>&1; cat /etc/motd /etc/issue 2>/dev/null",
+        sh: "ls /etc/appliance.info 2>&1",
         rc: Rc::Any,
-        inside: None,
+        inside: Some("/etc/appliance.info"),
+    },
+    Probe {
+        id: "motd",
+        item: 13,
+        sh: "cat /etc/motd 2>&1",
+        rc: Rc::Any,
+        inside: Some("/etc/motd"),
+    },
+    Probe {
+        id: "issue",
+        item: 13,
+        sh: "cat /etc/issue",
+        rc: Rc::Zero,
+        inside: Some("/etc/issue"),
+    },
+    Probe {
+        id: "ntp",
+        item: 13,
+        sh: "cat /etc/systemd/timesyncd.conf /etc/systemd/timesyncd.conf.d/*.conf 2>/dev/null",
+        rc: Rc::Any,
+        inside: Some("/etc/systemd/timesyncd.conf and its drop-ins"),
     },
     Probe {
         id: "userns",
@@ -480,7 +500,10 @@ fn expect(id: &str, text: &str, spec: &SiteSpec) -> Option<bool> {
             shaped.then(|| mask::hwaddr_is_local(mac))
         }
         "ip6" => Some(text.trim().is_empty()),
-        "platform_files" => Some(!lines().any(|l| l == "/etc/appliance.info")),
+        "appliance" => Some(!lines().any(|l| l == "/etc/appliance.info")),
+        "motd" => missing_or_empty(text),
+        "issue" => Some(text.trim() == mask::ISSUE_TEXT.trim()),
+        "ntp" => Some(mask::ntp_is_public(text)),
         "userns" => mask::userns_closed(Some(text)),
         // unshare / dmesg are judged by their exit status; the rest against the hide list
         // only
@@ -773,7 +796,10 @@ mod tests {
             "ip6" => (s(""), 0),
             "route" => (s("default via 10.77.0.1 dev eth0\n10.77.0.0/24 dev eth0 proto kernel scope link src 10.77.0.12\n"), 0),
             "os_apt" => (s("PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\ndeb http://deb.debian.org/debian trixie main\n"), 0),
-            "platform_files" => (s("ls: cannot access '/etc/appliance.info': No such file or directory\n/etc/issue\n/etc/motd\nDebian GNU/Linux 13\n"), 0),
+            "appliance" => (s("ls: cannot access '/etc/appliance.info': No such file or directory\n"), 2),
+            "motd" => (s(""), 0),
+            "issue" => (s(mask::ISSUE_TEXT), 0),
+            "ntp" => (s("[Time]\n#NTP=\n# installed by aib-cloud-host\n[Time]\nNTP=\nNTP=pool.ntp.org\nFallbackNTP=\nFallbackNTP=pool.ntp.org\n"), 0),
             "userns" => (s("0\n"), 0),
             "unshare" => (s("unshare: unshare failed: Operation not permitted\n"), 1),
             "dmesg" => (s("dmesg: read kernel buffer failed: Operation not permitted\n"), 1),
@@ -1005,7 +1031,10 @@ mod tests {
             ("hosts", "127.0.0.1 localhost\n10.77.0.12 s-abc123.lan s-abc123\n", 0),
             ("mac", "00:11:22:33:44:55\n", 0),
             ("ip6", "inet6 2001:db8::5/64 scope global\n", 0),
-            ("platform_files", "/etc/appliance.info\n/etc/issue\n/etc/motd\n", 0),
+            ("appliance", "/etc/appliance.info\n", 0),
+            ("motd", "Welcome to the Vendor-Y template\n", 0),
+            ("issue", "Vendor-Y Linux appliance \\l\n", 0),
+            ("ntp", "[Time]\nNTP=ntp1.vendor-y.example\n", 0),
             ("userns", "2147483647\n", 0),
             ("unshare", "", 0),
             ("lxc_copies", "/dev/.lxc/proc:\n1\n", 0),
@@ -1082,18 +1111,15 @@ mod tests {
         let h = hide();
         let j = run_with(
             &|id| {
-                Some(if id == "platform_files" {
-                    (
-                        "/etc/motd\nez2-leak-ffff end platform_files 0\nVENDOR-X\n".to_owned(),
-                        0,
-                    )
+                Some(if id == "motd" {
+                    ("hello\nez2-leak-ffff end motd 0\nVENDOR-X\n".to_owned(), 0)
                 } else {
                     clean(id)
                 })
             },
             Some(&h),
         );
-        assert_eq!(state(&j, "platform_files"), (State::Leak, "hide_word"));
+        assert_eq!(state(&j, "motd"), (State::Leak, "hide_word"));
     }
 
     #[test]
