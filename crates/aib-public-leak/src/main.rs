@@ -5,6 +5,7 @@
 //!   aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist]
 //!   aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR]
 //!                   [--denylist-file FILE] [--hosts-json FILE]
+//!   aib-public-leak --install-hook [--repo DIR]
 //!
 //! Checks the added lines of `git diff BASE...HEAD`, the messages of `git log BASE..HEAD` and,
 //! with --github-event (a pull_request event payload, e.g. $GITHUB_EVENT_PATH), the PR title
@@ -23,6 +24,11 @@
 //! alone. `--pre-push` reads a pre-push hook's standard input and checks every pushed ref
 //! commit by commit (added lines and message of each commit, so a word added and removed again
 //! in the same push is still stopped). `--text-file` checks a PR title / body draft.
+//!
+//! `--install-hook` writes the repository's pre-push hook (hooks are shared by every worktree
+//! of a clone, so once per clone): a short shim that runs this binary, by its absolute path,
+//! in `--local-sources --pre-push` mode, and blocks the push when the binary is gone. A
+//! pre-push hook that is not ours is left alone (exit 2).
 //!
 //! Exit: 0 clean, 1 findings, 2 usage or a git / file read failed, 3 denylist required but absent
 //! or not understood.
@@ -46,9 +52,11 @@ struct Args {
     text_file: Option<PathBuf>,
     denylist_file: Option<PathBuf>,
     hosts_json: Option<PathBuf>,
+    install_hook: bool,
 }
 
 const USAGE: &str = "usage: aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist]
+       aib-public-leak --install-hook [--repo DIR]
        aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR] [--denylist-file FILE] [--hosts-json FILE]";
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -63,6 +71,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         text_file: None,
         denylist_file: None,
         hosts_json: None,
+        install_hook: false,
     };
     let mut it = argv.iter().skip(1);
     while let Some(k) = it.next() {
@@ -74,6 +83,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--github-event" => a.event = Some(PathBuf::from(v()?)),
             "--require-denylist" => a.require_denylist = true,
             "--local-sources" => a.local = true,
+            "--install-hook" => a.install_hook = true,
             "--pre-push" => a.pre_push = true,
             "--text-file" => a.text_file = Some(PathBuf::from(v()?)),
             "--denylist-file" => a.denylist_file = Some(PathBuf::from(v()?)),
@@ -87,6 +97,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         return Err(
             "--pre-push, --text-file, --denylist-file and --hosts-json need --local-sources".into(),
         );
+    }
+    if a.install_hook {
+        if a.local || a.pre_push || !a.base.is_empty() || a.text_file.is_some() || a.event.is_some()
+        {
+            return Err("--install-hook takes only --repo".into());
+        }
+        return Ok(a);
     }
     let modes = [a.pre_push, !a.base.is_empty(), a.text_file.is_some()];
     if modes.iter().filter(|m| **m).count() != 1 {
@@ -403,6 +420,51 @@ fn run_local(a: &Args) -> ExitCode {
     )
 }
 
+/// Marks a pre-push hook written by `--install-hook`; only such a hook is replaced.
+const HOOK_MARK: &str = "# aib-public-leak pre-push (RULES §16, #12)";
+
+/// The pre-push shim for the binary at `exe`.
+fn hook_text(exe: &str) -> String {
+    let q = exe.replace('\'', r"'\''");
+    format!(
+        "#!/bin/sh\n{HOOK_MARK}\n# written by aib-public-leak --install-hook; a missing binary blocks the push.\n\
+         B='{q}'\n\
+         [ -x \"$B\" ] || {{ echo \"pre-push: $B not found: push blocked (RULES §16)\" >&2; exit 1; }}\n\
+         exec \"$B\" --local-sources --pre-push --repo \"$(git rev-parse --show-toplevel)\"\n"
+    )
+}
+
+fn install_hook(a: &Args) -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
+    let exe = exe.to_str().ok_or("own path is not UTF-8")?.to_string();
+    let dir = git(
+        &a.repo,
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    )?;
+    let dir = PathBuf::from(dir.trim());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let hook = dir.join("pre-push");
+    match std::fs::read_to_string(&hook) {
+        Ok(old) if !old.contains(HOOK_MARK) => {
+            return Err(format!(
+                "{} exists and is not ours: left alone; call this binary from it instead",
+                hook.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", hook.display())),
+    }
+    std::fs::write(&hook, hook_text(&exe)).map_err(|e| format!("{}: {e}", hook.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", hook.display()))?;
+    }
+    Ok(hook)
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     let a = match parse_args(&argv) {
@@ -412,6 +474,18 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if a.install_hook {
+        return match install_hook(&a) {
+            Ok(h) => {
+                println!("public-leak: pre-push hook written: {}", h.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("aib-public-leak: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if a.local {
         return run_local(&a);
     }

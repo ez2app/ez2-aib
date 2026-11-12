@@ -254,3 +254,47 @@ fn local_options_need_local_sources_and_one_mode() {
         assert_eq!(o.status.code(), Some(2), "{args:?}");
     }
 }
+
+#[test]
+fn install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone() {
+    let (d, _) = repo("hook");
+    let bin = env!("CARGO_BIN_EXE_aib-public-leak");
+    let install = || {
+        Command::new(bin)
+            .args(["--install-hook", "--repo"])
+            .arg(&d)
+            .output()
+            .expect("runs")
+    };
+    let o = install();
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let hook = d.join(".git/hooks/pre-push");
+    let body = std::fs::read_to_string(&hook).expect("hook written");
+    assert!(body.contains(bin) && body.contains("--pre-push"), "{body}");
+    assert_eq!(install().status.code(), Some(0), "ours is replaced");
+    // a worktree of the clone uses the same hook
+    let wt = d.with_extension("wt");
+    git(
+        &d,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "w",
+            wt.to_str().expect("path"),
+        ],
+    );
+    let p = git(
+        &wt,
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    );
+    assert_eq!(PathBuf::from(p).join("pre-push"), hook);
+    std::fs::write(&hook, "#!/bin/sh\nexit 0\n").expect("write");
+    let o = install();
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert_eq!(
+        std::fs::read_to_string(&hook).expect("read"),
+        "#!/bin/sh\nexit 0\n"
+    );
+}
