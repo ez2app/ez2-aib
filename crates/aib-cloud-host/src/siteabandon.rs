@@ -631,6 +631,8 @@ mod tests {
             secrets: root.join("secrets"),
             site_admins: root.join("site-admins"),
             setup: root.join("ez2-site-setup"),
+            package: root.join("wp-package"),
+            package_conf: root.join("wp-package.conf"),
             records: root.join("records"),
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
