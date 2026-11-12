@@ -172,7 +172,6 @@ pub fn seal(plan: &mut Value, fingerprint: &str, version: &str) -> Result<(), St
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// The plan without the fields [`seal`] added: what an apply recomputes the hash over.
 pub fn unsealed(plan: &Value) -> Value {
     let mut p = plan.clone();
@@ -186,7 +185,6 @@ pub fn unsealed(plan: &Value) -> Value {
 
 // ------------------------------------------------------------------ journal
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// What a journal line is written to: the file, or a recorder in tests.
 pub trait Sink {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()>;
@@ -202,7 +200,6 @@ impl Sink for File {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// One whole line, then a sync. Returns only after both: the caller may act on `Ok`.
 pub fn write_line<S: Sink>(sink: &mut S, entry: &Entry) -> Result<(), String> {
     let mut line = entry.to_json().to_string();
@@ -229,7 +226,6 @@ pub fn read_journal(path: &Path) -> Result<(Vec<Entry>, bool), String> {
     op::parse_journal(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Whether `next` may follow `existing`: the whole history with it must replay.
 pub fn may_append(existing: &[Entry], next: &Entry) -> Result<(), String> {
     let mut all = existing.to_vec();
@@ -237,17 +233,19 @@ pub fn may_append(existing: &[Entry], next: &Entry) -> Result<(), String> {
     op::replay(&all).map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn sync_dir(dir: &Path) -> Result<(), String> {
     File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Append `entry` to its operation's journal under `dir`, after checking it follows what
 /// is on disk. A cut-short last line is removed first (it was never acted on, and the new
 /// line must not be glued to it).
+///
+/// The caller must hold the host lock ([`acquire`]): this reads, checks and appends
+/// without a lock of its own, so two processes appending to one journal would both
+/// write line n+1 and the whole history would no longer replay (FOLLOWUP-635 L2).
 pub fn append_entry(dir: &Path, entry: &Entry) -> Result<(), String> {
     entry.validate().map_err(|e| e.to_string())?;
     let path = journal_path(dir, &entry.op)?;
@@ -401,7 +399,6 @@ pub fn liveness(proc_root: &Path, holder: &Holder) -> Liveness {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 pub fn holder_json(h: &Holder) -> Value {
     json!({ "op": h.op, "pid": h.pid, "start_time": h.start_time, "boot_id": h.boot_id })
 }
@@ -444,7 +441,6 @@ impl LockPaths {
         })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
     fn guard(&self) -> PathBuf {
         let mut g = self.lock.clone().into_os_string();
         g.push(".guard");
@@ -452,7 +448,6 @@ impl LockPaths {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// How the lock was got.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Got {
@@ -462,7 +457,6 @@ pub enum Got {
     TookOver(Holder),
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn read_boot_id(path: &Path) -> Result<String, String> {
     let id = fs::read_to_string(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
@@ -502,7 +496,6 @@ pub fn holder_liveness(p: &LockPaths, holder: &Holder) -> Liveness {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Run `f` with the guard file's exclusive lock held.
 fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let g = OpenOptions::new()
@@ -519,7 +512,6 @@ fn guarded<T>(p: &LockPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T,
     r
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
     let mut f = OpenOptions::new()
         .create_new(true)
@@ -591,7 +583,6 @@ Make sure no aib-cloud-host operation is running (`pgrep -a aib-cloud-host`), ru
 for the targets you are about to touch, then move the lock file aside (keep it): \
 mv /var/lib/aib-cloud/host.lock /var/lib/aib-cloud/host.lock.damaged";
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Take the host lock for operation `op`, as process `pid`. `Busy` is an error: the caller
 /// waits or gives up and writes nothing.
 pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
@@ -652,7 +643,6 @@ pub fn acquire(p: &LockPaths, op: &str, pid: u32) -> Result<Got, String> {
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // B1: the apply step that writes is not wired yet
 /// Give the lock back. Only the holder may: the file is read back and must name `op` and
 /// `pid`, otherwise nothing is removed.
 pub fn release(p: &LockPaths, op: &str, pid: u32) -> Result<(), String> {
