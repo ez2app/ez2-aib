@@ -306,7 +306,7 @@ def legacy_line_of(item, pct, state="busy", color=False):
 
 
 def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False,
-          review=None):
+          review=None, goal=None):
     """啟動時間:加 new(aib now --new)才重新計時;改主項目文字、步數、狀態都沿用(the maintainer 10-10「--new 才重新計時」——
     以前一改字就當新項目,a seat 自己改字就把 16:04 洗成 17:46)。上一筆是【我很閒】(--clear)⇒ 接的一定是新工作,
     自動重新計時。--started 可更正。舊紀錄沒有這欄 ⇒ 用它上次回報的時間(最早量得到的),不是「現在」。"""
@@ -328,13 +328,22 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
         rec["review"] = dict(review, at=at)
     elif same and isinstance(prev.get("review"), dict):
         rec["review"] = prev["review"]
+    # 目標(RULES §17,Andy 11-12 21:2x;DECISION-goalcheck-gate-a63ab-1112):--goal A8 / E6 / none。
+    # 這次有給 ⇒ 記上時間;沒給 ⇒ 同一個主軸沿用上一筆。只記錄，對不對表由 Rust aib-expect check-goal 判
+    if goal:
+        rec["goal"] = goal
+        rec["goal_at"] = at
+    elif same and prev.get("goal"):
+        rec["goal"] = prev["goal"]
+        rec["goal_at"] = prev.get("goal_at")
     # 這個階段什麼時候完成的(043dd #714 L3,a63ab 裁):一個階段只要求回報一次判斷 ——
     # 同一主軸停在【等回應】巡好幾回合，不必每回合重寫;換主軸 / 從未完成變完成才重新要求
     if stage_done(rec):
         rec["done_at"] = prev.get("done_at") if same and stage_done(prev) and prev.get("done_at") else at
     changed_review = bool(review) and {k: (prev.get("review") or {}).get(k) for k in ("track", "why", "idea")} != review
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
-    if changed_review or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
+    changed_goal = bool(goal) and goal != prev.get("goal")
+    if changed_review or changed_goal or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
         append_history(d, code, rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -423,6 +432,22 @@ def review_at(rec):
         return 0
 
 
+_GOAL = re.compile(r"^(?:([AE])(\d{1,2})([a-z]?)|none)$", re.IGNORECASE)
+
+
+def parse_goal(goal, why=None):
+    """--goal:期望值表 A1–A99(可帶小寫尾碼，例 A4b)、開發計畫 E1–E99,或 none(雜務:回 dm、交接、審查;要配 --why)。
+    沒給 ⇒ (None, True);合法 ⇒ (正規化後的字, True);其他 ⇒ (None, False)。只看格式，表裡有沒有由 check-goal 判。"""
+    if goal is None:
+        return None, True
+    m = _GOAL.match(goal.strip())
+    if not m:
+        return None, False
+    if not m.group(1):
+        return ("none", True) if _clean_review(why) else (None, False)
+    return "%s%d%s" % (m.group(1).upper(), int(m.group(2)), m.group(3).lower()), True
+
+
 def parse_review(track, why, idea):
     """三個都沒給 ⇒ (None, True);三個齊、track 合法、字不空 ⇒ (dict, True);其他 ⇒ (None, False)。"""
     if track is None and why is None and idea is None:
@@ -451,6 +476,8 @@ def append_history(d, code, rec):
     row = {"item": rec["item"], "started_at": rec["started_at"], "seen": rec["at"]}
     if isinstance(rec.get("review"), dict) and rec["review"].get("at") == rec["at"]:
         row["track"] = rec["review"].get("track")   # 這次有回報判斷 ⇒ 記符合度(aib-plan 算校正次數)
+    if rec.get("goal"):
+        row["goal"] = rec["goal"]   # 開始那筆沒有、後來才有 ⇒ check-goal 判「事後才補」(goal_late)
     line = json.dumps(row, ensure_ascii=False)
     try:
         with open(path, "a", encoding="utf-8") as fh:
@@ -994,6 +1021,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--track", metavar="0-100", default=None, help=T("aib.now.help.track", min=ON_TRACK_MIN))
     ap.add_argument("--why", default=None, help=T("aib.now.help.why"))
     ap.add_argument("--idea", default=None, help=T("aib.now.help.idea"))
+    ap.add_argument("--goal", metavar="A8|E6|none", default=None, help=T("aib.now.help.goal"))
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
@@ -1173,12 +1201,16 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     if not ok:
         err.write("aib now: %s\n" % T("aib.now.review_bad", min=ON_TRACK_MIN))
         return 2
+    goal, ok = parse_goal(args.goal, args.why)
+    if not ok:
+        err.write("aib now: %s\n" % T("aib.now.goal_bad"))
+        return 2
     new = args.new
     if not new and started is None and auto_new(read(code, state_root=state_root), item):
         new = True
         err.write("aib now: %s\n" % T("aib.now.auto_new"))
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
-                new=new, review=review)
+                new=new, review=review, goal=goal)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
     nudge = dm_stale_nudge(code) if state_root is None else ""
     if nudge:
