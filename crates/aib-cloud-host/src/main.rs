@@ -71,6 +71,8 @@ mod sitelive;
 #[cfg(unix)]
 mod siteremovecmd;
 #[cfg(unix)]
+mod siteremovelic;
+#[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]
 mod speccmd;
