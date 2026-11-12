@@ -14,7 +14,8 @@ the maintainer:「把一開席之後每一個階段任務完成,就必需程式�
                  更新過;沒有 ⇒ rc 2 擋下,stderr 寫要跑的那一行。純聊天(本回合零工具)不擋。
 
 判斷(Andy 11-12 13:3x):紀錄是「階段完成」(步數做滿 /【等回應】/【等你決定】,seat_now.stage_done)
-                 ⇒ 還要本回合用 `aib now ... --track 0~100 --why ... --idea ...` 回報判斷(跟主軸的符合度、
+                 而這個階段完成後還沒回報過判斷(seat_now.review_due;同一階段只要一次,043dd #714 L3)
+                 ⇒ 要用 `aib now ... --track 0~100 --why ... --idea ...` 回報判斷(跟主軸的符合度、
                  為什麼這麼做、主人沒想到的建議),沒有 ⇒ 一樣 rc 2(aib.nowgate.review)。
 
 「階段完成」怎麼認:Stop 只在 AI 把話交回給人時觸發 —— 那正是一個段落結束、要回報的時刻;
@@ -371,7 +372,7 @@ def decide(payload):
         # Andy 11-12 13:3x:每個階段完成(步數做滿 /【等回應】/【等你決定】)交回前，一定要回報「判斷」:
         # 有沒有偏離主軸(--track)、為什麼這麼做(--why)、主人沒想到的建議(--idea);要本回合寫的
         import seat_now
-        if seat_now.stage_done(rec) and seat_now.review_at(rec) < since:
+        if seat_now.review_due(rec):
             _note("BLOCK-REVIEW @%s at=%s since=%s" % (code, at, since))
             return True, T("aib.nowgate.review", code=code, line=_shown(code))
         return False, "本回合已更新 aib now"

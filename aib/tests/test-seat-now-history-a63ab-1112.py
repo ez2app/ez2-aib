@@ -62,6 +62,27 @@ class History(unittest.TestCase):
         self.assertLessEqual(len(r), 3 + 10)
         self.assertEqual(r[-1]["item"], "項目 29")
 
+    def test_trim_survives_broken_utf8(self):
+        """043dd #714 L1:歷史檔有半個中文字 + 剛好超量 ⇒ 照裁，aib now 不失敗。"""
+        old = (seat_now.HISTORY_MAX_BYTES, seat_now.HISTORY_KEEP)
+        seat_now.HISTORY_MAX_BYTES, seat_now.HISTORY_KEEP = 200, 2
+        self.addCleanup(lambda: (setattr(seat_now, "HISTORY_MAX_BYTES", old[0]),
+                                 setattr(seat_now, "HISTORY_KEEP", old[1])))
+        d = seat_now.now_dir(self.root)
+        os.makedirs(d, exist_ok=True)
+        with open(seat_now.history_path("c0de1", state_root=self.root), "wb") as fh:
+            fh.write(b"\xe5\xa5\n" * 120)
+        rec = self.w("做 D", 1, 4000)
+        self.assertEqual(rec["item"], "做 D")
+        rows = self.rows_lenient()
+        self.assertEqual(rows[-1]["item"], "做 D")
+        with open(seat_now.history_path("c0de1", state_root=self.root), "rb") as fh:
+            self.assertLessEqual(len(fh.read().splitlines()), 2, "照裁到 HISTORY_KEEP")
+
+    def rows_lenient(self):
+        with open(seat_now.history_path("c0de1", state_root=self.root), encoding="utf-8", errors="replace") as fh:
+            return [json.loads(x) for x in fh if x.strip().startswith("{")]
+
     def test_unwritable_history_does_not_break_now(self):
         d = seat_now.now_dir(self.root)
         os.makedirs(os.path.join(d, "c0de1" + seat_now.HISTORY_SUFFIX))  # 擋住：同名是資料夾
@@ -131,6 +152,21 @@ class Review(unittest.TestCase):
         self.assertEqual(e, "")
         self.assertEqual(self.rec()["started_at"], st0)
 
+    def test_auto_new_review_samples_043dd(self):
+        """043dd #714 M1:本席今天真的 5 組同主軸前後句,都不該當成換題;真的換題仍要抓到。"""
+        same = [("等 preview.5 tag 後重跑 #708", "#708 ci 重跑中(43142969172)"),
+                ("核對 preview.5 發版說明", "p5 說明核對已交;#708 等 CI + 封版"),
+                ("審 #714 新頭 20a37a5f", "審 #714 最新頭 cd8b3ac7"),
+                ("審 #714(lin-macmini 跑測試 + 刀中)", "審 #714 新頭 20a37a5f(lin-macmini 實跑中)"),
+                ("一天回顧已交 f1fae;等叫交接 + preview.5 tag", "交接完成 verify 9/9;等 preview.5 tag 後重跑 #708")]
+        for a, b in same:
+            self.assertFalse(seat_now.auto_new({"item": a}, b), (a, b))
+        self.assertTrue(seat_now.auto_new({"item": "席位接續 v2 決定已寫"}, "主機發熱三條修法"))
+        self.assertTrue(seat_now.auto_new({"item": "審 #714"}, "主機發熱三條修法 #720"))
+        # 各條規則單獨要咬得到
+        self.assertFalse(seat_now.auto_new({"item": "合 #9"}, "審查 #9 完成"), "同一張 #PR")
+        self.assertFalse(seat_now.auto_new({"item": "審 cd8b3ac7d"}, "審 20a37a5fe"), "頭碼不算字")
+
     def test_similarity_matches_aib_plan(self):
         # 跟 crates/aib-plan/src/mainline.rs 的測試同一組數字
         self.assertGreater(seat_now.similarity("aib-plan 主軸兩行", "aib-plan 主軸兩行已裝"), 0.6)
@@ -144,6 +180,30 @@ class Review(unittest.TestCase):
                          [0, 70, 100, 85, 9, 100, 0])
         for bad in ("101", "-5", "", None, "7.5", "x"):
             self.assertIsNone(seat_now.parse_track(bad), bad)
+
+    def test_review_once_per_stage_and_history_only_on_change(self):
+        """043dd #714 L3(a63ab 裁):同一階段只要一次判斷;判斷沒變不寫歷史(校正次數不被巡次灌大)。"""
+        def hist():
+            return [json.loads(x) for x in open(seat_now.history_path("c0de1", state_root=self.root),
+                                                encoding="utf-8")]
+        self.now("做 E", "4/4", "--state", "reply", "--track", "80", "--why", "w", "--idea", "i")
+        r1 = self.rec()
+        self.assertFalse(seat_now.review_due(r1))
+        n = len(hist())
+        self.now("做 E", "4/4", "--state", "reply")                        # 巡一回合，沒重寫判斷
+        r2 = self.rec()
+        self.assertFalse(seat_now.review_due(r2), "同一階段不必重寫")
+        self.assertEqual(r2["done_at"], r1["done_at"])
+        self.now("做 E", "4/4", "--state", "reply", "--track", "80", "--why", "w", "--idea", "i")
+        self.assertEqual(len(hist()), n, "判斷沒變 ⇒ 不寫歷史")
+        self.now("做 E", "4/4", "--state", "reply", "--track", "60", "--why", "w", "--idea", "i")
+        self.assertEqual(len(hist()), n + 1)
+        import time
+        t = int(time.time())
+        seat_now.write("c0de1", "做 E", 2, 5, state_root=self.root, now=t + 10)                  # 回到做事中
+        rec = seat_now.write("c0de1", "做 E", 5, 5, state="reply", state_root=self.root, now=t + 20)  # 新的一次完成
+        self.assertEqual(rec["done_at"], t + 20)
+        self.assertTrue(seat_now.review_due(rec), "新的一次完成 ⇒ 要再回報")
 
     def test_stage_done(self):
         self.assertTrue(seat_now.stage_done({"steps_done": 3, "steps_total": 3, "state": "busy"}))

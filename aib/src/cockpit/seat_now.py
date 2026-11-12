@@ -323,12 +323,18 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
            "state": state if state in SETTABLE_STATES else "busy",
            "started_at": int(started_at), "at": at, "code": code}
     # 判斷(Andy 11-12 13:3x):--track / --why / --idea。這次有給 ⇒ 記上這次的時間;沒給 ⇒ 同一個主軸沿用上一筆
+    same = not new and prev.get("started_at") == rec["started_at"]
     if review:
         rec["review"] = dict(review, at=at)
-    elif not new and isinstance(prev.get("review"), dict) and prev.get("started_at") == rec["started_at"]:
+    elif same and isinstance(prev.get("review"), dict):
         rec["review"] = prev["review"]
+    # 這個階段什麼時候完成的(043dd #714 L3,a63ab 裁):一個階段只要求回報一次判斷 ——
+    # 同一主軸停在【等回應】巡好幾回合，不必每回合重寫;換主軸 / 從未完成變完成才重新要求
+    if stage_done(rec):
+        rec["done_at"] = prev.get("done_at") if same and stage_done(prev) and prev.get("done_at") else at
+    changed_review = bool(review) and {k: (prev.get("review") or {}).get(k) for k in ("track", "why", "idea")} != review
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
-    if review or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
+    if changed_review or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
         append_history(d, code, rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -337,11 +343,13 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     return rec
 
 
-AUTO_NEW_BELOW = 0.15   # 主項目字面相似度低於這個 ⇒ 當成換主軸(跟 aib-plan mainline.rs DRIFT_HINT_BELOW 同一個算法與門檻)
+AUTO_NEW_BELOW = 0.05   # 主項目字面相似度低於這個 ⇒ 當成換主軸(043dd #714 M1:0.15 會把同一件事判成換題)
+_NOISE = re.compile(r"[0-9a-fA-F]{6,}|\d{4,}")   # 頭碼、run id、長數字:換一個就全不同，不代表換題
+_PR = re.compile(r"#(\d+)")
 
 
 def _bigrams(text):
-    cs = [c.lower() for c in str(text or "") if c.isalnum()]
+    cs = [c.lower() for c in _NOISE.sub(" ", str(text or "")) if c.isalnum()]
     return {(a, b) for a, b in zip(cs, cs[1:])}
 
 
@@ -357,6 +365,8 @@ def auto_new(prev, item):
     """Andy 11-12 13:4x:忘了 --new 也要重新計時 —— 上一筆有主項目、不是【我很閒】,字面幾乎全換 ⇒ True。"""
     if not isinstance(prev, dict) or prev.get("idle") or not prev.get("item"):
         return False
+    if set(_PR.findall(prev.get("item"))) & set(_PR.findall(item)):
+        return False   # 兩邊都提到同一張 #PR ⇒ 同一件事
     return similarity(prev.get("item"), item) < AUTO_NEW_BELOW
 
 
@@ -391,6 +401,17 @@ def stage_done(rec):
     return full or rec.get("state") in ("reply", "decide")
 
 
+def review_due(rec):
+    """這個階段還沒回報判斷:階段完成了，而判斷早於完成時間(或沒有)。"""
+    if not stage_done(rec):
+        return False
+    try:
+        done_at = int(rec.get("done_at") or rec.get("at") or 0)
+    except (TypeError, ValueError):
+        done_at = 0
+    return review_at(rec) < done_at
+
+
 def review_at(rec):
     """這一筆最近一次回報判斷的時間;沒有 ⇒ 0。"""
     r = rec.get("review") if isinstance(rec, dict) else None
@@ -423,7 +444,7 @@ def history_path(code, state_root=None):
 
 
 def append_history(d, code, rec):
-    """主項目換了(文字或啟動時間不同)或回報了判斷就記一行 {"item","started_at","seen"[,"track"]}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
+    """主項目換了(文字或啟動時間不同)或判斷內容變了就記一行 {"item","started_at","seen"[,"track"]}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
     讀者:aib-plan 最上面「本席AI一開始主軸 / 目前開發主軸」(crates/aib-plan/src/mainline.rs,同格式)。
     超過 HISTORY_MAX_BYTES 只留最後 HISTORY_KEEP 行。寫失敗不影響 aib now 本身。"""
     path = os.path.join(d, code + HISTORY_SUFFIX)
@@ -435,13 +456,13 @@ def append_history(d, code, rec):
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
         if os.path.getsize(path) > HISTORY_MAX_BYTES:
-            with open(path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:   # 斷電留下半個字也照裁
                 keep = fh.readlines()[-HISTORY_KEEP:]
             tmp = path + ".%d" % os.getpid()
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.writelines(keep)
             os.replace(tmp, path)
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
@@ -970,7 +991,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--started", metavar="'MM-DD HH:MM'", help=T("aib.now.help.started"))
     ap.add_argument("--state", choices=SETTABLE_STATES, default="busy",
                     help=T("aib.now.help.state"))
-    ap.add_argument("--track", metavar="0-100", default=None, help=T("aib.now.help.track"))
+    ap.add_argument("--track", metavar="0-100", default=None, help=T("aib.now.help.track", min=ON_TRACK_MIN))
     ap.add_argument("--why", default=None, help=T("aib.now.help.why"))
     ap.add_argument("--idea", default=None, help=T("aib.now.help.idea"))
     ap.add_argument("--seat", metavar="SEAT", default="",
@@ -1148,14 +1169,14 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         if started is None:
             err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
+    review, ok = parse_review(args.track, args.why, args.idea)
+    if not ok:
+        err.write("aib now: %s\n" % T("aib.now.review_bad", min=ON_TRACK_MIN))
+        return 2
     new = args.new
     if not new and started is None and auto_new(read(code, state_root=state_root), item):
         new = True
         err.write("aib now: %s\n" % T("aib.now.auto_new"))
-    review, ok = parse_review(args.track, args.why, args.idea)
-    if not ok:
-        err.write("aib now: %s\n" % T("aib.now.review_bad"))
-        return 2
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
                 new=new, review=review)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
