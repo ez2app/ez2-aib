@@ -660,30 +660,46 @@ $(cockpit_pane_plan)
 EOF
 }
 
-# 只缺中欄時原地補:別的格一格不多一格不少、hub 在、plan / hosts 缺(或只缺 hosts)才動手。
-# 回 0 = 補好了(且補完版面驗得過);非 0 = 不是這個形狀,交回原本的自癒判斷。
+# 進度欄原地對齊設定(不拆窗;hub 活著時下面的自癒一律拒絕重建,只能在這裡處理):
+#   設定要 plan ⇒ 補到剛好 plan + hosts 各一格(只剩 hosts 沒有 plan 時先收掉那格 hosts 再補兩格,
+#     例:plan 格被收掉而 hosts 還在 —— 審查 M1);
+#   設定不要 plan(aib plan off)⇒ 收掉 plan / hosts 兩格(審查 M2)。
+# 只在「其餘的格一格不多一格不少、hub 在」時動手;回 0 = 處理完且版面驗得過,
+# 非 0 = 不是這個形狀,交回原本的自癒判斷。大小照 cockpit_pane_plan 那一列,不另寫一份。
 _grow_missing_plan_column() {
-  local expected rows role others_want others_have
+  local expected rows role anchor dir size script others_want others_have n_plan n_hosts want_plan=0 id
   expected="$(cockpit_expected_roles)" || return 1
-  case " $(printf '%s ' $expected)" in *" plan "*) ;; *) return 1 ;; esac
+  case " $(printf '%s ' $expected)" in *" plan "*) want_plan=1 ;; esac
   rows="$(outer_tmux list-panes -t "$S:cockpit" -F '#{pane_id}|#{@aib_role}' 2>/dev/null)" || return 1
   others_want="$(printf '%s\n' $expected | awk '$1 != "plan" && $1 != "hosts" && NF' | sort | tr '\n' ' ')"
   others_have="$(printf '%s\n' "$rows" | awk -F '|' '$2 != "review" && $2 != "plan" && $2 != "hosts" && NF { print $2 }' | sort | tr '\n' ' ')"
   [ "$others_want" = "$others_have" ] || return 1
   P_HUB="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hub" { print $1; exit }')"
-  P_PLAN="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { print $1; exit }')"
   [ -n "$P_HUB" ] || return 1
-  [ "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { n++ } END { print n+0 }')" -le 1 ] || return 1
-  [ "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { n++ } END { print n+0 }')" -eq 0 ] || return 1
-  while IFS='|' read -r role _ _ _ _; do
-    case "$role" in plan|hosts) ;; *) continue ;; esac
+  n_plan="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { n++ } END { print n+0 }')"
+  n_hosts="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { n++ } END { print n+0 }')"
+  if [ "$want_plan" = 0 ]; then
+    for id in $(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" || $2 == "hosts" { print $1 }'); do
+      outer_tmux kill-pane -t "$id" || return 1
+    done
+    validate_cockpit_layout
+    return
+  fi
+  [ "$n_plan" -le 1 ] && [ "$n_hosts" -le 1 ] || return 1
+  P_PLAN="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { print $1; exit }')"
+  if [ -z "$P_PLAN" ] && [ "$n_hosts" = 1 ]; then
+    outer_tmux kill-pane -t "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { print $1; exit }')" || return 1
+    n_hosts=0
+  fi
+  while IFS='|' read -r role anchor dir size script; do
     if [ "$role" = "plan" ] && [ -z "$P_PLAN" ]; then
-      P_PLAN="$(outer_tmux split-window -h -t "$P_HUB" -l 62% \
-        -P -F '#{pane_id}' "$(pane_command "$C/pane-plan.sh")")" || return 1
+      P_PLAN="$(outer_tmux split-window -"$dir" -t "$P_HUB" -l "$size" \
+        -P -F '#{pane_id}' "$(pane_command "$script")")" || return 1
       _assign_pane_role "$P_PLAN" plan
-    elif [ "$role" = "hosts" ] && [ -n "$P_PLAN" ]; then
-      _assign_pane_role "$(outer_tmux split-window -v -t "$P_PLAN" -l 14 \
-        -P -F '#{pane_id}' "$(pane_command "$C/pane-hosts.sh")")" hosts || return 1
+    elif [ "$role" = "hosts" ] && [ "$n_hosts" = 0 ] && [ -n "$P_PLAN" ]; then
+      id="$(outer_tmux split-window -"$dir" -t "$P_PLAN" -l "$size" \
+        -P -F '#{pane_id}' "$(pane_command "$script")")" || return 1
+      _assign_pane_role "$id" hosts
     fi
   done <<EOF
 $(cockpit_pane_plan)
