@@ -44,6 +44,7 @@ pub mod client;
 pub mod create;
 pub mod customer;
 pub mod edge;
+pub mod fpkey;
 pub mod isolation;
 pub mod op;
 pub mod provision;
