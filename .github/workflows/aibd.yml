@@ -3801,6 +3801,17 @@ jobs:
           # CF9 a customer key may not approve a cache clear
           hk opstore.rs '    "site.cache-flush",' '    "site.cache-flush-not", // knife' \
              the_customer_clear_is_journaled_as_the_customer_keys_and_never_blocks
+          # CF10 (33e28 L2) a plugin list WordPress did not give reads as "absent", not "failed"
+          hk cachecmd.rs '        Err(_) => return "failed",' '        Err(_) => return "absent", // knife' \
+             a_plugin_list_that_cannot_be_read_is_failed_not_absent
+          # CF11 (33e28 L1) the last clear of the site is not waited for
+          hk cachecmd.rs '    next.checked_sub(now).filter(|left| *left > 0)' \
+             '    next.checked_sub(now).filter(|left| *left > 0 && false) // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
+          # CF12 (33e28 L1) the gap is not asked before the clear runs
+          hk cachecmd.rs '    if let Some(left) = wait_left(&lasts, &on, now) {' \
+             '    if let Some(left) = wait_left(&lasts, &on, now).filter(|_| false) { // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
 
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py

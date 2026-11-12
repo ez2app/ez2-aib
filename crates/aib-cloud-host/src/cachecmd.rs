@@ -32,6 +32,24 @@ pub const COMMAND: &str = "site.cache-flush";
 pub const PAGE_CACHE_PLUGIN: &str = "flying-press";
 /// The host has no Cloudflare key: that part was not asked for.
 pub const CF_SKIPPED: &str = "cf_skipped";
+/// The shortest gap between two clears of one site, in seconds (33e28 L1). To be tuned
+/// with Cloudflare's rate answers once it is used for real (33e28 N2).
+pub const MIN_GAP_S: u64 = 60;
+/// A clear asked again before [`MIN_GAP_S`] has passed since the last one of that site.
+pub const TOO_SOON: &str = "cache_flush_too_soon";
+
+/// Seconds still to wait before `target` may be cleared again, from the last entry of
+/// every journal on the host; `None` when it may be cleared now. Only clears of that same
+/// site count.
+pub fn wait_left(lasts: &[aib_cloud::op::Entry], target: &str, now: u64) -> Option<u64> {
+    let last = lasts
+        .iter()
+        .filter(|e| e.command == COMMAND && e.target == target)
+        .map(|e| e.at)
+        .max()?;
+    let next = last.saturating_add(MIN_GAP_S);
+    next.checked_sub(now).filter(|left| *left > 0)
+}
 
 /// What each part of a clear did, as the words the host answers with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +91,19 @@ fn wordpress(runner: &mut impl Runner, spec: &SiteSpec) -> &'static str {
     }
 }
 
-/// The page cache plugin, in the site's CT: only when it is active.
+/// The page cache plugin, in the site's CT: only when it is active. Whether it is comes
+/// from the list of active plugins: a list WordPress does not give is `failed`, never
+/// `absent` (33e28 L2: `plugin is-active` answers a broken WordPress and an inactive
+/// plugin with the same exit 1).
 fn page_cache(runner: &mut impl Runner, spec: &SiteSpec) -> &'static str {
-    if runner
-        .run(&wp(spec, &["plugin", "is-active", PAGE_CACHE_PLUGIN]))
-        .is_err()
-    {
+    let active = match runner.run(&wp(
+        spec,
+        &["plugin", "list", "--status=active", "--field=name"],
+    )) {
+        Ok(names) => names.lines().any(|n| n.trim() == PAGE_CACHE_PLUGIN),
+        Err(_) => return "failed",
+    };
+    if !active {
         return "absent";
     }
     match runner.run(&wp(spec, &["flying-press", "purge-everything"])) {
@@ -154,6 +179,18 @@ pub fn customer_clear<R: Runner>(
     code: &str,
     runner: &mut R,
 ) -> Result<Cleared, String> {
+    customer_clear_at(place, paths, code, runner, crate::probe::unix_now())
+}
+
+/// [`customer_clear`] at the time `now`: a clear of the same site less than
+/// [`MIN_GAP_S`] after the last one is refused ([`TOO_SOON`]) before anything runs.
+fn customer_clear_at<R: Runner>(
+    place: &opstore::OpPlace,
+    paths: &HostPaths,
+    code: &str,
+    runner: &mut R,
+    now: u64,
+) -> Result<Cleared, String> {
     if !aib_cloud::site::valid_code(code) {
         return Err(format!("site_unknown: {code:?} is not a site code"));
     }
@@ -173,12 +210,18 @@ pub fn customer_clear<R: Runner>(
         .cloned()
         .ok_or_else(|| format!("site_unknown: {code} has no name"))?;
     let on = crate::sitecreatecmd::target(&domain);
+    let lasts = opstore::last_entries(&place.ops_dir)?;
+    if let Some(left) = wait_left(&lasts, &on, now) {
+        return Err(format!(
+            "{TOO_SOON}: {code} was cleared less than {MIN_GAP_S}s ago; again in {left}s"
+        ));
+    }
     opstore::run_op_prepared(
         place,
         COMMAND,
         &on,
         opstore::BY_CUSTOMER_KEY,
-        crate::probe::unix_now(),
+        now,
         move || {
             let plan = json!({ "command": COMMAND, "domain": domain, "site": spec.code });
             Ok(Some((plan, (spec, record, runner))))
@@ -207,6 +250,7 @@ mod tests {
         ran: Vec<Vec<String>>,
         fed: Vec<String>,
         wp_fails: bool,
+        list_fails: bool,
         plugin_active: bool,
         purge_fails: bool,
         cf_http: u16,
@@ -218,6 +262,7 @@ mod tests {
                 ran: Vec::new(),
                 fed: Vec::new(),
                 wp_fails: false,
+                list_fails: false,
                 plugin_active: true,
                 purge_fails: false,
                 cf_http: 200,
@@ -243,11 +288,13 @@ mod tests {
                     Ok("Success: The cache was flushed.".to_owned())
                 };
             }
-            if line.contains(" plugin is-active ") {
-                return if self.plugin_active {
-                    Ok(String::new())
+            if line.contains(" plugin list --status=active --field=name") {
+                return if self.list_fails {
+                    Err("Error: WordPress is not installed".to_owned())
+                } else if self.plugin_active {
+                    Ok(format!("akismet\n{PAGE_CACHE_PLUGIN}\n"))
                 } else {
-                    Err("exit 1".to_owned())
+                    Ok("akismet\nflying-pages\n".to_owned())
                 };
             }
             if line.ends_with(" flying-press purge-everything") {
@@ -504,10 +551,11 @@ mod tests {
         let place = place(&d);
         let mut fake = Fake::new();
         fake.wp_fails = true;
-        let done = customer_clear(&place, &p, CODE, &mut fake).unwrap();
+        let t = 1_800_000_000;
+        let done = customer_clear_at(&place, &p, CODE, &mut fake, t).unwrap();
         assert_eq!(done.wordpress, "failed");
         // a failed part does not fail the operation: the next one is not blocked
-        let again = customer_clear(&place, &p, CODE, &mut Fake::new()).unwrap();
+        let again = customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S).unwrap();
         assert_eq!(again.exit(), 0);
         assert!(opstore::CUSTOMER_COMMANDS.contains(&COMMAND));
         // a code that is not a site's, or a site without a record, is refused before
@@ -516,5 +564,60 @@ mod tests {
         assert!(customer_clear(&place, &p, "../x", &mut idle).is_err());
         assert!(customer_clear(&place, &p, "s-other1", &mut idle).is_err());
         assert!(idle.ran.is_empty());
+    }
+
+    #[test]
+    fn a_plugin_list_that_cannot_be_read_is_failed_not_absent() {
+        let p = paths(&scratch("nolist"), false);
+        let mut fake = Fake::new();
+        fake.list_fails = true;
+        let hosts = ["shop.example.com"];
+        let done = clear(&mut fake, &p, &spec(&hosts), &record(&hosts));
+        assert_eq!(done.page_cache, "failed");
+        assert_eq!(done.exit(), 3);
+        assert!(fake
+            .wp_calls()
+            .iter()
+            .all(|c| !c.contains("purge-everything")));
+        // a name that only looks like it is not the plugin
+        let mut near = Fake::new();
+        near.plugin_active = false;
+        let done = clear(&mut near, &p, &spec(&hosts), &record(&hosts));
+        assert_eq!(done.page_cache, "absent");
+    }
+
+    #[test]
+    fn a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs() {
+        let d = scratch("gap");
+        let p = paths(&d, false);
+        let place = place(&d);
+        let t = 1_800_000_000;
+        customer_clear_at(&place, &p, CODE, &mut Fake::new(), t).unwrap();
+        let mut idle = Fake::new();
+        let err = customer_clear_at(&place, &p, CODE, &mut idle, t + MIN_GAP_S - 1).unwrap_err();
+        assert!(err.starts_with(TOO_SOON), "{err}");
+        assert!(idle.ran.is_empty());
+        // once the gap has passed it runs again
+        customer_clear_at(&place, &p, CODE, &mut Fake::new(), t + MIN_GAP_S).unwrap();
+        // the gap is the site's own: another site's clear does not count
+        let other = aib_cloud::op::Entry {
+            op: String::from("x"),
+            seq: 3,
+            at: t,
+            state: aib_cloud::op::State::Verified,
+            command: String::from(COMMAND),
+            target: String::from("domain:other.example.org"),
+            plan_sha256: "0".repeat(64),
+            code: String::from("ok"),
+            approval: String::new(),
+        };
+        assert_eq!(
+            wait_left(&[other.clone()], "domain:shop.example.com", t + 1),
+            None
+        );
+        assert_eq!(
+            wait_left(&[other], "domain:other.example.org", t + 1),
+            Some(MIN_GAP_S - 1)
+        );
     }
 }
