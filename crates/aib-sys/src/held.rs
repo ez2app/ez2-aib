@@ -178,9 +178,10 @@ fn monotonic_ms() -> i64 {
     };
     // SAFETY: `ts` is a live, writable timespec; CLOCK_MONOTONIC always exists.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    i64::from(ts.tv_sec)
+    // held is macOS only, where time_t and c_long are both i64
+    ts.tv_sec
         .saturating_mul(1000)
-        .saturating_add(i64::from(ts.tv_nsec) / 1_000_000)
+        .saturating_add(ts.tv_nsec / 1_000_000)
 }
 
 #[cfg(test)]
