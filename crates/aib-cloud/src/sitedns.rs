@@ -570,19 +570,19 @@ pub fn proxied(names: &[&str], records: Option<&[Record]>) -> Proxied {
     let Some(records) = records else {
         return Proxied::Unchecked(UNREADABLE);
     };
-    let address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());
+    let is_address = |r: &&Record| DNS_ADDRESS_TYPES.contains(&r.kind.as_str());
     let mut grey = Vec::new();
     let mut unanswered = names.is_empty();
     for name in names {
         let mut here: Vec<&Record> = records
             .iter()
-            .filter(address)
+            .filter(is_address)
             .filter(|r| same_name(&r.name, name))
             .collect();
         if here.is_empty() {
             here = records
                 .iter()
-                .filter(address)
+                .filter(is_address)
                 .filter(|r| wildcard_covers(&r.name, name))
                 .collect();
         }

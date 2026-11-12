@@ -457,7 +457,7 @@ pub fn proxied_names(
     let zone = sitedns::pick_zone(&domain, Some(accounts.as_slice()), Some(zones.as_slice()))
         .map_err(|w| format!("{w}: {domain}"))?;
     let names: Vec<&str> = spec.hosts.iter().map(String::as_str).collect();
-    if !names.iter().all(|n| sitedns::in_zone(n, &zone.name)) {
+    if names.iter().any(|n| !sitedns::in_zone(n, &zone.name)) {
         return Ok(sitedns::Proxied::Unchecked(sitedns::MULTI_ZONE));
     }
     let all = listing(&mut cf, &zone.id)?;
