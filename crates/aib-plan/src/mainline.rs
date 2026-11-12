@@ -176,7 +176,7 @@ pub fn first_today(log: &[Entry], cur: Option<&Entry>, now: i64) -> Option<Entry
 /// 今天(台北)的總結次數與交接次數。只讀，讀不到就是 0。
 /// - 總結 = `<狀態根>/pending/to-maintainer-from-<席>-*.txt`(aib summary 每次寫一份),看檔案修改時間
 /// - aib now 的回報不算(Andy 11-12 20:5x:「有執行 aib 總結、aib 交接才算」;取代 14:3x 的算法)
-/// - 交接 = `<狀態根>/state/handoff/<席>.receipts.jsonl` 每行一張收據，看 ts
+/// - 交接 = `<狀態根>/state/handoff/<席>.receipts.jsonl` 每行一張收據，看 ts;只算有效的(valid_handoff),同一輪只算一次
 pub fn day_counts(state_root: &Path, seat: &str, now: i64) -> (u32, u32) {
     let ds = day_start(now);
     let prefix = format!("to-maintainer-from-{seat}-");
@@ -201,10 +201,27 @@ pub fn day_counts(state_root: &Path, seat: &str, now: i64) -> (u32, u32) {
     .unwrap_or_default()
     .lines()
     .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-    .filter_map(|v| v.get("ts").and_then(|t| t.as_f64()))
-    .filter(|t| *t as i64 >= ds)
-    .count() as u32;
+    .filter(valid_handoff)
+    .filter_map(|v| {
+        let ts = v.get("ts").and_then(|t| t.as_f64())?;
+        // 同一輪重寫幾次只算一次(round_ts 相同);舊收據沒有 round_ts 就以 ts 自成一輪
+        let round = v.get("round_ts").and_then(|t| t.as_f64()).unwrap_or(ts);
+        (ts as i64 >= ds).then_some(round.to_bits())
+    })
+    .collect::<std::collections::HashSet<u64>>()
+    .len() as u32;
     (summaries, handoffs)
+}
+
+/// 有效的交接(Andy 11-13 06:1x「應該只有真實交接有效的才算」):
+/// 收據的 incomplete 是空的(verify 第 7 項會過)、沒有 seat_mismatch。
+/// 沒寫完就重寫的那幾張不算。舊收據沒有 incomplete 欄 ⇒ 當時沒有這項檢查，照舊算
+fn valid_handoff(v: &serde_json::Value) -> bool {
+    let done = v
+        .get("incomplete")
+        .is_none_or(|x| x.as_array().is_some_and(|a| a.is_empty()));
+    let mismatch = v.get("seat_mismatch").and_then(|x| x.as_bool()) == Some(true);
+    done && !mismatch
 }
 
 /// 別席：只讀(不替別席記任何東西)。aib now 歷史 + aib-plan 舊記(有就讀)取今天最早
@@ -554,6 +571,35 @@ mod tests {
         }
         // 剛寫的檔 = 今天;交接 3 張裡 1 張是昨天、1 行壞的
         assert_eq!(day_counts(&state, "s5", now), (2, 2));
+        // Andy 11-13:同一輪沒寫完就重寫 4 次、第 5 次才過 ⇒ 只算 1 次;座位對不上也不算
+        let mut extra = String::new();
+        for (i, inc) in ["[\"a\", \"b\"]", "[\"a\"]", "[\"c\"]", "[\"d\"]", "[]"]
+            .iter()
+            .enumerate()
+        {
+            extra += &format!(
+                "{{\"ts\": {}, \"round_ts\": {}, \"incomplete\": {inc}}}\n",
+                now - 10 + i as i64,
+                ds + 100
+            );
+        }
+        extra += &format!(
+            "{{\"ts\": {now}, \"round_ts\": {}, \"incomplete\": [], \"seat_mismatch\": true}}\n",
+            ds + 200
+        );
+        extra += &format!(
+            "{{\"ts\": {now}, \"round_ts\": {}, \"incomplete\": [\"x\"]}}\n",
+            ds + 300
+        );
+        let f = state.join("handoff/s5.receipts.jsonl");
+        let base = std::fs::read_to_string(&f).unwrap();
+        std::fs::write(&f, base.clone() + &extra).unwrap();
+        assert_eq!(
+            day_counts(&state, "s5", now).1,
+            3,
+            "舊 2 張 + 第 5 次才過的那一輪"
+        );
+        std::fs::write(&f, base).unwrap();
         // aib now 帶判斷的回報不算總結(Andy 20:5x):寫了歷史，數字不變
         std::fs::write(
             state.join("seat-now/s5.history.jsonl"),
