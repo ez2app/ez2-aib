@@ -1517,14 +1517,14 @@ mod tests {
     #[test]
     fn adopt_needs_full_ssl_and_a_challenge_the_proxy_passes() {
         let both = Some(vec!["http-01", "tls-alpn-01"]);
-        assert_eq!(adopt_gate(Ok(()), &[both.clone()]), Ok(()));
+        assert_eq!(adopt_gate(Ok(()), core::slice::from_ref(&both)), Ok(()));
         assert_eq!(adopt_gate(Ok(()), &[Some(vec!["http-01"])]), Ok(()));
         assert_eq!(
-            adopt_gate(Err(SSL_MODE_NOT_FULL), &[both.clone()]),
+            adopt_gate(Err(SSL_MODE_NOT_FULL), core::slice::from_ref(&both)),
             Err(SSL_MODE_NOT_FULL)
         );
         assert_eq!(
-            adopt_gate(Err(UNREADABLE), &[both.clone()]),
+            adopt_gate(Err(UNREADABLE), core::slice::from_ref(&both)),
             Err(UNREADABLE)
         );
         assert_eq!(
