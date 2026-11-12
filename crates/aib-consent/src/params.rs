@@ -687,7 +687,7 @@ mod tests {
             params_declared(&p, &decl)
         };
         for (k, v) in [
-            ("IP", "10.77.0.9/24,gw=1.2.3.4"),
+            ("IP", "10.77.0.9/24,gw=192.0.2.4"),
             ("IP", "x,hwaddr"),
             ("IP", "a=b"),
             ("IDS", "a,,b"),

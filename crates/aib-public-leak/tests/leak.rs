@@ -217,7 +217,45 @@ fn a_pr_cannot_hide_its_lines_with_its_own_gitattributes() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Does the git on this machine have `--attr-source` (2.41+)? Without it the binary reads
+/// every file as text (DECISION-690-old-git).
+fn git_has_attr_source() -> bool {
+    let o = Command::new("git")
+        .arg("version")
+        .output()
+        .expect("git runs");
+    aib_public_leak::has_attr_source(aib_public_leak::git_version(&String::from_utf8_lossy(
+        &o.stdout,
+    )))
+}
+
+/// DECISION-690-old-git (043dd): the read-everything path runs on every machine, new git
+/// included (`--full-read`), so its knife bites in CI too. A PR's own `binary` attribute
+/// cannot hide its lines, and nothing is counted as not read.
+#[test]
+fn full_read_reads_files_any_attributes_call_binary() {
+    let d = repo("full");
+    std::fs::write(d.join(".gitattributes"), "*.txt binary\n").expect("write");
+    git(&d, &["add", ".gitattributes"]);
+    git(&d, &["commit", "-q", "-m", "attributes"]);
+    let o = run(&d, &["--base", "base", "--full-read"], Some("unrelated"));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("public-leak: notes.txt:2 (file #2): public IPv4 address"),
+        "{out}"
+    );
+    assert!(
+        out.contains("public-leak: full_read (--full-read)"),
+        "{out}"
+    );
+    assert!(out.contains(", 0 binary file(s) not read"), "{out}");
+    assert_no_leak(&out);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A file the base's own attributes call binary is not read, and the summary says how many.
+/// With a git that has no `--attr-source`, it is read as text and the summary says so.
 #[test]
 fn a_file_the_base_calls_binary_is_counted_as_not_read() {
     let d = repo("bin");
@@ -231,7 +269,12 @@ fn a_file_the_base_calls_binary_is_counted_as_not_read() {
     let o = run(&d, &["--base", "base2"], Some("unrelated"));
     let out = text(&o);
     assert_eq!(o.status.code(), Some(0), "{out}");
-    assert!(out.contains(", 1 binary file(s) not read"), "{out}");
+    if git_has_attr_source() {
+        assert!(out.contains(", 1 binary file(s) not read"), "{out}");
+    } else {
+        assert!(out.contains("attr_source_unsupported"), "{out}");
+        assert!(out.contains(", 0 binary file(s) not read"), "{out}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

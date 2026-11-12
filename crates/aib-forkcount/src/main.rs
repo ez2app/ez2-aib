@@ -129,6 +129,45 @@ fn cpu_ms() -> Value {
     json!(s)
 }
 
+/// Most forking pids listed in `forkers`.
+const FORKERS_TOP: usize = 50;
+
+/// Every fork event, summed by the forking pid's command line (`?` when
+/// none was kept), most first (label breaks ties). Unlike `forkers` this
+/// covers all events: a `$( … )` subshell is a new pid with its parent's
+/// argv, so 50 pids saw a third of the events on andymini (11-12).
+fn by_argv(stats: &Stats) -> Vec<Value> {
+    let mut m: BTreeMap<&str, u64> = BTreeMap::new();
+    for (pid, n) in &stats.fork_events_by_pid {
+        let label = stats.parent_argv.get(pid).map_or("?", String::as_str);
+        *m.entry(label).or_default() += n;
+    }
+    let mut v: Vec<(&str, u64)> = m.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v.into_iter()
+        .map(|(argv, n)| json!({ "argv": argv, "fork_events": n }))
+        .collect()
+}
+
+/// The busiest forking pids, most fork events first (pid breaks ties), each
+/// with its command line from `parent_argv` (`?` when none was kept): goal 2
+/// prerequisite 1, telling which `bash` / `sh` / `tmux` did the forking.
+fn forkers(stats: &Stats) -> Vec<Value> {
+    let mut v: Vec<(u32, u64)> = stats
+        .fork_events_by_pid
+        .iter()
+        .map(|(p, n)| (*p, *n))
+        .collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.into_iter()
+        .take(FORKERS_TOP)
+        .map(|(pid, n)| {
+            let argv = stats.parent_argv.get(&pid).map_or("?", String::as_str);
+            json!({ "pid": pid, "fork_events": n, "argv": argv })
+        })
+        .collect()
+}
+
 fn report(stats: &Stats, seconds: f64, tracked: usize) -> Value {
     let per_second: Vec<u64> = {
         let last = stats.per_second.keys().max().copied().unwrap_or(0);
@@ -143,6 +182,9 @@ fn report(stats: &Stats, seconds: f64, tracked: usize) -> Value {
         "forks_per_sec_lower_bound": if seconds > 0.0 { stats.fork_events.max(stats.children_adopted) as f64 / seconds } else { 0.0 },
         "per_second": per_second,
         "by_parent": stats.by_parent,
+        "forkers": forkers(stats),
+        "by_argv": by_argv(stats),
+        "parent_argv_dropped": stats.parent_argv_dropped,
         "register_failures": stats.register_failures,
         "list_failures": stats.list_failures,
         "list_failures_by_tag": stats.list_failures_by_tag,

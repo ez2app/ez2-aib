@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(dig_lines(""), Some(Vec::new()));
         // a resolver error is not an empty answer
         assert_eq!(
-            dig_lines(";; communications error to 1.1.1.1#53: timed out\n"),
+            dig_lines(";; communications error to 192.0.2.53#53: timed out\n"),
             None
         );
         assert_eq!(

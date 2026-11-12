@@ -26,11 +26,11 @@ fn host_a() -> Topology {
             Ct::new(112, "10.77.0.12").expect("ct"),
         ],
         internet: InternetTargets {
-            dns: Ip::parse("1.1.1.1").expect("ip"),
-            http: Ip::parse("151.101.2.132").expect("ip"), // deb.debian.org
-            https: Ip::parse("140.82.121.4").expect("ip"), // github.com
-            ssh: Ip::parse("140.82.121.4").expect("ip"),   // github.com sshd
-            https6: Some(Ip6::parse("2606:4700:4700::1111").expect("ip6")), // Cloudflare DNS over HTTPS
+            dns: Ip::parse("192.0.2.53").expect("ip"),
+            http: Ip::parse("192.0.2.80").expect("ip"), // stands in for a package mirror
+            https: Ip::parse("192.0.2.44").expect("ip"), // stands in for a git host
+            ssh: Ip::parse("192.0.2.44").expect("ip"),  // stands in for a git host sshd
+            https6: Some(Ip6::parse("2001:db8::443").expect("ip6")), // stands in for a DNS-over-HTTPS resolver
         },
     }
 }

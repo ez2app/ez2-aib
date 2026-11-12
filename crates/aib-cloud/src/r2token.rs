@@ -181,9 +181,9 @@ impl EgressIp {
         } else if o[0] == 203 && o[1] == 0 && o[2] == 113 {
             Some("203.0.113.0/24 (documentation range)")
         } else if o[0] == 198 && (18..=19).contains(&o[1]) {
-            Some("198.18.0.0/15 (benchmarking range)")
+            Some("198.18.0.0/15 (benchmarking range)") // ip-literal-ok: range name
         } else if o[0] >= 224 {
-            Some("224.0.0.0/3 (multicast / reserved / broadcast)")
+            Some("224.0.0.0/3 (multicast / reserved / broadcast)") // ip-literal-ok: range name
         } else {
             None
         };
@@ -199,7 +199,7 @@ impl EgressIp {
         self.0
     }
 
-    /// Dotted form, e.g. `8.8.8.8`.
+    /// Dotted form, `a.b.c.d`.
     pub fn text(&self) -> String {
         format!("{}.{}.{}.{}", self.0[0], self.0[1], self.0[2], self.0[3])
     }
@@ -556,7 +556,7 @@ mod tests {
             "host-a-ts",
             // a well-known public resolver address stands in for the host's egress address:
             // EgressIp refuses the documentation ranges on purpose, so 203.0.113.x cannot be used here
-            "8.8.8.8",
+            "8.8.8.8", // ip-literal-ok: public resolver; EgressIp refuses documentation ranges
             "host-b-ts",
             "example.org",
             "/etc/ez2-cloud/backup-r2.env",
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn r1_summary_has_no_secret_and_marks_ip_condition() {
         let s = plan().summary();
-        assert_eq!(s["ip_condition"], "8.8.8.8/32");
+        assert_eq!(s["ip_condition"], "8.8.8.8/32"); // ip-literal-ok: same sample
         assert_eq!(s["name"], "ez2-cloud-host-a-ez2-cloud-host-a-r2");
         let text = s.to_string();
         for k in ["secret", "access_key", "value", "authorization"] {
@@ -598,7 +598,7 @@ mod tests {
             .map(|g| g["id"].as_str().unwrap())
             .collect();
         assert_eq!(perms, vec![PERM_ITEM_READ, PERM_ITEM_WRITE]);
-        assert_eq!(b["condition"]["request_ip"]["in"], json!(["8.8.8.8/32"]));
+        assert_eq!(b["condition"]["request_ip"]["in"], json!(["8.8.8.8/32"])); // ip-literal-ok: same sample
         assert_eq!(b["policies"][0]["effect"], "allow");
     }
 
@@ -609,7 +609,7 @@ mod tests {
         let spec = p.remote_spec();
         assert_eq!(
             (f.bucket.as_str(), f.host.as_str(), f.ip.as_str()),
-            ("ez2-cloud-host-a", "host-a-ts", "8.8.8.8")
+            ("ez2-cloud-host-a", "host-a-ts", "8.8.8.8") // ip-literal-ok: same sample
         );
         assert_eq!(spec["bucket"], f.bucket);
         assert_eq!(spec["ip"], f.ip);
@@ -642,12 +642,12 @@ mod tests {
     #[test]
     fn r4_ip_rules() {
         for bad in [
-            "2a01:4f9:4b:134f::2",
+            "2001:db8:a:abcd::2",
             "0.0.0.0",
-            "0.1.2.3",
+            "0.1.2.3", // ip-literal-ok: reserved-range boundary sample
             "127.0.0.1",
-            "224.0.0.1",
-            "240.0.0.1",
+            "224.0.0.1", // ip-literal-ok: reserved-range boundary sample
+            "240.0.0.1", // ip-literal-ok: reserved-range boundary sample
             "255.255.255.255",
             "169.254.1.1",
             "10.1.1.1",
@@ -657,32 +657,32 @@ mod tests {
             "100.64.0.1",
             "100.64.0.46",
             "010.1.1.1",
-            "8.8.08.8", // #564 r2 L1: leading zero on an otherwise public address
-            "8.8.8.08",
+            "8.8.08.8", // #564 r2 L1: leading zero on an otherwise public address; ip-literal-ok: leading-zero sample
+            "8.8.8.08", // ip-literal-ok: leading-zero sample
             "192.0.2.10", // #564 r2 L3: documentation / benchmark ranges
             "198.51.100.7",
             "203.0.113.200",
-            "198.18.0.1",
-            "198.19.255.254",
+            "198.18.0.1",     // ip-literal-ok: reserved-range boundary sample
+            "198.19.255.254", // ip-literal-ok: reserved-range boundary sample
             "1.2.3",
             "１.2.3.4",
             "1.2.3.256",
             "01.2.3.4.5",
-            "1.2.3.4 ",
+            "1.2.3.4 ", // ip-literal-ok: trailing-space sample must be otherwise public
         ] {
             assert!(
                 matches!(EgressIp::parse(bad), Err(Error::Ip(_))),
                 "{bad:?} should be refused"
             );
         }
-        assert_eq!(EgressIp::parse("8.8.8.8").unwrap().cidr(), "8.8.8.8/32");
+        assert_eq!(EgressIp::parse("8.8.8.8").unwrap().cidr(), "8.8.8.8/32"); // ip-literal-ok: public resolver sample
         assert!(
-            matches!(EgressIp::parse("8.8.08.8"), Err(Error::Ip(m)) if m.contains("leading zero"))
+            matches!(EgressIp::parse("8.8.08.8"), Err(Error::Ip(m)) if m.contains("leading zero")) // ip-literal-ok: leading-zero sample
         );
-        assert!(EgressIp::parse("198.17.0.1").is_ok()); // just outside 198.18/15
-        assert!(EgressIp::parse("198.20.0.1").is_ok());
-        assert!(EgressIp::parse("172.32.0.1").is_ok()); // just outside 172.16/12
-        assert!(EgressIp::parse("100.128.0.1").is_ok()); // just outside 100.64/10
+        assert!(EgressIp::parse("198.17.0.1").is_ok()); // just outside 198.18/15; ip-literal-ok: just outside a reserved range
+        assert!(EgressIp::parse("198.20.0.1").is_ok()); // ip-literal-ok: just outside a reserved range
+        assert!(EgressIp::parse("172.32.0.1").is_ok()); // just outside 172.16/12; ip-literal-ok: just outside a reserved range
+        assert!(EgressIp::parse("100.128.0.1").is_ok()); // just outside 100.64/10; ip-literal-ok: just outside a reserved range
         assert!(
             matches!(EgressIp::parse("100.64.0.46"), Err(Error::Ip(m)) if m.contains("Tailscale"))
         );
@@ -701,7 +701,7 @@ mod tests {
             assert!(matches!(Zone::parse(bad), Err(Error::Zone(_))), "{bad:?}");
         }
         let mk = |dest: &str, remote: &str| {
-            Plan::new("abc", "h", "8.8.8.8", "c", "a.b", dest, remote, None)
+            Plan::new("abc", "h", "8.8.8.8", "c", "a.b", dest, remote, None) // ip-literal-ok: public resolver sample
         };
         assert!(matches!(mk("relative.env", "r2"), Err(Error::Dest(_))));
         assert!(matches!(mk("/etc/../x", "r2"), Err(Error::Dest(_))));
@@ -717,7 +717,7 @@ mod tests {
             Plan::new(
                 "abc",
                 "h",
-                "8.8.8.8",
+                "8.8.8.8", // ip-literal-ok: public resolver sample
                 "c",
                 "a.b",
                 "/etc/x",

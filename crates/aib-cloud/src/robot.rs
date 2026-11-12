@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Hetzner Robot webservice: validated input → [`Plan`] (what will be sent) →
+//! The hosting provider's rescue webservice: validated input → [`Plan`] (what will be sent) →
 //! [`ApprovalFacts`] (what the human sees). A `Plan` is immutable and can only
 //! be built through its constructors, so the popup can never describe a
 //! different target than the request (#532 M1).
 //!
 //! Rules carried over from the Python PoC and its reviews (#528 r1–r4, #532):
-//! - the API host is a constant, never read from the environment;
+//! - the API origin is an [`ApiOrigin`]: `https://` + host (+ port) only — no
+//!   userinfo, path, query or fragment — validated before any plan exists,
+//!   carried inside the plan, bound by [`Plan::plan_hash`] and shown in the
+//!   popup, so it cannot be swapped after approval. This repo is public: the
+//!   provider's real origin is not written here; the caller reads it from the
+//!   private host settings (there is no default; unset is a refusal);
 //! - `server` is 1–10 ASCII digits with no leading zero, `--fingerprint` is 16
 //!   colon-separated hex pairs (de-duplicated and sorted), `--type` is a closed
 //!   list; full-width or Arabic-Indic digits are refused explicitly, not by length;
-//! - `rescue` without a fingerprint is refused (Hetzner would answer with a
+//! - `rescue` without a fingerprint is refused (the provider would answer with a
 //!   one-time root password that the mask hides from everyone);
 //! - rescue and reset have **no rollback**; the recovery text is part of the plan;
 //! - [`mask`] hides every secret-looking key and any `user:pw@` URL userinfo
@@ -19,9 +24,6 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-
-/// The only host this crate will ever address. Not configurable on purpose.
-pub const API_HOST: &str = "https://robot-ws.your-server.de";
 
 /// Recovery text attached to every mutating plan (no rollback exists).
 pub const NO_ROLLBACK: &str = "不支援回滾:Rescue 只排下一次開機(60 分鐘內要重開、只供一次);reset 一送就送了。恢復路徑 = 再排一次 / 再重開。";
@@ -40,6 +42,8 @@ pub enum Error {
     BadResetType(String),
     /// `rescue` without a fingerprint.
     NoFingerprint,
+    /// Not `https://<host>[:port]` (the origin comes from private settings).
+    BadOrigin,
 }
 
 impl Error {
@@ -50,6 +54,7 @@ impl Error {
             Error::BadFingerprint(_) => "bad_fingerprint",
             Error::BadResetType(_) => "bad_reset_type",
             Error::NoFingerprint => "no_fingerprint",
+            Error::BadOrigin => "bad_origin",
         }
     }
 }
@@ -59,7 +64,7 @@ impl fmt::Display for Error {
         match self {
             Error::BadServer(s) => write!(
                 f,
-                "server 只收 1–10 位 ASCII 數字、不能以 0 開頭(Hetzner server number),不是「{s}」"
+                "server 只收 1–10 位 ASCII 數字、不能以 0 開頭(主機商的伺服器編號),不是「{s}」"
             ),
             Error::BadFingerprint(s) => {
                 write!(f, "fingerprint 要是 aa:bb:…(16 組十六進位),不是「{s}」")
@@ -71,13 +76,18 @@ impl fmt::Display for Error {
                 f,
                 "沒帶 fingerprint 會拿到一次性 root 密碼(被遮罩,沒人拿得到),Rescue 白排;拒絕"
             ),
+            // the value itself is not echoed: it may be a private setting
+            Error::BadOrigin => write!(
+                f,
+                "救援 API 位址沒設定或不合格:只收 https://主機[:埠],不帶帳密、路徑、查詢字串"
+            ),
         }
     }
 }
 
 impl core::error::Error for Error {}
 
-/// A Hetzner server number: 1–10 ASCII digits, no leading zero. Checked
+/// The provider's server number: 1–10 ASCII digits, no leading zero. Checked
 /// character by character (`is_ascii_digit`), so `３１０` or `٣١` are refused
 /// even when they fit the byte length (#532 M3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +192,64 @@ pub enum Mutation {
     Mutating,
 }
 
+/// Where plans are sent: `https://` + a lowercase ASCII host name (labels of
+/// letters, digits and `-`, not starting or ending with `-`; the last label is
+/// not all digits, so an IPv4 address is not a host name here) + an optional
+/// `:port`. Anything else — `http://`, userinfo (`user:pw@`), a path, `?`, `#`,
+/// an empty or trailing-dot host, non-ASCII — is refused, because the request
+/// carries the operator's webservice credentials (#528 r2 M1: never send them
+/// to a place the plan did not name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiOrigin(String);
+
+impl ApiOrigin {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
+        let rest = raw.strip_prefix("https://").ok_or(Error::BadOrigin)?;
+        let (host, port) = match rest.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (rest, None),
+        };
+        let label_ok = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
+        // a host name, not an address: the last label must not be all digits (c477a N1)
+        let tld_ok = host
+            .rsplit('.')
+            .next()
+            .is_some_and(|l| !l.bytes().all(|b| b.is_ascii_digit()));
+        let host_ok =
+            !host.is_empty() && host.len() <= 253 && host.split('.').all(label_ok) && tld_ok;
+        let port_ok = port.is_none_or(|p| {
+            !p.is_empty()
+                && p.len() <= 5
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && !p.starts_with('0')
+                && p.parse::<u32>().is_ok_and(|n| n <= 65_535)
+        });
+        if host_ok && port_ok {
+            Ok(Self(raw.to_owned()))
+        } else {
+            Err(Error::BadOrigin)
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One request the operator is about to send. All fields are private: a plan
 /// exists only through [`Plan::rescue`] / [`Plan::reset`], never through a
 /// struct literal, and cannot be edited afterwards, so `path`, `form` and
 /// [`ApprovalFacts`] always describe the same validated values (#532 M1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
+    origin: ApiOrigin,
     action: Action,
     server: ServerNumber,
     fingerprints: Vec<Fingerprint>,
@@ -198,14 +260,22 @@ pub struct Plan {
     recovery: &'static str,
 }
 
-/// The three read-only requests `status` issues.
+/// The three read-only requests `status` issues. It carries its origin like
+/// [`Plan`] but has no plan hash: nothing is approved for a read (no popup, no
+/// mutation), so there is nothing to bind. Show "where" from
+/// [`StatusPlan::origin`], never from a second read of the settings (c477a L1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusPlan {
+    origin: ApiOrigin,
     server: ServerNumber,
     paths: [String; 3],
 }
 
 impl StatusPlan {
+    pub fn origin(&self) -> &ApiOrigin {
+        &self.origin
+    }
+
     pub fn server(&self) -> &ServerNumber {
         &self.server
     }
@@ -219,6 +289,8 @@ impl StatusPlan {
 /// from raw input, and never truncated here (the gate decides display limits).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalFacts {
+    /// The origin the request goes to (the person sees where, not only what).
+    pub origin: String,
     pub action: String,
     pub server: String,
     /// Comma-joined, sorted, de-duplicated fingerprints, or `-` when the plan carries none.
@@ -231,7 +303,11 @@ pub struct ApprovalFacts {
 impl Plan {
     /// `POST /boot/{server}/rescue` with `os=linux` and one `authorized_key[]` per
     /// fingerprint (sorted, duplicates dropped). Refuses an empty list.
-    pub fn rescue(server: ServerNumber, fingerprints: Vec<Fingerprint>) -> Result<Self, Error> {
+    pub fn rescue(
+        origin: ApiOrigin,
+        server: ServerNumber,
+        fingerprints: Vec<Fingerprint>,
+    ) -> Result<Self, Error> {
         let mut fps = fingerprints;
         fps.sort();
         fps.dedup();
@@ -244,6 +320,7 @@ impl Plan {
                 .map(|f| ("authorized_key[]".to_owned(), f.as_str().to_owned())),
         );
         Ok(Self {
+            origin,
             path: format!("/boot/{}/rescue", server.as_str()),
             action: Action::Rescue,
             server,
@@ -256,8 +333,9 @@ impl Plan {
     }
 
     /// `POST /reset/{server}` with `type=<t>`.
-    pub fn reset(server: ServerNumber, kind: ResetType) -> Self {
+    pub fn reset(origin: ApiOrigin, server: ServerNumber, kind: ResetType) -> Self {
         Self {
+            origin,
             path: format!("/reset/{}", server.as_str()),
             action: Action::Reset(kind),
             server,
@@ -270,9 +348,10 @@ impl Plan {
     }
 
     /// The read-only `status` bundle: `/server`, `/boot/{n}/rescue`, `/reset/{n}`.
-    pub fn status(server: ServerNumber) -> StatusPlan {
+    pub fn status(origin: ApiOrigin, server: ServerNumber) -> StatusPlan {
         let n = server.as_str();
         StatusPlan {
+            origin,
             paths: [
                 format!("/server/{n}"),
                 format!("/boot/{n}/rescue"),
@@ -280,6 +359,10 @@ impl Plan {
             ],
             server,
         }
+    }
+
+    pub fn origin(&self) -> &ApiOrigin {
+        &self.origin
     }
 
     pub fn action(&self) -> &Action {
@@ -298,7 +381,7 @@ impl Plan {
         self.method
     }
 
-    /// Path under [`API_HOST`]; the server number is inserted verbatim because
+    /// Path under the plan's [`ApiOrigin`]; the server number is inserted verbatim because
     /// [`ServerNumber`] only admits ASCII digits (nothing to percent-encode).
     pub fn path(&self) -> &str {
         &self.path
@@ -317,9 +400,9 @@ impl Plan {
         self.recovery
     }
 
-    /// Full URL (host is the constant [`API_HOST`]).
+    /// Full URL: the plan's own origin + path.
     pub fn url(&self) -> String {
-        format!("{API_HOST}{}", self.path)
+        format!("{}{}", self.origin.as_str(), self.path)
     }
 
     /// Body as `application/x-www-form-urlencoded`.
@@ -343,6 +426,7 @@ impl Plan {
                 .join(",")
         };
         ApprovalFacts {
+            origin: self.origin.as_str().to_owned(),
             action: self.action.label(),
             server: self.server.as_str().to_owned(),
             fp,
@@ -357,7 +441,8 @@ impl Plan {
     /// with a secret field must bind a non-revealing commitment instead).
     pub fn canonical(&self) -> String {
         format!(
-            "aib-cloud/plan/v1\n{API_HOST}\n{}\n{}\n{}\n{}",
+            "aib-cloud/plan/v1\n{}\n{}\n{}\n{}\n{}",
+            self.origin.as_str(),
             self.method,
             self.path,
             self.form_body(),
@@ -493,6 +578,13 @@ mod tests {
     const FP2: &str = "aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:cc";
     const PW: &str = "S3cr3tPW";
 
+    // Neutral test origin (RFC 2606 reserved name): the real one is a private setting.
+    const ORIGIN: &str = "https://rescue-api.example";
+
+    fn org() -> ApiOrigin {
+        ApiOrigin::parse(ORIGIN).expect("valid")
+    }
+
     fn srv() -> ServerNumber {
         ServerNumber::parse("1234567").expect("valid")
     }
@@ -505,13 +597,66 @@ mod tests {
         Fingerprint::parse(FP2).expect("valid")
     }
 
-    // R10 / M1: the host is a constant and is https.
+    // R10 / M1 / §16: the origin is validated https, carried by the plan, used by url().
     #[test]
-    fn api_host_is_fixed_https() {
-        assert_eq!(API_HOST, "https://robot-ws.your-server.de");
-        assert!(Plan::reset(srv(), ResetType::Sw)
-            .url()
-            .starts_with("https://robot-ws.your-server.de/reset/"));
+    fn api_origin_is_https_and_used_by_url() {
+        let p = Plan::reset(org(), srv(), ResetType::Sw);
+        assert_eq!(p.origin().as_str(), ORIGIN);
+        assert_eq!(p.url(), format!("{ORIGIN}/reset/1234567"));
+        assert_eq!(Plan::status(org(), srv()).origin().as_str(), ORIGIN);
+        for ok in [
+            "https://rescue-api.example",
+            "https://a.b-c.example:8443",
+            "https://x1.example:1",
+            "https://localhost:65535",
+        ] {
+            assert!(ApiOrigin::parse(ok).is_ok(), "{ok}");
+        }
+    }
+
+    // #528 r2 M1: credentials go only to an https origin with nothing hidden in it.
+    #[test]
+    fn api_origin_rejects_everything_else() {
+        for bad in [
+            "",
+            "rescue-api.example",
+            "http://rescue-api.example",
+            "HTTPS://rescue-api.example",
+            "https://",
+            "https://rescue-api.example/",
+            "https://rescue-api.example/x",
+            "https://rescue-api.example?x=1",
+            "https://rescue-api.example#f",
+            "https://u:p@rescue-api.example",
+            "https://u@rescue-api.example",
+            "https://rescue-api.example.",
+            "https://.example",
+            "https://a..example",
+            "https://-a.example",
+            "https://a-.example",
+            "https://Rescue-api.example",
+            "https://rescue_api.example",
+            "https://rescue-api.example:",
+            "https://rescue-api.example:0",
+            "https://rescue-api.example:08443",
+            "https://rescue-api.example:65536",
+            "https://rescue-api.example:1:2",
+            "https://rescue-api.example:８４４３",
+            "https://réscue.example",
+            "https://[::1]",
+            "https://203.0.113.5",
+            "https://203.0.113.5:8443",
+            "https://example.123",
+            " https://rescue-api.example",
+            "https://rescue-api.example ",
+            "https://rescue-api.example\n",
+        ] {
+            assert_eq!(ApiOrigin::parse(bad), Err(Error::BadOrigin), "{bad:?}");
+        }
+        // the refusal does not echo the (possibly private) value
+        let msg = Error::BadOrigin.to_string();
+        assert!(!msg.contains("example") && !msg.contains("http://"));
+        assert_eq!(Error::BadOrigin.code(), "bad_origin");
     }
 
     // R9 / H2 / K5 / K8 / #532 M3: only ASCII digits, checked per character —
@@ -588,7 +733,7 @@ mod tests {
     #[test]
     fn rescue_needs_fingerprint() {
         assert_eq!(
-            Plan::rescue(srv(), vec![]).expect_err("refused"),
+            Plan::rescue(org(), srv(), vec![]).expect_err("refused"),
             Error::NoFingerprint
         );
     }
@@ -596,7 +741,7 @@ mod tests {
     // R2: the rescue form is exactly os=linux + one authorized_key[] per fingerprint.
     #[test]
     fn rescue_plan_shape() {
-        let p = Plan::rescue(srv(), vec![fp()]).expect("plan");
+        let p = Plan::rescue(org(), srv(), vec![fp()]).expect("plan");
         assert_eq!(p.method(), "POST");
         assert_eq!(p.path(), "/boot/1234567/rescue");
         assert_eq!(
@@ -610,8 +755,8 @@ mod tests {
     // #532 L2: fingerprints are de-duplicated and sorted, so the same set always gives the same plan.
     #[test]
     fn rescue_fingerprints_sorted_and_unique() {
-        let a = Plan::rescue(srv(), vec![fp2(), fp(), fp()]).expect("plan");
-        let b = Plan::rescue(srv(), vec![fp(), fp2()]).expect("plan");
+        let a = Plan::rescue(org(), srv(), vec![fp2(), fp(), fp()]).expect("plan");
+        let b = Plan::rescue(org(), srv(), vec![fp(), fp2()]).expect("plan");
         assert_eq!(a, b);
         assert_eq!(a.fingerprints(), &[fp(), fp2()]);
         assert_eq!(a.approval_facts().fp, format!("{FP},{FP2}"));
@@ -627,7 +772,7 @@ mod tests {
     // R5b: reset sends type=<t>.
     #[test]
     fn reset_plan_shape() {
-        let p = Plan::reset(srv(), ResetType::Sw);
+        let p = Plan::reset(org(), srv(), ResetType::Sw);
         assert_eq!(
             (p.method(), p.path(), p.form_body().as_str()),
             ("POST", "/reset/1234567", "type=sw")
@@ -638,7 +783,7 @@ mod tests {
     // R4: status is three GETs, no mutation, no gate.
     #[test]
     fn status_paths() {
-        let s = Plan::status(srv());
+        let s = Plan::status(org(), srv());
         assert_eq!(
             s.paths(),
             &[
@@ -655,7 +800,7 @@ mod tests {
     #[test]
     fn approval_facts_equal_request() {
         let long = ServerNumber::parse("1234567890").expect("ok");
-        let p = Plan::rescue(long.clone(), vec![fp(), fp2()]).expect("plan");
+        let p = Plan::rescue(org(), long.clone(), vec![fp(), fp2()]).expect("plan");
         let f = p.approval_facts();
         assert_eq!(f.server, "1234567890");
         assert!(p.path().contains(&f.server));
@@ -663,31 +808,48 @@ mod tests {
         assert!(p.form_body().contains(&FP.replace(':', "%3A")));
         assert_eq!(f.action, "rescue");
         assert_eq!(f.plan_hash, p.plan_hash());
-        assert_eq!(Plan::reset(long, ResetType::Hw).approval_facts().fp, "-");
+        assert_eq!(f.origin, ORIGIN);
+        assert_eq!(
+            Plan::reset(org(), long, ResetType::Hw).approval_facts().fp,
+            "-"
+        );
     }
 
     // The canonical form is versioned and its fields are in a fixed order; a golden
     // value guards against silently changing the hash input.
     #[test]
     fn canonical_is_versioned_and_golden() {
-        let p = Plan::reset(srv(), ResetType::Sw);
+        let p = Plan::reset(org(), srv(), ResetType::Sw);
         assert_eq!(
             p.canonical(),
-            format!("aib-cloud/plan/v1\n{API_HOST}\nPOST\n/reset/1234567\ntype=sw\n{NO_ROLLBACK}")
+            format!("aib-cloud/plan/v1\n{ORIGIN}\nPOST\n/reset/1234567\ntype=sw\n{NO_ROLLBACK}")
         );
-        assert_eq!(p.plan_hash(), "2c66af24ad356f39");
+        assert_eq!(p.plan_hash(), "c11d36a0503b48ca");
     }
 
     // plan_hash binds the approval to one request shape: any change to path/body changes it.
     #[test]
     fn plan_hash_changes_with_request() {
-        let a = Plan::reset(srv(), ResetType::Sw);
-        let b = Plan::reset(srv(), ResetType::Hw);
-        let c = Plan::reset(ServerNumber::parse("7654321").expect("ok"), ResetType::Sw);
-        assert_eq!(a.plan_hash(), Plan::reset(srv(), ResetType::Sw).plan_hash());
+        let a = Plan::reset(org(), srv(), ResetType::Sw);
+        let b = Plan::reset(org(), srv(), ResetType::Hw);
+        let c = Plan::reset(
+            org(),
+            ServerNumber::parse("7654321").expect("ok"),
+            ResetType::Sw,
+        );
+        assert_eq!(
+            a.plan_hash(),
+            Plan::reset(org(), srv(), ResetType::Sw).plan_hash()
+        );
         assert_ne!(a.plan_hash(), b.plan_hash());
         assert_ne!(a.plan_hash(), c.plan_hash());
         assert_eq!(a.plan_hash().len(), 16);
+        // the origin is part of the approval: same request to another origin = another plan
+        let elsewhere = ApiOrigin::parse("https://other.example").expect("ok");
+        assert_ne!(
+            a.plan_hash(),
+            Plan::reset(elsewhere, srv(), ResetType::Sw).plan_hash()
+        );
     }
 
     // R5 / K1 / #532 M2: every secret-looking key is masked at any depth; URL userinfo is
@@ -700,7 +862,7 @@ mod tests {
             "error": {"status": 401, "pass": "x"},
             "api_key": PW, "apiKey": PW, "access_token": PW, "client_secret": PW,
             "Authorization": format!("Basic {PW}"),
-            "url": format!("https://ws:{PW}@robot-ws.your-server.de/server/1?x=1"),
+            "url": format!("https://ws:{PW}@rescue-api.example/server/1?x=1"),
             "urls": [format!("http://u:{PW}@h/"), "https://h/no-userinfo"],
             "plain": "keep me",
         });
@@ -720,10 +882,7 @@ mod tests {
         ] {
             assert_eq!(v[k], "***", "{k}");
         }
-        assert_eq!(
-            v["url"],
-            "https://***:***@robot-ws.your-server.de/server/1?x=1"
-        );
+        assert_eq!(v["url"], "https://***:***@rescue-api.example/server/1?x=1");
         assert_eq!(v["urls"][0], "http://***:***@h/");
         assert_eq!(v["urls"][1], "https://h/no-userinfo");
         assert_eq!(v["rescue"]["active"], true);

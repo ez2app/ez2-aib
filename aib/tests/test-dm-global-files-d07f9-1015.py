@@ -181,7 +181,7 @@ class Inbox(Base):
                     "Andy(全球·已驗證)", "Andy(全球·已驗證)", None, 42):
             self.assertIsNone(G.clean_display_name(raw), raw)
         # 顯示名稱 → 人格名 → npub 前 12 碼
-        self.assertEqual(G.queue_fields(inbox(display_name="IP:1.2.3.4/6ddf/X"))["shown_name"], "AIB工程師")
+        self.assertEqual(G.queue_fields(inbox(display_name="IP:192.0.2.4/6ddf/X"))["shown_name"], "AIB工程師")
         self.assertEqual(G.queue_fields(inbox(display_name=None))["shown_name"], "AIB工程師")
         r = inbox()
         del r["display_name"], r["persona_name"]

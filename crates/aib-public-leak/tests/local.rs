@@ -298,3 +298,82 @@ fn install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone() {
         "#!/bin/sh\nexit 0\n"
     );
 }
+
+/// S23 (Andy 11-12 23:0x): every test Mac has a new git, so the old-git path (no
+/// `--attr-source`, Apple Git 2.39 on macOS 15) is checked with a stand-in `git` that reports
+/// 2.39.5 and passes every other call to the real one. A file the base's attributes call binary
+/// must then be read as text and still stop the push.
+#[cfg(unix)]
+#[test]
+fn an_old_git_reads_every_file_as_text_and_still_stops_the_push() {
+    use std::os::unix::fs::PermissionsExt;
+    let (d, deny) = repo("oldgit");
+    std::fs::write(d.join(".gitattributes"), "*.dat binary\n").expect("write");
+    git(&d, &["add", ".gitattributes"]);
+    git(&d, &["commit", "-q", "-m", "attrs"]);
+    git(&d, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let base = git(&d, &["rev-parse", "HEAD"]);
+    let head = commit(&d, "x.dat", "moved to ExampleHost\n", "data");
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("sh")
+            .stdout,
+    )
+    .expect("utf8");
+    let bin = tmp("fakegit");
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = version ] && {{ echo 'git version 2.39.5 (Apple Git-154)'; exit 0; }}\nexec '{}' \"$@\"\n",
+            real.trim()
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let go = |p: &str| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_aib-public-leak"));
+        c.arg("--repo")
+            .arg(&d)
+            .args(["--local-sources", "--pre-push", "--denylist-file"])
+            .arg(&deny)
+            .arg("--hosts-json")
+            .arg(d.join("no-hosts.json"))
+            .env("PATH", p)
+            .env_remove("AIB_PUBLIC_DENYLIST")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().expect("runs");
+        use std::io::Write;
+        ch.stdin
+            .take()
+            .expect("stdin")
+            .write_all(push_line(&head, &base).as_bytes())
+            .expect("stdin");
+        ch.wait_with_output().expect("waits")
+    };
+    let o = go(&path);
+    let out = text(&o);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "old git: read as text, so it hits: {out}"
+    );
+    assert!(out.contains("full_read"), "{out}");
+    assert_no_leak(&out);
+    // the real (new) git keeps the base's attribute: the file is binary and not read
+    let o = go(&std::env::var("PATH").unwrap_or_default());
+    let out = text(&o);
+    if !out.contains("full_read") {
+        assert_eq!(o.status.code(), Some(0), "{out}");
+        assert!(out.contains("1 binary file(s) not read"), "{out}");
+    }
+}

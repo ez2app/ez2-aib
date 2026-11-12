@@ -2,9 +2,9 @@
 //! aib-public-leak — RULES §16 gate (approvals-to-rust C10; becomes `aib-verify public-leak`
 //! once aib-verify is on main).
 //!
-//!   aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist]
+//!   aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist] [--full-read]
 //!   aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR]
-//!                   [--denylist-file FILE] [--hosts-json FILE]
+//!                   [--denylist-file FILE] [--hosts-json FILE] [--full-read]
 //!   aib-public-leak --install-hook [--repo DIR]
 //!
 //! Checks the added lines of `git diff BASE...HEAD`, the messages of `git log BASE..HEAD` and,
@@ -16,6 +16,9 @@
 //! The diff reads .gitattributes from BASE (`git --attr-source=BASE`, 043dd #636 L1): a PR that
 //! adds `*.rs binary` or `-diff` cannot turn its own added lines into "Binary files differ".
 //! Files BASE's attributes call binary are counted as not read in the summary.
+//! `--attr-source` needs git 2.41; with an older git (Apple Git 2.39 on macOS 15), an unknown
+//! version, or `--full-read`, every file is read as text instead (`full_read` in the summary):
+//! stricter, never looser (DECISION-690-old-git).
 //!
 //! Local mode (`--local-sources`, 建議表 #12): the denylist is the private file
 //! (default ~/.ez2-aib/public-denylist, same format as the CI secret, read strictly; `word:`
@@ -35,7 +38,8 @@
 
 use aib_public_leak::local::{hosts_entries, parse_pre_push, parse_strict, PushRef};
 use aib_public_leak::{
-    parse_diff, parse_log, pr_text, report_line, scan, Denylist, Finding, Input, DENYLIST_ENV,
+    diff_args, git_version, has_attr_source, parse_diff, parse_log, pr_text, report_line, scan,
+    Denylist, Finding, Input, DENYLIST_ENV,
 };
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -53,11 +57,12 @@ struct Args {
     denylist_file: Option<PathBuf>,
     hosts_json: Option<PathBuf>,
     install_hook: bool,
+    full_read: bool,
 }
 
-const USAGE: &str = "usage: aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist]
+const USAGE: &str = "usage: aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist] [--full-read]
        aib-public-leak --install-hook [--repo DIR]
-       aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR] [--denylist-file FILE] [--hosts-json FILE]";
+       aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR] [--denylist-file FILE] [--hosts-json FILE] [--full-read]";
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut a = Args {
@@ -72,6 +77,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         denylist_file: None,
         hosts_json: None,
         install_hook: false,
+        full_read: false,
     };
     let mut it = argv.iter().skip(1);
     while let Some(k) = it.next() {
@@ -88,6 +94,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--text-file" => a.text_file = Some(PathBuf::from(v()?)),
             "--denylist-file" => a.denylist_file = Some(PathBuf::from(v()?)),
             "--hosts-json" => a.hosts_json = Some(PathBuf::from(v()?)),
+            "--full-read" => a.full_read = true,
             _ => return Err(format!("unknown argument {k}")),
         }
     }
@@ -133,28 +140,20 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
         let sub = args.iter().find(|a| !a.starts_with('-')).unwrap_or(&"");
         return Err(format!("git {sub} failed ({})", o.status));
     }
-    String::from_utf8(o.stdout).map_err(|_| "git output is not UTF-8".to_string())
+    // a file read as text may hold any bytes: lossy, never a failure (DECISION-690-old-git)
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-/// What was read, and how many files the base's attributes kept as binary (not read).
-fn gather(a: &Args) -> Result<(Input, usize), String> {
+/// What was read, how many files the base's attributes kept as binary (not read), and whether
+/// attributes came from BASE (false = every file read as text).
+fn gather(a: &Args) -> Result<(Input, usize, bool), String> {
     let range3 = format!("{}...{}", a.base, a.head);
     let range2 = format!("{}..{}", a.base, a.head);
-    // attributes from BASE, never from the PR's own tree
-    let attr = format!("--attr-source={}", a.base);
-    let diff = git(
-        &a.repo,
-        &[
-            &attr,
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-renames",
-            "-U0",
-            &range3,
-            "--",
-        ],
-    )?;
+    // attributes from BASE, never from the PR's own tree; old git ⇒ every file as text
+    let attr_source = attr_source_usable(a);
+    let args = diff_args(&a.base, &range3, attr_source);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let diff = git(&a.repo, &argv)?;
     let log = git(&a.repo, &["log", "--format=%H%x00%B%x1e", &range2, "--"])?;
     let (title, body) = match &a.event {
         None => (None, None),
@@ -178,6 +177,7 @@ fn gather(a: &Args) -> Result<(Input, usize), String> {
             text: None,
         },
         binary,
+        attr_source,
     ))
 }
 
@@ -222,11 +222,22 @@ fn local_denylist(a: &Args) -> Result<Denylist, (u8, String)> {
     Ok(deny)
 }
 
+/// Whether this git can take attributes from a base (`--attr-source`, git 2.41+) and
+/// `--full-read` was not asked for; same test as `gather`.
+fn attr_source_usable(a: &Args) -> bool {
+    let version = git(&a.repo, &["version"]).ok();
+    !a.full_read && has_attr_source(version.as_deref().and_then(git_version))
+}
+
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Every commit a pre-push sends, each with its own added lines and message.
 /// Returns (commit sha, its input, binary files not read).
-fn pre_push_inputs(a: &Args, refs: &[PushRef]) -> Result<Vec<(String, Input, usize)>, String> {
+fn pre_push_inputs(
+    a: &Args,
+    refs: &[PushRef],
+    attr_source: bool,
+) -> Result<Vec<(String, Input, usize)>, String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for r in refs.iter().filter(|r| !r.is_delete()) {
@@ -248,7 +259,6 @@ fn pre_push_inputs(a: &Args, refs: &[PushRef]) -> Result<Vec<(String, Input, usi
                 r.remote_sha.clone(),
             )
         };
-        let attr = format!("--attr-source={attr_base}");
         for c in list.lines().map(str::trim).filter(|c| !c.is_empty()) {
             if !seen.insert(c.to_string()) {
                 continue;
@@ -259,20 +269,10 @@ fn pre_push_inputs(a: &Args, refs: &[PushRef]) -> Result<Vec<(String, Input, usi
                 .nth(1)
                 .unwrap_or(EMPTY_TREE)
                 .to_string();
-            let diff = git(
-                &a.repo,
-                &[
-                    &attr,
-                    "diff",
-                    "--no-color",
-                    "--no-ext-diff",
-                    "--no-renames",
-                    "-U0",
-                    &parent,
-                    c,
-                    "--",
-                ],
-            )?;
+            // same diff as CI (a9136 DECISION-690-old-git): old git ⇒ every file as text
+            let args = diff_args(&attr_base, &format!("{parent}..{c}"), attr_source);
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            let diff = git(&a.repo, &argv)?;
             let log = git(
                 &a.repo,
                 &["log", "-n", "1", "--format=%H%x00%B%x1e", c, "--"],
@@ -372,7 +372,8 @@ fn run_local(a: &Args) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        let inputs = match pre_push_inputs(a, &refs) {
+        let attr_source = attr_source_usable(a);
+        let inputs = match pre_push_inputs(a, &refs, attr_source) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("aib-public-leak: {e}");
@@ -389,16 +390,17 @@ fn run_local(a: &Args) -> ExitCode {
         return finish(
             &found,
             format!(
-                "checked {} ref(s), {} commit(s) one by one, {lines} added line(s), denylist {}, {binary} binary file(s) not read",
+                "checked {} ref(s), {} commit(s) one by one, {lines} added line(s), denylist {}, {binary} binary file(s) not read{}",
                 refs.len(),
                 inputs.len(),
-                entries(deny.len())
+                entries(deny.len()),
+                if attr_source { "" } else { ", full_read" }
             ),
             &deny,
             true,
         );
     }
-    let (input, binary) = match gather(a) {
+    let (input, binary, attr_source) = match gather(a) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("aib-public-leak: {e}");
@@ -410,10 +412,11 @@ fn run_local(a: &Args) -> ExitCode {
     finish(
         &found,
         format!(
-            "checked {} file(s), {lines} added line(s), {} commit(s), denylist {}, {binary} binary file(s) not read",
+            "checked {} file(s), {lines} added line(s), {} commit(s), denylist {}, {binary} binary file(s) not read{}",
             input.files.len(),
             input.commits.len(),
-            entries(deny.len())
+            entries(deny.len()),
+            if attr_source { "" } else { ", full_read" }
         ),
         &deny,
         true,
@@ -490,13 +493,21 @@ fn main() -> ExitCode {
         return run_local(&a);
     }
     let deny = Denylist::parse(&std::env::var(DENYLIST_ENV).unwrap_or_default());
-    let (input, binary) = match gather(&a) {
+    let (input, binary, attr_source) = match gather(&a) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("aib-public-leak: {e}");
             return ExitCode::from(2);
         }
     };
+    if !attr_source {
+        let why = if a.full_read {
+            "--full-read"
+        } else {
+            "attr_source_unsupported: git < 2.41 or version unknown"
+        };
+        println!("public-leak: full_read ({why}): every file read as text");
+    }
     if deny.is_empty() {
         println!("public-leak: denylist_absent ({DENYLIST_ENV} not set or empty): only the IPv4 rule ran");
     }

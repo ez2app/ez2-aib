@@ -66,6 +66,188 @@ pub struct Stats {
     pub fork_events_by_pid: BTreeMap<u32, u64>,
     /// Fork events per whole second since start.
     pub per_second: BTreeMap<u64, u64>,
+    /// Command line of each forking pid, read once at its first fork event
+    /// and shaped by [`argv_label`] (goal 2 prerequisite 1: `by_parent` only
+    /// says "bash", this says which bash). At most [`PARENT_ARGV_CAP`] pids.
+    pub parent_argv: BTreeMap<u32, String>,
+    /// Fork events whose pid got no `parent_argv` entry because the map was
+    /// full. Report only.
+    pub parent_argv_dropped: u64,
+}
+
+/// Most pids kept in [`Stats::parent_argv`].
+pub const PARENT_ARGV_CAP: usize = 4096;
+/// Longest [`argv_label`], in characters (before the trailing `…`).
+pub const ARGV_LABEL_MAX: usize = 256;
+/// Longest single word inside an [`argv_label`], in characters.
+pub const ARGV_WORD_MAX: usize = 80;
+
+/// Words that make a flag or a header name look like it carries a secret
+/// (matched without case, anywhere in the name).
+const SECRET_NAMES: &[&str] = &[
+    "token",
+    "key",
+    "secret",
+    "pass",
+    "auth",
+    "bearer",
+    "cookie",
+    "credential",
+    "session",
+];
+/// Starts of well-known tokens; a word starting with one is hidden whole.
+const TOKEN_PREFIXES: &[&str] = &[
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "sk-",
+    "AKIA",
+];
+/// Words after which the rest of a word is a credential (`Bearer x`).
+const SECRET_SCHEMES: &[&str] = &["bearer ", "basic ", "token "];
+
+fn names_secret(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    SECRET_NAMES.iter().any(|n| l.contains(n))
+}
+
+/// Whether the word after `flag` is its value and may be a secret:
+/// `-p` (mysql, sshpass) or a `-`/`--` flag whose name looks secret.
+fn flag_takes_secret(flag: &str) -> bool {
+    flag == "-p"
+        || (flag.starts_with('-')
+            && !flag.contains('=')
+            && names_secret(flag.trim_start_matches('-')))
+}
+
+/// One word with its secrets cut out (before the per-character pass, which
+/// still hides everything after `=`). Byte offsets come from ASCII-only
+/// searches, so every cut is on a character boundary.
+fn hide_secrets(word: &str) -> String {
+    if TOKEN_PREFIXES.iter().any(|t| word.starts_with(t)) {
+        return "…".to_owned();
+    }
+    // https://user:tok@host/… ⇒ https://…@host/…
+    if let Some(i) = word.find("://") {
+        let rest = &word[i + 3..];
+        if let Some(at) = rest.find('@') {
+            if !rest[..at].contains('/') {
+                return format!("{}…{}", &word[..i + 3], &rest[at..]);
+            }
+        }
+    }
+    // a header like `X-Api-Key: abc` or `Authorization: Basic abc`
+    if let Some(c) = word.find(':') {
+        if !word[c..].starts_with("://") && names_secret(&word[..c]) {
+            return format!("{}: …", &word[..c]);
+        }
+    }
+    let lower = word.to_ascii_lowercase();
+    for s in SECRET_SCHEMES {
+        if let Some(i) = lower.find(s) {
+            return format!("{}…", &word[..i + s.len()]);
+        }
+    }
+    word.to_owned()
+}
+
+/// A command line as one short, printable line for a measurement report:
+/// words joined by spaces; control, format and line / paragraph separator
+/// characters become `?`; secrets are replaced by `…` — the value after
+/// `=`, the word after a secret-looking flag (`--token x`, `-p x`), a URL's
+/// user and password, a header value whose name looks secret, what follows
+/// `Bearer ` / `Basic ` / `token `, and a word that starts like a known token;
+/// each word is cut at [`ARGV_WORD_MAX`] and the whole at
+/// [`ARGV_LABEL_MAX`] characters, a cut marked with `…`.
+/// An empty or unreadable command line is `?`.
+pub fn argv_label(argv: &[String]) -> String {
+    let mut out = String::new();
+    let mut n = 0usize;
+    let mut hide_next = false;
+    for raw in argv {
+        let word = if hide_next {
+            "…".to_owned()
+        } else {
+            hide_secrets(raw)
+        };
+        hide_next = flag_takes_secret(raw);
+        let mut w = String::new();
+        let mut cut = false;
+        for (wn, c) in word.chars().enumerate() {
+            if wn == ARGV_WORD_MAX {
+                cut = true;
+                break;
+            }
+            if c == '=' {
+                w.push_str("=…");
+                break;
+            }
+            w.push(if c.is_control() || is_format(c) {
+                '?'
+            } else {
+                c
+            });
+        }
+        if cut {
+            w.push('…');
+        }
+        if w.is_empty() {
+            continue;
+        }
+        for c in (if out.is_empty() { "" } else { " " })
+            .chars()
+            .chain(w.chars())
+        {
+            if n == ARGV_LABEL_MAX {
+                out.push('…');
+                return out;
+            }
+            out.push(c);
+            n += 1;
+        }
+    }
+    if out.is_empty() {
+        "?".to_owned()
+    } else {
+        out
+    }
+}
+
+/// Unicode format characters (bidi overrides, zero-width, tag characters)
+/// and the line / paragraph separators U+2028 / U+2029 that would make a
+/// label print differently from what it holds (or on two lines).
+fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
+        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F)
+}
+
+impl Stats {
+    /// Keep `label` as the command line of forking `pid` unless it already
+    /// has one; when [`PARENT_ARGV_CAP`] pids are kept, count a drop instead.
+    pub fn note_parent_argv(&mut self, pid: u32, label: Option<String>) {
+        if self.parent_argv.contains_key(&pid) {
+            return;
+        }
+        match label {
+            Some(l) if self.parent_argv.len() < PARENT_ARGV_CAP => {
+                self.parent_argv.insert(pid, l);
+            }
+            _ => self.parent_argv_dropped += 1,
+        }
+    }
+
+    /// Whether a fork by `pid` still needs its command line read.
+    pub fn wants_parent_argv(&self, pid: u32) -> bool {
+        !self.parent_argv.contains_key(&pid) && self.parent_argv.len() < PARENT_ARGV_CAP
+    }
 }
 
 /// Fault injection for the child listing (tests and `aib-forkcount
@@ -233,6 +415,34 @@ mod imp {
 
     pub fn program_name(pid: u32) -> Option<String> {
         name(i32::try_from(pid).ok()?).ok()
+    }
+
+    /// The command line of `pid` (`KERN_PROCARGS2` through sysinfo: no fork,
+    /// no `unsafe` here). `None` when the process is gone or refused.
+    pub fn program_argv(pid: u32) -> Option<Vec<String>> {
+        // sysinfo 0.40: `System::new` can fail; no reading = no argv ("?")
+        program_argv_with(&mut sysinfo::System::new().ok()?, pid)
+    }
+
+    /// [`program_argv`] with a `System` the caller keeps: the watch thread
+    /// builds one and reuses it, so a busy fork storm does not pay a new
+    /// `System` per forking pid on the thread that reads NOTE_FORK (a9136
+    /// #705 L2). A pid that is gone is dropped from `sys` (`remove_dead`), so
+    /// a reused pid never gets the old command line.
+    pub fn program_argv_with(sys: &mut sysinfo::System, pid: u32) -> Option<Vec<String>> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+        let p = Pid::from_u32(pid);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[p]),
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        let cmd = sys.process(p)?.cmd();
+        Some(
+            cmd.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        )
     }
 
     fn watch(kq: &Kqueue, pid: u32) -> bool {
@@ -541,6 +751,8 @@ mod imp {
             0,
         );
         let mut buf = [blank; 64];
+        // one System for the whole watch (a9136 #705 L2); none ⇒ argv "?"
+        let mut sys = sysinfo::System::new().ok();
         loop {
             let n = match kq.kevent(&[], &mut buf, None) {
                 Ok(n) => n,
@@ -557,8 +769,19 @@ mod imp {
                         let read_ns = uptime_ns().unwrap_or(0);
                         let exited = ev.fflags().contains(FilterFlag::NOTE_EXIT);
                         let parent = program_name(pid).unwrap_or_else(|| "?".into());
+                        // read outside the lock (the guard of a one-line
+                        // `lock(sh)...then(..)` would live through the read)
+                        let want = lock(sh).stats.wants_parent_argv(pid);
+                        let argv = want.then(|| {
+                            super::argv_label(
+                                &sys.as_mut()
+                                    .and_then(|s| program_argv_with(s, pid))
+                                    .unwrap_or_default(),
+                            )
+                        });
                         {
                             let mut g = lock(sh);
+                            g.stats.note_parent_argv(pid, argv);
                             g.record(read_ns, pid, TraceKind::Fork { exited });
                             g.stats.fork_events += 1;
                             *g.stats.fork_events_by_pid.entry(pid).or_default() += 1;
@@ -626,6 +849,10 @@ mod imp {
         None
     }
 
+    pub fn program_argv(_pid: u32) -> Option<Vec<String>> {
+        None
+    }
+
     /// Not available on this OS yet (Windows: Job Object messages, ADR 0005).
     pub struct ForkWatch;
 
@@ -665,7 +892,7 @@ mod imp {
     }
 }
 
-pub use imp::{program_name, start_time, uptime_ns, ForkWatch};
+pub use imp::{program_argv, program_name, start_time, uptime_ns, ForkWatch};
 
 #[cfg(test)]
 mod errno_tests {
@@ -686,5 +913,148 @@ mod errno_tests {
             None
         );
         assert_eq!(errno_in("errno = x"), None);
+    }
+
+    /// The text errno_in reads is libproc's real output, not a copy of it: a libproc
+    /// upgrade that changes the format turns this red instead of silently sending every
+    /// EPERM back to start_unknown (1ced7 #624 inc L1).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn libproc_error_text_carries_errno() {
+        use libproc::libproc::bsd_info::BSDInfo;
+        use libproc::libproc::proc_pid::pidinfo;
+        // no such pid: ESRCH (3)
+        let e = pidinfo::<BSDInfo>(i32::MAX, 0).unwrap_err();
+        assert_eq!(errno_in(&e), Some(3), "{e}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+mod argv_tests {
+    use super::{argv_label, Stats, ARGV_LABEL_MAX, ARGV_WORD_MAX, PARENT_ARGV_CAP};
+
+    fn v(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn label_joins_words_and_marks_empty() {
+        assert_eq!(
+            argv_label(&v(&["/bin/bash", "pane-tick.sh", "-x"])),
+            "/bin/bash pane-tick.sh -x"
+        );
+        assert_eq!(argv_label(&[]), "?", "reason: argv_empty_not_marked");
+        assert_eq!(
+            argv_label(&v(&["", ""])),
+            "?",
+            "reason: argv_empty_not_marked"
+        );
+    }
+
+    #[test]
+    fn label_hides_values_after_equals() {
+        let l = argv_label(&v(&["env", "TOKEN=s3cret", "--key=abc", "run"]));
+        assert_eq!(l, "env TOKEN=… --key=… run", "reason: argv_value_leaked");
+        assert!(!l.contains("s3cret"), "reason: argv_value_leaked {l}");
+    }
+
+    #[test]
+    fn label_hides_secrets_that_have_no_equals_sign() {
+        // a9136 #705 M1: header values, URL user / password, a flag's next word
+        for (argv, secret) in [
+            (
+                vec!["curl", "-H", "Authorization: Bearer ghx_s3cret"],
+                "s3cret",
+            ),
+            (vec!["curl", "-H", "X-Api-Key: s3cret"], "s3cret"),
+            (vec!["curl", "-u", "x", "-H", "Bearer s3cret"], "s3cret"),
+            (
+                vec!["git", "clone", "https://user:s3cret@github.com/o/r"],
+                "s3cret",
+            ),
+            (vec!["mysql", "-p", "s3cret", "db"], "s3cret"),
+            (vec!["aib", "--token", "s3cret"], "s3cret"),
+            (vec!["x", "--password", "s3cret"], "s3cret"),
+            (vec!["x", "--client-secret", "s3cret"], "s3cret"),
+            (vec!["gh", "ghp_s3cret"], "s3cret"),
+            (vec!["x", "Basic czNjcmV0"], "czNjcmV0"),
+        ] {
+            let l = argv_label(&v(&argv));
+            assert!(!l.contains(secret), "reason: argv_value_leaked {l}");
+        }
+        // the parts goal 2 needs stay readable
+        assert_eq!(
+            argv_label(&v(&["git", "clone", "https://user:s3cret@github.com/o/r"])),
+            "git clone https://…@github.com/o/r",
+            "reason: argv_url_host_lost"
+        );
+        assert_eq!(
+            argv_label(&v(&["bash", "title-beat.sh", "--once"])),
+            "bash title-beat.sh --once",
+            "reason: argv_plain_words_hidden"
+        );
+        assert_eq!(
+            argv_label(&v(&["aib", "--token", "s3cret", "run"])),
+            "aib --token … run",
+            "reason: argv_value_leaked"
+        );
+    }
+
+    #[test]
+    fn label_replaces_control_and_format_characters() {
+        let l = argv_label(&v(&[
+            "a\u{1b}[2Jb",
+            "c\u{202e}d",
+            "e\u{200b}f",
+            "g\u{e0041}h",
+            "i\u{2028}j\u{2029}k",
+        ]));
+        assert_eq!(
+            l, "a?[2Jb c?d e?f g?h i?j?k",
+            "reason: argv_unprintable_kept"
+        );
+    }
+
+    #[test]
+    fn label_cuts_long_words_and_long_lines() {
+        let long = "x".repeat(ARGV_WORD_MAX + 5);
+        let l = argv_label(&v(&[&long]));
+        assert_eq!(
+            l.chars().count(),
+            ARGV_WORD_MAX + 1,
+            "reason: argv_word_not_cut"
+        );
+        assert!(l.ends_with('…'));
+        let many: Vec<String> = (0..100).map(|i| format!("w{i:03}")).collect();
+        let l = argv_label(&many);
+        assert_eq!(
+            l.chars().count(),
+            ARGV_LABEL_MAX + 1,
+            "reason: argv_line_not_cut"
+        );
+        assert!(l.ends_with('…'));
+    }
+
+    #[test]
+    fn first_label_wins_and_the_cap_counts_drops() {
+        let mut s = Stats::default();
+        assert!(s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("first".into()));
+        assert!(!s.wants_parent_argv(7));
+        s.note_parent_argv(7, Some("second".into()));
+        assert_eq!(s.parent_argv[&7], "first", "reason: argv_overwritten");
+        assert_eq!(s.parent_argv_dropped, 0);
+        for p in 0..u32::try_from(PARENT_ARGV_CAP).unwrap() {
+            s.note_parent_argv(1000 + p, Some("x".into()));
+        }
+        assert_eq!(
+            s.parent_argv.len(),
+            PARENT_ARGV_CAP,
+            "reason: argv_cap_exceeded"
+        );
+        assert!(!s.wants_parent_argv(1));
+        s.note_parent_argv(1, None);
+        assert_eq!(s.parent_argv_dropped, 2, "reason: argv_drop_not_counted");
     }
 }

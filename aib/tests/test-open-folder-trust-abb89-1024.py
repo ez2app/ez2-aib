@@ -377,10 +377,10 @@ class CursorMenuSuspect(unittest.TestCase):
 class BridgeSystemNotice(unittest.TestCase):
     def test_system_notice_is_system_card_not_unverified_seat(self):
         import sand_bridge
-        kind, label = sand_bridge._dm_card("IP:100.1.1.1/6ddf/系統@aib >> IP:100.1.1.1/6ddf/未綁@6d76f "
+        kind, label = sand_bridge._dm_card("IP:100.64.0.201/6ddf/系統@aib >> IP:100.64.0.201/6ddf/未綁@6d76f "
                                            "10-24 04:24(台北時間) 長訊已落檔")
         self.assertEqual((kind, label), ("system", "AIB 系統"))
-        kind, _ = sand_bridge._dm_card("IP:100.1.1.1/6ddf/dev@abb89 >> IP:100.1.1.1/6ddf/dev1@6d76f "
+        kind, _ = sand_bridge._dm_card("IP:100.64.0.201/6ddf/dev@abb89 >> IP:100.64.0.201/6ddf/dev1@6d76f "
                                        "10-24 04:24(台北時間) hi")
         self.assertEqual(kind, "dm")
 
