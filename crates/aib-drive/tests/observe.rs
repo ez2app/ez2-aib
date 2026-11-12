@@ -315,6 +315,7 @@ fn wired() -> aib_drive::observe::ExpectSide {
     aib_drive::observe::ExpectSide {
         table: vec![serde_json::json!({"goal_id": "A1", "state": "unverified", "pr": 7})],
         unknown: None,
+        ..Default::default()
     }
 }
 
@@ -594,4 +595,37 @@ fn expect_rows_reach_drive_without_an_order_of_their_own() {
             );
         }
     }
+}
+
+#[test]
+fn the_report_says_how_many_evidence_lines_were_unreadable() {
+    // 1ced7 wiring N1: skipped evidence is counted in the report, not only
+    // visible as a thinner table
+    use aib_drive::observe::{expect_side, record_with};
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goals = vec![aib_expect::Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let log = aib_expect::EvidenceLog {
+        unreadable: 2,
+        ..Default::default()
+    };
+    let side = expect_side(&gh, REPO, Ok(goals), Ok(log), &snap(), 1);
+    assert_eq!(side.unreadable_evidence, 2);
+    let rec = record_with(
+        1,
+        REPO,
+        &BTreeMap::new(),
+        Ok((snap(), Some(side))),
+        Some(EV),
+    );
+    assert_eq!(rec.report.unwrap().unreadable_evidence, 2);
+    // a report written before the field still reads, as 0
+    let old = serde_json::json!({
+        "event": EV, "at": 1, "table": [], "expect_unknown": null,
+        "next": [], "ai_order": null, "dry_run": true
+    });
+    let r: aib_drive::report::Report = serde_json::from_value(old).unwrap();
+    assert_eq!(r.unreadable_evidence, 0);
 }

@@ -164,11 +164,14 @@ pub struct Record {
 }
 
 /// What aib-expect said this round (DESIGN-drive-expect-wiring): its whole
-/// table as `gap_json` rows, and why the goals could not be used, if so.
+/// table as `gap_json` rows, why the goals could not be used, if so, and how
+/// many evidence lines could not be read (1ced7 wiring N1: a reader of the
+/// report sees that some evidence was skipped, not only a thinner table).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExpectSide {
     pub table: Vec<Value>,
     pub unknown: Option<String>,
+    pub unreadable_evidence: usize,
 }
 
 /// aib-expect's side of one round, from the snapshot drive just read. The
@@ -200,6 +203,7 @@ pub fn expect_side(
     ExpectSide {
         table: r.table.iter().map(ex::gap_json).collect(),
         unknown: r.source_unknown,
+        unreadable_evidence: r.unreadable_evidence,
     }
 }
 
@@ -301,7 +305,16 @@ pub fn record_with(
             ),
         });
     }
-    let report = event.and_then(|e| report::report(e, at, side.table, side.unknown, &would));
+    let report = event.and_then(|e| {
+        report::report(
+            e,
+            at,
+            side.table,
+            side.unknown,
+            side.unreadable_evidence,
+            &would,
+        )
+    });
     Record {
         at,
         kind: Kind::Round,

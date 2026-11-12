@@ -41,6 +41,10 @@ pub struct Report {
     pub table: Vec<Value>,
     /// Set when the goals could not be used (aib-expect's code).
     pub expect_unknown: Option<String>,
+    /// Evidence lines aib-expect could not read this round (0 on lines
+    /// written before this field).
+    #[serde(default)]
+    pub unreadable_evidence: usize,
     pub next: Vec<Intent>,
     pub ai_order: Option<AiOrder>,
     /// Always true in v0.
@@ -114,6 +118,7 @@ pub fn report(
     at: u64,
     table: Vec<Value>,
     expect_unknown: Option<String>,
+    unreadable_evidence: usize,
     would: &[Intent],
 ) -> Option<Report> {
     if !is_event(event) {
@@ -125,6 +130,7 @@ pub fn report(
         table,
         expect_unknown: expect_unknown
             .map(|w| crate::observe::clean(&w, crate::observe::MAX_REASON)),
+        unreadable_evidence,
         next: next_of(would),
         ai_order: None,
         dry_run: true,

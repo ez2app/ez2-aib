@@ -716,6 +716,7 @@ fn side(table: Vec<serde_json::Value>, unknown: Option<&str>) -> aib_drive::obse
     aib_drive::observe::ExpectSide {
         table,
         unknown: unknown.map(str::to_owned),
+        ..Default::default()
     }
 }
 

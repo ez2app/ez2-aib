@@ -2202,6 +2202,38 @@ jobs:
              '        "goal_id": g.goal_id, "order": 0, // knife' \
              --expect-fail expect_rows_reach_drive_without_an_order_of_their_own \
              -- cargo test -p aib-drive --locked --test observe expect_rows_reach_drive_without_an_order_of_their_own
+          # W13 (1ced7 N1) the report drops the unreadable-evidence count
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '            side.unreadable_evidence,' \
+             '            0, // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W14 (1ced7 N1) expect_side does not pass the count on
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '        unreadable_evidence: r.unreadable_evidence,' \
+             '        unreadable_evidence: 0, // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W15 (a9136 N1) without source.rs's pub use, run_fixed's old path is gone: the callers fail on a private import (E0603).
+          # A private use keeps source.rs's own run_fixed / CALL_TIMEOUT calls building, so the error is only the callers'.
+          f=crates/aib-drive/src/source.rs
+          cp "$f" "$RUNNER_TEMP/source.rs.orig"
+          python3 -I - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          old = "pub use aib_ghread::{run_fixed, CALL_TIMEOUT};"
+          assert s.count(old) == 1, "W15 anchor"
+          open(p, "w", encoding="utf-8").write(s.replace(old, "use aib_ghread::{run_fixed, CALL_TIMEOUT}; // knife"))
+          PY
+          set +e
+          cargo test -p aib-drive --locked --test snapshot --no-run > "$RUNNER_TEMP/w15.log" 2>&1
+          rc=$?
+          set -e
+          cp "$RUNNER_TEMP/source.rs.orig" "$f"
+          if [ "$rc" -ne 0 ] && grep -q 'E0603' "$RUNNER_TEMP/w15.log"; then
+            echo "KNIFE source_pub_use_keeps_old_paths: BITES rc=$rc"
+          else
+            echo "KNIFE source_pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w15.log"; exit 1
+          fi
           # W7 (a9136 item 5) without the pub use, drive's own tests no longer build: the old path is real.
           # Keeps the private Read import snapshot.rs uses, so the error is the callers' unresolved GhRead (E0432).
           f=crates/aib-drive/src/snapshot.rs
