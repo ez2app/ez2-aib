@@ -526,6 +526,65 @@ pub fn opened_of(reply: &str) -> Option<Opened> {
     })
 }
 
+/// The code of the customer's own opening in the host's answer to `site create`
+/// (`{"site": <code>, "state": "opening"}`, with `opening` or with the refusal
+/// `already_opening`): `None` when the answer is not of that shape or the code is not one.
+pub fn opening_code_of(reply: &str) -> Option<alloc::string::String> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    if v.get("state").and_then(Value::as_str) != Some("opening") {
+        return None;
+    }
+    let site = v.get("site").and_then(Value::as_str)?;
+    let known = crate::site::valid_code(site);
+    if !known {
+        return None;
+    }
+    Some(site.into())
+}
+
+/// The domain of an opening of the customer's that was abandoned (stopped, and what it
+/// had made was cleared), as the host's answer to `site <code> status` tells it: `state`
+/// `stopped`, `why` `abandoned`, and the domain asked for. Any other stop is not one.
+pub fn abandoned_domain_of(reply: &str) -> Option<alloc::string::String> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    let stopped = v.get("state").and_then(Value::as_str) == Some("stopped");
+    let abandoned = v.get("why").and_then(Value::as_str) == Some("abandoned");
+    if !stopped || !abandoned || !is_opening(reply) {
+        return None;
+    }
+    let domain = v.get("domain").and_then(Value::as_str)?;
+    if !crate::edge::valid_domain(domain) {
+        return None;
+    }
+    Some(domain.into())
+}
+
+/// A site just opened whose answer names no administrator (`admins` missing or empty):
+/// its code and domain, for the opened sentence that says the login comes separately
+/// ([`crate::wording::opened_without_login`]). An answer naming one is [`opened_of`]'s.
+pub fn opened_without_login_of(
+    reply: &str,
+) -> Option<(alloc::string::String, alloc::string::String)> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    let open = v.get("state").and_then(Value::as_str) == Some("open");
+    if !open || !is_opening(reply) {
+        return None;
+    }
+    let named = v
+        .get("admins")
+        .and_then(Value::as_array)
+        .is_some_and(|a| !a.is_empty());
+    if named {
+        return None;
+    }
+    let site = v.get("site").and_then(Value::as_str)?;
+    let domain = v.get("domain").and_then(Value::as_str)?;
+    if !crate::site::valid_code(site) || !crate::edge::valid_domain(domain) {
+        return None;
+    }
+    Some((site.into(), domain.into()))
+}
+
 /// What a customer is shown of their site's checks (c477a 11-10,
 /// PROPOSAL-customer-status-codes): a **whitelist**.
 ///
@@ -878,6 +937,58 @@ mod tests {
             r#"{"exit":0,"checks":[]}"#,
         ] {
             assert_eq!(opened_of(bad), None, "{bad}");
+        }
+    }
+
+    /// HUMAN-PASTE-4542e-1111 17 to 21: an opening's code, an abandoned opening's domain and
+    /// a site opened with no administrator named are read only from their own shape.
+    #[test]
+    fn the_opening_answers_are_read_only_from_their_own_shape() {
+        let opening = r#"{"site":"s-abc123","state":"opening"}"#;
+        assert_eq!(opening_code_of(opening).as_deref(), Some("s-abc123"));
+        for bad in [
+            r#"{"site":"s-abc123","state":"open"}"#,
+            r#"{"site":"S/1","state":"opening"}"#,
+            r#"{"state":"opening"}"#,
+            "already_opening",
+        ] {
+            assert_eq!(opening_code_of(bad), None, "{bad}");
+        }
+        let gone = r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned","domain":"gone.example.test"}"#;
+        assert_eq!(
+            abandoned_domain_of(gone).as_deref(),
+            Some("gone.example.test")
+        );
+        for bad in [
+            // a stop that is not an abandon, or not a stop
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","domain":"gone.example.test"}"#,
+            r#"{"site":"s-gone02","state":"opening","step_done":"clone","stopped_at":null,"why":"abandoned","domain":"gone.example.test"}"#,
+            // no domain, or one that is not one
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned"}"#,
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned","domain":"gone example"}"#,
+            // not the progress answer
+            r#"{"site":"s-gone02","state":"stopped","why":"abandoned","domain":"gone.example.test"}"#,
+        ] {
+            assert_eq!(abandoned_domain_of(bad), None, "{bad}");
+        }
+        let unnamed = r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[]}"#;
+        assert_eq!(
+            opened_without_login_of(unnamed),
+            Some((
+                alloc::string::String::from("s-abc123"),
+                alloc::string::String::from("shop.example.test")
+            ))
+        );
+        let no_list = unnamed.replace(r#","admins":[]"#, "");
+        assert!(opened_without_login_of(&no_list).is_some());
+        for bad in [
+            // an administrator named: the opened screen's
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":["ops"]}"#,
+            r#"{"site":"s-abc123","state":"opening","step_done":"edge","stopped_at":null,"domain":"shop.example.test","admins":[]}"#,
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"admins":[]}"#,
+            r#"{"site":"S/1","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[]}"#,
+        ] {
+            assert_eq!(opened_without_login_of(bad), None, "{bad}");
         }
     }
 
