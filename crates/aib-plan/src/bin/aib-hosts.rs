@@ -735,7 +735,7 @@ fn taipei_clock(t: i64) -> String {
 
 /// 主機群(Andy 11-12 15:0x):每台一個直立小機箱，預設收合;點一台(或按 1–9)看明細，再點返回。
 /// 機箱 6 行 × CELL 格：名字 / 頂 / 負載上半 / 負載下半 / 底(兩顆燈：連線、租約)/ 功能 + 負載
-const CELL: usize = 10;
+const CELL: usize = 12;
 const TOWER_H: usize = 6;
 const LEVELS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -798,6 +798,7 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     } else {
         Color::DarkGrey
     };
+    let gap = " ".repeat(CELL - 8);
     let pad = |t: String| {
         let t = fit(&t, CELL - 1);
         let n = CELL.saturating_sub(w(&t));
@@ -818,16 +819,23 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     };
     vec![
         vec![(pad(format!("{num}{}", h.name)), kind_color(h))],
-        vec![("┌──────┐  ".into(), edge)],
-        vec![("│".into(), edge), (top, fill_c), ("│  ".into(), edge)],
-        vec![("│".into(), edge), (low, fill_c), ("│  ".into(), edge)],
+        vec![(format!("┌──────┐{gap}"), edge)],
+        vec![("│".into(), edge), (top, fill_c), (format!("│{gap}"), edge)],
+        vec![("│".into(), edge), (low, fill_c), (format!("│{gap}"), edge)],
         vec![
             ("└".into(), edge),
             (led_net.0.to_string(), led_net.1),
             (led_use.0.to_string(), led_use.1),
-            ("────┘  ".into(), edge),
+            (format!("────┘{gap}"), edge),
         ],
-        vec![(pad(format!("{} {stat}", h.role)), Color::DarkGrey)],
+        // 負載數字一定看得到;功能字太長就截
+        vec![(
+            pad(format!(
+                "{} {stat}",
+                fit(&h.role, (CELL - 2).saturating_sub(w(&stat) + 1))
+            )),
+            Color::DarkGrey,
+        )],
     ]
 }
 
@@ -1292,22 +1300,26 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         });
         let l = screen(&hs, 102, 0, 1500);
         assert!(text(&l[0]).starts_with("主機群 "), "{}", text(&l[0]));
-        assert_eq!(l.len(), 2 + 2 * TOWER_H, "102 格一排 10 台,12 台兩排");
+        assert_eq!(l.len(), 2 + 2 * TOWER_H, "102 格一排 8 台,12 台兩排");
         for (r, row) in l.iter().enumerate().skip(2) {
             assert!(w(&text(row)) <= 102, "row {r} too wide");
         }
         assert!(text(&l[2]).starts_with("1h0"));
         // HELD:10 核負載 5.1 ⇒ 51%,黃
         assert!(text(&l[7]).starts_with("測試 51%"), "{}", text(&l[7]));
-        // 第二排第二台 = 主機,2/8 = 25%
+        // 第二排第四台 = 主機,2/8 = 25%
         assert!(
             text(&l[8 + TOWER_H - 1]).contains("正式站 25%"),
             "{}",
             text(&l[13])
         );
-        // 點第二排第 2 台 ⇒ 打開 h11;明細模式點哪都不是機箱
-        assert_eq!(hit(&hs, 102, 12, 2 + TOWER_H + 3), Some(11));
-        assert_eq!(hit(&hs, 102, 25, 2 + TOWER_H + 3), None, "第二排只有 2 台");
+        // 點第二排第 4 台 ⇒ 打開 h11;明細模式點哪都不是機箱
+        assert_eq!(hit(&hs, 102, 3 * CELL + 2, 2 + TOWER_H + 3), Some(11));
+        assert_eq!(
+            hit(&hs, 102, 4 * CELL + 2, 2 + TOWER_H + 3),
+            None,
+            "第二排只有 4 台"
+        );
         assert_eq!(hit(&hs, 102, 3, 1), None, "標題列");
         hs[11].open = true;
         let d = screen(&hs, 102, 0, 1500);
