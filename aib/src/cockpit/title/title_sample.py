@@ -5,7 +5,7 @@
 import json, os, re, sys, time
 
 # 介面號(PLAN-aibtitle-install-043dd-1113 r2 包 2):Rust 的 aib-title 帶 AIB_TITLE_PROTO 來;
-# 不是這裡的號 ⇒ 什麼都不做、rc 75(aib-title 轉成 126,窗格連 3 幀就退回 title-beat.sh)。
+# 不是這裡的號 ⇒ 在加 sys.path、載入座艙模組之前就停(上面只 import 標準庫),什麼都不做、rc 75(aib-title 轉成 126,窗格連 3 幀就退回 title-beat.sh)。
 # bash 舊路不帶這個變數 ⇒ 不檢查。改了輸入變數或輸出格式就把號 +1,crates/aib-title/src/lib.rs 的
 # SAMPLER_PROTO 一起改(crates/aib-title/tests/title.rs 把兩邊釘在一起)。
 TB_PROTO = 1

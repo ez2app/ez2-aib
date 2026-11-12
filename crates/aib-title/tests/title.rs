@@ -502,7 +502,7 @@ fn sampler_proto_reads_one_digits_line_only() {
 
 /// A cockpit dir whose sampler says `body`; the binary run against it with a python stub that
 /// records whether it was called. Returns (rc, stub called, beat file written).
-fn run_against_sampler(body: &str) -> (i32, bool, bool) {
+fn run_against_sampler(body: &str) -> (i32, Option<String>, bool) {
     let td = tempfile::tempdir().expect("tempdir");
     let t = td.path();
     let ck = t.join("cockpit");
@@ -514,7 +514,12 @@ fn run_against_sampler(body: &str) -> (i32, bool, bool) {
     let stub = t.join("py-stub");
     fs::write(
         &stub,
-        format!("#!/bin/sh\ntouch '{}'\necho T\n", called.display()),
+        // records the handshake variable it was given (L1 of the 043dd §18 review: without
+        // this, dropping `.env("AIB_TITLE_PROTO", …)` kept every test green)
+        format!(
+            "#!/bin/sh\nprintf '%s' \"${{AIB_TITLE_PROTO-unset}}\" > '{}'\necho T\n",
+            called.display()
+        ),
     )
     .expect("stub");
     Command::new("chmod")
@@ -533,7 +538,7 @@ fn run_against_sampler(body: &str) -> (i32, bool, bool) {
         .expect("run");
     (
         o.status.code().unwrap_or(-1),
-        called.exists(),
+        fs::read_to_string(&called).ok(),
         state.join(BEAT_FILE).exists(),
     )
 }
@@ -550,12 +555,16 @@ fn other_proto_or_none_is_126_before_anything_runs_or_is_written() {
     ] {
         let (rc, called, beat) = run_against_sampler(body);
         assert_eq!(rc, PROTO_FALLBACK_RC, "rc_126 {what}");
-        assert!(!called, "sampler_not_run {what}");
+        assert_eq!(called, None, "sampler_not_run {what}");
         assert!(!beat, "beat_not_moved {what}");
     }
     let same = format!("TB_PROTO = {SAMPLER_PROTO}\n");
     let (rc, called, beat) = run_against_sampler(&same);
-    assert_eq!((rc, called, beat), (0, true, true), "same_proto_runs");
+    assert_eq!(
+        (rc, called, beat),
+        (0, Some(SAMPLER_PROTO.to_string()), true),
+        "same_proto_runs_and_sends_the_number"
+    );
 }
 
 /// The sampler's own refusal (rc 75, an older binary than the sampler) comes back as 126;
@@ -582,7 +591,13 @@ fn sampler_refusal_75_becomes_126() {
 /// says nothing on stdout.
 #[test]
 fn real_sampler_refuses_another_number_first() {
-    let py = if cfg!(windows) { "python" } else { "python3" };
+    // Windows: env_clear() drops SYSTEMROOT, which some Pythons need to start, and a Store
+    // `python` stub runs and returns something else (L2 of the 043dd §18 review). The parity
+    // tests skip Windows the same way.
+    if skip_without_bash() {
+        return;
+    }
+    let py = "python3";
     let td = tempfile::tempdir().expect("tempdir");
     let run = |proto: Option<&str>| {
         let mut c = Command::new(py);
