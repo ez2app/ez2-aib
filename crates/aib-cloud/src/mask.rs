@@ -282,9 +282,11 @@ pub fn conf_cores(conf: &str) -> Option<u32> {
 pub const NEUTRAL_RESOLVER: &str = "1.1.1.1"; // ip-literal-ok: well-known public resolver, never a host of ours
 
 /// Whether a CT's `nameserver` value names only public resolvers: every address in it
-/// IPv4, and none private, loopback, link-local, shared (100.64.0.0/10, where a tailnet's
-/// own resolver lives), unspecified, broadcast, multicast, reserved (240.0.0.0/4), (ip-literal-ok: range name / boundary sample, never a host of ours)
-/// documentation or benchmarking (c477a, ct-mask2 N4). A private one is the host's resolver or our
+/// IPv4, and none private, loopback, link-local, shared, unspecified, broadcast, multicast,
+/// reserved, documentation or benchmarking (c477a, ct-mask2 N4).
+/// Shared is 100.64.0.0/10, where a tailnet's own resolver lives. (ip-literal-ok: range name, never a host of ours)
+/// Reserved is 240.0.0.0/4. (ip-literal-ok: range name, never a host of ours)
+/// A private one is the host's resolver or our
 /// network's (it would show in the CT's `resolv.conf`); IPv6 is not given to a site CT.
 /// An empty value is not neutral (c477a, ct-mask2 N1).
 pub fn resolver_is_neutral(value: &str) -> bool {
