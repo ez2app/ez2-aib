@@ -449,7 +449,7 @@ fn autofix_path() -> PathBuf {
         .unwrap_or_else(|| state_dir().join("aib-plan").join("autofix.jsonl"))
 }
 
-/// 樹上「自動審修」分支的節點 id(fix-1 = 最新)
+/// 樹上「自動審修」分支的節點 id(autofix-1 = 最新;前綴夠長，不會撞到進度資料的 id)
 const FIX_ID: &str = "autofix";
 
 /// 右上角的字:「影子續跑 17時45分」;沒有省成功的紀錄 ⇒ 不顯示
@@ -506,7 +506,10 @@ impl App {
     fn graft_shadow(&mut self) {
         let keep = self.plan.nodes.get(self.sel).map(|n| n.id.clone());
         let ours = |id: &str| {
-            id == SHADOW_ID || id.starts_with("shadow-") || id == FIX_ID || id.starts_with("fix-")
+            id == SHADOW_ID
+                || id.starts_with("shadow-")
+                || id == FIX_ID
+                || id.starts_with("autofix-")
         };
         self.plan.nodes.retain(|n| !ours(&n.id));
         let root = self
@@ -567,7 +570,7 @@ impl App {
                 });
                 for (i, e) in f.items.iter().enumerate() {
                     self.plan.nodes.push(Node {
-                        id: format!("fix-{}", i + 1),
+                        id: format!("autofix-{}", i + 1),
                         parent: Some(FIX_ID.into()),
                         kind: "fix".into(),
                         title: format!(
@@ -2114,27 +2117,37 @@ mod tests {
         let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["V", "shadow", "shadow-1", "autofix", "fix-1", "fix-2"],
+            vec![
+                "V",
+                "shadow",
+                "shadow-1",
+                "autofix",
+                "autofix-1",
+                "autofix-2"
+            ],
             "接在影子續跑下方;接兩次不重複;嚴重只記不修的列不收"
         );
         let title = |id: &str| app.plan.nodes.iter().find(|n| n.id == id).unwrap();
         assert_eq!(title("autofix").title, "自動審修(修 1,註記 1)");
         assert_eq!(title("autofix").parent.as_deref(), Some("V"));
         assert_eq!(
-            title("fix-1").title,
+            title("autofix-1").title,
             "11-01 09:00 註記 輕度 · 註解錯字 · #730"
         );
         assert_eq!(
-            title("fix-2").title,
+            title("autofix-2").title,
             "11-01 08:00 修 中度 · 舊名稱沒清 · #731"
         );
-        assert_eq!(title("fix-2").why.as_deref(), Some("修正 commit cb9014cd"));
-        assert_eq!(title("fix-2").owner.as_deref(), Some("a63ab"));
+        assert_eq!(
+            title("autofix-2").why.as_deref(),
+            Some("修正 commit cb9014cd")
+        );
+        assert_eq!(title("autofix-2").owner.as_deref(), Some("a63ab"));
         assert!(
             app.plan
                 .nodes
                 .iter()
-                .filter(|n| n.id.starts_with("fix") || n.id == "autofix")
+                .filter(|n| n.id.starts_with("autofix"))
                 .all(|n| n.status.is_none()),
             "沒有狀態 ⇒ 不算進完成度"
         );

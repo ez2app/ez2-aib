@@ -107,6 +107,7 @@ const SERVER_POLL: Duration = Duration::from_secs(300);
 const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
                              $(if [ -r /proc/loadavg ]; then echo \"{ $(cut -d' ' -f1-3 /proc/loadavg) }\"; \
                              else sysctl -n vm.loadavg; fi); \
+                             [ -r /proc/stat ] && echo AIB_TOPAVG; \
                              LC_ALL=C ps -Ao pid=,pcpu=,etime=,user=,lstart=,args= 2>/dev/null \
                              | sort -k2 -nr | head -5 | cut -c1-400 | sed 's/^/AIB_TOP /'";
 const STUCK: Duration = Duration::from_secs(60);
@@ -119,6 +120,7 @@ const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WI
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
                       $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null); \
+                      [ -r /proc/stat ] && echo AIB_TOPAVG; \
                       LC_ALL=C ps -Ao pid=,pcpu=,etime=,user=,lstart=,args= 2>/dev/null \
                       | sort -k2 -nr | head -5 | cut -c1-400 | sed 's/^/AIB_TOP /'";
 
@@ -195,6 +197,8 @@ struct Sample {
     runs: Vec<Waiter>,
     /// CPU 前 5 名(展開時列出「為什麼忙」,每支一顆「同意關閉」)
     top: Vec<Proc>,
+    /// Linux procps 的 %CPU 是整段壽命平均(不是現在):畫面要講清楚
+    top_avg: bool,
     err: String,
 }
 
@@ -280,15 +284,17 @@ fn owner_of(v: &Value) -> String {
 fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
     // CPU 前 5 名那幾列先拿掉，剩下的才是租約 JSON + AIB_HOSTS_SYS(數字不能混進負載)
     let top: Vec<Proc> = out.lines().filter_map(parse_top).collect();
+    let top_avg = out.lines().any(|l| l.trim() == "AIB_TOPAVG");
     let rest: String = out
         .lines()
-        .filter(|l| !l.starts_with("AIB_TOP "))
+        .filter(|l| !l.starts_with("AIB_TOP ") && l.trim() != "AIB_TOPAVG")
         .collect::<Vec<_>>()
         .join("\n");
     let out = rest.as_str();
     let mut s = Sample {
         err: err.lines().last().unwrap_or("").trim().to_string(),
         top,
+        top_avg,
         ..Sample::default()
     };
     let (json, sys) = match out.find("AIB_HOSTS_SYS ") {
@@ -864,10 +870,15 @@ fn top_lines(h: &Host, s: Option<&Sample>, room: usize) -> Vec<Line> {
         pad(),
         (
             format!(
-                "為什麼忙:{why} {:.1}/{:.0} 核 · CPU 前 {} 名合計 {sum:.0}%",
+                "為什麼忙:{why} {:.1}/{:.0} 核 · CPU 前 {} 名合計 {sum:.0}%{}",
                 s.load1,
                 s.ncpu,
-                s.top.len()
+                s.top.len(),
+                if s.top_avg {
+                    "(Linux:整段平均，不是現在)"
+                } else {
+                    ""
+                }
             ),
             Color::Magenta,
         ),
@@ -921,61 +932,156 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// 關閉指令：先比啟動時間，pid 換人或已經結束就不關;只送 TERM(不 -9)。別台走 ssh(同一組防護選項)
-fn kill_script(p: &Probe, pr: &Proc) -> String {
-    let inner = format!(
-        "now=$(LC_ALL=C ps -o lstart= -p {pid} 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'); \
-         if [ \"$now\" = {start} ]; then kill {pid} && echo killed {pid}; \
-         else echo 'pid {pid} 已結束或換成別的程式，沒有關'; exit 3; fi",
-        pid = pr.pid,
-        start = sh_quote(&pr.start)
+/// 檔名 / 腳本裡用的主機代號：只留英數與 . _ -
+fn slug(s: &str) -> String {
+    let t: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if t.is_empty() {
+        "host".into()
+    } else {
+        t
+    }
+}
+
+/// 關閉用的 SIGN 腳本(consent 只收 `bash ~/.ez2-aib/pending/SIGN-*.sh` + Touch ID,而且先過 aib-signlint):
+/// 先比啟動時間，pid 已結束或換成別的程式就不關;只送 TERM(不 -9)。別台走 ssh(同一組防護選項),
+/// 直連 255 而且 hosts.json 有跳板 ⇒ 帶 -J 再試一次;還是 255 ⇒ 寫「連不上」(不當成已關)。
+/// 啟動時間只准英數、冒號、空白(遠端不可信,ps 吐什麼都不能變成指令)⇒ 不符就不產腳本。
+fn sign_script(name: &str, p: &Probe, pr: &Proc, receipt: &str) -> Option<String> {
+    if pr.start.is_empty()
+        || !pr
+            .start
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == ' ')
+    {
+        return None;
+    }
+    let (pid, start) = (pr.pid, &pr.start);
+    let head = format!(
+        "#!/bin/bash\n\
+         # aib-hosts「同意關閉」:{name} 上 pid {pid}(比對啟動時間，只送 TERM)\n\
+         # 可丟環境: {name} 收據: {receipt}\n\
+         set -euo pipefail\n\
+         mkdir -p \"$(dirname {r})\"\n\
+         exec > >(tee -a {r}) 2>&1\n",
+        r = sh_quote(receipt)
     );
     if p.target == "local" {
-        return inner;
+        return Some(format!(
+            "{head}if ! now=$(LC_ALL=C ps -o lstart= -p {pid} | tr -s ' ' | sed 's/^ //;s/ $//'); then\n  \
+             echo 'pid {pid} 已經結束，沒有關'; exit 3\nfi\n\
+             if [ \"$now\" != '{start}' ]; then\n  echo 'pid {pid} 已換成別的程式，沒有關'; exit 3\nfi\n\
+             kill {pid}\necho 'killed {pid}'\n"
+        ));
     }
+    let inner = format!(
+        "set -eu; if ! now=$(LC_ALL=C ps -o lstart= -p {pid} | tr -s \" \" | sed \"s/^ //;s/ $//\"); \
+         then echo \"pid {pid} 已經結束，沒有關\"; exit 3; fi; \
+         if [ \"$now\" != \"{start}\" ]; then echo \"pid {pid} 已換成別的程式，沒有關\"; exit 3; fi; \
+         kill {pid}; echo \"killed {pid}\""
+    );
     let id = p
         .identity
         .as_deref()
         .map_or(String::new(), |i| format!("-i {} ", sh_quote(i)));
-    format!(
-        "ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=8 {id}-- {} {}",
-        sh_quote(&p.target),
-        sh_quote(&inner)
-    )
+    let ssh = |jump: &str| {
+        format!(
+            "ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=8 \
+             -o ServerAliveInterval=5 -o ServerAliveCountMax=3 {id}{jump}-- {} {} || rc=$?\n",
+            sh_quote(&p.target),
+            sh_quote(&inner)
+        )
+    };
+    let mut out = format!("{head}rc=0\n{}", ssh(""));
+    if let Some(j) = &p.jump_fallback {
+        out.push_str(&format!(
+            "if [ \"$rc\" = 255 ]; then\n  rc=0\n  {}fi\n",
+            ssh(&format!("-J {} ", sh_quote(j)))
+        ));
+    }
+    out.push_str(&format!(
+        "if [ \"$rc\" = 255 ]; then echo '連不上 {}(ssh 255),沒有關'; exit 4; fi\nexit \"$rc\"\n",
+        slug(name)
+    ));
+    Some(out)
 }
 
-/// 點了同意關閉：跳 Touch ID 視窗(--strong),按了才關;結果(最後一行)回傳給畫面
-fn ask_kill(idx: usize, host: String, p: Probe, pr: Proc, tx: mpsc::Sender<(usize, String)>) {
+/// consent 回來的 JSON(最後一行)⇒ 畫面上一句話;只有 result = ok 才算關了
+fn kill_note(name: &str, pid: u32, out: &str) -> String {
+    let v: Value = out
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str(l.trim()).ok())
+        .unwrap_or(Value::Null);
+    let r = v["result"].as_str().unwrap_or("");
+    let why = v["why"].as_str().unwrap_or("");
+    match r {
+        "ok" => format!("已關閉 pid {pid}({name})"),
+        "denied" => format!("沒關閉 pid {pid}:你按了拒絕"),
+        "timeout" | "expired" | "pending" => {
+            format!("沒關閉 pid {pid}:沒按 Touch ID 或 3 分鐘逾時")
+        }
+        "rc_nonzero" => format!("沒關閉 pid {pid}:已結束、換了程式或連不上(看收據)"),
+        "" => format!("沒關閉 pid {pid}:aib consent 沒回結果"),
+        _ => format!(
+            "沒關閉 pid {pid}:{r}{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!("({why})")
+            }
+        ),
+    }
+}
+
+/// 點了同意關閉：寫一支 SIGN 腳本 → `aib consent ask --strong --wait` 跳 Touch ID,等結果(按了、拒絕、逾時);
+/// 結果回傳給畫面
+fn ask_kill(idx: usize, name: String, p: Probe, pr: Proc, tx: mpsc::Sender<(usize, String)>) {
     std::thread::spawn(move || {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let tag = format!("{}-{}-{}", slug(&name), pr.pid, now());
+        let receipt = home
+            .join(".ez2-aib/state/aib-hosts/kill")
+            .join(format!("{tag}.log"));
+        let sign = home
+            .join(".ez2-aib/pending")
+            .join(format!("SIGN-aibhosts-kill-{tag}.sh"));
+        let Some(script) = sign_script(&name, &p, &pr, &receipt.to_string_lossy()) else {
+            let _ = tx.send((
+                idx,
+                format!("沒關閉 pid {}:啟動時間格式不對，不產關閉腳本", pr.pid),
+            ));
+            return;
+        };
+        if let Err(e) = std::fs::write(&sign, script) {
+            let _ = tx.send((
+                idx,
+                format!("沒關閉 pid {}:寫不了 {}({e})", pr.pid, sign.display()),
+            ));
+            return;
+        }
         let summary = format!(
-            "關閉 {host} 上 pid {}({:.0}% CPU,跑了 {},{})",
-            pr.pid,
-            pr.cpu,
-            pr.etime,
-            fit(&pr.cmd, 80)
+            "關閉 {name} 上 pid {}({:.0}% CPU,跑了 {})",
+            pr.pid, pr.cpu, pr.etime
         );
         let o = Command::new("aib")
-            .args(["consent", "ask", "--strong", "--summary", summary.as_str()])
-            .args(["bash", "-c", kill_script(&p, &pr).as_str()])
+            .args(["consent", "ask", "--strong", "--wait", "200", "--json"])
+            .args(["--summary", summary.as_str(), "bash"])
+            .arg(&sign)
             .stdin(Stdio::null())
             .output();
         let note = match o {
-            Ok(o) if o.status.success() => format!("已關閉 pid {}({host})", pr.pid),
-            Ok(o) => {
-                let all = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&o.stdout),
-                    String::from_utf8_lossy(&o.stderr)
-                );
-                format!(
-                    "沒關閉 pid {}:{}",
-                    pr.pid,
-                    all.lines()
-                        .rev()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("沒同意或逾時")
-                )
-            }
+            Ok(o) => kill_note(&name, pr.pid, &String::from_utf8_lossy(&o.stdout)),
             Err(e) => format!("沒關閉 pid {}:叫不起 aib consent({e})", pr.pid),
         };
         let _ = tx.send((idx, note));
@@ -1405,7 +1511,10 @@ fn main() {
                 KeyCode::Char(c @ '1'..='9') => {
                     let i = c as usize - '1' as usize;
                     let was = hosts.get(i).is_some_and(|h| h.open);
-                    hosts.iter_mut().for_each(|h| h.open = false);
+                    hosts.iter_mut().for_each(|h| {
+                        h.open = false;
+                        h.note = None;
+                    });
                     if let Some(h) = hosts.get_mut(i) {
                         h.open = !was;
                     }
@@ -1419,9 +1528,12 @@ fn main() {
                 let open = hosts.iter().position(|h| h.open);
                 if let (Some(i), Some(pid)) = (open, kill_hit(&lines, x, y)) {
                     let h = &mut hosts[i];
+                    // 已經在等 Touch ID ⇒ 連點不再跳第二個視窗
+                    let waiting = h.note.as_deref().is_some_and(|n| n.starts_with("等你按"));
                     if let Some(pr) = h
                         .last
                         .as_ref()
+                        .filter(|_| !waiting)
                         .and_then(|s| s.top.iter().find(|p| p.pid == pid))
                     {
                         h.note = Some(format!(
@@ -1970,37 +2082,89 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
 
     #[test]
     fn closing_checks_the_start_time_and_goes_through_hardened_ssh() {
-        let pr = Proc {
+        let mut pr = Proc {
             pid: 4321,
             cpu: 90.0,
             etime: "1:00".into(),
             user: "u".into(),
             start: "Thu Nov 12 13:20:01 2026".into(),
-            cmd: "it's".into(),
+            cmd: "x".into(),
         };
         let mut p = host("a=local", None, false).probe();
-        let local = kill_script(&p, &pr);
+        let local = sign_script("Pro 16", &p, &pr, "/r/k.log").unwrap();
+        assert!(
+            local.contains("# 可丟環境: Pro 16 收據: /r/k.log"),
+            "{local}"
+        );
+        assert!(local.contains("set -euo pipefail"), "{local}");
         assert!(local.contains("ps -o lstart= -p 4321"), "{local}");
         assert!(
-            local.contains("= 'Thu Nov 12 13:20:01 2026' ]; then kill 4321"),
+            local.contains("if [ \"$now\" != 'Thu Nov 12 13:20:01 2026' ]; then\n  echo 'pid 4321 已換成別的程式，沒有關'; exit 3"),
             "{local}"
         );
         assert!(
-            !local.contains("-9") && !local.starts_with("ssh"),
+            local.ends_with("kill 4321\necho 'killed 4321'\n"),
             "{local}"
         );
+        assert!(!local.contains("-9") && !local.contains("ssh "), "{local}");
         p.target = "me@box".into();
         p.identity = Some("/k/id".into());
-        let remote = kill_script(&p, &pr);
-        assert!(
-            remote
-                .starts_with("ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes"),
-            "{remote}"
-        );
-        assert!(remote.contains("-i '/k/id' -- 'me@box' '"), "{remote}");
+        p.jump_fallback = Some("j@hop".into());
+        let remote = sign_script("andymini", &p, &pr, "/r/k.log").unwrap();
+        let ssh: Vec<&str> = remote.lines().filter(|l| l.contains("ssh -o")).collect();
+        assert_eq!(ssh.len(), 2, "直連一次 + 跳板一次:{remote}");
+        for l in &ssh {
+            assert!(
+                l.contains("ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes"),
+                "{l}"
+            );
+            assert!(
+                l.contains("-i '/k/id' ") && l.contains("-- 'me@box' '"),
+                "{l}"
+            );
+            assert!(
+                l.contains("[ \"$now\" != \"Thu Nov 12 13:20:01 2026\" ]"),
+                "{l}"
+            );
+        }
+        assert!(ssh[1].contains("-J 'j@hop' --"), "{}", ssh[1]);
+        assert!(remote.contains(
+            "if [ \"$rc\" = 255 ]; then echo '連不上 andymini(ssh 255),沒有關'; exit 4; fi"
+        ));
+        // 遠端給的啟動時間有怪字 ⇒ 不產腳本
+        pr.start = "Thu Nov 12 13:20:01 2026'; rm -rf ~".into();
+        assert!(sign_script("a", &p, &pr, "/r").is_none());
+        pr.start.clear();
+        assert!(sign_script("a", &p, &pr, "/r").is_none());
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(slug("Pro 16/x"), "Pro_16_x");
         assert_eq!(tree_of("a /wt.noindex/x-12345/b"), Some("x-12345"));
         assert_eq!(tree_of("plain"), None);
+    }
+
+    #[test]
+    fn only_an_ok_from_consent_counts_as_closed() {
+        let n = |o: &str| kill_note("mini", 7, o);
+        assert_eq!(n("{\"id\":\"c1\",\"result\":\"ok\"}"), "已關閉 pid 7(mini)");
+        assert_eq!(n("{\"result\":\"denied\"}"), "沒關閉 pid 7:你按了拒絕");
+        assert_eq!(
+            n("{\"result\":\"timeout\"}"),
+            "沒關閉 pid 7:沒按 Touch ID 或 3 分鐘逾時"
+        );
+        assert_eq!(
+            n("{\"result\":\"pending\"}"),
+            "沒關閉 pid 7:沒按 Touch ID 或 3 分鐘逾時"
+        );
+        assert!(n("{\"result\":\"rc_nonzero\"}").contains("看收據"));
+        assert_eq!(
+            n("{\"result\":\"not_allowed\",\"why\":\"sign_lint\"}"),
+            "沒關閉 pid 7:not_allowed(sign_lint)"
+        );
+        assert_eq!(
+            n("c1 ok"),
+            "沒關閉 pid 7:aib consent 沒回結果",
+            "不是 JSON 不算關了"
+        );
     }
 
     #[test]

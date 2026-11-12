@@ -47,7 +47,8 @@ fn build(args: &[String], now: i64) -> Result<Fix, String> {
         let v = it
             .next()
             .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
+            // 值不能是空的，也不能是下一個旗標(少打一個值時不會把旗標吃成內容)
+            .filter(|v| !v.is_empty() && !v.starts_with("--"))
             .ok_or_else(|| format!("missing_value: {k}"))?;
         let slot = match k.as_str() {
             "--seat" => &mut seat,
@@ -177,5 +178,11 @@ mod tests {
         )
         .is_err());
         assert!(build(&a("list"), 7).is_err());
+        assert!(
+            build(&a("add|--seat|--work|w|--sev|L|--what|q|--state|noted"), 7)
+                .unwrap_err()
+                .starts_with("missing_value: --seat"),
+            "少一個值不能把下一個旗標吃成內容"
+        );
     }
 }
