@@ -175,7 +175,7 @@ pub fn cf_only(
     fw: &str,
     check: bool,
 ) -> Result<(Value, u8), String> {
-    let known = cfonly::parse_ranges(cfonly::BUILTIN_V4).map_err(|e| e.to_string())?;
+    let known = cfonly::builtin_ranges().map_err(|e| e.to_string())?;
     let ranges = if builtin {
         known.clone()
     } else {
@@ -350,19 +350,24 @@ mod tests {
         }
     }
 
+    /// A list in the documentation ranges: tests never carry a real address.
+    const SAMPLE: &str = "192.0.2.0/24\n198.51.100.0/24\n";
     const EDGE_FW: &str = "[OPTIONS]\nenable: 1\n\n[RULES]\nGROUP ez2-edge-v1\n";
 
     #[test]
     fn a_fetched_list_is_checked_and_its_change_shown() {
-        let list = format!("{}198.51.100.0/24\n", cfonly::BUILTIN_V4);
-        let mut f = Fake(Ok(list), 0);
+        let mut f = Fake(Ok(SAMPLE.into()), 0);
         let (doc, rc) = cf_only(&mut f, false, EDGE_FW, false).unwrap();
         assert_eq!((rc, f.1), (0, 1));
-        assert_eq!(doc["added_to_builtin"], json!(["198.51.100.0/24"]));
+        assert_eq!(
+            doc["added_to_builtin"],
+            json!(["192.0.2.0/24", "198.51.100.0/24"])
+        );
+        assert_eq!(doc["dropped_from_builtin"].as_array().unwrap().len(), 15);
         assert_eq!(doc["found_now"], json!(["set_missing", "rules_not_first"]));
         let text = doc["steps"][0]["text"].as_str().unwrap();
         // the planned file read back with --check is clean
-        let mut again = Fake(Ok(format!("{}198.51.100.0/24\n", cfonly::BUILTIN_V4)), 0);
+        let mut again = Fake(Ok(SAMPLE.into()), 0);
         assert_eq!(cf_only(&mut again, false, text, true).unwrap().1, 0);
         assert_eq!(cf_only(&mut again, false, EDGE_FW, true).unwrap().1, 1);
         // the built-in list never fetches

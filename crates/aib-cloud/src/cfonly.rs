@@ -28,8 +28,29 @@ use core::fmt;
 /// Where Cloudflare publishes its IPv4 ranges, one CIDR per line.
 pub const SOURCE_URL: &str = "https://www.cloudflare.com/ips-v4";
 
-/// Cloudflare's IPv4 ranges as [`SOURCE_URL`] gave them on 2026-11-12.
-pub const BUILTIN_V4: &str = "173.245.48.0/20\n103.21.244.0/22\n103.22.200.0/22\n103.31.4.0/22\n141.101.64.0/18\n108.162.192.0/18\n190.93.240.0/20\n188.114.96.0/20\n197.234.240.0/22\n198.41.128.0/17\n162.158.0.0/15\n104.16.0.0/13\n104.24.0.0/14\n172.64.0.0/13\n131.0.72.0/22\n";
+/// Cloudflare's IPv4 ranges as [`SOURCE_URL`] gave them on 2026-11-12, one per line.
+pub const BUILTIN_V4: [&str; 15] = [
+    "173.245.48.0/20",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "103.21.244.0/22",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "103.22.200.0/22",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "103.31.4.0/22",    // ip-literal-ok: Cloudflare 官方 ips-v4
+    "141.101.64.0/18",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "108.162.192.0/18", // ip-literal-ok: Cloudflare 官方 ips-v4
+    "190.93.240.0/20",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "188.114.96.0/20",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "197.234.240.0/22", // ip-literal-ok: Cloudflare 官方 ips-v4
+    "198.41.128.0/17",  // ip-literal-ok: Cloudflare 官方 ips-v4
+    "162.158.0.0/15",   // ip-literal-ok: Cloudflare 官方 ips-v4
+    "104.16.0.0/13",    // ip-literal-ok: Cloudflare 官方 ips-v4
+    "104.24.0.0/14",    // ip-literal-ok: Cloudflare 官方 ips-v4
+    "172.64.0.0/13",    // ip-literal-ok: Cloudflare 官方 ips-v4
+    "131.0.72.0/22",    // ip-literal-ok: Cloudflare 官方 ips-v4
+];
+
+/// [`BUILTIN_V4`] through the same check as a fetched list.
+pub fn builtin_ranges() -> Result<Vec<Range>, Error> {
+    parse_ranges(&BUILTIN_V4.join("\n"))
+}
 
 /// The set in the edge CT's firewall file that holds the ranges.
 pub const IPSET: &str = "ez2-cloudflare-v4";
@@ -244,19 +265,24 @@ pub fn readback(fw: &str, want: &[Range]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A list in the documentation ranges: tests never carry a real address.
+    const SAMPLE: &str = "192.0.2.0/24\n198.51.100.0/24\n203.0.113.128/25\n";
     const EDGE_FW: &str = "[OPTIONS]\nenable: 1\npolicy_in: DROP\n\n[RULES]\nIN ACCEPT -p tcp -dport 80,443 -log nolog\nGROUP ez2-edge-v1\n";
 
     #[test]
     fn the_builtin_list_is_cloudflare_s_and_passes_its_own_check() {
-        let r = parse_ranges(BUILTIN_V4).unwrap();
-        assert_eq!(r.len(), 15);
-        assert!(r.iter().any(|x| x.to_string() == "104.16.0.0/13"));
-        assert!(r.iter().all(|x| (8..=32).contains(&x.prefix)));
+        let r = builtin_ranges().unwrap();
+        assert_eq!(r.len(), BUILTIN_V4.len());
+        let mut shown: Vec<String> = r.iter().map(ToString::to_string).collect();
+        let mut listed: Vec<String> = BUILTIN_V4.iter().map(|l| (*l).to_string()).collect();
+        shown.sort();
+        listed.sort();
+        assert_eq!(shown, listed);
     }
 
     #[test]
     fn only_cloudflare_ranges_are_let_in() {
-        let r = parse_ranges(BUILTIN_V4).unwrap();
+        let r = parse_ranges(SAMPLE).unwrap();
         let fw = apply(EDGE_FW, &r);
         // the two rules come first: the old "80,443 from anywhere" line is after the drop
         let rules: Vec<&str> = fw.lines().skip_while(|l| *l != "[RULES]").skip(1).collect();
@@ -278,15 +304,16 @@ mod tests {
 
     #[test]
     fn a_read_back_set_must_match_exactly() {
-        let r = parse_ranges(BUILTIN_V4).unwrap();
+        let r = parse_ranges(SAMPLE).unwrap();
         let fw = apply(EDGE_FW, &r);
-        let extra = alloc::format!("{fw}198.51.100.0/24\n");
-        assert_eq!(readback(&extra, &r), ["range_extra 198.51.100.0/24"]);
-        let short = fw.replace("131.0.72.0/22\n", "");
-        assert_eq!(readback(&short, &r), ["range_missing 131.0.72.0/22"]);
-        let (added, dropped) = difference(&r, &parse_ranges("131.0.72.0/22\n1.2.3.0/24").unwrap());
-        assert_eq!(added, ["1.2.3.0/24"]);
-        assert_eq!(dropped.len(), 14);
+        let extra = alloc::format!("{fw}203.0.113.0/26\n");
+        assert_eq!(readback(&extra, &r), ["range_extra 203.0.113.0/26"]);
+        let short = fw.replace("198.51.100.0/24\n", "");
+        assert_eq!(readback(&short, &r), ["range_missing 198.51.100.0/24"]);
+        let (added, dropped) =
+            difference(&r, &parse_ranges("192.0.2.0/24\n203.0.113.0/26").unwrap());
+        assert_eq!(added, ["203.0.113.0/26"]);
+        assert_eq!(dropped, ["198.51.100.0/24", "203.0.113.128/25"]);
     }
 
     #[test]
@@ -295,22 +322,22 @@ mod tests {
         assert_eq!(parse_ranges("\n \n"), Err(Error::Empty));
         assert_eq!(parse_ranges("0.0.0.0/0\n"), Err(Error::OpenToAll));
         assert_eq!(
-            parse_ranges("173.245.48.0/20\n0.0.0.0/0"),
+            parse_ranges("192.0.2.0/24\n0.0.0.0/0"),
             Err(Error::OpenToAll)
         );
         for bad in [
-            "173.245.48.0",
-            "173.245.48.0/7",
+            "192.0.2.0",
+            "10.0.0.0/7",
             "0.0.0.0/1",
-            "173.245.48.0/33",
-            "173.245.48.0/020",
-            "173.245.048.0/20",
-            "173.245.48.1/20",
-            "173.245.48.0/20 x",
+            "192.0.2.0/33",
+            "192.0.2.0/024",
+            "192.0.002.0/24",
+            "192.0.2.1/24",
+            "192.0.2.0/24 x",
             "256.0.0.0/8",
-            "2400:cb00::/32",
+            "2001:db8::/32",
             "<html>",
-            "1.2.3.0/24\n1.2.3.0/24",
+            "192.0.2.0/24\n192.0.2.0/24",
         ] {
             assert!(
                 matches!(parse_ranges(bad), Err(Error::Malformed(_))),
@@ -318,8 +345,8 @@ mod tests {
             );
         }
         assert_eq!(
-            parse_ranges("1.2.3.4/32").unwrap()[0].to_string(),
-            "1.2.3.4/32"
+            parse_ranges("192.0.2.7/32").unwrap()[0].to_string(),
+            "192.0.2.7/32"
         );
     }
 }
