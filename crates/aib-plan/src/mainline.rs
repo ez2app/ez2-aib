@@ -18,7 +18,7 @@ pub struct Entry {
     /// 這一筆最早被看到的時間(秒)
     pub seen: i64,
     /// 判斷(aib now --track/--why/--idea);只有目前那筆讀得到
-    #[serde(default, skip_serializing)]
+    #[serde(skip)]
     pub review: Option<Review>,
     /// 歷史那一行回報的主軸符合度(aib now 回報判斷時才有;算校正次數用)
     #[serde(default, skip_serializing_if = "Option::is_none")]
