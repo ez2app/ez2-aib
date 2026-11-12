@@ -1482,6 +1482,48 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// 043dd #614 L2, made deterministic (a9136 11-12): a late-exec candidate
+    /// started with a cleared environment reads as an empty environment, so it
+    /// is kept (unreadable or other coalition), never let go as "not ours".
+    /// sysinfo's own read on macOS returns the apple strings (`ptr_munge=` …)
+    /// as variables: a readable environment without our marker. The grandchild
+    /// test in tests/tree.rs reaches this read only when the fork watcher
+    /// missed the middle process, so a knife there bites only now and then.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_cleared_environment_reads_as_empty_not_as_apple_strings() {
+        let mut child = Command::new("/usr/bin/env")
+            .args(["-i", "/bin/sleep", "5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        let env = loop {
+            let mut sys = new_system().unwrap();
+            refresh(&mut sys, true);
+            if let Some(p) = sys.process(Pid::from_u32(pid)) {
+                if p.name().to_string_lossy() == "sleep" {
+                    break candidate_env(pid, p);
+                }
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "env -i never became sleep"
+            );
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        let shown: Vec<String> = env
+            .iter()
+            .map(|e| String::from_utf8_lossy(e).into_owned())
+            .collect();
+        assert!(env.is_empty(), "a cleared environment read as {shown:?}");
+    }
+
     /// c477a #614 M1 / M2: a candidate missing from the table is reported when
     /// it is still there, skipped only when really gone, and an unreadable
     /// answer leaves the check incomplete.

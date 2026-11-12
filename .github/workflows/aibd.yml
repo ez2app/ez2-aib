@@ -2568,12 +2568,14 @@ jobs:
             --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
             -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
           # 043dd #614 L2: back to sysinfo's environ on macOS (apple strings read as variables) must
-          # turn the grandchild test red; if it does not, its green had another cause
+          # turn the cleared-environment read red. Not the grandchild test: it reaches this read only
+          # when the fork watcher missed the middle process (a9136 11-12: the knife missed on a Mac
+          # where the watcher saw it), so a knife there would be red or green by chance.
           python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
             '        aib_sys::Macos.environ(pid).unwrap_or_default()' \
             '        { let _ = pid; p.environ().iter().map(|e| e.as_encoded_bytes().to_vec()).collect() } // knife' \
-            --expect-fail a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped \
-            -- cargo test -p aibd --locked --test tree a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped
+            --expect-fail a_cleared_environment_reads_as_empty_not_as_apple_strings \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_reads_as_empty_not_as_apple_strings
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
