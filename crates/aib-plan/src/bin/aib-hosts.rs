@@ -661,6 +661,19 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
 
 /// 整張畫面，和每一行屬於哪一台(點擊用)。
 fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Option<usize>>) {
+    frame_h(hosts, width, tick, t, usize::MAX)
+}
+
+/// 窗格放不下每台 3 行(Andy 11-12 14:5x 加了 GitHub / Windows 後 14 行高只看得到 4 台)⇒
+/// 每台縮成 1 行(名字、電池、狀態),點開的那台照樣展開
+fn frame_h(
+    hosts: &[Host],
+    width: usize,
+    tick: u64,
+    t: i64,
+    height: usize,
+) -> (Vec<Line>, Vec<Option<usize>>) {
+    let compact = 2 + 3 * hosts.len() > height;
     let clock = {
         // 台北時間(UTC+8),不依賴本機時區
         let s = (t + 8 * 3600).rem_euclid(86400);
@@ -679,7 +692,11 @@ fn frame(hosts: &[Host], width: usize, tick: u64, t: i64) -> (Vec<Line>, Vec<Opt
     ];
     let mut owner: Vec<Option<usize>> = vec![None, None];
     for (i, h) in hosts.iter().enumerate() {
-        for l in host_lines(h, i, width, tick, t) {
+        let mut ls = host_lines(h, i, width, tick, t);
+        if compact && !h.open {
+            ls.truncate(1);
+        }
+        for l in ls {
             lines.push(l);
             owner.push(Some(i));
         }
@@ -819,7 +836,7 @@ fn main() {
             }
         }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
-        let (lines, owner) = frame(&hosts, cw as usize, tick, now());
+        let (lines, owner) = frame_h(&hosts, cw as usize, tick, now(), ch as usize);
         if draw(&mut out, &lines, cw as usize, ch as usize).is_err() {
             break;
         }
@@ -1071,6 +1088,26 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let idle = parse_gh("[]", true, "");
         assert_eq!(charge(Some(&idle), now), (100, Color::Green));
         assert!(!parse_gh("not json", false, "HTTP 502").online);
+    }
+
+    /// Andy 11-12 14:5x:6 台 × 3 行放不下 14 行窗格 ⇒ 每台 1 行，點開的那台照樣展開
+    #[test]
+    fn a_short_pane_shows_one_line_per_machine() {
+        let mut hs: Vec<Host> = (0..6)
+            .map(|i| host(&format!("h{i}"), Some(parse_sample(HELD, true, "")), false))
+            .collect();
+        let (lines, owner) = frame_h(&hs, 100, 0, 1500, 14);
+        assert_eq!(lines.len(), 2 + 6, "{}", lines.len());
+        assert_eq!(
+            owner[2..],
+            [Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)]
+        );
+        hs[2].open = true;
+        let (lines, owner) = frame_h(&hs, 100, 0, 1500, 14);
+        assert!(lines.len() > 2 + 6 && owner.iter().filter(|o| **o == Some(2)).count() > 1);
+        // 放得下 ⇒ 每台 3 行照舊
+        hs[2].open = false;
+        assert_eq!(frame_h(&hs, 100, 0, 1500, 40).0.len(), 2 + 18);
     }
 
     #[test]
