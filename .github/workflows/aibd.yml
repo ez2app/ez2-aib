@@ -3146,8 +3146,8 @@ jobs:
              '    if scheduler_in_place(runner, spec).is_ok() && false { // knife' \
              a_scheduler_already_in_place_is_left_alone
           # the scheduler is read back after writing
-          hk siteidentity.rs '    scheduler_in_place(runner, spec)?;' \
-             '    let _ = scheduler_in_place(runner, spec); // knife' \
+          hk siteidentity.rs '    scheduler_in_place(runner, spec)' \
+             '    { let _ = scheduler_in_place(runner, spec); Ok(()) } // knife' \
              a_scheduler_is_read_back_as_written
           # a unit file must hold what was written
           hk siteidentity.rs '        if there != text {' \
@@ -3613,9 +3613,17 @@ jobs:
              '        let _ = c; // knife: an unread part is not decisive' \
              apply_writes_nothing_where_it_does_not_know
           # site scheduler: only exit 1 of `config has` says the constant is missing
-          hk sitescheduler.rs '        (Err(_), _) => vec![Found::Unknown("cron_constant_unread")],' \
-             '        (Err(_), _) => vec![Found::Needs("cron_not_set")], // knife' \
+          hk sitescheduler.rs '        (_, Err(_), _) => vec![Found::Unknown("cron_constant_unread")],' \
+             '        (_, Err(_), _) => vec![Found::Needs("cron_not_set")], // knife' \
              the_constant_is_known_missing_only_from_exit_1
+          # site scheduler: `config has` exiting 1 believed with the configuration unread (c477a L1)
+          hk sitescheduler.rs '        (false, _, _) => vec![Found::Unknown("cron_constant_unread")],' \
+             '        (false, _, _) if false => vec![Found::Unknown("cron_constant_unread")], // knife' \
+             a_site_whose_configuration_cannot_be_read_is_unknown
+          # site scheduler: a container named for another site is entered (c477a N3)
+          hk sitescheduler.rs '        Some(_) => Gate::Skip("ct_not_this_site"),' \
+             '        Some(_) => Gate::Run, // knife' \
+             apply_refuses_a_container_that_is_not_this_site
           # site scheduler: a quarantined container is entered
           hk sitescheduler.rs '    if quarantine::is_quarantined(fw) {' \
              '    if quarantine::is_quarantined(fw) && false { // knife' \

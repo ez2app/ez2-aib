@@ -17,9 +17,12 @@
 //! alone. Only [`State::Needs`] reaches the writing (Codex 11-12 on the plan: the shared
 //! `scheduler` writes when its first reading fails; this command must not).
 //!
+//! A unit systemd cannot load (`bad-setting`, `error`) stays unknown: this command does
+//! not know what was meant there, and a person looks at it (c477a N2).
+//!
 //! **Where nothing is run.** A quarantined container is not entered (Andy 11-10), nor one
-//! that is not running; a firewall file or a container status that cannot be read stops
-//! the same way. The command never starts a container.
+//! that is not running, nor one whose name is not the site's code; a firewall file, a
+//! container status or a name that cannot be read stops the same way. The command never starts a container.
 //!
 //! **`--apply`** is an operation (`site.scheduler` on `site:<code>`, approved by root on
 //! the host only; a customer's key cannot): under the host lock the gate and the reading
@@ -225,19 +228,31 @@ pub fn judge_unit(
 
 /// The site software's own scheduler: `config has` exiting 0 then `config get` reading
 /// `1` / `true` is off as it should be; `config has` exiting 1 is a constant not there.
-pub fn judge_constant(has: Result<(), Option<i32>>, got: Option<Result<&str, ()>>) -> Vec<Found> {
-    match (has, got) {
-        (Err(Some(1)), _) => vec![Found::Needs("cron_not_set")],
-        (Err(_), _) => vec![Found::Unknown("cron_constant_unread")],
-        (Ok(()), Some(Ok(v))) if matches!(v.trim(), "1" | "true") => Vec::new(),
-        (Ok(()), Some(Ok(_))) => vec![Found::Needs("cron_not_set")],
-        (Ok(()), _) => vec![Found::Unknown("cron_constant_unread")],
+///
+/// `config has` exits 1 for any error of the site software's command line too (no
+/// configuration file, no such user): its 1 is believed only once `config path` answered
+/// (`config_read`), the configuration file is there and readable (c477a L1).
+pub fn judge_constant(
+    config_read: bool,
+    has: Result<(), Option<i32>>,
+    got: Option<Result<&str, ()>>,
+) -> Vec<Found> {
+    match (config_read, has, got) {
+        (false, _, _) => vec![Found::Unknown("cron_constant_unread")],
+        (_, Err(Some(1)), _) => vec![Found::Needs("cron_not_set")],
+        (_, Err(_), _) => vec![Found::Unknown("cron_constant_unread")],
+        (_, Ok(()), Some(Ok(v))) if matches!(v.trim(), "1" | "true") => Vec::new(),
+        (_, Ok(()), Some(Ok(_))) => vec![Found::Needs("cron_not_set")],
+        (_, Ok(()), _) => vec![Found::Unknown("cron_constant_unread")],
     }
 }
 
 /// Read every part inside the container and judge it ([`verdict`]). Reads only.
 pub fn observe(runner: &mut impl Runner, spec: &SiteSpec) -> (State, Vec<Found>) {
     let mut found = Vec::new();
+    let config_read = runner
+        .run(&wp(spec, &[QUIET[0], QUIET[1], "config", "path"]))
+        .is_ok();
     let has = runner
         .run(&wp(
             spec,
@@ -258,6 +273,7 @@ pub fn observe(runner: &mut impl Runner, spec: &SiteSpec) -> (State, Vec<Found>)
         None
     };
     found.extend(judge_constant(
+        config_read,
         has,
         got.as_ref().map(|r| r.as_deref().map_err(|_| ())),
     ));
@@ -373,7 +389,24 @@ fn gate_of(runner: &mut impl Runner, places: &Places, spec: &SiteSpec) -> Gate {
     let status = runner
         .run(&["pct".to_owned(), "status".to_owned(), ct])
         .ok();
-    gate(fw.as_deref(), status.as_deref())
+    match gate(fw.as_deref(), status.as_deref()) {
+        // only now is the container entered: its name must be the site's (c477a N3: a
+        // record from `--records` that names another site's container stops here)
+        Gate::Run => {
+            let name = runner.run(&in_ct(spec.ct, &["hostname"])).ok();
+            same_site(name.as_deref(), &spec.code)
+        }
+        skip => skip,
+    }
+}
+
+/// The container's own name against the site's code.
+pub fn same_site(hostname: Option<&str>, code: &str) -> Gate {
+    match hostname.map(str::trim) {
+        Some(h) if h == code => Gate::Run,
+        Some(_) => Gate::Skip("ct_not_this_site"),
+        None => Gate::Skip("ct_hostname_unread"),
+    }
 }
 
 fn load(places: &Places, code: &str) -> Result<SiteSpec, String> {
@@ -545,9 +578,9 @@ fn last_run(runner: &mut impl Runner, spec: &SiteSpec) -> String {
 
 /// What the person who signs must see first among the due events (4542e 11-12, c477a M1):
 /// how many may change the site's version (the automatic update and the check that
-/// starts it), send mail, or publish scheduled posts.
-pub fn marked(by: &[(String, u32)]) -> (u32, u32, u32) {
-    let mut out = (0, 0, 0);
+/// starts it), send mail, publish scheduled posts, or run the background queue.
+pub fn marked(by: &[(String, u32)]) -> (u32, u32, u32, u32) {
+    let mut out = (0, 0, 0, 0);
     for (hook, n) in by {
         let h = hook.to_ascii_lowercase();
         if h == "wp_maybe_auto_update" || h == "wp_version_check" {
@@ -558,6 +591,10 @@ pub fn marked(by: &[(String, u32)]) -> (u32, u32, u32) {
         }
         if h == "publish_future_post" {
             out.2 += n;
+        }
+        // the background queue runs whatever plugins put in it, mail among it (c477a N4)
+        if h == "action_scheduler_run_queue" {
+            out.3 += n;
         }
     }
     out
@@ -586,9 +623,9 @@ fn details(runner: &mut impl Runner, spec: &SiteSpec, now: u64) -> Vec<String> {
                 "due {total} oldest_waiting_s={oldest} hooks: {}",
                 hooks.join(" ")
             ));
-            let (update, mail, publish) = marked(&by);
+            let (update, mail, publish, queue) = marked(&by);
             lines.push(format!(
-                "marked update={update} mail={mail} publish={publish}"
+                "marked update={update} mail={mail} publish={publish} queue={queue}"
             ));
         }
         None => lines.push("due unread".to_owned()),
@@ -894,6 +931,10 @@ mod tests {
         exit: Option<(&'static str, i32)>,
         /// writes that do not take (a unit file written but read back different)
         sticky: bool,
+        /// `config path` fails: the site software cannot read its configuration
+        config_unread: bool,
+        /// the container's own name
+        hostname: &'static str,
         /// a drop-in shows up with the reload: the install's read back cannot see it
         dropin_after_write: bool,
     }
@@ -914,6 +955,8 @@ mod tests {
                 exit: None,
                 sticky: false,
                 dropin_after_write: false,
+                config_unread: false,
+                hostname: CODE,
             }
         }
         fn in_place() -> Self {
@@ -987,6 +1030,16 @@ mod tests {
                 if line.contains(f) {
                     return Err(exited(n));
                 }
+            }
+            if line.ends_with(" -- hostname") {
+                return Ok(format!("{}\n", self.hostname));
+            }
+            if line.contains("config path") {
+                return if self.config_unread {
+                    Err(exited(1))
+                } else {
+                    Ok(format!("/var/www/{CODE}/wp-config.php\n"))
+                };
             }
             if line.starts_with("pct status") {
                 return Ok(self.status.to_owned());
@@ -1186,29 +1239,34 @@ mod tests {
     #[test]
     fn the_constant_is_known_missing_only_from_exit_1() {
         assert_eq!(
-            judge_constant(Err(Some(1)), None),
+            judge_constant(true, Err(Some(1)), None),
             [Found::Needs("cron_not_set")]
         );
         assert_eq!(
-            judge_constant(Err(Some(255)), None),
+            judge_constant(true, Err(Some(255)), None),
             [Found::Unknown("cron_constant_unread")]
         );
         assert_eq!(
-            judge_constant(Err(None), None),
+            judge_constant(true, Err(None), None),
             [Found::Unknown("cron_constant_unread")]
         );
-        assert!(judge_constant(Ok(()), Some(Ok("1\n"))).is_empty());
-        assert!(judge_constant(Ok(()), Some(Ok("true"))).is_empty());
+        assert!(judge_constant(true, Ok(()), Some(Ok("1\n"))).is_empty());
+        assert!(judge_constant(true, Ok(()), Some(Ok("true"))).is_empty());
         assert_eq!(
-            judge_constant(Ok(()), Some(Ok("false"))),
+            judge_constant(true, Ok(()), Some(Ok("false"))),
             [Found::Needs("cron_not_set")]
         );
         assert_eq!(
-            judge_constant(Ok(()), Some(Err(()))),
+            judge_constant(true, Ok(()), Some(Err(()))),
             [Found::Unknown("cron_constant_unread")]
         );
         assert_eq!(
-            judge_constant(Ok(()), None),
+            judge_constant(true, Ok(()), None),
+            [Found::Unknown("cron_constant_unread")]
+        );
+        // a 1 is believed only once the configuration was read (c477a L1)
+        assert_eq!(
+            judge_constant(false, Err(Some(1)), None),
             [Found::Unknown("cron_constant_unread")]
         );
     }
@@ -1603,8 +1661,9 @@ mod tests {
             ("publish_future_post".to_owned(), 3),
             ("wp_update_plugins".to_owned(), 1),
         ];
-        assert_eq!(marked(&by), (2, 2, 3));
-        assert_eq!(marked(&[]), (0, 0, 0));
+        assert_eq!(marked(&by), (2, 2, 3, 0));
+        assert_eq!(marked(&[]), (0, 0, 0, 0));
+        assert_eq!(marked(&[("action_scheduler_run_queue".to_owned(), 1)]), (0, 0, 0, 1));
     }
 
     #[test]
@@ -1646,6 +1705,46 @@ mod tests {
             journal_states(&pl).last().map(String::as_str),
             Some("failed")
         );
+    }
+
+    #[test]
+    fn a_site_whose_configuration_cannot_be_read_is_unknown() {
+        let mut ct = Ct::fresh();
+        ct.config_unread = true;
+        assert_eq!(
+            observe(&mut ct, &spec()).0,
+            State::Unknown("cron_constant_unread")
+        );
+        let d = scratch("config-unread");
+        let p = places(&d, false);
+        let pl = place(&d);
+        let mut ct = Ct::fresh();
+        ct.config_unread = true;
+        assert_eq!(
+            apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW),
+            Ok(Applied::Skipped("cron_constant_unread"))
+        );
+        assert!(ct.writes().is_empty(), "{:?}", ct.calls);
+    }
+
+    #[test]
+    fn apply_refuses_a_container_that_is_not_this_site() {
+        assert_eq!(same_site(Some("s-sched1\n"), CODE), Gate::Run);
+        assert_eq!(same_site(Some("other"), CODE), Gate::Skip("ct_not_this_site"));
+        assert_eq!(same_site(None, CODE), Gate::Skip("ct_hostname_unread"));
+        let d = scratch("hostname");
+        let p = places(&d, false);
+        let pl = place(&d);
+        let mut ct = Ct::fresh();
+        ct.hostname = "s-other1";
+        assert_eq!(
+            apply(&pl, &p, CODE, opstore::BY_LOCAL_ROOT, &mut ct, NOW),
+            Ok(Applied::Skipped("ct_not_this_site"))
+        );
+        // nothing but its name was asked inside it
+        let inside: Vec<&String> = ct.calls.iter().filter(|l| l.starts_with("pct exec")).collect();
+        assert_eq!(inside.len(), 1, "{inside:?}");
+        assert!(ct.writes().is_empty());
     }
 
     #[test]
