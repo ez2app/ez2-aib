@@ -957,7 +957,7 @@ esac
 if [ "${1:-}" = "plan" ]; then
   case "${2:-}" in
     on|off|status)
-      # 找程式順序同 cockpit-full.sh 的 _aib_seatview_bin
+      # 找程式順序同 seatview-glue.sh 的 aib_seatview_bin
       _sv="${AIB_SEATVIEW_BIN:-}"
       [ -n "$_sv" ] || { [ -x "$HOME/.ez2-aib/bin/aib-seatview" ] && _sv="$HOME/.ez2-aib/bin/aib-seatview"; }
       [ -n "$_sv" ] || _sv="$(command -v aib-seatview 2>/dev/null || true)"
@@ -1199,6 +1199,32 @@ if [ "${POS[0]-}" = "seat-env" ]; then
   printf 'EZ2_AIB_INSTANCE=%s\nEZ2_TMUX_SESSION=%s\nEZ2_AIHUB_SOCKET=%s\nEZ2_AIB_INSTANCE_HOME=%s\n' \
     "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME"
   exit 0
+fi
+
+# `aib seatview on|off|status`(Andy 11-13 非艦長畫面改案):座艙窗切席位視角(只留對話 + 本席進度樹)/ 切回完整版面。
+# 邏輯在 Rust aib-seatview(crates/aib-plan/src/seatview.rs);這裡只接環境、補右欄要不要、off 之後跑一次 ensure
+# 讓主機群與待審框照原本的格腳本長回來。外框重開 = 窗選項消失 = 回完整版面。
+if [ "${POS[0]-}" = "seatview" ]; then
+  [ -z "$INSTANCE" ] || export EZ2_AIB_INSTANCE="$INSTANCE"
+  . "$HERE/cockpit-env.sh"
+  . "$HERE/seatview-glue.sh"
+  _sv="$(aib_seatview_bin)"
+  if [ -z "$_sv" ]; then
+    echo "aib seatview: aib-seatview not found (cargo build -p aib-plan --bin aib-seatview, then put it in ~/.ez2-aib/bin/)" >&2
+    exit 2
+  fi
+  _svw="$EZ2_TMUX_SESSION:cockpit"
+  case "${POS[1]-status}" in
+    on) "$_sv" on --window "$_svw"; exit $? ;;
+    off)
+      _svr="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _svr=""
+      case $'\n'"$_svr"$'\n' in *$'\n'right$'\n'*) _svnr="" ;; *) _svnr="--no-right" ;; esac
+      "$_sv" off --window "$_svw" $_svnr || exit $?
+      bash "$HERE/cockpit-full.sh" --ensure
+      exit $? ;;
+    status) "$_sv" status --window "$_svw"; exit $? ;;
+    *) echo "usage: aib seatview on|off|status" >&2; exit 2 ;;
+  esac
 fi
 
 # ── 工單 AS(2026-09-02):`aib seat re-register <窗>` 的前置解析 ─────────────

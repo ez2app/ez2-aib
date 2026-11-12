@@ -148,7 +148,7 @@ impl T {
         let script = format!(
             "{}{}{}cockpit_pane_plan",
             s.map(|s| format!("S={s}\n")).unwrap_or_default(),
-            extract("cockpit-full.sh", "_aib_seatview_bin"),
+            extract("seatview-glue.sh", "aib_seatview_bin"),
             extract("cockpit-full.sh", "cockpit_pane_plan")
         );
         let o = self.bash_with(&script, roles, seatview);
@@ -181,8 +181,9 @@ impl T {
     fn grow(&self, rows: &[&str], roles: &str) -> (String, Vec<String>, String, String) {
         self.write_rows(rows);
         let mut script = FAKE_TMUX.to_string();
+        // 找程式的函式在 seatview-glue.sh(cockpit-full.sh 開頭載入;a9136 S61 合成一支)
+        script.push_str(&extract("seatview-glue.sh", "aib_seatview_bin"));
         for n in [
-            "_aib_seatview_bin",
             "cockpit_pane_plan",
             "validate_cockpit_layout",
             "_assign_pane_role",

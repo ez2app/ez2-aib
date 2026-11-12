@@ -5,6 +5,7 @@
 # bottom tab pane and a separate war-room window.
 set -euo pipefail
 . "$(dirname "$0")/cockpit-env.sh"
+. "$(dirname "$0")/seatview-glue.sh"
 
 AIB_MODE="${1:---ensure}"
 AIB_PROBE_LIVE=0
@@ -50,19 +51,8 @@ AIB_TITLE="Ez2 AIB v$EZ2_AIB_VERSION"
 #   anchor `-` = 這一格是 new-session 的初始 pane(沒有切點)
 #   direction  = `v`(往下切) / `h`(往右切) / `-`(初始 pane)
 #   size       = `-` 表示不指定 -l
-# 中欄開關的 Rust 程式(519d0 11-14:開關由 Rust 管，凍結的 panes.py 不動)。
-# 找程式順序同 pane-plan.sh:$AIB_SEATVIEW_BIN → ~/.ez2-aib/bin → PATH;找不到印空字串。
-_aib_seatview_bin() {
-  if [ -n "${AIB_SEATVIEW_BIN:-}" ]; then
-    [ -x "$AIB_SEATVIEW_BIN" ] && printf '%s' "$AIB_SEATVIEW_BIN"
-    return 0
-  fi
-  if [ -x "$HOME/.ez2-aib/bin/aib-seatview" ]; then
-    printf '%s' "$HOME/.ez2-aib/bin/aib-seatview"
-    return 0
-  fi
-  command -v aib-seatview 2>/dev/null || true
-}
+# 中欄開關 / 席位視角的 Rust 程式 aib-seatview:找程式用 seatview-glue.sh 的 aib_seatview_bin(519d0 11-14:
+# 開關由 Rust 管，凍結的 panes.py 不動;找程式順序同 pane-plan.sh:$AIB_SEATVIEW_BIN → ~/.ez2-aib/bin → PATH)。
 
 cockpit_pane_plan() {
   # 接 panes.py --expected-roles:off 的格不印、不建。預設只 hub+right。
@@ -74,7 +64,7 @@ cockpit_pane_plan() {
   # 中欄(plan + hosts)與席位視角:一律問 aib-seatview filter-roles(介面 IFACE-seatview-plan-a9136-1114):
   #   開關開著且有 hub ⇒ 補 plan、hosts;席位視角 ⇒ 只剩 hub、plan。外框還不在(--print-plan,沒有 $S)不帶 --window。
   # 程式找不到或跑不起來 ⇒ 沿用 panes.py 的格(沒有中欄的舊版面),不讓開艙中止。
-  sv="$(_aib_seatview_bin)"
+  sv="$(aib_seatview_bin)"
   if [ -n "$sv" ]; then
     if [ -n "${S:-}" ]; then
       filtered="$(printf '%s\n' "$roles" | "$sv" filter-roles --window "$S:cockpit" 2>/dev/null)"
@@ -1038,8 +1028,11 @@ env -u TMUX EZ2_AIB_THEME_FILE="$EZ2_AIB_THEME_FILE" \
   bash "$C/theme-ctl.sh" --apply "$S"
 # 待審框是疊在對話底下的,不進四格計畫。重開指揮艙要自己長回來,
 # 否則畫面退回沒有黃按鈕／加高改留言的舊待審。失敗不得擋開艙。
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
-  EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" \
-  EZ2_AIB_INSTANCE_HOME="${EZ2_AIB_INSTANCE_HOME:-}" \
-  EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/pane-pending-review.sh" --ensure >/dev/null 2>&1 || true
+# 席位視角(aib seatview on)不要待審框:只留對話 + 本席進度樹。
+if ! aib_seatview_is_seat "$S:cockpit"; then
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" \
+    EZ2_AIB_INSTANCE_HOME="${EZ2_AIB_INSTANCE_HOME:-}" \
+    EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/pane-pending-review.sh" --ensure >/dev/null 2>&1 || true
+fi

@@ -17,6 +17,7 @@ P_HUB="$(_absent "$3")"
 P_RIGHT="$(_absent "$4")"
 P_BOTTOM="$(_absent "$5")"
 outer_tmux() { env -u TMUX tmux "$@"; }
+. "$(dirname "$0")/seatview-glue.sh"
 
 STATE_DIR="${EZ2_COCKPIT_STATE_DIR:-}"
 if [ -z "$STATE_DIR" ]; then
@@ -112,7 +113,8 @@ _heal_right_pane() {
     printf '32\n' > "$STATE_DIR/.right-pane-required-width"
   fi
 }
-if [ -z "$P_RIGHT" ] && [ -n "$P_HUB" ]; then
+# 席位視角(aib seatview on)本來就沒有右欄:不補(判斷在 Rust aib-seatview,沒裝 = 照舊補)
+if [ -z "$P_RIGHT" ] && [ -n "$P_HUB" ] && ! aib_seatview_is_seat "$S:cockpit"; then
   _heal_right_pane "$P_HUB"
 fi
 
