@@ -567,14 +567,15 @@ fn pick<'a>(evidence: &'a EvidenceLog, goal: &str, now: u64) -> (Option<&'a Evid
     (latest, bad_after)
 }
 
-/// The PRs whose heads decide a row: the PR of each goal's deciding line
-/// ([`pick`], the same one [`compare`] uses), not every PR the history ever
-/// named, so old PRs never push a new one past [`MAX_PRS`] (a9136 #693).
-pub fn prs_of(evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u64> {
-    let goals: std::collections::BTreeSet<&str> =
-        evidence.lines.iter().map(|e| e.goal.as_str()).collect();
+/// The PRs whose heads decide a row: the PR of each current goal's deciding
+/// line ([`pick`], the same one [`compare`] uses), not every PR the history
+/// ever named, so old PRs never push a new one past [`MAX_PRS`] (a9136 #693).
+/// Only the goals on the card count: a goal taken off it has no row, so its
+/// PRs are never read (a9136 #693 N1, FOLLOWUP X2).
+pub fn prs_of(goals: &[Goal], evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u64> {
     goals
-        .into_iter()
+        .iter()
+        .map(|g| g.id.as_str())
         .filter_map(|g| match pick(evidence, g, now) {
             (Some(e), false) => e.pr,
             _ => None,

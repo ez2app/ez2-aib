@@ -562,7 +562,7 @@ fn old_prs_never_push_the_latest_one_out() {
     new["head"] = json!(H1);
     t.push_str(&format!("{new}\n"));
     let log = parse_evidence(&t);
-    assert_eq!(prs_of(&log, NOW), BTreeSet::from([900]));
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([900]));
     let gh = FakeGh(
         [(
             "repos/o/r/pulls/900".to_owned(),
@@ -571,7 +571,7 @@ fn old_prs_never_push_the_latest_one_out() {
         .into_iter()
         .collect(),
     );
-    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
+    let snap = read_heads(&gh, "o/r", &prs_of(&g, &log, NOW));
     assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
 }
 
@@ -617,7 +617,7 @@ fn a_pr_line_after_a_future_line_is_read_and_counts() {
     good["pr"] = json!(604);
     good["head"] = json!(H1);
     let log = parse_evidence(&format!("{far}\n{good}\n"));
-    assert_eq!(prs_of(&log, NOW), BTreeSet::from([604]));
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([604]));
     let gh = FakeGh(
         [(
             "repos/o/r/pulls/604".to_owned(),
@@ -626,11 +626,36 @@ fn a_pr_line_after_a_future_line_is_read_and_counts() {
         .into_iter()
         .collect(),
     );
-    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
+    let snap = read_heads(&gh, "o/r", &prs_of(&g, &log, NOW));
     assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
     // while the future line is the last thing in the file, nothing is read
     let log = parse_evidence(&format!("{good}\n{far}\n"));
-    assert!(prs_of(&log, NOW).is_empty());
+    assert!(prs_of(&g, &log, NOW).is_empty());
+}
+
+#[test]
+fn a_goal_off_the_card_reads_no_pr() {
+    // a9136 #693 N1 / FOLLOWUP X2: a goal taken off the card has no row, so
+    // its PRs must not use up the MAX_PRS reads of the live goals
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let mut t = String::new();
+    for (i, n) in (1..=31u64).enumerate() {
+        let mut e = ev(&format!("OLD{i}"), "gone", n, 0);
+        e["pr"] = json!(n);
+        e["head"] = json!(H2);
+        t.push_str(&format!("{e}\n"));
+    }
+    let mut live = ev("A1", "a", 100, 0);
+    live["pr"] = json!(900);
+    live["head"] = json!(H1);
+    t.push_str(&format!("{live}\n"));
+    let log = parse_evidence(&t);
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([900]));
+    // no goals on the card: nothing is read
+    assert!(prs_of(&[], &log, NOW).is_empty());
 }
 
 #[test]

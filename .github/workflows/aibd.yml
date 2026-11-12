@@ -2868,6 +2868,10 @@ jobs:
           ek '        .filter_map(|g| match pick(evidence, g, now) {' \
              '        .filter_map(|g| match pick(evidence, g, now.max(u64::MAX)) { // knife' \
              a_pr_line_after_a_future_line_is_read_and_counts
+          # KE21 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
+          ek '        .map(|g| g.id.as_str())' \
+             '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
+             a_goal_off_the_card_reads_no_pr
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

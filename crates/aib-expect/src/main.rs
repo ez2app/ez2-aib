@@ -86,10 +86,12 @@ fn run(a: &Args) -> Result<u8, String> {
     let repo = get("--repo").unwrap_or("ez2app/ez2-aib");
     // an unreadable evidence file still lets `event` record (it says why)
     let evidence = ex::load_evidence(&root, uid);
-    let prs = evidence
-        .as_ref()
-        .map(|e| ex::prs_of(e, now))
-        .unwrap_or_default();
+    // goals first: only their rows read PR heads (FOLLOWUP X2)
+    let goals = ex::load_goals(&root, uid);
+    let prs = match (&goals, &evidence) {
+        (Ok(g), Ok(e)) => ex::prs_of(g, e, now),
+        _ => Default::default(),
+    };
     let snap = if on("--offline") {
         ex::Snapshot {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
@@ -122,7 +124,7 @@ fn run(a: &Args) -> Result<u8, String> {
             }
         });
     }
-    let goals = match ex::load_goals(&root, uid) {
+    let goals = match goals {
         Ok(g) => g,
         Err(e) => {
             println!("{e}");
