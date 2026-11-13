@@ -113,11 +113,17 @@ impl Config {
         let session_policy = match get("AIBD_SESSION_POLICY") {
             Some(v) => crate::allowlist::from_path(&v)?,
             None => {
+                // only "not there" means no policy; a file that cannot be looked at
+                // stops the start with the reason (043dd T80 L2: `exists()` said false)
                 let d = data_dir.join(crate::allowlist::DEFAULT_POLICY_FILE);
-                if d.exists() {
-                    crate::allowlist::from_file(&d)?
-                } else {
-                    SessionPolicy::default()
+                match std::fs::metadata(&d) {
+                    Ok(_) => crate::allowlist::from_file(&d)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => SessionPolicy::default(),
+                    Err(e) => {
+                        return Err(
+                            crate::allowlist::PolicyError::Unreadable(e.kind().to_string()).into(),
+                        )
+                    }
                 }
             }
         };
@@ -209,6 +215,20 @@ mod tests {
         assert!(matches!(
             Config::from_lookup(|_| None, Some(data)).unwrap_err(),
             ConfigError::SessionPolicy(crate::allowlist::PolicyError::Invalid(_))
+        ));
+    }
+
+    /// 043dd T80 L2: a default file that cannot be looked at stops the start with the
+    /// reason instead of quietly meaning "no policy" (here the data folder is a file).
+    #[cfg(unix)]
+    #[test]
+    fn a_default_policy_that_cannot_be_looked_at_stops_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("data");
+        std::fs::write(&not_a_dir, "").unwrap();
+        assert!(matches!(
+            Config::from_lookup(|_| None, Some(not_a_dir)).unwrap_err(),
+            ConfigError::SessionPolicy(crate::allowlist::PolicyError::Unreadable(_))
         ));
     }
 

@@ -10,6 +10,10 @@
 //!
 //! The prefix stays and the rest becomes `***`, so a reader still sees what kind of
 //! key was there. Only ASCII is touched, so a JSON line stays valid JSON.
+//!
+//! A key must start a word. In a stored line a word also starts right after a JSON
+//! escape (`\n`, `\t`, `\r`: a key alone on a line of a tool result) and after an
+//! ANSI colour code (`ESC[…m`, raw or written `\u001b[…m` in JSON) — 043dd T80 M1.
 
 use std::borrow::Cow;
 
@@ -89,6 +93,35 @@ fn is_tok(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
+/// A word can start at `i`: the start of the line, after a non-token byte, after a
+/// JSON escape `\n` `\t` `\r`, or after an ANSI colour code.
+fn word_start(bytes: &[u8], i: usize) -> bool {
+    let before = &bytes[..i];
+    let Some(&last) = before.last() else {
+        return true;
+    };
+    if !is_tok(last) {
+        return true;
+    }
+    if matches!(last, b'n' | b't' | b'r') && before[..i - 1].ends_with(b"\\") {
+        return true;
+    }
+    // `ESC [ <digits and ;> m`, the escape raw or as JSON writes it
+    if let Some(rest) = before.strip_suffix(b"m") {
+        let params = rest
+            .iter()
+            .rev()
+            .take_while(|c| c.is_ascii_digit() || **c == b';')
+            .count();
+        if let Some(rest) = rest[..rest.len() - params].strip_suffix(b"[") {
+            return rest.ends_with(b"\x1b")
+                || rest.ends_with(b"\\u001b")
+                || rest.ends_with(b"\\u001B");
+        }
+    }
+    false
+}
+
 /// The body length of `r` at `rest` (the text after the prefix), if it is a match.
 fn body(r: &Rule, rest: &[u8]) -> Option<usize> {
     let n = rest
@@ -114,7 +147,7 @@ pub fn mask(line: &str) -> Cow<'_, str> {
     let mut i = 0;
     while i < bytes.len() {
         // a key starts a word: `risk-…` never matches `sk-`
-        if i == 0 || !is_tok(bytes[i - 1]) {
+        if word_start(bytes, i) {
             let hit = RULES.iter().find_map(|r| {
                 let p = r.prefix.as_bytes();
                 if bytes[i..].starts_with(p) {
@@ -229,9 +262,45 @@ mod tests {
             "Bearer short".to_string(),
             "a 40-hex commit 0123456789abcdef0123456789abcdef01234567".to_string(),
             "naïve text — with non-ASCII ✓".to_string(),
+            r"\nrisk-assessment-0123456789abcdefghij".to_string(), // escape, then no key
+            format!("warm{}", k("ghp_", "0123456789abcdefghijABCDEFGHIJ")), // `m`, no ESC[
         ] {
             assert!(matches!(mask(&s), Cow::Borrowed(_)), "{s} -> {}", mask(&s));
         }
+    }
+
+    /// 043dd T80 M1: Claude's stream-json writes a tool result's line break as `\n`, so a
+    /// key alone on a line follows an `n`; coloured output puts it after `…m`.
+    #[test]
+    fn a_key_after_a_json_escape_or_a_colour_code_is_masked() {
+        let ghp = k("ghp_", "0123456789abcdefghijABCDEFGHIJ");
+        let cases = [
+            (
+                format!(r#"{{"content":"line1\n{ghp}"}}"#),
+                r#"{"content":"line1\nghp_***"}"#,
+            ),
+            (
+                format!(r"a\t{}", k("AKIA", "IOSFODNN7EXAMPLE")),
+                r"a\tAKIA***",
+            ),
+            (format!(r"x\r{ghp}"), r"x\rghp_***"),
+            (
+                format!(r"\u001b[32m{}", k("sk-ant-", "api03-AbCdEf0123456789xyz")),
+                r"\u001b[32msk-ant-***",
+            ),
+            (
+                format!("\x1b[1;32m{ghp}\x1b[0m"),
+                "\x1b[1;32mghp_***\x1b[0m",
+            ),
+            (format!("\x1b[m{ghp}"), "\x1b[mghp_***"),
+        ];
+        for (inp, want) in cases {
+            assert_eq!(mask(&inp), want, "{inp}");
+        }
+        // the JSON line stays JSON and the key is gone from the value
+        let line = serde_json::json!({"content": format!("a\n{ghp}\nb")}).to_string();
+        let v: serde_json::Value = serde_json::from_str(&mask(&line)).unwrap();
+        assert_eq!(v["content"], "a\nghp_***\nb");
     }
 
     #[test]

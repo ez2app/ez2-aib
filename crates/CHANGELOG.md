@@ -10,12 +10,24 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
     (`PATH`, `HOME`, locale, `TERM`, temp folder, and on Windows the system folders,
     user profile and app data paths) and the names the policy lists under `env`;
     a token or API key aibd itself has stays out unless the policy names it.
+    **Upgrading:** a claude that logs in with an API key, Bedrock or Vertex, goes
+    through a proxy or a company CA, uses a moved config folder, or a session that
+    uses ssh-agent needs those names in the policy. `aibd ctl policy init` now lists
+    the ones set where it runs (names only, printed): `ANTHROPIC_API_KEY`,
+    `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` /
+    `_VERTEX`, `AWS_*` login names, `GOOGLE_APPLICATION_CREDENTIALS`,
+    `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, the proxy names,
+    `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+    `CLAUDE_CODE_GIT_BASH_PATH`, `SSH_AUTH_SOCK`. An existing policy file is not
+    rewritten: add the names by hand.
   - with `AIBD_SESSION_POLICY` unset, aibd reads `session-policy.json` from its data
     folder (the file `aibd ctl policy init` writes) on every platform; the variable
-    still wins, and a bad default file stops start like a bad named one.
+    still wins, and a bad default file, or one that cannot be looked at, stops start
+    like a bad named one.
   - known key formats a program prints (`sk-ant-`, `sk-`, `ghp_` and other GitHub
     tokens, `glpat-`, Slack `xox?-`, AWS `AKIA` / `ASIA`, Google `AIza`, JWTs,
-    `Bearer …`) are masked to `<prefix>***` before the line is stored. Fixed prefixes
+    `Bearer …`) are masked to `<prefix>***` before the line is stored, also right
+    after a JSON escape (`\n`, `\t`, `\r`) or an ANSI colour code. Fixed prefixes
     only, so Claude's ids stay readable; best effort.
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in

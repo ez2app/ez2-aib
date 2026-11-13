@@ -659,7 +659,12 @@ fn policy_init() -> Result<(), String> {
     if programs.is_empty() {
         return Err("no verified standalone provider found; policy not written".into());
     }
-    let policy = json!({"programs": programs, "env": []});
+    // names only: the values stay in this shell and in aibd's own environment
+    let env = aibd::allowlist::prefill_env(|k| std::env::var_os(k).is_some());
+    if !env.is_empty() {
+        eprintln!("env names listed (set here now): {}", env.join(" "));
+    }
+    let policy = json!({"programs": programs, "env": env});
     write_policy_new(&path, policy.to_string().as_bytes())?;
     println!("export AIBD_SESSION_POLICY='{shown}'");
     println!("Policy is user-writable and is not a same-user security boundary. Restart aibd to load it.");

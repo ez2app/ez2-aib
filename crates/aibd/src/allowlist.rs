@@ -561,6 +561,50 @@ pub fn parse(text: &str) -> Result<SessionPolicy, PolicyError> {
     })
 }
 
+/// Env names `aibd ctl policy init` lists when they are set where it runs (043dd T80
+/// L1): with them unset in the child, claude cannot log in (API key, Bedrock, Vertex),
+/// cannot reach the network (proxy, CA), loses its config folder, or git over ssh in a
+/// session fails. Only names go in the file, never a value.
+pub const PREFILL_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "CLAUDE_CODE_GIT_BASH_PATH",
+    "SSH_AUTH_SOCK",
+];
+
+/// The [`PREFILL_ENV`] names `is_set` says are set; of names that differ only in case
+/// the first set one (the policy file keeps one name per case-insensitive group).
+pub fn prefill_env(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for &k in PREFILL_ENV {
+        if is_set(k) && !out.iter().any(|o| o.eq_ignore_ascii_case(k)) {
+            out.push(k);
+        }
+    }
+    out
+}
+
 /// Read and check the file `AIBD_SESSION_POLICY` names.
 /// The policy file aibd reads from its data folder when `AIBD_SESSION_POLICY` is unset.
 pub const DEFAULT_POLICY_FILE: &str = "session-policy.json";
@@ -1082,5 +1126,20 @@ mod tests {
             };
             assert_eq!(resolve(s(&copy), &p), Ok(real(s(&copy))));
         }
+    }
+
+    /// 043dd T80 L1: every name `policy init` may write passes the policy check, and only
+    /// the set ones are written.
+    #[test]
+    fn prefill_names_pass_the_check_and_only_set_ones_are_listed() {
+        let names: Vec<String> = PREFILL_ENV.iter().map(|s| s.to_string()).collect();
+        let t = serde_json::json!({ "env": names }).to_string();
+        assert!(parse(&t).is_ok(), "{t}");
+        assert!(prefill_env(|_| false).is_empty());
+        let set = ["HTTPS_PROXY", "https_proxy", "SSH_AUTH_SOCK", "UNRELATED"];
+        assert_eq!(
+            prefill_env(|k| set.contains(&k)),
+            ["HTTPS_PROXY", "SSH_AUTH_SOCK"]
+        );
     }
 }
