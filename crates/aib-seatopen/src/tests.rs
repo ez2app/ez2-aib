@@ -154,6 +154,20 @@ fn the_environment_read_through_the_lookup() {
         Cabin::Default,
         "empty = unset"
     );
+    // a cabin the environment names is name-checked before it is looked up (043dd M2),
+    // but not when the words ask for a new one (1.x does not look it up then)
+    assert_eq!(
+        with(&d, &[("EZ2_AIB_INSTANCE", "Foo")]),
+        Err(OpenError::CabinChars("Foo".into()))
+    );
+    assert_eq!(
+        open(
+            &["claude", "safe", "dev", "new"],
+            &[("EZ2_AIB_INSTANCE", "Foo")]
+        )
+        .cabin,
+        Cabin::New
+    );
     // captain roles and their families; the escape hatch
     let cap = [("EZ2_AIB_CAPTAIN_ROLES", "cap  lead")];
     assert_eq!(open(&["claude", "safe", "lead2"], &cap).role, "lead2");
@@ -264,6 +278,10 @@ fn refusals_one_per_row() {
         (vec!["claude", "safe", "dev", "--instance="], E::Usage),
         (vec!["claude", "safe", "dev", "--bogus"], E::Usage),
         (vec!["claude", "safe", "dev", "99999999999sits"], E::Usage), // stricter than 1.x
+        (
+            vec!["claude", "safe", "dev", "--instance", "Bad_"],
+            E::CabinChars(s("Bad_")),
+        ),
     ];
     for (a, want) in rows {
         assert_eq!(p(&a), Err(want), "{a:?}");
@@ -317,6 +335,11 @@ fn several_faults_the_first_one_wins() {
         (
             vec!["foo", "safe", "dev", "Bad"],
             E::CabinChars("Bad".into()),
+        ),
+        // so is the --instance name (1.x aib_cabin_pick_named checks it first; 043dd M2)
+        (
+            vec!["foo", "fast", "Dev", "--dry-run", "--instance", "Bad_"],
+            E::CabinChars("Bad_".into()),
         ),
         (
             vec!["claude", "safe", "dev", "new", "--instance", "y", "--again"],
@@ -491,6 +514,8 @@ fn the_cabin_lookup_and_the_kill_switch_come_where_1x_has_them() {
         &["foo", "safe", "dev"][..],
         &["claude", "fast", "dev"],
         &["claude", "safe", "boss"],
+        // a batch count too large is refused after it (043dd L1: 1.x gives rc 3)
+        &["claude", "safe", "dev", "99999999999sits"],
     ] {
         let e = ctx(a, &[], &kill()).unwrap_err();
         assert_eq!(
@@ -553,6 +578,82 @@ fn what_the_cabin_lookup_is_asked_and_what_it_gives_back() {
         Cabin::FromEnvironment {
             instance: Some(full.into())
         }
+    );
+}
+
+/// 043dd M4: with no cabin named and no new one asked, the cabin the socket points at
+/// (given back by the lookup unasked) is the cabin; a new one or an environment cabin
+/// wins over it, as in 1.x `aib_apply_socket_instance`.
+#[test]
+fn a_cabin_the_socket_points_at_is_taken() {
+    let f = Fake::new(Ok(Some("x".into())), None);
+    let open = |a: &[&str], env: &[(&str, &str)]| match ctx(a, env, &f) {
+        Ok(Outcome::Open(s)) => s.cabin,
+        other => panic!("{a:?}: {other:?}"),
+    };
+    assert_eq!(
+        open(&["claude", "safe", "dev", "--again"], &[]),
+        named("x", false)
+    );
+    assert_eq!(open(&["claude", "safe", "dev"], &[]), named("x", false));
+    assert_eq!(open(&["claude", "safe", "dev", "new"], &[]), Cabin::New);
+    assert_eq!(
+        open(&["claude", "safe", "dev"], &[("EZ2_AIB_INSTANCE", "main")]),
+        Cabin::FromEnvironment {
+            instance: Some("main".into())
+        }
+    );
+    assert_eq!(
+        open(&["claude", "safe", "dev", "main"], &[]),
+        named("main", true)
+    );
+    // what the socket points at is shape-checked like any cabin
+    let bad = Fake::new(Ok(Some("-x".into())), None);
+    assert_eq!(
+        ctx(&["claude", "safe", "dev"], &[], &bad),
+        Err(OpenError::Instance("-x".into()))
+    );
+}
+
+/// A caller whose bot check refuses codexbot (no thread bound).
+struct Bot;
+
+impl Context for Bot {
+    fn resolve_cabin(&self, _: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
+        Ok(None)
+    }
+    fn killswitch(&self) -> Option<String> {
+        None
+    }
+    fn provider_preflight(&self, provider: &str) -> Result<(), OpenError> {
+        match provider {
+            "codexbot" => Err(OpenError::Preflight("aib: codexbot needs a thread".into())),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// 043dd M3: the edition and bot checks come after the AI's name, before the mode.
+#[test]
+fn the_bot_checks_come_between_the_ai_and_the_mode() {
+    let run = |a: &[&str]| parse_open_in(&args(a), |_: &str| None, &Bot);
+    let e = run(&["codexbot", "fast", "dev"]).unwrap_err();
+    assert_eq!(
+        (e.rc(), e.key(), e.to_string()),
+        (2, None, "aib: codexbot needs a thread".to_string())
+    );
+    assert_eq!(
+        run(&["foo", "fast", "dev"]),
+        Err(OpenError::Provider("foo".into()))
+    );
+    assert_eq!(
+        run(&["claude", "fast", "dev"]),
+        Err(OpenError::Mode("fast".into()))
+    );
+    // words only: no bot check
+    assert_eq!(
+        p(&["codexbot", "fast", "dev"]),
+        Err(OpenError::Mode("fast".into()))
     );
 }
 

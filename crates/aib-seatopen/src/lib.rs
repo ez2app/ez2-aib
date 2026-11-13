@@ -9,22 +9,24 @@
 //! and exit code. It touches no file, process or window, so it runs the same on
 //! macOS, Linux and Windows.
 //!
-//! The two checks only the caller can make — the cabin lookup (short code, socket) and
-//! the kill switch — are asked through [`Context`] at the point 1.x makes them, so the
-//! first refusal is still 1.x's ([`parse_open`] skips both). Left to the caller after a
-//! parse (B4-1b, `aibd ctl seat open`): the in-pane default cabin, edition and bot
-//! checks, the model default, whether the AI's program is installed, and every side
+//! The checks only the caller can make — the cabin lookup (short code, socket), the kill
+//! switch, and the edition and bot checks of one AI — are asked through [`Context`] at the
+//! point 1.x makes them, so the first refusal is still 1.x's ([`parse_open`] skips them).
+//! Left to the caller after a parse (B4-1b, `aibd ctl seat open`): the in-pane default
+//! cabin, the model default, whether the AI's program is installed, and every side
 //! effect. `aib seat re-register` (its own argv) is not parsed here.
 //!
 //! The environment is read through `env` (tests inject it): `AIB_DRY_RUN`,
 //! `AIB_PROBE_LIVE`, `EZ2_AIB_INSTANCE`, `EZ2_AIB_CAPTAIN_ROLES`, `AIB_ALLOW_CUSTOM_ROLE`. Pass
 //! `|k| std::env::var(k).ok()`: on Windows that lookup already ignores case.
 //!
-//! Known differences from 1.x, both stricter:
-//! - a batch count too large for `u32` (`99999999999sits`) is a usage error; 1.x passed
-//!   it on to the batch script.
+//! Known differences from 1.x, all stricter:
+//! - a batch count too large for `u32` (`99999999999sits`) is a usage error, reported
+//!   after every other check; 1.x passed it on to the batch script.
 //! - `--thread` values are matched as ASCII; 1.x's bash glob ranges could follow the
 //!   locale.
+//! - an AI's name holding a space (`"claude codex"`) is refused; 1.x's glob over the
+//!   space-separated list let it through.
 
 use std::fmt;
 
@@ -115,13 +117,23 @@ pub struct CabinQuery<'a> {
 /// What only the caller can look up, asked at the point 1.x asks it, so the first
 /// refusal is the one 1.x gives (Codex 11-13 #1).
 pub trait Context {
-    /// Look up the cabin. `Ok(Some(full))` replaces the name looked up (`named`, else
-    /// `from_env`); `Ok(None)` keeps it; `Err` refuses (use [`OpenError::Cabin`], rc 2).
-    /// Called once, after the fourth word and before the word count is checked.
+    /// Look up the cabin, then apply the socket (1.x `aib_apply_socket_instance`, :1286).
+    /// `Ok(Some(full))` replaces the name looked up (`named`, else `from_env`); when
+    /// neither was asked, it is the cabin the socket points at, and it is taken as the
+    /// cabin unless the words ask for a new one or the environment names one. `Ok(None)`
+    /// keeps what there is; `Err` refuses (use [`OpenError::Cabin`], rc 2). Called once,
+    /// after the fourth word and before the word count is checked; `named` and
+    /// `from_env` have passed the cabin-name check (1.x `aib_cabin_check_name`) already.
     fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError>;
     /// The kill switch: `Some(what the switch file says)` refuses with rc 3. Asked after
     /// the word count and the flag clashes, before the AI's name is checked.
     fn killswitch(&self) -> Option<String>;
+    /// The edition and bot checks of one AI (1.x :1317–1395: typesafe_cli.py present,
+    /// the bot's thread or agent free). `Err` refuses (use [`OpenError::Preflight`],
+    /// rc 2). Asked after the AI's name is checked, before the mode. Words only: none.
+    fn provider_preflight(&self, _provider: &str) -> Result<(), OpenError> {
+        Ok(())
+    }
 }
 
 /// Words only: no cabin lookup, no kill switch.
@@ -203,6 +215,9 @@ pub enum OpenError {
     Model,
     /// The cabin lookup refused ([`Context::resolve_cabin`]); the caller's own words.
     Cabin(String),
+    /// An edition or bot check refused ([`Context::provider_preflight`]); the caller's
+    /// own words.
+    Preflight(String),
     /// `aib.err.killswitch` (rc 3) with what the switch file says (`value`); the
     /// renderer adds `path`.
     Killswitch(String),
@@ -237,7 +252,8 @@ impl OpenError {
             | OpenError::CabinEmpty
             | OpenError::CabinChars(_)
             | OpenError::Model
-            | OpenError::Cabin(_) => return None,
+            | OpenError::Cabin(_)
+            | OpenError::Preflight(_) => return None,
         })
     }
 
@@ -266,7 +282,7 @@ impl fmt::Display for OpenError {
                 "aib: 艙解析輸入含非法字元:instance={v}(只准小寫 a-z、數字 0-9 與 -)"
             ),
             OpenError::Model => write!(f, "aib: requested model is missing or invalid"),
-            OpenError::Cabin(m) => write!(f, "{m}"),
+            OpenError::Cabin(m) | OpenError::Preflight(m) => write!(f, "{m}"),
             _ => match self.key() {
                 Some((k, Some((n, v)))) => write!(f, "{k} {n}={v}"),
                 Some((k, None)) => write!(f, "{k}"),
@@ -318,13 +334,24 @@ fn uuid_shape(s: &str) -> bool {
             .all(|(p, n)| p.len() == n && p.bytes().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// `<N>sits` with N = `[1-9][0-9]*`: `Some(Ok(n))`, `Some(Err)` when N does not fit, or
-/// `None` when the word is not a batch count.
-fn sits(s: &str) -> Option<Result<u32, OpenError>> {
+/// `<N>sits` with N = `[1-9][0-9]*`: `Some(Some(n))`, `Some(None)` when N does not fit,
+/// or `None` when the word is not a batch count.
+fn sits(s: &str) -> Option<Option<u32>> {
     let n = s.strip_suffix("sits")?;
     let ok = n.bytes().next().is_some_and(|b| (b'1'..=b'9').contains(&b))
         && n.bytes().all(|b| b.is_ascii_digit());
-    ok.then(|| n.parse::<u32>().map_err(|_| OpenError::Usage))
+    ok.then(|| n.parse::<u32>().ok())
+}
+
+/// 1.x `aib_cabin_check_name` (cabin_resolve.sh:55): not empty, only `a-z 0-9 -`.
+fn check_cabin_name(v: &str) -> Result<(), OpenError> {
+    if v.is_empty() {
+        return Err(OpenError::CabinEmpty);
+    }
+    if !lower_word(v) {
+        return Err(OpenError::CabinChars(v.to_string()));
+    }
+    Ok(())
 }
 
 /// roles.py `role_family`: trailing ASCII digits off (`dev2` → `dev`); all digits stays.
@@ -469,17 +496,18 @@ pub fn parse_open_in(
         }
     }
 
-    // `<N>sits [new]`
+    // `<N>sits [new]`; a count too large is refused last (043dd L1: the kill switch first)
     let mut batch = None;
+    let mut too_many = false;
     if pos.len() == 5 && pos[4] == "new" {
         if let Some(n) = sits(pos[3]) {
-            batch = Some(n?);
+            (batch, too_many) = (n, n.is_none());
             new = true;
             pos.truncate(3);
         }
     } else if pos.len() == 4 {
         if let Some(n) = sits(pos[3]) {
-            batch = Some(n?);
+            (batch, too_many) = (n, n.is_none());
             pos.truncate(3);
         }
     }
@@ -496,12 +524,7 @@ pub fn parse_open_in(
             if w == "dm" || w == "gameworld" {
                 return Err(OpenError::ReservedCabin(w.to_string()));
             }
-            if w.is_empty() {
-                return Err(OpenError::CabinEmpty);
-            }
-            if !lower_word(w) {
-                return Err(OpenError::CabinChars(w.to_string()));
-            }
+            check_cabin_name(w)?;
             main_explicit |= w == PRIMARY_CABIN;
             instance = Some(w.to_string());
         }
@@ -509,7 +532,7 @@ pub fn parse_open_in(
     }
 
     // the cabin lookup: a named cabin (unless the primary by hand), else one the
-    // environment names
+    // environment names; each name checked first (1.x aib_cabin_pick_named, 043dd M2)
     let mut env_instance = env("EZ2_AIB_INSTANCE");
     let (full, asked_named, asked_env) = {
         let q = CabinQuery {
@@ -520,6 +543,9 @@ pub fn parse_open_in(
             new,
             dry_run,
         };
+        if let Some(v) = q.named.or(q.from_env) {
+            check_cabin_name(v)?;
+        }
         (
             ctx.resolve_cabin(&q)?,
             q.named.is_some(),
@@ -527,10 +553,12 @@ pub fn parse_open_in(
         )
     };
     if let Some(full) = full {
-        if asked_named {
-            instance = Some(full);
-        } else if asked_env {
+        // nothing named, no new cabin asked: the cabin the socket points at (043dd M4)
+        let socket = !new && instance.is_none() && env_instance.as_deref().unwrap_or("").is_empty();
+        if asked_env {
             env_instance = Some(full);
+        } else if asked_named || socket {
+            instance = Some(full);
         }
     }
     let env_cabin = env_instance.as_deref().is_some_and(|v| !v.is_empty());
@@ -552,6 +580,7 @@ pub fn parse_open_in(
     if !PROVIDERS.contains(&provider) {
         return Err(OpenError::Provider(provider.to_string()));
     }
+    ctx.provider_preflight(provider)?;
     if !MODES.contains(&mode) {
         return Err(OpenError::Mode(mode.to_string()));
     }
@@ -573,6 +602,9 @@ pub fn parse_open_in(
     }
     if model.as_deref().is_some_and(|m| !model_shape(m)) {
         return Err(OpenError::Model);
+    }
+    if too_many {
+        return Err(OpenError::Usage);
     }
 
     let cabin = if new {
