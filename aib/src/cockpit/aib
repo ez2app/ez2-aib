@@ -1214,12 +1214,23 @@ if [ "${POS[0]-}" = "seatview" ]; then
     exit 2
   fi
   _svw="$EZ2_TMUX_SESSION:cockpit"
+  # 跟 cockpit-full.sh --ensure 拿同一把鎖(審查 L2:同時跑會看到收到一半的格、把主機群補回 seat 窗);
+  # 子殼拿著鎖切換,出來就放,off 之後的 ensure 自己再拿。
+  _svlock="$EZ2_COCKPIT_STATE_DIR/.cockpit-ensure.v2.lock"
+  mkdir -p "$EZ2_COCKPIT_STATE_DIR"
   case "${POS[1]-status}" in
-    on) "$_sv" on --window "$_svw"; exit $? ;;
+    on)
+      ( flock -w "${AIB_ENSURE_LOCK_WAIT_SEC:-60}" 8 || exit 5; "$_sv" on --window "$_svw" 8>&- ) 8>>"$_svlock"
+      exit $? ;;
     off)
+      # 設定要的格(完整版面);讀不到就停,不猜(猜成不要右欄 ⇒ 之後 ensure 卡在自癒拒絕,審查 L4)
       _svr="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _svr=""
-      case $'\n'"$_svr"$'\n' in *$'\n'right$'\n'*) _svnr="" ;; *) _svnr="--no-right" ;; esac
-      "$_sv" off --window "$_svw" $_svnr || exit $?
+      if [ -z "$_svr" ]; then
+        echo "aib seatview off: cannot read the pane config (aib panes); nothing changed" >&2
+        exit 2
+      fi
+      ( flock -w "${AIB_ENSURE_LOCK_WAIT_SEC:-60}" 8 || exit 5
+        "$_sv" off --window "$_svw" --want "$(printf '%s ' $_svr)" 8>&- ) 8>>"$_svlock" || exit $?
       bash "$HERE/cockpit-full.sh" --ensure
       exit $? ;;
     status) "$_sv" status --window "$_svw"; exit $? ;;
@@ -1634,6 +1645,7 @@ fi
 
 if [ "$DRY" = "1" ]; then export AIB_NO_STATE_WRITE=1; fi
 . "$HERE/cockpit-env.sh"
+. "$HERE/seatview-glue.sh"
 S="$EZ2_TMUX_SESSION"
 HUB="$EZ2_AIHUB_SOCKET"
 # 10-11 the maintainer(00:34 帶 CODEX_THREAD_ID 的程式在 EZ2_AIB_INSTANCE=main / 裸 aihub 下跑 aib codexbot,開出舊式 main 主艙):
@@ -2599,6 +2611,8 @@ fi
 aib_right_pane_expected() {   # rc0=預設會建右欄
   # 先落值再比對(EYE-141:接 grep 靜默比對的管線,機器忙時上游會吃 SIGPIPE,把會建右欄判成不會建)
   local _roles
+  # 席位視角(aib seatview on)沒有右欄:不等它畫(審查 M3:每開一席白等 5 秒還印警告)
+  aib_seatview_is_seat "$S:cockpit" && return 1
   _roles="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _roles=""
   case $'\n'"$_roles"$'\n' in
     *$'\n'right$'\n'*) return 0 ;;
