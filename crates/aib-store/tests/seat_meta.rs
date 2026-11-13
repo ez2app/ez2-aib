@@ -217,3 +217,70 @@ fn the_previous_seat_is_the_newest_other_one_with_that_resume_id() {
         None
     );
 }
+
+#[test]
+fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
+    // review L1/L2 (Codex 1ad12972): the constraints hold without the Rust checks
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("aibd.sqlite");
+    drop(Store::open(&db).unwrap());
+    let c = rusqlite::Connection::open(&db).unwrap();
+    let meta = |seat: Option<&str>, resume: Option<&str>| {
+        c.execute(
+            "INSERT INTO seat_meta (seat_id, provider, cwd, model_pinned, resume_id, updated_at)
+             VALUES (?1, 'claude', '/w', 0, ?2, 't')",
+            rusqlite::params![seat, resume],
+        )
+    };
+    assert!(meta(Some("seat_a"), Some("")).is_err());
+    assert!(meta(None, None).is_err());
+    assert!(meta(Some("seat_a"), None).is_ok());
+    let alive = |cabin: Option<&str>, seats: &str| {
+        c.execute(
+            "INSERT INTO cabin_alive (cabin, last_seen, seats_json) VALUES (?1, 1, ?2)",
+            rusqlite::params![cabin, seats],
+        )
+    };
+    assert!(alive(None, "[]").is_err());
+    assert!(alive(Some("cab1"), "{}").is_err());
+    assert!(alive(Some("cab1"), "not json").is_err());
+    assert!(alive(Some("cab1"), r#"["s1"]"#).is_ok());
+}
+
+#[test]
+fn the_fill_event_takes_the_next_sequence_after_other_seat_events() {
+    // review L3: MAX + 1, not a fixed 2
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(&s, "seat_a", "t1", meta("seat_a", None)).unwrap();
+    let mut more = created("seat_a", "ev_2");
+    more.sequence = 2;
+    more.event_type = "seat.ready".into();
+    let mut third = more.clone();
+    third.sequence = 3;
+    third.event_id = "ev_3".into();
+    s.append(vec![more, third]).unwrap();
+    assert_eq!(
+        s.fill_resume_id("seat_a", "conv-1", "ev_f", "t2").unwrap(),
+        ResumeFill::Filled
+    );
+    let evs = s.events_of("seat_a", 0, 10).unwrap();
+    assert_eq!(
+        evs.last().map(|e| (e.sequence, e.event_type.as_str())),
+        Some((4, "seat.resume_id_filled"))
+    );
+}
+
+#[test]
+fn a_fill_whose_event_cannot_be_written_changes_nothing() {
+    // review L3: the UPDATE and its event are one transaction
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(&s, "seat_a", "t1", meta("seat_a", None)).unwrap();
+    // the event id is taken already (the seat's first event)
+    assert!(s
+        .fill_resume_id("seat_a", "conv-1", "ev_seat_a", "t2")
+        .is_err());
+    assert_eq!(s.seat_meta("seat_a").unwrap(), Some(meta("seat_a", None)));
+    assert_eq!(s.events_of("seat_a", 0, 10).unwrap().len(), 1);
+}

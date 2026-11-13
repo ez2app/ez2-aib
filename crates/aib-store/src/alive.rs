@@ -32,8 +32,12 @@ pub struct AliveRow {
     pub alerted_at: Option<i64>,
 }
 
-fn seats_of(json: &str) -> Vec<String> {
-    serde_json::from_str(json).unwrap_or_default()
+/// The stored seat list; a row that is not a list of strings is an error,
+/// never read as "no seats".
+fn seats_of(json: &str) -> rusqlite::Result<Vec<String>> {
+    serde_json::from_str(json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 impl Store {
@@ -92,7 +96,7 @@ impl Store {
                 )?;
                 out.push(AliveDown {
                     gone_for_s: now - last_seen,
-                    seats: seats_of(&seats),
+                    seats: seats_of(&seats)?,
                     cabin,
                     last_seen,
                 });
@@ -113,7 +117,7 @@ impl Store {
             Ok(AliveRow {
                 cabin: r.get(0)?,
                 last_seen: r.get(1)?,
-                seats: seats_of(&seats),
+                seats: seats_of(&seats)?,
                 alerted_at: r.get(3)?,
             })
         })?;

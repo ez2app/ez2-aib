@@ -619,10 +619,20 @@ jobs:
             '                let _ = (crate::seat_meta::insert_meta, m); // knife' \
             --expect-fail opening_a_seat_writes_its_revive_data_and_it_survives_a_restart \
             -- cargo test -p aib-store --locked --test seat_meta opening_a_seat_writes_its_revive_data_and_it_survives_a_restart
-          # M2 an empty resume id is let through as a value
+          # M2 the API check for an empty resume id is gone (the database CHECK still refuses it; M5 knifes that)
           mk '    if m.resume_id.as_deref() == Some("") {' \
             '    if m.resume_id.as_deref() == Some("") && false { // knife' \
             an_empty_resume_id_is_refused_never_stored_as_a_value
+          # M5 the database takes an empty resume id (no CHECK)
+          python3 -I scripts/knife.py migrations/0004_seat_meta.sql \
+            '    resume_id    TEXT    CHECK (resume_id IS NULL OR length(resume_id) >= 1),' \
+            '    resume_id    TEXT, -- knife' \
+            --expect-fail the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists \
+            -- cargo test -p aib-store --locked --test seat_meta the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists
+          # A6 a seat list that is not strings is read as "no seats"
+          ak '    serde_json::from_str(json).map_err(|e| {' \
+            '    Ok::<_, rusqlite::Error>(serde_json::from_str(json).unwrap_or_default()).map_err(|e: rusqlite::Error| { let _ = e; // knife' \
+            a_stored_seat_list_that_is_not_strings_is_an_error_not_no_seats
           # M3 a second, different resume id overwrites the first
           mk '                Some(h) => return Ok(ResumeFill::Conflict { existing: h }),' \
             '                Some(_h) => {} // knife' \

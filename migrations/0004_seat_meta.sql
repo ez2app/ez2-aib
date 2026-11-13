@@ -7,7 +7,7 @@
 -- the seat list. resume_id is NULL until the CLI reports it (pending); an
 -- empty string never stands for a value.
 CREATE TABLE seat_meta (
-    seat_id      TEXT    PRIMARY KEY REFERENCES seats (seat_id),
+    seat_id      TEXT    NOT NULL PRIMARY KEY REFERENCES seats (seat_id),
     provider     TEXT    NOT NULL CHECK (length(provider) BETWEEN 1 AND 64),
     role         TEXT,
     cwd          TEXT    NOT NULL CHECK (length(cwd) >= 1),
@@ -25,8 +25,8 @@ CREATE INDEX seat_meta_resume ON seat_meta (resume_id) WHERE resume_id IS NOT NU
 -- outage was already reported. A live round clears alerted_at; a cabin
 -- closed on purpose loses its row. Times are Unix seconds (threshold math).
 CREATE TABLE cabin_alive (
-    cabin       TEXT    PRIMARY KEY CHECK (length(cabin) >= 1),
+    cabin       TEXT    NOT NULL PRIMARY KEY CHECK (length(cabin) >= 1),
     last_seen   INTEGER NOT NULL,
-    seats_json  TEXT    NOT NULL CHECK (json_valid(seats_json)),
+    seats_json  TEXT    NOT NULL CHECK (json_valid(seats_json) AND json_type(seats_json) = 'array'),
     alerted_at  INTEGER
 );

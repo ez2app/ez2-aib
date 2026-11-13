@@ -191,3 +191,21 @@ fn two_rounds_at_once_give_one_alert() {
     let total: usize = hs.into_iter().map(|h| h.join().unwrap()).sum();
     assert_eq!(total, 1);
 }
+
+#[test]
+fn a_stored_seat_list_that_is_not_strings_is_an_error_not_no_seats() {
+    // review L1: never read a bad row as "no seats"
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("aibd.sqlite");
+    drop(Store::open(&db).unwrap());
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute(
+        "INSERT INTO cabin_alive (cabin, last_seen, seats_json) VALUES ('cab1', 1, '[1, 2]')",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let s = Store::open(&db).unwrap();
+    assert!(s.alive_rows().is_err());
+    assert!(s.alive_round(T0, vec![], vec![], AFTER).is_err());
+}
