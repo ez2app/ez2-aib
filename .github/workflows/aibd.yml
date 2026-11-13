@@ -723,7 +723,7 @@ jobs:
           lk '            if *g == seen {' \
             '            if *g == seen || true { // knife' \
             a_stale_live_list_never_brings_back_a_seat_closed_on_purpose
-          # L12 a restart judges by the session started last (Codex M3)
+          # L12 a restart judges by the session that ended first (Codex M3)
           lk '                            .max_by(|a, b| a.ended_at.cmp(&b.ended_at))' \
             '                            .min_by(|a, b| a.ended_at.cmp(&b.ended_at)) // knife' \
             a_restart_judges_a_seat_by_the_session_that_ended_last
@@ -731,6 +731,14 @@ jobs:
           lk '                            .filter(|s| s.ended_at.is_some() && really_ran(s))' \
             '                            .filter(|s| s.ended_at.is_some() || really_ran(s)) // knife' \
             a_restart_judges_a_seat_by_the_session_that_ended_last
+          # L15 a waiting timer is not woken when the seat comes back (Codex M4)
+          lk '                while op.tick_or_wake(&self.rounds, &self.moved, &mut seen) {' \
+            '                while op.tick() && { let _ = &mut seen; true } { // knife' \
+            the_timer_stops_at_once_when_the_seat_comes_back
+          # L16 a queued session cut by a restart counts as alive at the stop (Codex M3 r2)
+          lk '    let started = s.pid != 0; // a queued session ended before it started (Codex M3 r2)' \
+            '    let started = s.pid != 0 || true; // knife' \
+            a_queued_session_cut_by_a_restart_does_not_count
           # L14 an alert is marked sent although its event was not written (Codex M2)
           python3 -I scripts/knife.py crates/aib-store/src/alive.rs \
             '                    insert_event(&tx, &m(&down, last + 1))?;' \

@@ -17,7 +17,7 @@
 use aib_store::{AliveDown, NewEvent, SessionRow, Store};
 use serde::Deserialize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// The file name in the data folder.
@@ -127,6 +127,9 @@ pub struct Alive {
     /// (Codex A11-2 M1: a stale list must not bring back a seat closed on
     /// purpose). Lock order: sessions, then this; never the other way.
     rounds: Mutex<u64>,
+    /// Told on every count change: a waiting timer looks again at once
+    /// (Codex A11-2 M4: a seat that came back stops the wait now).
+    moved: Condvar,
     /// A timer thread is running (one at a time).
     running: Mutex<bool>,
     /// Test hook: no timer thread (tests call [`Alive::run_due`] themselves).
@@ -143,11 +146,18 @@ fn unix_now() -> i64 {
 /// A session that really ran (not refused / failed to start), for the
 /// restart check.
 fn really_ran(s: &SessionRow) -> bool {
-    !matches!(
-        s.ended_by.as_deref(),
-        Some("spawn_failed" | "policy_refused")
-    )
+    let started = s.pid != 0; // a queued session ended before it started (Codex M3 r2)
+    started
+        && !matches!(
+            s.ended_by.as_deref(),
+            Some("spawn_failed" | "policy_refused")
+        )
 }
+
+/// How many times a round with its own live list looks again while session
+/// starts / ends keep coming in, before it gives up this time (the timer
+/// looks again a second later).
+const FRESH_TRIES: usize = 8;
 
 impl Alive {
     pub fn new(
@@ -161,6 +171,7 @@ impl Alive {
             live: Arc::new(live),
             now: Arc::new(unix_now),
             rounds: Mutex::new(0),
+            moved: Condvar::new(),
             running: Mutex::new(false),
             no_thread: false,
         })
@@ -179,9 +190,15 @@ impl Alive {
             live: Arc::new(live),
             now: Arc::new(now),
             rounds: Mutex::new(0),
+            moved: Condvar::new(),
             running: Mutex::new(false),
             no_thread: true,
         })
+    }
+
+    /// A timer thread is running now (tests and `aib restart alive`).
+    pub fn timer_running(&self) -> bool {
+        *self.running.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn policy(&self) -> &RevivePolicy {
@@ -231,12 +248,14 @@ impl Alive {
         let mut g = self.lock_rounds();
         *g = g.wrapping_add(1);
         self.round_locked(live, closed);
+        drop(g);
+        self.moved.notify_all();
     }
 
     /// A round with a live list taken here (timer, start), plus `extra`
     /// seats counted as alive. Retried while hooks come in between.
     fn round_fresh(&self, extra: &[String]) -> Vec<AliveDown> {
-        loop {
+        for _ in 0..FRESH_TRIES {
             let seen = *self.lock_rounds();
             let mut live = (self.live)();
             live.extend(extra.iter().cloned());
@@ -247,6 +266,8 @@ impl Alive {
                 return down;
             }
         }
+        tracing::warn!("alive: sessions kept changing, round left for the next look");
+        Vec::new()
     }
 
     /// The round itself; the alert and its `alive.down` event (the outbox
@@ -344,6 +365,13 @@ impl Alive {
             .min()
     }
 
+    /// The count, then the next due time: a start / end after this look
+    /// changes the count, so the wait that follows ends at once.
+    fn look(&self) -> Option<(i64, u64)> {
+        let seen = *self.lock_rounds();
+        self.next_due().map(|due| (due, seen))
+    }
+
     /// One round now: report every seat that is due. Returns what was reported.
     pub fn run_due(&self) -> Vec<AliveDown> {
         self.round_fresh(&[])
@@ -377,14 +405,15 @@ impl Alive {
         // a round that found nothing yet (the clock is whole seconds) waits
         // at least one second before the next look, never spins
         let mut floor = 0u64;
-        while let Some(due) = self.next_due() {
+        while let Some((due, mut seen)) = self.look() {
             let wait = u64::try_from(due - (self.now)()).unwrap_or(0).max(floor);
             if wait > 0 {
                 let op = crate::timers::ALIVE_DUE_WAIT
                     .begin(Some(Instant::now() + Duration::from_secs(wait)));
-                // each tick (at most 60 s) looks again: the seat came back or
-                // was closed ⇒ stop waiting for it (Codex A11-2 M4)
-                while op.tick() {
+                // any session start / end (else each 60 s tick) looks again:
+                // the seat came back or was closed ⇒ stop waiting for it now
+                // (Codex A11-2 M4)
+                while op.tick_or_wake(&self.rounds, &self.moved, &mut seen) {
                     if self.next_due() != Some(due) {
                         break;
                     }

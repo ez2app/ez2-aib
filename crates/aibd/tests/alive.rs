@@ -207,12 +207,17 @@ fn seat(store: &Store, seat: &str) {
 
 /// One ended session of `seat`: id, start and end time (RFC 3339), how.
 fn ended(store: &Store, seat: &str, id: &str, started: &str, ended: &str, by: &str) {
+    ended_pid(store, seat, id, started, ended, by, 1);
+}
+
+/// [`ended`] with its pid (0 = queued, never started).
+fn ended_pid(store: &Store, seat: &str, id: &str, started: &str, ended: &str, by: &str, pid: u32) {
     store
         .session_event(
             SessionRow {
                 session_id: id.into(),
                 seat_id: Some(seat.into()),
-                pid: 1,
+                pid,
                 argv0: Some("sh".into()),
                 argc: 1,
                 state: "killed".into(),
@@ -417,4 +422,66 @@ fn every_outage_is_its_own_event_in_order() {
             ("ev_alive_s1_2".to_string(), 2, T0 + 700),
         ]
     );
+}
+
+#[test]
+fn a_queued_session_cut_by_a_restart_does_not_count() {
+    // Codex A11-2 M3 r2: a session still queued (pid 0) when aibd stopped is
+    // marked aibd_restart, but the seat was not alive: it stays down
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
+    seat(&store, "s2");
+    ended(
+        &store,
+        "s2",
+        "ss_x",
+        "2026-11-13T01:00:00Z",
+        "2026-11-13T02:00:00Z",
+        "root_exit",
+    );
+    ended_pid(
+        &store,
+        "s2",
+        "ss_y",
+        "2026-11-13T02:10:00Z",
+        "2026-11-13T05:00:00Z",
+        "aibd_restart",
+        0,
+    );
+    let r = rig_on(dir, store, RevivePolicy::default());
+    r.start("s2");
+    r.end("s2", EndKind::Down);
+    r.at(T0 + 3600);
+    r.alive.start();
+    let d = r.downs();
+    assert_eq!(d.len(), 1, "down before the stop: reported at once {d:?}");
+    assert_eq!(d[0]["seat_id"], "s2");
+}
+
+#[test]
+fn the_timer_stops_at_once_when_the_seat_comes_back() {
+    // Codex A11-2 M4: no waiting out the tick (up to 60 s) once nothing is
+    // pending
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
+    let live = Arc::new(Mutex::new(Vec::<String>::new()));
+    let l = live.clone();
+    let alive = Alive::new(store, RevivePolicy::default(), move || {
+        l.lock().unwrap().clone()
+    });
+    alive.on_start("s1", Vec::new());
+    alive.on_end("s1", EndKind::Down, Vec::new());
+    assert!(alive.timer_running(), "a down seat arms the timer");
+    // let the thread reach its wait
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    live.lock().unwrap().push("s1".into());
+    alive.on_start("s1", Vec::new());
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while alive.timer_running() {
+        assert!(
+            std::time::Instant::now() < end,
+            "the timer still waits after the seat came back"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
