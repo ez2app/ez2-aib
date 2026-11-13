@@ -16,8 +16,14 @@
 //!
 //! Known (DECISION residual risk): an AI that makes its own owner-ACL root and swaps the
 //! whole file is caught only by the owner seeing a new fingerprint in the next window.
-//! Deleting a later `revoke` entry brings that key back (entries are only signed one by
-//! one); the window line shows the entry count so a drop is visible.
+//! Entries are signed one by one and sequence numbers may skip, so deleting **any** entry
+//! shows only as a different key count in the window line; deleting an `add` only drops
+//! a key, deleting a `revoke` brings that key back (c477a slice 3 N4; chaining each
+//! entry to the previous one would close this, not done here).
+//!
+//! Roles stay apart: only [`KeyKind::Signing`] keys verify approval proofs
+//! ([`TrustedKeys`]); grant keys only through [`Registry::check_kind`]; the root is never
+//! an entry.
 
 use crate::hwkey::{key_id_of, Device, KeyError, KeyKind, ALG_ECDSA_P256_SHA256, PUBLIC_KEY_LEN};
 use crate::proof::{hex, unhex, Binding, Proof, TrustedKeys};
@@ -52,6 +58,9 @@ pub enum RegistryError {
     /// Making an entry failed.
     Key(KeyError),
     Reason(TextError),
+    /// The entry would be dropped on load anyway; refused before the owner is asked
+    /// (c477a slice 3 N1).
+    Pointless(&'static str),
 }
 
 impl RegistryError {
@@ -64,6 +73,7 @@ impl RegistryError {
             RegistryError::RotationUnsigned => "rotation_unsigned",
             RegistryError::Key(e) => e.why(),
             RegistryError::Reason(e) => e.detail(),
+            RegistryError::Pointless(w) => w,
         }
     }
 }
@@ -392,6 +402,10 @@ impl<'v> Registry<'v> {
         if e.seq <= self.last_seq {
             return false;
         }
+        // Role separation (c477a slice 3 L1): the root is never also a trusted key.
+        if e.kind == KeyKind::RegistryRoot || e.public == self.root.public {
+            return false;
+        }
         let msg = entry_message(&self.root.key_id, e);
         if !self.verify.verify(&self.root.public, &msg, &e.sig) {
             return false;
@@ -446,7 +460,9 @@ impl<'v> Registry<'v> {
     /// caller's text cannot replace or drop the root line.
     pub fn reason(&self, action: &str) -> Result<String, TextError> {
         text::check(action, text::SE_SIGN_MAX)?;
-        let full = format!("{action} · {}", self.window_line());
+        // The real root line comes first, so a look-alike line inside `action` cannot sit
+        // in front of it (c477a slice 3 N3).
+        let full = format!("{} · {action}", self.window_line());
         text::check(&full, text::SE_SIGN_MAX)?;
         Ok(full)
     }
@@ -467,6 +483,16 @@ impl<'v> Registry<'v> {
         public: [u8; PUBLIC_KEY_LEN],
         at: u64,
     ) -> Result<Entry, RegistryError> {
+        let id = key_id_of(&public);
+        let known = self.keys.iter().any(|(k, _)| *k == id);
+        if kind == KeyKind::RegistryRoot || public == self.root.public {
+            return Err(RegistryError::Pointless("root_not_entry"));
+        }
+        match op {
+            Op::Add if known => return Err(RegistryError::Pointless("already_trusted")),
+            Op::Revoke if !known => return Err(RegistryError::Pointless("not_trusted")),
+            _ => {}
+        }
         let mut e = Entry {
             seq: self.next_seq(),
             op,
@@ -503,7 +529,9 @@ impl<'v> Registry<'v> {
 
     /// Have the current root hand over to `new_public` (one owner press; the window
     /// shows old and new fingerprints, item 2). The caller writes a new file whose root is
-    /// the new key with this as `prev`.
+    /// the new key with this as `prev`. Entries are signed over the root key id, so every
+    /// entry must be signed again under the new root (one press each); only one previous
+    /// root is kept, so after a second rotation the first no longer shows (c477a slice 3 N2).
     pub fn sign_rotation(
         &self,
         dev: &dyn Device,
@@ -569,8 +597,26 @@ impl TrustedKeys for Registry<'_> {
         msg: &[u8],
         sig: &[u8],
     ) -> Option<bool> {
+        // Approval proofs come only from signing keys: a grant key (login password
+        // allowed) or the root must not sign a single action (c477a slice 3 L1).
+        self.check_kind(KeyKind::Signing, provider, key_id, alg, msg, sig)
+    }
+}
+
+impl Registry<'_> {
+    /// Like [`TrustedKeys::check`], for a key of exactly `kind` (time-window grants use
+    /// [`KeyKind::Grant`], T137).
+    pub fn check_kind(
+        &self,
+        kind: KeyKind,
+        provider: &str,
+        key_id: &str,
+        alg: &str,
+        msg: &[u8],
+        sig: &[u8],
+    ) -> Option<bool> {
         let (_, t) = self.keys.iter().find(|(k, _)| k == key_id)?;
-        if t.provider != provider || t.alg != alg {
+        if t.kind != kind || t.provider != provider || t.alg != alg {
             return None;
         }
         Some(self.verify.verify(&t.public, msg, sig))

@@ -177,11 +177,23 @@ kr '                self.keys.retain(|(k, _)| *k != id);' \
    '                // knife: no retain' \
    a_revoke_removes_the_key
 # KR7 the root line is not added to the window (item 7)
-kr '        let full = format!("{action} · {}", self.window_line());' \
+kr '        let full = format!("{} · {action}", self.window_line());' \
    '        let full = action.to_owned(); // knife' \
    every_window_carries_the_root_fingerprint_and_date
 # KR8 the device reporting another root public key is ignored
 kr '        if reported != root.public {' \
    '        if false && reported != root.public { // knife' \
    a_root_the_device_reports_differently_voids_everything
+# KR9 the root (or a registry_root key) counts as a trusted key (c477a slice 3 L1)
+kr '        if e.kind == KeyKind::RegistryRoot || e.public == self.root.public {' \
+   '        if false && (e.kind == KeyKind::RegistryRoot || e.public == self.root.public) { // knife' \
+   the_root_is_never_a_trusted_key
+# KR10 any kind of key verifies an approval proof (c477a slice 3 L1)
+kr '        if t.kind != kind || t.provider != provider || t.alg != alg {' \
+   '        if (t.kind != kind && kind == KeyKind::Grant) || t.provider != provider || t.alg != alg { // knife' \
+   a_grant_key_cannot_sign_an_approval_proof
+# KR11 a pointless entry still asks the owner (c477a slice 3 N1)
+kr '            Op::Add if known => return Err(RegistryError::Pointless("already_trusted")),' \
+   '            Op::Add if known && false => return Err(RegistryError::Pointless("already_trusted")), // knife' \
+   an_entry_that_would_be_dropped_is_refused_before_the_owner_is_asked
 echo "aib-approve knives: all bit"

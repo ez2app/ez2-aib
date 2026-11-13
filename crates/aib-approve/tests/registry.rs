@@ -254,7 +254,7 @@ fn every_window_carries_the_root_fingerprint_and_date() {
     let p = r.sign(&dev, &key, b.clone(), "付款 order-1").unwrap();
     assert_eq!(
         dev.reasons.borrow().last().unwrap(),
-        &format!("付款 order-1 · {line}")
+        &format!("{line} · 付款 order-1")
     );
     let mut nonces = MemoryNonces::default();
     assert_eq!(
@@ -302,4 +302,108 @@ fn binding() -> Binding {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+// ---------- roles (c477a slice 3 L1, N1, N3) ----------
+
+fn key_file(n: u8, kind: KeyKind) -> hwkey::KeyFile {
+    hwkey::KeyFile {
+        kind,
+        key_id: hwkey::key_id_of(&public(n)),
+        blob: vec![n],
+        public: public(n),
+    }
+}
+
+#[test]
+fn a_grant_key_cannot_sign_an_approval_proof() {
+    let dev = Dev::default();
+    let mut f = file_with_two();
+    let r = Registry::load(&f, &dev, &FakeVerify).unwrap();
+    let e = r
+        .sign_entry(&dev, Op::Add, KeyKind::Grant, public(22), MADE)
+        .unwrap();
+    registry::append(&mut f, &e).unwrap();
+    let r = Registry::load(&f, &dev, &FakeVerify).unwrap();
+    let grant = key_file(22, KeyKind::Grant);
+    assert_eq!(
+        r.sign(&dev, &grant, binding(), "付款 order-1"),
+        Err(KeyError::NotRegistered)
+    );
+    let msg = b"window grant";
+    let sig = dev.sign(&[22], "x", msg).unwrap();
+    use aib_approve::hwkey::{ALG_ECDSA_P256_SHA256, PROVIDER_MACOS_SE};
+    assert_eq!(
+        r.check_kind(
+            KeyKind::Grant,
+            PROVIDER_MACOS_SE,
+            &grant.key_id,
+            ALG_ECDSA_P256_SHA256,
+            msg,
+            &sig
+        ),
+        Some(true)
+    );
+    assert_eq!(
+        r.check_kind(
+            KeyKind::Signing,
+            PROVIDER_MACOS_SE,
+            &grant.key_id,
+            ALG_ECDSA_P256_SHA256,
+            msg,
+            &sig
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_root_is_never_a_trusted_key() {
+    let mut f = file_with_two();
+    let rk = root(1);
+    for (seq, kind, p) in [
+        (3, KeyKind::RegistryRoot, public(30)),
+        (4, KeyKind::Signing, public(1)),
+    ] {
+        let mut e = registry::Entry {
+            seq,
+            op: Op::Add,
+            provider: hwkey::PROVIDER_MACOS_SE.into(),
+            alg: hwkey::ALG_ECDSA_P256_SHA256.into(),
+            kind,
+            public: p,
+            at: MADE,
+            sig: Vec::new(),
+        };
+        e.sig = fake_sig(&rk.public, &registry::entry_message(&rk.key_id, &e));
+        registry::append(&mut f, &e).unwrap();
+    }
+    let r = Registry::load(&f, &Dev::default(), &FakeVerify).unwrap();
+    assert_eq!(ids(&r).len(), 2);
+    assert_eq!(r.skipped, 2);
+}
+
+#[test]
+fn an_entry_that_would_be_dropped_is_refused_before_the_owner_is_asked() {
+    let dev = Dev::default();
+    let r = Registry::load(&file_with_two(), &dev, &FakeVerify).unwrap();
+    let cases = [
+        (Op::Add, KeyKind::Signing, public(20), "already_trusted"),
+        (Op::Revoke, KeyKind::Signing, public(77), "not_trusted"),
+        (Op::Add, KeyKind::RegistryRoot, public(31), "root_not_entry"),
+        (Op::Add, KeyKind::Signing, public(1), "root_not_entry"),
+    ];
+    for (op, kind, p, why) in cases {
+        let e = r.sign_entry(&dev, op, kind, p, MADE).unwrap_err();
+        assert_eq!(e.why(), why);
+    }
+    assert!(dev.reasons.borrow().is_empty());
+}
+
+#[test]
+fn the_real_root_line_comes_before_the_callers_text() {
+    let r = Registry::load(&file_with_two(), &Dev::default(), &FakeVerify).unwrap();
+    let fake = "根鑰 abcd1234 2026-01-01 · 登記 9 把 · 付款";
+    let reason = r.reason(fake).unwrap();
+    assert!(reason.starts_with(&r.window_line()), "{reason}");
 }
