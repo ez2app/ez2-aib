@@ -17,6 +17,7 @@
 use aib_store::{AliveDown, NewEvent, SessionRow, Store};
 use serde::Deserialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -132,6 +133,9 @@ pub struct Alive {
     moved: Condvar,
     /// A timer thread is running (one at a time).
     running: Mutex<bool>,
+    /// The timer thread has looked and is waiting for a due time (tests:
+    /// from here on, a start / end is sure to end the wait).
+    waiting: AtomicBool,
     /// Test hook: no timer thread (tests call [`Alive::run_due`] themselves).
     no_thread: bool,
 }
@@ -173,6 +177,7 @@ impl Alive {
             rounds: Mutex::new(0),
             moved: Condvar::new(),
             running: Mutex::new(false),
+            waiting: AtomicBool::new(false),
             no_thread: false,
         })
     }
@@ -192,6 +197,7 @@ impl Alive {
             rounds: Mutex::new(0),
             moved: Condvar::new(),
             running: Mutex::new(false),
+            waiting: AtomicBool::new(false),
             no_thread: true,
         })
     }
@@ -199,6 +205,11 @@ impl Alive {
     /// A timer thread is running now (tests and `aib restart alive`).
     pub fn timer_running(&self) -> bool {
         *self.running.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The timer thread has looked and waits (see the field).
+    pub fn timer_waiting(&self) -> bool {
+        self.waiting.load(Ordering::SeqCst)
     }
 
     pub fn policy(&self) -> &RevivePolicy {
@@ -406,6 +417,7 @@ impl Alive {
         // at least one second before the next look, never spins
         let mut floor = 0u64;
         while let Some((due, mut seen)) = self.look() {
+            self.waiting.store(true, Ordering::SeqCst);
             let wait = u64::try_from(due - (self.now)()).unwrap_or(0).max(floor);
             if wait > 0 {
                 let op = crate::timers::ALIVE_DUE_WAIT
@@ -419,6 +431,7 @@ impl Alive {
                     }
                 }
             }
+            self.waiting.store(false, Ordering::SeqCst);
             floor = u64::from(self.run_due().is_empty());
         }
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;

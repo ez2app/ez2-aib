@@ -472,8 +472,13 @@ fn the_timer_stops_at_once_when_the_seat_comes_back() {
     alive.on_start("s1", Vec::new());
     alive.on_end("s1", EndKind::Down, Vec::new());
     assert!(alive.timer_running(), "a down seat arms the timer");
-    // let the thread reach its wait
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // wait until the thread has looked (its count is read): from then on the
+    // start below must end the wait (Codex A11-2 r3 L: no fixed sleep)
+    let ready = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !alive.timer_waiting() {
+        assert!(std::time::Instant::now() < ready, "the timer never waited");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     live.lock().unwrap().push("s1".into());
     alive.on_start("s1", Vec::new());
     let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
