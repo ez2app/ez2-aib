@@ -20,10 +20,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   as variables, so a process started with a cleared environment (`env -i`) looked like one
   without the session marker and was let go as "not ours" instead of being reported
   (#614 CI). A failed read keeps the candidate (unreadable or other coalition).
-- macOS known limit: if aibd crashes while a program is held before exec, the next start can
-  see `AlreadyRunning` for up to `HOLD_LIMIT` (5 s), since the held child keeps copies of
-  `aibd.lock` and the listening socket until it execs (ADR 0004). The hold now ends at an
-  absolute deadline, so a signal no longer extends it.
+- macOS: a start waits up to `HOLD_LIMIT` + 1 s (6 s, `server::LOCK_WAIT`) for `aibd.lock`
+  before it says `AlreadyRunning`. A program held before exec keeps copies of `aibd.lock` and
+  the listening socket until it execs or gives up at `HOLD_LIMIT` (ADR 0004), so a restart
+  right after a crash, or a second server in the same process, saw the lock taken (main
+  74ec2d39 red: `session_queue` restart test 3/3 on macOS). A second aibd that really runs is
+  still refused, 6 s later. Other platforms do not wait. The hold ends at an absolute
+  deadline, so a signal does not extend it.
 
 ## 0.2.0-preview.5 — 2026-11-12
 
