@@ -80,11 +80,11 @@ fn file_with_two() -> Value {
     let dev = Dev::default();
     let mut f = registry::new_file(&root(1));
     for k in [20, 21] {
-        let r = Registry::load(&f, &dev, &FakeVerify).unwrap();
+        let r = Registry::load(&f, &dev, &FakeVerify).expect("load");
         let e = r
             .sign_entry(&dev, Op::Add, KeyKind::Signing, public(k), MADE)
-            .unwrap();
-        registry::append(&mut f, &e).unwrap();
+            .expect("entry");
+        registry::append(&mut f, &e).expect("append");
     }
     f
 }
