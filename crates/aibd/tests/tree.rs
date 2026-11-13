@@ -756,7 +756,8 @@ fn gone_unread_cancel(
     if root_readable {
         f.add(root, me, 1000, 10, 50);
     }
-    let ghost = 4_000_001; // above any macOS / Linux pid: never a real process
+    // above Linux PID_MAX_LIMIT (4194304) and macOS PID_MAX (99999): never a real process
+    let ghost = 4_194_305;
     h.record_for_test(ghost, 60);
     if let Some(o) = orphan {
         f.add(o, 1, 3000, 2000, 70);
@@ -781,7 +782,7 @@ fn a_recorded_process_gone_before_its_unique_id_was_read_is_not_lineage_unavaila
 /// process and not launchd), so without it this would be `observed_clean`.
 #[test]
 fn an_orphan_of_a_process_gone_before_its_unique_id_was_read_keeps_the_cancel_from_clean() {
-    let orphan = 4_000_002;
+    let orphan = 4_194_306; // above any real pid, like `ghost`
     let rep = gone_unread_cancel("s-gone-unread-orphan", Some(orphan), true);
     assert!(!rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.orphan_candidates_extra, 1, "{rep:?}");
