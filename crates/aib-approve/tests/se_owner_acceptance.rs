@@ -86,8 +86,9 @@ fn a2_a_real_signature_shows_the_text_and_verifies() {
 fn a3_cancel_comes_back_as_cancel() {
     let k = hwkey::enroll(&MacosSe, KeyKind::Signing).expect("enroll");
     say("A3", "視窗出現後請按「取消」,不要按指紋。");
-    let r = MacosSe.sign(&k.blob, "驗收 A3:請按取消", b"a3");
-    assert_eq!(r, Err("cancel"));
+    let r = se::sign(&k.blob, "驗收 A3:請按取消", b"a3");
+    eprintln!("A3 結果:{r:?}");
+    assert_eq!(r, Err(se::SeError::Cancel));
 }
 
 /// A4 試簽兩次(第二次帶隨機 applicationPassword):a real owner key passes the probe
@@ -141,10 +142,20 @@ fn a6_a_1x_sekey_still_works() {
 
 /// A7 換指紋失效,part 1:make a Touch ID key and keep it in `AIB_SE_ACCEPT_DIR`.
 /// Then the owner adds (or removes) a finger in System Settings and runs part 2.
-/// Optional: it changes the owner's Touch ID set.
+///
+/// **Changing the fingers voids EVERY biometryCurrentSet key on that Mac** (1.x SIGN
+/// keys, signing keys, a registry root), and removing the finger again does not bring
+/// them back. Optional; only on a Mac with no Secure Enclave key in use, and before
+/// A8/A9 and before any real root (c477a b2e L1). Needs
+/// `AIB_SE_A7_VOIDS_ALL_TOUCHID_KEYS=yes`.
 #[test]
 #[ignore = "owner present, optional: changes the Touch ID finger set between parts"]
 fn a7a_keep_a_key_before_the_fingers_change() {
+    assert_eq!(
+        std::env::var("AIB_SE_A7_VOIDS_ALL_TOUCHID_KEYS").as_deref(),
+        Ok("yes"),
+        "A7 voids every Touch ID key on this Mac; see the doc"
+    );
     let dir = PathBuf::from(std::env::var("AIB_SE_ACCEPT_DIR").expect("set AIB_SE_ACCEPT_DIR"));
     let k = hwkey::enroll(&MacosSe, KeyKind::Signing).expect("enroll");
     let f = dir.join("a7-signing.json");
@@ -168,7 +179,7 @@ fn a7b_after_the_fingers_change_the_old_key_does_not_sign() {
             .expect("json");
     let k = hwkey::KeyFile::from_json(&v).expect("key file");
     say("A7 第 2 段", "若跳出視窗就按指紋;預期簽不出來。");
-    let r = MacosSe.sign(&k.blob, "驗收 A7:換過手指的舊鑰", b"a7");
+    let r = se::sign(&k.blob, "驗收 A7:換過手指的舊鑰", b"a7");
     assert!(
         r.is_err(),
         "a key from before the finger change still signed"
@@ -177,7 +188,7 @@ fn a7b_after_the_fingers_change_the_old_key_does_not_sign() {
 }
 
 /// A8 + A9 建根鑰 + 第一次登記 + 用登記的鑰簽:the whole registry path on the real
-/// Secure Enclave. Three presses: the entry, the proof, and nothing for loading.
+/// Secure Enclave. Two presses: the entry and the proof (making keys and the probe need none).
 #[test]
 #[ignore = "owner present: two Touch ID presses; note the root fingerprint shown"]
 fn a8_a9_a_new_root_registers_a_key_that_then_signs() {
@@ -233,7 +244,7 @@ fn b64(s: &str) -> Vec<u8> {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::new();
     let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes().filter(|&c| c != b'=') {
+    for c in s.bytes().filter(|c| *c != b'=' && !c.is_ascii_whitespace()) {
         let v = A.iter().position(|&a| a == c).expect("base64 char") as u32;
         acc = acc << 6 | v;
         bits += 6;
@@ -251,4 +262,5 @@ fn b64_reads_standard_base64() {
     assert_eq!(b64("YWli"), b"aib");
     assert_eq!(b64("YWlidg=="), b"aibv");
     assert_eq!(b64("AAEC/w=="), [0, 1, 2, 255]);
+    assert_eq!(b64("YWli\nYWli\r\n"), b"aibaib");
 }
