@@ -66,6 +66,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-dmq-store"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-dmq",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-drive"
 version = "0.2.0-preview.5"
 dependencies = [
