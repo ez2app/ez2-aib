@@ -91,9 +91,17 @@ fn goals3() -> Vec<&'static str> {
     ]
 }
 
-/// A check line for the goal `goal` whose approved wording is `text`.
+/// A check line for the goal `goal` whose approved wording is `text`. It
+/// expires a day after `NOW`: a check line must be able to go stale (M2).
 fn ev(goal: &str, text: &str, at: u64, rc: i64) -> Value {
-    json!({"goal_id": goal, "goal_sha": goal_sha(text), "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s"})
+    json!({"goal_id": goal, "goal_sha": goal_sha(text), "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s", "valid_until": NOW + 86_400})
+}
+
+/// One ledger line approving project `uid`'s constitution `sha`, the shape
+/// `aib newproj --approve` appends.
+fn approval(uid: &str, sha: &str) -> Value {
+    json!({"kind": "decision.resolved", "body": {"subject": {"id": uid, "kind": "decision"},
+        "summary": {"en": format!("project {uid} goals and red lines approved by human andyimkt (touchid); constitution sha256={sha}")}}})
 }
 
 fn heads(pairs: &[(u64, Option<&str>)]) -> Snapshot {
@@ -164,6 +172,141 @@ fn a_snapshot_edited_to_match_is_still_refused() {
     )
     .unwrap();
     assert_eq!(load_goals(&r.0, UID).unwrap_err().code(), "expect_unsigned");
+}
+
+#[test]
+fn only_the_last_approval_in_the_ledger_counts() {
+    // ebb36 #693 M3: X approved, then Y approved; the card going back to X
+    // must not read as approved, though X's snapshot is still there
+    let r = Root::new("ledger");
+    let x: Vec<&str> = vec!["A1 舊的期望"];
+    let y: Vec<&str> = vec!["A1 新的期望"];
+    let sha = |g: &[&str]| const_sha(&g.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &[]);
+    r.card(&y, &[], true);
+    r.card(&x, &[], true); // both snapshots exist, the card shows X
+    let ledger = |lines: &[Value]| {
+        fs::create_dir_all(r.0.join("ledger")).unwrap();
+        let t: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(r.0.join("ledger").join("aib-ledger.jsonl"), t).unwrap();
+    };
+    // no ledger: the snapshot alone (approved before the ledger recorded it)
+    assert!(load_goals(&r.0, UID).is_ok());
+    // X then Y approved: X is no longer the human's approval
+    ledger(&[approval(UID, &sha(&x)), approval(UID, &sha(&y))]);
+    let e = load_goals(&r.0, UID).unwrap_err();
+    assert_eq!(e.code(), "expect_not_latest_approval", "{e}");
+    assert!(e.to_string().contains(&sha(&y)), "{e}");
+    // Y then X: X is the last one, it loads; another project's approval and
+    // a line that is not JSON change nothing
+    ledger(&[
+        approval(UID, &sha(&y)),
+        approval(UID, &sha(&x)),
+        approval("proj-other", &sha(&y)),
+        json!("not an event"),
+    ]);
+    let mut t = fs::read_to_string(r.0.join("ledger").join("aib-ledger.jsonl")).unwrap();
+    t.push_str("{half a line\n");
+    fs::write(r.0.join("ledger").join("aib-ledger.jsonl"), t).unwrap();
+    assert_eq!(load_goals(&r.0, UID).unwrap()[0].text, "A1 舊的期望");
+    assert_eq!(last_approved_sha(&r.0, UID).unwrap(), Some(sha(&x)));
+    // a ledger that cannot be read is refused, not skipped
+    fs::write(
+        r.0.join("ledger").join("aib-ledger.jsonl"),
+        b"\xff\xfe not utf-8\n",
+    )
+    .unwrap();
+    assert_eq!(
+        load_goals(&r.0, UID).unwrap_err().code(),
+        "expect_ledger_unreadable"
+    );
+}
+
+#[test]
+fn a_card_with_no_goals_never_says_all_passed() {
+    // ebb36 #693 M1: nothing to compare is not "all passed"
+    let rep = compare(&[], &EvidenceLog::default(), &Snapshot::default(), NOW);
+    for text in [render(&rep, None), render_short(&rep, None)] {
+        assert!(text.contains("卡上沒有核准的期望"), "{text}");
+        assert!(!text.contains("全部實查通過"), "{text}");
+    }
+    assert_eq!(to_json(&rep)["no_goals"], true);
+    // with goals that all pass it still says so
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let log = parse_evidence(&format!("{}\n", ev("A1", "a", 10, 0)));
+    let rep = compare(&g, &log, &Snapshot::default(), NOW);
+    assert!(render(&rep, None).contains("(全部實查通過)"));
+    assert_eq!(to_json(&rep)["no_goals"], false);
+}
+
+#[test]
+fn a_check_line_must_say_what_ran_and_be_able_to_go_stale() {
+    // ebb36 #693 M2: {goal_id, goal_sha, at, rc: 0} was a pass forever
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let bare = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 10, "rc": 0});
+    let mut no_check = ev("A1", "a", 10, 0);
+    no_check.as_object_mut().unwrap().remove("check_id");
+    let mut empty_check = ev("A1", "a", 10, 0);
+    empty_check["check_id"] = json!("");
+    let mut never_stale = ev("A1", "a", 10, 0);
+    never_stale.as_object_mut().unwrap().remove("valid_until");
+    for bad in [bare, no_check, empty_check, never_stale] {
+        let log = parse_evidence(&format!("{bad}\n"));
+        assert_eq!(log.unreadable, 1, "{bad}");
+        assert_eq!(
+            status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+            Status::Unverified(Why::EvidenceUnreadable),
+            "{bad}"
+        );
+    }
+    // a head instead of an expiry is enough: it goes stale when the PR moves
+    let mut by_head = ev("A1", "a", 10, 0);
+    by_head.as_object_mut().unwrap().remove("valid_until");
+    by_head["pr"] = json!(604);
+    by_head["head"] = json!(H1);
+    let log = parse_evidence(&format!("{by_head}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &heads(&[(604, Some(H1))]), NOW), "A1"),
+        Status::Pass
+    );
+    // a guess needs neither, and is still never a pass
+    let guess = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 10, "kind": "inferred"});
+    let log = parse_evidence(&format!("{guess}\n"));
+    assert_eq!(log.unreadable, 0);
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Inferred
+    );
+    // the platform is read and shown
+    let mut mac = ev("A1", "a", 10, 0);
+    mac["platform"] = json!("macos");
+    let rep = compare(
+        &g,
+        &parse_evidence(&format!("{mac}\n")),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert!(
+        render(&rep, None).contains("[macos]"),
+        "{}",
+        render(&rep, None)
+    );
+    assert_eq!(to_json(&rep)["rows"][0]["platform"], "macos");
+}
+
+#[test]
+fn an_evidence_file_that_cannot_be_read_says_so() {
+    // c477a / ebb36 #693 L1: not "the card cannot be read"
+    let r = Root::new("evbad");
+    fs::write(r.dir().join("evidence.jsonl"), b"\xff\xfe\n").unwrap();
+    let e = load_evidence(&r.0, UID).unwrap_err();
+    assert_eq!(e.code(), "expect_evidence_unreadable", "{e}");
+    assert!(e.to_string().contains("evidence.jsonl"), "{e}");
 }
 
 #[test]
@@ -510,7 +653,7 @@ fn local_files_over_their_limit_are_errors() {
     fs::write(r.dir().join("evidence.jsonl"), line.repeat(n)).unwrap();
     assert_eq!(
         load_evidence(&r.0, UID).unwrap_err().code(),
-        "expect_card_unreadable"
+        "expect_evidence_unreadable"
     );
     fs::write(r.dir().join("evidence.jsonl"), line.repeat(3)).unwrap();
     assert_eq!(load_evidence(&r.0, UID).unwrap().lines.len(), 3);

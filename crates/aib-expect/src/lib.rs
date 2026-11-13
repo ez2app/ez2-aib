@@ -10,7 +10,13 @@
 //!   human changes them (`aib newproj --approve`, Touch ID). This crate reads
 //!   them only if their hash has an approved snapshot
 //!   (`approved/<sha256>.json`, the same canonical hash `new_project.py`
-//!   writes); otherwise it refuses with `expect_unsigned`. The card is an
+//!   writes); otherwise it refuses with `expect_unsigned`. When the ledger
+//!   (`<state>/ledger/aib-ledger.jsonl`) records approvals for the project,
+//!   the card must also be the **last** one approved, as
+//!   `new_project.py::_last_approved` reads it; going back to an older
+//!   approved snapshot is `expect_not_latest_approval`. A project with no
+//!   approval in the ledger (approved before 0.1.24) falls back to the
+//!   snapshot alone. The ledger's hash chain is not verified here. The card is an
 //!   unsigned local file, so this shows that someone changed the goals
 //!   without approving them; it is not a defence against a same-user AI.
 //! - **Evidence** is `<state>/projects/<uid>/evidence.jsonl`, append-only,
@@ -57,6 +63,17 @@ pub enum GoalsError {
     Unsigned {
         sha: String,
     },
+    /// The card's goals have an approved snapshot, but the ledger's last
+    /// approval for this project is of other goals (`latest`): the card went
+    /// back to an approval the human has since replaced (ebb36 #693 M3).
+    NotLatest {
+        sha: String,
+        latest: String,
+    },
+    /// The ledger exists but cannot be read (too large, not UTF-8, no access).
+    LedgerUnreadable(String),
+    /// `evidence.jsonl` exists but cannot be read (c477a / ebb36 #693 L1).
+    EvidenceUnreadable(String),
 }
 
 impl GoalsError {
@@ -68,6 +85,9 @@ impl GoalsError {
             GoalsError::NotApproved => "expect_not_approved",
             GoalsError::BadItem(_) => "expect_bad_goal",
             GoalsError::Unsigned { .. } => "expect_unsigned",
+            GoalsError::NotLatest { .. } => "expect_not_latest_approval",
+            GoalsError::LedgerUnreadable(_) => "expect_ledger_unreadable",
+            GoalsError::EvidenceUnreadable(_) => "expect_evidence_unreadable",
         }
     }
 }
@@ -89,6 +109,14 @@ impl std::fmt::Display for GoalsError {
                 "{}: the goals on the card (sha256 {sha}) have no approved snapshot: changed without the human's approval",
                 self.code()
             ),
+            GoalsError::NotLatest { sha, latest } => write!(
+                f,
+                "{}: the goals on the card (sha256 {sha}) were approved once, but the human's last approval is of other goals (sha256 {latest})",
+                self.code()
+            ),
+            GoalsError::LedgerUnreadable(e) | GoalsError::EvidenceUnreadable(e) => {
+                write!(f, "{}: {e}", self.code())
+            }
         }
     }
 }
@@ -170,6 +198,8 @@ fn strings(v: Option<&Value>, what: &str) -> Result<Vec<String>, GoalsError> {
 pub const MAX_CARD_BYTES: u64 = 1 << 20;
 /// Largest `evidence.jsonl` read (bytes).
 pub const MAX_EVIDENCE_BYTES: u64 = 16 << 20;
+/// Largest ledger read (bytes).
+pub const MAX_LEDGER_BYTES: u64 = 64 << 20;
 /// How much of the end of `expect-evals.jsonl` the display throttle reads.
 pub const EVALS_TAIL_BYTES: u64 = 256 << 10;
 
@@ -231,6 +261,58 @@ fn goal_id(text: &str) -> Option<String> {
     ok.then(|| t.to_owned())
 }
 
+/// The constitution sha of the ledger's last approval of project `uid`
+/// (`decision.resolved` on `subject.id == uid` whose English summary carries
+/// `constitution sha256=<64 hex>`), the way `new_project.py::_last_approved`
+/// finds it. `Ok(None)`: no ledger, or no such approval. Lines that are not
+/// JSON are skipped.
+pub fn last_approved_sha(root: &Path, uid: &str) -> Result<Option<String>, GoalsError> {
+    let p = root.join("ledger").join("aib-ledger.jsonl");
+    let text = match read_capped(&p, MAX_LEDGER_BYTES) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(GoalsError::LedgerUnreadable(format!(
+                "{}: {e}",
+                p.display()
+            )))
+        }
+    };
+    const MARK: &str = "constitution sha256=";
+    let mut last = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("kind").and_then(Value::as_str) != Some("decision.resolved") {
+            continue;
+        }
+        let body = v.get("body");
+        let subject = body
+            .and_then(|b| b.get("subject"))
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str);
+        if subject != Some(uid) {
+            continue;
+        }
+        let en = body
+            .and_then(|b| b.get("summary"))
+            .and_then(|s| s.get("en"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(i) = en.find(MARK) {
+            let h: String = en[i + MARK.len()..].chars().take(64).collect();
+            if h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                last = Some(h);
+            }
+        }
+    }
+    Ok(last)
+}
+
 /// The approved goals of one project, or why they cannot be used.
 pub fn load_goals(root: &Path, uid: &str) -> Result<Vec<Goal>, GoalsError> {
     let dir = project_dir(root, uid)?;
@@ -261,6 +343,12 @@ pub fn load_goals(root: &Path, uid: &str) -> Result<Vec<Goal>, GoalsError> {
     if !snap_ok {
         return Err(GoalsError::Unsigned { sha });
     }
+    // only the human's last approval counts, not any earlier one (ebb36 #693 M3)
+    if let Some(latest) = last_approved_sha(root, uid)? {
+        if latest != sha {
+            return Err(GoalsError::NotLatest { sha, latest });
+        }
+    }
     let mut out: Vec<Goal> = Vec::new();
     for (i, text) in goals.into_iter().enumerate() {
         let id = goal_id(&text).unwrap_or_else(|| format!("G{}", i + 1));
@@ -284,6 +372,9 @@ pub struct Evidence {
     pub rc: i64,
     pub summary: String,
     pub valid_until: Option<u64>,
+    /// `platform` the check ran on (`macos`, `windows`, ...); "" when the line
+    /// does not say. Shown next to the evidence, not judged (ebb36 #693 M2).
+    pub platform: String,
     /// `kind: "inferred"`: a reasoned guess, shown as such, never a pass.
     pub inferred: bool,
     /// [`goal_sha`] of the wording this line checked.
@@ -313,6 +404,9 @@ pub fn goal_sha(text: &str) -> String {
 /// One line, or the goal id it names when it cannot be used. A field of the
 /// wrong type is an unreadable line, not a missing field; `pr` and `head`
 /// come together or not at all (a pr without a head could never go stale).
+/// A check line (not `inferred`) must name its `check_id` and must be able to
+/// go stale: a `head` or a `valid_until` (DECISION-expect-check item 3; ebb36
+/// #693 M2: a bare `{goal_id, goal_sha, at, rc: 0}` was a pass forever).
 fn evidence_line(v: &Value, pos: usize) -> Result<Evidence, Option<String>> {
     let goal = v
         .get("goal_id")
@@ -350,16 +444,22 @@ fn evidence_line(v: &Value, pos: usize) -> Result<Evidence, Option<String>> {
         None | Some(Value::Null) => return Err(goal.clone()),
         Some(x) => x.as_i64().ok_or_else(|| goal.clone())?,
     };
+    let check = text("check_id")?.unwrap_or_default();
+    let valid_until = num("valid_until")?;
+    if !inferred && (check.is_empty() || (head.is_none() && valid_until.is_none())) {
+        return Err(goal.clone());
+    }
     Ok(Evidence {
         goal: goal.clone().ok_or(None)?,
         at: num("at")?.ok_or_else(|| goal.clone())?,
         seat: text("seat")?.unwrap_or_default(),
         pr,
         head,
-        check: text("check_id")?.unwrap_or_default(),
+        check,
         rc,
         summary: text("summary")?.unwrap_or_default(),
-        valid_until: num("valid_until")?,
+        valid_until,
+        platform: text("platform")?.unwrap_or_default(),
         inferred,
         goal_sha: text("goal_sha")?,
         pos,
@@ -393,7 +493,10 @@ pub fn load_evidence(root: &Path, uid: &str) -> Result<EvidenceLog, GoalsError> 
     match read_capped(&p, MAX_EVIDENCE_BYTES) {
         Ok(t) => Ok(parse_evidence(&t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(EvidenceLog::default()),
-        Err(e) => Err(GoalsError::Unreadable(format!("{}: {e}", p.display()))),
+        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(
+            "{}: {e}",
+            p.display()
+        ))),
     }
 }
 
@@ -704,6 +807,10 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
     for r in &report.rows {
         let why = match (&r.status, &r.evidence) {
             (Status::Unverified(w), _) => w.text(),
+            (_, Some(e)) if !e.platform.is_empty() => format!(
+                "{} {} [{}] rc {}:{}",
+                e.seat, e.check, e.platform, e.rc, e.summary
+            ),
             (_, Some(e)) => format!("{} {} rc {}:{}", e.seat, e.check, e.rc, e.summary),
             (_, None) => String::new(),
         };
@@ -721,11 +828,14 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
             report.unreadable_evidence
         ));
     }
-    out.push_str(&format!("接下來(規則順序):{}\n", order_text(&report.next)));
+    out.push_str(&format!(
+        "接下來(規則順序):{}\n",
+        order_text(&report.next, report.rows.is_empty())
+    ));
     if let Some(a) = ai {
         out.push_str(&format!(
             "接下來(AI 建議):{};理由:{}\n",
-            order_text(&a.ids),
+            order_text(&a.ids, report.rows.is_empty()),
             clean(&a.why, 120)
         ));
     }
@@ -757,19 +867,26 @@ pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
             clean(&why, 60)
         ));
     }
-    out.push(format!("接下來:{}", order_text(&report.next)));
+    out.push(format!(
+        "接下來:{}",
+        order_text(&report.next, report.rows.is_empty())
+    ));
     if let Some(a) = ai {
         out.push(format!(
             "AI 改排:{}({})",
-            order_text(&a.ids),
+            order_text(&a.ids, report.rows.is_empty()),
             clean(&a.why, 60)
         ));
     }
     out.join("\n") + "\n"
 }
 
-fn order_text(ids: &[String]) -> String {
-    if ids.is_empty() {
+/// `no_goals`: the card has no approved expectation at all, so nothing was
+/// compared; that is never "all passed" (ebb36 #693 M1).
+fn order_text(ids: &[String], no_goals: bool) -> String {
+    if no_goals {
+        "(卡上沒有核准的期望,沒得比)".to_owned()
+    } else if ids.is_empty() {
         "(全部實查通過)".to_owned()
     } else {
         ids.join(" → ")
@@ -784,6 +901,7 @@ pub fn to_json(report: &Report) -> Value {
         "unverified": report.count("unverified"),
         "inferred": report.count("inferred"),
         "unreadable_evidence": report.unreadable_evidence,
+        "no_goals": report.rows.is_empty(),
         "next": report.next,
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
@@ -791,6 +909,7 @@ pub fn to_json(report: &Report) -> Value {
             "status": r.status.code(),
             "why": match &r.status { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
             "evidence_at": r.evidence.as_ref().map(|e| e.at),
+            "platform": r.evidence.as_ref().map(|e| e.platform.as_str()).filter(|p| !p.is_empty()),
         })).collect::<Vec<_>>(),
     })
 }

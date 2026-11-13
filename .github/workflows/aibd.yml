@@ -1078,8 +1078,7 @@ jobs:
           vs '        Known::Known(c) => lines_for(files, c)?,' \
              '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
-      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
-      # 043dd 11-11 22:2x for 1ced7 aib-expect v0 (checked against the working tree on top of 0b8a0351, including its uncommitted Why codes).
+      # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
       - name: aib-expect knives (macOS)
@@ -1169,6 +1168,27 @@ jobs:
           ek '        .filter_map(|g| match pick(evidence, g, now) {' \
              '        .filter_map(|g| match pick(evidence, g, now.max(u64::MAX)) { // knife' \
              a_pr_line_after_a_future_line_is_read_and_counts
+          # KE21 (ebb36 #693 L7) a guess is counted as a pass
+          ek '    if e.inferred {' \
+             '    if e.inferred && false { // knife' \
+             inferred_lines_and_unreadable_lines_are_shown_as_such
+          # KE22 (ebb36 #693 M1) a card with no goals says "all passed"
+          ek '    if no_goals {' \
+             '    if no_goals && false { // knife' \
+             a_card_with_no_goals_never_says_all_passed
+          # KE23 (ebb36 #693 M2) a check line with no check id and nothing to go stale on is a pass forever
+          ek '    if !inferred && (check.is_empty() || (head.is_none() && valid_until.is_none())) {' \
+             '    if !inferred && false { // knife' \
+             a_check_line_must_say_what_ran_and_be_able_to_go_stale
+          # KE24 (ebb36 #693 M3) any approval ever made counts, so going back to a replaced one reads as approved
+          ek '        if latest != sha {' \
+             '        if latest != sha && false { // knife' \
+             only_the_last_approval_in_the_ledger_counts
+          # KE25 (c477a / ebb36 #693 L1) an unreadable evidence file is reported as an unreadable card
+          ek '        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(' \
+             '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
+             an_evidence_file_that_cannot_be_read_says_so
+      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
