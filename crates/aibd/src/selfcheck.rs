@@ -163,6 +163,17 @@ pub fn check_tree(
     )
 }
 
+/// The marker file of check `n`. The check's number is in the name, not only
+/// the time: macOS clocks tick in microseconds, so two checks started in the
+/// same microsecond shared one marker and one read the other's child pid
+/// (#744 CI macOS, f1fae 11-14).
+fn marker_path(n: u64, nanos: u128) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "aibd-selfcheck-{}-{n}-{nanos}.child",
+        std::process::id()
+    ))
+}
+
 /// Start `argv` + the marker path as the check tree and stop it once its
 /// child wrote its pid to the marker, or after `wait`.
 #[doc(hidden)]
@@ -172,20 +183,19 @@ pub fn check_argv(
     mut argv: Vec<String>,
     wait: Duration,
 ) -> Result<Checked, SpawnFail> {
-    let marker = std::env::temp_dir().join(format!(
-        "aibd-selfcheck-{}-{}.child",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    let _ = std::fs::remove_file(&marker);
     // One session id per check, never per process: the stop's marker sweep
     // (ADR 0004 layer 3) adopts every process carrying `AIBD_SESSION=<id>`,
     // so two checks sharing an id would stop each other's trees (#579 CI:
     // a concurrent test's stop took this tree's background child).
     static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let marker = marker_path(
+        n,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    let _ = std::fs::remove_file(&marker);
     let spec = Spec {
         id: format!("selfcheck-{}-{n}", std::process::id()),
         argv: {
@@ -477,6 +487,13 @@ mod tests {
 
     fn nw() -> Row {
         process_row(&fail("unsupported_platform", None))
+    }
+
+    #[test]
+    fn two_checks_in_the_same_microsecond_get_their_own_markers() {
+        let t = 1_794_000_000_123_456_000u128; // whole microseconds, as on macOS
+        assert_ne!(marker_path(1, t), marker_path(2, t));
+        assert_eq!(marker_path(1, t), marker_path(1, t));
     }
 
     fn status_of(rows: &[Row], name: &str) -> String {

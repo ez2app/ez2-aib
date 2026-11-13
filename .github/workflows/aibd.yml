@@ -780,6 +780,13 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
+          # SC1 (a9136, #744 CI) the selfcheck marker is named by the time alone: two checks in
+          # one microsecond (macOS clock) share it and one reads the other's child pid
+          python3 -I scripts/knife.py crates/aibd/src/selfcheck.rs \
+            '        "aibd-selfcheck-{}-{n}-{nanos}.child",' \
+            '        "aibd-selfcheck-{}-{}-{nanos}.child", n * 0, // knife' \
+            --expect-fail selfcheck::tests::two_checks_in_the_same_microsecond_get_their_own_markers \
+            -- cargo test -p aibd --locked --lib selfcheck::tests::two_checks_in_the_same_microsecond_get_their_own_markers
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
