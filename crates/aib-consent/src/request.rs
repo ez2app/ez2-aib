@@ -208,7 +208,7 @@ pub fn clean_summary(text: &str) -> String {
 
 /// Python `Path.expanduser`: `~` and `~/…` from `home`, `~user/…` from the user database.
 /// `None` where Python raises (no such user).
-fn expand_user(p: &str, home: &Path) -> Option<PathBuf> {
+pub(crate) fn expand_user(p: &str, home: &Path) -> Option<PathBuf> {
     let Some(rest) = p.strip_prefix('~') else {
         return Some(PathBuf::from(p));
     };

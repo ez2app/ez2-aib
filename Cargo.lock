@@ -54,6 +54,7 @@ name = "aib-consent"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-approve",
+ "aib-signlint",
  "nix",
  "serde",
  "serde_json",

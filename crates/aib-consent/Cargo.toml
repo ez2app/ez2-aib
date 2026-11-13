@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 aib-approve = { path = "../aib-approve" }
+aib-signlint = { path = "../aib-signlint" }
 serde = "1"
 serde_json = "1"
 sha2 = "0.10.9"
