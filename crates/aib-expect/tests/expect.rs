@@ -237,8 +237,19 @@ fn a_card_with_no_goals_never_says_all_passed() {
     }];
     let log = parse_evidence(&format!("{}\n", ev("A1", "a", 10, 0)));
     let rep = compare(&g, &log, &Snapshot::default(), NOW);
+    // counted, not read off the header wording (2240e gaps N2)
+    let j = to_json(&rep);
+    assert_eq!(
+        (
+            j["pass"].clone(),
+            j["fail"].clone(),
+            j["unverified"].clone(),
+            j["no_goals"].clone()
+        ),
+        (json!(1), json!(0), json!(0), json!(false)),
+        "{j}"
+    );
     let text = render(&rep, None);
-    assert!(text.contains("實查通過 1 / 實查 1"), "{text}");
     assert!(!text.contains("沒得比"), "{text}");
     assert_eq!(to_json(&rep)["no_goals"], false);
 }
@@ -419,6 +430,13 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
         }
         s => panic!("{s:?}"),
     }
+    // a sha in capitals is the same commit (ebb36 #693 N3)
+    let mut up = ev("A4b", "a", 10, 0);
+    up["pr"] = json!(604);
+    up["head"] = json!("ABCDEF0123456789ABCDEF0123456789ABCDEF01");
+    let up = parse_evidence(&format!("{up}\n"));
+    let lower = heads(&[(604, Some("abcdef0123456789abcdef0123456789abcdef01"))]);
+    assert_eq!(status(&compare(&g, &up, &lower, NOW), "A4b"), Status::Pass);
     for snap in [heads(&[(604, None)]), Snapshot::default()] {
         match status(&compare(&g, &log, &snap, NOW), "A4b") {
             Status::Unverified(w) => assert_eq!(w, Why::SourceUnknown { pr: 604 }),
@@ -926,6 +944,10 @@ fn seat_text_is_cleaned_before_it_is_printed() {
     assert!(!t.contains('\u{1b}') && !t.contains('\u{202e}'), "{t:?}");
     assert!(t.contains("ok [2Jgnp next line"), "{t}");
     assert_eq!(clean(&"字".repeat(10), 4), "字字字…");
+    // more invisible marks (ebb36 #693 N4)
+    for m in ['\u{00ad}', '\u{061c}', '\u{180e}', '\u{fe0f}', '\u{e0041}'] {
+        assert_eq!(clean(&format!("a{m}b"), 10), "ab", "{m:?}");
+    }
 }
 
 fn event(kind: &str, seat: &str, at: u64) -> Event {
@@ -1155,4 +1177,90 @@ fn heads_drive_already_read_are_not_read_again() {
     assert!(!calls.iter().any(|c| c.ends_with("/685")));
     assert_eq!(s.pr_heads[&30].as_deref(), Some(H2));
     assert_eq!(s.pr_heads[&31], None, "past the cap: unknown");
+}
+
+// --- the program itself: exit codes (ebb36 #693 L5 / L6) ---
+
+fn bin(args: &[&str], root: &Path) -> (i32, String) {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_aib-expect"))
+        .args(args)
+        .args(["--state-root", root.to_str().unwrap(), "--offline"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+    t.push_str(&String::from_utf8_lossy(&o.stderr));
+    (o.status.code().unwrap_or(-1), t)
+}
+
+#[test]
+fn a_flag_the_command_does_not_take_is_refused() {
+    let r = Root::new("bin-flags");
+    let ev = [
+        "event",
+        "--project",
+        UID,
+        "--kind",
+        "now-done",
+        "--seat",
+        "1ced7",
+    ];
+    for extra in [&["--now", "1"][..], &["--json"], &["--short"]] {
+        let a: Vec<&str> = ev.iter().copied().chain(extra.iter().copied()).collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+        assert!(t.contains("does not take"), "{t}");
+    }
+    for extra in [
+        &["--kind", "now-done"][..],
+        &["--seat", "x"],
+        &["--pr", "1"],
+    ] {
+        let a: Vec<&str> = ["show", "--project", UID]
+            .iter()
+            .copied()
+            .chain(extra.iter().copied())
+            .collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+    }
+    // nothing was written by a refused event
+    assert!(!r.dir().join("expect-evals.jsonl").exists());
+}
+
+#[test]
+fn exit_codes_of_the_program() {
+    let r = Root::new("bin-rc");
+    // event: a missing --seat is a bad argument, checked before anything is read
+    let (rc, t) = bin(&["event", "--project", UID, "--kind", "now-done"], &r.0);
+    assert_eq!(rc, 2, "{t}");
+    // show without a card: the goals cannot be used
+    let (rc, t) = bin(&["show", "--project", UID], &r.0);
+    assert_eq!(rc, 3, "{t}");
+    // show with an approved card and no evidence: done, every row unverified
+    r.card(&["a"], &["r"], true);
+    let (rc, t) = bin(&["show", "--project", UID, "--json", "--now", "100"], &r.0);
+    assert_eq!(rc, 0, "{t}");
+    let j: Value = serde_json::from_str(t.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        (j["pass"].clone(), j["no_goals"].clone()),
+        (json!(0), json!(false)),
+        "{j}"
+    );
+    // event records with the real time
+    let (rc, t) = bin(
+        &[
+            "event",
+            "--project",
+            UID,
+            "--kind",
+            "now-done",
+            "--seat",
+            "1ced7",
+        ],
+        &r.0,
+    );
+    assert_eq!(rc, 0, "{t}");
+    let line = fs::read_to_string(r.dir().join("expect-evals.jsonl")).unwrap();
+    assert_eq!(line.lines().count(), 1, "{line}");
 }

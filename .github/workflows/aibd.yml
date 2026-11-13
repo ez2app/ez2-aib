@@ -1372,7 +1372,7 @@ jobs:
           ek '    if t.len() as u64 > max {' \
              '    if t.len() as u64 > max && false { // knife' \
              local_files_over_their_limit_are_errors
-          # KE15 (a9136 #693) every PR the history names is read, so old PRs push the newest past MAX_PRS
+          # KE15 (a9136 #693) only the first PR the history names is read, so a newer PR is never read (old PRs must not push the newest past MAX_PRS)
           ek '            (Some(e), false) => e.pr,' \
              '            (Some(_), false) => evidence.lines.iter().find_map(|e| e.pr), // knife' \
              old_prs_never_push_the_latest_one_out
@@ -1416,6 +1416,18 @@ jobs:
           ek '        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(' \
              '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
              an_evidence_file_that_cannot_be_read_says_so
+          # KE26 (ebb36 #693 N3) a head written in capitals reads as another commit
+          ek '            Some(Some(now_head)) if now_head.eq_ignore_ascii_case(head) => {}' \
+             '            Some(Some(now_head)) if now_head == head => {} // knife' \
+             a_pass_for_an_old_head_or_an_unreadable_head_is_unverified
+          # KE27 (ebb36 #693 N4) the soft hyphen and the other added marks pass through
+          ek "                '\\u{00ad}' | '\\u{061c}' | '\\u{180e}'" \
+             "                '\\u{200b}' | '\\u{200c}' | '\\u{200d}' // knife" \
+             seat_text_is_cleaned_before_it_is_printed
+          # KE28 (ebb36 #693 L5 / L6) a flag the command does not take is ignored (event --now writes a made-up time)
+          python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
+            '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
+            -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
