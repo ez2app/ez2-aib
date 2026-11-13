@@ -1,5 +1,5 @@
 //! Owner-present acceptance for the Secure Enclave path (B2 T135-b, PLAN-t135b §「還沒證」
-//! + DECISION-hardware-signed-registry). Every test here is `#[ignore]`: it needs a Mac
+//! and DECISION-hardware-signed-registry). Every test here is `#[ignore]`: it needs a Mac
 //! with Touch ID, the lid open, the owner's own GUI session (not ssh), and the owner at
 //! the keyboard. Run one at a time so each window is read before it is pressed:
 //!
