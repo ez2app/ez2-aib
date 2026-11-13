@@ -8,8 +8,9 @@
 //! 4. a command longer than [`REASON_CMD_MAX`] shown makes the request strong;
 //! 5. SIGN: the acks (`invalid lint_ack_code`), the file read with `O_NOFOLLOW` up to
 //!    256 KB (`failed sign_unreadable`), copied into a fresh 0700 folder and checked against
-//!    its sha256 (`failed sign_hash_changed`), linted from that copy (`not_allowed sign_lint`);
-//!    the copy is what is shown and what runs;
+//!    its sha256 (`failed sign_hash_changed`), linted (`not_allowed sign_lint`) from the
+//!    same bytes that were hashed and shown, never read again from disk (ebb36 T136-3a L1);
+//!    the copy is what runs, after T136-3b checks it against the sha once more;
 //! 6. shared program: pin / review shape (`invalid generic_pin_or_review`), then
 //!    [`params::stage`] into a fresh 0700 folder (`failed` for stage_dir / stage_write /
 //!    stage_hash_changed / stage_output, `not_allowed` for every other word).
@@ -31,6 +32,13 @@
 //!   always writes a string).
 //! - Nested JSON objects come out with their keys sorted (serde_json without
 //!   `preserve_order`); the values are the same.
+//! - A scratch folder that cannot be made: 1.x raised out of `decide` (`mkdtemp` was
+//!   outside its `try`); here SIGN gives `failed sign_hash_changed` and a shared program
+//!   `failed stage_dir` (also when 8 random names all exist, which does not happen).
+//! - 1.x linted the copy by path (the command read it), so a same-user program could swap
+//!   the copy between the hash check and the lint; here the hashed bytes are linted.
+//! - A `~other/…` path that cannot be expanded (1.x `expanduser` raised) cannot get here:
+//!   [`classify`] already refuses it (`sign_missing` / `generic_missing`).
 
 use crate::params::{self, Refused};
 use crate::request::{self, Kind, EXPIRE_S, MAX_SIGN_BYTES};
@@ -124,8 +132,12 @@ pub struct Ready {
     /// What goes into the done record whatever the answer (1.x `lint_rec`).
     pub lint_rec: Map<String, Value>,
     /// SIGN: the checked copy and its sha256. Shared program: the staged program / params.
+    /// The folder is 0700 but the same user can still write it: right before the run,
+    /// read each copy again with [`params::read_staged`] against these sha256 and use those
+    /// bytes (ebb36 T136-3a N3).
     pub staged: Option<Map<String, Value>>,
-    /// SIGN: the copy that runs (`/bin/bash <copy>`).
+    /// SIGN: the copy that runs and its sha256; read it back with [`params::read_staged`]
+    /// right before the run, never run the path as it is.
     pub sign_copy: Option<(PathBuf, String)>,
     /// The folder holding the copies; removed on drop unless kept by the run.
     pub scratch: Option<Scratch>,
@@ -285,8 +297,7 @@ fn finding_json(f: &aib_signlint::Finding) -> Value {
     json!({"rule": f.rule, "line": f.line, "state": f.state.as_str(), "msg": f.msg})
 }
 
-/// 1.x `run_signlint` on the copy, through the library. `Err(why)` only where 1.x could
-/// not run the lint at all (`signlint_rc:2`: not UTF-8).
+/// 1.x `run_signlint`'s result, through the library.
 struct Lint {
     ok: bool,
     findings: Vec<Value>,
@@ -296,15 +307,13 @@ struct Lint {
     rehearsal: Option<Value>,
 }
 
-fn run_lint(copy: &Path, acks: &[String]) -> Result<Lint, &'static str> {
-    let text = fs::read(copy)
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok())
-        .ok_or("signlint_rc:2")?;
-    let name = copy.file_name().and_then(|n| n.to_str()).unwrap_or("");
+/// The lint of `raw` (the bytes already hashed) as a file called `name`. `Err` only where
+/// the 1.x command refused the file (`signlint_rc:2`: not UTF-8).
+fn lint_bytes(raw: &[u8], name: &str, acks: &[String]) -> Result<Lint, &'static str> {
+    let text = std::str::from_utf8(raw).map_err(|_| "signlint_rc:2")?;
     let set: BTreeSet<String> = acks.iter().cloned().collect();
-    let (left, acked) = aib_signlint::split_acked(aib_signlint::lint(&text, name), &set);
-    let rehearsal = aib_signlint::rehearsal(&text).map(|r| {
+    let (left, acked) = aib_signlint::split_acked(aib_signlint::lint(text, name), &set);
+    let rehearsal = aib_signlint::rehearsal(text).map(|r| {
         json!({"env": plain(&r.env, aib_signlint::REHEARSAL_ENV_MAX),
                "receipt": plain(&r.receipt, aib_signlint::REHEARSAL_RECEIPT_MAX)})
     });
@@ -432,7 +441,8 @@ fn sign_script(
         return Err(changed());
     }
     // 1.x gives the same detail whether the lint refused or could not run
-    let lint = match run_lint(&copy, &acks) {
+    let lint_name = copy.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let lint = match lint_bytes(&sign.raw, lint_name, &acks) {
         Ok(l) if l.ok => l,
         Ok(l) => {
             return Err(stop(
@@ -551,4 +561,47 @@ fn shared_program(
     ready.view.insert("program".into(), st);
     ready.scratch = Some(scratch);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shape(dir: &Path, copy: &str, sha: &str) -> Value {
+        json!({"program": {"argv": ["/bin/bash", copy], "copy": copy, "sha256": sha},
+               "params": {"sha256": "a".repeat(64), "copy": dir.join("params.env")}})
+    }
+
+    // ebb36 T136-3a: the stage output check is kept, so it gets a test
+    #[test]
+    fn the_stage_output_must_stay_in_the_folder_and_match_the_pin() {
+        let dir = Path::new("/tmp/aib-x");
+        let pin = "b".repeat(64);
+        let inside = dir.join("p.sh");
+        let inside = inside.to_str().unwrap_or("");
+        assert!(stage_shape_ok(&shape(dir, inside, &pin), &pin, dir));
+        assert!(!stage_shape_ok(&shape(dir, "/etc/p.sh", &pin), &pin, dir));
+        assert!(!stage_shape_ok(
+            &shape(dir, inside, &"c".repeat(64)),
+            &pin,
+            dir
+        ));
+        let mut v = shape(dir, inside, &pin);
+        v["program"]["argv"] = json!(["/bin/sh", inside]);
+        assert!(!stage_shape_ok(&v, &pin, dir));
+        v["program"]["argv"] = json!([]);
+        assert!(!stage_shape_ok(&v, &pin, dir));
+    }
+
+    // ebb36 T136-3a L1: what is linted is the bytes given, whatever the file holds now
+    #[test]
+    fn the_lint_reads_the_bytes_it_is_given() {
+        let clean = "#!/bin/bash\n# 可丟環境: ct-900 收據: r.json\nset -euo pipefail\necho hi\n";
+        assert!(lint_bytes(clean.as_bytes(), "SIGN-a.sh", &[]).is_ok_and(|l| l.ok));
+        assert!(lint_bytes(b"#!/bin/bash\necho hi\n", "SIGN-a.sh", &[]).is_ok_and(|l| !l.ok));
+        assert_eq!(
+            lint_bytes(b"\xff", "SIGN-a.sh", &[]).err(),
+            Some("signlint_rc:2")
+        );
+    }
 }
