@@ -450,10 +450,21 @@ fn a_reader_sees_the_old_or_the_new_file_never_a_gap() {
         })
     };
     r.allow_downgrade = Some("swap back and forth for the test".into());
+    // the reader above only catches a half file when the timing lines up; the inode is the
+    // sure sign: a rename puts a new file at the path, writing in place keeps the old one
+    #[cfg(unix)]
+    let ino = || {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(dest.join("aib-title")).unwrap().ino()
+    };
     for i in 0..40u64 {
         r.bytes = if i % 2 == 0 { c.clone() } else { b.clone() };
         r.now = i;
+        #[cfg(unix)]
+        let before = ino();
         assert_eq!(install(&MAIN, &r).verdict, Verdict::Ok, "install {i}");
+        #[cfg(unix)]
+        assert_ne!(ino(), before, "install {i} wrote the tool path in place");
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let reads = reader.join().expect("reader saw a gap or a half file");
