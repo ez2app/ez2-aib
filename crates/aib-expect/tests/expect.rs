@@ -1247,6 +1247,22 @@ fn exit_codes_of_the_program() {
         (json!(0), json!(false)),
         "{j}"
     );
+    // a kind that is not a finished-task event: a bad argument, nothing recorded, nothing read
+    let (rc, t) = bin(
+        &[
+            "event",
+            "--project",
+            UID,
+            "--kind",
+            "bogus",
+            "--seat",
+            "1ced7",
+        ],
+        &r.0,
+    );
+    assert_eq!(rc, 2, "{t}");
+    assert!(t.contains("expect_not_a_completion"), "{t}");
+    assert!(!r.dir().join("expect-evals.jsonl").exists());
     // event records with the real time
     let (rc, t) = bin(
         &[

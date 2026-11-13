@@ -137,7 +137,12 @@ fn run(a: &Args) -> Result<u8, String> {
         .as_ref()
         .map(|e| ex::prs_of(e, now))
         .unwrap_or_default();
-    let snap = if on("--offline") {
+    // a kind that is not a finished-task event is refused by record_event (rc 2); no PR
+    // head is read for it first (ebb36 L1 on a67c3e43)
+    let not_an_event = event
+        .as_ref()
+        .is_some_and(|e| !ex::EVENTS.contains(&e.kind.as_str()));
+    let snap = if on("--offline") || not_an_event {
         ex::Snapshot {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
         }
