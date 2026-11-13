@@ -1509,6 +1509,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-signlint.sh
+      # aib-approve (ebb36 11-13, PLAN-b2 T135-a): the approval policy core. Each knife takes one
+      # check away and must turn its own test red; every knife still builds under -D warnings.
+      - name: aib-approve knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-approve.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
