@@ -615,6 +615,74 @@ fn a_cabin_the_socket_points_at_is_taken() {
     );
 }
 
+/// A caller in a pane whose socket points at cabin `x`, checking it as 1.x
+/// `aib_apply_socket_instance` does (no lookup of its own).
+struct Socket;
+
+impl Context for Socket {
+    fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
+        match q.explicit {
+            _ if q.new => Ok(None),
+            Some(e) if e != "x" => Err(OpenError::Cabin(format!("conflict {e} vs x"))),
+            Some(_) => Ok(None),
+            None => Ok(Some("x".into())),
+        }
+    }
+    fn killswitch(&self) -> Option<String> {
+        None
+    }
+}
+
+/// 043dd r3 M1: the primary named by hand or by the environment is handed to the
+/// caller, so a socket pointing elsewhere is refused, not quietly overruled.
+#[test]
+fn a_socket_pointing_elsewhere_than_the_named_cabin_is_refused() {
+    let run = |a: &[&str], env: &[(&str, &str)]| {
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        parse_open_in(
+            &args(a),
+            move |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
+            &Socket,
+        )
+    };
+    let d = ["claude", "safe", "dev"];
+    let conflict = |e: &str| Err(OpenError::Cabin(format!("conflict {e} vs x")));
+    assert_eq!(
+        run(&["claude", "safe", "dev", "--instance", "main"], &[]),
+        conflict("main")
+    );
+    assert_eq!(
+        run(&["claude", "safe", "dev", "main"], &[]),
+        conflict("main")
+    );
+    assert_eq!(run(&d, &[("EZ2_AIB_INSTANCE", "main")]), conflict("main"));
+    assert_eq!(run(&d, &[("EZ2_AIB_INSTANCE", "new")]), conflict("new"));
+    assert_eq!(run(&["claude", "safe", "dev", "y"], &[]), conflict("y"));
+    // the same cabin, a new one, or nothing named: no conflict
+    let cabin = |r: Result<Outcome, OpenError>| match r {
+        Ok(Outcome::Open(s)) => s.cabin,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        cabin(run(&["claude", "safe", "dev", "x"], &[])),
+        named("x", false)
+    );
+    assert_eq!(
+        cabin(run(
+            &["claude", "safe", "dev", "new"],
+            &[("EZ2_AIB_INSTANCE", "main")]
+        )),
+        Cabin::New
+    );
+    assert_eq!(
+        cabin(run(&d, &[("EZ2_AIB_INSTANCE", "")])),
+        named("x", false)
+    );
+}
+
 /// A caller whose bot check refuses codexbot (no thread bound).
 struct Bot;
 

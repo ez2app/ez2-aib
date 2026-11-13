@@ -1063,6 +1063,9 @@ jobs:
           ok '            check_cabin_name(v)?;' '            let _ = v; // knife' several_faults_the_first_one_wins
           # O17 a batch count too large is let through
           ok '    if too_many {' '    if too_many && false { // knife' refusals_one_per_row
+          # O18 the cabin named by hand or by the environment is not handed to the caller, so a
+          # socket pointing elsewhere is overruled quietly (043dd r3 M1)
+          ok '                .or(env_instance.as_deref().filter(|v| !v.is_empty())),' '                .filter(|_| false), // knife' a_socket_pointing_elsewhere_than_the_named_cabin_is_refused
           # O9 / O10 the role and provider lists drift from 1.x
           ok '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",' '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", // knife' roles_match_the_i18n_keys_in_this_tree
           ok '    "openrouterjev",' '    // knife' providers_and_modes_match_the_1x_launcher

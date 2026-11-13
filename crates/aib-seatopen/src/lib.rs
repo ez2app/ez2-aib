@@ -112,6 +112,11 @@ pub struct CabinQuery<'a> {
     pub new: bool,
     /// A dry run only warns about a cabin that is not found.
     pub dry_run: bool,
+    /// The cabin the words, else the environment, name, unfiltered: the primary and
+    /// `new` included, empty `EZ2_AIB_INSTANCE` = none (1.x
+    /// `${INSTANCE:-${EZ2_AIB_INSTANCE-}}`). Unless `new`, a socket pointing at another
+    /// cabin than this one (after the lookup) is a conflict (aib:692–704, rc 2).
+    pub explicit: Option<&'a str>,
 }
 
 /// What only the caller can look up, asked at the point 1.x asks it, so the first
@@ -121,7 +126,9 @@ pub trait Context {
     /// `Ok(Some(full))` replaces the name looked up (`named`, else `from_env`); when
     /// neither was asked, it is the cabin the socket points at, and it is taken as the
     /// cabin unless the words ask for a new one or the environment names one. `Ok(None)`
-    /// keeps what there is; `Err` refuses (use [`OpenError::Cabin`], rc 2). Called once,
+    /// keeps what there is; `Err` refuses (use [`OpenError::Cabin`], rc 2) — a socket
+    /// that points at another cabin than `explicit`, unless `new`, is refused here and
+    /// never chosen between quietly (043dd r3 M1). Called once,
     /// after the fourth word and before the word count is checked; `named` and
     /// `from_env` have passed the cabin-name check (1.x `aib_cabin_check_name`) already.
     fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError>;
@@ -542,6 +549,9 @@ pub fn parse_open_in(
             }),
             new,
             dry_run,
+            explicit: instance
+                .as_deref()
+                .or(env_instance.as_deref().filter(|v| !v.is_empty())),
         };
         if let Some(v) = q.named.or(q.from_env) {
             check_cabin_name(v)?;
