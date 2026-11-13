@@ -601,6 +601,56 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
+      # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
+      # revive data written with the seat, resume id filled once, who is alive
+      # (one alert per outage). Each knife must turn its own test red.
+      - name: A11-1 seat_meta / alive knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          mk() { python3 -I scripts/knife.py crates/aib-store/src/seat_meta.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-store --locked --test seat_meta "$3"; }
+          ak() { python3 -I scripts/knife.py crates/aib-store/src/alive.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-store --locked --test alive "$3"; }
+          # M1 the seat opens but its revive data is not written (the 1.x snapshot gap)
+          python3 -I scripts/knife.py crates/aib-store/src/seats.rs \
+            '                crate::seat_meta::insert_meta(&tx, &seat.seat_id, m)?;' \
+            '                let _ = (crate::seat_meta::insert_meta, m); // knife' \
+            --expect-fail opening_a_seat_writes_its_revive_data_and_it_survives_a_restart \
+            -- cargo test -p aib-store --locked --test seat_meta opening_a_seat_writes_its_revive_data_and_it_survives_a_restart
+          # M2 an empty resume id is let through as a value
+          mk '    if m.resume_id.as_deref() == Some("") {' \
+            '    if m.resume_id.as_deref() == Some("") && false { // knife' \
+            an_empty_resume_id_is_refused_never_stored_as_a_value
+          # M3 a second, different resume id overwrites the first
+          mk '                Some(h) => return Ok(ResumeFill::Conflict { existing: h }),' \
+            '                Some(_h) => {} // knife' \
+            the_resume_id_is_filled_once_with_an_event_and_no_revision
+          # M4 the lookup does not leave out the new seat itself
+          mk '                 WHERE m.resume_id = ?1 AND m.seat_id != ?2' \
+            '                 WHERE m.resume_id = ?1 AND ?2 = ?2 -- knife' \
+            the_previous_seat_is_the_newest_other_one_with_that_resume_id
+          # A1 no waiting for the threshold
+          ak '                     WHERE last_seen < ?1 AND alerted_at IS NULL AND ?1 - last_seen >= ?2' \
+            '                     WHERE last_seen < ?1 AND alerted_at IS NULL AND ?2 = ?2 -- knife' \
+            a_cabin_down_past_the_threshold_is_reported_once
+          # A2 an outage already reported is reported again
+          ak '                     WHERE last_seen < ?1 AND alerted_at IS NULL AND ?1 - last_seen >= ?2' \
+            '                     WHERE last_seen < ?1 AND ?1 - last_seen >= ?2 -- knife' \
+            two_rounds_at_once_give_one_alert
+          # A3 a cabin closed on purpose is still followed (and later alerted)
+          ak '                tx.execute("DELETE FROM cabin_alive WHERE cabin = ?1", params![cabin])?;' \
+            '                let _ = cabin; // knife' \
+            a_cabin_closed_on_purpose_is_dropped_without_an_alert
+          # A4 a cabin that came back keeps its old alert, so the next outage is silent
+          ak '                         alerted_at = NULL",' \
+            '                         alerted_at = cabin_alive.alerted_at -- knife",' \
+            back_then_down_again_is_reported_again
+          # A5 the threshold can be set below the minimum
+          ak '        let after_s = after_s.max(ALIVE_MIN_AFTER_S);' \
+            '        let after_s = after_s.max(ALIVE_MIN_AFTER_S * 0); // knife' \
+            the_threshold_never_goes_below_the_minimum
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
