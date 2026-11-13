@@ -107,7 +107,7 @@ pub fn end_kind(ended_by: &str, exit_code: Option<i32>) -> EndKind {
 /// restart such a seat gets a fresh threshold from the start (it could not
 /// have been brought back while aibd was down).
 pub fn alive_at_stop(ended_by: &str) -> bool {
-    matches!(ended_by, "shutdown" | aib_store::ENDED_BY_RESTART)
+    matches!(ended_by, "shutdown" | "aibd_restart") // aib_store::sessions ENDED_BY_RESTART
 }
 
 type LiveFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
