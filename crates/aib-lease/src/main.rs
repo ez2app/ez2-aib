@@ -2,13 +2,14 @@
 //! aib-lease — the per-machine run lease for a holder that may run on another machine.
 //!
 //!   aib-lease acquire   --owner O --what W --run-id ID [--host H --heartbeat-s S] [--pid P]
-//!                       [--ttl S] [--exclusive] [--priority] [--cwd DIR]
+//!                       [--ttl S] [--exclusive] [--priority] [--cwd DIR] [--expect S]
 //!   aib-lease queue add --owner O --what W --run-id ID [--host H --heartbeat-s S] [--pid P]
 //!                       [--ttl S] [--notify CABIN/SEAT] [--priority]
 //!   aib-lease queue list [--all]
 //!   aib-lease heartbeat --run-id ID
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
 //!   aib-lease classify --host H [--step CMD]... [-- CMD ARGS...]   (D7, see `aib_lease::classify`)
+//!   aib-lease hosts [--pick]   every machine in ~/.ez2-aib/hosts.json, read only (A2, see `aib_lease::hosts`)
 //!   global: --now EPOCH (fixtures)
 //!
 //! `--host` is the machine the holder process runs on. Another machine ⇒ `--heartbeat-s` is
@@ -37,6 +38,7 @@ struct Args {
     all: bool,
     cwd: Option<String>,
     notify: Option<String>,
+    expect: Option<i64>,
 }
 
 fn int(k: &str, v: String) -> Result<i64, String> {
@@ -62,6 +64,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--heartbeat-s" => a.holder.heartbeat_s = Some(int(k, val()?)?),
             "--ttl" => a.ttl = Some(int(k, val()?)?),
             "--cwd" => a.cwd = Some(val()?),
+            "--expect" => a.expect = Some(int(k, val()?)?),
             "--notify" => a.notify = Some(val()?),
             "--exclusive" => a.exclusive = true,
             "--priority" => a.priority = true,
@@ -106,6 +109,7 @@ fn run(a: &Args) -> Result<Outcome, String> {
                 exclusive: a.exclusive,
                 priority: a.priority,
                 cwd: a.cwd.clone(),
+                expect: a.expect,
             };
             Ok(acquire(&paths, &p, now, &args))
         }
@@ -132,6 +136,9 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("run") {
         std::process::exit(i32::from(aib_lease::run::cli(&argv[1..])));
+    }
+    if argv.first().map(String::as_str) == Some("hosts") {
+        std::process::exit(i32::from(aib_lease::hosts::cli(&argv[1..])));
     }
     if argv.first().map(String::as_str) == Some("classify") {
         std::process::exit(i32::from(aib_lease::classify::cli(&argv[1..])));
