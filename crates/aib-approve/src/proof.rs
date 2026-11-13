@@ -44,6 +44,18 @@ pub fn max_lifetime_s(cat: Category) -> u64 {
     SINGLE_ACTION_MAX_S.max(crate::category::window_allowed_s(cat))
 }
 
+/// Longest lifetime [`verify`] accepts for any category: the largest
+/// [`max_lifetime_s`]. A used-nonce ledger may forget a nonce only after this plus
+/// [`ISSUE_SKEW_S`] (`issued` may be up to the skew after the nonce was consumed); the
+/// skew is not included here, the ledger adds it (aib-consent `FileNonces::prune`,
+/// c477a T136-3b).
+pub fn max_proof_lifetime_s() -> u64 {
+    crate::category::ALL
+        .iter()
+        .map(|c| max_lifetime_s(*c))
+        .fold(SINGLE_ACTION_MAX_S, u64::max)
+}
+
 /// Proof strength, weakest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProofLevel {

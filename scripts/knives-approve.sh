@@ -120,6 +120,10 @@ kp '    if expect.expiry - expect.issued > max_lifetime_s(expect.category) {' \
 kp '    SINGLE_ACTION_MAX_S.max(crate::category::window_allowed_s(cat))' \
    '    (365 * 24 * 3600u64).max(crate::category::window_allowed_s(cat)) // knife' \
    a_proof_cannot_live_longer_than_its_category_allows
+# KP14 the ledger is told a shorter lifetime than some category allows (c477a T136-3b)
+kp '        .fold(SINGLE_ACTION_MAX_S, u64::max)' \
+   '        .fold(SINGLE_ACTION_MAX_S, u64::min) // knife' \
+   a_nonce_ledger_can_ask_how_long_any_proof_may_live
 # KW1 a signature the registered key does not verify still becomes a proof
 kw '        _ => return Err(KeyError::NotRegistered),' \
    '        _ => {} // knife' \
