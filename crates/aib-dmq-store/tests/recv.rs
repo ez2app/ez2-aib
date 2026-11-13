@@ -125,6 +125,15 @@ fn only_the_receiving_seat_may_take() {
         assert_eq!(out["reason"], json!("actor"), "{who}: {out}");
     }
     assert_eq!(t.status(), "delivered");
+    // a read or closed dm is not moved, so the transition rules never see the actor:
+    // take has to check it itself (dm_take.py #380 r1 M3)
+    for st in ["read", "done"] {
+        t.put(st, json!({}));
+        let out = take(&t.s, &t.ctx(), SEAT, ID, "seat:bbbbb", None).expect("take");
+        assert_eq!(out["reason"], json!("actor"), "{st}: {out}");
+        assert!(out.get("text").is_none(), "no text for another seat");
+        assert!(t.item().get("taken_rev").is_none(), "no note");
+    }
 }
 
 #[test]
