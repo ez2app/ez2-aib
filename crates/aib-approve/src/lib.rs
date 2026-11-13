@@ -12,11 +12,19 @@
 //! - [`text`]: what may be shown in an approval window.
 //! - [`proof`]: the binding a proof covers and the checks.
 //! - [`protocol`]: the native helper's exit codes and the 1.x result words.
+//! - [`hwkey`]: hardware key files, making / loading a key, signing a binding (every
+//!   signature is checked against the registered key before it becomes a proof).
+//! - `macos` (macOS only): the Secure Enclave device and registered-key check, through
+//!   aib-sys `presence_macos`.
 //!
-//! No OS calls and no unsafe code. The macOS side is the Swift helper; Windows
-//! Hello / TPM go into aib-sys (DECISION-b2-windows-native, W-a).
+//! No unsafe code here. OS calls go through aib-sys (DECISION-b2-windows-native W-a:
+//! Secure Enclave / LocalAuthentication on macOS, Windows Hello / TPM later); the 1.x
+//! Swift helper is frozen.
 
 pub mod category;
+pub mod hwkey;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod proof;
 pub mod protocol;
 pub mod text;

@@ -14,6 +14,10 @@ kl() { python3 -I scripts/knife.py crates/aib-approve/src/proof.rs "$1" "$2" --e
         -- cargo test -p aib-approve --locked --lib "$3"; }
 kh() { python3 -I scripts/knife.py crates/aib-approve/src/protocol.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-approve --locked --test policy "$3"; }
+kw() { python3 -I scripts/knife.py crates/aib-approve/src/hwkey.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-approve --locked --test hwkey "$3"; }
+km() { python3 -I scripts/knife.py crates/aib-approve/src/macos.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-approve --locked --lib "$3"; }
 # KA1 command keeps its 1.x 3 h window
 kc '            Category::Outbound => 3 * H,' \
    '            Category::Outbound | Category::Command => 3 * H, // knife' \
@@ -114,4 +118,36 @@ kp '    if expect.expiry - expect.issued > max_lifetime_s(expect.category) {' \
 kp '    SINGLE_ACTION_MAX_S.max(crate::category::window_allowed_s(cat))' \
    '    (365 * 24 * 3600u64).max(crate::category::window_allowed_s(cat)) // knife' \
    a_proof_cannot_live_longer_than_its_category_allows
+# KW1 a signature the registered key does not verify still becomes a proof
+kw '        _ => return Err(KeyError::NotRegistered),' \
+   '        _ => {} // knife' \
+   a_signature_the_registered_key_does_not_verify_never_becomes_a_proof
+# KW2 no owner check before signing
+kw '    dev.probe(&key.blob).map_err(KeyError::Device)?;' \
+   '    // knife: no probe' \
+   the_owner_check_runs_before_every_signature
+# KW3 a weak key is kept at enroll
+kw '    dev.probe(&blob).map_err(KeyError::Device)?;' \
+   '    let _ = dev.probe(&blob); // knife' \
+   a_key_that_does_not_ask_for_the_owner_is_never_kept
+# KW4 load does not compare the reported public key
+kw '    if reported != kf.public {' \
+   '    if false && reported != kf.public { // knife' \
+   loading_refuses_a_key_the_device_reports_differently
+# KW5 the key id is not bound to the public key
+kw '        if key_id != key_id_of(&public) {' \
+   '        if false && key_id != key_id_of(&public) { // knife' \
+   the_key_id_is_bound_to_the_public_key
+# KW6 the reason text is not checked
+kw '    text::check(reason, text::SE_SIGN_MAX).map_err(KeyError::Reason)?;' \
+   '    let _ = text::check(reason, text::SE_SIGN_MAX); // knife' \
+   a_bad_reason_or_binding_is_refused_before_the_device_is_asked
+# KW7 (macOS) the registered check ignores the key id
+km '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id)?;' \
+   '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id || !key_id.is_empty())?; // knife' \
+   a_registered_key_verifies_only_its_own_signature
+# KW8 a device error at load is taken for a format change (c477a slice 2 N1)
+kw '    let reported = dev.public_key(&kf.blob).map_err(KeyError::Device)?;' \
+   '    let reported = dev.public_key(&kf.blob).map_err(|_| KeyError::FormatChanged)?; // knife' \
+   loading_refuses_a_key_the_device_reports_differently
 echo "aib-approve knives: all bit"

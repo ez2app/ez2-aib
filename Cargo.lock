@@ -22,6 +22,7 @@ dependencies = [
 name = "aib-approve"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-sys",
  "serde_json",
  "sha2",
  "unicode-general-category",

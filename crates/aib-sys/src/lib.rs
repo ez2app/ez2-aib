@@ -50,8 +50,8 @@
 //! Tested platforms are listed in the API list (macOS 15 arm64); anything
 //! else is UNVERIFIED and relies on the start-up self-check.
 //!
-//! Only `aibd` and `aib-procwatch` (its child listing, DECISION-10 B) may
-//! depend on this crate; `aib-forkcount` only through aib-procwatch
+//! Only `aibd`, `aib-procwatch` (its child listing, DECISION-10 B) and `aib-approve`
+//! (owner keys, DECISION-t135b-objc2-deps) may depend on this crate; `aib-forkcount` only through aib-procwatch
 //! (checked by `aib-xtask deps`).
 
 pub mod fake;
