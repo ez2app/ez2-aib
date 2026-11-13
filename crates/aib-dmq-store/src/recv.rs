@@ -390,7 +390,7 @@ fn step(
     evidence: Option<&str>,
     why: Option<&str>,
 ) -> Result<crate::store::Moved, StoreError> {
-    store.transition(
+    let mut m = store.transition(
         &Move {
             seat,
             id,
