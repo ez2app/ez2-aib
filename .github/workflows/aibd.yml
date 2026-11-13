@@ -451,6 +451,57 @@ jobs:
       # and open sessions are interrupted at start. Each knife must turn its
       # own test red. RUSTFLAGS has -D warnings, so a knife keeps every
       # binding used (`&& false`, not `if false`).
+      # D4 (043dd DECISION-d4-insert-043dd-1110): the insert slot. Each knife takes
+      # one guard out and must turn its own test in crates/aib-lease/tests/insert.rs red.
+      # I1 keeps the call (`.filter(|_| false)`): replacing it left exclusive_blocked
+      # unused, a dead-code error under -D warnings, so the knife missed with no test run (11-10).
+      - name: aib-lease insert knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ik() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-lease --locked --test insert "$4"; }
+          # I1 an exclusive acquire does not look at a running insert
+          ik crates/aib-lease/src/lib.rs \
+            '        if let Some(o) = insert::exclusive_blocked(paths, p) {' \
+            '        if let Some(o) = insert::exclusive_blocked(paths, p).filter(|_| false) { // knife' \
+            an_exclusive_acquire_waits_for_a_running_insert
+          # I2 a 30-minute waiter does not keep the next turn
+          ik crates/aib-lease/src/insert.rs \
+            '        .find(|e| waited(e, now) >= STARVE_S)' \
+            '        .find(|e| waited(e, now) >= STARVE_S && false) // knife' \
+            a_long_waiter_of_thirty_minutes_keeps_the_next_turn
+          # I3 on without the machine opting in
+          ik crates/aib-lease/src/insert.rs \
+            '    if !paths.insert_enabled().exists() {' \
+            '    if !paths.insert_enabled().exists() && false { // knife' \
+            it_is_off_until_the_machine_opts_in
+          # I4 an exclusive holder is shared
+          ik crates/aib-lease/src/insert.rs \
+            '        .unwrap_or(false)' \
+            '        .unwrap_or(false) && false // knife' \
+            an_exclusive_holder_is_never_shared
+          # I5 a live insert does not keep the slot
+          ik crates/aib-lease/src/insert.rs \
+            '    !matches!(holder_alive(r, p), Live::Dead | Live::Reused)' \
+            '    let _ = (r, p); false // knife' \
+            one_insert_at_a_time_and_a_dead_one_frees_the_slot
+          # I6 an insert without a reason goes ahead
+          ik crates/aib-lease/src/insert.rs \
+            '    if a.reason.trim().is_empty() {' \
+            '    if a.reason.trim().is_empty() && false { // knife' \
+            an_insert_must_say_why
+          # I7 an insert of more than 15 minutes goes ahead
+          ik crates/aib-lease/src/insert.rs \
+            '        Some(m) if m > EST_MAX_MIN => {' \
+            '        Some(m) if m > EST_MAX_MIN && false => { // knife' \
+            an_insert_of_more_than_fifteen_minutes_queues
+          # I8 a long holder is gone ahead of a third time
+          ik crates/aib-lease/src/insert.rs \
+            '    if !again && count >= MAX_PER_MAIN {' \
+            '    if !again && count >= MAX_PER_MAIN && false { // knife' \
+            one_long_holder_is_gone_ahead_of_at_most_twice
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
