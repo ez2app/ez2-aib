@@ -12,6 +12,7 @@
 //! | M5 | `waitid(P_PID, pid, WEXITED \| WNOWAIT [\| WNOHANG])` | **public POSIX** (`sys/wait.h`); own children only |
 //! | T1 | IOHID `PMU tdie*` temperature events ([`thermal`]) | **private SPI**, looked up with `dlsym`, may disappear |
 //! | T2 | `notify_get_state("com.apple.system.thermalpressurelevel")` ([`thermal`]) | **public** (`notify.h`) |
+//! | P1–P5 | Secure Enclave owner keys (`presence_macos`, macOS only): `SecKeyCreateRandomKey`, `SecKeyCreateWithData`, `SecKeyCreateSignature`, `LAContext` | public, except P2 restores a key by its token object id (`"toid"`), a **private attribute** — callers check every load against the registered public key |
 //!
 //! T1 / T2 feed thermal protection (R1); their rules are in [`thermal`]. Unlike M1, a wrong
 //! T1 reading would cause an action, so it fails closed (error, never 0 or a guess).
@@ -61,6 +62,8 @@ pub mod job;
 pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+pub mod presence_macos;
 pub mod procargs;
 pub mod selfcheck;
 #[cfg(windows)]
