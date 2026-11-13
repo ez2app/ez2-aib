@@ -19,6 +19,7 @@
 
 pub mod classify;
 pub mod hosts;
+pub mod insert;
 pub mod run;
 
 use serde_json::{json, Map, Value};
@@ -698,6 +699,12 @@ pub fn acquire(paths: &Paths, p: &dyn Probe, now: f64, a: &AcquireArgs) -> Outco
         Ok(c) => c,
         Err(e) => return unreadable(e),
     };
+    // D4: an exclusive holder waits for a running insert (same lock as the insert takes)
+    if a.exclusive {
+        if let Some(o) = insert::exclusive_blocked(paths, p) {
+            return o;
+        }
+    }
     let h = &a.holder;
     let mut new = Rec::new();
     new.insert("schema".into(), json!(SCHEMA));
