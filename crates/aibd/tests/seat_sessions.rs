@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 
 /// The programs these tests start (`/bin/sh` is an interpreter, so
 /// `interpreters_ok`, which only Rust code can set).
+/// DECISION-614-held-lock (043dd + Codex): the tests in this file run one at a
+/// time. On macOS a held spawn keeps copies of the whole process's fds between
+/// fork and exec, so another test's held child can hold the crash test's
+/// `aibd.lock` and its restart sees AlreadyRunning (Pro 13: 3/10 in parallel,
+/// 0/10 one at a time). Fixed for real in a follow-up (close the lock and the
+/// listener before holding; one held spawn at a time).
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn policy() -> SessionPolicy {
     SessionPolicy {
         programs: vec![Program {
@@ -59,10 +67,18 @@ async fn start(dir: &Path) -> Daemon {
         )
         .await
     });
-    let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
+    let st = match tokio::time::timeout(Duration::from_secs(20), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        // bounded: a server that dropped the sender but still runs must not hang the test (ebb36 #683 N1)
+        Err(_) => panic!(
+            "aibd did not start: {:?}",
+            tokio::time::timeout(Duration::from_secs(5), h).await
+        ),
+    };
     Daemon {
         addr: st.addr,
         token: std::fs::read_to_string(&st.token_path).unwrap(),
@@ -156,6 +172,7 @@ const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("dev").await;
@@ -215,6 +232,7 @@ async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_left_open_by_a_crash_is_interrupted_at_the_next_start() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("qa").await;
@@ -283,6 +301,7 @@ async fn a_session_left_open_by_a_crash_is_interrupted_at_the_next_start() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_seat_starts_nothing() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let (code, v) = d
@@ -324,6 +343,7 @@ async fn an_unknown_seat_starts_nothing() {
 /// integ preview.3: #592's route and #593's gate had not seen each other).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_seat_route_refuses_an_unlisted_program_and_records_it() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("dev").await;

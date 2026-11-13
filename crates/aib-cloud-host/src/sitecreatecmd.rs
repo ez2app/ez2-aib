@@ -24,6 +24,9 @@
 //! B4 adds the licences, the entry and the health; B5 the DNS step between the licences
 //! and the entry ([`crate::cfdns`]): the customer's zone at Cloudflare, proxied records
 //! carrying the site's mark, read back.
+//! The identity also puts the one-time login plugin in place, and an opened site's answer
+//! names `site login-link` for the caller to run next ([`crate::loginlink`]); it never
+//! carries the link.
 //! `op status` lists every opening record with the step it reached, so a half-made
 //! container is never hidden behind a `verified` clone (c477a, B1 L1).
 //!
@@ -777,16 +780,7 @@ pub fn clone_step(
             ));
         }
     }
-    let spec = aib_cloud::site::SiteSpec::new(
-        &input.code,
-        ct,
-        input.ip,
-        &[domain],
-        !input.blank,
-        "zh_TW",
-        aib_cloud::site::Limits::START,
-    )
-    .map_err(|e| format!("{e:?}"))?;
+    let spec = opening_spec(&input.code, ct, input.ip, domain, !input.blank, None)?;
     let mut record = json!({
         "site": input.code,
         "ct": ct,
@@ -934,6 +928,11 @@ pub struct HostPaths {
     pub site_admins: PathBuf,
     /// The reviewed site installer on the host, pushed into the container for the install.
     pub setup: PathBuf,
+    /// The template package on the host ([`crate::siteidentity::PACKAGE_DIR`]): pushed
+    /// into a template opening's container for the install, with its list.
+    pub package: PathBuf,
+    /// The template package's list ([`crate::siteidentity::PACKAGE_CONF`]).
+    pub package_conf: PathBuf,
     /// The site records (`/var/lib/ez2-cloud/sites`): B4 writes the new site's there, and
     /// asks every other site in them through the entry.
     pub records: PathBuf,
@@ -960,6 +959,8 @@ impl HostPaths {
             secrets: PathBuf::from(crate::siteidentity::SECRETS),
             site_admins: PathBuf::from(SITE_ADMINS),
             setup: PathBuf::from(crate::siteidentity::SETUP_ON_HOST),
+            package: PathBuf::from(crate::siteidentity::PACKAGE_DIR),
+            package_conf: PathBuf::from(crate::siteidentity::PACKAGE_CONF),
             records: PathBuf::from(RECORDS),
             sites_list: PathBuf::from(crate::sitelive::SITES_LIST),
             keys: PathBuf::from(crate::sitelive::KEYS),
@@ -1037,17 +1038,37 @@ pub fn read_opening(creating: &Path, code: &str, domain: &str) -> Result<Opening
         .get("blank")
         .and_then(Value::as_bool)
         .ok_or("the opening record has no blank")?;
-    let spec = aib_cloud::site::SiteSpec::new(
+    let group = record.get("fw_group").and_then(Value::as_str);
+    let spec = opening_spec(code, ct, ip, domain, !blank, group)?;
+    Ok(Opening { record, spec })
+}
+
+/// The firewall group a new site's container is switched to: NET-1 (11-10) moved every
+/// site to v2, and the host's cluster firewall has it (f1fae 11-12; audit #8). The library
+/// default stays v1 for the old records that name no group.
+pub const NEW_SITE_FW_GROUP: &str = "ez2-site-v2";
+
+/// The spec of an opening: the group its record names once the firewall step wrote one,
+/// else [`NEW_SITE_FW_GROUP`].
+fn opening_spec(
+    code: &str,
+    ct: u32,
+    ip: u8,
+    domain: &str,
+    wp: bool,
+    group: Option<&str>,
+) -> Result<aib_cloud::site::SiteSpec, String> {
+    aib_cloud::site::SiteSpec::new(
         code,
         ct,
         ip,
         &[domain],
-        !blank,
+        wp,
         "zh_TW",
         aib_cloud::site::Limits::START,
     )
-    .map_err(|e| format!("{e:?}"))?;
-    Ok(Opening { record, spec })
+    .and_then(|s| s.with_fw_group(group.unwrap_or(NEW_SITE_FW_GROUP)))
+    .map_err(|e| format!("{e:?}"))
 }
 
 /// `text` (a container's configuration) with exactly one `lxc.cgroup2.pids.max` line, set
@@ -1099,9 +1120,22 @@ fn limits_step(
     let conf = paths.lxc_conf.join(format!("{}.conf", spec.ct));
     let text =
         fs::read_to_string(&conf).map_err(|e| format!("limits_failed: {}: {e}", conf.display()))?;
-    write_via_tmp(&conf, &with_pids(&text, spec.limits.pids_max))
-        .map_err(|e| format!("limits_failed: {e}"))?;
-    // TODO(ct-mask2): the container settings of the host-information mask
+    let mut text = with_pids(&text, spec.limits.pids_max);
+    // The clone keeps the template's platform address on net0; ready_to_start refuses it
+    // (c477a B2 L2), so every opening stopped at the firewall (e1a 11-12). The address is
+    // made locally administered here, before the first start. An address that is local
+    // already is left as it is, so a carried-on opening writes nothing new.
+    if net0_hwaddr(&text).is_some_and(|mac| !mac_is_local(&mac)) {
+        let raw: [u8; 6] = runner
+            .random(6)
+            .map_err(|e| format!("limits_failed: {e}"))?
+            .try_into()
+            .map_err(|_| "limits_failed: random: not six bytes".to_owned())?;
+        text = with_net0_hwaddr(&text, &local_hwaddr(raw))
+            .ok_or("limits_failed: net0 hwaddr could not be replaced")?;
+    }
+    write_via_tmp(&conf, &text).map_err(|e| format!("limits_failed: {e}"))?;
+    // TODO(ct-mask2): the rest of the host-information mask's container settings
     // (aib_cloud::mask, branch feat/aib-cloud-ct-mask2) are written here, in the limits
     // step, once that branch is in main
     let shown = runner
@@ -1109,10 +1143,13 @@ fn limits_step(
         .map_err(|e| format!("limits_unchecked: pct config: {e}"))?;
     let differ = aib_cloud::site::limits_differ(spec, &shown)
         .map_err(|e| format!("limits_unchecked: {e:?}"))?;
-    if differ.is_empty() {
+    let mut keys: Vec<&str> = differ.iter().map(|d| d.key.as_str()).collect();
+    if net0_hwaddr(&shown).is_some_and(|mac| !mac_is_local(&mac)) {
+        keys.push("hwaddr");
+    }
+    if keys.is_empty() {
         Ok(())
     } else {
-        let keys: Vec<&str> = differ.iter().map(|d| d.key.as_str()).collect();
         Err(format!("limits_not_applied: {}", keys.join(",")))
     }
 }
@@ -1187,6 +1224,62 @@ pub fn net0_hwaddr(config: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A hardware address for a site CT out of six random bytes: unicast and locally
+/// administered (the low two bits of the first byte are `10`), so no vendor prefix names
+/// the platform. Upper-case hex, as the platform writes them.
+///
+/// TODO(ct-mask2): the same function as `aib_cloud::mask::local_hwaddr` on branch
+/// feat/aib-cloud-ct-mask2 (#672), brought ahead for the limits step; one of the two goes
+/// when that branch is in main.
+pub fn local_hwaddr(raw: [u8; 6]) -> String {
+    let first = (raw[0] & 0xFC) | 0x02;
+    format!(
+        "{first:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        raw[1], raw[2], raw[3], raw[4], raw[5]
+    )
+}
+
+/// `text` (a container's configuration file) with the `hwaddr=` of the main section's
+/// `net0` set to `mac`; every other field of that line, and every other line, as it was.
+/// `None`: the main section has no `net0` or its `net0` no `hwaddr=`.
+pub fn with_net0_hwaddr(text: &str, mac: &str) -> Option<String> {
+    let mut done = false;
+    let mut main = true;
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with('[') {
+            main = false;
+        }
+        match line.strip_prefix("net0:") {
+            Some(value) if main && !done => {
+                let fields: Vec<String> = value
+                    .split(',')
+                    .map(|f| {
+                        if f.trim().starts_with("hwaddr=") {
+                            done = true;
+                            let lead = &f[..f.len() - f.trim_start().len()];
+                            format!("{lead}hwaddr={mac}")
+                        } else {
+                            f.to_owned()
+                        }
+                    })
+                    .collect();
+                if !done {
+                    return None;
+                }
+                out.push_str("net0:");
+                out.push_str(&fields.join(","));
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    done.then_some(out)
+}
+
 /// Before the first start: `net0` must carry a locally administered address (c477a B2
 /// L2). Until the host-information mask writes one in the limits step, the template's
 /// platform address is refused here: nothing is undone and the opening stays at the
@@ -1236,6 +1329,8 @@ pub fn continue_steps(
 ) -> Result<Value, String> {
     let Opening { mut record, spec } = opening;
     for &step in steps {
+        // E11: the progress file says which step the opening is in
+        crate::opstop::step(step.as_str());
         if step == CreateStep::Start {
             if let Err(why) = ready_to_start(runner, spec.ct) {
                 record["held"] = json!(why);
@@ -1259,8 +1354,7 @@ pub fn continue_steps(
                 // the opening becomes a site: its record moves to the opened ones as it is
                 // after this step, and nothing is written back to the openings
                 let mut opened = record.clone();
-                opened["step"] = json!(step.as_str());
-                opened["at"] = json!(crate::probe::unix_now());
+                step_done(&mut opened, step);
                 if let Err(why) = crate::sitelive::health_step(runner, paths, &spec, &opened) {
                     return Err(keep(paths, &spec, &mut record, step, &why));
                 }
@@ -1272,8 +1366,7 @@ pub fn continue_steps(
             // from the licences on nothing is undone: a failure, or a record that cannot
             // be written after the step, keeps the site for a person
             let saved = done.and_then(|()| {
-                record["step"] = json!(step.as_str());
-                record["at"] = json!(crate::probe::unix_now());
+                step_done(&mut record, step);
                 write_record(&paths.creating, &spec.code, &record)
             });
             if let Err(why) = saved {
@@ -1282,8 +1375,7 @@ pub fn continue_steps(
             continue;
         }
         let moved = done.and_then(|()| {
-            record["step"] = json!(step.as_str());
-            record["at"] = json!(crate::probe::unix_now());
+            step_done(&mut record, step);
             if step == CreateStep::Firewall {
                 record["fw_group"] = json!(spec.fw_group);
             }
@@ -1306,6 +1398,16 @@ pub fn continue_steps(
         }
     }
     Ok(record)
+}
+
+/// A step went through: the record says so, and a `kept` from an earlier try of a step
+/// is gone (the site is no longer waiting for a person; audit 11-12 #6).
+fn step_done(record: &mut Value, step: CreateStep) {
+    record["step"] = json!(step.as_str());
+    record["at"] = json!(crate::probe::unix_now());
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("kept");
+    }
 }
 
 /// A failure from the licences on: the site is kept as it is, the opening record says at
@@ -1457,6 +1559,15 @@ pub fn read_records(dir: &Path) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// The records whose numbers and code are never given again although nothing holds them:
+/// the removed sites' and the abandoned openings' (`<creating>/abandoned`). Either not read
+/// is `None`.
+pub fn gone_records(removed: &Path, creating: &Path) -> Option<Vec<Value>> {
+    let mut out = read_records(removed)?;
+    out.extend(read_records(&crate::siteabandon::abandoned_dir(creating))?);
+    Some(out)
+}
+
 /// The sites' addresses in every `*.conf` under the given directories. Any directory or
 /// file that cannot be read is `None`.
 pub fn read_guest_ips(dirs: &[&Path]) -> Option<Vec<u8>> {
@@ -1493,7 +1604,7 @@ pub(crate) fn see(domain: &str, records: &str, tenant: Option<String>) -> Seen {
         vm_list: capture("qm", &["list"], 20),
         guest_ips: read_guest_ips(&[Path::new(LXC_CONFIGS), Path::new(VM_CONFIGS)]),
         records: read_records(Path::new(records)),
-        removed: read_records(Path::new(REMOVED_RECORDS)),
+        removed: gone_records(Path::new(REMOVED_RECORDS), Path::new(CREATING)),
         creating: read_records(Path::new(CREATING)),
         tenant,
         entry_config: crate::probe::edge_caddyfile().ok(),
@@ -1517,6 +1628,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
     let mut continue_code: Option<String> = None;
     let mut run_code: Option<String> = None;
     let mut tenant: Option<String> = None;
+    let mut abandon_code: Option<String> = None;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1527,6 +1639,9 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
                 continue_code = Some(it.next().ok_or("--continue needs a site code")?.clone());
             }
             "--run" => run_code = Some(it.next().ok_or("--run needs a site code")?.clone()),
+            "--abandon" => {
+                abandon_code = Some(it.next().ok_or("--abandon needs a site code")?.clone());
+            }
             "--tenant" => {
                 let t = it.next().ok_or("--tenant needs a customer id")?;
                 if !aib_cloud::site::valid_code(t) {
@@ -1537,6 +1652,18 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
             "--records" => records = it.next().ok_or("--records needs a dir")?.clone(),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if let Some(code) = abandon_code {
+        if blank || run_code.is_some() || continue_code.is_some() || tenant.is_some() {
+            return Err("--abandon <code> takes only --plan or --apply <plan.json>".to_owned());
+        }
+        return match (plan_only, apply_file) {
+            (true, None) => crate::siteabandon::cmd(&domain, &code, None),
+            (false, Some(file)) => crate::siteabandon::cmd(&domain, &code, Some(&file)),
+            _ => {
+                Err("--abandon <code> needs --plan or --apply <plan.json>, one of them".to_owned())
+            }
+        };
     }
     if let Some(code) = run_code {
         if plan_only || blank || apply_file.is_some() || continue_code.is_some() || tenant.is_some()
@@ -1566,7 +1693,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
         (true, Some(_)) => return Err("--plan or --apply, not both".to_owned()),
         (false, None) => {
             return Err(
-                "needs --plan, --apply <plan.json> with a plan this command printed, or --continue <code>".to_owned(),
+                "needs --plan, --apply <plan.json> with a plan this command printed, --continue <code> or --abandon <code>".to_owned(),
             )
         }
     }
@@ -1644,6 +1771,12 @@ fn apply_cmd(
 /// number is used again, but `site verify` may report a `.fw` without a container as a
 /// leftover (c477a B2 N3; whether destroy removes it is a host test).
 ///
+/// An opened site's answer names the next command for its one-time login link
+/// (`login_link_next`, Andy 11-11: a direct login, not a password reset): the caller runs
+/// `site login-link <domain> --login <first administrator>` itself, whose standard output
+/// is the link alone. The link is never in this answer, which callers keep as receipts
+/// (ebb36 L1, f1fae 11-11).
+///
 /// Exit 0 when the steps ran, 1 when the start was held (`held` says why).
 fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
     let place = opstore::OpPlace::host()?;
@@ -1662,12 +1795,21 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         Some(record) => {
             let open =
                 record.get("step").and_then(Value::as_str) == Some(CreateStep::Health.as_str());
+            let next = if open {
+                link_login(&record)
+                    .ok()
+                    .map(|login| login_link_next(domain, &login))
+            } else {
+                None
+            };
             json!({
                 "applied": record.get("step"),
                 "record": record,
                 "open": open,
                 // from the record: what B3 left for later and the licences not done
                 "pending": crate::sitelive::pending_of(&record),
+                // the command, never the link: this answer is kept as a receipt
+                "login_link_next": next,
             })
         }
         None => json!({ "applied": null, "why": "the opening has done every step of this slice" }),
@@ -1677,6 +1819,22 @@ fn continue_cmd(domain: &str, code: &str) -> Result<u8, String> {
         serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
     );
     Ok(u8::from(held))
+}
+
+/// The login every opened site's link is for: the first administrator the identity made.
+pub fn link_login(record: &Value) -> Result<String, String> {
+    record
+        .get("admins")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "login_unknown: the record names no administrator".to_owned())
+}
+
+/// The command an opened site's caller runs next for the one-time login link.
+pub fn login_link_next(domain: &str, login: &str) -> String {
+    format!("aib-cloud-host site login-link {domain} --login {login}")
 }
 
 #[cfg(test)]
@@ -2543,6 +2701,8 @@ mod tests {
             secrets: root.join("secrets"),
             site_admins: root.join("site-admins"),
             setup: root.join("ez2-site-setup"),
+            package: root.join("wp-package"),
+            package_conf: root.join("wp-package.conf"),
             records: root.join("records"),
             sites_list: root.join("sites.list"),
             keys: root.join("keys.env"),
@@ -2573,6 +2733,9 @@ mod tests {
             "arch: amd64\nhostname: s-b2test\nlxc.cgroup2.pids.max: 99\nmemory: 512\n\n[snap1]\nmemory: 512\n",
         )
         .unwrap();
+        // the template package the install pushes in
+        fs::create_dir_all(paths.package.join("plugins")).unwrap();
+        fs::write(&paths.package_conf, "plugin|wp-seopress|pkg|activate|-\n").unwrap();
         (place, paths)
     }
 
@@ -2642,6 +2805,42 @@ mod tests {
             .map(|e| e.state)
     }
 
+    /// E11: the progress file names the step each host command belongs to.
+    #[test]
+    fn an_opening_says_which_step_it_is_in() {
+        let (place, paths) = opened("b2steps", "clone");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut host = b2_host(shown_config());
+        let mut runner = fake(|argv: &[String]| {
+            seen.borrow_mut().push(format!(
+                "{} {}",
+                crate::opstop::current_step().unwrap_or_default(),
+                argv[1]
+            ));
+            host(argv)
+        });
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            *seen.borrow(),
+            [
+                "limits set",
+                "limits config",
+                "start config",
+                "start start",
+                "start status"
+            ]
+        );
+    }
+
     #[test]
     fn an_opening_is_carried_on_through_limits_firewall_and_start() {
         let (place, paths) = opened("b2run", "clone");
@@ -2657,7 +2856,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(rec["step"], "start");
-        assert_eq!(rec["fw_group"], aib_cloud::site::FW_GROUP);
+        assert_eq!(rec["fw_group"], NEW_SITE_FW_GROUP);
         assert_eq!(record_of(&paths), rec, "the record on disk moved on");
         assert!(rec["at"].as_u64().unwrap() > 1);
         let set = aib_cloud::site::plan(&spec131())
@@ -2686,7 +2885,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(paths.firewall.join("131.fw")).unwrap(),
-            aib_cloud::site::desired_firewall(aib_cloud::site::FW_GROUP, None)
+            aib_cloud::site::desired_firewall(NEW_SITE_FW_GROUP, None)
         );
         assert_eq!(last_state(&place), Some(State::Verified));
         assert!(!place.lock.lock.exists(), "the lock is given back");
@@ -2783,6 +2982,59 @@ mod tests {
         .unwrap();
         assert_eq!(rec["kept"]["step"], "licenses");
         assert_eq!(rec["step"], "identity");
+    }
+
+    /// A site kept for a person and carried on: once a step goes through, the record no
+    /// longer says it is kept, and the opened record of a healthy site carries no `kept`
+    /// (audit 11-12 #6).
+    /// A new site's container goes into the firewall group every site is in (v2 since
+    /// NET-1); an opening whose record already names a group keeps it (audit 11-12 #8).
+    #[test]
+    fn a_new_opening_uses_the_current_firewall_group() {
+        let (_place, paths) = opened("b8group", "start");
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        assert_eq!(opening.spec.fw_group, "ez2-site-v2");
+        let file = paths.creating.join(format!("{CODE}.json"));
+        let mut rec: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        rec["fw_group"] = json!("ez2-site-v3");
+        fs::write(&file, rec.to_string()).unwrap();
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        assert_eq!(opening.spec.fw_group, "ez2-site-v3");
+        rec["fw_group"] = json!("ez2-site-v2; rm");
+        fs::write(&file, rec.to_string()).unwrap();
+        assert!(read_opening(&paths.creating, CODE, "new.example.test").is_err());
+    }
+
+    #[test]
+    fn a_step_that_goes_through_clears_kept() {
+        let mut rec = json!({ "step": "licenses", "kept": { "step": "dns", "why": "x", "at": 1 } });
+        step_done(&mut rec, CreateStep::Dns);
+        assert_eq!(rec["step"], "dns");
+        assert!(rec.get("kept").is_none(), "{rec}");
+        // the whole way: kept at the health, carried on, healthy
+        let (_place, paths) = opened("b6kept", "edge");
+        for d in [&paths.records, &paths.opened] {
+            fs::create_dir_all(d).unwrap();
+        }
+        let file = paths.creating.join(format!("{CODE}.json"));
+        let mut on_disk: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        on_disk["kept"] = json!({ "step": "health", "why": "curl: (35)", "at": 1 });
+        fs::write(&file, on_disk.to_string()).unwrap();
+        let opening = read_opening(&paths.creating, CODE, "new.example.test").unwrap();
+        let mut runner = fake(|argv: &[String]| {
+            if argv.iter().any(|a| a == "curl") {
+                Ok(
+                    "HTTP/2 200\r\nlink: <https://new.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            } else {
+                Ok(String::new())
+            }
+        });
+        let opened_rec =
+            continue_steps(&mut runner, &paths, opening, &[CreateStep::Health]).unwrap();
+        assert_eq!(opened_rec["step"], "health");
+        assert!(opened_rec.get("kept").is_none(), "{opened_rec}");
     }
 
     #[test]
@@ -3062,6 +3314,194 @@ mod tests {
             Some("02:5A:00:12:34:56")
         );
         assert_eq!(net0_hwaddr("[s]\nnet0: hwaddr=02:5A:00:12:34:56\n"), None);
+    }
+
+    #[test]
+    fn a_local_hardware_address_is_made_of_any_six_bytes() {
+        assert_eq!(
+            local_hwaddr([0xBC, 0x24, 0x11, 0xAA, 0xBB, 0xCC]),
+            "BE:24:11:AA:BB:CC"
+        );
+        assert_eq!(local_hwaddr([0xFF; 6]), "FE:FF:FF:FF:FF:FF");
+        assert_eq!(local_hwaddr([0; 6]), "02:00:00:00:00:00");
+        for b in 0..=255u8 {
+            let mac = local_hwaddr([b, 1, 2, 3, 4, 5]);
+            assert!(mac_is_local(&mac), "{b}: {mac}");
+        }
+    }
+
+    #[test]
+    fn only_the_main_net0_hwaddr_is_replaced() {
+        let conf = "arch: amd64\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.41/24,type=veth\nmemory: 512\n\n[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n";
+        let out = with_net0_hwaddr(conf, "02:11:22:33:44:55").unwrap();
+        assert_eq!(
+            out,
+            conf.replacen("hwaddr=BC:24:11:AA:BB:CC", "hwaddr=02:11:22:33:44:55", 1),
+            "every other field and line as it was; the snapshot untouched"
+        );
+        // no trailing newline in, none out
+        assert_eq!(
+            with_net0_hwaddr(
+                "net0: name=eth0,hwaddr=BC:24:11:00:00:01",
+                "02:00:00:00:00:01"
+            )
+            .as_deref(),
+            Some("net0: name=eth0,hwaddr=02:00:00:00:00:01")
+        );
+        // the address first on the line keeps the space after "net0:"
+        assert_eq!(
+            with_net0_hwaddr(
+                "net0: hwaddr=BC:24:11:00:00:01,ip=dhcp\n",
+                "02:00:00:00:00:01"
+            )
+            .as_deref(),
+            Some("net0: hwaddr=02:00:00:00:00:01,ip=dhcp\n")
+        );
+        // nothing to replace
+        assert_eq!(
+            with_net0_hwaddr("net0: name=eth0,ip=dhcp\n", "02:00:00:00:00:01"),
+            None
+        );
+        assert_eq!(
+            with_net0_hwaddr(
+                "arch: amd64\n[s]\nnet0: hwaddr=BC:24:11:00:00:01\n",
+                "02:00:00:00:00:01"
+            ),
+            None
+        );
+    }
+
+    /// A runner like [`fake`] whose random bytes are fixed, and whose `pct config` shows
+    /// the configuration file as the limits step left it.
+    struct MacHost {
+        calls: Vec<String>,
+        conf: std::path::PathBuf,
+        config: String,
+        follow_file: bool,
+        started: bool,
+        destroyed: bool,
+    }
+
+    impl Runner for MacHost {
+        fn run(&mut self, argv: &[String]) -> Result<String, String> {
+            self.calls.push(argv.join(" "));
+            match argv[1].as_str() {
+                "config" if self.follow_file => {
+                    let file = fs::read_to_string(&self.conf).unwrap();
+                    let mac = net0_hwaddr(&file).unwrap();
+                    Ok(self.config.replace("02:5A:00:12:34:56", &mac))
+                }
+                "config" => Ok(self.config.clone()),
+                "start" => {
+                    self.started = true;
+                    Ok(String::new())
+                }
+                "destroy" => {
+                    self.destroyed = true;
+                    Ok(String::new())
+                }
+                "status" if self.destroyed => Err(GONE.to_owned()),
+                "status" if self.started => Ok("status: running\n".to_owned()),
+                "status" => Ok("status: stopped\n".to_owned()),
+                _ => Ok(String::new()),
+            }
+        }
+        fn random(&mut self, n: usize) -> Result<Vec<u8>, String> {
+            Ok(vec![0xBC; n])
+        }
+    }
+
+    fn mac_host(paths: &HostPaths, follow_file: bool) -> MacHost {
+        let conf = paths.lxc_conf.join("131.conf");
+        fs::write(
+            &conf,
+            "arch: amd64\nhostname: s-b2test\nmemory: 512\nnet0: name=eth0,bridge=vmbr1,firewall=1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.41/24,type=veth\n\n[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n",
+        )
+        .unwrap();
+        MacHost {
+            calls: Vec::new(),
+            conf,
+            config: shown_config(),
+            follow_file,
+            started: false,
+            destroyed: false,
+        }
+    }
+
+    /// The template's platform address is replaced in the limits step, so the opening
+    /// goes on through the firewall to the start (e1a 11-12 stopped at the firewall).
+    #[test]
+    fn the_limits_step_gives_net0_a_local_address() {
+        let (place, paths) = opened("b2localmac", "clone");
+        let mut runner = mac_host(&paths, true);
+        let rec = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rec["step"], "start");
+        assert!(rec.get("held").is_none(), "{rec}");
+        let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
+        assert!(
+            conf.contains("net0: name=eth0,bridge=vmbr1,firewall=1,hwaddr=BE:BC:BC:BC:BC:BC,ip=10.77.0.41/24,type=veth\n"),
+            "{conf}"
+        );
+        assert!(
+            conf.ends_with("[snap1]\nnet0: name=eth0,hwaddr=BC:24:11:AA:BB:CC\n"),
+            "the snapshot keeps its own: {conf}"
+        );
+        assert!(runner.calls.contains(&"pct start 131".to_owned()));
+    }
+
+    /// An address that is local already is not changed (an opening carried on again).
+    #[test]
+    fn a_local_address_is_left_as_it_is() {
+        let (place, paths) = opened("b2keepmac", "clone");
+        let mut runner = mac_host(&paths, true);
+        let local = fs::read_to_string(&runner.conf).unwrap().replacen(
+            "hwaddr=BC:24:11:AA:BB:CC",
+            "hwaddr=06:12:34:56:78:9A",
+            1,
+        );
+        fs::write(&runner.conf, &local).unwrap();
+        continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap()
+        .unwrap();
+        let conf = fs::read_to_string(paths.lxc_conf.join("131.conf")).unwrap();
+        assert!(conf.contains(",hwaddr=06:12:34:56:78:9A,"), "{conf}");
+    }
+
+    /// The platform still shows its own address after the step: the limits did not take,
+    /// and the opening is undone like any other limit that did not take.
+    #[test]
+    fn a_platform_address_shown_after_the_limits_is_refused() {
+        let (place, paths) = opened("b2stuckmac", "clone");
+        let mut runner = mac_host(&paths, false);
+        runner.config =
+            shown_config().replace("hwaddr=02:5A:00:12:34:56", "hwaddr=BC:24:11:AA:BB:CC");
+        let err = continue_apply(
+            &place,
+            "new.example.test",
+            CODE,
+            &paths,
+            &mut runner,
+            CreateStep::Start,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("limits_not_applied: hwaddr"), "{err}");
+        assert!(!runner.calls.contains(&"pct start 131".to_owned()));
     }
 
     /// The files under /etc/pve are written beside and renamed: no temporary file stays.

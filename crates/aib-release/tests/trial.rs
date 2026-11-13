@@ -286,6 +286,27 @@ fn a_ref_git_does_not_know_or_the_same_commit_twice_is_an_error_not_a_pass() {
     assert_eq!(exit_code(&run(&git, &q)), 3);
 }
 
+/// #644 / #675: trials made at the same moment in one process each get their own scratch
+/// repository (pid + nanoseconds named two alike on macOS: "File exists").
+#[test]
+fn trials_made_at_once_each_get_their_own_scratch() {
+    let r = Repo::new("many");
+    let dir = r.dir().to_path_buf();
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let d = dir.clone();
+            std::thread::spawn(move || (0..4).map(|_| GitCli::new(&d)).collect::<Vec<_>>())
+        })
+        .collect();
+    let mut made = Vec::new();
+    for t in threads {
+        for g in t.join().unwrap() {
+            made.push(g.unwrap());
+        }
+    }
+    assert_eq!(made.len(), 32);
+}
+
 #[test]
 fn a_directory_that_is_not_a_repository_is_refused() {
     let p = std::env::temp_dir().join(format!("aib-trial-test-norepo-{}", std::process::id()));
