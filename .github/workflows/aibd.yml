@@ -3335,14 +3335,18 @@ jobs:
              '        "inactive" | "failed" | "deactivating" => {} // knife' \
              cron_not_there_off_or_stopped_is_red
           # S18: an allow file that does not name the user lets it in
-          ck usercron.rs '        File::Omits => true,' '        File::Omits => false, // knife' \
+          ck usercron.rs '        (File::Omits, _) => true,' '        (File::Omits, _) => false, // knife' \
              an_allow_file_decides_alone_when_it_is_there
           # S18: the deny file is read though an allow file names the user
-          ck usercron.rs '        File::Names => false,' '        File::Names => seen.deny == File::Names, // knife' \
+          ck usercron.rs '        (File::Names, _) => false,' '        (File::Names, _) => seen.deny == File::Names, // knife' \
              an_allow_file_decides_alone_when_it_is_there
           # S18: without an allow file, a deny file naming the user does not keep it out
-          ck usercron.rs '        File::Absent => seen.deny == File::Names,' '        File::Absent => false, // knife' \
+          ck usercron.rs '        (File::Absent, deny) => deny == File::Names,' '        (File::Absent, deny) => deny == File::Names && false, // knife' \
              without_an_allow_file_the_deny_file_decides
+          # S18 (c477a L1): a name with blanks around it in the deciding file is taken as the user
+          ck usercron.rs '            return Outcome::Unknown("user_cron_padded")' \
+             '            return Outcome::Green // knife' \
+             a_name_with_blanks_around_it_in_the_deciding_file_is_unknown
           # S18: what was not read as expected is green
           ck usercron.rs '        Some(None) => Outcome::Unknown("user_cron_unparsed"),' \
              '        Some(None) => Outcome::Green, // knife' \

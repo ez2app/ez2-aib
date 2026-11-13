@@ -3,14 +3,18 @@
 //!
 //! What is read, and what is not:
 //! * cron's unit: loaded, enabled, active (`systemctl show`, three keys);
-//! * `/etc/cron.allow` and `/etc/cron.deny`: whether each is there and whether it names
-//!   the site's user. Only that answer leaves the container, never the files;
+//! * `/etc/cron.allow` and `/etc/cron.deny`: whether each is there and whether a line of
+//!   it is the site's user. cron compares whole lines, so a line that is the user only
+//!   once blanks around it are taken off is told apart (`padded`) and judged unknown:
+//!   whether cron takes it is not ours to guess (c477a L1). Only that answer leaves the
+//!   container, never the files;
 //! * the site user's crontab: whether there is one, how many lines are not comments, and
 //!   how many of those call `wp-cron.php` with curl or wget. Only those two numbers leave
 //!   the container: a crontab can hold passwords or keys.
 //!
-//! cron's own rule decides who may use it: when `cron.allow` is there only the users it
-//! names may; when it is not, `cron.deny` names who may not; with neither, everyone may.
+//! cron's own rule decides who may use the `crontab` command to set or change a schedule:
+//! when `cron.allow` is there only the users it names may; when it is not, `cron.deny`
+//! names who may not; with neither, everyone may.
 //!
 //! A line that calls the site's `wp-cron.php` over the network is a warning, not a
 //! failure: the site's scheduler already runs from the container's timer (S14), and a
@@ -30,13 +34,13 @@ pub const S18_SCRIPT: &str = concat!(
     "systemctl show cron.service -p LoadState -p UnitFileState -p ActiveState || exit 1; ",
     "for k in allow deny; do f=/etc/cron.$k; ",
     "if [ ! -e \"$f\" ] && [ ! -L \"$f\" ]; then echo \"ez2-s18-$k none\"; ",
-    "else awk -v u=\"$u\" '{ gsub(/^[ \\t]+|[ \\t]+$/, \"\") } $0 == u { f = 1 } END { exit f ? 0 : 1 }' \"$f\"; r=$?; ",
-    "case $r in 0) echo \"ez2-s18-$k listed\" ;; 1) echo \"ez2-s18-$k unlisted\" ;; *) exit 1 ;; esac; fi; done; ",
+    "else awk -v u=\"$u\" '$0 == u { f = 1 } { t = $0; gsub(/^[ \\t\\r]+|[ \\t\\r]+$/, \"\", t); if (t == u) p = 1 } END { exit f ? 0 : (p ? 3 : 1) }' \"$f\"; r=$?; ",
+    "case $r in 0) echo \"ez2-s18-$k listed\" ;; 1) echo \"ez2-s18-$k unlisted\" ;; 3) echo \"ez2-s18-$k padded\" ;; *) exit 1 ;; esac; fi; done; ",
     "t=/var/spool/cron/crontabs/$u; ",
     "if [ ! -e \"$t\" ] && [ ! -L \"$t\" ]; then echo 'ez2-s18-tab none'; ",
     "else [ -r \"$t\" ] || exit 1; ",
     "n=$(grep -cvE '^[[:space:]]*(#|$)' \"$t\") || [ $? -eq 1 ] || exit 1; ",
-    "s=$(grep -vE '^[[:space:]]*#' \"$t\" | grep -ciE '(curl|wget)[^#]*wp-cron[.]php') || [ $? -eq 1 ] || exit 1; ",
+    "s=$(grep -ciE '^[[:space:]]*[^#[:space:]].*(curl|wget).*wp-cron[.]php' \"$t\") || [ $? -eq 1 ] || exit 1; ",
     "echo \"ez2-s18-tab $n $s\"; fi; ",
     "echo ez2-s18-end"
 );
@@ -56,6 +60,8 @@ enum File {
     Names,
     /// The file is there and does not name the user.
     Omits,
+    /// A line is the user only once blanks around it are taken off.
+    Padded,
 }
 
 /// What [`S18_SCRIPT`] printed, read strictly: each part once, in its order.
@@ -76,6 +82,7 @@ fn listed(line: &str, marker: &str) -> Option<File> {
         "none" => Some(File::Absent),
         "listed" => Some(File::Names),
         "unlisted" => Some(File::Omits),
+        "padded" => Some(File::Padded),
         _ => None,
     }
 }
@@ -133,10 +140,12 @@ fn parse(text: &str) -> Option<Seen<'_>> {
 /// [`S18_SCRIPT`] printed; `None` when it could not be run or did not end well.
 ///
 /// * red `user_cron_off`: cron is not there, not enabled or not running;
-/// * red `user_cron_denied`: `cron.allow` is there and does not name the user, or there is
-///   no `cron.allow` and `cron.deny` names the user;
+/// * red `user_cron_denied`: the user cannot add or change its schedule: `cron.allow` is
+///   there and does not name it, or there is no `cron.allow` and `cron.deny` names it;
 /// * warn `user_cron_self_url`: a line of the user's crontab calls `wp-cron.php` with curl
 ///   or wget (see [`SELF_URL_HINT`]);
+/// * unknown `user_cron_padded`: the deciding file names the user only with blanks around
+///   it (see the module notes);
 /// * unknown `user_cron_unread` / `user_cron_unparsed`: not read, or not as expected;
 /// * green otherwise. No crontab, or an empty one, is green: nothing is scheduled yet.
 pub fn s18_user_cron(listing: Option<&str>) -> CheckResult {
@@ -164,10 +173,13 @@ fn judge(seen: &Seen<'_>) -> Outcome {
         "inactive" | "failed" | "deactivating" => return Outcome::Red("user_cron_off"),
         _ => return Outcome::Unknown("user_cron_unparsed"),
     }
-    let denied = match seen.allow {
-        File::Names => false,
-        File::Omits => true,
-        File::Absent => seen.deny == File::Names,
+    let denied = match (seen.allow, seen.deny) {
+        (File::Names, _) => false,
+        (File::Omits, _) => true,
+        (File::Padded, _) | (File::Absent, File::Padded) => {
+            return Outcome::Unknown("user_cron_padded")
+        }
+        (File::Absent, deny) => deny == File::Names,
     };
     if denied {
         return Outcome::Red("user_cron_denied");
@@ -248,6 +260,25 @@ mod tests {
     }
 
     #[test]
+    fn a_name_with_blanks_around_it_in_the_deciding_file_is_unknown() {
+        for (allow, deny) in [("padded", "none"), ("padded", "listed"), ("none", "padded")] {
+            assert_eq!(
+                s18(&out(ON, allow, deny, "none")),
+                Outcome::Unknown("user_cron_padded"),
+                "{allow} {deny}"
+            );
+        }
+        // the allow file decides alone: a padded deny file does not matter then
+        assert_eq!(s18(&out(ON, "listed", "padded", "none")), Outcome::Green);
+        assert_eq!(
+            s18(&out(ON, "unlisted", "padded", "none")),
+            Outcome::Red("user_cron_denied")
+        );
+        assert!(S18_SCRIPT.contains("$0 == u { f = 1 }"));
+        assert!(S18_SCRIPT.contains("3) echo \"ez2-s18-$k padded\""));
+    }
+
+    #[test]
     fn a_line_calling_wp_cron_over_the_network_is_a_warning() {
         assert_eq!(
             s18(&out(ON, "none", "none", "2 1")),
@@ -324,6 +355,8 @@ mod tests {
         assert!(!S18_SCRIPT.contains("cat "));
         assert!(!S18_SCRIPT.contains("crontab -l"));
         assert!(S18_SCRIPT.contains("grep -cvE"));
+        // one grep per count, no pipe that could hide a read error (c477a N2)
+        assert!(!S18_SCRIPT.contains(" | "));
         assert!(S18_SCRIPT.ends_with(S18_END));
     }
 }
