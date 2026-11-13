@@ -4,8 +4,10 @@
 //!
 //! The API is synchronous on purpose; async callers use `spawn_blocking`.
 
+mod alive;
 mod idem;
 mod migrate;
+mod seat_meta;
 mod seats;
 mod sessions;
 
@@ -14,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
 pub use idem::{IdemClaim, IN_PROGRESS};
 pub use migrate::{Migration, MIGRATIONS};
+pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatCreate};
 pub use sessions::SessionRow;
 
