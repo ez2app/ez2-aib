@@ -344,6 +344,9 @@ fn stage(
         f.set_permissions(fs::Permissions::from_mode(mode))
             .map_err(io)?;
     }
+    // Windows has no mode bits; a tool is runnable by its name there
+    #[cfg(not(unix))]
+    let _ = exec;
     f.sync_all().map_err(io)?;
     drop(f);
     let mut back = Vec::new();
