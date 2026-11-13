@@ -16,6 +16,18 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   last; exit 0 / 1 / 2. Never signals a bare pid: leftovers end through the fixture's stop
   file. Pids are checked with `ps` / `tasklist` (no aib-sys: xtask deps keeps it to aibd and
   aib-procwatch).
+- `Idempotency-Key` on the session writes (ADR 0003; T81): `POST /api/v1/sessions`,
+  `POST /api/v1/seats/{id}/sessions` and `DELETE /api/v1/sessions/{id}`. A retry with the
+  same key starts or stops nothing again and gets the first status with the session as it
+  is now (`Idempotent-Replayed: true`, also after a restart); the same key for another
+  request, or while the first one still runs (or was cut off by a stop of aibd), is
+  `409 idempotency_conflict`; a refused request gives its key back. The key is bound to a
+  SHA-256 of the request (argv and env stay out of the store, spec 9.4) and the stored
+  answer is only the session id (`aib_store::IdemClaim`: claim, finish, release). The
+  keyed work runs as its own task, so a client that hangs up mid-request does not leave
+  its key claimed; at start, stop keys left unfinished by the last run are given back
+  (stopping again is harmless), start keys stay claimed. The pairing writes are not
+  covered: their answers carry one-time codes.
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)

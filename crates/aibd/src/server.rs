@@ -98,6 +98,14 @@ pub async fn run(
     if !store.integrity_ok()? {
         return Err(StartError::Integrity);
     }
+    // 043dd T81 N1: a stop cut off by the last exit can be asked again (stopping a
+    // stopped session does nothing), so its key is given back; a start's stays (it
+    // may have started something)
+    match store.idem_release_unfinished("DELETE ") {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(keys = n, "unfinished stop keys of the last run given back"),
+        Err(e) => tracing::warn!(error = %e, "unfinished stop keys not given back"),
+    }
     let store = Arc::new(store);
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;

@@ -4,6 +4,7 @@
 //!
 //! The API is synchronous on purpose; async callers use `spawn_blocking`.
 
+mod idem;
 mod migrate;
 mod seats;
 mod sessions;
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+pub use idem::{IdemClaim, IN_PROGRESS};
 pub use migrate::{Migration, MIGRATIONS};
 pub use seats::{IdemKey, Seat, SeatCreate};
 pub use sessions::SessionRow;

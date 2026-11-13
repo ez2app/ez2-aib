@@ -8,6 +8,7 @@ pub mod allowlist;
 pub mod api;
 pub mod config;
 pub mod guard;
+pub mod idem;
 pub mod lineage;
 pub mod pair_api;
 pub mod pairing;
