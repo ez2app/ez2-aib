@@ -3,13 +3,14 @@
 //!
 //! ```text
 //! aib-seatview on  [--window S:cockpit]                         切到席位視角
-//! aib-seatview off [--window S:cockpit] [--no-right]            切回完整版面(--no-right:設定檔關了右欄)
+//! aib-seatview off [--window S:cockpit] --want "hub right plan …"  切回完整版面(--want = 設定檔要的格,必帶)
 //! aib-seatview status [--window S:cockpit]                      印 full / seat
 //! aib-seatview filter-roles [--window S:cockpit] < roles        設定檔的格(一行一個)照窗的版面收窄
 //! ```
 //! - 窗預設 `$EZ2_TMUX_SESSION:cockpit`。只碰外框 tmux,不碰 hub 伺服器。
-//! - `off` 補回右欄的指令照 cockpit-resize.sh:`<狀態夾>/run-right-tabs.sh` 可執行就用它,
-//!   不然 `env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash $EZ2_COCKPIT_DIR/pane-right-tabs.sh`;
+//! - `off` 補回 left / bottom / right(設定要、現在沒有的);右欄指令照 cockpit-resize.sh:
+//!   `<狀態夾>/run-right-tabs.sh` 可執行就用它,不然 `env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash $EZ2_COCKPIT_DIR/pane-right-tabs.sh`;
+//!   左 / 下欄 `bash $EZ2_COCKPIT_DIR/pane-left-tabs.sh` / `pane-bottom-tabs.sh`;
 //!   主機群與待審框由呼叫端接著跑 `cockpit-full.sh --ensure` 照原本的格腳本補。
 //! - 結束碼:0 好;2 用法錯;3 座艙窗讀不到 / 沒有對話格(什麼都沒動);4 tmux 指令中途失敗。
 
@@ -23,7 +24,7 @@ const USAGE: &str =
 struct Opts {
     cmd: String,
     window: Option<String>,
-    no_right: bool,
+    want: Option<Vec<String>>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -35,7 +36,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
         cmd,
         window: None,
-        no_right: false,
+        want: None,
     };
     while let Some(k) = it.next() {
         match k.as_str() {
@@ -46,9 +47,20 @@ fn parse(args: &[String]) -> Result<Opts, String> {
                     .ok_or("missing_value: --window")?;
                 o.window = Some(v.clone());
             }
-            "--no-right" if o.cmd == "off" => o.no_right = true,
+            "--want" if o.cmd == "off" => {
+                let v = it.next().ok_or("missing_value: --want")?;
+                let w: Vec<String> = v.split_whitespace().map(str::to_string).collect();
+                // 空的 = 呼叫端讀不到設定:不猜(猜成「不要右欄」會讓之後的 ensure 卡在自癒拒絕,審查 L4)
+                if w.is_empty() {
+                    return Err("missing_value: --want".into());
+                }
+                o.want = Some(w);
+            }
             _ => return Err(format!("unknown_flag: {k}\n{USAGE}")),
         }
+    }
+    if o.cmd == "off" && o.want.is_none() {
+        return Err(format!("missing_flag: --want\n{USAGE}"));
     }
     Ok(o)
 }
@@ -64,8 +76,20 @@ fn window(o: &Opts) -> Result<String, String> {
         .ok_or_else(|| "no_window: 沒有 EZ2_TMUX_SESSION,請帶 --window".into())
 }
 
-/// 右欄格的指令(同 cockpit-resize.sh 的 _heal_right_pane)
-fn right_cmd(t: &dyn Tmux, win: &str) -> String {
+/// 外欄格的指令:右欄同 cockpit-resize.sh 的 _heal_right_pane;左 / 下欄跑各自的格腳本
+fn pane_cmd(t: &dyn Tmux, win: &str, role: &str) -> String {
+    let dir = std::env::var("EZ2_COCKPIT_DIR").unwrap_or_default();
+    if role != "right" {
+        let script = if role == "left" {
+            "pane-left-tabs.sh"
+        } else {
+            "pane-bottom-tabs.sh"
+        };
+        return format!(
+            "bash {}",
+            sh_quote(&Path::new(&dir).join(script).to_string_lossy())
+        );
+    }
     let session = win.split(':').next().unwrap_or(win);
     let state = std::env::var("EZ2_COCKPIT_STATE_DIR")
         .ok()
@@ -80,7 +104,6 @@ fn right_cmd(t: &dyn Tmux, win: &str) -> String {
             return format!("bash {}", sh_quote(&run.to_string_lossy()));
         }
     }
-    let dir = std::env::var("EZ2_COCKPIT_DIR").unwrap_or_default();
     format!(
         "env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash {}",
         sh_quote(&Path::new(&dir).join("pane-right-tabs.sh").to_string_lossy())
@@ -135,14 +158,16 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
             ))
         }
         _ => {
-            let cmd = right_cmd(t, &win);
-            let r = seatview::seat_off(t, &win, &cmd, !o.no_right).map_err(fail)?;
+            let want = o.want.clone().unwrap_or_default();
+            let cmd = |role: &str| pane_cmd(t, &win, role);
+            let r = seatview::seat_off(t, &win, &want, &cmd).map_err(fail)?;
+            let added: Vec<&str> = r.added.iter().map(|a| a.0.as_str()).collect();
             Ok(format!(
-                "full: {}{}",
-                if r.added_right.is_some() {
-                    "右欄補回"
+                "full: 補回 {}{}",
+                if added.is_empty() {
+                    "無".to_string()
                 } else {
-                    "右欄不用補"
+                    added.join(" ")
                 },
                 if r.respawned_plan {
                     ",進度樹重開"
@@ -189,15 +214,28 @@ mod tests {
         assert!(parse(&a(&[])).is_err());
         assert!(parse(&a(&["toggle"])).is_err());
         assert!(parse(&a(&["on", "--window"])).is_err());
-        assert!(parse(&a(&["on", "--window", "--no-right"])).is_err());
+        assert!(parse(&a(&["on", "--window", "--want"])).is_err());
         assert!(
-            parse(&a(&["on", "--no-right"])).is_err(),
-            "--no-right only for off"
+            parse(&a(&["on", "--want", "hub"])).is_err(),
+            "--want only for off"
         );
-        let o = parse(&a(&["off", "--window", "S:cockpit", "--no-right"])).expect("ok");
+        assert!(parse(&a(&["off"])).is_err(), "off needs --want");
+        assert!(
+            parse(&a(&["off", "--want", " "])).is_err(),
+            "empty --want is not a guess"
+        );
+        let o = parse(&a(&[
+            "off",
+            "--window",
+            "S:cockpit",
+            "--want",
+            "hub right plan",
+        ]))
+        .expect("ok");
+        assert_eq!(o.window.as_deref(), Some("S:cockpit"));
         assert_eq!(
-            (o.cmd.as_str(), o.window.as_deref(), o.no_right),
-            ("off", Some("S:cockpit"), true)
+            o.want,
+            Some(vec!["hub".into(), "right".into(), "plan".into()])
         );
     }
 

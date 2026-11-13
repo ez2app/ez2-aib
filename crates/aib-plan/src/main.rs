@@ -1613,7 +1613,7 @@ fn main() {
     app.pin = auto_pin(&args.only_seat, args.seat.as_deref(), || {
         std::env::var("TMUX_PANE")
             .ok()
-            .map(|p| seatview::pane_layout(&seatview::RealTmux, &p))
+            .map(|p| seatview::pane_layout(&seatview::OwnTmux, &p))
     });
     app.filter = app.base_filter();
     if let Some(seat) = &args.seat {

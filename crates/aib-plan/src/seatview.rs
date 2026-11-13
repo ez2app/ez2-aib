@@ -35,6 +35,25 @@ impl Tmux for RealTmux {
     }
 }
 
+/// 問「自己這一格所在的那台伺服器」:保留 TMUX(aib-plan 在 hub 裡被叫起來時,
+/// $TMUX_PANE 是 hub 的格號,不能拿去問外框 —— 外框剛好有同號的格就會誤判,審查 L3)
+pub struct OwnTmux;
+
+impl Tmux for OwnTmux {
+    fn run(&self, args: &[&str]) -> Option<String> {
+        let bin = std::env::var("AIB_TMUX_BIN").unwrap_or_else(|_| "tmux".into());
+        let o = std::process::Command::new(bin)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     Full,
@@ -60,7 +79,8 @@ impl Layout {
 /// seat 版面留下的格
 pub const SEAT_ROLES: [&str; 2] = ["hub", "plan"];
 /// seat 版面收掉的格(hub / plan 永遠不在這裡)
-pub const SEAT_DROPS: [&str; 5] = ["left", "right", "bottom", "hosts", "review"];
+/// edit = 待審框的編輯框(mouse-ctl.sh),底下的待審框收掉了它也要一起收(審查 L1)
+pub const SEAT_DROPS: [&str; 6] = ["left", "right", "bottom", "hosts", "review", "edit"];
 
 /// 窗的版面;讀不到 = 完整版面(讀不到不把格收掉)
 pub fn layout(t: &dyn Tmux, win: &str) -> Layout {
@@ -104,7 +124,8 @@ pub fn panes(t: &dyn Tmux, win: &str) -> Option<Vec<Pane>> {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub killed: Vec<String>,
-    pub added_right: Option<String>,
+    /// (格, pane id)
+    pub added: Vec<(String, String)>,
     pub respawned_plan: bool,
 }
 
@@ -135,45 +156,48 @@ pub fn seat_on(t: &dyn Tmux, win: &str) -> Result<Report, String> {
     Ok(r)
 }
 
-/// 切回完整版面。`right_cmd` = 右欄格要跑的指令(呼叫端照 cockpit-resize.sh 的寫法給);
-/// `want_right` = 設定檔要不要右欄(`aib right off` 的人不補)。
+/// 切回完整版面時要補回的外欄、怎麼切(都整窗切,跟 cockpit-resize.sh 的 _heal_right_pane 同法):
+/// left 貼最左全高、bottom 貼最下全寬 12 列、right 貼最右全高 32%。
+/// 主機群(hosts)與待審框(review)不在這裡補:呼叫端接著跑 `cockpit-full.sh --ensure`,照原本的格腳本長回來。
+const OUTER_GROW: [(&str, &[&str]); 3] = [
+    ("left", &["split-window", "-h", "-f", "-b", "-p", "20"]),
+    ("bottom", &["split-window", "-v", "-f", "-l", "12"]),
+    ("right", &["split-window", "-h", "-f", "-p", "32"]),
+];
+
+/// 切回完整版面。`want` = 設定檔說完整版面要的格(panes.py --expected-roles,讀不到由呼叫端報錯,不猜);
+/// `cmd(role)` = 那一格要跑的指令(呼叫端照 cockpit-resize.sh 的寫法給)。
+/// 設定要、而現在沒有的 left / bottom / right 補回來(審查 M1:只補右欄 ⇒ 開了左 / 下欄的人卡在自癒拒絕)。
 pub fn seat_off(
     t: &dyn Tmux,
     win: &str,
-    right_cmd: &str,
-    want_right: bool,
+    want: &[String],
+    cmd: &dyn Fn(&str) -> String,
 ) -> Result<Report, String> {
     let ps = panes(t, win).ok_or("cockpit_unreadable")?;
     let hub = need(&ps, "hub").ok_or("no_hub_pane")?.id.clone();
     t.run(&["set-option", "-w", "-u", "-t", win, "@aib_layout"])
         .ok_or("set_option_failed")?;
     let mut r = Report::default();
-    if want_right && need(&ps, "right").is_none() {
+    for (role, split) in OUTER_GROW {
+        if !want.iter().any(|w| w == role) || need(&ps, role).is_some() {
+            continue;
+        }
+        let c = cmd(role);
+        let mut args: Vec<&str> = split.to_vec();
+        args.extend(["-t", hub.as_str(), "-P", "-F", "#{pane_id}", c.as_str()]);
         let id = t
-            .run(&[
-                "split-window",
-                "-h",
-                "-f",
-                "-p",
-                "32",
-                "-t",
-                &hub,
-                "-P",
-                "-F",
-                "#{pane_id}",
-                right_cmd,
-            ])
+            .run(&args)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or("split_failed")?;
-        for (k, v) in [
-            ("@aib_role", "right"),
-            ("@aib_pane", "ai-list"),
-            ("@aib_cockpit", "1"),
-        ] {
-            let _ = t.run(&["set-option", "-p", "-t", &id, k, v]);
+            .ok_or_else(|| format!("split_failed: {role}"))?;
+        let _ = t.run(&["set-option", "-p", "-t", &id, "@aib_role", role]);
+        if role == "right" {
+            for (k, v) in [("@aib_pane", "ai-list"), ("@aib_cockpit", "1")] {
+                let _ = t.run(&["set-option", "-p", "-t", &id, k, v]);
+            }
         }
-        r.added_right = Some(id);
+        r.added.push((role.to_string(), id));
     }
     r.respawned_plan = respawn_plan(t, &ps);
     Ok(r)
@@ -261,12 +285,13 @@ mod tests {
         }
     }
 
-    const FULL: [(&str, &str); 5] = [
+    const FULL: [(&str, &str); 6] = [
         ("%0", "hub"),
         ("%1", "plan"),
         ("%2", "hosts"),
         ("%3", "right"),
         ("%4", "review"),
+        ("%5", "edit"),
     ];
 
     #[test]
@@ -289,7 +314,7 @@ mod tests {
     fn seat_on_drops_outer_panes_only() {
         let t = Fake::new(&FULL);
         let r = seat_on(&t, "S:cockpit").expect("on");
-        assert_eq!(r.killed, ["%2", "%3", "%4"]);
+        assert_eq!(r.killed, ["%2", "%3", "%4", "%5"]);
         assert!(r.respawned_plan);
         assert_eq!(t.roles(), ["hub", "plan"]);
         assert_eq!(layout(&t, "S:cockpit"), Layout::Seat);
@@ -311,20 +336,24 @@ mod tests {
         assert!(r2.killed.is_empty());
     }
 
+    fn roles(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn seat_off_adds_right_back_with_role() {
+        let cmd = |r: &str| format!("bash {r}.sh");
         let t = Fake::new(&[("%0", "hub"), ("%1", "plan")]);
         *t.layout.borrow_mut() = "seat".into();
-        let r = seat_off(&t, "S:cockpit", "bash right.sh", true).expect("off");
+        let want = roles(&["hub", "right", "plan", "hosts"]);
+        let r = seat_off(&t, "S:cockpit", &want, &cmd).expect("off");
         assert_eq!(layout(&t, "S:cockpit"), Layout::Full);
-        let id = r.added_right.expect("right added");
+        assert_eq!(r.added.len(), 1);
+        let id = r.added[0].1.clone();
         assert_eq!(t.roles(), ["hub", "plan", "right"]);
-        assert!(t
-            .calls
-            .borrow()
-            .iter()
-            .any(|c| c.starts_with("split-window -h -f -p 32 -t %0 ")
-                && c.ends_with("bash right.sh")));
+        assert!(t.calls.borrow().iter().any(|c| {
+            c.starts_with("split-window -h -f -p 32 -t %0 ") && c.ends_with("bash right.sh")
+        }));
         assert!(t
             .calls
             .borrow()
@@ -332,20 +361,35 @@ mod tests {
             .any(|c| c == &format!("set-option -p -t {id} @aib_role right")));
         // aib right off 的人:不補右欄
         let t2 = Fake::new(&[("%0", "hub"), ("%1", "plan")]);
-        assert_eq!(
-            seat_off(&t2, "S:cockpit", "x", false)
-                .expect("off")
-                .added_right,
-            None
-        );
+        let r2 = seat_off(&t2, "S:cockpit", &roles(&["hub", "plan"]), &cmd).expect("off");
+        assert!(r2.added.is_empty());
         // 右欄已經在:不重複補
         let t3 = Fake::new(&FULL);
-        assert_eq!(
-            seat_off(&t3, "S:cockpit", "x", true)
-                .expect("off")
-                .added_right,
-            None
-        );
+        let r3 = seat_off(&t3, "S:cockpit", &want, &cmd).expect("off");
+        assert!(r3.added.is_empty());
+    }
+
+    /// 審查 M1:開了左欄 / 下欄的人,切回完整版面時三格都要補回(角色標齊,validate 才過)
+    #[test]
+    fn seat_off_restores_left_and_bottom_too() {
+        let cmd = |r: &str| format!("bash {r}.sh");
+        let t = Fake::new(&[("%0", "hub"), ("%1", "plan")]);
+        let want = roles(&["left", "bottom", "hub", "right", "plan", "hosts"]);
+        let r = seat_off(&t, "S:cockpit", &want, &cmd).expect("off");
+        let got: Vec<&str> = r.added.iter().map(|a| a.0.as_str()).collect();
+        assert_eq!(got, ["left", "bottom", "right"]);
+        let mut have = t.roles();
+        have.sort();
+        assert_eq!(have, ["bottom", "hub", "left", "plan", "right"]);
+        let calls = t.calls.borrow();
+        assert!(calls
+            .iter()
+            .any(|c| c.starts_with("split-window -h -f -b -p 20 -t %0 ")
+                && c.ends_with("bash left.sh")));
+        assert!(calls
+            .iter()
+            .any(|c| c.starts_with("split-window -v -f -l 12 -t %0 ")
+                && c.ends_with("bash bottom.sh")));
     }
 
     #[test]
