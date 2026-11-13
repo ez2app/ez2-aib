@@ -18,6 +18,7 @@
 //! An async variant is added here when the first async timer appears.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +124,30 @@ impl Op {
     }
 }
 
+impl Op {
+    /// [`Op::tick`] that a state change can end early: returns as soon as
+    /// the counter behind `m` is no longer `*seen` (and stores the new value
+    /// in `*seen`), else after one period. Same end rule as `tick`.
+    pub fn tick_or_wake(&self, m: &Mutex<u64>, cv: &Condvar, seen: &mut u64) -> bool {
+        let now = Instant::now();
+        let step = match self.end {
+            Some(end) if now >= end => return false,
+            Some(end) => self.timer.period.min(end - now),
+            None => self.timer.period,
+        };
+        self.timer.wakeups.fetch_add(1, Ordering::Relaxed);
+        let g = m.lock().unwrap_or_else(|e| e.into_inner());
+        // ADR 0005 named exception: this registered timer's own tick, which
+        // a state change may end early (A11-2, Codex M4)
+        #[allow(clippy::disallowed_methods)]
+        let (g, _) = cv
+            .wait_timeout_while(g, step, |n| *n == *seen)
+            .unwrap_or_else(|e| e.into_inner());
+        *seen = *g;
+        true
+    }
+}
+
 impl Drop for Op {
     fn drop(&mut self) {
         self.timer.active.fetch_sub(1, Ordering::Relaxed);
@@ -180,6 +205,13 @@ pub static THERMAL_SAMPLE: Timer = Timer::operation(
     "sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1)",
 );
 
+pub static ALIVE_DUE_WAIT: Timer = Timer::operation(
+    "alive.due_wait",
+    secs(60),
+    secs(86_400),
+    "only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -187,6 +219,7 @@ pub static ALL: &[&Timer] = &[
     &SESSION_REJECT_FLUSH,
     &STARTUP_LOCK_WAIT,
     &THERMAL_SAMPLE,
+    &ALIVE_DUE_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

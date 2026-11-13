@@ -22,6 +22,10 @@ pub enum StartError {
     Store(#[from] aib_store::StoreError),
     #[error("database integrity check failed; refusing to start (restore from backup)")]
     Integrity,
+    /// A11: `revive-policy.json` is there but cannot be used (a9136 11-13:
+    /// stop with the reason, never fall back to defaults quietly).
+    #[error("revive policy: {0}")]
+    RevivePolicy(String),
 }
 
 /// How long a start waits for `aibd.lock` before it says `AlreadyRunning`.
@@ -82,6 +86,14 @@ pub async fn run(
     platform::create_private_dir(&run_dir)?;
 
     let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
+    let revive_policy =
+        crate::alive::RevivePolicy::load(&dirs.data_dir()).map_err(StartError::RevivePolicy)?;
+    tracing::info!(
+        alive_alert = revive_policy.alive_alert,
+        auto_revive = revive_policy.auto_revive,
+        alive_after_s = revive_policy.alive_after_s,
+        "revive policy"
+    );
     if let Some(was) = platform::keep_child_zombies() {
         // inherited from whoever started us (SIG_IGN survives exec): without
         // this every group stop would be unverified (ADR 0008 rule 3)
@@ -166,6 +178,13 @@ pub async fn run(
     sessions.set_policy(session_policy.clone());
     // no instance id, no start (#646): checked before the thermal guard reads anything
     api::process_ready()?;
+    // A11 T46: who is alive (no resident timer; see crate::alive)
+    let weak = Arc::downgrade(&sessions);
+    let alive = crate::alive::Alive::new(store.clone(), revive_policy, move || {
+        weak.upgrade().map(|s| s.live_seats()).unwrap_or_default()
+    });
+    sessions.set_alive(alive.clone());
+    let _ = tokio::task::spawn_blocking(move || alive.start()).await;
     // R1 thermal guard, dry run (ADR 0005 §1): before the router takes requests,
     // so it hears the first 0 → 1. Its start-up T1 check reads sensors once.
     let thermal = {

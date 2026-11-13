@@ -7,7 +7,7 @@
 //! The store does not decide who is alive or who closed on purpose; the
 //! caller passes both (process gone = down; "no activity" is not down).
 
-use crate::{Result, Store};
+use crate::{insert_event, NewEvent, Result, Store};
 use rusqlite::params;
 
 /// The alert threshold never goes below this (1.x `EZ2_AIB_ALIVE_ALERT_AFTER_S`).
@@ -31,6 +31,8 @@ pub struct AliveRow {
     pub seats: Vec<String>,
     pub alerted_at: Option<i64>,
 }
+
+type AlertEvent = Box<dyn Fn(&AliveDown, i64) -> NewEvent + Send>;
 
 /// The stored seat list; a row that is not a list of strings is an error,
 /// never read as "no seats".
@@ -57,6 +59,33 @@ impl Store {
         live: Vec<(String, Vec<String>)>,
         closed: Vec<String>,
         after_s: i64,
+    ) -> Result<Vec<AliveDown>> {
+        self.alive_round_inner(now, live, closed, after_s, None)
+    }
+
+    /// [`Store::alive_round`], and for every seat reported, the event `make`
+    /// builds (given the next sequence of aggregate `alive:<cabin>`), in the
+    /// same transaction: an alert is marked sent only together with its
+    /// outbox event (Codex A11-2 M2). If an event cannot be written, nothing
+    /// of the round is.
+    pub fn alive_round_events(
+        &self,
+        now: i64,
+        live: Vec<(String, Vec<String>)>,
+        closed: Vec<String>,
+        after_s: i64,
+        make: impl Fn(&AliveDown, i64) -> NewEvent + Send + 'static,
+    ) -> Result<Vec<AliveDown>> {
+        self.alive_round_inner(now, live, closed, after_s, Some(Box::new(make)))
+    }
+
+    fn alive_round_inner(
+        &self,
+        now: i64,
+        live: Vec<(String, Vec<String>)>,
+        closed: Vec<String>,
+        after_s: i64,
+        make: Option<AlertEvent>,
     ) -> Result<Vec<AliveDown>> {
         let after_s = after_s.max(ALIVE_MIN_AFTER_S);
         self.write(move |c| {
@@ -94,12 +123,22 @@ impl Store {
                     "UPDATE cabin_alive SET alerted_at = ?2 WHERE cabin = ?1",
                     params![cabin, now],
                 )?;
-                out.push(AliveDown {
+                let down = AliveDown {
                     gone_for_s: now - last_seen,
                     seats: seats_of(&seats)?,
                     cabin,
                     last_seen,
-                });
+                };
+                if let Some(m) = &make {
+                    let agg = format!("alive:{}", down.cabin);
+                    let last: i64 = tx.query_row(
+                        "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?1",
+                        params![agg],
+                        |r| r.get(0),
+                    )?;
+                    insert_event(&tx, &m(&down, last + 1))?;
+                }
+                out.push(down);
             }
             tx.commit()?;
             Ok(out)
