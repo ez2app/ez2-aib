@@ -3,7 +3,7 @@
 //! changes not committed, and the target it was built for (goal2 title-beat step 2,
 //! PLAN-aibtitle-install-043dd-1113 r2 package 1). `aib-title build-info` prints them; the
 //! installer reads them out of the file before it puts the binary where a pane runs it, so a
-//! build from a PR head or a dirty tree cannot slip in (the EU02 #638 lesson, 11-11).
+//! build from a PR head or a dirty tree cannot slip in (the #638 lesson, 11-11).
 //!
 //! Same rules as crates/aib-cloud-host/build.rs (copied: a build script cannot share code with
 //! another crate's): only git is asked, no environment variable can set the commit or the dirty
