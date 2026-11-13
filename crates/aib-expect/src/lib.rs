@@ -574,7 +574,7 @@ impl Status {
             Status::Inferred => "推測",
         }
     }
-    fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Status::Pass => "pass",
             Status::Fail => "fail",
@@ -595,9 +595,6 @@ pub struct Row {
 pub struct Report {
     pub rows: Vec<Row>,
     pub unreadable_evidence: usize,
-    /// Up to three goal ids, by rule: failing first, then unverified, then
-    /// inferred, each in goal order.
-    pub next: Vec<String>,
 }
 
 impl Report {
@@ -690,26 +687,46 @@ pub fn prs_of(evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u6
 /// A failed call, an odd answer or a PR past [`MAX_PRS`] is `None`: unknown,
 /// which makes its rows unverified, never an old pass.
 pub fn read_heads(
-    gh: &dyn aib_drive::snapshot::Read,
+    gh: &dyn aib_ghread::Read,
     repo: &str,
     prs: &std::collections::BTreeSet<u64>,
 ) -> Snapshot {
-    let pr_heads = prs
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let head = (i < MAX_PRS)
-                .then(|| gh.get(&format!("repos/{repo}/pulls/{n}")).ok())
-                .flatten()
+    read_heads_known(gh, repo, prs, &BTreeMap::new())
+}
+
+/// [`read_heads`] inside one aib-drive round: the open PRs' heads come from
+/// drive's snapshot (`known`, read this round already) and are not read
+/// again; only the PRs the evidence names that are not open (mostly merged)
+/// are read, at most [`MAX_PRS`] calls, the rest unknown (DESIGN-drive-expect-
+/// wiring, 2240e × 1ced7: one reader, at most 30 more calls a round).
+pub fn read_heads_known(
+    gh: &dyn aib_ghread::Read,
+    repo: &str,
+    prs: &std::collections::BTreeSet<u64>,
+    known: &BTreeMap<u64, String>,
+) -> Snapshot {
+    let mut calls = 0;
+    let mut pr_heads = BTreeMap::new();
+    for n in prs {
+        if let Some(h) = known.get(n) {
+            pr_heads.insert(*n, Some(h.clone()));
+            continue;
+        }
+        let head = if calls < MAX_PRS {
+            calls += 1;
+            gh.get(&format!("repos/{repo}/pulls/{n}"))
+                .ok()
                 .and_then(|v| {
                     v.pointer("/head/sha")
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                 })
-                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()));
-            (*n, head)
-        })
-        .collect();
+                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        } else {
+            None
+        };
+        pr_heads.insert(*n, head);
+    }
     Snapshot { pr_heads }
 }
 
@@ -735,44 +752,129 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
             }
         })
         .collect();
-    let mut next = Vec::new();
-    for code in ["fail", "unverified", "inferred"] {
-        for r in rows.iter().filter(|r| r.status.code() == code) {
-            if next.len() < 3 {
-                next.push(r.goal.id.clone());
-            }
-        }
-    }
     Report {
         rows,
         unreadable_evidence: evidence.unreadable,
-        next,
     }
 }
 
-/// The order an AI proposes instead of the rule's. It must say why.
+/// Longest `missing` text a row carries.
+pub const MISSING_MAX: usize = 300;
+
+/// One expectation row as aib-drive's report carries it (DESIGN-drive-expect-
+/// wiring, agreed 2240e × 1ced7 11-11 23:3x). No order: what comes next is
+/// decided once, by drive's decide, from the same snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiOrder {
-    pub ids: Vec<String>,
-    pub why: String,
+pub struct Gap {
+    pub goal_id: String,
+    /// Pass / Fail / Unverified(reason code) / Inferred.
+    pub state: Status,
+    /// What is missing: the reason of an unverified row, else the latest
+    /// evidence's summary. Cleaned, at most [`MISSING_MAX`] characters.
+    pub missing: String,
+    /// The PR the latest evidence names.
+    pub pr: Option<u64>,
+    /// `check_id@head8`, or `check_id` when the evidence has no head.
+    pub evidence: Option<String>,
 }
 
-impl AiOrder {
-    pub fn new(ids: Vec<String>, why: &str, report: &Report) -> Result<Self, String> {
-        if why.trim().is_empty() {
-            return Err("expect_order_without_reason: an AI order needs a reason".to_owned());
-        }
-        if let Some(bad) = ids
-            .iter()
-            .find(|i| !report.rows.iter().any(|r| &r.goal.id == *i))
-        {
-            return Err(format!("expect_order_unknown_goal: {bad}"));
-        }
-        Ok(Self {
-            ids,
-            why: why.to_owned(),
+/// Every row (passing ones too), in goal order: the board's full table.
+pub fn table(report: &Report) -> Vec<Gap> {
+    report
+        .rows
+        .iter()
+        .map(|r| Gap {
+            goal_id: r.goal.id.clone(),
+            state: r.status.clone(),
+            missing: clean(
+                &match &r.status {
+                    Status::Unverified(w) => w.text(),
+                    _ => r
+                        .evidence
+                        .as_ref()
+                        .map(|e| e.summary.clone())
+                        .unwrap_or_default(),
+                },
+                MISSING_MAX,
+            ),
+            pr: r.evidence.as_ref().and_then(|e| e.pr),
+            evidence: r
+                .evidence
+                .as_ref()
+                .filter(|e| !e.check.is_empty())
+                .map(|e| match &e.head {
+                    Some(h) => format!("{}@{}", e.check, h.get(..8).unwrap_or(h.as_str())),
+                    None => e.check.clone(),
+                }),
         })
+        .collect()
+}
+
+/// What aib-expect hands to aib-drive for one event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectReport {
+    /// Set only when the goals cannot be used (the [`GoalsError`] code); the
+    /// table is then empty and drive decides as usual and says why. A PR
+    /// whose head cannot be read makes only its own rows `source_unknown`.
+    pub source_unknown: Option<String>,
+    pub table: Vec<Gap>,
+    pub unreadable_evidence: usize,
+}
+
+impl ExpectReport {
+    /// The rows that are not passing (decide's weights), in goal order.
+    pub fn gaps(&self) -> Vec<&Gap> {
+        self.table
+            .iter()
+            .filter(|g| g.state != Status::Pass)
+            .collect()
     }
+}
+
+/// The report for one event: the goals (or why they cannot be used), the
+/// evidence, and the heads drive and expect read with one reader.
+pub fn expect_report(
+    goals: Result<&[Goal], &GoalsError>,
+    evidence: &EvidenceLog,
+    snap: &Snapshot,
+    now: u64,
+) -> ExpectReport {
+    match goals {
+        Err(e) => ExpectReport {
+            source_unknown: Some(e.code().to_owned()),
+            table: Vec::new(),
+            unreadable_evidence: evidence.unreadable,
+        },
+        Ok(g) => {
+            let r = compare(g, evidence, snap, now);
+            ExpectReport {
+                source_unknown: None,
+                table: table(&r),
+                unreadable_evidence: r.unreadable_evidence,
+            }
+        }
+    }
+}
+
+/// One row as JSON.
+pub fn gap_json(g: &Gap) -> Value {
+    json!({
+        "goal_id": g.goal_id,
+        "state": g.state.code(),
+        "why": match &g.state { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
+        "missing": g.missing,
+        "pr": g.pr,
+        "evidence": g.evidence,
+    })
+}
+
+/// [`ExpectReport`] as JSON (what drive's journal line carries).
+pub fn expect_json(r: &ExpectReport) -> Value {
+    json!({
+        "source_unknown": r.source_unknown,
+        "unreadable_evidence": r.unreadable_evidence,
+        "table": r.table.iter().map(gap_json).collect::<Vec<_>>(),
+    })
 }
 
 /// Text that came from a seat, made safe to print: no control characters,
@@ -793,8 +895,13 @@ pub fn clean(s: &str, max: usize) -> String {
     }
 }
 
-/// The full table, for a terminal.
-pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
+/// What comes next, as aib-drive's decide put it (already in its order).
+/// aib-expect prints it as given and never makes its own.
+pub type Next<'a> = &'a [String];
+
+/// The full table, for a terminal. `next` is decide's list for the same
+/// event, or `None` when there is none (then no "next" line is printed).
+pub fn render(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "期望值對比:實查通過 {} / 實查 {}(未驗 {}、推測 {})\n",
@@ -828,23 +935,19 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
             report.unreadable_evidence
         ));
     }
-    out.push_str(&format!(
-        "接下來(規則順序):{}\n",
-        order_text(&report.next, report.rows.is_empty())
-    ));
-    if let Some(a) = ai {
-        out.push_str(&format!(
-            "接下來(AI 建議):{};理由:{}\n",
-            order_text(&a.ids, report.rows.is_empty()),
-            clean(&a.why, 120)
-        ));
+    if let Some(l) = no_goals_line(report) {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    if let Some(n) = next {
+        out.push_str(&format!("接下來(aib-drive):{}\n", next_text(n)));
     }
     out
 }
 
 /// 3–5 lines for the end of a reply: the rows that are not passing, then
 /// what comes next.
-pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
+pub fn render_short(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = Vec::new();
     for r in report
         .rows
@@ -867,29 +970,35 @@ pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
             clean(&why, 60)
         ));
     }
-    out.push(format!(
-        "接下來:{}",
-        order_text(&report.next, report.rows.is_empty())
-    ));
-    if let Some(a) = ai {
-        out.push(format!(
-            "AI 改排:{}({})",
-            order_text(&a.ids, report.rows.is_empty()),
-            clean(&a.why, 60)
-        ));
+    if let Some(l) = no_goals_line(report) {
+        out.push(l);
+    }
+    if let Some(n) = next {
+        out.push(format!("接下來:{}", next_text(n)));
     }
     out.join("\n") + "\n"
 }
 
-/// `no_goals`: the card has no approved expectation at all, so nothing was
-/// compared; that is never "all passed" (ebb36 #693 M1).
-fn order_text(ids: &[String], no_goals: bool) -> String {
-    if no_goals {
-        "(卡上沒有核准的期望,沒得比)".to_owned()
-    } else if ids.is_empty() {
-        "(全部實查通過)".to_owned()
+/// The card has no approved expectation at all, so nothing was compared; that
+/// is never "all passed" (ebb36 #693 M1).
+fn no_goals_line(report: &Report) -> Option<String> {
+    if report.rows.is_empty() {
+        Some("期望:(卡上沒有核准的期望,沒得比)".to_owned())
     } else {
-        ids.join(" → ")
+        None
+    }
+}
+
+fn next_text(items: &[String]) -> String {
+    if items.is_empty() {
+        "(aib-drive 這輪沒有建議)".to_owned()
+    } else {
+        items
+            .iter()
+            .take(3)
+            .map(|i| clean(i, 60))
+            .collect::<Vec<_>>()
+            .join(" → ")
     }
 }
 
@@ -901,8 +1010,8 @@ pub fn to_json(report: &Report) -> Value {
         "unverified": report.count("unverified"),
         "inferred": report.count("inferred"),
         "unreadable_evidence": report.unreadable_evidence,
+        "gaps": table(report).iter().filter(|g| g.state != Status::Pass).map(gap_json).collect::<Vec<_>>(),
         "no_goals": report.rows.is_empty(),
-        "next": report.next,
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
             "goal_sha": goal_sha(&r.goal.text),
