@@ -173,12 +173,20 @@ pub static SELFCHECK_LEAF_LIFE: Timer = Timer::operation(
     "the self-exec check tree's child stays for the stop to meet, then ends by itself (one wake-up; a9136 11-09)",
 );
 
+pub static STARTUP_LOCK_WAIT: Timer = Timer::operation(
+    "startup.lock_wait",
+    ms(100),
+    secs(7),
+    "at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SESSION_REJECT_FLUSH,
     &SELFCHECK_LEAF_LIFE,
+    &STARTUP_LOCK_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
