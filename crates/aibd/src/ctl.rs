@@ -573,7 +573,7 @@ fn policy_init() -> Result<(), String> {
     use std::process::Command;
     let path = match std::env::var_os("AIBD_SESSION_POLICY") {
         Some(path) => std::path::PathBuf::from(path),
-        None => data_dir()?.join("session-policy.json"),
+        None => data_dir()?.join(crate::allowlist::DEFAULT_POLICY_FILE),
     };
     if !path.is_absolute() {
         return Err("policy path must be absolute".into());

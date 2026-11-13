@@ -5,6 +5,18 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- A session's environment and output are narrowed (T80):
+  - the child no longer inherits aibd's whole environment: only a fixed base set
+    (`PATH`, `HOME`, locale, `TERM`, temp folder, and on Windows the system folders,
+    user profile and app data paths) and the names the policy lists under `env`;
+    a token or API key aibd itself has stays out unless the policy names it.
+  - with `AIBD_SESSION_POLICY` unset, aibd reads `session-policy.json` from its data
+    folder (the file `aibd ctl policy init` writes) on every platform; the variable
+    still wins, and a bad default file stops start like a bad named one.
+  - known key formats a program prints (`sk-ant-`, `sk-`, `ghp_` and other GitHub
+    tokens, `glpat-`, Slack `xox?-`, AWS `AKIA` / `ASIA`, Google `AIza`, JWTs,
+    `Bearer …`) are masked to `<prefix>***` before the line is stored. Fixed prefixes
+    only, so Claude's ids stay readable; best effort.
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)

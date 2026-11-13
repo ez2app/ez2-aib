@@ -27,9 +27,12 @@ pub struct Spec {
     pub id: String,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
-    /// Added on top of aibd's own environment minus every `AIBD_*` key; the
+    /// Added on top of what the child inherits from aibd ([`child_env`]); the
     /// platform then sets `AIBD_SESSION=<id>` last.
     pub env: Vec<(String, String)>,
+    /// The policy's env names (`SessionPolicy::env`): aibd's own value of each
+    /// is passed too, on top of [`BASE_ENV`] (T80). Filled by the API layer.
+    pub pass: Vec<String>,
 }
 
 /// How the root process ended.
@@ -327,17 +330,83 @@ fn same_key(a: &OsStr, b: &OsStr) -> bool {
     }
 }
 
+/// The names a child inherits from aibd's own environment whatever the policy
+/// says (T80): enough for a program to find its tools, home, locale and temp
+/// folder. Anything else aibd has (tokens, API keys, cloud credentials) stays
+/// out unless the policy lists the name ([`Spec::pass`]). POSIX also passes
+/// every `LC_*`.
+pub const BASE_ENV: &[&str] = if cfg!(windows) {
+    &[
+        "ALLUSERSPROFILE",
+        "APPDATA",
+        "COMPUTERNAME",
+        "ComSpec",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "CommonProgramW6432",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LOCALAPPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "PUBLIC",
+        "SystemDrive",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "TZ",
+        "USERDOMAIN",
+        "USERNAME",
+        "USERPROFILE",
+        "windir",
+    ]
+} else {
+    &[
+        "COLORTERM",
+        "HOME",
+        "LANG",
+        "LANGUAGE",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "TZ",
+        "USER",
+    ]
+};
+
+/// Does a child inherit aibd's own `k`? [`BASE_ENV`], POSIX `LC_*`, or a
+/// name in `pass`; never an `AIBD_*` key.
+fn inherited(k: &OsStr, pass: &[String]) -> bool {
+    if is_aibd_key(k) {
+        return false;
+    }
+    BASE_ENV.iter().any(|b| same_key(k, OsStr::new(b)))
+        || (!cfg!(windows) && k.to_string_lossy().starts_with("LC_"))
+        || pass.iter().any(|p| same_key(k, OsStr::new(p)))
+}
+
 /// The child's whole environment (contract §1, one rule for both platforms,
-/// 043dd #539 M3): `parent` (aibd's own) minus every `AIBD_*`, then the
-/// request's `env` (replacing a parent entry of the same name; Windows
-/// compares names without case), then `AIBD_SESSION=<id>` last.
+/// 043dd #539 M3; narrowed by T80): from `parent` (aibd's own) only what
+/// [`inherited`] lets through, then the request's `env` (replacing a parent
+/// entry of the same name; Windows compares names without case), then
+/// `AIBD_SESSION=<id>` last.
 pub fn child_env(
     spec: &Spec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
     let mut out: Vec<(OsString, OsString)> = parent
         .into_iter()
-        .filter(|(k, _)| !is_aibd_key(k))
+        .filter(|(k, _)| inherited(k, &spec.pass))
         .filter(|(k, _)| !spec.env.iter().any(|(rk, _)| same_key(k, OsStr::new(rk))))
         .collect();
     out.extend(
@@ -624,6 +693,7 @@ mod tests {
             argv: vec!["/bin/true".into()],
             cwd: "/".into(),
             env: vec![("LANG".into(), "C".into()), ("MY".into(), "1".into())],
+            pass: vec![],
         };
         let parent = vec![
             os("AIBD_TOKEN_FILE", "x"),
@@ -645,6 +715,49 @@ mod tests {
         assert!(env.contains(&os("LANG", "C")));
     }
 
+    /// T80: aibd's secrets stay out of a child; the base set, `LC_*` (POSIX)
+    /// and the policy's names pass.
+    #[test]
+    fn child_env_passes_only_the_base_set_and_the_policy_names() {
+        let spec = Spec {
+            id: "s_1".into(),
+            argv: vec!["/bin/true".into()],
+            cwd: "/".into(),
+            env: vec![],
+            pass: vec!["ANTHROPIC_API_KEY".into()],
+        };
+        let parent = vec![
+            os("PATH", "/usr/bin"),
+            os("GITHUB_TOKEN", "ghp_x"),
+            os("AWS_SECRET_ACCESS_KEY", "x"),
+            os("ANTHROPIC_API_KEY", "sk-ant-x"),
+            os("LC_ALL", "C"),
+            os("OPENAI_API_KEY", "sk-x"),
+        ];
+        let env = child_env(&spec, parent);
+        let keys: Vec<String> = env
+            .iter()
+            .map(|(k, _)| k.to_string_lossy().into())
+            .collect();
+        let want: &[&str] = if cfg!(windows) {
+            &["PATH", "ANTHROPIC_API_KEY", "AIBD_SESSION"]
+        } else {
+            &["PATH", "ANTHROPIC_API_KEY", "LC_ALL", "AIBD_SESSION"]
+        };
+        assert_eq!(keys, want, "{env:?}");
+    }
+
+    #[test]
+    fn the_base_set_lists_no_aibd_key_and_no_secret_looking_name() {
+        for b in BASE_ENV {
+            assert!(!is_aibd_key(OsStr::new(b)), "{b}");
+            let u = b.to_ascii_uppercase();
+            for bad in ["TOKEN", "KEY", "SECRET", "PASS", "AUTH", "CRED"] {
+                assert!(!u.contains(bad), "{b} looks like a secret");
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn child_env_replaces_a_parent_name_without_case_on_windows() {
@@ -653,6 +766,7 @@ mod tests {
             argv: vec!["C:\\x.exe".into()],
             cwd: "C:\\".into(),
             env: vec![("TEMP".into(), "D:\\t".into())],
+            pass: vec![],
         };
         let env = child_env(&spec, vec![os("Temp", "C:\\t"), os("Aibd_X", "1")]);
         assert_eq!(env, vec![os("TEMP", "D:\\t"), os("AIBD_SESSION", "s_1")]);

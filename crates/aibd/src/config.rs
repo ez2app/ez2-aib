@@ -80,7 +80,8 @@ fn parse_origin(s: &str) -> Result<String, ConfigError> {
 
 impl Config {
     /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS` and
-    /// `AIBD_SESSION_POLICY` (a file, read now) through `get`
+    /// `AIBD_SESSION_POLICY` (a file, read now; unset ⇒ the data folder's
+    /// `session-policy.json` if present) through `get`
     /// (injected so tests never touch the real environment).
     pub fn from_lookup(
         get: impl Fn(&str) -> Option<String>,
@@ -107,9 +108,18 @@ impl Config {
                 _ => return Err(ConfigError::BadMaxSessions(v)),
             },
         };
+        // T80: unset ⇒ the data folder's default file if it is there (the one
+        // `aibd ctl policy init` writes), on every platform
         let session_policy = match get("AIBD_SESSION_POLICY") {
-            None => SessionPolicy::default(),
             Some(v) => crate::allowlist::from_path(&v)?,
+            None => {
+                let d = data_dir.join(crate::allowlist::DEFAULT_POLICY_FILE);
+                if d.exists() {
+                    crate::allowlist::from_file(&d)?
+                } else {
+                    SessionPolicy::default()
+                }
+            }
         };
         Ok(Config {
             bind,
@@ -174,6 +184,32 @@ mod tests {
             Config::from_lookup(get, Some("/x".into())).unwrap_err(),
             ConfigError::SessionPolicy(crate::allowlist::PolicyError::NotAbsolute)
         );
+    }
+
+    /// T80: with `AIBD_SESSION_POLICY` unset, the data folder's `session-policy.json`
+    /// is read when it is there (a bad one stops start as the named file does);
+    /// the variable still wins.
+    #[test]
+    fn session_policy_unset_reads_the_data_folder_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_path_buf();
+        let none = Config::from_lookup(|_| None, Some(data.clone())).unwrap();
+        assert_eq!(none.session_policy, SessionPolicy::default());
+        let f = data.join(crate::allowlist::DEFAULT_POLICY_FILE);
+        std::fs::write(&f, r#"{"env": ["MY_VAR"]}"#).unwrap();
+        let c = Config::from_lookup(|_| None, Some(data.clone())).unwrap();
+        assert_eq!(c.session_policy.env, ["MY_VAR"]);
+        let other = dir.path().join("other.json");
+        std::fs::write(&other, r#"{"env": ["OTHER_VAR"]}"#).unwrap();
+        let named = other.to_string_lossy().into_owned();
+        let get = move |k: &str| (k == "AIBD_SESSION_POLICY").then(|| named.clone());
+        let c = Config::from_lookup(get, Some(data.clone())).unwrap();
+        assert_eq!(c.session_policy.env, ["OTHER_VAR"], "the variable wins");
+        std::fs::write(&f, "not json").unwrap();
+        assert!(matches!(
+            Config::from_lookup(|_| None, Some(data)).unwrap_err(),
+            ConfigError::SessionPolicy(crate::allowlist::PolicyError::Invalid(_))
+        ));
     }
 
     #[test]

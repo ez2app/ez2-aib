@@ -16,15 +16,17 @@
 //! for that are the M2 signer check, M4 Touch ID / Windows Hello approval, and the
 //! Phase 5 installer keeping the list where the user cannot write.
 //!
-//! The policy is read once at start from the file named by `AIBD_SESSION_POLICY`:
+//! The policy is read once at start from the file named by `AIBD_SESSION_POLICY`, or,
+//! when that is unset, from [`DEFAULT_POLICY_FILE`] in aibd's data folder (T80; the
+//! file `aibd ctl policy init` writes):
 //!
 //! ```json
 //! {"programs": [{"name": "claude", "path": "/abs/claude", "signer": "Q6L2SF6YDW"}],
 //!  "env": ["MY_VAR"]}
 //! ```
 //!
-//! Unset means nothing may be started. An unreadable or invalid file stops aibd from
-//! starting.
+//! Neither set nor present means nothing may be started. An unreadable or invalid file
+//! stops aibd from starting.
 
 use aib_core::ErrorCode;
 use serde::Deserialize;
@@ -560,8 +562,15 @@ pub fn parse(text: &str) -> Result<SessionPolicy, PolicyError> {
 }
 
 /// Read and check the file `AIBD_SESSION_POLICY` names.
+/// The policy file aibd reads from its data folder when `AIBD_SESSION_POLICY` is unset.
+pub const DEFAULT_POLICY_FILE: &str = "session-policy.json";
+
 pub fn from_path(path: &str) -> Result<SessionPolicy, PolicyError> {
-    let p = Path::new(path);
+    from_file(Path::new(path))
+}
+
+/// [`from_path`] for a path that may not be UTF-8 (the data folder's default file).
+pub fn from_file(p: &Path) -> Result<SessionPolicy, PolicyError> {
     if !p.is_absolute() {
         return Err(PolicyError::NotAbsolute);
     }
