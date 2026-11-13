@@ -646,7 +646,7 @@ mod tests {
     fn a_clear_arriving_while_another_holds_the_lock_runs_nothing_and_is_too_soon_after() {
         let d = scratch("race");
         let p = paths(&d, false);
-        let place = place(&d);
+        let here = place(&d);
         let t = crate::probe::unix_now();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
@@ -661,12 +661,12 @@ mod tests {
         entered_rx.recv().unwrap();
         // a second request for the same site, at the same moment: it runs nothing
         let mut idle = Fake::new();
-        assert!(customer_clear_at(&place, &p, CODE, &mut idle, t).is_err());
+        assert!(customer_clear_at(&here, &p, CODE, &mut idle, t).is_err());
         assert!(idle.ran.is_empty());
         go_tx.send(()).unwrap();
         assert_eq!(first.join().unwrap().unwrap().exit(), 0);
         // and once the first is done it is too soon, judged from the journal the first wrote
-        let err = customer_clear_at(&place, &p, CODE, &mut idle, t).unwrap_err();
+        let err = customer_clear_at(&here, &p, CODE, &mut idle, t).unwrap_err();
         assert!(err.starts_with(TOO_SOON), "{err}");
         assert!(idle.ran.is_empty());
     }
