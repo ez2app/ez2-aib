@@ -144,6 +144,6 @@ kw '    text::check(reason, text::SE_SIGN_MAX).map_err(KeyError::Reason)?;' \
    a_bad_reason_or_binding_is_refused_before_the_device_is_asked
 # KW7 (macOS) the registered check ignores the key id
 km '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id)?;' \
-   '        let (_, public) = self.keys.first()?; // knife' \
+   '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id || !key_id.is_empty())?; // knife' \
    a_registered_key_verifies_only_its_own_signature
 echo "aib-approve knives: all bit"
