@@ -37,6 +37,9 @@ pub enum KeyKind {
     /// The key that signs time-window grants: Touch ID or the login password (1.x
     /// GRANT_KEY, the only key allowed the password).
     Grant,
+    /// The root that signs every entry of the trusted-key registry
+    /// (DECISION-hardware-signed-registry): Touch ID with the fingers enrolled now.
+    RegistryRoot,
 }
 
 impl KeyKind {
@@ -44,13 +47,15 @@ impl KeyKind {
         match self {
             KeyKind::Signing => "signing",
             KeyKind::Grant => "grant",
+            KeyKind::RegistryRoot => "registry_root",
         }
     }
 
-    fn parse(s: &str) -> Option<KeyKind> {
+    pub(crate) fn parse(s: &str) -> Option<KeyKind> {
         match s {
             "signing" => Some(KeyKind::Signing),
             "grant" => Some(KeyKind::Grant),
+            "registry_root" => Some(KeyKind::RegistryRoot),
             _ => None,
         }
     }
