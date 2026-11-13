@@ -3598,6 +3598,14 @@ jobs:
           ck customer.rs '            Request::PhpReload | Request::CacheFlush => Operation::Edit,' \
              '            Request::PhpReload => Operation::Edit, Request::CacheFlush => Operation::Publish, // knife' \
              a_role_gives_what_the_table_says_and_no_more
+          # SS1 the customer ssh cell probes a port other than 2000+ct
+          ck isolation.rs '        let port = site::customer_ssh_port(*ct).ok_or(Error::CtId(*ct))?;' \
+             '        let port = site::customer_ssh_port(*ct + 1).ok_or(Error::CtId(*ct))?; // knife' \
+             i6_a_site_with_customer_ssh_gets_one_public_open_cell_on_2000_plus_ct
+          # SS2 one source may expect the same target both open and blocked
+          ck isolation.rs '                && x.expect != c.expect' \
+             '                && x.expect != c.expect && false // knife' \
+             i6_a_site_with_customer_ssh_gets_one_public_open_cell_on_2000_plus_ct
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
