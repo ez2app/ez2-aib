@@ -93,6 +93,7 @@ fn long(ps: &Paths, p: &Fake, exclusive: bool) -> Outcome {
             exclusive,
             priority: false,
             cwd: Some("/x".into()),
+            expect: None,
         },
     )
 }
