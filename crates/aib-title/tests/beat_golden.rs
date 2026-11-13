@@ -4,7 +4,9 @@
 //! tests/fixtures/beat-golden.json holds what the Python gave for every case (function,
 //! arguments, answer); it was written once from the frozen module, with
 //! `seat_address.label_of` replaced by the seat's `_label` field so the label path is
-//! driven from the table. Nothing here runs Python. When the Python and this module part,
+//! driven from the table. Nothing here runs Python. tests/fixtures/README.md records the
+//! frozen file's git blob, the Python version and the command that writes the table
+//! again. When the Python and this module part,
 //! the case says which function, which arguments and both answers.
 
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
