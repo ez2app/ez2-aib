@@ -183,7 +183,8 @@ pub fn customer_clear<R: Runner>(
 }
 
 /// [`customer_clear`] at the time `now`: a clear of the same site less than
-/// [`MIN_GAP_S`] after the last one is refused ([`TOO_SOON`]) before anything runs.
+/// [`MIN_GAP_S`] after the last one is refused ([`TOO_SOON`]) before anything runs. The
+/// gap is judged under the host lock, from the journals as they are then.
 fn customer_clear_at<R: Runner>(
     place: &opstore::OpPlace,
     paths: &HostPaths,
@@ -210,12 +211,8 @@ fn customer_clear_at<R: Runner>(
         .cloned()
         .ok_or_else(|| format!("site_unknown: {code} has no name"))?;
     let on = crate::sitecreatecmd::target(&domain);
-    let lasts = opstore::last_entries(&place.ops_dir)?;
-    if let Some(left) = wait_left(&lasts, &on, now) {
-        return Err(format!(
-            "{TOO_SOON}: {code} was cleared less than {MIN_GAP_S}s ago; again in {left}s"
-        ));
-    }
+    let ops_dir = place.ops_dir.clone();
+    let gate_on = on.clone();
     opstore::run_op_prepared(
         place,
         COMMAND,
@@ -223,6 +220,15 @@ fn customer_clear_at<R: Runner>(
         opstore::BY_CUSTOMER_KEY,
         now,
         move || {
+            // under the host lock, so a clear that went through between this request's
+            // arrival and the lock is in the journals read here (c477a L1): two requests
+            // for one site cannot both pass the gap by looking before either wrote
+            let lasts = opstore::last_entries(&ops_dir)?;
+            if let Some(left) = wait_left(&lasts, &gate_on, now) {
+                return Err(format!(
+                    "{TOO_SOON}: {code} was cleared less than {MIN_GAP_S}s ago; again in {left}s"
+                ));
+            }
             let plan = json!({ "command": COMMAND, "domain": domain, "site": spec.code });
             Ok(Some((plan, (spec, record, runner))))
         },
@@ -254,6 +260,9 @@ mod tests {
         plugin_active: bool,
         purge_fails: bool,
         cf_http: u16,
+        /// Set in the test that holds the lock: `run` tells it has reached the WordPress
+        /// flush (under the lock) and waits there until told to go on.
+        hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     }
 
     impl Fake {
@@ -266,6 +275,7 @@ mod tests {
                 plugin_active: true,
                 purge_fails: false,
                 cf_http: 200,
+                hold: None,
             }
         }
         fn wp_calls(&self) -> Vec<String> {
@@ -282,6 +292,10 @@ mod tests {
             self.ran.push(argv.to_vec());
             let line = argv.join(" ");
             if line.ends_with(" cache flush") {
+                if let Some((entered, go)) = &self.hold {
+                    entered.send(()).unwrap();
+                    go.recv().unwrap();
+                }
                 return if self.wp_fails {
                     Err("wp failed".to_owned())
                 } else {
@@ -626,5 +640,34 @@ mod tests {
             wait_left(&[other], "domain:other.example.org", t + 1),
             Some(MIN_GAP_S - 1)
         );
+    }
+
+    #[test]
+    fn a_clear_arriving_while_another_holds_the_lock_runs_nothing_and_is_too_soon_after() {
+        let d = scratch("race");
+        let p = paths(&d, false);
+        let place = place(&d);
+        let t = crate::probe::unix_now();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        let dir = d.clone();
+        let first = std::thread::spawn(move || {
+            let (place, p2) = (place(&dir), paths(&dir, false));
+            let mut held = Fake::new();
+            held.hold = Some((entered_tx, go_rx));
+            customer_clear_at(&place, &p2, CODE, &mut held, t)
+        });
+        // the first clear is under the lock, at its WordPress step
+        entered_rx.recv().unwrap();
+        // a second request for the same site, at the same moment: it runs nothing
+        let mut idle = Fake::new();
+        assert!(customer_clear_at(&place, &p, CODE, &mut idle, t).is_err());
+        assert!(idle.ran.is_empty());
+        go_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap().exit(), 0);
+        // and once the first is done it is too soon, judged from the journal the first wrote
+        let err = customer_clear_at(&place, &p, CODE, &mut idle, t).unwrap_err();
+        assert!(err.starts_with(TOO_SOON), "{err}");
+        assert!(idle.ran.is_empty());
     }
 }

@@ -5155,6 +5155,6 @@ jobs:
              '    next.checked_sub(now).filter(|left| *left > 0 && false) // knife' \
              a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
           # CF12 (33e28 L1) the gap is not asked before the clear runs
-          hk cachecmd.rs '    if let Some(left) = wait_left(&lasts, &on, now) {' \
-             '    if let Some(left) = wait_left(&lasts, &on, now).filter(|_| false) { // knife' \
+          hk cachecmd.rs '            if let Some(left) = wait_left(&lasts, &gate_on, now) {' \
+             '            if let Some(left) = wait_left(&lasts, &gate_on, now).filter(|_| false) { // knife' \
              a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
