@@ -58,12 +58,10 @@ WHYS = {
     "reopen-empty": Q.REOPEN_WHY_PREFIX,
     "superseded": "superseded",
     "done_12h": Q.AUTO_ARCHIVE_WHY,
-    "ack_12h": Q.ACK_ARCHIVE_WHY,             # B11(1ced7 11-10):ack 已讀滿 12 小時由系統備存
 }
 EVIDENCES = ("none", "file", "pr", "text")
 FLAGS = ("plain", "global", "im")
-NOT_COVERED = ["evidence=commit(要 git 倉)", "evidence=回信 id(要別席佇列)", "rev 檢查只列四種(見 rev_cases)",
-               "kind=ack 由 record --status read 直接落成已讀,不經轉移(見 test-dm-ack-1ced7-1110.py)"]
+NOT_COVERED = ["evidence=commit(要 git 倉)", "evidence=回信 id(要別席佇列)", "rev 檢查只列四種(見 rev_cases)"]
 
 
 # 暫存目錄(_Env)的路徑:Mac 的 /var/folders/… 一定超過 40 字 ⇒ 本來就記 <str>;Linux 的 /tmp/aib-dm-spec-xxxxxxxx/…
