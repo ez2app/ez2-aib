@@ -454,11 +454,26 @@ pub fn stage_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Refu
 
 /// Read a staged copy back and check it is still the bytes with this sha256.
 pub fn read_staged(path: &Path, sha256: &str, limit: u64) -> Result<Vec<u8>, Refused> {
-    let meta = fs::symlink_metadata(path).map_err(|_| refused("staged_missing", 0))?;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    // open without following a link, then check what was opened (ebb36 T136-3b N3)
+    let missing = || refused("staged_missing", 0);
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| missing())?;
+    let meta = f.metadata().map_err(|_| missing())?;
     if !meta.is_file() || meta.len() > limit {
-        return Err(refused("staged_missing", 0));
+        return Err(missing());
     }
-    let bytes = fs::read(path).map_err(|_| refused("staged_missing", 0))?;
+    let mut bytes = Vec::new();
+    f.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| missing())?;
+    if bytes.len() as u64 > limit {
+        return Err(missing());
+    }
     if sha256_hex(&bytes) != sha256 {
         return Err(refused("staged_hash_changed", 0));
     }

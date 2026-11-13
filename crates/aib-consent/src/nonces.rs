@@ -10,7 +10,7 @@
 //! handler. Old files can be removed with [`FileNonces::prune`] once every proof that
 //! could carry them has expired (the proof's own expiry is checked before the nonce).
 
-use aib_approve::proof::NonceLedger;
+use aib_approve::proof::{NonceLedger, ISSUE_SKEW_S};
 use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -62,11 +62,16 @@ impl FileNonces {
         &self.dir
     }
 
-    /// Remove nonce files last changed more than `age_s` seconds before `now_s` (unix
-    /// seconds). Only call with an age longer than any proof's lifetime. Returns how many
-    /// were removed; files it cannot read are left.
-    pub fn prune(&self, age_s: u64, now_s: i64) -> io::Result<usize> {
-        let cut = now_s.saturating_sub(i64::try_from(age_s).unwrap_or(i64::MAX));
+    /// Remove nonce files that no proof can still use. `lifetime_s` is the longest proof
+    /// lifetime aib-approve accepts (its `TooLongLived` check; wave2 41b954ce
+    /// `max_lifetime_s`, `nonce_keep_s` once it exists). A file is kept for `lifetime_s +
+    /// ISSUE_SKEW_S` after it was made: a proof consumed at `c` may carry `issued` up to
+    /// `c + ISSUE_SKEW_S`, so it expires by `c + ISSUE_SKEW_S + lifetime` (ebb36 T136-3b L1).
+    /// The proof's own expiry is checked before the nonce, so a removed file cannot let an
+    /// expired proof through. Returns how many were removed; files it cannot read are left.
+    pub fn prune(&self, lifetime_s: u64, now_s: i64) -> io::Result<usize> {
+        let keep = lifetime_s.saturating_add(ISSUE_SKEW_S);
+        let cut = now_s.saturating_sub(i64::try_from(keep).unwrap_or(i64::MAX));
         let mut n = 0;
         for e in fs::read_dir(&self.dir)?.flatten() {
             let name = e.file_name();
@@ -88,13 +93,18 @@ impl NonceLedger for FileNonces {
         if !nonce_ok(nonce) {
             return false;
         }
-        fs::OpenOptions::new()
+        let made = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(nix::libc::O_NOFOLLOW)
-            .open(self.dir.join(nonce))
-            .is_ok()
+            .open(self.dir.join(nonce));
+        let Ok(f) = made else { return false };
+        // best effort, so a power cut right after does not lose the entry (ebb36 T136-3b N1);
+        // the nonce is taken either way
+        let _ = f.sync_all();
+        let _ = fs::File::open(&self.dir).and_then(|d| d.sync_all());
+        true
     }
 }
 
@@ -204,8 +214,27 @@ mod tests {
             .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
             .unwrap_or(0);
         assert_eq!(a.prune(3600, now).expect("prune"), 0);
-        assert_eq!(a.prune(0, now + 10).expect("prune"), 1);
+        assert_eq!(
+            a.prune(0, now + ISSUE_SKEW_S as i64 + 10).expect("prune"),
+            1
+        );
         assert!(t.0.join("note.txt").exists());
         assert!(a.consume(&"e".repeat(32)), "pruned: may be used again");
+    }
+
+    // knife: a file must outlive the proof by the issue skew (ebb36 T136-3b L1)
+    #[test]
+    fn prune_keeps_a_nonce_until_its_latest_proof_has_expired() {
+        let t = tmp("edge");
+        let mut a = FileNonces::open(&t.0).expect("open");
+        let n = "f".repeat(32);
+        assert!(a.consume(&n));
+        let c = fs::metadata(t.0.join(&n)).expect("meta").mtime();
+        let life = 1800;
+        // the latest proof with this nonce expires at c + skew + life
+        let last = c + ISSUE_SKEW_S as i64 + life as i64;
+        assert_eq!(a.prune(life, last).expect("prune"), 0);
+        assert_eq!(a.prune(life, c + life as i64 + 1).expect("prune"), 0);
+        assert_eq!(a.prune(life, last + 1).expect("prune"), 1);
     }
 }

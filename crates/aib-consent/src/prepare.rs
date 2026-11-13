@@ -192,7 +192,8 @@ impl Ready {
                     )?),
                 }))
             }
-            _ => Ok(None),
+            // these run their argv; a new kind that copies must be added above (ebb36 N2)
+            Kind::Aib | Kind::ClaudePlugin => Ok(None),
         }
     }
 }
