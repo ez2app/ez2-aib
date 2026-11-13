@@ -178,7 +178,7 @@ fn a_long_message_is_read_from_the_relay_folder_only() {
 fn close_after_the_dm_changed_since_take_is_refused() {
     let t = T::new();
     t.put("delivered", json!({}));
-    take(&t.s, &t.ctx(), SEAT, ID, ME, None).expect("take").out;
+    take(&t.s, &t.ctx(), SEAT, ID, ME, None).expect("take");
     let mut it = t.item();
     it.insert("rev".into(), json!(4));
     it.insert("msg".into(), json!("改過的內容"));
