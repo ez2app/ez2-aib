@@ -661,6 +661,64 @@ jobs:
           ak '        let after_s = after_s.max(ALIVE_MIN_AFTER_S);' \
             '        let after_s = after_s.max(ALIVE_MIN_AFTER_S * 0); // knife' \
             the_threshold_never_goes_below_the_minimum
+      # A11-2 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §8 / §9): aibd
+      # who-is-alive. Each knife keeps the build warning-free and must turn its
+      # own test red.
+      - name: A11-2 alive knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          lk() { python3 -I scripts/knife.py crates/aibd/src/alive.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --test alive "$3"; }
+          # L1 a CLI that exits non-zero counts as closed on purpose
+          python3 -I scripts/knife.py crates/aibd/src/alive.rs \
+            '        "root_exit" if exit_code == Some(0) => EndKind::OnPurpose,' \
+            '        "root_exit" if exit_code.is_some() || exit_code.is_none() => EndKind::OnPurpose, // knife' \
+            --expect-fail alive::tests::end_kinds \
+            -- cargo test -p aibd --locked --lib alive::tests::end_kinds
+          # L2 the threshold range is not enforced
+          python3 -I scripts/knife.py crates/aibd/src/alive.rs \
+            '        if !(aib_store::ALIVE_MIN_AFTER_S..=MAX_AFTER_S).contains(&p.alive_after_s) {' \
+            '        if false && !(aib_store::ALIVE_MIN_AFTER_S..=MAX_AFTER_S).contains(&p.alive_after_s) { // knife' \
+            --expect-fail alive::tests::policy_defaults_and_limits \
+            -- cargo test -p aibd --locked --lib alive::tests::policy_defaults_and_limits
+          # L3 a bad revive-policy.json quietly runs on defaults
+          python3 -I scripts/knife.py crates/aibd/src/alive.rs \
+            '            Ok(t) => RevivePolicy::parse(&t).map_err(|e| format!("{REVIVE_POLICY_FILE}: {e}")),' \
+            '            Ok(t) => Ok(RevivePolicy::parse(&t).unwrap_or_default()), // knife' \
+            --expect-fail a_bad_revive_policy_stops_the_start \
+            -- cargo test -p aibd --locked --test seat_sessions a_bad_revive_policy_stops_the_start
+          # L4 closed on purpose is still followed (and later alerted)
+          lk '            EndKind::OnPurpose => self.round_with(live, vec![seat.to_string()]),' \
+            '            EndKind::OnPurpose => self.round_with(live, Vec::new()), // knife' \
+            a_seat_closed_on_purpose_is_forgotten
+          # L5 the end time is not stamped (the threshold counts from an older time)
+          lk '                with.push(seat.to_string());' \
+            '                with.retain(|s| s != seat); // knife' \
+            coming_back_before_the_threshold_cancels_and_the_newest_end_counts
+          # L6 a restart does not give seats alive at the stop a fresh threshold
+          lk '        live.extend(fresh);' \
+            '        live.extend(fresh.into_iter().take(0)); // knife' \
+            a_restart_retimes_seats_alive_at_the_stop_and_reports_what_was_already_due
+          # L7 alerts switched off still say notify
+          lk '                    "notify": self.policy.alive_alert,' \
+            '                    "notify": true, // knife' \
+            with_alerts_off_the_outage_is_only_recorded
+          # L8 auto revive on by default
+          lk '            let auto = if self.policy.auto_revive {' \
+            '            let auto = if !self.policy.auto_revive {' \
+            auto_revive_is_off_by_default_and_not_available_when_on
+          # L9 the timer thread is never started
+          lk '        if self.no_thread {' \
+            '        if self.no_thread || true { // knife' \
+            the_timer_thread_reports_a_seat_when_it_falls_due
+          # L10 a session's end never reaches who-is-alive
+          python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+            '            a.on_end(seat, crate::alive::end_kind(by, rec.exit_code), others);' \
+            '            let _ = (a, seat, others); // knife' \
+            --expect-fail a_seat_session_end_is_recorded_for_who_is_alive \
+            -- cargo test -p aibd --locked --test seat_sessions a_seat_session_end_is_recorded_for_who_is_alive
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).

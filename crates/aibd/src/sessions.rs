@@ -474,6 +474,8 @@ pub struct Sessions {
     policy: Mutex<Option<Arc<SessionPolicy>>>,
     /// Set once by the server ([`Sessions::set_hooks`]); unset = defaults.
     hooks: std::sync::OnceLock<Hooks>,
+    /// A11 who-is-alive, set once by the server ([`Sessions::set_alive`]).
+    alive: std::sync::OnceLock<Arc<crate::alive::Alive>>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -501,6 +503,19 @@ fn row_of(s: &Session) -> SessionRow {
         stop_reason: s.stop.as_ref().and_then(|v| v.reason.clone()),
         updated_at: now_rfc3339(),
     }
+}
+
+/// Seats of the running sessions in `g`, once each.
+fn live_seats_of(g: &Inner) -> Vec<String> {
+    let mut v: Vec<String> = g
+        .live
+        .values()
+        .filter(|e| e.rec.state == "running")
+        .filter_map(|e| e.rec.seat_id.clone())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -583,8 +598,19 @@ impl Sessions {
             rejections: allowlist::RejectLog::default(),
             policy: Mutex::new(None),
             hooks: std::sync::OnceLock::new(),
+            alive: std::sync::OnceLock::new(),
             me: me.clone(),
         })
+    }
+
+    /// A11: tell `alive` when a seat's session starts and ends. Set once.
+    pub fn set_alive(&self, a: Arc<crate::alive::Alive>) {
+        let _ = self.alive.set(a);
+    }
+
+    /// Seats with a running session now (A11; reads only memory).
+    pub fn live_seats(&self) -> Vec<String> {
+        live_seats_of(&lock(&self.inner))
     }
 
     /// The M1 policy the queue re-checks a waiting session against when it
@@ -956,6 +982,9 @@ impl Sessions {
             }),
         );
         tracing::info!(session = %id, pid = rec.pid, "session started");
+        if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
+            a.on_start(seat, live_seats_of(&g));
+        }
         if let Some(out) = output {
             // after `session.started`, so the first line comes after it on
             // the global cursor; the readers never take `inner`
@@ -1195,6 +1224,15 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
+            let others: Vec<String> = g
+                .live
+                .iter()
+                .filter(|(k, e)| k.as_str() != id && e.rec.state == "running")
+                .filter_map(|(_, e)| e.rec.seat_id.clone())
+                .collect();
+            a.on_end(seat, crate::alive::end_kind(by, rec.exit_code), others);
+        }
         tracing::info!(session = %id, state = rec.state, ended_by = by,
             stop = stop.status.as_str(), survivors = stop.survivors.len(),
             candidates = stop.candidates.count, orphan_extra = stop.candidates.orphan_extra,
@@ -1755,6 +1793,11 @@ pub fn now_rfc3339() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     rfc3339(d.as_secs() as i64, d.subsec_millis())
+}
+
+/// UTC RFC 3339 of whole Unix seconds (A11 alive events).
+pub(crate) fn rfc3339_of_unix(secs: i64) -> String {
+    rfc3339(secs, 0)
 }
 
 fn rfc3339(secs: i64, ms: u32) -> String {

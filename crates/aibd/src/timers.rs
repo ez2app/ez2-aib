@@ -173,12 +173,20 @@ pub static STARTUP_LOCK_WAIT: Timer = Timer::operation(
     "at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614)",
 );
 
+pub static ALIVE_DUE_WAIT: Timer = Timer::operation(
+    "alive.due_wait",
+    secs(60),
+    secs(86_400),
+    "only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SESSION_REJECT_FLUSH,
     &STARTUP_LOCK_WAIT,
+    &ALIVE_DUE_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
