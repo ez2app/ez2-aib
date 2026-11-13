@@ -19,7 +19,11 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
     `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, the proxy names,
     `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`,
     `CLAUDE_CODE_GIT_BASH_PATH`, `SSH_AUTH_SOCK`. An existing policy file is not
-    rewritten: add the names by hand.
+    rewritten: add the names by hand. A listed name passes only the value aibd itself
+    has: init reads the shell it runs in, so an aibd started another way (a login
+    item, launchd) needs the same values in its own environment. On macOS and Linux
+    names have case, so `HTTP_PROXY` and `http_proxy` are two entries (curl and git
+    read only the lower-case one) and the policy keeps both.
   - with `AIBD_SESSION_POLICY` unset, aibd reads `session-policy.json` from its data
     folder (the file `aibd ctl policy init` writes) on every platform; the variable
     still wins, and a bad default file, or one that cannot be looked at, stops start

@@ -550,7 +550,9 @@ pub fn parse(text: &str) -> Result<SessionPolicy, PolicyError> {
         if !crate::sessions::env_key_ok(&k) || crate::sessions::env_key_denied(&k) {
             return Err(PolicyError::BadEnv(k));
         }
-        if !env.iter().any(|e| e.eq_ignore_ascii_case(&k)) {
+        // same-name test as the child's env (043dd T80 r2 N1): on POSIX `http_proxy` and
+        // `HTTP_PROXY` are two names and both stay; Windows has one
+        if !env.iter().any(|e| env_name_eq(e, &k)) {
             env.push(k);
         }
     }
@@ -593,12 +595,13 @@ pub const PREFILL_ENV: &[&str] = &[
     "SSH_AUTH_SOCK",
 ];
 
-/// The [`PREFILL_ENV`] names `is_set` says are set; of names that differ only in case
-/// the first set one (the policy file keeps one name per case-insensitive group).
+/// The [`PREFILL_ENV`] names `is_set` says are set. On POSIX both spellings of a proxy
+/// name are kept (curl and git read only the lower-case `http_proxy`); on Windows,
+/// where names have no case, the first one.
 pub fn prefill_env(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for &k in PREFILL_ENV {
-        if is_set(k) && !out.iter().any(|o| o.eq_ignore_ascii_case(k)) {
+        if is_set(k) && !out.iter().any(|o| env_name_eq(o, k)) {
             out.push(k);
         }
     }
@@ -894,7 +897,8 @@ mod tests {
         .unwrap();
         assert_eq!(ok.programs.len(), 1);
         assert_eq!(ok.programs[0].signer.as_deref(), Some("Q6L2SF6YDW"));
-        assert_eq!(ok.env, ["MY_VAR", "LANG"]);
+        // POSIX names have case: both stay (043dd T80 r2 N1)
+        assert_eq!(ok.env, ["MY_VAR", "my_var", "LANG"]);
         assert!(!ok.interpreters_ok);
         assert_eq!(parse("{}").unwrap(), SessionPolicy::default());
         let bad = |t: &str| parse(t).unwrap_err();
@@ -1137,9 +1141,14 @@ mod tests {
         assert!(parse(&t).is_ok(), "{t}");
         assert!(prefill_env(|_| false).is_empty());
         let set = ["HTTPS_PROXY", "https_proxy", "SSH_AUTH_SOCK", "UNRELATED"];
-        assert_eq!(
-            prefill_env(|k| set.contains(&k)),
-            ["HTTPS_PROXY", "SSH_AUTH_SOCK"]
-        );
+        let want: &[&str] = if cfg!(windows) {
+            &["HTTPS_PROXY", "SSH_AUTH_SOCK"]
+        } else {
+            &["HTTPS_PROXY", "https_proxy", "SSH_AUTH_SOCK"]
+        };
+        assert_eq!(prefill_env(|k| set.contains(&k)), want);
+        // what init writes is what the file keeps
+        let t = serde_json::json!({ "env": prefill_env(|k| set.contains(&k)) }).to_string();
+        assert_eq!(parse(&t).unwrap().env, want);
     }
 }
