@@ -263,10 +263,13 @@ fn a_refused_proof_does_not_use_up_the_nonce() {
     );
 }
 
+/// One edit to a binding, for the mismatch table.
+type Change = Box<dyn Fn(&mut Binding)>;
+
 #[test]
 fn a_proof_for_anything_else_is_refused() {
     let want = binding(Category::DeleteData);
-    let cases: Vec<(&str, Box<dyn Fn(&mut Binding)>)> = vec![
+    let cases: Vec<(&str, Change)> = vec![
         ("category", Box::new(|b| b.category = Category::Payment)),
         ("actor", Box::new(|b| b.actor = "f457/c477a".into())),
         (
