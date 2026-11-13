@@ -597,9 +597,8 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
 /// DECISION-23: with lineage on and nothing left, macOS still does not say
 /// `clean` (no proven containment): `unverified` with `observed_clean`, or
 /// `candidates_unreadable` if launchd started a same-user agent meanwhile.
-/// `tree-stable` has no intermediate that exits at once: with one, lineage is
-/// honestly incomplete whenever it exits before its unique id is read (H2),
-/// which under a parallel test run is most of the time.
+/// `tree-stable` has no intermediate that exits at once (that case:
+/// `with_lineage_an_intermediate_that_exits_at_once_is_not_lineage_unavailable`).
 #[cfg(target_os = "macos")]
 #[test]
 fn with_lineage_a_clean_looking_cancel_is_observed_clean_never_clean() {
@@ -727,6 +726,107 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     assert_eq!(rep.clean_status(), "unverified");
 }
 
+/// DECISION-lineage-gone-unread (c477a 11-13): a recorded process gone before
+/// its unique id was read. `ghost` is recorded (as a scan would) but is not in
+/// the process table, so the lineage pass finds it gone. `orphan` (optional)
+/// is a same-user launchd child newer than the root whose creator (2000) is
+/// a dead, unrecorded process newer than the root: what such a ghost leaves
+/// behind. It is only in the fake table, never in the real one, so it is
+/// never signalled; the candidate check then cannot rule it out.
+fn gone_unread_cancel(
+    session: &str,
+    orphan: Option<u32>,
+    root_readable: bool,
+) -> aibd::platform::tree::Report {
+    use aib_sys::fake::FakeProcessInfo;
+    let me = std::process::id();
+    let f = Arc::new(FakeProcessInfo::new());
+    f.add(me, 1, 10, 1, 1);
+    let l = Arc::new(Lineage::from_selfcheck(f.clone(), Ok(())));
+    let mut h = spawn_tree(&SpawnSpec {
+        lineage: Some(l),
+        inject: None,
+        ..spec_watch("complete", session, false)
+    })
+    .unwrap();
+    let root = h.root_pid();
+    let _ = lines(&mut h);
+    h.wait_root(Duration::from_secs(10)).unwrap();
+    // the root's unique id: read by the next lineage pass (it was not in the table at spawn)
+    if root_readable {
+        f.add(root, me, 1000, 10, 50);
+    }
+    // above Linux PID_MAX_LIMIT (4194304) and macOS PID_MAX (99999): never a real process
+    let ghost = 4_194_305;
+    h.record_for_test(ghost, 60);
+    if let Some(o) = orphan {
+        f.add(o, 1, 3000, 2000, 70);
+    }
+    h.cancel(Duration::from_millis(300)).unwrap()
+}
+
+/// Knife for `adopt`'s `Gone ⇒ gone_unread` (put `complete = false` back and
+/// this is `lineage_unavailable` again, the slot never comes back).
+#[test]
+fn a_recorded_process_gone_before_its_unique_id_was_read_is_not_lineage_unavailable() {
+    let rep = gone_unread_cancel("s-gone-unread", None, true);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
+    assert!(rep.candidates_complete, "{rep:?}");
+    assert_eq!(rep.orphan_candidates_extra, 0, "{rep:?}");
+    assert_eq!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
+}
+
+/// Knife for `lineage_pass`'s `gone_unread ⇒ unread_gone`: the ghost's
+/// orphan is found only by the widened check (its creator is no recorded
+/// process and not launchd), so without it this would be `observed_clean`.
+#[test]
+fn an_orphan_of_a_process_gone_before_its_unique_id_was_read_keeps_the_cancel_from_clean() {
+    let orphan = 4_194_306; // above any real pid, like `ghost`
+    let rep = gone_unread_cancel("s-gone-unread-orphan", Some(orphan), true);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert_eq!(rep.orphan_candidates_extra, 1, "{rep:?}");
+    assert!(rep.candidates_unreadable.contains(&orphan), "{rep:?}");
+    assert_ne!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// a9136 (DECISION-lineage-gone-unread): the root itself never had its unique
+/// id read (gone or unreadable). Nothing can be linked to it, so the widened
+/// check cannot run: still never `observed_clean` (`candidates_incomplete`).
+#[test]
+fn a_root_whose_unique_id_was_never_read_is_never_observed_clean() {
+    let rep = gone_unread_cancel("s-gone-unread-root", None, false);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(!rep.candidates_complete, "{rep:?}");
+    assert_eq!(
+        rep.unverified_reason(),
+        Some("candidates_incomplete"),
+        "{rep:?}"
+    );
+    assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// The gate_replay G1 flake on the real OS: `tree` has an intermediate that
+/// forks and exits at once, so it is often gone before its unique id is read
+/// (before: `lineage_unavailable` most of the time under a parallel run, and
+/// the session's slot was never released). Now never `lineage_unavailable`.
+#[cfg(target_os = "macos")]
+#[test]
+fn with_lineage_an_intermediate_that_exits_at_once_is_not_lineage_unavailable() {
+    let mut h = spawn_tree(&spec_lineage("tree", "s-tree-lineage-mid")).unwrap();
+    let v = first_line(&mut h);
+    assert_eq!(v["type"], "ready", "{v}");
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
+    let why = rep.unverified_reason();
+    assert!(
+        matches!(why, Some("observed_clean" | "candidates_unreadable")),
+        "{why:?} {rep:?}"
+    );
+}
+
 /// bb7dc #544 High: a start that fails after `spawn()` succeeded. The shell
 /// starts a long `sleep` in its group and waits for it, so without a stop
 /// the root would live ~60 s.
@@ -795,4 +895,111 @@ fn a_system_failure_after_spawn_stops_the_tree() {
 #[test]
 fn a_fork_watch_failure_after_spawn_stops_the_tree() {
     a_late_failure_is_stopped("s-fail-watch", aibd::platform::tree::Inject::ForkWatch);
+}
+
+/// G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): a program that
+/// exits at once, recorded 300 ms late, is still recorded on macOS: it is
+/// held before exec until it is. Without the hold it is gone by then.
+#[cfg(target_os = "macos")]
+fn held_spec(session: &str, program: &str, args: &[&str]) -> SpawnSpec {
+    SpawnSpec {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).into()).collect(),
+        env: vec![],
+        discard_output: true,
+        inject: Some(aibd::platform::tree::Inject::RecordLate),
+        // a63ab 11-10 ruling A: with the watcher alone, a middle process that
+        // forks and exits at once is missed about 1 run in 3 under a full
+        // suite (fork_watch_miss); M1 lineage links the grandchild back to
+        // the recorded middle, as a real session does.
+        lineage: Some(lineage()),
+        ..spec_watch("unused", session, true)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_instant_program_is_recorded_before_it_can_exit() {
+    let mut h = spawn_tree(&held_spec("s-held-true", "/usr/bin/true", &[])).unwrap();
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+}
+
+/// For a failure message only: the process line with its environment
+/// (`ps -E`), to tell "not a candidate" from "read as not ours".
+#[cfg(target_os = "macos")]
+fn ps_env(pid: u32) -> String {
+    Command::new("ps")
+        .args([
+            "-wwE",
+            "-o",
+            "pid,ppid,stat,command",
+            "-p",
+            &pid.to_string(),
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// 043dd / bb7dc / Codex counterexample: the root forks at once, the child
+/// clears the environment, leaves the session (`setsid`) and execs a long
+/// sleep, the root exits. Held from before exec, the root is recorded. The
+/// sleep is stopped when the watcher saw the middle process; when it did
+/// not, it is reported as an unreadable candidate and the cancel is not
+/// observed_clean (never silently left).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
+    let dir = std::env::temp_dir().join(format!("aibd-held-gc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("pid");
+    let script = format!(
+        "( /usr/bin/env -i /usr/bin/perl -MPOSIX -e \
+         'POSIX::setsid(); open(F, \">{f}\"); print F $$; close F; exec q(/bin/sleep), 30' & ) ; exit 0",
+        f = f.display()
+    );
+    let mut h = spawn_tree(&held_spec("s-held-gc", "/bin/sh", &["-c", &script])).unwrap();
+    let t = std::time::Instant::now();
+    let gc = loop {
+        if let Some(p) = std::fs::read_to_string(&f)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            break p;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no grandchild pid");
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let rep = h.cleanup(Duration::from_millis(500)).unwrap();
+    let left = still_running(&[gc]);
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+    // a63ab 11-10 ruling B (A measured 30/50 on Mac Pro 13): the grandchild
+    // clears its environment and execs after its creator exited, so neither
+    // lineage (parent_unique = 1) nor the marker can tie it to the session;
+    // when the fork watcher missed the middle process it is an unreadable
+    // candidate. That is never signalled; the cancel must then say so and
+    // never claim observed_clean. Either way nothing is left unaccounted.
+    if !left.is_empty() {
+        assert!(
+            rep.candidates_unreadable.contains(&gc),
+            "grandchild {gc} left running and not reported: {rep:?}\nps: {}",
+            ps_env(gc)
+        );
+        assert_eq!(
+            rep.unverified_reason(),
+            Some("candidates_unreadable"),
+            "a left grandchild must not read as observed_clean: {rep:?}"
+        );
+    }
 }
