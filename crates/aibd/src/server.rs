@@ -24,6 +24,35 @@ pub enum StartError {
     Integrity,
 }
 
+/// How long a start waits for `aibd.lock` before it says `AlreadyRunning`.
+///
+/// macOS: a program aibd holds between `fork` and `exec` (`aib_sys::held`, #614) keeps copies of
+/// every fd of the process, `aibd.lock` included, until it execs or gives up at
+/// `aib_sys::held::HOLD_LIMIT` (5 s). A restart right after a crash, or a second server in the
+/// same process (the integration tests), would otherwise see the lock taken by a child that is
+/// about to let it go (main 74ec2d39 red: session_queue restart test 3/3 on macOS). So wait out
+/// one hold, plus a margin. A second aibd that really runs is still refused, 6 s later.
+/// Elsewhere nothing is held before exec: no wait.
+#[cfg(target_os = "macos")]
+pub const LOCK_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(aib_sys::held::HOLD_LIMIT as u64 + 1_000);
+#[cfg(not(target_os = "macos"))]
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::ZERO;
+
+/// Take the single-instance lock, retrying every 100 ms for up to [`LOCK_WAIT`].
+async fn instance_lock_waiting(p: &std::path::Path) -> Result<std::fs::File, StartError> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        if let Some(l) = platform::instance_lock(p)? {
+            return Ok(l);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(StartError::AlreadyRunning);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Information handed back to the caller (and tests) once listening.
 #[derive(Debug, Clone)]
 pub struct Started {
@@ -42,8 +71,7 @@ pub async fn run(
     platform::create_private_dir(&dirs.data_dir())?;
     platform::create_private_dir(&run_dir)?;
 
-    let _lock =
-        platform::instance_lock(&run_dir.join("aibd.lock"))?.ok_or(StartError::AlreadyRunning)?;
+    let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
     if let Some(was) = platform::keep_child_zombies() {
         // inherited from whoever started us (SIG_IGN survives exec): without
         // this every group stop would be unverified (ADR 0008 rule 3)
