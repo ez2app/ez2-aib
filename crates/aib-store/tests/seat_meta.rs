@@ -225,6 +225,14 @@ fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
     let db = dir.path().join("aibd.sqlite");
     drop(Store::open(&db).unwrap());
     let c = rusqlite::Connection::open(&db).unwrap();
+    // foreign keys stay on: the parent seat exists, so only the CHECKs decide
+    c.pragma_update(None, "foreign_keys", "ON").unwrap();
+    c.execute(
+        "INSERT INTO seats (seat_id, name, state, created_at, updated_at)
+         VALUES ('seat_a', 'a', 'CREATED', 't', 't')",
+        [],
+    )
+    .unwrap();
     let meta = |seat: Option<&str>, resume: Option<&str>| {
         c.execute(
             "INSERT INTO seat_meta (seat_id, provider, cwd, model_pinned, resume_id, updated_at)
@@ -232,7 +240,11 @@ fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
             rusqlite::params![seat, resume],
         )
     };
-    assert!(meta(Some("seat_a"), Some("")).is_err());
+    let empty = meta(Some("seat_a"), Some(""));
+    assert!(
+        matches!(&empty, Err(e) if e.to_string().contains("CHECK constraint failed")),
+        "{empty:?}"
+    );
     assert!(meta(None, None).is_err());
     assert!(meta(Some("seat_a"), None).is_ok());
     let alive = |cabin: Option<&str>, seats: &str| {

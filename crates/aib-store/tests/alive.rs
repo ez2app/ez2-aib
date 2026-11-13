@@ -207,5 +207,17 @@ fn a_stored_seat_list_that_is_not_strings_is_an_error_not_no_seats() {
     drop(c);
     let s = Store::open(&db).unwrap();
     assert!(s.alive_rows().is_err());
-    assert!(s.alive_round(T0, vec![], vec![], AFTER).is_err());
+    assert!(s
+        .alive_round(T0, live(&[("cab2", vec!["s2"])]), vec![], AFTER)
+        .is_err());
+    // the failed round is rolled back whole: cab2 was not recorded, cab1 not marked
+    let c = rusqlite::Connection::open(&db).unwrap();
+    let rows: Vec<(String, Option<i64>)> = c
+        .prepare("SELECT cabin, alerted_at FROM cabin_alive ORDER BY cabin")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, [("cab1".to_string(), None)]);
 }
