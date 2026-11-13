@@ -12,6 +12,7 @@
 //! Every function returns the JSON object dm_take.py returns (the CLI prints it), with
 //! the full text under `text`.
 
+use std::cell::RefCell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,6 +22,7 @@ use aib_dmq::lock::{Level, TRANSITION_LOCK_TIMEOUT_MS};
 use aib_dmq::norm::{is_dispatch, kind};
 use aib_dmq::rev::{item_rev, IfRev};
 use aib_dmq::spec::{Reason, Status};
+use aib_dmq::transition::Outcome;
 use aib_dmq::util::{py_isspace, py_strip, take_chars, truthy};
 use serde_json::{json, Map, Value};
 
@@ -33,6 +35,28 @@ pub const WAIT_MAX_CHARS: usize = 300;
 pub const RELAY_MAX_BYTES: u64 = 200_000;
 /// dm_queue.TZ_NAME is Asia/Taipei: UTC+8, no daylight time since 1979.
 const TAIPEI_OFFSET_S: i64 = 8 * 3600;
+/// O_NONBLOCK without a libc dependency (the value differs by kernel).
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))
+))]
+const O_NONBLOCK: i32 = 0o4000;
 
 const UNREAD: [&str; 3] = ["queued", "delivered", "hold_human"];
 const CLOSED: [&str; 3] = ["done", "archived", "deleted"];
@@ -49,13 +73,16 @@ pub struct Ctx<'a> {
 }
 
 /// dm_relay.relay_dirs from an environment lookup (AIB_DM_RELAY_DIR, then
-/// `<EZ2_AIB_HOME or $HOME/.ez2-aib>/pending`), each resolved; a folder that does not
-/// exist is left out (no long-message file can be in it).
+/// `<EZ2_AIB_HOME or ~/.ez2-aib>/pending`, `~` being HOME, else USERPROFILE as Python's
+/// expanduser does on Windows), each resolved; a folder that does not exist is left out
+/// (no long-message file can be in it).
 pub fn relay_dirs(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     let nonempty = |k: &str| env(k).filter(|v| !v.is_empty());
-    let home = nonempty("EZ2_AIB_HOME")
-        .map(PathBuf::from)
-        .or_else(|| nonempty("HOME").map(|h| Path::new(&h).join(".ez2-aib")));
+    let home = nonempty("EZ2_AIB_HOME").map(PathBuf::from).or_else(|| {
+        nonempty("HOME")
+            .or_else(|| nonempty("USERPROFILE"))
+            .map(|h| Path::new(&h).join(".ez2-aib"))
+    });
     [
         nonempty("AIB_DM_RELAY_DIR").map(PathBuf::from),
         home.map(|h| h.join("pending")),
@@ -69,6 +96,10 @@ pub fn relay_dirs(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
 /// dm_relay.relay_path_of: the path in a 「長訊已落檔(N 位元組[,來自 @x[ 的背景分身]]),請讀:<path>」
 /// pointer, absolute paths only. The byte count is ASCII digits here (Python's `\d` also
 /// takes other scripts' digits; dm-ctl only writes ASCII).
+///
+/// Known gap: only a `/`-rooted path counts, as in 1.x, so long messages are Unix only.
+/// dm-ctl writes relay files on the Macs; a Windows seat sees the pointer line itself
+/// until a Windows sender exists (drive paths get added here then, with a test).
 pub fn relay_path_of(msg: &str) -> Option<&str> {
     let s = py_strip(msg);
     let rest = s.strip_prefix("長訊已落檔(")?;
@@ -118,13 +149,17 @@ pub fn relay_file_ok(path: &Path, dirs: &[PathBuf]) -> bool {
 }
 
 /// dm_queue._onboard_relay_text: a regular file only, at most RELAY_MAX_BYTES, UTF-8 with
-/// replacement. The type is checked before opening (so a FIFO is never opened and cannot
-/// block) and again on the open file.
+/// replacement. Opened non-blocking on Unix like 1.x (a FIFO swapped in cannot hang the
+/// caller, who holds the seat's transition lock), then checked on the open file.
 fn relay_text(path: &Path) -> Option<String> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(O_NONBLOCK);
     }
-    let f = std::fs::File::open(path).ok()?;
+    let f = o.open(path).ok()?;
     if !f.metadata().ok()?.is_file() {
         return None;
     }
@@ -279,27 +314,66 @@ fn status_of(item: &Map<String, Value>) -> &str {
     item.get("status").and_then(Value::as_str).unwrap_or("")
 }
 
+enum Hold {
+    Got(crate::locks::SeatLock),
+    Timeout,
+    /// No queue folder for this seat: nothing to take (and no folder is made for it).
+    NoSeat,
+}
+
 /// Hold the seat's transition lock for a whole call (the moves inside re-enter it).
-fn hold(store: &Store, seat: &str) -> Result<Option<crate::locks::SeatLock>, StoreError> {
+fn hold(store: &Store, seat: &str) -> Result<Hold, StoreError> {
     let dir = store.seat_dir(seat)?;
-    std::fs::create_dir_all(&dir).map_err(|e| StoreError::Write {
-        path: dir.clone(),
-        why: e.to_string(),
-    })?;
+    if !dir.is_dir() {
+        return Ok(Hold::NoSeat);
+    }
     match lock(
         &dir,
         seat,
         Level::Transition,
         Duration::from_millis(TRANSITION_LOCK_TIMEOUT_MS),
     ) {
-        Ok(g) => Ok(Some(g)),
-        Err(LockError::Timeout { .. }) => Ok(None),
+        Ok(g) => Ok(Hold::Got(g)),
+        Err(LockError::Timeout { .. }) => Ok(Hold::Timeout),
         Err(e) => Err(e.into()),
     }
 }
 
-fn lock_timeout() -> Value {
+/// The lock wait ran out: audited like _transition's timeout (to = the move asked for).
+fn lock_timeout(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    seat: &str,
+    id: &str,
+    to: &str,
+    actor: &str,
+) -> Value {
+    let mut a = Map::new();
+    a.insert("ts".into(), json!(ctx.now));
+    a.insert("id".into(), json!(id));
+    a.insert("to".into(), json!(to));
+    a.insert("actor".into(), json!(actor));
+    a.insert("ok".into(), json!(false));
+    a.insert("reason".into(), json!("lock_timeout"));
+    store.audit(seat, ctx.caller, a);
     json!({"ok": false, "reason": "lock_timeout", "rev": null, "message": Reason::LockTimeout.message()})
+}
+
+/// What a call answers: the JSON the CLI prints, and the receipts its moves made for the
+/// outside sender of a global dm. The lock is already let go when this comes back; the
+/// caller sends them (_global_delivery_for_transition), as 1.x does after its lock.
+pub struct Answer {
+    pub out: Value,
+    pub receipts: Vec<Outcome>,
+}
+
+type Sink = RefCell<Vec<Outcome>>;
+
+fn answer(sink: Sink, out: Value) -> Answer {
+    Answer {
+        out,
+        receipts: sink.into_inner(),
+    }
 }
 
 /// One move with an explicit rev (or none, for the system's own follow-ups).
@@ -307,6 +381,7 @@ fn lock_timeout() -> Value {
 fn step(
     store: &Store,
     ctx: &Ctx<'_>,
+    sink: &Sink,
     seat: &str,
     id: &str,
     to: Status,
@@ -330,13 +405,18 @@ fn step(
             now: ctx.now,
         },
         ctx.caller,
-    )
+    )?;
+    if let Some(o) = m.outcome.take_if(|o| o.receipt.is_some()) {
+        sink.borrow_mut().push(o);
+    }
+    Ok(m)
 }
 
 /// dm_queue.mark_read: read, then a notice (kind=notice) is archived by the system.
 fn mark_read(
     store: &Store,
     ctx: &Ctx<'_>,
+    sink: &Sink,
     seat: &str,
     id: &str,
     actor: &str,
@@ -345,6 +425,7 @@ fn mark_read(
     let m = step(
         store,
         ctx,
+        sink,
         seat,
         id,
         Status::Read,
@@ -360,6 +441,7 @@ fn mark_read(
                 step(
                     store,
                     ctx,
+                    sink,
                     seat,
                     id,
                     Status::Archived,
@@ -398,6 +480,20 @@ pub fn take(
     id: &str,
     actor: &str,
     wait: Option<&str>,
+) -> Result<Answer, StoreError> {
+    let sink = Sink::default();
+    let out = take_in(store, ctx, &sink, seat, id, actor, wait)?;
+    Ok(answer(sink, out))
+}
+
+fn take_in(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    sink: &Sink,
+    seat: &str,
+    id: &str,
+    actor: &str,
+    wait: Option<&str>,
 ) -> Result<Value, StoreError> {
     let me = parse_actor(Some(actor));
     if !me
@@ -406,8 +502,10 @@ pub fn take(
     {
         return Ok(refusal("actor", Reason::Actor.message()));
     }
-    let Some(_held) = hold(store, seat)? else {
-        return Ok(lock_timeout());
+    let _held = match hold(store, seat)? {
+        Hold::Got(g) => g,
+        Hold::Timeout => return Ok(lock_timeout(store, ctx, seat, id, "read", actor)),
+        Hold::NoSeat => return Ok(refusal("not_found", Reason::NotFound.message())),
     };
     let Some(item) = live_item(store, seat, id)? else {
         return Ok(refusal("not_found", Reason::NotFound.message()));
@@ -422,7 +520,7 @@ pub fn take(
     let seen = item_rev(&Value::Object(item.clone()));
     let status = status_of(&item).to_string();
     if UNREAD.contains(&status.as_str()) {
-        let r = mark_read(store, ctx, seat, id, actor, seen)?;
+        let r = mark_read(store, ctx, sink, seat, id, actor, seen)?;
         if r.reason != Reason::Ok {
             return Ok(moved_json(&r));
         }
@@ -507,13 +605,31 @@ pub fn close(
     actor: &str,
     evidence: Option<&str>,
     why: Option<&str>,
+) -> Result<Answer, StoreError> {
+    let sink = Sink::default();
+    let out = close_in(store, ctx, &sink, seat, id, actor, evidence, why)?;
+    Ok(answer(sink, out))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn close_in(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    sink: &Sink,
+    seat: &str,
+    id: &str,
+    actor: &str,
+    evidence: Option<&str>,
+    why: Option<&str>,
 ) -> Result<Value, StoreError> {
     let has_why = why.is_some_and(|w| !py_strip(w).is_empty());
     if !(evidence.is_some_and(|e| !e.is_empty()) || has_why) {
         return Ok(refusal("evidence", Reason::Evidence.message()));
     }
-    let Some(held) = hold(store, seat)? else {
-        return Ok(lock_timeout());
+    let held = match hold(store, seat)? {
+        Hold::Got(g) => g,
+        Hold::Timeout => return Ok(lock_timeout(store, ctx, seat, id, "done", actor)),
+        Hold::NoSeat => return Ok(refusal("not_found", Reason::NotFound.message())),
     };
     let Some(item) = live_item(store, seat, id)? else {
         return Ok(refusal("not_found", Reason::NotFound.message()));
@@ -529,7 +645,7 @@ pub fn close(
                              "message": "長訊落檔讀不到,沒有標已讀也沒有結"}),
             );
         }
-        let r = mark_read(store, ctx, seat, id, actor, cur)?;
+        let r = mark_read(store, ctx, sink, seat, id, actor, cur)?;
         if r.reason != Reason::Ok {
             return Ok(moved_json(&r));
         }
@@ -558,6 +674,7 @@ pub fn close(
     let r = step(
         store,
         ctx,
+        sink,
         seat,
         id,
         Status::Done,
@@ -594,6 +711,18 @@ pub fn set_wait(
     id: &str,
     actor: &str,
     text: Option<&str>,
+) -> Result<Answer, StoreError> {
+    let out = set_wait_in(store, ctx, seat, id, actor, text)?;
+    Ok(answer(Sink::default(), out))
+}
+
+fn set_wait_in(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    seat: &str,
+    id: &str,
+    actor: &str,
+    text: Option<&str>,
 ) -> Result<Value, StoreError> {
     let ok_actor = parse_actor(Some(actor)).is_some_and(|a| match (a.class, a.ident.as_deref()) {
         (ActorClass::Seat, Some(i)) => i == seat,
@@ -603,8 +732,10 @@ pub fn set_wait(
     if !ok_actor {
         return Ok(refusal("actor", Reason::Actor.message()));
     }
-    let Some(_held) = hold(store, seat)? else {
-        return Ok(lock_timeout());
+    let _held = match hold(store, seat)? {
+        Hold::Got(g) => g,
+        Hold::Timeout => return Ok(lock_timeout(store, ctx, seat, id, "wait", actor)),
+        Hold::NoSeat => return Ok(refusal("not_found", Reason::NotFound.message())),
     };
     let Some(item) = live_item(store, seat, id)? else {
         return Ok(refusal("not_found", Reason::NotFound.message()));
