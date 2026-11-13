@@ -139,6 +139,20 @@ impl Lineage {
         }
     }
 
+    /// Read `pid`'s unique id, keeping the three outcomes apart (c477a #614
+    /// M1): `Ok` = there, `Err(Gone)` = gone, any other `Err` = unknown
+    /// (counted). Lineage off is `Err(Unsupported)`.
+    pub fn unique_read(&self, pid: u32) -> Result<u64, SysError> {
+        let Some(info) = self.info.as_ref() else {
+            return Err(SysError::Unsupported);
+        };
+        let r = info.unique_ids(pid).map(|u| u.unique);
+        if matches!(r, Err(ref e) if *e != SysError::Gone) {
+            self.fail();
+        }
+        r
+    }
+
     /// Does `pid` still carry the unique id recorded for it? `false` on any
     /// doubt (gone, unreadable, lineage off).
     pub fn same_unique(&self, pid: u32, unique: u64) -> bool {

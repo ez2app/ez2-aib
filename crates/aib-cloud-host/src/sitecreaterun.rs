@@ -110,6 +110,9 @@ pub trait Opener {
     fn create(&mut self, tenant: &str, domain: &str, blank: bool) -> Asked;
     /// `None`: no ask of this customer under this code.
     fn progress(&mut self, tenant: &str, code: &str) -> Option<Value>;
+    /// [`opened_view`]: `None` unless the customer's opening under this code is open and
+    /// recent.
+    fn opened(&mut self, tenant: &str, code: &str) -> Option<Value>;
 }
 
 pub struct HostOpener;
@@ -135,6 +138,11 @@ impl Opener for HostOpener {
     fn progress(&mut self, tenant: &str, code: &str) -> Option<Value> {
         let places = Places::host().ok()?;
         progress(&places, tenant, code, crate::probe::unix_now())
+    }
+
+    fn opened(&mut self, tenant: &str, code: &str) -> Option<Value> {
+        let places = Places::host().ok()?;
+        opened_view(&places, tenant, code, crate::probe::unix_now())
     }
 }
 
@@ -185,6 +193,45 @@ fn ask_state(places: &Places, ask: &Value, now: u64) -> &'static str {
     }
 }
 
+/// The customer's ask under `code` as an abandon sees it ([`crate::siteabandon`]): `None`
+/// when there is none, else its state now (`opening` while its run is waited for or still
+/// going). `Err` when it is there and cannot be read: an ask unread might be an opening.
+pub(crate) fn ask_now(places: &Places, code: &str, now: u64) -> Result<Option<&'static str>, ()> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let ask: Value = serde_json::from_str(&text).map_err(|_| ())?;
+    if ask.get("site").and_then(Value::as_str) != Some(code) {
+        return Err(());
+    }
+    Ok(Some(ask_state(places, &ask, now)))
+}
+
+/// The ask of an abandoned opening, stopped with `why: abandoned` (c477a abandon L1). It is
+/// kept, not removed: the code it holds stays given ([`codes_given`]). No ask is nothing to
+/// do; one that cannot be read is an error.
+pub(crate) fn stop_ask_abandoned(places: &Places, code: &str, now: u64) -> Result<(), String> {
+    let path = places.asked.join(format!("{code}.json"));
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut ask: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let obj = ask
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: not an ask", path.display()))?;
+    obj.insert("state".to_owned(), json!("stopped"));
+    obj.insert("why".to_owned(), json!("abandoned"));
+    obj.insert("at".to_owned(), json!(now));
+    // kept, not removed: the code stays given
+    rewrite_ask(&places.asked, code, &ask)
+}
+
 fn first_host(rec: &Value) -> Option<&str> {
     rec.get("hosts")?.as_str()?.split(',').next().map(str::trim)
 }
@@ -224,10 +271,12 @@ fn opening_of(
 /// Every code given: live, removed and opening sites, and every ask.
 fn codes_given(places: &Places) -> Option<Vec<String>> {
     let mut out = Vec::new();
+    let abandoned = crate::siteabandon::abandoned_dir(&places.creating);
     for dir in [
         &places.records,
         &places.removed,
         &places.creating,
+        &abandoned,
         &places.asked,
     ] {
         for r in sitecreatecmd::read_records(dir)? {
@@ -373,7 +422,7 @@ fn step_after(done: Option<&str>) -> Option<&'static str> {
 /// What a customer sees of their opening under `code`: `None` unless there is an ask of
 /// theirs under it. `state` is `opening`, `open` or `stopped`; `step_done` is the last step
 /// done (none before the clone); `stopped_at` the step it stopped at, when it stopped and
-/// that is known.
+/// that is known. An opening that was abandoned adds `why: abandoned` and its `domain`.
 pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<Value> {
     if !aib_cloud::site::valid_code(code) {
         return None;
@@ -416,11 +465,61 @@ pub fn progress(places: &Places, tenant: &str, code: &str, now: u64) -> Option<V
         })
         .or_else(|| step_after(step_done.as_deref()).map(str::to_owned))
     });
-    Some(json!({
+    let mut view = json!({
         "site": code,
         "state": state,
         "step_done": step_done,
         "stopped_at": stopped_at.flatten(),
+    });
+    // an opening we abandoned says so, with the domain it was for: the customer's side
+    // words it (HUMAN-PASTE-4542e-1111 21, Andy 11-12 12:1x). No other stop says why.
+    let gave_up = ask.get("why").and_then(Value::as_str) == Some("abandoned");
+    if gave_up && state == "stopped" {
+        view["why"] = json!("abandoned");
+        view["domain"] = ask.get("domain").cloned().unwrap_or(Value::Null);
+    }
+    Some(view)
+}
+
+/// How long after it opened a site's `status` answers that it opened, with what the
+/// opened screen needs (`aib_cloud::wording::opened`), instead of the site's checks.
+pub const OPENED_SHOWN_S: u64 = 3600;
+
+/// A site the customer opened under `code`, told as opened for [`OPENED_SHOWN_S`] after its
+/// run ended (E1 N1, f1fae 11-12: the customer's side prints the opened screen when it
+/// sees `open`). The answer is [`progress`]'s with two fields more, the least that screen
+/// needs: `domain` (the ask's) and `admins` (the logins the opening made, from its record
+/// under `opened`). Never a link, a password or a reason. `None` when there is no such ask
+/// of this customer, it is not open, it opened longer ago, or a field cannot be read.
+pub fn opened_view(places: &Places, tenant: &str, code: &str, now: u64) -> Option<Value> {
+    if !aib_cloud::site::valid_code(code) {
+        return None;
+    }
+    let ask = read_json(&places.asked.join(format!("{code}.json")))?;
+    let theirs = aib_cloud::site::record_tenant(&ask) == Some(tenant);
+    let open = ask.get("state").and_then(Value::as_str) == Some("open");
+    if ask.get("site").and_then(Value::as_str) != Some(code) || !theirs || !open {
+        return None;
+    }
+    let at = ask.get("at").and_then(Value::as_u64)?;
+    if now.saturating_sub(at) > OPENED_SHOWN_S {
+        return None;
+    }
+    let domain = ask.get("domain").and_then(Value::as_str)?;
+    let kept = read_json(&places.opened.join(format!("{code}.json")))?;
+    let admins: Vec<&str> = kept
+        .get("admins")?
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<_>>()?;
+    Some(json!({
+        "site": code,
+        "state": "open",
+        "step_done": CreateStep::Health.as_str(),
+        "stopped_at": null,
+        "domain": domain,
+        "admins": admins,
     }))
 }
 
@@ -698,6 +797,63 @@ mod tests {
                 boot_id: d.join("boot_id"),
             },
         }
+    }
+
+    /// An abandoned opening's code is never given again, though nothing holds it.
+    #[test]
+    fn an_abandoned_openings_code_stays_given() {
+        let places = scratch("abandoned");
+        let gone = crate::siteabandon::abandoned_dir(&places.creating);
+        sitecreatecmd::write_record(&gone, "s-gone01", &json!({"site": "s-gone01"})).unwrap();
+        let taken = codes_given(&places).unwrap();
+        assert!(taken.iter().any(|c| c == "s-gone01"));
+        let _ = fs::remove_dir_all(places.asked.parent().unwrap());
+    }
+
+    /// An abandoned opening's ask reads stopped, why abandoned, and is kept: its code stays
+    /// given.
+    #[test]
+    fn an_abandoned_ask_is_stopped_kept_and_its_code_given() {
+        let p = scratch("askgone");
+        let ask = json!({"site": "s-gone02", "domain": "gone.example.test", "tenant_id": "t-aaa",
+            "state": "running", "holder": null, "asked_at": NOW});
+        write_new_ask(&p.asked, "s-gone02", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-gone02", NOW), Ok(Some("stopped")));
+        // stopped but not abandoned: no why, no domain
+        let before = progress(&p, "t-aaa", "s-gone02", NOW + 1).unwrap();
+        assert_eq!(before["state"], "stopped");
+        assert!(before.get("why").is_none() && before.get("domain").is_none());
+        stop_ask_abandoned(&p, "s-gone02", NOW + 5).unwrap();
+        let kept = read_json(&p.asked.join("s-gone02.json")).unwrap();
+        assert_eq!(kept["state"], "stopped");
+        assert_eq!(kept["why"], "abandoned");
+        assert_eq!(kept["domain"], "gone.example.test");
+        assert!(codes_given(&p).unwrap().iter().any(|c| c == "s-gone02"));
+        let told = progress(&p, "t-aaa", "s-gone02", NOW + 6).unwrap();
+        assert_eq!(told["state"], "stopped");
+        // the customer's side words it (HUMAN-PASTE-4542e-1111 21): why, and for which domain
+        assert_eq!(told["why"], "abandoned");
+        assert_eq!(told["domain"], "gone.example.test");
+        // no ask: nothing to stop, nothing to tell
+        stop_ask_abandoned(&p, "s-none01", NOW).unwrap();
+        assert_eq!(ask_now(&p, "s-none01", NOW), Ok(None));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
+    }
+
+    /// An ask waited for is an opening; one that cannot be read is not told.
+    #[test]
+    fn an_ask_is_seen_opening_or_not_told() {
+        let p = scratch("asknow");
+        let ask = json!({"site": "s-wait01", "domain": "wait.example.test", "state": "waiting", "asked_at": NOW});
+        write_new_ask(&p.asked, "s-wait01", &ask).unwrap();
+        assert_eq!(ask_now(&p, "s-wait01", NOW + 1), Ok(Some("opening")));
+        assert_eq!(
+            ask_now(&p, "s-wait01", NOW + START_GRACE_S + 1),
+            Ok(Some("stopped"))
+        );
+        fs::write(p.asked.join("s-bad001.json"), "{").unwrap();
+        assert_eq!(ask_now(&p, "s-bad001", NOW), Err(()));
+        let _ = fs::remove_dir_all(p.asked.parent().unwrap());
     }
 
     /// A process `pid` started at `start` in the scratch `/proc`.
@@ -1107,6 +1263,40 @@ mod tests {
         let mut again = fake(&p);
         assert_eq!(ran(&p, &code, &mut again), Ok("open"));
         assert!(again.calls.is_empty());
+    }
+
+    /// E1 N1 (f1fae 11-12): for a while after it opened, the customer's site answers that
+    /// it opened, with its domain and the logins its opening made; never someone else's,
+    /// never before it is open, never after [`OPENED_SHOWN_S`].
+    #[test]
+    fn an_opened_site_tells_its_domain_and_administrators_for_a_while() {
+        let p = scratch("opened-view");
+        let code = asked(&p);
+        // still opening: nothing to tell yet
+        assert!(opened_view(&p, T, &code, NOW + 5).is_none());
+        let mut steps = fake(&p);
+        steps.record["admins"] = json!(["ops", "ops2"]);
+        assert_eq!(ran(&p, &code, &mut steps), Ok("open"));
+        let at = NOW + 10;
+        let view = opened_view(&p, T, &code, at + 60).unwrap();
+        assert_eq!(
+            view,
+            json!({
+                "site": code, "state": "open", "step_done": "health", "stopped_at": null,
+                "domain": "www.new.example.test", "admins": ["ops", "ops2"],
+            })
+        );
+        // the customer's side reads it as an opening of that shape
+        let shown = aib_cloud::customer::opened_of(&view.to_string()).unwrap();
+        assert_eq!(shown.admins, ["ops", "ops2"]);
+        assert!(opened_view(&p, T, &code, at + OPENED_SHOWN_S).is_some());
+        assert!(opened_view(&p, T, &code, at + OPENED_SHOWN_S + 1).is_none());
+        // someone else's, or no such code: nothing
+        assert!(opened_view(&p, "t-other", &code, at + 60).is_none());
+        assert!(opened_view(&p, T, "s-zzzzzz", at + 60).is_none());
+        // the logins cannot be read: nothing made up
+        fs::write(p.opened.join(format!("{code}.json")), "{\"admins\":[7]}").unwrap();
+        assert!(opened_view(&p, T, &code, at + 60).is_none());
     }
 
     /// A run cut off after the clone: run again, it carries on from the opening record and

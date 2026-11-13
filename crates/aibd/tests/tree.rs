@@ -796,3 +796,110 @@ fn a_system_failure_after_spawn_stops_the_tree() {
 fn a_fork_watch_failure_after_spawn_stops_the_tree() {
     a_late_failure_is_stopped("s-fail-watch", aibd::platform::tree::Inject::ForkWatch);
 }
+
+/// G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): a program that
+/// exits at once, recorded 300 ms late, is still recorded on macOS: it is
+/// held before exec until it is. Without the hold it is gone by then.
+#[cfg(target_os = "macos")]
+fn held_spec(session: &str, program: &str, args: &[&str]) -> SpawnSpec {
+    SpawnSpec {
+        program: program.into(),
+        args: args.iter().map(|a| (*a).into()).collect(),
+        env: vec![],
+        discard_output: true,
+        inject: Some(aibd::platform::tree::Inject::RecordLate),
+        // a63ab 11-10 ruling A: with the watcher alone, a middle process that
+        // forks and exits at once is missed about 1 run in 3 under a full
+        // suite (fork_watch_miss); M1 lineage links the grandchild back to
+        // the recorded middle, as a real session does.
+        lineage: Some(lineage()),
+        ..spec_watch("unused", session, true)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_instant_program_is_recorded_before_it_can_exit() {
+    let mut h = spawn_tree(&held_spec("s-held-true", "/usr/bin/true", &[])).unwrap();
+    let rep = h.cleanup(Duration::from_millis(300)).unwrap();
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+}
+
+/// For a failure message only: the process line with its environment
+/// (`ps -E`), to tell "not a candidate" from "read as not ours".
+#[cfg(target_os = "macos")]
+fn ps_env(pid: u32) -> String {
+    Command::new("ps")
+        .args([
+            "-wwE",
+            "-o",
+            "pid,ppid,stat,command",
+            "-p",
+            &pid.to_string(),
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// 043dd / bb7dc / Codex counterexample: the root forks at once, the child
+/// clears the environment, leaves the session (`setsid`) and execs a long
+/// sleep, the root exits. Held from before exec, the root is recorded. The
+/// sleep is stopped when the watcher saw the middle process; when it did
+/// not, it is reported as an unreadable candidate and the cancel is not
+/// observed_clean (never silently left).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
+    let dir = std::env::temp_dir().join(format!("aibd-held-gc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("pid");
+    let script = format!(
+        "( /usr/bin/env -i /usr/bin/perl -MPOSIX -e \
+         'POSIX::setsid(); open(F, \">{f}\"); print F $$; close F; exec q(/bin/sleep), 30' & ) ; exit 0",
+        f = f.display()
+    );
+    let mut h = spawn_tree(&held_spec("s-held-gc", "/bin/sh", &["-c", &script])).unwrap();
+    let t = std::time::Instant::now();
+    let gc = loop {
+        if let Some(p) = std::fs::read_to_string(&f)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            break p;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no grandchild pid");
+        #[allow(clippy::disallowed_methods)] // test pacing only
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let rep = h.cleanup(Duration::from_millis(500)).unwrap();
+    let left = still_running(&[gc]);
+    let _ = Command::new("kill").args(["-9", &gc.to_string()]).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !rep.known_gaps.contains(&"root_unrecorded"),
+        "recorded too late: {rep:?}"
+    );
+    // a63ab 11-10 ruling B (A measured 30/50 on Mac Pro 13): the grandchild
+    // clears its environment and execs after its creator exited, so neither
+    // lineage (parent_unique = 1) nor the marker can tie it to the session;
+    // when the fork watcher missed the middle process it is an unreadable
+    // candidate. That is never signalled; the cancel must then say so and
+    // never claim observed_clean. Either way nothing is left unaccounted.
+    if !left.is_empty() {
+        assert!(
+            rep.candidates_unreadable.contains(&gc),
+            "grandchild {gc} left running and not reported: {rep:?}\nps: {}",
+            ps_env(gc)
+        );
+        assert_eq!(
+            rep.unverified_reason(),
+            Some("candidates_unreadable"),
+            "a left grandchild must not read as observed_clean: {rep:?}"
+        );
+    }
+}
