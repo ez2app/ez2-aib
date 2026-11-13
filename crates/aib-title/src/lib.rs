@@ -23,6 +23,8 @@
 //! caller), 2 usage, the sampler's code when the python fails (bash: `set -e` on
 //! `TITLE="$(sample 0)"`), 1 when the sampler cannot start.
 
+pub mod beat;
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
