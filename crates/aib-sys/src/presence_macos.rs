@@ -633,10 +633,29 @@ mod tests {
         let (blob, public) = create_unprotected().expect("create");
         assert_eq!(public[0], 0x04);
         assert_eq!(public_key(&blob), Ok(public));
-        let mut other = blob.clone();
-        let last = other.len() - 1;
-        other[last] ^= 0xff;
-        assert!(public_key(&other).is_err());
+        // The blob is opaque and the Secure Enclave does not promise to refuse every changed
+        // byte (measured on Pro 13, 11-13: flipping the last byte still gave a key). What must
+        // hold is that a key from a blob signs only for the public key recomputed from that
+        // same blob; callers then compare it with the registered one (aib-approve).
+        for at in [0, blob.len() / 2, blob.len() - 1] {
+            let mut other = blob.clone();
+            other[at] ^= 0xff;
+            match public_key(&other) {
+                Err(e) => eprintln!("byte {at} of {}: refused ({e})", blob.len()),
+                Ok(p) => {
+                    eprintln!(
+                        "byte {at} of {}: restored, same key: {}",
+                        blob.len(),
+                        p == public
+                    );
+                    let der = sign(&other, "test", b"m").expect("sign");
+                    assert_eq!(verify(&p, b"m", &der), Ok(true));
+                    if p != public {
+                        assert_eq!(verify(&public, b"m", &der), Ok(false));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
