@@ -213,10 +213,11 @@ jobs:
           pk pointer.rs "    if p.contains('/') || p.starts_with('~') || bare_file {" \
              "    if p.contains('/') || p.starts_with('~') || (bare_file && false) { // knife" \
              '--test persona' a_bare_file_name_in_the_working_folder_is_a_path
-          # P12 dm:q_X skips the queue check (ebb36 #627 M1)
+          # P12 check() takes dm:q_X as a message without asking the queue (ebb36 #627 M1;
+          # the CLI strips the prefix first, so the library test is the one that sees it)
           pk pointer.rs '    let p = dm_alias(p).unwrap_or(p);' \
              '    let p = p; // knife' \
-             '--test persona' dm_ids_must_be_in_the_queue_including_retired
+             '--lib' a_prefixed_dm_id_is_the_dm_id
           # P13 q_X and dm:q_X are two groups (ebb36 #627 M1)
           pk lib.rs '            (None, _) => pointer::dm_alias(ptr).unwrap_or(ptr).to_string(),' \
              '            (None, _) => ptr.to_string(), // knife' \
