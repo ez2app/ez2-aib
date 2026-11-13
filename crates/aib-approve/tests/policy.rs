@@ -479,3 +479,52 @@ fn legacy_words_are_kept_verbatim() {
     assert_eq!(protocol::CONSENT_RESULTS.len(), 10);
     assert_eq!(protocol::consent_result_for_not_approved(), "denied");
 }
+
+#[test]
+fn a_proof_cannot_live_longer_than_its_category_allows() {
+    assert_eq!(proof::max_lifetime_s(Category::DeleteData), 30 * 60);
+    assert_eq!(proof::max_lifetime_s(Category::Command), 30 * 60);
+    assert_eq!(proof::max_lifetime_s(Category::Outbound), 3 * 3600);
+    assert_eq!(
+        proof::max_lifetime_s(Category::SeatInput),
+        category::WINDOW_CAP_S
+    );
+    let mut n = MemoryNonces::default();
+    let mut year = binding(Category::DeleteData);
+    year.expiry = year.issued + 365 * 24 * 3600;
+    assert_eq!(
+        proof::verify(
+            Evidence::Signed(signed(year.clone())),
+            &year,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
+        Err(Refusal::TooLongLived)
+    );
+    let mut edge = binding(Category::DeleteData);
+    edge.expiry = edge.issued + proof::SINGLE_ACTION_MAX_S;
+    assert_eq!(
+        proof::verify(
+            Evidence::Signed(signed(edge.clone())),
+            &edge,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
+        Ok(())
+    );
+    let mut over = binding(Category::DeleteData);
+    over.nonce = "a".repeat(32);
+    over.expiry = over.issued + proof::SINGLE_ACTION_MAX_S + 1;
+    assert_eq!(
+        proof::verify(
+            Evidence::Signed(signed(over.clone())),
+            &over,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
+        Err(Refusal::TooLongLived)
+    );
+}

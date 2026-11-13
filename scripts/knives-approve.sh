@@ -106,4 +106,12 @@ kh '            Some(3) if in_set(RC3_CODES) => HelperOutcome::NotApproved(code.
 kh '            _ => HelperOutcome::Broken("helper_failed".to_owned()),' \
    '            _ => HelperOutcome::Ok, // knife' \
    helper_exit_codes_map_to_classes_and_mismatches_are_broken
+# KP12 no lifetime cap: a proof signed for a year is accepted (c477a T135-a L1)
+kp '    if expect.expiry - expect.issued > max_lifetime_s(expect.category) {' \
+   '    if false && expect.expiry - expect.issued > max_lifetime_s(expect.category) { // knife' \
+   a_proof_cannot_live_longer_than_its_category_allows
+# KP13 the cap ignores the single-action limit
+kp '    SINGLE_ACTION_MAX_S.max(crate::category::window_allowed_s(cat))' \
+   '    (365 * 24 * 3600u64).max(crate::category::window_allowed_s(cat)) // knife' \
+   a_proof_cannot_live_longer_than_its_category_allows
 echo "aib-approve knives: all bit"

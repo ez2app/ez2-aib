@@ -31,6 +31,19 @@ pub const BINDING_VERSION: &str = "aib-approve/binding/v2";
 /// How much clock skew a proof's issue time may be ahead of the checker.
 pub const ISSUE_SKEW_S: u64 = 30;
 
+/// Longest life of a single-action approval: 1.x `consent.EXPIRE_S` (30 min).
+pub const SINGLE_ACTION_MAX_S: u64 = 30 * 60;
+
+/// Longest `expiry - issued` a proof for `cat` may have, whatever the caller
+/// asks for: a single action lives at most [`SINGLE_ACTION_MAX_S`]; a category that
+/// may hold a time window lives at most that window
+/// ([`crate::category::window_allowed_s`]). c477a T135-a review L1: without this a
+/// caller that copied the proof's expiry into `expect` would accept a proof signed
+/// for a year.
+pub fn max_lifetime_s(cat: Category) -> u64 {
+    SINGLE_ACTION_MAX_S.max(crate::category::window_allowed_s(cat))
+}
+
 /// Proof strength, weakest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProofLevel {
@@ -79,6 +92,8 @@ pub enum Refusal {
     /// `expiry` is not after `issued`.
     BadTime,
     Expired,
+    /// `expiry - issued` is longer than [`max_lifetime_s`] allows for the category.
+    TooLongLived,
     NotYet,
     /// Weaker than the category needs.
     TooWeak {
@@ -106,6 +121,7 @@ impl Refusal {
             Refusal::Mismatch(_) => "mismatch",
             Refusal::BadTime => "bad_time",
             Refusal::Expired => "expired",
+            Refusal::TooLongLived => "too_long_lived",
             Refusal::NotYet => "not_yet",
             Refusal::TooWeak { .. } => "too_weak",
             Refusal::PresenceNotTransferable => "presence_not_transferable",
@@ -338,6 +354,9 @@ pub fn verify(
     let have = evidence.level();
     if have < need {
         return Err(Refusal::TooWeak { have, need });
+    }
+    if expect.expiry - expect.issued > max_lifetime_s(expect.category) {
+        return Err(Refusal::TooLongLived);
     }
     if now >= expect.expiry {
         return Err(Refusal::Expired);

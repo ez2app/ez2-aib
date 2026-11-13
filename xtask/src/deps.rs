@@ -49,6 +49,26 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_Threading",
         ],
     ),
+    // DECISION-t135b-objc2-deps: macOS presence keys (presence_macos). Appended after
+    // windows-sys, which the tests below address as index 2.
+    (
+        "objc2",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.6.3",
+        &["std"],
+    ),
+    (
+        "objc2-foundation",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.3.2",
+        &["NSData", "NSString", "std"],
+    ),
+    (
+        "objc2-local-authentication",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.3.2",
+        &["LAContext", "std"],
+    ),
 ];
 
 /// Every dependency of aib-sys that is not exactly on [`SYS_OWN_DEPS`].
@@ -377,5 +397,21 @@ mod tests {
             d[0][k] = v.clone();
             assert_eq!(check_own(&sys_with(json!(d))).len(), 1, "{k}={v}");
         }
+    }
+
+    #[test]
+    fn an_extra_local_authentication_feature_or_loose_version_is_refused() {
+        let i = SYS_OWN_DEPS
+            .iter()
+            .position(|d| d.0 == "objc2-local-authentication")
+            .expect("on the list");
+        let (n, t, r, _) = SYS_OWN_DEPS[i];
+        let mut d = allowed();
+        d[i] = dep(n, t, r, &["LAContext", "LAError", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[i] = dep(n, t, "^0.3.2", &["LAContext", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[i] = dep(n, None, r, &["LAContext", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
     }
 }
