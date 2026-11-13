@@ -177,6 +177,27 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # aib-verify g1 (1ced7, PLAN-approvals-to-rust C1/C2): the G1 probes without
+      # Claude (30 setuid ps / a stuck setuid ps, one slot) against this tree's own
+      # aibd. Until G1 is on main this step checks the tool, not G1: rc 0 or 1 and a
+      # well-formed first line; the report goes to the step summary. Once G1 is on
+      # main, require rc 0 here.
+      - name: aib-verify g1 probes (macOS, no Claude)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo build --locked -p aibd -p aib-fixture-tree -p aib-verify
+          T="$PWD/target/debug"; OUT="$RUNNER_TEMP/aib-verify-g1"
+          set +e
+          "$T/aib-verify" g1 --head "$(git rev-parse HEAD)" --bin "$T/aibd" --fixture "$T/aib-fixture-tree" \
+            --out "$OUT" --burst-runs 3 --stuck-runs 2 --host "ci-$RUNNER_OS"
+          rc=$?
+          set -e
+          cat "$OUT/VERIFY-g1.md" >> "$GITHUB_STEP_SUMMARY" || true
+          echo "aib-verify g1 rc $rc"
+          [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
+          head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
+            || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives

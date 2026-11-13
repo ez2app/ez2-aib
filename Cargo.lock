@@ -204,6 +204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-verify"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-xtask"
 version = "0.2.0-preview.5"
 dependencies = [

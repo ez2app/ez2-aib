@@ -33,6 +33,22 @@
 //!   smoke-wait <stop>
 //!                 wait until <stop> exists (600 s at most).
 //!
+//!   setuid-ps-burst
+//!                 G1 (aib-verify, 1ced7 11-10): run the setuid `/bin/ps -axww`
+//!                 30 times in a row (50 ms apart), each waited for, then exit 0.
+//!                 A single short `ps` ends before the fork watcher reads it and
+//!                 does not reproduce G1 (11-09: the old head passed it), so the
+//!                 count and the arguments are fixed here, not taken from argv.
+//!   setuid-ps-stuck <pidfile>
+//!                 G1 counterexample (043dd's recipe): a child runs the setuid
+//!                 `/bin/ps -E -ww` with a 70 000-byte env through
+//!                 `sh -c "trap '' TERM HUP INT; exec …"` (a real SIG_IGN, kept
+//!                 across exec). Its stdout is a pipe whose read end ps itself
+//!                 also holds (as stdin), so it never gets SIGPIPE: it blocks once
+//!                 the pipe is full and only SIGKILL ends it, also after this
+//!                 fixture is gone. Writes the ps pid to <pidfile> atomically, then
+//!                 sleeps until AIB_FIXTURE_TTL. The caller must SIGKILL that pid.
+//!
 //! With AIB_FIXTURE_GO=<path>, `tree-platform` / `tree-plain` start nothing
 //! until that file exists (the test creates it once `spawn_tree` returned, so
 //! the fork watcher is on the root before the first fork). No go within
@@ -150,6 +166,43 @@ fn smoke_tree(marker: &str, stop: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `setuid-ps-burst`: 30 setuid `ps` runs in a row (see the header).
+fn setuid_ps_burst() -> std::io::Result<()> {
+    for _ in 0..30 {
+        Command::new("/bin/ps")
+            .args(["-axww", "-o", "pid,uid,command"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// `setuid-ps-stuck <pidfile>`: leave a setuid `ps` blocked on a full pipe (see the header).
+// Never waited on by design: the ps must outlive this fixture; the caller SIGKILLs it.
+#[allow(clippy::zombie_processes)]
+fn setuid_ps_stuck(pidfile: &str) -> std::io::Result<()> {
+    let (read_end, write_end) = std::io::pipe()?;
+    let child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "trap '' TERM HUP INT; exec /bin/ps -E -ww -o command -U \"$(/usr/bin/id -u)\"",
+            "sh",
+        ])
+        .env_clear()
+        .env("BIG", "x".repeat(70_000))
+        .stdin(read_end)
+        .stdout(write_end)
+        .stderr(Stdio::null())
+        .spawn()?;
+    let tmp = format!("{pidfile}.tmp");
+    std::fs::write(&tmp, child.id().to_string())?;
+    std::fs::rename(&tmp, pidfile)?;
+    sleep_until_ttl()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match (args.get(1).map(String::as_str), args.len()) {
@@ -162,6 +215,20 @@ fn main() {
         }
         (Some("smoke-wait"), 3) => {
             wait_for_stop(std::path::Path::new(&args[2]));
+            return;
+        }
+        (Some("setuid-ps-burst"), 2) => {
+            if let Err(e) = setuid_ps_burst() {
+                eprintln!("aib-fixture-tree setuid-ps-burst: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("setuid-ps-stuck"), 3) => {
+            if let Err(e) = setuid_ps_stuck(&args[2]) {
+                eprintln!("aib-fixture-tree setuid-ps-stuck: {e}");
+                std::process::exit(1);
+            }
             return;
         }
         _ => {}
