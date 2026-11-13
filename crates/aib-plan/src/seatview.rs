@@ -397,7 +397,8 @@ mod tests {
         let t = Fake::new(&[("%3", "right")]);
         assert_eq!(seat_on(&t, "S:cockpit"), Err("no_hub_pane".into()));
         assert_eq!(
-            seat_off(&t, "S:cockpit", "x", true),
+            seat_off(&t, "S:cockpit", &roles(&["hub", "right"]), &|_: &str| "x"
+                .to_string()),
             Err("no_hub_pane".into())
         );
         let mut t2 = Fake::new(&FULL);
