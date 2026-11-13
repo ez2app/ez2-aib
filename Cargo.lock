@@ -62,8 +62,19 @@ name = "aib-drive"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
+ "aib-expect",
+ "aib-ghread",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "aib-expect"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ghread",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -88,6 +99,13 @@ version = "0.2.0-preview.5"
 dependencies = [
  "aib-procwatch",
  "nix",
+ "serde_json",
+]
+
+[[package]]
+name = "aib-ghread"
+version = "0.2.0-preview.5"
+dependencies = [
  "serde_json",
 ]
 
@@ -132,6 +150,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

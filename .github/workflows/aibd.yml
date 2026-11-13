@@ -56,7 +56,21 @@ jobs:
         # on 2026-11-07); the first step prints what we actually got.
         os: [macos-latest, windows-latest]
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || matrix.os }}
+    # Self-hosted Mac (label ez2-aib-mac): only the macOS cell, only when the repository variable
+    # AIB_MAC_SELFHOSTED is 'on', only for a pull request from a branch of this repository whose name
+    # starts with integ/ or release/ or that carries the label mac-selfhosted. Pushes to main stay on
+    # GitHub's runners. The cell keeps its name (it comes from matrix.os, not from runs-on). A fork can
+    # rewrite this line in its own PR, so this is not the guard: the runner refuses fork and non
+    # push / pull_request jobs in its job-started hook, and the repository asks approval for outside
+    # contributors' runs. AIB_MAC_SELFHOSTED=off sends everything back to GitHub's runners.
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || matrix.os }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -95,8 +109,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-${{ matrix.os }}-
+          # runner.environment (github-hosted / self-hosted) keeps a target built on the self-hosted Mac
+          # out of GitHub's macOS image and the other way round
+          key: aibd-${{ matrix.os }}-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-${{ matrix.os }}-${{ runner.environment }}-
       - name: Core purity
         if: env.RUN == 'true'
         shell: bash
@@ -427,6 +443,25 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+          # KP1 aib-sys procargs (#614): the empty string after the variables is skipped, so the apple
+          # strings are read as variables (sysinfo's bug; a cleared environment then has no marker)
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '        if end == 0 {' \
+            '        if end == 0 && false { // knife' \
+            --expect-fail a_cleared_environment_followed_by_apple_strings_is_empty \
+            -- cargo test -p aib-sys --locked --lib procargs::
+          # KP2 aib-sys procargs (#614): a cut buffer read as a whole environment
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '    rest.is_empty().then_some(env)' \
+            '    let _ = rest; Some(env) // knife' \
+            --expect-fail a_cut_buffer_is_none \
+            -- cargo test -p aib-sys --locked --lib procargs::
+          # KP3 aib-sys procargs (043dd #614 L1): apple strings with no empty string before them read as variables
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '        if APPLE_KEYS.iter().any(|k| rest[..end].starts_with(k)) {' \
+            '        if APPLE_KEYS.iter().any(|k| rest[..end].starts_with(k)) && false { // knife' \
+            --expect-fail apple_strings_without_the_empty_string_before_them_are_none \
+            -- cargo test -p aib-sys --locked --lib procargs::
           # KT4 aib-sys T1 (R1, a63ab / a9136): a private SPI symbol that is missing taken as found
           python3 -I scripts/knife.py crates/aib-sys/src/thermal_macos.rs \
             '    if p.is_null() {' \
@@ -720,6 +755,82 @@ jobs:
             '        (Ok(_), Err(_)) => (None, false),' \
             '        (Ok(m), Err(_)) => (Some(m), false), // knife' \
             platform::tree::tests::the_coalition_self_check
+      # G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): macOS holds a new
+      # program before exec until it is recorded. Each knife must turn its test red.
+      - name: held-before-exec knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # H1 the child does not wait for the go byte: the program runs while held
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    loop {' \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
+            --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
+            -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
+          # spawn holds back, instead of sending its own child the cancel byte
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '                    let _ = (&go_w).write_all(&[CANCEL]);' \
+            '                    let _ = CANCEL; // knife: wait for EOF' \
+            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+          # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
+            '            return Ok(()); // knife: run after the limit' \
+            --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
+          # once std reaped a child that gave up); only Child::kill
+          if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
+            echo "held.rs signals by pid"; exit 1
+          fi
+          # H2 / H3 start_tree does not hold: an instant root is recorded too late,
+          # and a detached grandchild of it is left running
+          for t in an_instant_program_is_recorded_before_it_can_exit \
+                   a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped; do
+            python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+              $'    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))\n        .map_err(StartFailedOr::NotStarted)?;' \
+              '    let (child, rec): (_, Option<Recorded>) = (c.spawn().map_err(StartFailedOr::NotStarted)?, None); // knife: not held' \
+              --expect-fail "$t" \
+              -- cargo test -p aibd --locked --test tree "$t"
+          done
+          # c477a #614 M1 / M2: a candidate missing from the process table read is
+          # reported when still there, and an unknown answer leaves the check incomplete
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Ok(_) => Missing::Unreadable,' \
+            '        Ok(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Err(_) => Missing::Incomplete,' \
+            '        Err(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
+          # L2a (DECISION-614-l2-knife-a9136-1112, 043dd + Codex): an empty read counted as
+          # "no marker" lets a cleared environment go as not ours. Deterministic: synthetic
+          # KERN_PROCARGS2, so it bites on every OS whatever the fork watcher saw.
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '    (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()))' \
+            '    Some(env.iter().any(|e| e.as_slice() == want.as_bytes())) // knife' \
+            --expect-fail a_cleared_environment_with_apple_strings_is_unreadable_not_ours \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_with_apple_strings_is_unreadable_not_ours
+          # L2 (043dd #614): back to sysinfo's environ must turn the real `env -i` read red.
+          # It can only bite where sysinfo misreads a cleared environment (seen on macos-26);
+          # macOS 27 shows no environment of another process at all, so sysinfo reads it right.
+          # Decided by capability, not by version: on a miss, the probe says whether sysinfo
+          # misreads here. Misreads and missed = fail; reads right = named SKIP (not a bite).
+          if ! python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        aib_sys::Macos.environ(pid).unwrap_or_default()' \
+            '        { let _ = pid; p.environ().iter().map(|e| e.as_encoded_bytes().to_vec()).collect() } // knife' \
+            --expect-fail a_cleared_environment_reads_as_empty_not_as_apple_strings \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_reads_as_empty_not_as_apple_strings; then
+            if cargo test -p aibd --locked --lib probe_sysinfo_reads_a_cleared_environment_as_variables -- --ignored; then
+              echo "knife L2 missed although sysinfo misreads a cleared environment here"; exit 1
+            fi
+            echo "KNIFE L2: SKIP (named) sysinfo reads a cleared environment correctly on this macOS; the reader knife cannot bite here"
+          fi
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
@@ -985,6 +1096,9 @@ jobs:
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-drive --locked --test snapshot "$4"; }
+          # run_fixed lives in aib-ghread since the drive x expect wiring (a9136 DECISION-drive-expect-cycle); drive's tests still cover it
+          rk() { python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test snapshot "$3"; }
           # S1 an unreadable notes folder reads as "no reviews"
           sk snapshot.rs '    let files = read_notes(inp.pending)?;' \
              '    let files = read_notes(inp.pending).unwrap_or_default(); // knife' \
@@ -994,11 +1108,11 @@ jobs:
              '        let Ok(v) = q.waiting(seat) else { continue }; // knife' \
              an_unreadable_dm_queue_is_no_snapshot
           # S3 no deadline: a call that hangs is waited for
-          sk source.rs '    let stdout = match out_rx.recv_timeout(left()) {' \
+          rk '    let stdout = match out_rx.recv_timeout(left()) {' \
              '    let stdout = match Ok::<_, ()>(out_rx.recv().unwrap_or(Ok(Vec::new()))) { // knife' \
              a_call_past_its_deadline_is_killed_and_an_error
           # S4 a non-zero exit with output is read as an answer
-          sk source.rs '    if !status.success() {' \
+          rk '    if !status.success() {' \
              '    if false && !status.success() { // knife' \
              a_non_zero_exit_is_an_error_even_with_output
           # S5 a full page is read as the whole list
@@ -1018,7 +1132,7 @@ jobs:
              '        rerun_done: false, // knife' \
              a_cancelled_or_runner_red_cell_is_not_re_run_without_a_journal
           # S9 (1ced7 #685 L3) the wait for the exit has no deadline
-          sk source.rs '    let status = match exit_rx.recv_timeout(left()) {' \
+          rk '    let status = match exit_rx.recv_timeout(left()) {' \
              '    let status = match Ok::<_, ()>(exit_rx.recv().unwrap_or_else(|_| Err(std::io::ErrorKind::Other.into()))) { // knife' \
              a_child_that_closes_its_output_and_keeps_running_is_killed_at_the_deadline
           # S10 (1ced7 #685 L2) a file moved out of a guarded path is not seen
@@ -1030,7 +1144,7 @@ jobs:
              '    let rules = match arr(&v, "rules") { // knife' \
              a_full_page_of_rules_is_unknown
           # S12 (1ced7 #685 r2 L1) an already reaped child is killed by a pid that may be reused
-          sk source.rs '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
+          rk '        if let Err(TryRecvError::Empty) = exit_rx.try_recv() {' \
              '        if let Err(TryRecvError::Empty) | Ok(_) = exit_rx.try_recv() { // knife' \
              a_child_already_reaped_is_not_killed_by_pid_at_the_deadline
           # S13 (Codex #685 M2) a dm item without a string priority reads as not urgent
@@ -1141,6 +1255,230 @@ jobs:
           vs '        Known::Known(c) => lines_for(files, c)?,' \
              '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
+      # aib-drive x aib-expect wiring (DESIGN-drive-expect-wiring, a9136 DECISION-drive-expect-cycle): gaps only
+      # reorder, unknown goals merge nothing, one report per event, only completion events, an AI order is a
+      # permutation, and drive keeps the reader's old paths. Each knife keeps the build clean under -D warnings.
+      - name: aib-drive expect wiring knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          wk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-drive --locked --test "$5" "$4"; }
+          # W1 gaps do not weigh
+          wk decide.rs '                    .contains(&b.number)' \
+             '                    .contains(&a.number) // knife' \
+             a_gap_puts_its_pr_first_within_a_level_and_only_reorders decide
+          # W2 goals that cannot be used still let a PR merge
+          wk observe.rs '        would.retain(|i| !matches!(i, Intent::Merge { .. }));' \
+             '        would.retain(|_| true); // knife' \
+             goals_that_cannot_be_used_merge_nothing_and_the_report_says_why decide
+          # W3 the same event is reported again
+          wk observe.rs '    let event = event.filter(|e| !reported(&paths.journal, e));' \
+             '    let event = event; // knife' \
+             the_same_event_twice_gives_one_report observe
+          # W4 any id is a completion event (a report could start a round)
+          wk report.rs '        _ => false,' \
+             '        _ => true, // knife' \
+             only_a_completion_event_gets_a_report observe
+          # W5 notes fill the "next" list
+          wk report.rs '        .filter(|i| !matches!(i, Intent::Note { .. }))' \
+             '        .filter(|_| true) // knife' \
+             goals_that_cannot_be_used_merge_nothing_and_the_report_says_why decide
+          # W6 an AI order that is not a permutation of next is kept
+          wk report.rs '    if seen != (0..next_len).collect::<Vec<_>>() {' \
+             '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
+             an_ai_order_must_be_a_permutation_of_next observe
+          # W8 (1ced7 wiring L1) the PRs to read are picked with another `now` than the comparison
+          wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
+             '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
+             one_now_for_the_prs_to_read_and_the_comparison observe
+          # W9 (043dd M1) a round without a snapshot drops its event
+          wk observe.rs '                events.push_front(e);' \
+             '                drop(e); // knife' \
+             an_event_met_by_a_failed_round_is_answered_by_the_next_good_one observe
+          # W10 (043dd M1) an event written while paused is dropped
+          wk observe.rs '                queue_event(&mut events, read_event(&paths.event));' \
+             '                let _ = read_event(&paths.event); // knife' \
+             an_event_written_while_paused_is_answered_after_the_pause observe
+          # W11 (043dd L2) --watch reports the same event again
+          wk observe.rs '                Some(e) if reported(&paths.journal, &e) => continue,' \
+             '                Some(e) if false && reported(&paths.journal, &e) => continue, // knife' \
+             watch_reports_the_same_event_once observe
+          # W12 (043dd L1) aib-expect rows carry an order of their own
+          python3 -I scripts/knife.py crates/aib-expect/src/lib.rs '        "goal_id": g.goal_id,' \
+             '        "goal_id": g.goal_id, "order": 0, // knife' \
+             --expect-fail expect_rows_reach_drive_without_an_order_of_their_own \
+             -- cargo test -p aib-drive --locked --test observe expect_rows_reach_drive_without_an_order_of_their_own
+          # W13 (1ced7 N1) the report drops the unreadable-evidence count
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '            side.unreadable_evidence,' \
+             '            None, // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W14 (1ced7 N1) expect_side does not pass the count on
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '        unreadable_evidence: evidence_read.then_some(r.unreadable_evidence),' \
+             '        unreadable_evidence: evidence_read.then_some(0), // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W16 (1ced7 L1) an evidence file that cannot be read is counted as 0, not unknown
+          python3 -I scripts/knife.py crates/aib-drive/src/observe.rs '    let evidence_read = evidence.is_ok();' \
+             '    let evidence_read = true; // knife' \
+             --expect-fail the_report_says_how_many_evidence_lines_were_unreadable \
+             -- cargo test -p aib-drive --locked --test observe the_report_says_how_many_evidence_lines_were_unreadable
+          # W15 (a9136 N1) without source.rs's pub use, run_fixed's old path is gone: the callers fail on a private import (E0603).
+          # A private use keeps source.rs's own run_fixed / CALL_TIMEOUT calls building, so the error is only the callers'.
+          f=crates/aib-drive/src/source.rs
+          cp "$f" "$RUNNER_TEMP/source.rs.orig"
+          python3 -I - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          old = "pub use aib_ghread::{run_fixed, CALL_TIMEOUT};"
+          assert s.count(old) == 1, "W15 anchor"
+          open(p, "w", encoding="utf-8").write(s.replace(old, "use aib_ghread::{run_fixed, CALL_TIMEOUT}; // knife"))
+          PY
+          set +e
+          cargo test -p aib-drive --locked --test snapshot --no-run > "$RUNNER_TEMP/w15.log" 2>&1
+          rc=$?
+          set -e
+          cp "$RUNNER_TEMP/source.rs.orig" "$f"
+          if [ "$rc" -ne 0 ] && grep -q 'E0603' "$RUNNER_TEMP/w15.log"; then
+            echo "KNIFE source_pub_use_keeps_old_paths: BITES rc=$rc"
+          else
+            echo "KNIFE source_pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w15.log"; exit 1
+          fi
+          # W7 (a9136 item 5) without the pub use, drive's own tests no longer build: the old path is real.
+          # Keeps the private Read import snapshot.rs uses, so the error is the callers' unresolved GhRead (E0432).
+          f=crates/aib-drive/src/snapshot.rs
+          cp "$f" "$RUNNER_TEMP/snapshot.rs.orig"
+          python3 -I - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          old = "pub use aib_ghread::{GhRead, Read};"
+          assert s.count(old) == 1, "W7 anchor"
+          open(p, "w", encoding="utf-8").write(s.replace(old, "use aib_ghread::Read; // knife"))
+          PY
+          set +e
+          cargo test -p aib-drive --locked --test snapshot --no-run > "$RUNNER_TEMP/w7.log" 2>&1
+          rc=$?
+          set -e
+          cp "$RUNNER_TEMP/snapshot.rs.orig" "$f"
+          if [ "$rc" -ne 0 ] && grep -q 'E0432' "$RUNNER_TEMP/w7.log"; then
+            echo "KNIFE pub_use_keeps_old_paths: BITES rc=$rc"
+          else
+            echo "KNIFE pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w7.log"; exit 1
+          fi
+      # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
+      # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
+      # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
+      - name: aib-expect knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ek() { python3 -I scripts/knife.py crates/aib-expect/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-expect --locked --test expect "$3"; }
+          # KE1 (K1) goals changed without a Touch ID snapshot are still read
+          ek '    if !snap_ok {' \
+             '    if !snap_ok && false { // knife' \
+             goals_changed_without_approval_are_refused
+          # KE2 (K1) a snapshot edited to match is trusted without rehashing it
+          ek '            Some(const_sha(&g, &r) == sha)' \
+             '            Some(const_sha(&g, &r) == sha || true) // knife' \
+             a_snapshot_edited_to_match_is_still_refused
+          # KE3 (K2) the oldest line wins, so an old pass hides a newer failure
+          ek '        .max_by_key(|(i, e)| (e.at, *i))' \
+             '        .min_by_key(|(i, e)| (e.at, *i)) // knife' \
+             a_failing_check_is_never_covered_by_an_older_pass
+          # KE4 (K2) expired evidence still counts
+          ek '    if e.valid_until.is_some_and(|t| t < now) {' \
+             '    if e.valid_until.is_some_and(|t| t < now) && false { // knife' \
+             a_failing_check_is_never_covered_by_an_older_pass
+          # KE5 (K2) the head is never compared, so a pass for an old head stays a pass
+          ek '    if let (Some(pr), Some(head)) = (e.pr, e.head.as_deref()) {' \
+             '    if let (Some(pr), Some(head)) = (e.pr.filter(|_| false), e.head.as_deref()) { // knife' \
+             a_pass_for_an_old_head_or_an_unreadable_head_is_unverified
+          # KE6 (K2, a9136) an unreadable head falls through to the old pass
+          ek '            _ => return Status::Unverified(Why::SourceUnknown { pr }),' \
+             '            _ => {} // knife' \
+             a_pass_for_an_old_head_or_an_unreadable_head_is_unverified
+          # KE7 (K3) the display never merges
+          ek '        .any(|t| t <= ev.at && ev.at - t < MERGE_SECS);' \
+             '        .any(|t| t <= ev.at && ev.at - t < MERGE_SECS && false); // knife' \
+             every_finished_task_is_recorded_and_only_the_display_merges
+          # KE8 (K3, Codex) throttling drops the evaluation itself, not only the display
+          ek '    let mut line = json!({' \
+             '    if merged_display { return Err("knife: merged".to_owned()); } let mut line = json!({ // knife' \
+             every_finished_task_is_recorded_and_only_the_display_merges
+          # KE9 (K3) any event kind triggers (push, plain dm, aib now --clear)
+          ek '    if !EVENTS.contains(&ev.kind.as_str()) {' \
+             '    if !EVENTS.contains(&ev.kind.as_str()) && false { // knife' \
+             only_finished_task_events_trigger
+          # KE10 (K4) recording an event writes something besides its one line
+          ek '    let dir = project_dir(root, uid).map_err(|e| e.to_string())?;' \
+             '    let dir = project_dir(root, uid).map_err(|e| e.to_string())?; let _ = fs::write(dir.join("merge.intent"), b"approved"); // knife' \
+             text_that_claims_approval_changes_nothing
+          # KE11 (Codex #693 M3) evidence for other wording of the goal still counts
+          ek '    if e.goal_sha.as_deref() != Some(goal_sha(&goal.text).as_str()) {' \
+             '    if e.goal_sha.as_deref() != Some(goal_sha(&goal.text).as_str()) && false { // knife' \
+             evidence_for_other_wording_does_not_count
+          # KE12 (Codex #693 M1) a newer unreadable line falls back to the older pass
+          ek '                status: if bad_after {' \
+             '                status: if bad_after && false { // knife' \
+             a_newer_unreadable_line_hides_an_older_pass
+          # KE13 (Codex #693 M2) a pr without a head is read, so it can never go stale
+          ek '    if pr.is_some() != head.is_some() {' \
+             '    if pr.is_some() != head.is_some() && false { // knife' \
+             fields_of_the_wrong_type_or_a_pr_without_a_head_are_unreadable
+          # KE14 (Codex #693 M4) a file over its limit is read anyway
+          ek '    if t.len() as u64 > max {' \
+             '    if t.len() as u64 > max && false { // knife' \
+             local_files_over_their_limit_are_errors
+          # KE15 (a9136 #693) every PR the history names is read, so old PRs push the newest past MAX_PRS
+          ek '            (Some(e), false) => e.pr,' \
+             '            (Some(_), false) => evidence.lines.iter().find_map(|e| e.pr), // knife' \
+             old_prs_never_push_the_latest_one_out
+          # KE16 (a9136 #693 L) a line dated in the future is dropped silently, the older pass shows
+          ek '    let bad_after = evidence.bad.iter().cloned().chain(future).any(|(pos, g)| {' \
+             '    let bad_after = evidence.bad.iter().cloned().chain(future.filter(|_| false)).any(|(pos, g)| { // knife' \
+             a_line_dated_in_the_future_is_unreadable
+          # KE17 (a9136 #693 L) a half line left by a cut write is glued to the next one
+          ek '        && f.read_exact(&mut last).is_ok()' \
+             '        && f.read_exact(&mut last).is_ok() && false // knife' \
+             a_half_line_left_by_a_cut_write_is_not_glued_to_the_next
+          # KE18 (a9136 #693 L) the evaluation log is written through a symlink
+          ek '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) {' \
+             '    if fs::symlink_metadata(&log).is_ok_and(|m| !m.is_file()) && false { // knife' \
+             the_evaluation_log_is_never_written_through_a_link
+          # KE19 (Codex #693 r2) an older line appended after an unreadable one clears it (last position, not the chosen line)
+          ek '        g.as_deref().is_none_or(|x| x == goal) && latest.is_none_or(|l| pos > l.pos)' \
+             '        g.as_deref().is_none_or(|x| x == goal) && evidence.lines.iter().filter(|e| e.goal == goal && e.at <= limit).map(|e| e.pos).max().is_none_or(|l| pos > l) // knife' \
+             a_newer_unreadable_line_hides_an_older_pass
+          # KE20 (Codex #693 r2) prs_of picks without the future limit, so a good PR line after a future one is never read
+          ek '        .filter_map(|g| match pick(evidence, g, now) {' \
+             '        .filter_map(|g| match pick(evidence, g, now.max(u64::MAX)) { // knife' \
+             a_pr_line_after_a_future_line_is_read_and_counts
+          # KE21 (ebb36 #693 L7) a guess is counted as a pass
+          ek '    if e.inferred {' \
+             '    if e.inferred && false { // knife' \
+             inferred_lines_and_unreadable_lines_are_shown_as_such
+          # KE22 (ebb36 #693 M1) a card with no goals says "all passed"
+          ek '    if report.rows.is_empty() {' \
+             '    if report.rows.is_empty() && false { // knife' \
+             a_card_with_no_goals_never_says_all_passed
+          # KE23 (ebb36 #693 M2) a check line with no check id and nothing to go stale on is a pass forever
+          ek '    if !inferred && (check.is_empty() || (head.is_none() && valid_until.is_none())) {' \
+             '    if !inferred && false { // knife' \
+             a_check_line_must_say_what_ran_and_be_able_to_go_stale
+          # KE24 (ebb36 #693 M3) any approval ever made counts, so going back to a replaced one reads as approved
+          ek '        if latest != sha {' \
+             '        if latest != sha && false { // knife' \
+             only_the_last_approval_in_the_ledger_counts
+          # KE25 (c477a / ebb36 #693 L1) an unreadable evidence file is reported as an unreadable card
+          ek '        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(' \
+             '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
+             an_evidence_file_that_cannot_be_read_says_so
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -1165,6 +1503,10 @@ jobs:
           tk '            .scratch_git(&args)' \
              '            .src_git(&args) // knife: merge in the repository itself' \
              heads_on_different_files_stack_cleanly_and_match_a_real_merge
+          # T5 (#644 / #675) every trial's scratch repository gets the same name
+          tk '            .suffix(".git")' \
+             '            .suffix(".git").rand_bytes(0) // knife: one name for all' \
+             trials_made_at_once_each_get_their_own_scratch
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
@@ -1422,8 +1764,9 @@ jobs:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 60: these knives took ~41 min inside the macOS rust cell (11-12); own job so they run beside it (a63ab / a9136 11-12 23:5x)
-    timeout-minutes: 60
+    # 90: ~41 min inside the macOS rust cell (11-12), 51.5 min as its own job on #732 run 43273505548 (cache
+    # restore + compile included); 60 left under 9 min of room (c477a 11-13, f1fae FALLBACK #732)
+    timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
     env:
@@ -3294,14 +3637,39 @@ jobs:
           ck cfonly.rs '        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),' \
              '        Outcome::Red("fw_not_on_card") => {} // knife' \
              every_card_of_the_edge_must_carry_the_firewall
+          # E10 7.6 cache flush (c477a L7: never a cache other sites share)
+          # CF1 a clear that names more than its hosts (purge_everything with them) is let through
+          ck sitedns.rs '    m.len() == 1' '    m.len() >= 1 // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF2 a clear of any body (the whole zone, files, prefixes) is let through
+          ck sitedns.rs '        ("POST", ["", "zones", z, "purge_cache"], None, Some(b)) => valid_id(z) && purge_body_ok(b),' \
+             '        ("POST", ["", "zones", z, "purge_cache"], None, _) => valid_id(z), // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF3 a clear of more names than one call may carry is let through
+          ck sitedns.rs '        && names.len() <= PURGE_HOSTS_MAX' \
+             '        && (names.len() <= PURGE_HOSTS_MAX || true) // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF4 a name twice is let through
+          ck sitedns.rs '        && seen.len() == names.len()' \
+             '        && (seen.len() == names.len() || true) // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF5 a name of another zone goes into the clear
+          ck sitedns.rs '    let mine: Vec<&str> = names.iter().copied().filter(|n| in_zone(n, zone)).collect();' \
+             '    let mine: Vec<&str> = names.iter().copied().filter(|n| in_zone(n, zone) || true).collect(); // knife' \
+             a_cache_clear_body_keeps_to_the_zone
+          # CF6 a clear is the publisher's and not the editor's
+          ck customer.rs '            Request::PhpReload | Request::CacheFlush => Operation::Edit,' \
+             '            Request::PhpReload => Operation::Edit, Request::CacheFlush => Operation::Publish, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
-    # 60: these knives took ~29 min inside the macOS rust cell (11-12); own job so they run beside it (a63ab / a9136 11-12 23:5x)
-    timeout-minutes: 60
+    # 90: ~29 min inside the macOS rust cell (11-12), but as its own job on #732 run 43273505548 it was cancelled at
+    # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
+    timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
     env:
@@ -5076,3 +5444,25 @@ jobs:
           hk edgecmd.rs '    if needs_ack && !opts.accept_diff {' \
              '    if needs_ack && !opts.accept_diff && false { // knife' \
              a_changed_list_needs_accept_diff
+          # E10 7.6 cache flush, the host side
+          # CF7 no Cloudflare key on the host reads as a failure instead of cf_skipped
+          hk cachecmd.rs '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CF_SKIPPED),' \
+             '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("no key".to_owned()), // knife' \
+             no_key_on_the_host_skips_cloudflare_and_is_not_a_failure
+          # CF8 the page cache plugin is cleared without asking whether it is there
+          hk cachecmd.rs '        return "absent";' '        let _ = "absent"; // knife' \
+             a_page_cache_plugin_that_is_not_active_is_left_alone
+          # CF9 a customer key may not approve a cache clear
+          hk opstore.rs '    "site.cache-flush",' '    "site.cache-flush-not", // knife' \
+             the_customer_clear_is_journaled_as_the_customer_keys_and_never_blocks
+          # CF10 (33e28 L2) a plugin list WordPress did not give reads as "absent", not "failed"
+          hk cachecmd.rs '        Err(_) => return "failed",' '        Err(_) => return "absent", // knife' \
+             a_plugin_list_that_cannot_be_read_is_failed_not_absent
+          # CF11 (33e28 L1) the last clear of the site is not waited for
+          hk cachecmd.rs '    next.checked_sub(now).filter(|left| *left > 0)' \
+             '    next.checked_sub(now).filter(|left| *left > 0 && false) // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
+          # CF12 (33e28 L1) the gap is not asked before the clear runs
+          hk cachecmd.rs '            if let Some(left) = wait_left(&lasts, &gate_on, now) {' \
+             '            if let Some(left) = wait_left(&lasts, &gate_on, now).filter(|_| false) { // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
