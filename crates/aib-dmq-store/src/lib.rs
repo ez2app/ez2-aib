@@ -25,6 +25,7 @@
 pub mod fsx;
 pub mod locks;
 pub mod pyjson;
+pub mod recv;
 pub mod store;
 
 pub use locks::{LockError, SeatLock};
