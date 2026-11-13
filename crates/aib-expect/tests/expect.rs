@@ -725,8 +725,11 @@ fn a_line_dated_in_the_future_is_unreadable() {
         id: "A1".into(),
         text: "a".into(),
     }];
-    let pass = ev("A1", "a", NOW - 10, 0);
-    let far = ev("A1", "a", NOW + FUTURE_SECS + 1, 1);
+    // valid forever, so the last check at u64::MAX is about the date alone
+    let mut pass = ev("A1", "a", NOW - 10, 0);
+    pass["valid_until"] = json!(u64::MAX);
+    let mut far = ev("A1", "a", NOW + FUTURE_SECS + 1, 1);
+    far["valid_until"] = json!(u64::MAX);
     let log = parse_evidence(&format!("{pass}\n{far}\n"));
     assert_eq!(
         status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
