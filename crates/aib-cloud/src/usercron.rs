@@ -49,13 +49,13 @@ pub const SELF_URL_HINT: &str = "排程已由主機 timer 處理，這行可移�
 
 /// What one of `cron.allow` / `cron.deny` says about the site's user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Listed {
+enum File {
     /// The file is not there.
-    None,
+    Absent,
     /// The file names the user.
-    Listed,
+    Names,
     /// The file is there and does not name the user.
-    Unlisted,
+    Omits,
 }
 
 /// What [`S18_SCRIPT`] printed, read strictly: each part once, in its order.
@@ -64,18 +64,18 @@ struct Seen<'a> {
     load: &'a str,
     file: &'a str,
     active: &'a str,
-    allow: Listed,
-    deny: Listed,
+    allow: File,
+    deny: File,
     /// `None` when the user has no crontab; else lines that are not comments, and of those
     /// the ones that call `wp-cron.php` with curl or wget.
     tab: Option<(u32, u32)>,
 }
 
-fn listed(line: &str, marker: &str) -> Option<Listed> {
+fn listed(line: &str, marker: &str) -> Option<File> {
     match line.strip_prefix(marker)?.strip_prefix(' ')? {
-        "none" => Some(Listed::None),
-        "listed" => Some(Listed::Listed),
-        "unlisted" => Some(Listed::Unlisted),
+        "none" => Some(File::Absent),
+        "listed" => Some(File::Names),
+        "unlisted" => Some(File::Omits),
         _ => None,
     }
 }
@@ -165,9 +165,9 @@ fn judge(seen: &Seen<'_>) -> Outcome {
         _ => return Outcome::Unknown("user_cron_unparsed"),
     }
     let denied = match seen.allow {
-        Listed::Listed => false,
-        Listed::Unlisted => true,
-        Listed::None => seen.deny == Listed::Listed,
+        File::Names => false,
+        File::Omits => true,
+        File::Absent => seen.deny == File::Names,
     };
     if denied {
         return Outcome::Red("user_cron_denied");
