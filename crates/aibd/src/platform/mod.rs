@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use lifecycle::{Lifecycle, Step};
 
+pub mod check_tree;
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod lifecycle;

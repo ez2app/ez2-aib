@@ -615,7 +615,8 @@ fn status_of(goal: &Goal, e: Option<&Evidence>, snap: &Snapshot, now: u64) -> St
     }
     if let (Some(pr), Some(head)) = (e.pr, e.head.as_deref()) {
         match snap.pr_heads.get(&pr) {
-            Some(Some(now_head)) if now_head == head => {}
+            // a sha written in capitals is the same commit (ebb36 #693 N3)
+            Some(Some(now_head)) if now_head.eq_ignore_ascii_case(head) => {}
             Some(Some(now_head)) => {
                 return Status::Unverified(Why::StaleHead {
                     pr,
@@ -883,7 +884,14 @@ pub fn clean(s: &str, max: usize) -> String {
     let one: String = s
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .filter(|c| !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'))
+        // invisible or direction-changing marks (ebb36 #693 N4 adds U+00AD, U+061C, U+180E,
+        // the variation selectors and the tag block)
+        .filter(|c| {
+            !matches!(c,
+                '\u{00ad}' | '\u{061c}' | '\u{180e}'
+                | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}'
+                | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}')
+        })
         .collect();
     let one = one.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= max {

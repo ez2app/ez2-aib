@@ -307,8 +307,10 @@ pub struct TreeHandle {
     /// unique ids read while each process was alive (lineage on only)
     uniques: BTreeMap<u32, u64>,
     lineage_incomplete: bool,
-    /// G1: the fork watcher saw a child gone before it could be read.
-    /// Latched for the session (043dd 21:42 #1): widens the orphan check.
+    /// G1: the fork watcher saw a child gone before it could be read, or a
+    /// lineage pass found a recorded process gone before its unique id was
+    /// read (DECISION-lineage-gone-unread). Latched for the session
+    /// (043dd 21:42 #1): widens the orphan check.
     unread_gone: bool,
     /// G1 (043dd M1): the session's coalition, set only when the root's
     /// read the same as aibd's own at start (the self-check of a private
@@ -1028,6 +1030,12 @@ impl TreeHandle {
         );
         if !a.complete {
             self.lineage_incomplete = true;
+        }
+        // DECISION-lineage-gone-unread (c477a 11-13): a recorded process gone
+        // before its unique id was read is the G1 case — widen the orphan
+        // check (latched, like the fork watch's own flag), never "incomplete"
+        if a.gone_unread > 0 {
+            self.unread_gone = true;
         }
         for f in &a.found {
             if self.known.insert(f.pid, f.start).is_none() {

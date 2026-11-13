@@ -64,6 +64,35 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   (cabin lookup and socket, kill switch, edition and bot checks) is asked through
   `Context` at the point 1.x asks it. Not wired to a command yet
   (B4-1b: `aibd ctl seat open`).
+- `aib-public-leak` (new, RULES §16 / approvals-to-rust C10): checks what a PR adds to this public
+  repository — added diff lines and their paths, commit messages, PR title / body — against a
+  secret denylist (`AIB_PUBLIC_DENYLIST`, case-insensitive) and for public IPv4 addresses
+  (documentation, private, shared, loopback and non-unicast ranges pass). Prints place and rule
+  number only, never the text; no denylist ⇒ `denylist_absent` and only the IPv4 rule. Exit 0 / 1
+  findings / 2 usage or git error. Paths come from the `diff --git` line too, so a new empty
+  file or a mode-only change has its path checked. CI: `public-leak` job in ci.yml (PRs) and
+  `public-leak-text.yml` (title / body edited after the last push; not a required check); both
+  build the gate from the base commit and run it on the PR checkout, and only that binary gets
+  the denylist. Becomes `aib-verify public-leak` once aib-verify is on main.
+- `aib-public-leak` reads `.gitattributes` from the base (`git --attr-source=BASE`, 043dd #636 L1):
+  a PR that marks its own files `binary` / `-diff` still has their added lines checked; files
+  the base calls binary are counted in the summary as not read. `--require-denylist`: an absent
+  denylist is exit 3, not a pass (CI passes it once the base-built gate knows the flag, so a
+  fork PR without the secret is red, not silently green).
+- `aib-public-leak` on a git without the global `--attr-source` (before 2.41, e.g. Apple Git 2.39
+  on macOS 15; also an unknown or pre-release version) reads every file as text (`--text`) and
+  says `full_read` in the summary, instead of exit 2 on every run. Stricter, never looser: no
+  attribute can hide a line. `--full-read` forces that path on any git. Git output is read
+  lossily (a file read as text may hold any bytes).
+- macOS: a session whose child exited between aibd reading its start time and its unique id
+  no longer holds its slot for good. The lineage pass counted that as incomplete
+  (`lineage_unavailable`, never re-checked), so the session stayed `stop_unconfirmed` and the
+  next start got `too_many_sessions` (gate_replay `ten_providers_in_a_row_on_one_slot`, round 8,
+  on macOS CI). It now widens the orphan check instead, exactly as for a child gone before its
+  start time was read (G1); other read errors still make the pass incomplete. Known limit:
+  if the root's own unique id was never read, the stop is `candidates_incomplete` and the slot
+  is still held (as before, then as `lineage_unavailable`); in normal use the root's id is read
+  at spawn, while it is held.
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)

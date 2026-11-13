@@ -17,7 +17,10 @@
 """
 
 import glob
+import json
 import os
+import shutil
+import subprocess
 
 import wrappers
 from wrappers import rt
@@ -81,10 +84,53 @@ ROOTS = (TOOLS_ROOT,)
 BY_KEY = {r.key: r for r in ROOTS}
 
 
-def resolve(spec, flag_value=None, environ=None):
-    """flag → env → 無。回 {key, value, source, env, flag};source ∈ flag|env|None。
+RUST_BIN_ENV = "AIB_PERSONA_BIN"
 
-    ★ 沒有第四種來源。不落預設、不從 cwd 猜、不從別的 root 推另一個 root。"""
+
+def rust_bin(environ=None):
+    """Rust 版 aib-persona 執行檔:$AIB_PERSONA_BIN → PATH → 本倉 target/{release,debug};找不到 = None。"""
+    env = os.environ if environ is None else environ
+    p = env.get(RUST_BIN_ENV)
+    if p:
+        return p if os.access(p, os.X_OK) else None
+    p = shutil.which("aib-persona", path=env.get("PATH"))
+    if p:
+        return p
+    repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+    for sub in ("release", "debug"):
+        c = os.path.join(repo, "target", sub, "aib-persona")
+        if os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def pinned(environ=None):
+    """`aib-persona doctor` 讀 PINNED(人親手 --pin 的固定 sha)。回 (root 或 None, 錯誤字或 None)。
+    沒裝 Rust 版 / 沒 pin(rc 2)= (None, None);pin 了但樹不對(rc 3)= (None, 原因)——不退回掃描。"""
+    b = rust_bin(environ)
+    if not b:
+        return None, None
+    try:
+        r = subprocess.run([b, "doctor"], capture_output=True, text=True, timeout=30,
+                           env=os.environ if environ is None else dict(environ))
+    except (OSError, subprocess.SubprocessError) as err:
+        return None, str(err)
+    if r.returncode == 0:
+        try:
+            return json.loads(r.stdout)["root"], None
+        except (ValueError, KeyError, TypeError) as err:
+            return None, "aib-persona doctor: %s" % err
+    if r.returncode == 2:
+        return None, None
+    return None, (r.stderr or "").strip()[:300] or "aib-persona doctor rc=%d" % r.returncode
+
+
+def resolve(spec, flag_value=None, environ=None):
+    """flag → env → PINNED(只有 tools root)→ 無。回 {key, value, source, env, flag[, pinned_error]};
+    source ∈ flag|env|pinned|None。
+
+    ★ PINNED 不是猜:是人親手 `aib-persona doctor --pin --repo --ref` 固定的一個 sha,讀時驗樹頭、
+      乾淨、判別檔都對才用(a63ab 11-10 裁 Q5 不算猜);不對就報錯，不落預設、不掃 worktree。"""
     env = os.environ if environ is None else environ
     if flag_value:
         return {"key": spec.key, "value": flag_value, "source": "flag",
@@ -93,6 +139,14 @@ def resolve(spec, flag_value=None, environ=None):
     if from_env:
         return {"key": spec.key, "value": from_env, "source": "env",
                 "env": spec.env, "flag": spec.flag}
+    if spec.env == TOOLS_ROOT_ENV:
+        root, err = pinned(environ)
+        if root:
+            return {"key": spec.key, "value": root, "source": "pinned",
+                    "env": spec.env, "flag": spec.flag}
+        if err:
+            return {"key": spec.key, "value": None, "source": None,
+                    "env": spec.env, "flag": spec.flag, "pinned_error": err}
     return {"key": spec.key, "value": None, "source": None,
             "env": spec.env, "flag": spec.flag}
 
@@ -174,7 +228,8 @@ def unset_message(spec, found=None):
 
 def tool_missing_message(spec, resolved, script_path, found=None):
     """root 給了、但工具檔不在的訊息(比「未指定」更常被誤讀成產品壞掉)。"""
-    src = {"flag": rt("root.src_flag", flag=spec.flag), "env": rt("root.src_env", env=spec.env)}.get(
+    src = {"flag": rt("root.src_flag", flag=spec.flag), "env": rt("root.src_env", env=spec.env),
+           "pinned": rt("root.src_pinned")}.get(
         resolved.get("source"), rt("root.src_unknown"))
     partial = inspect(spec, resolved.get("value"))["is_root"]
     lines = ["tools_missing: " + rt("root.tool_missing_head", path=script_path),
@@ -198,6 +253,8 @@ def report(flag_values=None, environ=None, discover_candidates=True):
                  "marker": spec.markers[0], "gotcha": spec.gotcha,
                  "exists": info["exists"], "missing_files": info["missing"],
                  "is_root": info["is_root"], "ok": info["ok"]}
+        if res.get("pinned_error"):
+            entry["pinned_error"] = res["pinned_error"]
         if not entry["ok"] and discover_candidates:
             entry["discovery"] = discover(spec)
         roots[spec.key] = entry
@@ -214,12 +271,15 @@ def report_hints(rep):
             continue
         found = entry.get("discovery")
         if entry["source"] is None:
+            if entry.get("pinned_error"):
+                lines.append("tools_missing: " + rt("root.pinned_broken", err=entry["pinned_error"]))
             lines.append(unset_message(spec, found))
         elif not entry["exists"]:
             lines.append("tools_missing: %s\n  %s"
                          % (rt("root.dir_missing", value=entry["value"],
-                               src=rt("root.src_env", env=spec.env) if entry["source"] == "env"
-                               else rt("root.src_flag", flag=spec.flag)),
+                               src={"env": rt("root.src_env", env=spec.env),
+                                    "pinned": rt("root.src_pinned")}.get(
+                                   entry["source"], rt("root.src_flag", flag=spec.flag))),
                             rt("root.pass_line", how=_how_to_pass(spec))))
             lines += _where_to_look(spec, found)
         else:

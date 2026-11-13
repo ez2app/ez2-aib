@@ -597,9 +597,8 @@ fn without_lineage_a_clean_looking_cancel_is_unverified() {
 /// DECISION-23: with lineage on and nothing left, macOS still does not say
 /// `clean` (no proven containment): `unverified` with `observed_clean`, or
 /// `candidates_unreadable` if launchd started a same-user agent meanwhile.
-/// `tree-stable` has no intermediate that exits at once: with one, lineage is
-/// honestly incomplete whenever it exits before its unique id is read (H2),
-/// which under a parallel test run is most of the time.
+/// `tree-stable` has no intermediate that exits at once (that case:
+/// `with_lineage_an_intermediate_that_exits_at_once_is_not_lineage_unavailable`).
 #[cfg(target_os = "macos")]
 #[test]
 fn with_lineage_a_clean_looking_cancel_is_observed_clean_never_clean() {
@@ -725,6 +724,107 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
     assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// DECISION-lineage-gone-unread (c477a 11-13): a recorded process gone before
+/// its unique id was read. `ghost` is recorded (as a scan would) but is not in
+/// the process table, so the lineage pass finds it gone. `orphan` (optional)
+/// is a same-user launchd child newer than the root whose creator (2000) is
+/// a dead, unrecorded process newer than the root: what such a ghost leaves
+/// behind. It is only in the fake table, never in the real one, so it is
+/// never signalled; the candidate check then cannot rule it out.
+fn gone_unread_cancel(
+    session: &str,
+    orphan: Option<u32>,
+    root_readable: bool,
+) -> aibd::platform::tree::Report {
+    use aib_sys::fake::FakeProcessInfo;
+    let me = std::process::id();
+    let f = Arc::new(FakeProcessInfo::new());
+    f.add(me, 1, 10, 1, 1);
+    let l = Arc::new(Lineage::from_selfcheck(f.clone(), Ok(())));
+    let mut h = spawn_tree(&SpawnSpec {
+        lineage: Some(l),
+        inject: None,
+        ..spec_watch("complete", session, false)
+    })
+    .unwrap();
+    let root = h.root_pid();
+    let _ = lines(&mut h);
+    h.wait_root(Duration::from_secs(10)).unwrap();
+    // the root's unique id: read by the next lineage pass (it was not in the table at spawn)
+    if root_readable {
+        f.add(root, me, 1000, 10, 50);
+    }
+    // above Linux PID_MAX_LIMIT (4194304) and macOS PID_MAX (99999): never a real process
+    let ghost = 4_194_305;
+    h.record_for_test(ghost, 60);
+    if let Some(o) = orphan {
+        f.add(o, 1, 3000, 2000, 70);
+    }
+    h.cancel(Duration::from_millis(300)).unwrap()
+}
+
+/// Knife for `adopt`'s `Gone ⇒ gone_unread` (put `complete = false` back and
+/// this is `lineage_unavailable` again, the slot never comes back).
+#[test]
+fn a_recorded_process_gone_before_its_unique_id_was_read_is_not_lineage_unavailable() {
+    let rep = gone_unread_cancel("s-gone-unread", None, true);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
+    assert!(rep.candidates_complete, "{rep:?}");
+    assert_eq!(rep.orphan_candidates_extra, 0, "{rep:?}");
+    assert_eq!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
+}
+
+/// Knife for `lineage_pass`'s `gone_unread ⇒ unread_gone`: the ghost's
+/// orphan is found only by the widened check (its creator is no recorded
+/// process and not launchd), so without it this would be `observed_clean`.
+#[test]
+fn an_orphan_of_a_process_gone_before_its_unique_id_was_read_keeps_the_cancel_from_clean() {
+    let orphan = 4_194_306; // above any real pid, like `ghost`
+    let rep = gone_unread_cancel("s-gone-unread-orphan", Some(orphan), true);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert_eq!(rep.orphan_candidates_extra, 1, "{rep:?}");
+    assert!(rep.candidates_unreadable.contains(&orphan), "{rep:?}");
+    assert_ne!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// a9136 (DECISION-lineage-gone-unread): the root itself never had its unique
+/// id read (gone or unreadable). Nothing can be linked to it, so the widened
+/// check cannot run: still never `observed_clean` (`candidates_incomplete`).
+#[test]
+fn a_root_whose_unique_id_was_never_read_is_never_observed_clean() {
+    let rep = gone_unread_cancel("s-gone-unread-root", None, false);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(!rep.candidates_complete, "{rep:?}");
+    assert_eq!(
+        rep.unverified_reason(),
+        Some("candidates_incomplete"),
+        "{rep:?}"
+    );
+    assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// The gate_replay G1 flake on the real OS: `tree` has an intermediate that
+/// forks and exits at once, so it is often gone before its unique id is read
+/// (before: `lineage_unavailable` most of the time under a parallel run, and
+/// the session's slot was never released). Now never `lineage_unavailable`.
+#[cfg(target_os = "macos")]
+#[test]
+fn with_lineage_an_intermediate_that_exits_at_once_is_not_lineage_unavailable() {
+    let mut h = spawn_tree(&spec_lineage("tree", "s-tree-lineage-mid")).unwrap();
+    let v = first_line(&mut h);
+    assert_eq!(v["type"], "ready", "{v}");
+    let rep = h.cancel(Duration::from_millis(300)).unwrap();
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(rep.no_recorded_survivors(), "{rep:?}");
+    let why = rep.unverified_reason();
+    assert!(
+        matches!(why, Some("observed_clean" | "candidates_unreadable")),
+        "{why:?} {rep:?}"
+    );
 }
 
 /// bb7dc #544 High: a start that fails after `spawn()` succeeded. The shell
