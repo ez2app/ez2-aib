@@ -34,52 +34,42 @@ pub const BEAT_FILE: &str = "title-beat-seq";
 pub const VERSION_FILE: &str = "title-version.json";
 pub const SAMPLER: &str = "title/title_sample.py";
 
-/// The interface between this binary and title_sample.py (PLAN-aibtitle-install r2 package 2):
-/// the variables it is given and what it prints. Bump it here AND as `TB_PROTO = N` in
-/// title_sample.py whenever either changes; tests/title.rs pins the two to each other.
-/// A binary left installed while the repository moves on then stops with rc 126 instead of
-/// printing a wrong title, and the pane's existing "3 frames of 126" rule falls back to
-/// title-beat.sh (pane-right-tabs.sh title_beat_launch).
-pub const SAMPLER_PROTO: u32 = 1;
-
-/// title_sample.py exits with this when `AIB_TITLE_PROTO` is set and is not its `TB_PROTO`
-/// (an older binary than the sampler). Mapped to 126 like a sampler without our number.
-pub const PROTO_MISMATCH_RC: i32 = 75;
+/// The sampler this binary was built against: SHA-256 of title_sample.py in the same tree
+/// (PLAN-aibtitle-install r2 package 2). The handshake lives on this side only: the Python
+/// sampler is frozen and does not change for it (Andy 11-13 「程式只能是 rust 沒有 Python」).
+/// A binary left installed while the repository's sampler moves on then stops with rc 126
+/// before anything runs or is written, instead of printing a title from a sampler it was not
+/// built with, and the pane's existing "3 frames of 126" rule falls back to title-beat.sh
+/// (pane-right-tabs.sh title_beat_launch). tests/title.rs pins this to the file in the tree.
+pub const SAMPLER_SHA256: &str = "7479c49b5dfd3496687abedcdad058d36c8338fb1722a823e7520a69db028fe0";
 
 /// Exit code for "this binary and the sampler do not agree": the pane counts it as broken.
 pub const PROTO_FALLBACK_RC: i32 = 126;
 
-/// The `TB_PROTO = N` line of title_sample.py: exactly one, digits only, else None
-/// (a sampler from before the handshake has none).
-pub fn sampler_proto(text: &str) -> Option<u32> {
-    let mut found = None;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("TB_PROTO = ") {
-            let rest = rest.trim_end();
-            if found.is_some() || rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            found = rest.parse().ok();
-        }
-    }
-    found
+/// Lower-case hex SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
-/// Read the sampler under `cockpit` and say whether it speaks SAMPLER_PROTO. One file read,
-/// no process: runs every frame before anything is written.
+/// Read the sampler under `cockpit` and say whether it is the one this binary was built
+/// against. One file read, no process: runs every frame before anything is written.
 pub fn proto_check(cockpit: &Path) -> Result<(), String> {
     let p = cockpit.join(SAMPLER);
-    let text = fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    match sampler_proto(&text) {
-        Some(n) if n == SAMPLER_PROTO => Ok(()),
-        Some(n) => Err(format!(
-            "{} 是介面 {n},這支 aib-title 是 {SAMPLER_PROTO}",
-            p.display()
-        )),
-        None => Err(format!(
-            "{} 沒有 TB_PROTO(比這支 aib-title 舊)",
-            p.display()
-        )),
+    let bytes = fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let got = sha256_hex(&bytes);
+    if got == SAMPLER_SHA256 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} 跟這支 aib-title 編進來的不同(sha256 {} ≠ {})",
+            p.display(),
+            &got[..12],
+            &SAMPLER_SHA256[..12]
+        ))
     }
 }
 
@@ -411,9 +401,6 @@ pub fn sample(env: &Env, beat: &str, window: &str, print_only: bool) -> Result<S
         .env("EZ2_TB_COLOR", "0")
         .env("EZ2_TB_PRINT_ONLY", if print_only { "1" } else { "0" })
         .env("EZ2_TB_WINDOW", window)
-        // the handshake: not an EZ2_TB_* input (the title does not depend on it), so the bash
-        // path and this one still hand the sampler the same EZ2_TB_* set
-        .env("AIB_TITLE_PROTO", SAMPLER_PROTO.to_string())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit());
     match c.output() {
@@ -447,12 +434,6 @@ pub fn once(env: &Env, o: Opts, out: &mut dyn Write) -> i32 {
     }
     let title = match sample(env, &beat, &window, o.print_only) {
         Ok(t) => t,
-        Err(PROTO_MISMATCH_RC) => {
-            eprintln!(
-                "aib-title: title_sample.py 說介面不合(rc {PROTO_MISMATCH_RC});改走 title-beat.sh"
-            );
-            return PROTO_FALLBACK_RC;
-        }
         Err(rc) => return rc,
     };
     if !o.print_only {

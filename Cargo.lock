@@ -184,6 +184,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "aib-release",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
