@@ -333,7 +333,8 @@ pub fn groups(led: &Ledger) -> Value {
         ) {
             (Some(r), Some(n)) => format!("{r}:{n}"),
             (Some(r), None) => r.to_string(),
-            (None, _) => ptr.to_string(),
+            // `dm:q_X` and `q_X` are one dm (ebb36 #627 M1)
+            (None, _) => pointer::dm_alias(ptr).unwrap_or(ptr).to_string(),
         };
         if !seen_ptr.insert(ptr_key) {
             rejected.push(json!({"id": l.id, "why": "duplicate_pointer"}));
@@ -459,6 +460,27 @@ mod tests {
         let g = groups(&l);
         assert_eq!(g["groups"], 1, "{g}");
         assert_eq!(g["rejected"][0]["why"], "duplicate_pointer", "{g}");
+    }
+
+    /// ebb36 #627 M1: `q_X` in one lane and `dm:q_X` in another are one dm.
+    #[test]
+    fn a_dm_id_counts_once_with_or_without_its_prefix() {
+        let mut bare: Value = json!({"schema": EVIDENCE_V2, "persona_code": "p1", "lane": "a",
+            "day": "2026-11-09", "pointer": "q_00000000000000aa", "pointer_kind": "dm", "at_ms": 1});
+        let l = led(&[
+            serde_json::to_string(&bare).unwrap_or_default(),
+            ev("b", "2026-11-10", "dm:q_00000000000000aa", None),
+        ]);
+        let g = groups(&l);
+        assert_eq!(g["groups"], 1, "{g}");
+        assert_eq!(g["rejected"][0]["why"], "duplicate_pointer", "{g}");
+        bare["lane"] = json!("c");
+        bare["pointer"] = json!("q_00000000000000bb");
+        let l = led(&[
+            serde_json::to_string(&bare).unwrap_or_default(),
+            ev("b", "2026-11-10", "dm:q_00000000000000aa", None),
+        ]);
+        assert_eq!(groups(&l)["groups"], 2);
     }
 
     /// 043dd #627 M2: two lines of one file are two pointers; the same line twice is one.

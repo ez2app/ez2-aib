@@ -213,6 +213,18 @@ jobs:
           pk pointer.rs "    if p.contains('/') || p.starts_with('~') || bare_file {" \
              "    if p.contains('/') || p.starts_with('~') || (bare_file && false) { // knife" \
              '--test persona' a_bare_file_name_in_the_working_folder_is_a_path
+          # P12 dm:q_X skips the queue check (ebb36 #627 M1)
+          pk pointer.rs '    let p = dm_alias(p).unwrap_or(p);' \
+             '    let p = p; // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
+          # P13 q_X and dm:q_X are two groups (ebb36 #627 M1)
+          pk lib.rs '            (None, _) => pointer::dm_alias(ptr).unwrap_or(ptr).to_string(),' \
+             '            (None, _) => ptr.to_string(), // knife' \
+             '--lib' a_dm_id_counts_once_with_or_without_its_prefix
+          # P14 dm:q_X is stored with its prefix (ebb36 #627 M1)
+          pk main.rs '    let ptr = pointer::dm_alias(ptr).unwrap_or(ptr).to_string();' \
+             '    let ptr = ptr.to_string(); // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives

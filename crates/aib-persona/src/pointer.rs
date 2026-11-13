@@ -102,6 +102,17 @@ pub fn is_dm_id(p: &str) -> bool {
         .is_some_and(|h| h.len() == 16 && lower_hex(h))
 }
 
+/// The `q_<16 hex>` inside `dm:q_…`, `msg:q_…`, `acb-q_…`, `msg_id_q_…`: seats wrote
+/// a dm id that way while bare `q_` was refused (ebb36 #627 M1). It is the same dm,
+/// so it is checked against the queue and counted once with the bare id.
+pub fn dm_alias(p: &str) -> Option<&str> {
+    ["msg_id", "msg", "dm", "acb"].iter().find_map(|pre| {
+        let r = p.strip_prefix(pre)?;
+        let id = r.strip_prefix([':', '_', '-'])?;
+        is_dm_id(id).then_some(id)
+    })
+}
+
 /// `pr:<owner>/<repo>#<n>` → (repo, n).
 pub fn pr_ref(p: &str) -> Option<(String, u64)> {
     let r = p.strip_prefix("pr:")?;
@@ -319,6 +330,7 @@ pub fn check(p: &str, w: &World) -> Result<Checked, String> {
     if is_event(p) {
         return plain(Kind::Event);
     }
+    let p = dm_alias(p).unwrap_or(p);
     if is_dm_id(p) {
         return if (w.dm_exists)(p) {
             plain(Kind::Dm)
@@ -373,6 +385,37 @@ mod tests {
         ] {
             assert_eq!(legacy_kind(p), k, "{p}");
         }
+    }
+
+    #[test]
+    fn a_prefixed_dm_id_is_the_dm_id() {
+        for (p, want) in [
+            ("dm:q_0123456789abcdef", Some("q_0123456789abcdef")),
+            ("msg_id_q_0123456789abcdef", Some("q_0123456789abcdef")),
+            ("acb-q_0123456789abcdef", Some("q_0123456789abcdef")),
+            ("msg:q_0123456789abcdef", Some("q_0123456789abcdef")),
+            ("q_0123456789abcdef", None),
+            ("dm:q_0123456789abcde", None),
+            ("dm:q_0123456789ABCDEF", None),
+            ("dm:abcd", None),
+            ("dmq_0123456789abcdef", None),
+        ] {
+            assert_eq!(dm_alias(p), want, "{p}");
+        }
+        let (cwd, home) = (Path::new("/nonexistent"), Path::new("/nonexistent"));
+        let w = World {
+            cwd,
+            home,
+            roots: &[],
+            dm_exists: &|id: &str| id == "q_00000000000000aa",
+            pr_exists: &|_: &str, _: u64| Ok(false),
+        };
+        assert_eq!(
+            check("dm:q_00000000000000aa", &w).map(|c| c.kind),
+            Ok(Kind::Dm)
+        );
+        let e = check("dm:q_00000000000000bb", &w).err().unwrap_or_default();
+        assert!(e.contains("not in the dm queue"), "{e}");
     }
 
     #[test]

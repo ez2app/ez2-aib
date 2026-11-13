@@ -166,6 +166,13 @@ fn dm_ids_must_be_in_the_queue_including_retired() {
     assert_eq!(e.add("q_00000000000000bb", "b", "seat:aaaaa").0, 0);
     let (rc, _, err) = e.add("q_00000000000000cc", "c", "seat:aaaaa");
     assert_eq!(rc, 2, "{err}");
+    // ebb36 #627 M1: a prefixed id is the same dm, checked and stored bare
+    let (rc, _, err) = e.add("dm:q_00000000000000cc", "c", "seat:aaaaa");
+    assert_eq!(rc, 2, "{err}");
+    let (rc, v, err) = e.add("dm:q_00000000000000aa", "c", "seat:aaaaa");
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(v["pointer"], "q_00000000000000aa", "{v}");
+    assert_eq!(v["pointer_kind"], "dm", "{v}");
 }
 
 #[test]

@@ -333,7 +333,9 @@ fn evidence_add(a: &Args) -> R<Value> {
         dm_exists: &dm_exists,
         pr_exists: &pr_exists,
     };
-    let ptr = a.get("--pointer")?.trim().to_string();
+    // `dm:q_X` is stored as `q_X`, the id the queue knows (ebb36 #627 M1)
+    let ptr = a.get("--pointer")?.trim();
+    let ptr = pointer::dm_alias(ptr).unwrap_or(ptr).to_string();
     let c = pointer::check(&ptr, &w).map_err(Fail::Usage)?;
     let at = now_ms();
     let mut v = json!({
