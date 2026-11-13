@@ -1476,6 +1476,35 @@ jobs:
           # DS7 a transition-lock timeout is an error, not lock_timeout (rc 10)
           sk store.rs '            Err(LockError::Timeout { .. }) => {' '            Err(LockError::Timeout { .. }) if false => {' \
              a_timed_out_transition_lock_is_lock_timeout_and_changes_nothing
+      - name: aib-dmq-store recv knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py crates/aib-dmq-store/src/recv.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-dmq-store --locked --test recv "$3"; }
+          # RK1 any seat may take another seat's dm
+          rk '.is_some_and(|a| a.class == ActorClass::Seat && a.ident.as_deref() == Some(seat))' \
+             '.is_some_and(|a| a.class == ActorClass::Seat || a.ident.as_deref() == Some(seat))' \
+             only_the_receiving_seat_may_take
+          # RK2 a long-message pointer outside the relay folder is read
+          rk 'name_ok && rp.parent().is_some_and(|p| dirs.iter().any(|d| d == p))' \
+             'name_ok || rp.parent().is_some_and(|p| dirs.iter().any(|d| d == p))' \
+             a_long_message_is_read_from_the_relay_folder_only
+          # RK3 close goes through after the dm changed since take
+          rk 'if taken_differs(taken, cur) {' 'if false && taken_differs(taken, cur) {' \
+             close_after_the_dm_changed_since_take_is_refused
+          # RK4 a notice stays read after take
+          rk '== Some("notice")' '== Some("knife")' a_notice_is_archived_when_taken_and_gets_no_note
+          # RK5 zero-width / direction characters stay in a wait
+          rk '.filter(|c| !is_format(*c))' '.filter(|c| !is_format(*c) || c.is_alphanumeric() || true)' \
+             take_with_a_wait_writes_it_cleaned
+          # RK6 another seat's tidy-up agent may write a wait
+          rk "(ActorClass::Agent, Some(i)) => i.split('/').next() == Some(seat)," \
+             "(ActorClass::Agent, Some(i)) => !i.is_empty()," wait_by_the_seat_or_its_agent_and_clearing_it
+          # RK7 a wait on a dm not in progress
+          rk '    if status_of(&item) != "read" {' '    if status_of(&item) != "read" && false {' \
+             wait_by_the_seat_or_its_agent_and_clearing_it
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
