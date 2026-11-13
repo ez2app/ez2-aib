@@ -22,7 +22,12 @@ pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch", "aib-approve"];
 /// `(crate, through)`: `crate` may reach aib-sys, but only through `through`
 /// (a path that avoids `through` is still refused). DECISION-10 B: the
 /// measurement tool uses aib-procwatch, which keeps aib-sys types private.
-pub const SYS_VIA: &[(&str, &str)] = &[("aib-forkcount", "aib-procwatch")];
+/// aib-consent: only through aib-approve (T136 consent uses the owner-key flow; c477a T135-b
+/// slice 2 review M1).
+pub const SYS_VIA: &[(&str, &str)] = &[
+    ("aib-forkcount", "aib-procwatch"),
+    ("aib-consent", "aib-approve"),
+];
 
 /// One allowed dependency of aib-sys: `(name, target, version req, features)`.
 /// Kind is always normal (no dev / build dependencies); `features` sorted.
@@ -426,5 +431,21 @@ mod tests {
             pkg("aib-sys", &[]),
         ]);
         assert_eq!(check(&through).len(), 1, "{:?}", check(&through));
+    }
+
+    #[test]
+    fn aib_consent_reaches_aib_sys_only_through_aib_approve() {
+        let ok = meta(vec![
+            pkg("aib-consent", &["aib-approve"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert!(check(&ok).is_empty(), "{:?}", check(&ok));
+        let direct = meta(vec![
+            pkg("aib-consent", &["aib-approve", "aib-sys"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert_eq!(check(&direct).len(), 1, "{:?}", check(&direct));
     }
 }

@@ -181,12 +181,14 @@ pub fn enroll(dev: &dyn Device, kind: KeyKind) -> Result<KeyFile, KeyError> {
 }
 
 /// Read a key file and check the device still reports the same public key for it
-/// (format check only; see the module notes).
+/// (format check only; see the module notes). Only a different public key is
+/// [`KeyError::FormatChanged`]; a device error comes back as [`KeyError::Device`].
 pub fn load(dev: &dyn Device, v: &Value) -> Result<KeyFile, KeyError> {
     let kf = KeyFile::from_json(v)?;
-    let reported = dev
-        .public_key(&kf.blob)
-        .map_err(|_| KeyError::FormatChanged)?;
+    // A device error is passed on as it is (no GUI session, a blob it cannot read): it
+    // is not proof that the format changed, and must not send the owner to make a new
+    // key (c477a T135-b slice 2 review N1).
+    let reported = dev.public_key(&kf.blob).map_err(KeyError::Device)?;
     if reported != kf.public {
         return Err(KeyError::FormatChanged);
     }

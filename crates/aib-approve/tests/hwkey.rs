@@ -23,6 +23,7 @@ struct Fake {
     probe_err: Option<&'static str>,
     sign_err: Option<&'static str>,
     reported: Option<[u8; PUBLIC_KEY_LEN]>,
+    public_err: Option<&'static str>,
     made: RefCell<Vec<KeyKind>>,
     probes: Cell<u32>,
     signs: Cell<u32>,
@@ -38,6 +39,9 @@ impl Device for Fake {
         self.probe_err.map_or(Ok(()), Err)
     }
     fn public_key(&self, _blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+        if let Some(e) = self.public_err {
+            return Err(e);
+        }
         Ok(self.reported.unwrap_or(PUBLIC))
     }
     fn sign(&self, _blob: &[u8], _reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
@@ -163,6 +167,11 @@ fn loading_refuses_a_key_the_device_reports_differently() {
         ..Fake::default()
     };
     assert_eq!(hwkey::load(&dev, &v), Err(KeyError::FormatChanged));
+    let dev = Fake {
+        public_err: Some("se_error"),
+        ..Fake::default()
+    };
+    assert_eq!(hwkey::load(&dev, &v), Err(KeyError::Device("se_error")));
 }
 
 // ---------- sign ----------

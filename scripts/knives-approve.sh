@@ -146,4 +146,8 @@ kw '    text::check(reason, text::SE_SIGN_MAX).map_err(KeyError::Reason)?;' \
 km '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id)?;' \
    '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id || !key_id.is_empty())?; // knife' \
    a_registered_key_verifies_only_its_own_signature
+# KW8 a device error at load is taken for a format change (c477a slice 2 N1)
+kw '    let reported = dev.public_key(&kf.blob).map_err(KeyError::Device)?;' \
+   '    let reported = dev.public_key(&kf.blob).map_err(|_| KeyError::FormatChanged)?; // knife' \
+   loading_refuses_a_key_the_device_reports_differently
 echo "aib-approve knives: all bit"
