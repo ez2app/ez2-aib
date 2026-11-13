@@ -488,8 +488,33 @@ pub fn eta_min(v: &HostView, now: f64, per_queued: f64) -> Option<(f64, bool)> {
     }
 }
 
-/// Usable machines best first: not hot before hot (whatever the eta), then the soonest
-/// start, then config order. Offline / unreadable are left out.
+/// Under load: hot, or free with no lease but loaded (someone runs there without a lease).
+/// Ranked after every machine that is not (1ced7 M1: `pick` already skips the second kind).
+pub fn loaded_view(v: &HostView) -> bool {
+    is_hot(v) || unleased_busy(v)
+}
+
+/// What the recommendation says about the best machine.
+pub fn why_text(v: &HostView, e: f64, late: bool) -> String {
+    let mut w = if unleased_busy(v) {
+        format!("{} 沒有租約但負載高(有人在跑),沒有安靜的空機", v.name)
+    } else if e == 0.0 {
+        format!("{} 現在就能開跑", v.name)
+    } else {
+        format!("{} 最快，約 {:.0} 分鐘後能開跑", v.name, e)
+    };
+    if late {
+        w.push_str("(持有者已超過自己估的時間，低可信)");
+    }
+    if is_hot(v) {
+        w.push_str("(每台都過負載門檻，仍挑最快的)");
+    }
+    w
+}
+
+/// Usable machines best first: not loaded before loaded (hot, or free but busy without a
+/// lease; whatever the eta), then the soonest start, then config order. Offline / unreadable
+/// are left out.
 pub fn rank<'a>(
     views: &[&'a HostView],
     now: f64,
@@ -501,8 +526,8 @@ pub fn rank<'a>(
         .filter_map(|(i, v)| eta_min(v, now, per_queued).map(|(e, late)| (i, *v, e, late)))
         .collect();
     r.sort_by(|a, b| {
-        is_hot(a.1)
-            .cmp(&is_hot(b.1))
+        loaded_view(a.1)
+            .cmp(&loaded_view(b.1))
             .then(a.2.total_cmp(&b.2))
             .then(a.0.cmp(&b.0))
     });
@@ -728,23 +753,10 @@ pub fn report(
         .iter()
         .map(|(v, e, late)| {
             json!({"name": v.name, "eta_min": (e * 10.0).round() / 10.0, "late": late,
-                   "hot": is_hot(v), "state": v.state.name()})
+                   "hot": is_hot(v), "unleased_busy": unleased_busy(v), "state": v.state.name()})
         })
         .collect();
-    let why = best.map(|(v, e, late)| {
-        let mut w = if *e == 0.0 {
-            format!("{} 現在就能開跑", v.name)
-        } else {
-            format!("{} 最快，約 {:.0} 分鐘後能開跑", v.name, e)
-        };
-        if *late {
-            w.push_str("(持有者已超過自己估的時間，低可信)");
-        }
-        if is_hot(v) {
-            w.push_str("(每台都過負載門檻，仍挑最快的)");
-        }
-        w
-    });
+    let why = best.map(|(v, e, late)| why_text(v, *e, *late));
     let soon = picked.is_none().then(|| soonest(&el)).flatten();
     let hint = soon
         .and_then(|v| cfg.iter().find(|h| h.name == v.name))
@@ -1359,6 +1371,33 @@ mod tests {
             "loaded without a lease ⇒ someone runs there: not picked"
         );
         assert_eq!(view_json(&warm)["unleased_busy"], json!(true));
+    }
+
+    #[test]
+    fn a_free_machine_busy_without_a_lease_is_not_recommended_first() {
+        // 1ced7 M1: warm is free at 0.83 per core (someone runs there without a lease); a is
+        // busy for 30 min. pick skips warm, so the recommendation must not put it first.
+        let now = 10_000.0;
+        let warm = view("warm", Some(0), &loaded("6", "10", "{ 5.0 5.0 5.0 }"));
+        let a = HostView {
+            state: State::Busy,
+            expiry_epoch: Some(now + 30.0 * 60.0),
+            ..view("a", Some(0), &loaded("6", "10", "{ 1.0 1.0 1.0 }"))
+        };
+        assert!(unleased_busy(&warm) && !is_hot(&warm));
+        let r = rank(&[&warm, &a], now, PER_QUEUED_MIN);
+        let names: Vec<_> = r.iter().map(|(v, _, _)| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["a", "warm"],
+            "busy without a lease ranks after a real wait"
+        );
+        // alone, it may still be listed, but never as "can start now"
+        let only = rank(&[&warm], now, PER_QUEUED_MIN);
+        let (v, e, late) = only[0];
+        let w = why_text(v, e, late);
+        assert!(!w.contains("現在就能開跑"), "{w}");
+        assert!(w.contains("有人在跑"), "{w}");
     }
 
     #[test]
