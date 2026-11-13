@@ -790,13 +790,13 @@ pub fn reopen(
     }
     // _load_item: missing, unreadable or a tombstone is "not found" before any move (no
     // rev in the answer, no audit line), as dm_triage_agent.reopen returns early
-    let Some(item) = live_item(store, seat, id)? else {
+    let Some(found) = live_item(store, seat, id)? else {
         return Ok(answer(
             Sink::default(),
             refusal("not_found", Reason::NotFound.message()),
         ));
     };
-    let rev = item_rev(&Value::Object(item));
+    let rev = item_rev(&Value::Object(found));
     let why = format!("{}{text}", aib_dmq::spec::REOPEN_WHY_PREFIX);
     let sink = Sink::default();
     let mut m = store.transition(

@@ -293,11 +293,21 @@ fn the_bash_dispatcher_runs_rust_when_listed_and_python_on_75() {
         !stdout(&o).contains("PYTHON"),
         "and Python does not run after it"
     );
+    // a bare name that is an executable file in the current folder: `[ -f ]` would pass
+    // there while running it looks the name up in PATH
+    let cwd = tempfile::tempdir().expect("cwd");
+    let fake = cwd.path().join("aib-dmq");
+    std::fs::write(&fake, "#!/bin/sh\necho RUST\n").expect("fake");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
     let o = Command::new("bash")
         .arg("-c")
         .arg(". \"$0\"; aib_dmq_route /nowhere/src/cockpit \"$@\"; echo PYTHON")
         .arg(&route)
         .args(["take", "--seat", SEAT, "--id", ID])
+        .current_dir(cwd.path())
         .env_clear()
         .env("AIB_DMQ_RUST", "take")
         .env("AIB_DMQ_BIN", "aib-dmq")
