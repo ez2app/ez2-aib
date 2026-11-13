@@ -53,29 +53,29 @@ fn conflict(msg: &str) -> Response {
     ApiError::new(ErrorCode::IdempotencyConflict, msg).into_response()
 }
 
-/// Claim `key` before the work. `Ok(())` = do the work; `Err(answer)` = answer this and
+/// Claim `key` before the work. `None` = do the work; `Some(answer)` = answer this and
 /// do nothing.
-pub async fn begin(st: &AppState, key: &Option<IdemKey>) -> Result<(), Response> {
+pub async fn begin(st: &AppState, key: &Option<IdemKey>) -> Option<Response> {
     let Some(k) = key.clone() else {
-        return Ok(());
+        return None;
     };
     let store = st.store.clone();
     let claim = tokio::task::spawn_blocking(move || store.idem_claim(&k, &now_rfc3339())).await;
     match claim {
-        Ok(Ok(IdemClaim::Fresh)) => Ok(()),
-        Ok(Ok(IdemClaim::Replay { status, response })) => Err(replay(st, status, &response)),
-        Ok(Ok(IdemClaim::Conflict)) => Err(conflict(
+        Ok(Ok(IdemClaim::Fresh)) => None,
+        Ok(Ok(IdemClaim::Replay { status, response })) => Some(replay(st, status, &response)),
+        Ok(Ok(IdemClaim::Conflict)) => Some(conflict(
             "this Idempotency-Key was used for a different request",
         )),
-        Ok(Ok(IdemClaim::InProgress)) => Err(conflict(
+        Ok(Ok(IdemClaim::InProgress)) => Some(conflict(
             "a request with this Idempotency-Key is still running, or aibd stopped in the \
              middle of it: list the sessions, then use a new key",
         )),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "idempotency claim failed");
-            Err(ApiError::new(ErrorCode::Internal, "internal error").into_response())
+            Some(ApiError::new(ErrorCode::Internal, "internal error").into_response())
         }
-        Err(_) => Err(ApiError::new(ErrorCode::Internal, "internal error").into_response()),
+        Err(_) => Some(ApiError::new(ErrorCode::Internal, "internal error").into_response()),
     }
 }
 

@@ -1851,7 +1851,7 @@ async fn start_keyed(
         Ok(k) => k,
         Err(e) => return e.into_response(),
     };
-    if let Err(answer) = crate::idem::begin(st, &key).await {
+    if let Some(answer) = crate::idem::begin(st, &key).await {
         return answer;
     }
     let (req, asked) = match gate(st, req).await {
@@ -2056,7 +2056,7 @@ pub async fn delete_one(
         Ok(k) => k,
         Err(e) => return e.into_response(),
     };
-    if let Err(answer) = crate::idem::begin(&st, &key).await {
+    if let Some(answer) = crate::idem::begin(&st, &key).await {
         return answer;
     }
     let s = st.sessions.clone();
