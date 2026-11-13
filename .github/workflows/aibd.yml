@@ -1050,7 +1050,13 @@ jobs:
           # O7 --new with --again is let through
           ok '    if new && (instance.is_some() || again) {' '    if new && instance.is_some() { // knife' refusals_one_per_row
           # O8 an empty EZ2_AIB_INSTANCE counts as set
-          ok '    let env_cabin = env("EZ2_AIB_INSTANCE").is_some_and(|v| !v.is_empty());' '    let env_cabin = env("EZ2_AIB_INSTANCE").is_some(); // knife' the_environment_read_through_the_lookup
+          ok '    let env_cabin = env_instance.as_deref().is_some_and(|v| !v.is_empty());' '    let env_cabin = env_instance.is_some(); // knife' the_environment_read_through_the_lookup
+          # O11 the kill switch is not asked (Codex 11-13 #1: it sits between the word count and the AI's name)
+          ok '    if let Some(v) = ctx.killswitch() {' '    if let Some(v) = None::<String> { // knife' the_cabin_lookup_and_the_kill_switch_come_where_1x_has_them
+          # O12 AIB_PROBE_LIVE in the environment is not followed (Codex #3)
+          ok '    let mut probe_live = env("AIB_PROBE_LIVE").is_some_and(|v| !v.is_empty());' '    let mut probe_live = false; // knife' the_environment_read_through_the_lookup
+          # O13 the full cabin name the lookup gives back is dropped
+          ok '            instance = Some(full);' '            let _ = full; // knife' what_the_cabin_lookup_is_asked_and_what_it_gives_back
           # O9 / O10 the role and provider lists drift from 1.x
           ok '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",' '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", // knife' roles_match_the_i18n_keys_in_this_tree
           ok '    "openrouterjev",' '    // knife' providers_and_modes_match_the_1x_launcher

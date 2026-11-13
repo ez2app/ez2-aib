@@ -9,13 +9,15 @@
 //! and exit code. It touches no file, process or window, so it runs the same on
 //! macOS, Linux and Windows.
 //!
-//! Left to the caller (B4-1b, `aibd ctl seat open`), in this order after a parse:
-//! the cabin lookup (short code, socket, in-pane default), the kill switch, edition and
-//! bot checks, the model default, whether the AI's program is installed, and every
-//! side effect. `aib seat re-register` (its own argv) is not parsed here.
+//! The two checks only the caller can make — the cabin lookup (short code, socket) and
+//! the kill switch — are asked through [`Context`] at the point 1.x makes them, so the
+//! first refusal is still 1.x's ([`parse_open`] skips both). Left to the caller after a
+//! parse (B4-1b, `aibd ctl seat open`): the in-pane default cabin, edition and bot
+//! checks, the model default, whether the AI's program is installed, and every side
+//! effect. `aib seat re-register` (its own argv) is not parsed here.
 //!
 //! The environment is read through `env` (tests inject it): `AIB_DRY_RUN`,
-//! `EZ2_AIB_INSTANCE`, `EZ2_AIB_CAPTAIN_ROLES`, `AIB_ALLOW_CUSTOM_ROLE`. Pass
+//! `AIB_PROBE_LIVE`, `EZ2_AIB_INSTANCE`, `EZ2_AIB_CAPTAIN_ROLES`, `AIB_ALLOW_CUSTOM_ROLE`. Pass
 //! `|k| std::env::var(k).ok()`: on Windows that lookup already ignores case.
 //!
 //! Known differences from 1.x, both stricter:
@@ -92,7 +94,47 @@ pub enum Cabin {
     /// Three words and nothing else: the cabin of the pane it is typed in, or a new one.
     Default,
     /// Three words with `--again` or `EZ2_AIB_INSTANCE` set: the caller's cabin.
-    FromEnvironment,
+    /// `instance` is `EZ2_AIB_INSTANCE` as it was (`Some("")` when set but empty), or
+    /// as [`Context::resolve_cabin`] gave it back.
+    FromEnvironment { instance: Option<String> },
+}
+
+/// The cabin lookup 1.x makes (short code → full name, the socket check; :1270–1288).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CabinQuery<'a> {
+    /// The cabin the words name, unless it is the primary written by hand.
+    pub named: Option<&'a str>,
+    /// `EZ2_AIB_INSTANCE` when it names a cabin to look up (set, not empty, not `new`,
+    /// not the primary) and the words name none and do not ask for a new one.
+    pub from_env: Option<&'a str>,
+    pub new: bool,
+    /// A dry run only warns about a cabin that is not found.
+    pub dry_run: bool,
+}
+
+/// What only the caller can look up, asked at the point 1.x asks it, so the first
+/// refusal is the one 1.x gives (Codex 11-13 #1).
+pub trait Context {
+    /// Look up the cabin. `Ok(Some(full))` replaces the name looked up (`named`, else
+    /// `from_env`); `Ok(None)` keeps it; `Err` refuses (use [`OpenError::Cabin`], rc 2).
+    /// Called once, after the fourth word and before the word count is checked.
+    fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError>;
+    /// The kill switch: `Some(what the switch file says)` refuses with rc 3. Asked after
+    /// the word count and the flag clashes, before the AI's name is checked.
+    fn killswitch(&self) -> Option<String>;
+}
+
+/// Words only: no cabin lookup, no kill switch.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WordsOnly;
+
+impl Context for WordsOnly {
+    fn resolve_cabin(&self, _: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
+        Ok(None)
+    }
+    fn killswitch(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The review panel (1.x `OPEN_DM`).
@@ -159,16 +201,26 @@ pub enum OpenError {
     CabinChars(String),
     /// The `--model` value has the wrong shape (plain text).
     Model,
+    /// The cabin lookup refused ([`Context::resolve_cabin`]); the caller's own words.
+    Cabin(String),
+    /// `aib.err.killswitch` (rc 3) with what the switch file says (`value`); the
+    /// renderer adds `path`.
+    Killswitch(String),
 }
 
 impl OpenError {
-    /// The exit code 1.x gives: every refusal here is [`rc::USAGE`].
+    /// The exit code 1.x gives: [`rc::KILLSWITCH`] for the kill switch, else [`rc::USAGE`].
     pub fn rc(&self) -> i32 {
-        rc::USAGE
+        match self {
+            OpenError::Killswitch(_) => rc::KILLSWITCH,
+            _ => rc::USAGE,
+        }
     }
 
     /// The 1.x i18n key, and its parameter, for the keyed refusals; `None` for the ones
-    /// 1.x prints as plain text (see [`fmt::Display`]).
+    /// 1.x prints as plain text (see [`fmt::Display`]). The renderer adds what 1.x adds
+    /// beside the words: `roles` for `aib.err.role_undefined` (each of [`ROLES`] with its
+    /// name in the person's language), `path` for `aib.err.killswitch`.
     pub fn key(&self) -> Option<(&'static str, Option<(&'static str, &str)>)> {
         Some(match self {
             OpenError::Usage | OpenError::Arity => ("aib.err.usage", None),
@@ -179,11 +231,13 @@ impl OpenError {
             OpenError::RoleUndefined(v) => ("aib.err.role_undefined", Some(("role", v))),
             OpenError::ReportsTo(v) => ("aib.err.reports_to", Some(("seat", v))),
             OpenError::Instance(v) => ("aib.err.instance", Some(("instance", v))),
+            OpenError::Killswitch(v) => ("aib.err.killswitch", Some(("value", v))),
             OpenError::Thread(_)
             | OpenError::ReservedCabin(_)
             | OpenError::CabinEmpty
             | OpenError::CabinChars(_)
-            | OpenError::Model => return None,
+            | OpenError::Model
+            | OpenError::Cabin(_) => return None,
         })
     }
 
@@ -201,7 +255,7 @@ impl fmt::Display for OpenError {
             OpenError::Thread(v) => write!(f, "aib: --thread 要 UUID(查法:aib bot list),不是:{v}"),
             OpenError::ReservedCabin(v) => write!(
                 f,
-                "aib: 「{v}」是開席尾端的保留字，不能當艙名(每個保留字最多寫一次)"
+                "aib: 「{v}」是開席尾端的保留字,不能當艙名(每個保留字最多寫一次)"
             ),
             OpenError::CabinEmpty => write!(
                 f,
@@ -212,6 +266,7 @@ impl fmt::Display for OpenError {
                 "aib: 艙解析輸入含非法字元:instance={v}(只准小寫 a-z、數字 0-9 與 -)"
             ),
             OpenError::Model => write!(f, "aib: requested model is missing or invalid"),
+            OpenError::Cabin(m) => write!(f, "{m}"),
             _ => match self.key() {
                 Some((k, Some((n, v)))) => write!(f, "{k} {n}={v}"),
                 Some((k, None)) => write!(f, "{k}"),
@@ -304,14 +359,26 @@ fn value<'a>(it: &mut impl Iterator<Item = &'a String>) -> Result<&'a str, OpenE
     }
 }
 
-/// The words after `aib` (or after `aib seat open`): what they ask for, or the first
-/// refusal 1.x gives for them.
+/// [`parse_open_in`] with words only ([`WordsOnly`]): no cabin lookup, no kill switch.
 pub fn parse_open(
     args: &[String],
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Outcome, OpenError> {
+    parse_open_in(args, env, &WordsOnly)
+}
+
+/// The words after `aib` (or after `aib seat open`): what they ask for, or the first
+/// refusal 1.x gives for them, asking `ctx` what only the caller can look up at the
+/// point 1.x looks it up.
+pub fn parse_open_in(
+    args: &[String],
+    env: impl Fn(&str) -> Option<String>,
+    ctx: &impl Context,
+) -> Result<Outcome, OpenError> {
     let mut dry_run = env("AIB_DRY_RUN").as_deref() == Some("1");
-    let (mut new, mut again, mut probe_live) = (false, false, false);
+    // 1.x passes --probe-live on when AIB_PROBE_LIVE is set and not empty (:2120)
+    let mut probe_live = env("AIB_PROBE_LIVE").is_some_and(|v| !v.is_empty());
+    let (mut new, mut again) = (false, false);
     let mut dm = Dm::Auto;
     let mut reports_to: Option<String> = None;
     let mut model: Option<String> = None;
@@ -441,7 +508,32 @@ pub fn parse_open(
         pos.truncate(3);
     }
 
-    let env_cabin = env("EZ2_AIB_INSTANCE").is_some_and(|v| !v.is_empty());
+    // the cabin lookup: a named cabin (unless the primary by hand), else one the
+    // environment names
+    let mut env_instance = env("EZ2_AIB_INSTANCE");
+    let (full, asked_named, asked_env) = {
+        let q = CabinQuery {
+            named: instance.as_deref().filter(|_| !main_explicit),
+            from_env: env_instance.as_deref().filter(|v| {
+                instance.is_none() && !new && !v.is_empty() && *v != "new" && *v != PRIMARY_CABIN
+            }),
+            new,
+            dry_run,
+        };
+        (
+            ctx.resolve_cabin(&q)?,
+            q.named.is_some(),
+            q.from_env.is_some(),
+        )
+    };
+    if let Some(full) = full {
+        if asked_named {
+            instance = Some(full);
+        } else if asked_env {
+            env_instance = Some(full);
+        }
+    }
+    let env_cabin = env_instance.as_deref().is_some_and(|v| !v.is_empty());
     let default_cabin = pos.len() == 3 && !new && !again && instance.is_none() && !env_cabin;
 
     if !pos.is_empty() && pos.len() != 3 && !PROVIDERS.contains(&pos[0]) {
@@ -452,6 +544,9 @@ pub fn parse_open(
     }
     if new && (instance.is_some() || again) {
         return Err(OpenError::Usage);
+    }
+    if let Some(v) = ctx.killswitch() {
+        return Err(OpenError::Killswitch(v));
     }
     let (provider, mode, role) = (pos[0], pos[1], pos[2]);
     if !PROVIDERS.contains(&provider) {
@@ -490,7 +585,9 @@ pub fn parse_open(
     } else if default_cabin {
         Cabin::Default
     } else {
-        Cabin::FromEnvironment
+        Cabin::FromEnvironment {
+            instance: env_instance,
+        }
     };
     Ok(Outcome::Open(OpenSpec {
         provider: provider.to_string(),

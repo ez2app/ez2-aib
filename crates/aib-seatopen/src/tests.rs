@@ -71,7 +71,10 @@ fn accepted_words_and_what_they_mean() {
         named("0sits", false)
     );
     let s = spec(&["claude", "safe", "dev", "--again"]);
-    assert_eq!((s.cabin, s.again), (Cabin::FromEnvironment, true));
+    assert_eq!(
+        (s.cabin, s.again),
+        (Cabin::FromEnvironment { instance: None }, true)
+    );
     // --instance new = a new cabin; --instance main is the primary, by hand
     assert_eq!(
         spec(&["--instance=new", "codex", "dgrs", "qa"]).cabin,
@@ -139,8 +142,13 @@ fn the_environment_read_through_the_lookup() {
     );
     assert_eq!(
         open(&d, &[("EZ2_AIB_INSTANCE", "x")]).cabin,
-        Cabin::FromEnvironment
+        Cabin::FromEnvironment {
+            instance: Some("x".into())
+        }
     );
+    // Codex #3: AIB_PROBE_LIVE set and not empty = --probe-live
+    assert!(open(&d, &[("AIB_PROBE_LIVE", "1")]).probe_live);
+    assert!(!open(&d, &[("AIB_PROBE_LIVE", "")]).probe_live);
     assert_eq!(
         open(&d, &[("EZ2_AIB_INSTANCE", "")]).cabin,
         Cabin::Default,
@@ -402,4 +410,169 @@ fn providers_and_modes_match_the_1x_launcher() {
     };
     assert_eq!(list("PROVIDERS"), PROVIDERS);
     assert_eq!(list("MODES"), MODES);
+}
+
+/// A caller with a cabin lookup and a kill switch, recording what it was asked.
+struct Fake {
+    cabin: Result<Option<String>, OpenError>,
+    kill: Option<String>,
+    asked: std::cell::RefCell<Vec<String>>,
+}
+
+impl Fake {
+    fn new(cabin: Result<Option<String>, OpenError>, kill: Option<&str>) -> Fake {
+        Fake {
+            cabin,
+            kill: kill.map(str::to_string),
+            asked: Default::default(),
+        }
+    }
+}
+
+impl Context for Fake {
+    fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
+        self.asked.borrow_mut().push(format!(
+            "named={:?} env={:?} new={} dry={}",
+            q.named, q.from_env, q.new, q.dry_run
+        ));
+        self.cabin.clone()
+    }
+    fn killswitch(&self) -> Option<String> {
+        self.kill.clone()
+    }
+}
+
+fn ctx(a: &[&str], env: &[(&str, &str)], c: &Fake) -> Result<Outcome, OpenError> {
+    let env: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    parse_open_in(
+        &args(a),
+        move |k| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
+        c,
+    )
+}
+
+/// Codex 11-13 #1: the cabin lookup and the kill switch come where 1.x has them, so the
+/// first refusal is still 1.x's.
+#[test]
+fn the_cabin_lookup_and_the_kill_switch_come_where_1x_has_them() {
+    let no_cabin = || Fake::new(Err(OpenError::Cabin("aib: no such cabin".into())), None);
+    // the cabin lookup comes before the word count and every name check
+    for a in [
+        &["claude", "safe", "boss", "--instance", "zz"][..],
+        &["claude", "safe", "--instance", "zz"],
+        &["foo", "fast", "Dev", "zz"],
+    ] {
+        assert_eq!(
+            ctx(a, &[], &no_cabin()),
+            Err(OpenError::Cabin("aib: no such cabin".into())),
+            "{a:?}"
+        );
+    }
+    // but after the flags and the fourth word's own check
+    assert_eq!(
+        ctx(&["claude", "safe", "dev", "Bad"], &[], &no_cabin()),
+        Err(OpenError::CabinChars("Bad".into()))
+    );
+    let kill = || Fake::new(Ok(None), Some("stop"));
+    // the kill switch comes after the word count and the flag clashes ...
+    assert_eq!(
+        ctx(&["claude", "safe"], &[], &kill()),
+        Err(OpenError::Arity)
+    );
+    assert_eq!(
+        ctx(&["claude", "safe", "dev", "new", "--again"], &[], &kill()),
+        Err(OpenError::Usage)
+    );
+    // ... and before the AI, the mode and the role
+    for a in [
+        &["foo", "safe", "dev"][..],
+        &["claude", "fast", "dev"],
+        &["claude", "safe", "boss"],
+    ] {
+        let e = ctx(a, &[], &kill()).unwrap_err();
+        assert_eq!(
+            (e.rc(), &e),
+            (3, &OpenError::Killswitch("stop".into())),
+            "{a:?}"
+        );
+    }
+}
+
+#[test]
+fn what_the_cabin_lookup_is_asked_and_what_it_gives_back() {
+    let asked = |a: &[&str], env: &[(&str, &str)]| {
+        let f = Fake::new(Ok(None), None);
+        let _ = ctx(a, env, &f);
+        f.asked.into_inner()
+    };
+    let d = ["claude", "safe", "dev"];
+    assert_eq!(
+        asked(&["claude", "safe", "dev", "6ddf"], &[]),
+        ["named=Some(\"6ddf\") env=None new=false dry=false"]
+    );
+    // the primary by hand is not looked up; nor an env cabin that is empty, new or main
+    assert_eq!(
+        asked(&["claude", "safe", "dev", "main"], &[]),
+        ["named=None env=None new=false dry=false"]
+    );
+    for v in ["", "new", "main"] {
+        assert_eq!(
+            asked(&d, &[("EZ2_AIB_INSTANCE", v)]),
+            ["named=None env=None new=false dry=false"],
+            "{v:?}"
+        );
+    }
+    assert_eq!(
+        asked(&d, &[("EZ2_AIB_INSTANCE", "dab9"), ("AIB_DRY_RUN", "1")]),
+        ["named=None env=Some(\"dab9\") new=false dry=true"]
+    );
+    // asking for a new cabin: the environment's is not looked up
+    assert_eq!(
+        asked(
+            &["claude", "safe", "dev", "new"],
+            &[("EZ2_AIB_INSTANCE", "dab9")]
+        ),
+        ["named=None env=None new=true dry=false"]
+    );
+    // a full name given back replaces the one looked up
+    let full = "20261113-035938-dab9";
+    let f = Fake::new(Ok(Some(full.into())), None);
+    let open = |a: &[&str], env: &[(&str, &str)]| match ctx(a, env, &f) {
+        Ok(Outcome::Open(s)) => s.cabin,
+        other => panic!("{a:?}: {other:?}"),
+    };
+    assert_eq!(
+        open(&["claude", "safe", "dev", "dab9"], &[]),
+        named(full, false)
+    );
+    assert_eq!(
+        open(&d, &[("EZ2_AIB_INSTANCE", "dab9")]),
+        Cabin::FromEnvironment {
+            instance: Some(full.into())
+        }
+    );
+}
+
+/// The refusals 1.x prints as plain text, word for word as they are in its source.
+#[test]
+fn plain_refusals_match_the_1x_source_word_for_word() {
+    let read =
+        |p: &str| String::from_utf8_lossy(&std::fs::read(repo().join(p)).unwrap()).into_owned();
+    let aib = read("aib/src/cockpit/aib");
+    let cabin = read("aib/src/cockpit/cabin_resolve.sh");
+    assert!(aib.contains(&OpenError::Thread("$_thr".into()).to_string()));
+    assert!(aib.contains(&OpenError::ReservedCabin("%s".into()).to_string()));
+    assert!(aib.contains(&OpenError::Model.to_string()));
+    // cabin_resolve.sh prints the label (`instance`) through %s as well
+    let label = |e: OpenError| e.to_string().replacen("instance", "%s", 1);
+    assert!(cabin.contains(&label(OpenError::CabinEmpty)));
+    assert!(cabin.contains(&label(OpenError::CabinChars("%s".into()))));
+    assert_eq!(
+        OpenError::Killswitch("x".into()).key(),
+        Some(("aib.err.killswitch", Some(("value", "x"))))
+    );
+    assert_eq!(OpenError::Cabin("m".into()).to_string(), "m");
 }
