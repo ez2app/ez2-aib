@@ -14,7 +14,7 @@
 //! `session-policy.json`): missing ⇒ defaults (alert on, auto revive off,
 //! 600 s; Andy 11-13); unreadable or invalid ⇒ aibd does not start.
 
-use aib_store::{AliveDown, NewEvent, Store};
+use aib_store::{AliveDown, NewEvent, SessionRow, Store};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -121,6 +121,12 @@ pub struct Alive {
     /// from a process listing: "could not list" must not read as "all gone").
     live: LiveFn,
     now: NowFn,
+    /// Every round runs under this lock. The number counts the session
+    /// starts / ends seen; a round that took its own live list (timer, start)
+    /// only writes if no start / end came in meanwhile, else it looks again
+    /// (Codex A11-2 M1: a stale list must not bring back a seat closed on
+    /// purpose). Lock order: sessions, then this; never the other way.
+    rounds: Mutex<u64>,
     /// A timer thread is running (one at a time).
     running: Mutex<bool>,
     /// Test hook: no timer thread (tests call [`Alive::run_due`] themselves).
@@ -134,6 +140,15 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// A session that really ran (not refused / failed to start), for the
+/// restart check.
+fn really_ran(s: &SessionRow) -> bool {
+    !matches!(
+        s.ended_by.as_deref(),
+        Some("spawn_failed" | "policy_refused")
+    )
+}
+
 impl Alive {
     pub fn new(
         store: Arc<Store>,
@@ -145,6 +160,7 @@ impl Alive {
             policy,
             live: Arc::new(live),
             now: Arc::new(unix_now),
+            rounds: Mutex::new(0),
             running: Mutex::new(false),
             no_thread: false,
         })
@@ -162,6 +178,7 @@ impl Alive {
             policy,
             live: Arc::new(live),
             now: Arc::new(now),
+            rounds: Mutex::new(0),
             running: Mutex::new(false),
             no_thread: true,
         })
@@ -204,22 +221,88 @@ impl Alive {
         }
     }
 
+    fn lock_rounds(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.rounds.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A round from a session hook: its live list is exact (taken under the
+    /// sessions lock), so it always writes, and it tells the other rounds.
     fn round_with(&self, live: Vec<String>, closed: Vec<String>) {
+        let mut g = self.lock_rounds();
+        *g = g.wrapping_add(1);
+        self.round_locked(live, closed);
+    }
+
+    /// A round with a live list taken here (timer, start), plus `extra`
+    /// seats counted as alive. Retried while hooks come in between.
+    fn round_fresh(&self, extra: &[String]) -> Vec<AliveDown> {
+        loop {
+            let seen = *self.lock_rounds();
+            let mut live = (self.live)();
+            live.extend(extra.iter().cloned());
+            let g = self.lock_rounds();
+            if *g == seen {
+                let down = self.round_locked(live, Vec::new());
+                drop(g);
+                return down;
+            }
+        }
+    }
+
+    /// The round itself; the alert and its `alive.down` event (the outbox
+    /// for B1's dm) are written in one transaction (Codex A11-2 M2).
+    fn round_locked(&self, live: Vec<String>, closed: Vec<String>) -> Vec<AliveDown> {
         let now = (self.now)();
-        match self.store.alive_round(
+        let notify = self.policy.alive_alert;
+        let auto = if self.policy.auto_revive {
+            "not_available"
+        } else {
+            "off"
+        };
+        let at = crate::sessions::rfc3339_of_unix(now);
+        let made = self.store.alive_round_events(
             now,
             Self::live_pairs(live),
             closed,
             self.policy.alive_after_s,
-        ) {
-            Ok(down) => self.report(now, down),
-            Err(e) => tracing::error!(error = %e, "alive: could not record"),
+            move |d, seq| NewEvent {
+                event_id: format!("ev_alive_{}_{seq}", d.cabin),
+                aggregate_type: "alive".into(),
+                aggregate_id: format!("alive:{}", d.cabin),
+                sequence: seq,
+                event_type: "alive.down".into(),
+                correlation_id: None,
+                occurred_at: at.clone(),
+                payload: serde_json::json!({
+                    "seat_id": d.cabin,
+                    "last_seen": d.last_seen,
+                    "gone_for_s": d.gone_for_s,
+                    "notify": notify,
+                    "auto_revive": auto,
+                    "restore": serde_json::Value::Null,
+                }),
+            },
+        );
+        match made {
+            Ok(down) => {
+                for d in &down {
+                    tracing::warn!(seat = %d.cabin, gone_for_s = d.gone_for_s,
+                        notify, "seat down past the threshold");
+                }
+                down
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "alive: round failed");
+                Vec::new()
+            }
         }
     }
 
     /// At aibd start: seats that were alive when aibd stopped get a fresh
     /// threshold from now; others keep their time, and anything already due
     /// is reported at once (a9136 11-13: a restart must not lose an alert).
+    /// "When aibd stopped" = the session of the seat that ended last (Codex
+    /// A11-2 M3), not the one started last.
     pub fn start(self: &Arc<Self>) {
         let rows = match self.store.alive_rows() {
             Ok(r) => r,
@@ -235,14 +318,17 @@ impl Alive {
                 self.store
                     .sessions_of_seat(&r.cabin)
                     .ok()
-                    .and_then(|v| v.last().and_then(|s| s.ended_by.clone()))
+                    .and_then(|v| {
+                        v.into_iter()
+                            .filter(|s| s.ended_at.is_some() && really_ran(s))
+                            .max_by(|a, b| a.ended_at.cmp(&b.ended_at))
+                    })
+                    .and_then(|s| s.ended_by)
                     .is_some_and(|b| alive_at_stop(&b))
             })
             .map(|r| r.cabin.clone())
             .collect();
-        let mut live = (self.live)();
-        live.extend(fresh);
-        self.round_with(live, Vec::new());
+        self.round_fresh(&fresh);
         self.kick();
     }
 
@@ -253,29 +339,14 @@ impl Alive {
             .alive_rows()
             .ok()?
             .into_iter()
-            .filter(|r| r.alerted_at.is_none() && !live.iter().any(|s| *s == r.cabin))
+            .filter(|r| r.alerted_at.is_none() && !live.contains(&r.cabin))
             .map(|r| r.last_seen + self.policy.alive_after_s)
             .min()
     }
 
     /// One round now: report every seat that is due. Returns what was reported.
     pub fn run_due(&self) -> Vec<AliveDown> {
-        let now = (self.now)();
-        match self.store.alive_round(
-            now,
-            Self::live_pairs((self.live)()),
-            Vec::new(),
-            self.policy.alive_after_s,
-        ) {
-            Ok(down) => {
-                self.report(now, down.clone());
-                down
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "alive: round failed");
-                Vec::new()
-            }
-        }
+        self.round_fresh(&[])
     }
 
     /// Start the timer thread unless one runs; the thread itself looks for
@@ -306,13 +377,18 @@ impl Alive {
         // a round that found nothing yet (the clock is whole seconds) waits
         // at least one second before the next look, never spins
         let mut floor = 0u64;
-        loop {
-            let Some(due) = self.next_due() else { break };
+        while let Some(due) = self.next_due() {
             let wait = u64::try_from(due - (self.now)()).unwrap_or(0).max(floor);
             if wait > 0 {
                 let op = crate::timers::ALIVE_DUE_WAIT
                     .begin(Some(Instant::now() + Duration::from_secs(wait)));
-                while op.tick() {}
+                // each tick (at most 60 s) looks again: the seat came back or
+                // was closed ⇒ stop waiting for it (Codex A11-2 M4)
+                while op.tick() {
+                    if self.next_due() != Some(due) {
+                        break;
+                    }
+                }
             }
             floor = u64::from(self.run_due().is_empty());
         }
@@ -321,40 +397,6 @@ impl Alive {
         // cleared found a thread running and did not start one: look again
         if self.next_due().is_some() {
             self.kick();
-        }
-    }
-
-    /// One `alive.down` event per reported seat (the outbox for B1's dm).
-    fn report(&self, now: i64, down: Vec<AliveDown>) {
-        for d in down {
-            let auto = if self.policy.auto_revive {
-                "not_available"
-            } else {
-                "off"
-            };
-            let ev = NewEvent {
-                event_id: format!("ev_alive_{}_{now}", d.cabin),
-                aggregate_type: "alive".into(),
-                aggregate_id: format!("alive:{}:{now}", d.cabin),
-                sequence: 1,
-                event_type: "alive.down".into(),
-                correlation_id: None,
-                occurred_at: crate::sessions::rfc3339_of_unix(now),
-                payload: serde_json::json!({
-                    "seat_id": d.cabin,
-                    "last_seen": d.last_seen,
-                    "gone_for_s": d.gone_for_s,
-                    "notify": self.policy.alive_alert,
-                    "auto_revive": auto,
-                    "restore": serde_json::Value::Null,
-                }),
-            };
-            if let Err(e) = self.store.append(vec![ev]) {
-                tracing::error!(error = %e, seat = %d.cabin, "alive: could not record the alert");
-            } else {
-                tracing::warn!(seat = %d.cabin, gone_for_s = d.gone_for_s,
-                    notify = self.policy.alive_alert, "seat down past the threshold");
-            }
         }
     }
 }

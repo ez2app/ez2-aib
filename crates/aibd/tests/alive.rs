@@ -177,7 +177,7 @@ fn auto_revive_is_off_by_default_and_not_available_when_on() {
     }
 }
 
-fn seat_with_last_end(store: &Store, seat: &str, ended_by: &str) {
+fn seat(store: &Store, seat: &str) {
     store
         .create_seat(
             Seat {
@@ -203,37 +203,53 @@ fn seat_with_last_end(store: &Store, seat: &str, ended_by: &str) {
             json!({}),
         )
         .unwrap();
+}
+
+/// One ended session of `seat`: id, start and end time (RFC 3339), how.
+fn ended(store: &Store, seat: &str, id: &str, started: &str, ended: &str, by: &str) {
     store
         .session_event(
             SessionRow {
-                session_id: format!("ss_{seat}"),
+                session_id: id.into(),
                 seat_id: Some(seat.into()),
                 pid: 1,
                 argv0: Some("sh".into()),
                 argc: 1,
                 state: "killed".into(),
                 holds_slot: false,
-                started_at: "t".into(),
-                ended_at: Some("t".into()),
-                ended_by: Some(ended_by.into()),
+                started_at: started.into(),
+                ended_at: Some(ended.into()),
+                ended_by: Some(by.into()),
                 exit_code: None,
                 signal: None,
                 stop_status: None,
                 stop_reason: None,
-                updated_at: "t".into(),
+                updated_at: ended.into(),
             },
             NewEvent {
-                event_id: format!("ev_ss_{seat}"),
+                event_id: format!("ev_{id}"),
                 aggregate_type: "session".into(),
-                aggregate_id: format!("ss_{seat}"),
+                aggregate_id: id.into(),
                 sequence: 1,
                 event_type: "session.killed".into(),
                 correlation_id: None,
-                occurred_at: "t".into(),
+                occurred_at: ended.into(),
                 payload: json!({}),
             },
         )
         .unwrap();
+}
+
+fn seat_with_last_end(store: &Store, s: &str, ended_by: &str) {
+    seat(store, s);
+    ended(
+        store,
+        s,
+        &format!("ss_{s}"),
+        "2026-11-13T01:00:00Z",
+        "2026-11-13T02:00:00Z",
+        ended_by,
+    );
 }
 
 #[test]
@@ -291,4 +307,114 @@ fn the_timer_thread_reports_a_seat_when_it_falls_due() {
         assert!(std::time::Instant::now() < end, "the timer did not report");
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+#[test]
+fn a_restart_judges_a_seat_by_the_session_that_ended_last() {
+    // Codex A11-2 M3: the one that ended last, not the one started last;
+    // a session that never really ran does not count
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
+    seat(&store, "s1");
+    ended(
+        &store,
+        "s1",
+        "ss_a",
+        "2026-11-13T01:00:00Z",
+        "2026-11-13T03:00:00Z",
+        "shutdown",
+    );
+    ended(
+        &store,
+        "s1",
+        "ss_b",
+        "2026-11-13T02:00:00Z",
+        "2026-11-13T02:30:00Z",
+        "root_exit",
+    );
+    ended(
+        &store,
+        "s1",
+        "ss_c",
+        "2026-11-13T04:00:00Z",
+        "2026-11-13T04:00:01Z",
+        "spawn_failed",
+    );
+    let r = rig_on(dir, store, RevivePolicy::default());
+    r.start("s1");
+    r.end("s1", EndKind::Down);
+    r.at(T0 + 3600);
+    r.alive.start();
+    assert!(
+        r.downs().is_empty(),
+        "alive at the stop: re-timed, not reported"
+    );
+    assert_eq!(r.alive.next_due(), Some(T0 + 3600 + 600));
+}
+
+#[test]
+fn a_stale_live_list_never_brings_back_a_seat_closed_on_purpose() {
+    // Codex A11-2 M1: the timer took "s1 runs", then s1 was closed on purpose
+    // before the timer wrote; the round must look again, not re-add s1
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
+    let me: Arc<std::sync::OnceLock<Arc<Alive>>> = Arc::new(std::sync::OnceLock::new());
+    let race = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (m, rc) = (me.clone(), race.clone());
+    let alive = Alive::for_test(
+        store.clone(),
+        RevivePolicy::default(),
+        move || {
+            if rc.swap(false, Ordering::SeqCst) {
+                // the list says s1 runs, but s1 is closed right after
+                m.get()
+                    .unwrap()
+                    .on_end("s1", EndKind::OnPurpose, Vec::new());
+                return vec!["s1".to_string()];
+            }
+            Vec::new()
+        },
+        || T0,
+    );
+    me.set(alive.clone()).ok().unwrap();
+    alive.on_start("s1", Vec::new());
+    race.store(true, Ordering::SeqCst);
+    assert!(alive.run_due().is_empty());
+    assert!(!race.load(Ordering::SeqCst), "the race was not run");
+    assert!(store.alive_rows().unwrap().is_empty(), "s1 came back");
+}
+
+#[test]
+fn every_outage_is_its_own_event_in_order() {
+    // Codex A11-2 L1 / L2: one event per alert, ids never collide, the
+    // payload carries when the seat was last seen
+    let r = rig(RevivePolicy::default());
+    r.start("s1");
+    r.at(T0 + 5);
+    r.end("s1", EndKind::Down);
+    r.at(T0 + 605);
+    assert_eq!(r.alive.run_due().len(), 1);
+    r.start("s1");
+    r.at(T0 + 700);
+    r.end("s1", EndKind::Down);
+    r.at(T0 + 1300);
+    assert_eq!(r.alive.run_due().len(), 1);
+    let evs = r.store.events_of("alive:s1", 0, 10).unwrap();
+    let got: Vec<(String, i64, i64)> = evs
+        .iter()
+        .map(|e| {
+            (
+                e.event_id.clone(),
+                e.sequence,
+                e.payload["last_seen"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("ev_alive_s1_1".to_string(), 1, T0 + 5),
+            ("ev_alive_s1_2".to_string(), 2, T0 + 700),
+        ]
+    );
 }

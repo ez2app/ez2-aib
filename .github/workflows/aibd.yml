@@ -698,16 +698,16 @@ jobs:
             '                with.retain(|s| s != seat); // knife' \
             coming_back_before_the_threshold_cancels_and_the_newest_end_counts
           # L6 a restart does not give seats alive at the stop a fresh threshold
-          lk '        live.extend(fresh);' \
-            '        live.extend(fresh.into_iter().take(0)); // knife' \
+          lk '        self.round_fresh(&fresh);' \
+            '        self.round_fresh(&fresh[..0]); // knife' \
             a_restart_retimes_seats_alive_at_the_stop_and_reports_what_was_already_due
           # L7 alerts switched off still say notify
-          lk '                    "notify": self.policy.alive_alert,' \
+          lk '                    "notify": notify,' \
             '                    "notify": true, // knife' \
             with_alerts_off_the_outage_is_only_recorded
           # L8 auto revive on by default
-          lk '            let auto = if self.policy.auto_revive {' \
-            '            let auto = if !self.policy.auto_revive {' \
+          lk '        let auto = if self.policy.auto_revive {' \
+            '        let auto = if !self.policy.auto_revive {' \
             auto_revive_is_off_by_default_and_not_available_when_on
           # L9 the timer thread is never started
           lk '        if self.no_thread {' \
@@ -719,6 +719,24 @@ jobs:
             '            let _ = (a, seat, others); // knife' \
             --expect-fail a_seat_session_end_is_recorded_for_who_is_alive \
             -- cargo test -p aibd --locked --test seat_sessions a_seat_session_end_is_recorded_for_who_is_alive
+          # L11 a round on a stale live list writes anyway (Codex M1)
+          lk '            if *g == seen {' \
+            '            if *g == seen || true { // knife' \
+            a_stale_live_list_never_brings_back_a_seat_closed_on_purpose
+          # L12 a restart judges by the session started last (Codex M3)
+          lk '                            .max_by(|a, b| a.ended_at.cmp(&b.ended_at))' \
+            '                            .min_by(|a, b| a.ended_at.cmp(&b.ended_at)) // knife' \
+            a_restart_judges_a_seat_by_the_session_that_ended_last
+          # L13 a session that never ran decides the restart (Codex M3)
+          lk '                            .filter(|s| s.ended_at.is_some() && really_ran(s))' \
+            '                            .filter(|s| s.ended_at.is_some() || really_ran(s)) // knife' \
+            a_restart_judges_a_seat_by_the_session_that_ended_last
+          # L14 an alert is marked sent although its event was not written (Codex M2)
+          python3 -I scripts/knife.py crates/aib-store/src/alive.rs \
+            '                    insert_event(&tx, &m(&down, last + 1))?;' \
+            '                    let _ = insert_event(&tx, &m(&down, last + 1)); // knife' \
+            --expect-fail an_alert_and_its_event_are_written_together_or_not_at_all \
+            -- cargo test -p aib-store --locked --test alive an_alert_and_its_event_are_written_together_or_not_at_all
       # G1 (a9136, 11-10): a program that ends at once gives its slot back (macOS).
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).

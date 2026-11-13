@@ -221,3 +221,60 @@ fn a_stored_seat_list_that_is_not_strings_is_an_error_not_no_seats() {
         .unwrap();
     assert_eq!(rows, [("cab1".to_string(), None)]);
 }
+
+fn alert_event(
+    id: &str,
+) -> impl Fn(&aib_store::AliveDown, i64) -> aib_store::NewEvent + Send + 'static {
+    let id = id.to_string();
+    move |d, seq| aib_store::NewEvent {
+        event_id: id.clone(),
+        aggregate_type: "alive".into(),
+        aggregate_id: format!("alive:{}", d.cabin),
+        sequence: seq,
+        event_type: "alive.down".into(),
+        correlation_id: None,
+        occurred_at: "t".into(),
+        payload: serde_json::json!({"seat_id": d.cabin}),
+    }
+}
+
+#[test]
+fn an_alert_and_its_event_are_written_together_or_not_at_all() {
+    // Codex A11-2 M2: never marked sent without its outbox event
+    let (_d, s) = store();
+    s.alive_round(T0, live(&[("cab1", vec![])]), vec![], AFTER)
+        .unwrap();
+    // the event id is taken: the whole round is refused, nothing is marked
+    s.append(vec![aib_store::NewEvent {
+        event_id: "ev_taken".into(),
+        aggregate_type: "x".into(),
+        aggregate_id: "x".into(),
+        sequence: 1,
+        event_type: "x".into(),
+        correlation_id: None,
+        occurred_at: "t".into(),
+        payload: serde_json::json!({}),
+    }])
+    .unwrap();
+    assert!(s
+        .alive_round_events(T0 + AFTER, vec![], vec![], AFTER, alert_event("ev_taken"))
+        .is_err());
+    assert_eq!(s.alive_rows().unwrap()[0].alerted_at, None);
+    // retried with a fresh id: marked and recorded at once, sequence 1 then 2
+    let got = s
+        .alive_round_events(T0 + AFTER, vec![], vec![], AFTER, alert_event("ev_a1"))
+        .unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(s.alive_rows().unwrap()[0].alerted_at, Some(T0 + AFTER));
+    s.alive_round(T0 + 2 * AFTER, live(&[("cab1", vec![])]), vec![], AFTER)
+        .unwrap();
+    s.alive_round_events(T0 + 3 * AFTER, vec![], vec![], AFTER, alert_event("ev_a2"))
+        .unwrap();
+    let evs = s.events_of("alive:cab1", 0, 10).unwrap();
+    assert_eq!(
+        evs.iter()
+            .map(|e| (e.event_id.as_str(), e.sequence))
+            .collect::<Vec<_>>(),
+        [("ev_a1", 1), ("ev_a2", 2)]
+    );
+}
