@@ -52,6 +52,8 @@
 #[cfg(unix)]
 mod backupcmd;
 #[cfg(unix)]
+mod cachecmd;
+#[cfg(unix)]
 mod cfdns;
 #[cfg(unix)]
 mod customercmd;
