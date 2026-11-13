@@ -593,6 +593,17 @@ impl Sessions {
         *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
 
+    /// The policy's env names: a child inherits aibd's own value of each (T80,
+    /// [`crate::platform::session::child_env`]). None before [`Self::set_policy`].
+    fn pass_names(&self) -> Vec<String> {
+        self.policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|p| p.env.clone())
+            .unwrap_or_default()
+    }
+
     /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
     /// refused (`false`) and the first stays. Set under the sessions lock and
     /// told the current count at once (`(0, n)` when sessions already run), so
@@ -769,6 +780,7 @@ impl Sessions {
             argv: req.argv,
             cwd,
             env: req.env,
+            pass: self.pass_names(),
         };
         self.launch(spec, seat_id, None)
     }
@@ -1040,6 +1052,7 @@ impl Sessions {
                 argv,
                 cwd: q.cwd,
                 env: q.env,
+                pass: self.pass_names(),
             };
             // errors are recorded on the session itself (`failed`)
             let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));

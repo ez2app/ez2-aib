@@ -154,6 +154,7 @@ pub fn check_tree(
         ],
         cwd: std::env::temp_dir(),
         env: Vec::new(),
+        pass: Vec::new(),
     };
     let mut run = spawn(&spec, lineage)?;
     let started = || {

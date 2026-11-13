@@ -15,6 +15,7 @@ pub mod pairing;
 pub mod platform;
 pub mod runtime;
 pub mod seats;
+pub mod secret_mask;
 pub mod selfcheck;
 pub mod server;
 pub mod session_output;
