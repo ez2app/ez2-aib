@@ -228,6 +228,16 @@ impl Alive {
         *self.running.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Tests: wake a waiting timer without a round (as its 60 s tick
+    /// would), so only the timer's own checks decide what happens next.
+    #[doc(hidden)]
+    pub fn nudge(&self) {
+        let mut g = self.lock_rounds();
+        *g = g.wrapping_add(1);
+        drop(g);
+        self.moved.notify_all();
+    }
+
     /// The timer thread has looked and waits (see the field).
     pub fn timer_waiting(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
@@ -438,11 +448,11 @@ impl Alive {
         // at least one second before the next look, never spins
         let mut floor = 0u64;
         while let Some((due, mut seen)) = self.look() {
-            self.waiting.store(true, Ordering::SeqCst);
             let wait = u64::try_from(due - (self.now)()).unwrap_or(0).max(floor);
             if wait > 0 {
                 let op = crate::timers::ALIVE_DUE_WAIT
                     .begin(Some(Instant::now() + Duration::from_secs(wait)));
+                self.waiting.store(true, Ordering::SeqCst);
                 // any session start / end (else each 60 s tick) looks again:
                 // the seat came back or was closed ⇒ stop waiting for it now
                 // (Codex A11-2 M4)

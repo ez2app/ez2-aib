@@ -494,8 +494,8 @@ fn the_timer_stops_at_once_when_the_seat_comes_back() {
 #[test]
 fn a_wall_clock_past_the_due_time_reports_at_the_next_look() {
     // a9136 L1: the Mac slept, the monotonic wait stood still but the wall
-    // clock is past the due time; the next look (here a session start of
-    // another seat) reports at once instead of waiting out the rest
+    // clock is past the due time; the next look reports at once instead of
+    // waiting out the rest
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
     let now = Arc::new(AtomicI64::new(T0));
@@ -513,9 +513,10 @@ fn a_wall_clock_past_the_due_time_reports_at_the_next_look() {
         assert!(std::time::Instant::now() < ready, "the timer never waited");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // two hours asleep
+    // two hours asleep, then the timer wakes (its tick) with no round:
+    // only its own wall-clock check can report s1 (Codex c132d152 M1)
     now.store(T0 + 7200, Ordering::SeqCst);
-    alive.on_start("s2", Vec::new());
+    alive.nudge();
     let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let n = store
