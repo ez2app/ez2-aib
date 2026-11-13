@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 serde_json = "1"
 sha2 = "0.10.9"
+# Exact: the table decides what an approval window refuses (Unicode 16.0).
+unicode-general-category = "=1.1.0"
 
 [lints]
 workspace = true

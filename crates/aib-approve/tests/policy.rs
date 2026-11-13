@@ -3,8 +3,8 @@
 
 use aib_approve::category::{self, Category};
 use aib_approve::proof::{
-    self, parameter_digest, Binding, MemoryNonces, NonceLedger, Proof, ProofLevel, Refusal,
-    TrustedKeys,
+    self, parameter_digest, Binding, Evidence, MemoryNonces, NonceLedger, Proof, ProofLevel,
+    Refusal, TrustedKeys,
 };
 use aib_approve::protocol::{self, HelperOutcome};
 use aib_approve::text::{self, TextError};
@@ -105,6 +105,26 @@ fn invisible_and_control_characters_are_refused_not_cleaned() {
         '\u{e0000}',
         '\u{e0041}',
         '\u{e007f}',
+        // 1.x consent extras and categories the first version missed (Codex T135-a H2)
+        '\u{34f}',
+        '\u{115f}',
+        '\u{1160}',
+        '\u{17b4}',
+        '\u{180b}',
+        '\u{206a}',
+        '\u{206f}',
+        '\u{2800}',
+        '\u{3164}',
+        '\u{ffa0}',
+        '\u{e0100}',
+        '\u{e01ef}',
+        '\u{e000}',
+        '\u{f8ff}',
+        '\u{378}',
+        '\u{e0080}',
+        '\u{a0}',
+        '\u{2007}',
+        '\u{3000}',
     ];
     for c in bad {
         let s = format!("刪站 a{c}b");
@@ -118,12 +138,7 @@ fn invisible_and_control_characters_are_refused_not_cleaned() {
             c as u32
         );
     }
-    for ok in [
-        "刪站 example.com",
-        "a-b_c.d/e:f",
-        "é ñ 中文 😀",
-        "\u{e0080}",
-    ] {
+    for ok in ["刪站 example.com", "a-b_c.d/e:f", "é ñ 中文 😀", "a b"] {
         assert_eq!(text::check(ok, text::LA_MAX), Ok(ok));
     }
 }
@@ -151,6 +166,11 @@ fn too_long_is_refused_never_cut() {
         ),
         (320, 320, 200, 160)
     );
+}
+
+#[test]
+fn the_unicode_table_is_pinned() {
+    assert_eq!(text::UNICODE_VERSION, (16, 0, 0));
 }
 
 // ---------- proof ----------
@@ -198,12 +218,11 @@ fn binding(cat: Category) -> Binding {
 fn signed(b: Binding) -> Proof {
     let sig = sign(&b.canonical().expect("canonical"));
     Proof {
-        level: ProofLevel::HardwareSigned,
         provider: "test-hw".into(),
         key_id: "k1".into(),
         alg: "test-sha256".into(),
         binding: b,
-        signature: Some(sig),
+        signature: sig,
     }
 }
 
@@ -212,9 +231,12 @@ fn a_signed_proof_for_exactly_this_action_is_accepted_once() {
     let b = binding(Category::DeleteData);
     let p = signed(b.clone());
     let mut n = MemoryNonces::default();
-    assert_eq!(proof::verify(&p, &b, NOW, &TestKeys, &mut n), Ok(()));
     assert_eq!(
-        proof::verify(&p, &b, NOW, &TestKeys, &mut n),
+        proof::verify(Evidence::Signed(p.clone()), &b, NOW, &TestKeys, &mut n),
+        Ok(())
+    );
+    assert_eq!(
+        proof::verify(Evidence::Signed(p.clone()), &b, NOW, &TestKeys, &mut n),
         Err(Refusal::Replay)
     );
 }
@@ -223,14 +245,20 @@ fn a_signed_proof_for_exactly_this_action_is_accepted_once() {
 fn a_refused_proof_does_not_use_up_the_nonce() {
     let b = binding(Category::DeleteData);
     let mut bad = signed(b.clone());
-    bad.signature = Some(vec![0; 32]);
+    bad.signature = vec![0; 32];
     let mut n = MemoryNonces::default();
     assert_eq!(
-        proof::verify(&bad, &b, NOW, &TestKeys, &mut n),
+        proof::verify(Evidence::Signed(bad.clone()), &b, NOW, &TestKeys, &mut n),
         Err(Refusal::BadSig)
     );
     assert_eq!(
-        proof::verify(&signed(b.clone()), &b, NOW, &TestKeys, &mut n),
+        proof::verify(
+            Evidence::Signed(signed(b.clone())),
+            &b,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
         Ok(())
     );
 }
@@ -254,6 +282,8 @@ fn a_proof_for_anything_else_is_refused() {
             Box::new(|b| b.parameter_digest = parameter_digest(b"DRY=1\n")),
         ),
         ("nonce", Box::new(|b| b.nonce = "f".repeat(32))),
+        ("issued", Box::new(|b| b.issued -= 1)),
+        ("expiry", Box::new(|b| b.expiry += 3600)),
     ];
     for (field, change) in cases {
         let mut other = want.clone();
@@ -261,7 +291,7 @@ fn a_proof_for_anything_else_is_refused() {
         let p = signed(other);
         let mut n = MemoryNonces::default();
         assert_eq!(
-            proof::verify(&p, &want, NOW, &TestKeys, &mut n),
+            proof::verify(Evidence::Signed(p.clone()), &want, NOW, &TestKeys, &mut n),
             Err(Refusal::Mismatch(field)),
             "{field}"
         );
@@ -274,14 +304,20 @@ fn expired_and_future_proofs_are_refused() {
     let p = signed(b.clone());
     let mut n = MemoryNonces::default();
     assert_eq!(
-        proof::verify(&p, &b, b.expiry, &TestKeys, &mut n),
+        proof::verify(Evidence::Signed(p.clone()), &b, b.expiry, &TestKeys, &mut n),
         Err(Refusal::Expired)
     );
     let mut f = binding(Category::DeleteData);
     f.issued = NOW + proof::ISSUE_SKEW_S + 1;
     f.expiry = NOW + 600;
     assert_eq!(
-        proof::verify(&signed(f.clone()), &f, NOW, &TestKeys, &mut n),
+        proof::verify(
+            Evidence::Signed(signed(f.clone())),
+            &f,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
         Err(Refusal::NotYet)
     );
     let mut back = binding(Category::DeleteData);
@@ -290,44 +326,29 @@ fn expired_and_future_proofs_are_refused() {
 }
 
 #[test]
-fn presence_only_is_too_weak_for_high_risk_and_enough_for_command() {
-    let b = binding(Category::Secret);
-    let mut p = signed(b.clone());
-    p.level = ProofLevel::PresenceOnly;
-    p.signature = None;
-    let mut n = MemoryNonces::default();
-    assert_eq!(
-        proof::verify(&p, &b, NOW, &TestKeys, &mut n),
-        Err(Refusal::TooWeak {
-            have: ProofLevel::PresenceOnly,
-            need: ProofLevel::HardwareSigned
-        })
-    );
-    let c = binding(Category::Command);
-    let mut q = signed(c.clone());
-    q.level = ProofLevel::PresenceOnly;
-    q.signature = None;
-    assert_eq!(proof::verify(&q, &c, NOW, &TestKeys, &mut n), Ok(()));
-}
-
-#[test]
 fn hardware_signed_needs_a_signature_by_a_trusted_key() {
     let b = binding(Category::Payment);
     let mut n = MemoryNonces::default();
     let mut none = signed(b.clone());
-    none.signature = None;
+    none.signature = Vec::new();
     assert_eq!(
-        proof::verify(&none, &b, NOW, &TestKeys, &mut n),
+        proof::verify(Evidence::Signed(none.clone()), &b, NOW, &TestKeys, &mut n),
         Err(Refusal::NoSignature)
     );
     let mut other = signed(b.clone());
     other.key_id = "k2".into();
     assert_eq!(
-        proof::verify(&other, &b, NOW, &TestKeys, &mut n),
+        proof::verify(Evidence::Signed(other.clone()), &b, NOW, &TestKeys, &mut n),
         Err(Refusal::UntrustedKey)
     );
     assert_eq!(
-        proof::verify(&signed(b.clone()), &b, NOW, &TestKeys, &mut n),
+        proof::verify(
+            Evidence::Signed(signed(b.clone())),
+            &b,
+            NOW,
+            &TestKeys,
+            &mut n
+        ),
         Ok(())
     );
 }
@@ -362,13 +383,7 @@ fn canonical_form_has_one_reading() {
 
 fn json_of(p: &Proof, level: &str) -> serde_json::Value {
     let b = &p.binding;
-    let hex: String = p
-        .signature
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .map(|x| format!("{x:02x}"))
-        .collect();
+    let hex: String = p.signature.iter().map(|x| format!("{x:02x}")).collect();
     serde_json::json!({
         "v": proof::BINDING_VERSION, "level": level, "provider": p.provider, "key_id": p.key_id,
         "alg": p.alg, "category": b.category.id(), "actor": b.actor, "operation": b.operation,

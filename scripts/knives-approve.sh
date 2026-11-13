@@ -10,6 +10,8 @@ kt() { python3 -I scripts/knife.py crates/aib-approve/src/text.rs "$1" "$2" --ex
         -- cargo test -p aib-approve --locked --test policy "$3"; }
 kp() { python3 -I scripts/knife.py crates/aib-approve/src/proof.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-approve --locked --test policy "$3"; }
+kl() { python3 -I scripts/knife.py crates/aib-approve/src/proof.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-approve --locked --lib "$3"; }
 kh() { python3 -I scripts/knife.py crates/aib-approve/src/protocol.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-approve --locked --test policy "$3"; }
 # KA1 command keeps its 1.x 3 h window
@@ -32,9 +34,17 @@ kc '            .unwrap_or(Category::Unregistered)' \
 kc '            _ => ProofLevel::HardwareSigned,' \
    '            _ => ProofLevel::PresenceOnly, // knife' \
    only_seat_input_outbound_and_command_accept_presence_only
-# KT1 zero-width characters pass
-kt '        | 0x200b..=0x200f                   // zero width, LRM / RLM' \
-   '        | 0x200c..=0x200f /* knife */' \
+# KT1 a Mongolian free variation selector (1.x extra list) passes
+kt '        | 0x180b..=0x180f' \
+   '        | 0x180c..=0x180f /* knife */' \
+   invisible_and_control_characters_are_refused_not_cleaned
+# KT1b a no-break or ideographic space passes
+kt "        G::SpaceSeparator => c != ' '," \
+   '        G::SpaceSeparator => false, // knife' \
+   invisible_and_control_characters_are_refused_not_cleaned
+# KT1c the Unicode category table is not consulted (format, private use, unassigned pass)
+kt '    match get_general_category(c) {' \
+   "    match get_general_category('a') { // knife" \
    invisible_and_control_characters_are_refused_not_cleaned
 # KT2 bad characters are not checked at all
 kt '        if is_bad_char(c) {' \
@@ -45,24 +55,24 @@ kt '    if len > max {' \
    '    if false && len > max { // knife' \
    too_long_is_refused_never_cut
 # KP1 the nonce is never consumed
-kp '    if !nonces.consume(&proof.binding.nonce) {' \
-   '    if false && !nonces.consume(&proof.binding.nonce) { // knife' \
+kp '    if !nonces.consume(&expect.nonce) {' \
+   '    if false && !nonces.consume(&expect.nonce) { // knife' \
    a_signed_proof_for_exactly_this_action_is_accepted_once
 # KP2 a proof for another action is accepted
-kp '    if let Some(field) = proof.binding.first_difference(expect) {' \
-   '    if let Some(field) = proof.binding.first_difference(expect).filter(|_| false) { // knife' \
+kp '    if let Some(field) = got.first_difference(expect) {' \
+   '    if let Some(field) = got.first_difference(expect).filter(|_| false) { // knife' \
    a_proof_for_anything_else_is_refused
 # KP3 a weaker proof is accepted
-kp '    if proof.level < need {' \
-   '    if false && proof.level < need { // knife' \
+kl '    if have < need {' \
+   '    if false && have < need { // knife' \
    presence_only_is_too_weak_for_high_risk_and_enough_for_command
 # KP4 a proof is still good at its expiry second
-kp '    if now >= proof.binding.expiry {' \
-   '    if now > proof.binding.expiry { // knife' \
+kp '    if now >= expect.expiry {' \
+   '    if now > expect.expiry { // knife' \
    expired_and_future_proofs_are_refused
 # KP5 a proof from the future is accepted
-kp '    if proof.binding.issued > now.saturating_add(ISSUE_SKEW_S) {' \
-   '    if false && proof.binding.issued > now.saturating_add(ISSUE_SKEW_S) { // knife' \
+kp '    if expect.issued > now.saturating_add(ISSUE_SKEW_S) {' \
+   '    if false && expect.issued > now.saturating_add(ISSUE_SKEW_S) { // knife' \
    expired_and_future_proofs_are_refused
 # KP6 an untrusted key is accepted
 kp '            None => return Err(Refusal::UntrustedKey),' \
@@ -80,6 +90,14 @@ kp '            "presence_only" => return Err(Refusal::PresenceNotTransferable),
 kp '    if v.is_empty() || v.chars().count() > FIELD_MAX || v.contains('"'"'='"'"') {' \
    '    if v.is_empty() || v.chars().count() > FIELD_MAX { // knife' \
    canonical_form_has_one_reading
+# KP10 a proof with a later expiry than the caller allows is accepted (Codex T135-a H1)
+kp '        if self.expiry != other.expiry {' \
+   '        if false && self.expiry != other.expiry { // knife' \
+   a_proof_for_anything_else_is_refused
+# KP11 a presence check for a later expiry is accepted (unit test)
+kl '        if self.expiry != other.expiry {' \
+   '        if false && self.expiry != other.expiry { // knife' \
+   presence_for_another_action_or_after_expiry_is_refused
 # KH1 any rc 3 counts as "the person said no", whatever the code
 kh '            Some(3) if in_set(RC3_CODES) => HelperOutcome::NotApproved(code.to_owned()),' \
    '            Some(3) => HelperOutcome::NotApproved(code.to_owned()), // knife' \

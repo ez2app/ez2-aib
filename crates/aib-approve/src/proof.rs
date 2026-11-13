@@ -6,11 +6,12 @@
 //! exact byte string a hardware key signs.
 //!
 //! Two levels (PLAN-b2 §3, Codex point 2):
-//! - [`ProofLevel::PresenceOnly`]: a fresh owner check (fingerprint or login
-//!   password) seen by the flow that is about to act. It is a yes/no inside that
-//!   process. It can never be read back from a file, a pipe or another process:
-//!   [`Proof::from_json`] refuses it.
-//! - [`ProofLevel::HardwareSigned`]: a signature by a hardware-held key (Secure
+//! - [`ProofLevel::PresenceOnly`] ([`Presence`]): a fresh owner check (fingerprint
+//!   or login password) seen by the flow that is about to act. A yes/no inside that
+//!   process: only this crate can make one, it cannot be cloned, and
+//!   [`Proof::from_json`] refuses the level, so it never comes from a file, a pipe
+//!   or another process.
+//! - [`ProofLevel::HardwareSigned`] ([`Proof`]): a signature by a hardware-held key (Secure
 //!   Enclave, TPM) over [`Binding::canonical`]. Checked against a trusted key list
 //!   the caller supplies; the list must not come from a file the same-user AI can
 //!   write (1.x `aib quote` keeps it compiled in and empty, so it fails closed).
@@ -186,7 +187,9 @@ impl Binding {
         Ok(s.into_bytes())
     }
 
-    /// The first field that differs from `other`, if any.
+    /// The first field that differs from `other`, if any. Every field counts: a
+    /// proof with a later expiry or another issue time covers something else than
+    /// what the caller is about to allow.
     fn first_difference(&self, other: &Binding) -> Option<&'static str> {
         if self.category != other.category {
             return Some("category");
@@ -206,21 +209,82 @@ impl Binding {
         if self.nonce != other.nonce {
             return Some("nonce");
         }
+        if self.issued != other.issued {
+            return Some("issued");
+        }
+        if self.expiry != other.expiry {
+            return Some("expiry");
+        }
         None
     }
 }
 
-/// An approval as handed to the checker.
+/// A signature by a hardware-held key over [`Binding::canonical`]. The only kind of
+/// proof that may travel between processes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proof {
-    pub level: ProofLevel,
-    /// e.g. `macos-se`, `windows-tpm`, `macos-la`.
+    /// e.g. `macos-se`, `windows-tpm`.
     pub provider: String,
     pub key_id: String,
     /// e.g. `ecdsa-p256-sha256`.
     pub alg: String,
     pub binding: Binding,
-    pub signature: Option<Vec<u8>>,
+    pub signature: Vec<u8>,
+}
+
+/// A fresh owner check (fingerprint or login password) that the platform flow in
+/// this crate saw for `binding`. Private fields, no `Clone`, and only this crate can
+/// make one; [`verify`] takes it by value, so it is used once and cannot be copied,
+/// stored or read back from elsewhere.
+///
+/// This keeps other code from producing one by mistake. A same-user AI that edits
+/// this crate can still make one; the real defence is the fingerprint press.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Presence {
+    provider: String,
+    binding: Binding,
+}
+
+impl Presence {
+    /// Only the platform flow (T135-b) and this crate's tests call this.
+    #[allow(dead_code)]
+    pub(crate) fn observed(provider: &str, binding: Binding) -> Presence {
+        Presence {
+            provider: provider.to_owned(),
+            binding,
+        }
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn binding(&self) -> &Binding {
+        &self.binding
+    }
+}
+
+/// What [`verify`] is handed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Evidence {
+    Signed(Proof),
+    Presence(Presence),
+}
+
+impl Evidence {
+    pub fn level(&self) -> ProofLevel {
+        match self {
+            Evidence::Signed(_) => ProofLevel::HardwareSigned,
+            Evidence::Presence(_) => ProofLevel::PresenceOnly,
+        }
+    }
+
+    fn binding(&self) -> &Binding {
+        match self {
+            Evidence::Signed(p) => &p.binding,
+            Evidence::Presence(p) => &p.binding,
+        }
+    }
 }
 
 /// Trusted public keys. Implementations must not read a file the same-user AI
@@ -253,47 +317,52 @@ impl NonceLedger for MemoryNonces {
     }
 }
 
-/// Accept `proof` for the action described by `expect`, or say why not.
+/// Accept `evidence` for the action described by `expect`, or say why not.
 ///
 /// `expect` is built by the caller from what it is about to run, never copied from
 /// the proof. The nonce is consumed last.
 pub fn verify(
-    proof: &Proof,
+    evidence: Evidence,
     expect: &Binding,
     now: u64,
     keys: &dyn TrustedKeys,
     nonces: &mut dyn NonceLedger,
 ) -> Result<(), Refusal> {
     expect.validate()?;
-    proof.binding.validate()?;
-    if let Some(field) = proof.binding.first_difference(expect) {
+    let got = evidence.binding();
+    got.validate()?;
+    if let Some(field) = got.first_difference(expect) {
         return Err(Refusal::Mismatch(field));
     }
     let need = expect.category.required_proof();
-    if proof.level < need {
-        return Err(Refusal::TooWeak {
-            have: proof.level,
-            need,
-        });
+    let have = evidence.level();
+    if have < need {
+        return Err(Refusal::TooWeak { have, need });
     }
-    if now >= proof.binding.expiry {
+    if now >= expect.expiry {
         return Err(Refusal::Expired);
     }
-    if proof.binding.issued > now.saturating_add(ISSUE_SKEW_S) {
+    if expect.issued > now.saturating_add(ISSUE_SKEW_S) {
         return Err(Refusal::NotYet);
     }
-    if proof.level == ProofLevel::HardwareSigned {
-        let Some(sig) = proof.signature.as_deref() else {
+    if let Evidence::Signed(proof) = &evidence {
+        if proof.signature.is_empty() {
             return Err(Refusal::NoSignature);
-        };
+        }
         let msg = proof.binding.canonical()?;
-        match keys.check(&proof.provider, &proof.key_id, &proof.alg, &msg, sig) {
+        match keys.check(
+            &proof.provider,
+            &proof.key_id,
+            &proof.alg,
+            &msg,
+            &proof.signature,
+        ) {
             None => return Err(Refusal::UntrustedKey),
             Some(false) => return Err(Refusal::BadSig),
             Some(true) => {}
         }
     }
-    if !nonces.consume(&proof.binding.nonce) {
+    if !nonces.consume(&expect.nonce) {
         return Err(Refusal::Replay);
     }
     Ok(())
@@ -332,7 +401,6 @@ impl Proof {
         let sig_hex = s("signature")?;
         let signature = unhex(&sig_hex).ok_or(Refusal::Corrupt("signature"))?;
         Ok(Proof {
-            level: ProofLevel::HardwareSigned,
             provider: s("provider")?,
             key_id: s("key_id")?,
             alg: s("alg")?,
@@ -346,17 +414,109 @@ impl Proof {
                 issued: n("issued")?,
                 expiry: n("expiry")?,
             },
-            signature: Some(signature),
+            signature,
         })
     }
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.is_empty() || s.len() % 2 != 0 || !is_lower_hex(s) {
+    if s.is_empty() || !s.len().is_multiple_of(2) || !is_lower_hex(s) {
         return None;
     }
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoKeys;
+    impl TrustedKeys for NoKeys {
+        fn check(&self, _: &str, _: &str, _: &str, _: &[u8], _: &[u8]) -> Option<bool> {
+            None
+        }
+    }
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn binding(cat: Category) -> Binding {
+        Binding {
+            category: cat,
+            actor: "f457/ebb36".into(),
+            operation: "consent.run".into(),
+            resource: "host:/srv/site".into(),
+            parameter_digest: parameter_digest(b"DRY=0\n"),
+            nonce: "0123456789abcdef0123456789abcdef".into(),
+            issued: NOW - 10,
+            expiry: NOW + 120,
+        }
+    }
+
+    #[test]
+    fn presence_only_is_too_weak_for_high_risk_and_enough_for_command() {
+        let mut n = MemoryNonces::default();
+        let b = binding(Category::Secret);
+        assert_eq!(
+            verify(
+                Evidence::Presence(Presence::observed("macos-la", b.clone())),
+                &b,
+                NOW,
+                &NoKeys,
+                &mut n
+            ),
+            Err(Refusal::TooWeak {
+                have: ProofLevel::PresenceOnly,
+                need: ProofLevel::HardwareSigned
+            })
+        );
+        let c = binding(Category::Command);
+        let p = Presence::observed("macos-la", c.clone());
+        assert_eq!(p.provider(), "macos-la");
+        assert_eq!(p.binding(), &c);
+        assert_eq!(
+            verify(Evidence::Presence(p), &c, NOW, &NoKeys, &mut n),
+            Ok(())
+        );
+        assert_eq!(
+            verify(
+                Evidence::Presence(Presence::observed("macos-la", c.clone())),
+                &c,
+                NOW,
+                &NoKeys,
+                &mut n
+            ),
+            Err(Refusal::Replay)
+        );
+    }
+
+    #[test]
+    fn presence_for_another_action_or_after_expiry_is_refused() {
+        let mut n = MemoryNonces::default();
+        let want = binding(Category::Command);
+        let mut other = want.clone();
+        other.expiry += 3600;
+        assert_eq!(
+            verify(
+                Evidence::Presence(Presence::observed("macos-la", other)),
+                &want,
+                NOW,
+                &NoKeys,
+                &mut n
+            ),
+            Err(Refusal::Mismatch("expiry"))
+        );
+        assert_eq!(
+            verify(
+                Evidence::Presence(Presence::observed("macos-la", want.clone())),
+                &want,
+                want.expiry,
+                &NoKeys,
+                &mut n
+            ),
+            Err(Refusal::Expired)
+        );
+    }
 }
