@@ -56,9 +56,7 @@ fn conflict(msg: &str) -> Response {
 /// Claim `key` before the work. `None` = do the work; `Some(answer)` = answer this and
 /// do nothing.
 pub async fn begin(st: &AppState, key: &Option<IdemKey>) -> Option<Response> {
-    let Some(k) = key.clone() else {
-        return None;
-    };
+    let k = key.clone()?;
     let store = st.store.clone();
     let claim = tokio::task::spawn_blocking(move || store.idem_claim(&k, &now_rfc3339())).await;
     match claim {
