@@ -14,8 +14,9 @@
 //! Known differences from 1.x, all stricter and none reachable from the CLI:
 //! - Python `re.match(r"^…$")` also accepts one trailing `\n`; the name checks here do not.
 //! - Python `json.loads` takes `NaN` / `Infinity`; [`read_json`] refuses them (serde_json).
-//! - [`write_atomic`] writes keys sorted (serde_json map), 1.x in insertion order; both
-//!   are one-space-indented UTF-8 JSON and every reader parses rather than compares bytes.
+//! - [`write_atomic`] given a `serde_json` map writes its keys sorted, 1.x in insertion
+//!   order; the done record ([`crate::queue::record`]) passes an ordered list instead and
+//!   matches 1.x at its top level. Both are one-space-indented UTF-8 JSON.
 
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -340,15 +341,16 @@ pub fn read_json(path: &Path, limit: u64) -> Option<Map<String, Value>> {
     }
 }
 
-fn token_hex4() -> std::io::Result<String> {
-    let mut b = [0u8; 4];
+/// Python `secrets.token_hex(n)`: `n` random bytes from `/dev/urandom` as lowercase hex.
+pub(crate) fn token_hex(n: usize) -> std::io::Result<String> {
+    let mut b = vec![0u8; n];
     File::open("/dev/urandom")?.read_exact(&mut b)?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// 1.x `_write_atomic`: write `data` as JSON to a hidden temp file next to `path`
 /// (`.<name>.<8 hex>.tmp`, mode 0600), then rename it over `path`.
-pub fn write_atomic(path: &Path, data: &Value) -> std::io::Result<()> {
+pub fn write_atomic<T: serde::Serialize + ?Sized>(path: &Path, data: &T) -> std::io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent"))?;
@@ -357,11 +359,11 @@ pub fn write_atomic(path: &Path, data: &Value) -> std::io::Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| std::io::Error::other("bad name"))?;
-    let tmp = dir.join(format!(".{name}.{}.tmp", token_hex4()?));
+    let tmp = dir.join(format!(".{name}.{}.tmp", token_hex(4)?));
     let mut out = Vec::new();
     let fmt = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut ser = serde_json::Serializer::with_formatter(&mut out, fmt);
-    serde::Serialize::serialize(data, &mut ser).map_err(std::io::Error::other)?;
+    data.serialize(&mut ser).map_err(std::io::Error::other)?;
     let res = (|| {
         let mut f = OpenOptions::new()
             .write(true)
@@ -395,7 +397,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!(
             "aib-consent-req-{tag}-{}-{}",
             std::process::id(),
-            token_hex4().unwrap()
+            token_hex(4).unwrap()
         ));
         fs::create_dir_all(&p).unwrap();
         Td(fs::canonicalize(&p).unwrap())
