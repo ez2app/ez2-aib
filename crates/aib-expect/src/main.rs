@@ -131,7 +131,15 @@ fn run(a: &Args) -> Result<u8, String> {
             return Ok(3);
         }
     };
-    let evidence = evidence.map_err(|e| e.to_string())?;
+    // an evidence file that exists but cannot be read means the tool cannot
+    // be used (rc 3), not a bad argument (rc 2) (c477a / ebb36 #693 L1)
+    let evidence = match evidence {
+        Ok(e) => e,
+        Err(e) => {
+            println!("{e}");
+            return Ok(3);
+        }
+    };
     let report = ex::compare(&goals, &evidence, &snap, now);
     if on("--json") {
         println!("{}", ex::to_json(&report));

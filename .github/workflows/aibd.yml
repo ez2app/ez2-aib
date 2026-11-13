@@ -364,6 +364,25 @@ jobs:
             $'        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size); // knife' \
             --expect-fail a_failure_without_errno_is_unknown_not_a_stale_gone \
             -- cargo test -p aib-sys --locked --lib macos::
+          # KP1 aib-sys procargs (#614): the empty string after the variables is skipped, so the apple
+          # strings are read as variables (sysinfo's bug; a cleared environment then has no marker)
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '        if end == 0 {' \
+            '        if end == 0 && false { // knife' \
+            --expect-fail a_cleared_environment_followed_by_apple_strings_is_empty \
+            -- cargo test -p aib-sys --locked --lib procargs::
+          # KP2 aib-sys procargs (#614): a cut buffer read as a whole environment
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '    rest.is_empty().then_some(env)' \
+            '    let _ = rest; Some(env) // knife' \
+            --expect-fail a_cut_buffer_is_none \
+            -- cargo test -p aib-sys --locked --lib procargs::
+          # KP3 aib-sys procargs (043dd #614 L1): apple strings with no empty string before them read as variables
+          python3 -I scripts/knife.py crates/aib-sys/src/procargs.rs \
+            '        if APPLE_KEYS.iter().any(|k| rest[..end].starts_with(k)) {' \
+            '        if APPLE_KEYS.iter().any(|k| rest[..end].starts_with(k)) && false { // knife' \
+            --expect-fail apple_strings_without_the_empty_string_before_them_are_none \
+            -- cargo test -p aib-sys --locked --lib procargs::
           # KT4 aib-sys T1 (R1, a63ab / a9136): a private SPI symbol that is missing taken as found
           python3 -I scripts/knife.py crates/aib-sys/src/thermal_macos.rs \
             '    if p.is_null() {' \
@@ -657,6 +676,82 @@ jobs:
             '        (Ok(_), Err(_)) => (None, false),' \
             '        (Ok(m), Err(_)) => (Some(m), false), // knife' \
             platform::tree::tests::the_coalition_self_check
+      # G1 root_unrecorded (DECISION-root-unrecorded-a9136-1110): macOS holds a new
+      # program before exec until it is recorded. Each knife must turn its test red.
+      - name: held-before-exec knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # H1 the child does not wait for the go byte: the program runs while held
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    loop {' \
+            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
+            --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
+            -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
+          # spawn holds back, instead of sending its own child the cancel byte
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '                    let _ = (&go_w).write_all(&[CANCEL]);' \
+            '                    let _ = CANCEL; // knife: wait for EOF' \
+            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+          # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
+            '            return Ok(()); // knife: run after the limit' \
+            --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
+          # once std reaped a child that gave up); only Child::kill
+          if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
+            echo "held.rs signals by pid"; exit 1
+          fi
+          # H2 / H3 start_tree does not hold: an instant root is recorded too late,
+          # and a detached grandchild of it is left running
+          for t in an_instant_program_is_recorded_before_it_can_exit \
+                   a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped; do
+            python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+              $'    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))\n        .map_err(StartFailedOr::NotStarted)?;' \
+              '    let (child, rec): (_, Option<Recorded>) = (c.spawn().map_err(StartFailedOr::NotStarted)?, None); // knife: not held' \
+              --expect-fail "$t" \
+              -- cargo test -p aibd --locked --test tree "$t"
+          done
+          # c477a #614 M1 / M2: a candidate missing from the process table read is
+          # reported when still there, and an unknown answer leaves the check incomplete
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Ok(_) => Missing::Unreadable,' \
+            '        Ok(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        Err(_) => Missing::Incomplete,' \
+            '        Err(_) => Missing::Gone,' \
+            --expect-fail a_candidate_missing_from_the_table_is_never_dropped_on_a_guess \
+            -- cargo test -p aibd --locked --lib a_candidate_missing_from_the_table_is_never_dropped_on_a_guess
+          # L2a (DECISION-614-l2-knife-a9136-1112, 043dd + Codex): an empty read counted as
+          # "no marker" lets a cleared environment go as not ours. Deterministic: synthetic
+          # KERN_PROCARGS2, so it bites on every OS whatever the fork watcher saw.
+          python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '    (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()))' \
+            '    Some(env.iter().any(|e| e.as_slice() == want.as_bytes())) // knife' \
+            --expect-fail a_cleared_environment_with_apple_strings_is_unreadable_not_ours \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_with_apple_strings_is_unreadable_not_ours
+          # L2 (043dd #614): back to sysinfo's environ must turn the real `env -i` read red.
+          # It can only bite where sysinfo misreads a cleared environment (seen on macos-26);
+          # macOS 27 shows no environment of another process at all, so sysinfo reads it right.
+          # Decided by capability, not by version: on a miss, the probe says whether sysinfo
+          # misreads here. Misreads and missed = fail; reads right = named SKIP (not a bite).
+          if ! python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+            '        aib_sys::Macos.environ(pid).unwrap_or_default()' \
+            '        { let _ = pid; p.environ().iter().map(|e| e.as_encoded_bytes().to_vec()).collect() } // knife' \
+            --expect-fail a_cleared_environment_reads_as_empty_not_as_apple_strings \
+            -- cargo test -p aibd --locked --lib a_cleared_environment_reads_as_empty_not_as_apple_strings; then
+            if cargo test -p aibd --locked --lib probe_sysinfo_reads_a_cleared_environment_as_variables -- --ignored; then
+              echo "knife L2 missed although sysinfo misreads a cleared environment here"; exit 1
+            fi
+            echo "KNIFE L2: SKIP (named) sysinfo reads a cleared environment correctly on this macOS; the reader knife cannot bite here"
+          fi
       # M1 allowlist gate (1ced7 reverse tests, a63ab 19:57: K1 / K4 / K9 / K13 for
       # preview.3). Each knife takes one check out of the gate and must turn its own
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
@@ -1078,8 +1173,7 @@ jobs:
           vs '        Known::Known(c) => lines_for(files, c)?,' \
              '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
-      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
-      # 043dd 11-11 22:2x for 1ced7 aib-expect v0 (checked against the working tree on top of 0b8a0351, including its uncommitted Why codes).
+      # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
       - name: aib-expect knives (macOS)
@@ -1169,6 +1263,27 @@ jobs:
           ek '        .filter_map(|g| match pick(evidence, g, now) {' \
              '        .filter_map(|g| match pick(evidence, g, now.max(u64::MAX)) { // knife' \
              a_pr_line_after_a_future_line_is_read_and_counts
+          # KE21 (ebb36 #693 L7) a guess is counted as a pass
+          ek '    if e.inferred {' \
+             '    if e.inferred && false { // knife' \
+             inferred_lines_and_unreadable_lines_are_shown_as_such
+          # KE22 (ebb36 #693 M1) a card with no goals says "all passed"
+          ek '    if report.rows.is_empty() {' \
+             '    if report.rows.is_empty() && false { // knife' \
+             a_card_with_no_goals_never_says_all_passed
+          # KE23 (ebb36 #693 M2) a check line with no check id and nothing to go stale on is a pass forever
+          ek '    if !inferred && (check.is_empty() || (head.is_none() && valid_until.is_none())) {' \
+             '    if !inferred && false { // knife' \
+             a_check_line_must_say_what_ran_and_be_able_to_go_stale
+          # KE24 (ebb36 #693 M3) any approval ever made counts, so going back to a replaced one reads as approved
+          ek '        if latest != sha {' \
+             '        if latest != sha && false { // knife' \
+             only_the_last_approval_in_the_ledger_counts
+          # KE25 (c477a / ebb36 #693 L1) an unreadable evidence file is reported as an unreadable card
+          ek '        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(' \
+             '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
+             an_evidence_file_that_cannot_be_read_says_so
+      # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
