@@ -5,6 +5,17 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- `aib-accept` (new, T06 / T07 / T79): real-machine acceptance for a built aibd. One run on
+  the machine itself — open (start, health, a seat, the same `Idempotency-Key` again creates
+  nothing), run (a seat session of `aib-fixture-tree smoke-tree`), see (`running`,
+  `session.started` on the cursor, a short program's stdout through the output API), stop
+  (DELETE as the contract allows on this OS, every pid gone within 10 s), recover (aibd
+  killed with a tree running, started again on the same data: the seat reads back, the
+  session is `session.interrupted`, on Windows the tree is gone) and, with `--claude`, one
+  real `claude -p` stream-json run. One `STEP` line per check, `ACCEPT_OK` / `ACCEPT_FAIL`
+  last; exit 0 / 1 / 2. Never signals a bare pid: leftovers end through the fixture's stop
+  file. Pids are checked with `ps` / `tasklist` (no aib-sys: xtask deps keeps it to aibd and
+  aib-procwatch).
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
