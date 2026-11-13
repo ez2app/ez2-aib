@@ -465,6 +465,61 @@ pub fn read_staged(path: &Path, sha256: &str, limit: u64) -> Result<Vec<u8>, Ref
     Ok(bytes)
 }
 
+/// What `aib-consent-run stage` does (main.rs), as a function: check the shared program
+/// against its pin, read its parameter file and the review's first line, and copy program
+/// and parameters into `dir` (0700, the caller's). Returns the same JSON object the command
+/// prints on success (`{"ok":true,"program":{…},"params":{…},"review":…}`); the consent
+/// decide step (B2 T136-3a) calls this directly instead of starting the command.
+pub fn stage(
+    home: &Path,
+    program: &Path,
+    pin: &str,
+    pfile: &Path,
+    review: &Path,
+    dir: &Path,
+) -> Result<serde_json::Value, Refused> {
+    use serde_json::json;
+    let prog = check_program(home, program, pin)?;
+    let Some(declared) = declared_keys(&prog.bytes) else {
+        return Err(refused("program_declares_no_params", 0));
+    };
+    let (text, pairs) = read_params(pfile)?;
+    params_declared(&pairs, &declared)?;
+    // declared but not given: shown in the dialog (a typo such as ARCHVE= is refused above,
+    // so a missing key here is one the program will default or refuse by itself)
+    let missing: Vec<String> = declared
+        .iter()
+        .filter(|d| !pairs.iter().any(|(pk, _)| *pk == d.key))
+        .map(|d| d.key.clone())
+        .collect();
+    let review_text = match fs::read(review) {
+        Ok(b) if b.len() <= 256 * 1024 => String::from_utf8_lossy(&b).into_owned(),
+        _ => return Err(refused("review_unreadable", 0)),
+    };
+    let first = review_first_line(&review_text, pin)?;
+    let name = prog
+        .real
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("program")
+        .to_owned();
+    let pcopy = stage_bytes(dir, &name, &prog.bytes)?;
+    let params_copy = stage_bytes(dir, "params.env", text.as_bytes())?;
+    let lang = match prog.lang {
+        Lang::Bash => "bash",
+        Lang::Python => "python",
+    };
+    Ok(json!({
+            "ok": true,
+            "program": {"real": prog.real, "name": name, "sha256": prog.sha256, "copy": pcopy,
+                        "lang": lang, "argv": prog.lang.argv(&pcopy),
+                        "declared": declared.iter().map(|d| d.key.as_str()).collect::<Vec<_>>()},
+            "params": {"sha256": sha256_hex(text.as_bytes()), "copy": params_copy,
+                       "text": text, "pairs": pairs, "missing": missing},
+            "review": first,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
