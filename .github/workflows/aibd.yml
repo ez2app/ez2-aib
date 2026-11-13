@@ -1441,7 +1441,7 @@ jobs:
           dk rev.rs '        IfRev::Absent => (false, Reason::NoRev, cur),' \
              '        IfRev::Absent => (true, Reason::Ok, cur),' spec_fixture rev_cases_match
           # DQ6 a reopen without a reason
-          dk transition.rs '!why_has_rest(why, REOPEN_WHY_PREFIX)' '!why_has_rest(why, "")' \
+          dk transition.rs '!why_has_rest(why, REOPEN_WHY_PREFIX)' '!why_has_rest(why, &REOPEN_WHY_PREFIX[..0])' \
              spec_fixture every_cell_matches_the_python_queue
           # DQ7 a dm leaving the active states stays in order.json
           dk transition.rs '        leaves_order: !to.is_active(),' '        leaves_order: true,' \

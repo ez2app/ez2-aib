@@ -129,7 +129,7 @@ fn changes(before: &Map<String, Value>, after: &Map<String, Value>, root: &str) 
     Value::Object(out)
 }
 
-fn s<'a>(row: &'a [Value], i: usize) -> &'a str {
+fn s(row: &[Value], i: usize) -> &str {
     row[i]
         .as_str()
         .unwrap_or_else(|| panic!("cell field {i} not a string: {row:?}"))
