@@ -43,7 +43,14 @@ pub const SUMMARY_MAX: usize = 200;
 /// `aib <sub>` commands a seat may ask for (1.x `AIB_SUBCOMMANDS`; `update` is not one).
 pub const AIB_SUBCOMMANDS: &[&str] = &["dm-queue", "lang", "now", "plugins", "theme"];
 /// `claude plugin <sub>` commands a seat may ask for (1.x `CLAUDE_PLUGIN_SUB`).
-pub const CLAUDE_PLUGIN_SUB: &[&str] = &["disable", "enable", "install", "list", "uninstall", "update"];
+pub const CLAUDE_PLUGIN_SUB: &[&str] = &[
+    "disable",
+    "enable",
+    "install",
+    "list",
+    "uninstall",
+    "update",
+];
 
 /// What kind of job an accepted argv is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,7 +110,9 @@ pub fn sign_name_ok(s: &str) -> bool {
 /// 1.x `_PLUGIN_REF_RE`: `^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$`.
 pub fn plugin_ref_ok(s: &str) -> bool {
     match s.split_once('@') {
-        Some((a, b)) => !a.is_empty() && !b.is_empty() && all_in(a, name_byte) && all_in(b, name_byte),
+        Some((a, b)) => {
+            !a.is_empty() && !b.is_empty() && all_in(a, name_byte) && all_in(b, name_byte)
+        }
         None => false,
     }
 }
@@ -126,7 +135,11 @@ pub fn lint_acks(v: &Value) -> Option<Vec<String>> {
         // Python str(x) of a non-string item never matches S[1-5]
         Value::Array(a) => a
             .iter()
-            .map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| "\u{0}".into()))
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "\u{0}".into())
+            })
             .collect(),
         _ => return None,
     };
@@ -159,7 +172,10 @@ pub fn shell_quote(a: &str) -> String {
 
 /// 1.x `display_cmd`: argv as one shell-quoted line.
 pub fn display_cmd(argv: &[String]) -> String {
-    argv.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
+    argv.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// 1.x `_clean_summary`: tabs and line breaks become spaces, characters the person
@@ -169,7 +185,13 @@ pub fn display_cmd(argv: &[String]) -> String {
 pub fn clean_summary(text: &str) -> String {
     let kept: String = text
         .chars()
-        .map(|c| if matches!(c, '\t' | '\r' | '\n') { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '\t' | '\r' | '\n') {
+                ' '
+            } else {
+                c
+            }
+        })
         .filter(|c| !aib_approve::text::is_bad_char(*c))
         .collect();
     // after the filter the only white space left is U+0020 (every other one is Cc / Zs / Zl / Zp)
@@ -198,13 +220,20 @@ fn expand_user(p: &str, home: &Path) -> Option<PathBuf> {
     } else {
         nix::unistd::User::from_name(user).ok()??.dir
     };
-    Some(if tail.is_empty() { base } else { base.join(tail) })
+    Some(if tail.is_empty() {
+        base
+    } else {
+        base.join(tail)
+    })
 }
 
 /// 1.x `classify`: which kind of job `argv` is, or the refusal word. `home` is the
 /// person's home (the SIGN folder is `<home>/.ez2-aib/pending`).
 pub fn classify(argv: &Value, strong: bool, home: &Path) -> Result<Kind, &'static str> {
-    let Some(arr) = argv.as_array().filter(|a| !a.is_empty() && a.len() <= MAX_ARGV) else {
+    let Some(arr) = argv
+        .as_array()
+        .filter(|a| !a.is_empty() && a.len() <= MAX_ARGV)
+    else {
         return Err("argv_shape");
     };
     let mut words = Vec::with_capacity(arr.len());
@@ -363,7 +392,11 @@ mod tests {
         }
     }
     fn td(tag: &str) -> Td {
-        let p = std::env::temp_dir().join(format!("aib-consent-req-{tag}-{}-{}", std::process::id(), token_hex4().unwrap()));
+        let p = std::env::temp_dir().join(format!(
+            "aib-consent-req-{tag}-{}-{}",
+            std::process::id(),
+            token_hex4().unwrap()
+        ));
         fs::create_dir_all(&p).unwrap();
         Td(fs::canonicalize(&p).unwrap())
     }
@@ -384,11 +417,31 @@ mod tests {
         let t = td("ok");
         let s = home_with_sign(&t, "SIGN-x-0.1.0-abb89-1025.sh");
         let h = &t.0;
-        assert_eq!(c(json!(["aib", "now", "--seat", "abb89", "x", "1/2"]), false, h), Ok("aib"));
+        assert_eq!(
+            c(
+                json!(["aib", "now", "--seat", "abb89", "x", "1/2"]),
+                false,
+                h
+            ),
+            Ok("aib")
+        );
         assert_eq!(c(json!(["aib", "dm-queue", "list"]), false, h), Ok("aib"));
-        assert_eq!(c(json!(["claude", "plugin", "list"]), false, h), Ok("claude_plugin"));
-        assert_eq!(c(json!(["claude", "plugin", "install", "aib-boards@ez2"]), false, h), Ok("claude_plugin"));
-        assert_eq!(c(json!(["bash", s.to_str().unwrap()]), true, h), Ok("sign_script"));
+        assert_eq!(
+            c(json!(["claude", "plugin", "list"]), false, h),
+            Ok("claude_plugin")
+        );
+        assert_eq!(
+            c(
+                json!(["claude", "plugin", "install", "aib-boards@ez2"]),
+                false,
+                h
+            ),
+            Ok("claude_plugin")
+        );
+        assert_eq!(
+            c(json!(["bash", s.to_str().unwrap()]), true, h),
+            Ok("sign_script")
+        );
         assert_eq!(c(json!(["aib", "now", "中文 進度 ✓"]), false, h), Ok("aib"));
     }
 
@@ -407,24 +460,87 @@ mod tests {
             (json!(["aib", "--x"]), true, "aib_subcommand"),
             (json!(["aib", "test", "x"]), true, "aib_subcommand"),
             (json!(["aib", "update"]), true, "aib_subcommand"),
-            (json!(["aib", "update", "--allow-unsigned=1"]), true, "aib_subcommand"),
-            (json!(["aib", "plugins", "install", "--allow-unsigned", "x"]), true, "aib_allow_unsigned"),
-            (json!(["aib", "plugins", "install", "--allow-unsigned=yes"]), true, "aib_allow_unsigned"),
-            (json!(["claude", "plugin", "install", "x@m", "-y"]), true, "claude_flag"),
-            (json!(["claude", "plugin", "install", "x@m", "--marketplace", "/tmp/evil"]), true, "claude_flag"),
-            (json!(["claude", "plugin", "update", "x", "--accept-command", "sh"]), true, "claude_flag"),
-            (json!(["claude", "--dangerously-skip-permissions"]), true, "claude_subcommand"),
+            (
+                json!(["aib", "update", "--allow-unsigned=1"]),
+                true,
+                "aib_subcommand",
+            ),
+            (
+                json!(["aib", "plugins", "install", "--allow-unsigned", "x"]),
+                true,
+                "aib_allow_unsigned",
+            ),
+            (
+                json!(["aib", "plugins", "install", "--allow-unsigned=yes"]),
+                true,
+                "aib_allow_unsigned",
+            ),
+            (
+                json!(["claude", "plugin", "install", "x@m", "-y"]),
+                true,
+                "claude_flag",
+            ),
+            (
+                json!([
+                    "claude",
+                    "plugin",
+                    "install",
+                    "x@m",
+                    "--marketplace",
+                    "/tmp/evil"
+                ]),
+                true,
+                "claude_flag",
+            ),
+            (
+                json!(["claude", "plugin", "update", "x", "--accept-command", "sh"]),
+                true,
+                "claude_flag",
+            ),
+            (
+                json!(["claude", "--dangerously-skip-permissions"]),
+                true,
+                "claude_subcommand",
+            ),
             (json!(["claude", "-p", "x"]), true, "claude_subcommand"),
-            (json!(["claude", "plugin", "list", "--dangerously-skip-permissions"]), true, "claude_flag"),
-            (json!(["claude", "plugin", "install", "./local-dir"]), true, "claude_install_ref"),
-            (json!(["claude", "plugin", "install"]), true, "claude_install_ref"),
-            (json!(["claude", "plugin", "marketplace", "add", "x"]), true, "claude_subcommand"),
+            (
+                json!(["claude", "plugin", "list", "--dangerously-skip-permissions"]),
+                true,
+                "claude_flag",
+            ),
+            (
+                json!(["claude", "plugin", "install", "./local-dir"]),
+                true,
+                "claude_install_ref",
+            ),
+            (
+                json!(["claude", "plugin", "install"]),
+                true,
+                "claude_install_ref",
+            ),
+            (
+                json!(["claude", "plugin", "marketplace", "add", "x"]),
+                true,
+                "claude_subcommand",
+            ),
             (json!(["bash", s]), false, "sign_needs_strong"),
-            (json!(["bash", outside.to_str().unwrap()]), true, "sign_path"),
+            (
+                json!(["bash", outside.to_str().unwrap()]),
+                true,
+                "sign_path",
+            ),
             (json!(["bash", n.to_str().unwrap()]), true, "sign_path"),
             (json!(["bash", "-c", "rm -rf /"]), true, "sign_shape"),
-            (json!(["bash", "~nosuchuser_zz9/SIGN-a.sh"]), true, "sign_missing"),
-            (json!(["bash", "/nonexistent/SIGN-a.sh"]), true, "sign_missing"),
+            (
+                json!(["bash", "~nosuchuser_zz9/SIGN-a.sh"]),
+                true,
+                "sign_missing",
+            ),
+            (
+                json!(["bash", "/nonexistent/SIGN-a.sh"]),
+                true,
+                "sign_missing",
+            ),
             (json!(["sh", "-c", "x"]), true, "not_allowed"),
             (json!(["rm", "-rf", "/"]), true, "not_allowed"),
             (json!(["aib", "now\u{0}x"]), true, "argv_chars"),
@@ -432,8 +548,16 @@ mod tests {
             (json!(["aib", 1]), true, "argv_chars"),
             (json!([]), true, "argv_shape"),
             (json!("aib now"), true, "argv_shape"),
-            (Value::Array(vec![json!("aib"); MAX_ARGV + 1]), true, "argv_shape"),
-            (json!(["aib", "now", "x".repeat(1600)]), true, "argv_too_long"),
+            (
+                Value::Array(vec![json!("aib"); MAX_ARGV + 1]),
+                true,
+                "argv_shape",
+            ),
+            (
+                json!(["aib", "now", "x".repeat(1600)]),
+                true,
+                "argv_too_long",
+            ),
         ];
         for (argv, strong, want) in cases {
             assert_eq!(c(argv.clone(), strong, h), Err(want), "{argv}");
@@ -447,16 +571,26 @@ mod tests {
         let l = t.0.join("SIGN-link-1.sh");
         symlink(&s, &l).unwrap();
         // link outside pending pointing in: resolved path is inside ⇒ accepted (1.x resolve(strict=True))
-        assert_eq!(c(json!(["bash", l.to_str().unwrap()]), true, &t.0), Ok("sign_script"));
+        assert_eq!(
+            c(json!(["bash", l.to_str().unwrap()]), true, &t.0),
+            Ok("sign_script")
+        );
         // link inside pending pointing out: refused
         let out = t.0.join("SIGN-out-1.sh");
         fs::write(&out, "x").unwrap();
         let l2 = t.0.join(".ez2-aib/pending/SIGN-in-1.sh");
         symlink(&out, &l2).unwrap();
-        assert_eq!(c(json!(["bash", l2.to_str().unwrap()]), true, &t.0), Err("sign_path"));
+        assert_eq!(
+            c(json!(["bash", l2.to_str().unwrap()]), true, &t.0),
+            Err("sign_path")
+        );
         // "~/" is the given home
         assert_eq!(
-            c(json!(["bash", "~/.ez2-aib/pending/SIGN-real-1.sh"]), true, &t.0),
+            c(
+                json!(["bash", "~/.ez2-aib/pending/SIGN-real-1.sh"]),
+                true,
+                &t.0
+            ),
             Ok("sign_script")
         );
     }
@@ -471,14 +605,43 @@ mod tests {
         fs::write(&params, "SITE=s1\n").unwrap();
         let (p, q) = (prog.to_str().unwrap(), params.to_str().unwrap());
         let h = &t.0;
-        assert_eq!(c(json!(["generic", p, "--params", q]), true, h), Ok("shared_program"));
-        assert_eq!(c(json!(["generic", p, "--params", q]), false, h), Err("generic_needs_strong"));
-        assert_eq!(c(json!(["generic", p, "--params"]), true, h), Err("generic_shape"));
-        assert_eq!(c(json!(["generic", p, "--env", q]), true, h), Err("generic_shape"));
-        assert_eq!(c(json!(["generic", "site-remove.sh", "--params", q]), true, h), Err("generic_missing"));
+        assert_eq!(
+            c(json!(["generic", p, "--params", q]), true, h),
+            Ok("shared_program")
+        );
+        assert_eq!(
+            c(json!(["generic", p, "--params", q]), false, h),
+            Err("generic_needs_strong")
+        );
+        assert_eq!(
+            c(json!(["generic", p, "--params"]), true, h),
+            Err("generic_shape")
+        );
+        assert_eq!(
+            c(json!(["generic", p, "--env", q]), true, h),
+            Err("generic_shape")
+        );
+        assert_eq!(
+            c(json!(["generic", "site-remove.sh", "--params", q]), true, h),
+            Err("generic_missing")
+        );
         let nope = t.0.join("nope");
-        assert_eq!(c(json!(["generic", p, "--params", nope.to_str().unwrap()]), true, h), Err("generic_missing"));
-        assert_eq!(c(json!(["generic", p, "--params", "~nosuchuser_zz9/x"]), true, h), Err("generic_missing"));
+        assert_eq!(
+            c(
+                json!(["generic", p, "--params", nope.to_str().unwrap()]),
+                true,
+                h
+            ),
+            Err("generic_missing")
+        );
+        assert_eq!(
+            c(
+                json!(["generic", p, "--params", "~nosuchuser_zz9/x"]),
+                true,
+                h
+            ),
+            Err("generic_missing")
+        );
     }
 
     // test-consent-popup-abb89-1025.py Whitelist.test_c11_bad_chars
@@ -486,12 +649,40 @@ mod tests {
     fn invisible_characters_are_refused_not_cleaned() {
         let t = td("chr");
         for s in [
-            "a\nb", "a\rb", "a\u{1b}b", "a\u{200b}b", "a\u{202e}b", "a\u{2066}b", "a\u{feff}b", "a\u{85}b",
-            "a\u{2028}b", "a\u{e0041}b", "a\u{180e}b", "a\u{34f}b", "a\u{3164}b", "a\u{115f}b", "a\u{ffa0}b",
-            "a\u{2800}b", "a\u{fe0f}b", "a\u{e0100}b", "a\u{206a}b", "a\u{fff9}b", "a\u{600}b", "a\u{1bca0}b",
-            "a\u{1d173}b", "a\u{e000}b", "a\u{378}b", "a\u{a0}b", "a\u{3000}b", "a\u{2009}b",
+            "a\nb",
+            "a\rb",
+            "a\u{1b}b",
+            "a\u{200b}b",
+            "a\u{202e}b",
+            "a\u{2066}b",
+            "a\u{feff}b",
+            "a\u{85}b",
+            "a\u{2028}b",
+            "a\u{e0041}b",
+            "a\u{180e}b",
+            "a\u{34f}b",
+            "a\u{3164}b",
+            "a\u{115f}b",
+            "a\u{ffa0}b",
+            "a\u{2800}b",
+            "a\u{fe0f}b",
+            "a\u{e0100}b",
+            "a\u{206a}b",
+            "a\u{fff9}b",
+            "a\u{600}b",
+            "a\u{1bca0}b",
+            "a\u{1d173}b",
+            "a\u{e000}b",
+            "a\u{378}b",
+            "a\u{a0}b",
+            "a\u{3000}b",
+            "a\u{2009}b",
         ] {
-            assert_eq!(c(json!(["aib", "now", s]), true, &t.0), Err("argv_chars"), "{s:?}");
+            assert_eq!(
+                c(json!(["aib", "now", s]), true, &t.0),
+                Err("argv_chars"),
+                "{s:?}"
+            );
         }
     }
 
@@ -503,21 +694,30 @@ mod tests {
         assert_eq!(shell_quote("it's"), "'it'\"'\"'s'");
         assert_eq!(shell_quote("中文"), "'中文'");
         assert_eq!(shell_quote("$x"), "'$x'");
-        let argv: Vec<String> = ["aib", "now", "a b", "1/2"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = ["aib", "now", "a b", "1/2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(display_cmd(&argv), "aib now 'a b' 1/2");
     }
 
     // test-consent-popup-abb89-1025.py :456
     #[test]
     fn summary_is_cleaned_to_one_line() {
-        assert_eq!(clean_summary("進\u{202e}度\u{e0100}\n下一步"), "進度 下一步");
+        assert_eq!(
+            clean_summary("進\u{202e}度\u{e0100}\n下一步"),
+            "進度 下一步"
+        );
         assert_eq!(clean_summary("  \t x \r\n"), "x");
         assert_eq!(clean_summary(""), "");
         let long = "字".repeat(SUMMARY_MAX + 5);
         let got = clean_summary(&long);
         assert_eq!(got.chars().count(), SUMMARY_MAX);
         assert!(got.ends_with('…'));
-        assert_eq!(clean_summary(&"字".repeat(SUMMARY_MAX)).chars().count(), SUMMARY_MAX);
+        assert_eq!(
+            clean_summary(&"字".repeat(SUMMARY_MAX)).chars().count(),
+            SUMMARY_MAX
+        );
     }
 
     #[test]
@@ -525,8 +725,14 @@ mod tests {
         assert_eq!(lint_acks(&Value::Null), Some(vec![]));
         assert_eq!(lint_acks(&json!("")), Some(vec![]));
         assert_eq!(lint_acks(&json!([])), Some(vec![]));
-        assert_eq!(lint_acks(&json!("S4,S2, S2")), Some(vec!["S2".into(), "S4".into()]));
-        assert_eq!(lint_acks(&json!(["S1", "S5"])), Some(vec!["S1".into(), "S5".into()]));
+        assert_eq!(
+            lint_acks(&json!("S4,S2, S2")),
+            Some(vec!["S2".into(), "S4".into()])
+        );
+        assert_eq!(
+            lint_acks(&json!(["S1", "S5"])),
+            Some(vec!["S1".into(), "S5".into()])
+        );
         assert_eq!(lint_acks(&json!("S2,U1")), None);
         assert_eq!(lint_acks(&json!("R1")), None);
         assert_eq!(lint_acks(&json!("S6")), None);
@@ -538,10 +744,26 @@ mod tests {
     #[test]
     fn names_and_seats() {
         assert!(id_ok("1794575050-e37a6120") && id_ok(&"a".repeat(64)));
-        assert!(!id_ok("") && !id_ok(&"a".repeat(65)) && !id_ok("a.b") && !id_ok("a/b") && !id_ok("a\n"));
+        assert!(
+            !id_ok("")
+                && !id_ok(&"a".repeat(65))
+                && !id_ok("a.b")
+                && !id_ok("a/b")
+                && !id_ok("a\n")
+        );
         assert!(sign_name_ok("SIGN-mini-runner-acl-c477a-1113.sh"));
-        assert!(!sign_name_ok("SIGN-.sh") && !sign_name_ok("SIGN-a b.sh") && !sign_name_ok("sign-a.sh") && !sign_name_ok("SIGN-a.sh\n"));
-        assert!(plugin_ref_ok("aib-boards@ez2") && !plugin_ref_ok("x@") && !plugin_ref_ok("@m") && !plugin_ref_ok("./x"));
+        assert!(
+            !sign_name_ok("SIGN-.sh")
+                && !sign_name_ok("SIGN-a b.sh")
+                && !sign_name_ok("sign-a.sh")
+                && !sign_name_ok("SIGN-a.sh\n")
+        );
+        assert!(
+            plugin_ref_ok("aib-boards@ez2")
+                && !plugin_ref_ok("x@")
+                && !plugin_ref_ok("@m")
+                && !plugin_ref_ok("./x")
+        );
         assert_eq!(seat(&json!("c477a")), Some("c477a".into()));
         assert_eq!(seat(&json!("C477A")), None);
         assert_eq!(seat(&json!("ab")), None);
@@ -556,16 +778,25 @@ mod tests {
         assert_eq!(read_json(&ok, MAX_REQ_BYTES).unwrap()["v"], json!(1));
         let lnk = t.0.join("l.json");
         symlink(&ok, &lnk).unwrap();
-        assert!(read_regular(&lnk, MAX_REQ_BYTES).is_none(), "a link must not be followed");
+        assert!(
+            read_regular(&lnk, MAX_REQ_BYTES).is_none(),
+            "a link must not be followed"
+        );
         let fifo = t.0.join("p.json");
         nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
-        assert!(read_regular(&fifo, MAX_REQ_BYTES).is_none(), "a pipe must not block or be read");
+        assert!(
+            read_regular(&fifo, MAX_REQ_BYTES).is_none(),
+            "a pipe must not block or be read"
+        );
         let big = t.0.join("b.json");
         fs::write(&big, vec![b' '; MAX_REQ_BYTES as usize + 1]).unwrap();
         assert!(read_regular(&big, MAX_REQ_BYTES).is_none());
         let edge = t.0.join("e.json");
         fs::write(&edge, vec![b' '; MAX_REQ_BYTES as usize]).unwrap();
-        assert_eq!(read_regular(&edge, MAX_REQ_BYTES).unwrap().len(), MAX_REQ_BYTES as usize);
+        assert_eq!(
+            read_regular(&edge, MAX_REQ_BYTES).unwrap().len(),
+            MAX_REQ_BYTES as usize
+        );
         let arr = t.0.join("arr.json");
         fs::write(&arr, b"[1]").unwrap();
         assert!(read_json(&arr, MAX_REQ_BYTES).is_none());
@@ -573,7 +804,10 @@ mod tests {
         fs::write(&bad, b"\xff{}").unwrap();
         assert!(read_json(&bad, MAX_REQ_BYTES).is_none());
         assert!(read_regular(&t.0.join("missing"), MAX_REQ_BYTES).is_none());
-        assert!(read_regular(&t.0, MAX_REQ_BYTES).is_none(), "a directory is not a request");
+        assert!(
+            read_regular(&t.0, MAX_REQ_BYTES).is_none(),
+            "a directory is not a request"
+        );
     }
 
     #[test]
@@ -584,11 +818,20 @@ mod tests {
         write_atomic(&p, &v).unwrap();
         let m = fs::metadata(&p).unwrap();
         assert_eq!(m.permissions().mode() & 0o777, 0o600);
-        assert_eq!(read_json(&p, MAX_REQ_BYTES).unwrap(), v.as_object().unwrap().clone());
-        let names: Vec<_> = fs::read_dir(t.0.join("inbox")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(
+            read_json(&p, MAX_REQ_BYTES).unwrap(),
+            v.as_object().unwrap().clone()
+        );
+        let names: Vec<_> = fs::read_dir(t.0.join("inbox"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names.len(), 1, "no temp file left: {names:?}");
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.contains("\"summary\": \"中文\""), "UTF-8, not escaped: {text}");
+        assert!(
+            text.contains("\"summary\": \"中文\""),
+            "UTF-8, not escaped: {text}"
+        );
         write_atomic(&p, &json!({"v": 2})).unwrap();
         assert_eq!(read_json(&p, MAX_REQ_BYTES).unwrap()["v"], json!(2));
     }
