@@ -17,6 +17,13 @@ aib_dmq_route() {   # $1=cockpit 資料夾,其餘 = dm-queue 之後的參數;沒
     *) return 0 ;;
   esac
   bin="${AIB_DMQ_BIN:-${HOME:-}/.ez2-aib/bin/aib-dmq}"
+  # 只收絕對路徑:不帶斜線的名字在這裡查目前資料夾、執行時卻走 PATH(043dd S3b 審 N1)
+  case "$bin" in
+    /*) ;;
+    *)
+      echo "aib: AIB_DMQ_RUST lists $sub but $bin is not an absolute path; using the Python path" >&2
+      return 0 ;;
+  esac
   if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then
     echo "aib: AIB_DMQ_RUST lists $sub but $bin is not an executable file; using the Python path" >&2
     return 0

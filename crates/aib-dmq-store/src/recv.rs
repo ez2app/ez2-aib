@@ -788,8 +788,9 @@ pub fn reopen(
             refusal("transition", "回復要寫理由"),
         ));
     }
-    // _load_item: a tombstone is still an item here; the move answers not_found for it
-    let ItemRead::Item { item, .. } = store.read_item(seat, id)? else {
+    // _load_item: missing, unreadable or a tombstone is "not found" before any move (no
+    // rev in the answer, no audit line), as dm_triage_agent.reopen returns early
+    let Some(item) = live_item(store, seat, id)? else {
         return Ok(answer(
             Sink::default(),
             refusal("not_found", Reason::NotFound.message()),

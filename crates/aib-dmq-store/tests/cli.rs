@@ -237,6 +237,8 @@ fn what_argparse_or_seat_who_must_answer_goes_back_to_python() {
     for args in [
         &["take", "--id", ID][..],
         &["take", "--seat", "", "--id", ID],
+        // wait has no global-dm read first: only the empty-seat check sends it back
+        &["wait", "--seat", "", "--id", ID],
         &["take", "--seat", SEAT, "--id", ID, "--ev", "x"],
         &["take", "--seat", SEAT, "-h"],
         &["reopen", "--seat", SEAT, "--id", ID],
@@ -291,6 +293,22 @@ fn the_bash_dispatcher_runs_rust_when_listed_and_python_on_75() {
         !stdout(&o).contains("PYTHON"),
         "and Python does not run after it"
     );
+    let o = Command::new("bash")
+        .arg("-c")
+        .arg(". \"$0\"; aib_dmq_route /nowhere/src/cockpit \"$@\"; echo PYTHON")
+        .arg(&route)
+        .args(["take", "--seat", SEAT, "--id", ID])
+        .env_clear()
+        .env("AIB_DMQ_RUST", "take")
+        .env("AIB_DMQ_BIN", "aib-dmq")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .output()
+        .expect("bash");
+    assert_eq!(
+        (rc(&o), stdout(&o)),
+        (0, "PYTHON\n".to_owned()),
+        "a relative AIB_DMQ_BIN is not run"
+    );
     let o = run("take", &["take", "--seat", SEAT, "--id", ID]);
     assert_eq!(rc(&o), 0);
     assert!(stdout(&o).contains("----- 全文 -----") && !stdout(&o).contains("PYTHON"));
@@ -309,4 +327,43 @@ fn the_bash_dispatcher_runs_rust_when_listed_and_python_on_75() {
         "a global dm: 75, then the Python line"
     );
     assert_eq!(t.item()["status"], json!("done"));
+}
+
+#[test]
+fn reopen_of_a_tombstone_is_not_found_before_any_move() {
+    let t = T::new();
+    t.put("deleted", json!({}));
+    let o = t.run(&["reopen", "--seat", SEAT, "--id", ID, "--why", "x"]);
+    assert_eq!(rc(&o), 4, "{}", stdout(&o));
+    assert_eq!(
+        stdout(&o),
+        "{\"message\": \"這封信已經不在了\", \"ok\": false, \"reason\": \"not_found\"}\n",
+        "no rev, as dm_triage_agent.reopen returns early"
+    );
+    let audit =
+        t.d.path()
+            .join("state/dm-queue")
+            .join(SEAT)
+            .join("audit.jsonl");
+    assert!(!audit.exists(), "no audit line");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8_goes_back_to_python() {
+    use std::os::unix::ffi::OsStrExt;
+    let t = T::new();
+    t.put("read", json!({}));
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-dmq"))
+        .args(["wait", "--seat", SEAT, "--id", ID])
+        .arg(std::ffi::OsStr::from_bytes(b"\xff\xfe"))
+        .env_clear()
+        .env("EZ2_AIB_STATE_ROOT", t.d.path())
+        .output()
+        .expect("run");
+    assert_eq!(rc(&o), 75, "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        t.item().get("wait").is_none_or(Value::is_null),
+        "nothing written"
+    );
 }

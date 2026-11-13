@@ -177,7 +177,14 @@ fn fail(what: &str, e: impl std::fmt::Display) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // an argument that is not UTF-8 (Python takes it with surrogateescape): not ours
+    let Some(argv) = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string().ok())
+        .collect::<Option<Vec<String>>>()
+    else {
+        return ExitCode::from(FALLBACK);
+    };
     let Some((cmd, a)) = parse(&argv) else {
         return ExitCode::from(FALLBACK);
     };
