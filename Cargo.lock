@@ -70,6 +70,7 @@ name = "aib-dmq-store"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-dmq",
+ "serde",
  "serde_json",
  "tempfile",
 ]

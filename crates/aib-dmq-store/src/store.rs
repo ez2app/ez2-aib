@@ -144,6 +144,10 @@ pub struct Moved {
     pub rev: Option<i64>,
     pub outcome: Option<Outcome>,
     pub written: Option<Written>,
+    /// The item was written (the move happened) but taking it out of order.json failed.
+    /// The move is still reported and audited as done; the caller says so instead of
+    /// claiming nothing changed.
+    pub order_error: Option<StoreError>,
 }
 
 impl Store {
@@ -316,6 +320,8 @@ impl Store {
     }
 
     /// _bump_source_rev: +1 under rev.lock. Best effort like 1.x: a failure leaves the rev.
+    /// 1.x waits on rev.lock without a limit; the hour here only stops a stuck holder from
+    /// hanging the command for ever. It is not the short wait fsx::pause speaks of.
     pub fn bump_source_rev(&self, seat: &str) -> Option<u64> {
         let dir = self.seat_dir(seat).ok()?;
         let lock_path = dir.join(aib_dmq::lock::SOURCE_REV_LOCK);
@@ -347,7 +353,7 @@ impl Store {
             json!({"tmux_pane": caller.tmux_pane, "instance": caller.instance, "ppid": parent_pid()}),
         );
         rec.extend(fields);
-        let Ok(line) = serde_json::to_string(&Value::Object(rec)) else {
+        let Ok(line) = crate::pyjson::dumps(&Value::Object(rec)) else {
             return;
         };
         let path = dir.join(AUDIT_FILE);
@@ -370,7 +376,7 @@ impl Store {
         } else {
             (None, None)
         };
-        let audit = |reason: Reason, from: Option<Status>, rev: Option<i64>| {
+        let audit_fields = |reason: Reason, from: Option<Status>, rev: Option<i64>| {
             let mut m = Map::new();
             m.insert("ts".into(), json!(mv.now));
             m.insert("id".into(), json!(mv.id));
@@ -384,10 +390,10 @@ impl Store {
             if let Some(r) = rev {
                 m.insert("rev".into(), json!(r));
             }
-            if reason == Reason::Ok {
-                m.insert("why".into(), json!(mv.why));
-            }
-            self.audit(mv.seat, caller, m);
+            m
+        };
+        let audit = |reason: Reason, from: Option<Status>, rev: Option<i64>| {
+            self.audit(mv.seat, caller, audit_fields(reason, from, rev));
         };
         let _t = match lock(
             &dir,
@@ -404,6 +410,7 @@ impl Store {
                     rev: None,
                     outcome: None,
                     written: None,
+                    order_error: None,
                 });
             }
             Err(e) => return Err(e.into()),
@@ -418,6 +425,7 @@ impl Store {
                 rev,
                 outcome: None,
                 written: None,
+                order_error: None,
             })
         };
         if !ok {
@@ -459,16 +467,28 @@ impl Store {
             } => refused(reason, message, Some(from), Some(rev_now)),
             Decision::Allow(o) => {
                 let written = self.write_item(mv.seat, &o.item)?;
+                // the item is written: from here on the move happened, whatever fails next
+                let mut order_error = None;
                 if o.leaves_order {
-                    self.order_remove(mv.seat, mv.id)?;
+                    order_error = self.order_remove(mv.seat, mv.id).err();
                 }
-                audit(Reason::Ok, Some(o.from), Some(rev_now));
+                let mut m = audit_fields(Reason::Ok, Some(o.from), Some(rev_now));
+                m.insert("why".into(), json!(mv.why));
+                if mv.to == Status::Done {
+                    // dm_queue.py:1591, the board's spot-check reads it
+                    m.insert(
+                        "evidence".into(),
+                        o.item.get("done_evidence").cloned().unwrap_or(Value::Null),
+                    );
+                }
+                self.audit(mv.seat, caller, m);
                 Ok(Moved {
                     reason: Reason::Ok,
                     message: String::new(),
                     rev: Some(rev_now),
                     outcome: Some(*o),
                     written: Some(written),
+                    order_error,
                 })
             }
         }
@@ -491,7 +511,7 @@ impl Store {
 }
 
 fn put(path: &Path, v: &Value) -> Result<Written, StoreError> {
-    let mut s = serde_json::to_string(v).map_err(|e| StoreError::Write {
+    let mut s = crate::pyjson::dumps(v).map_err(|e| StoreError::Write {
         path: path.into(),
         why: e.to_string(),
     })?;

@@ -279,3 +279,78 @@ fn bad_seats_and_ids_never_touch_the_disk() {
     ));
     assert!(!d.path().join("state").exists());
 }
+
+/// The audit line in the frozen Python's bytes: power_tasks.py:173 looks for
+/// `"to": "done"` in audit.jsonl, so separators and key order are part of the contract.
+#[test]
+fn a_done_audit_line_is_byte_for_byte_the_python_line() {
+    let (_d, s) = store();
+    s.write_item(SEAT, &item("read")).expect("write");
+    let m = mv(Status::Done, "seat:aaaaa", Some("回過了"), IfRev::Value(3));
+    let out = s.transition(&m, &Caller::default()).expect("move");
+    assert_eq!(out.reason, Reason::Ok, "{}", out.message);
+    let audit =
+        std::fs::read_to_string(s.seat_dir(SEAT).expect("dir").join("audit.jsonl")).expect("audit");
+    let line = audit.lines().last().expect("a line");
+    let row: Value = serde_json::from_str(line).expect("json");
+    let ppid = row["caller"]["ppid"].clone();
+    let ev = row["evidence"].clone();
+    assert!(
+        row.as_object().expect("obj").contains_key("evidence"),
+        "{line}"
+    );
+    // json.dumps(rec, ensure_ascii=False, sort_keys=True) for the same record
+    let want = format!(
+        "{{\"actor\": \"seat:aaaaa\", \"caller\": {{\"instance\": null, \"ppid\": {ppid}, \"tmux_pane\": null}}, \
+         \"evidence\": {ev}, \"from\": \"read\", \"id\": \"{ID}\", \"ok\": true, \"reason\": \"ok\", \"rev\": 3, \
+         \"to\": \"done\", \"ts\": 1000, \"why\": \"回過了\"}}"
+    );
+    assert_eq!(line, want);
+    assert!(line.contains("\"to\": \"done\""));
+    // the item file is in the same form
+    let raw = std::fs::read_to_string(s.item_path(SEAT, ID).expect("path")).expect("item");
+    assert!(raw.contains("\"status\": \"done\""), "{raw}");
+    assert!(raw.ends_with("}\n"));
+}
+
+/// A write on Unix ends with the folder synced: Durable, not NotSynced.
+#[cfg(unix)]
+#[test]
+fn a_plain_write_is_durable() {
+    let (_d, s) = store();
+    assert!(matches!(
+        s.write_item(SEAT, &item("queued")).expect("write"),
+        aib_dmq_store::Written::Durable
+    ));
+}
+
+/// The item is written, then order.json cannot be: the move still counts and is audited;
+/// the order failure comes back beside it instead of "nothing changed".
+#[cfg(target_os = "macos")]
+#[test]
+fn an_order_failure_after_the_item_write_still_reports_the_move() {
+    use std::process::Command;
+    let (_d, s) = store();
+    s.write_item(SEAT, &item("delivered")).expect("write");
+    s.order_append(SEAT, ID).expect("append");
+    let order = s.seat_dir(SEAT).expect("dir").join("order.json");
+    // an immutable order.json: readable, but rename over it is refused (EPERM)
+    let st = Command::new("chflags")
+        .arg("uchg")
+        .arg(&order)
+        .status()
+        .expect("chflags");
+    assert!(st.success());
+    let out = s.transition(
+        &mv(Status::Read, "seat:aaaaa", None, IfRev::Value(3)),
+        &Caller::default(),
+    );
+    let _ = Command::new("chflags").arg("nouchg").arg(&order).status();
+    let out = out.expect("the move is reported, not an error");
+    assert_eq!(out.reason, Reason::Ok);
+    assert!(out.order_error.is_some(), "the order failure is kept");
+    assert_eq!(status(&s), "read");
+    let audit =
+        std::fs::read_to_string(s.seat_dir(SEAT).expect("dir").join("audit.jsonl")).expect("audit");
+    assert!(audit.lines().last().expect("line").contains("\"ok\": true"));
+}

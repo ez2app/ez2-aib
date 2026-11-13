@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::fs::File;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -47,16 +48,26 @@ impl std::fmt::Display for LockError {
 }
 
 /// A held lock. Dropping it leaves the lock (and releases the real one when this thread
-/// does not hold it further out).
+/// does not hold it further out). Drop guards innermost first, on the thread that took
+/// them: the order stack is per thread, so the guard is not `Send`.
 pub struct SeatLock {
     seat: String,
     level: Level,
     file: Option<File>,
+    _same_thread: PhantomData<*const ()>,
 }
 
 impl Drop for SeatLock {
     fn drop(&mut self) {
-        let last = HELD.with(|h| h.borrow_mut().exit(&self.seat, self.level));
+        // try_with: a guard dropped while the thread is ending still releases the real lock
+        let last = HELD
+            .try_with(|h| h.borrow_mut().exit(&self.seat, self.level))
+            .unwrap_or(true);
+        // a guard that took the real lock must be the innermost one left
+        debug_assert!(
+            last || self.file.is_none() || std::thread::panicking(),
+            "SeatLock dropped out of order"
+        );
         if last {
             if let Some(f) = self.file.take() {
                 let _ = f.unlock();
@@ -96,6 +107,7 @@ pub fn lock(
         seat: seat.to_string(),
         level,
         file: None,
+        _same_thread: PhantomData,
     };
     if enter == Enter::Reentered {
         return Ok(g);

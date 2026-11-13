@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 aib-dmq = { path = "../aib-dmq" }
+serde = "1"
 serde_json = "1"
 
 [dev-dependencies]

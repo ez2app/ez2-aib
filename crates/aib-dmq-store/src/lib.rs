@@ -12,15 +12,19 @@
 //!   a file that is created once and never replaced or deleted. No Python writer runs on
 //!   Windows, so nothing there takes the other lock.
 //!
-//! Every read-modify-write happens inside the folder lock (1.x reads some files outside
-//! it; the Rust side does not carry that over).
+//! order.json is read, changed and written inside the folder lock (no window between).
+//! An item is read inside the seat's transition lock only, like 1.x: every status move of an
+//! item goes through that lock, and the item write then takes the folder lock.
 //!
 //! Writes: temp file (create_new, random name) → write → sync → rename over the target →
-//! sync the folder (Unix). Once the rename is done the change is in place: a failure after
+//! sync the folder (Unix). Files and audit lines are written in the frozen Python's byte
+//! form ([`pyjson`]), because 1.x readers match strings in them.
+//! Once the rename is done the change is in place: a failure after
 //! it is reported as [`Written::NotSynced`], never as "nothing changed".
 
 pub mod fsx;
 pub mod locks;
+pub mod pyjson;
 pub mod store;
 
 pub use locks::{LockError, SeatLock};
