@@ -16,7 +16,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SYS_CRATE: &str = "aib-sys";
-pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch"];
+/// aib-approve: macOS owner keys (presence_macos), DECISION-t135b-objc2-deps.
+pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch", "aib-approve"];
 
 /// `(crate, through)`: `crate` may reach aib-sys, but only through `through`
 /// (a path that avoids `through` is still refused). DECISION-10 B: the
@@ -413,5 +414,17 @@ mod tests {
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
         d[i] = dep(n, None, r, &["LAContext", "std"]);
         assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+    }
+
+    #[test]
+    fn aib_approve_may_use_aib_sys_but_its_users_may_not_reach_it() {
+        let ok = meta(vec![pkg("aib-approve", &["aib-sys"]), pkg("aib-sys", &[])]);
+        assert!(check(&ok).is_empty(), "{:?}", check(&ok));
+        let through = meta(vec![
+            pkg("tool", &["aib-approve"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert_eq!(check(&through).len(), 1, "{:?}", check(&through));
     }
 }
