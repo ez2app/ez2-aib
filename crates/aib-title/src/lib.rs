@@ -41,6 +41,8 @@ pub const SAMPLER: &str = "title/title_sample.py";
 /// before anything runs or is written, instead of printing a title from a sampler it was not
 /// built with, and the pane's existing "3 frames of 126" rule falls back to title-beat.sh
 /// (pane-right-tabs.sh title_beat_launch). tests/title.rs pins this to the file in the tree.
+/// Maintenance: any byte of title_sample.py changing (a comment too) needs this constant
+/// written again (`shasum -a 256 title_sample.py`); the pin test goes red first, never quietly.
 pub const SAMPLER_SHA256: &str = "7479c49b5dfd3496687abedcdad058d36c8338fb1722a823e7520a69db028fe0";
 
 /// Exit code for "this binary and the sampler do not agree": the pane counts it as broken.
