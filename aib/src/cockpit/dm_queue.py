@@ -773,6 +773,72 @@ def drain_wanted(env=None):
     return admit(env)[0] or global_pending_path(env).exists()
 
 
+# ── 右欄只在有新信時起排空器(a63ab 11-12 13:38 准,主機發熱第 2 條)────────────────
+# 以前右欄每一幀都 Popen 一支 `dm_queue.py drain-idle`(整支模組載入 + 掃每一席),佇列空著也照跑;
+# 11-12 13:2x 實量單次 68% CPU。改成:排空器跑完且**沒有任何一席有信在等**時,記下跑之前的佇列指紋
+# 與時刻;右欄下一幀指紋沒變、記號也還沒滿 DRAIN_IDLE_RECHECK_S 秒就不起。
+# 指紋 = 佇列開關 + 全球記號 + 每席 rev(內容 + mtime;任何信 / 順序變動都會 +1)。
+# ★ 1ced7 #716 M1:drain-idle 還做三件不動 rev、靠時間或席位狀態的事 —— triage_tick(席閒才叫醒,60 秒)、
+#   retention_tick(10 分鐘)、next_to_drain 裡的到期掃描。launchd upkeep 不是每台都裝(11-12 實查本機沒有),
+#   不能靠它補 ⇒ 記號滿 60 秒(= TRIAGE_EVERY_S)就再起一次:佇列靜著時從「每幀」變成「約每分鐘一次」,
+#   叫醒最慢仍是 60 秒,與改前一樣。
+# 有信在等(席忙、死窗、拿不到投遞鎖)⇒ 拿掉記號 ⇒ 照舊每幀起,行為不變。
+DRAIN_IDLE_MARK = "drain-idle.idle"
+DRAIN_IDLE_RECHECK_S = 60
+
+
+def drain_idle_mark_path(env=None):
+    return queue_root(env) / DRAIN_IDLE_MARK
+
+
+def queue_fingerprint(env=None):
+    """便宜的「佇列有沒有變」:listdir + 每席讀一個小 rev 檔與 stat,不讀信檔。"""
+    seats = []
+    for seat in all_seats(env):
+        path = source_rev_path(seat, env)
+        try:
+            seats.append([seat, path.read_text(encoding="utf-8").strip(), path.stat().st_mtime_ns])
+        except OSError:
+            seats.append([seat, None, None])
+    return {"admit": bool(admit(env)[0]), "global": global_pending_path(env).exists(), "seats": seats}
+
+
+def note_drain_idle(fp, state, env=None, now=None):
+    """排空器跑完:真的跑過、而且沒有任何一席有信在等 ⇒ 記下跑之前的指紋與時刻;
+    跑過但有信在等 ⇒ 拿掉記號(下一幀照舊起);沒跑成(等鎖)⇒ 什麼都不碰(1ced7 N1:別刪別支剛寫的記號)。"""
+    path = drain_idle_mark_path(env)
+    if not state.get("ran"):
+        return False
+    if not state.get("waiting"):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            AJ.write_json(str(path), {"fp": fp, "at": int(time.time() if now is None else now)})
+        except (OSError, AJ.AtomicWriteError):
+            return False
+        return True
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def drain_needed(env=None, now=None):
+    """右欄這一幀要不要起排空器:drain_wanted 為真,而且(佇列指紋和上次「沒信在等」時不一樣,
+    或那次已滿 DRAIN_IDLE_RECHECK_S 秒 —— 叫醒 / 保留整理 / 到期掃描靠時間,要定期跑)。"""
+    if not drain_wanted(env):
+        return False
+    try:
+        mark = json.loads(drain_idle_mark_path(env).read_text(encoding="utf-8"))
+        at = int(mark["at"])
+        fp = mark["fp"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return True
+    if (time.time() if now is None else now) - at >= DRAIN_IDLE_RECHECK_S:
+        return True
+    return fp != queue_fingerprint(env)
+
+
 def _is_global_item(item):
     return isinstance(item.get("global"), dict) or item.get("sender_kind") in GLOBAL_SENDER_KINDS
 
@@ -5461,8 +5527,10 @@ def _settle_delivery(seat, claimed, rc, env, sent, now=None):
     hold_item(seat, item_id, why, rc=rc, env=env, now=now)
 
 
-def drain_once(env=None, hold_fn=None, deliver_fn=None):
-    """每席最多領一封。緊急→重要→一般→提醒,同組先到先送。草稿不送。"""
+def drain_once(env=None, hold_fn=None, deliver_fn=None, state=None):
+    """每席最多領一封。緊急→重要→一般→提醒,同組先到先送。草稿不送。
+    state(可選 dict):跑完寫 ran=True 與 waiting(有沒有任何一席還有信在等),給 note_drain_idle 用。"""
+    state = {} if state is None else state
     ok, _reason = admit(env)
     global_only = not ok                     # 沒開佇列:只投全球來信(見 global_pending_path)
     if global_only and not global_pending_path(env).exists():
@@ -5492,6 +5560,8 @@ def drain_once(env=None, hold_fn=None, deliver_fn=None):
                 global_pending_path(env).unlink()        # 全球來信都投完了 ⇒ 右欄 / upkeep 不必再跑
             except OSError:
                 pass
+        state["ran"] = True
+        state["waiting"] = waiting
         return sent
     finally:
         try:
@@ -6648,7 +6718,11 @@ def main(argv=None, env=None):
             pass
         # ★ hold_fn 寫成呼叫(lambda 裡叫 _hold)而不是傳函式物件:到達性閘只認「呼叫」,傳物件它看不出
         #   main 走得到 _hold,於是量 main 的入口格被判成沒量到 _hold(09-30 triage 那包撞到的,行為不變)。
-        sent = drain_once(env=env, hold_fn=lambda item: _hold(item), deliver_fn=lambda item: _deliver_via_dmctl(item))
+        fp = queue_fingerprint(env)     # 跑之前量:跑的當下有新信進來,指紋就對不上,下一幀照起
+        st = {}
+        sent = drain_once(env=env, hold_fn=lambda item: _hold(item), deliver_fn=lambda item: _deliver_via_dmctl(item),
+                          state=st)
+        note_drain_idle(fp, st, env=env)
         _print_json([{"id": i.get("id"), "seat": i.get("seat")} for i in sent])
         return 0
 

@@ -233,6 +233,7 @@ pub(crate) fn wait_with_timeout(
         if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
             return Ok(st);
         }
+        crate::opstop::tick(); // E11: run_capture / run_quiet
         if t0.elapsed() > timeout {
             // c477a #584 L1': the child was spawned as its own process group, so grandchildren
             // (pct exec → lxc-attach, pct restore → tar / zstd) that inherited our pipes die
@@ -265,7 +266,10 @@ fn own_group(cmd: &mut Command) -> &mut Command {
     }
 }
 
-fn run_quiet(cmd: &mut Command, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+pub(crate) fn run_quiet(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
     let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -361,6 +365,8 @@ pub(crate) fn run_capture_bounded(
     });
     let t0 = Instant::now();
     while !reader.is_finished() && t0.elapsed() <= timeout {
+        // E11: a long step (an install, an import) still says it is alive
+        crate::opstop::tick(); // E11: run_capture_bounded
         std::thread::sleep(Duration::from_millis(20));
     }
     let finished = reader.is_finished();
@@ -396,6 +402,71 @@ pub(crate) fn run_capture_bounded(
         return Err(format!("{:?} exited {status}", cmd.get_program()));
     }
     Ok((String::from_utf8_lossy(&buf).into_owned(), false))
+}
+
+/// [`run_capture_bounded`] for a child that may rightly say a lot (a restore's progress):
+/// all of its standard output is read, only the last `keep` bytes of it are kept, and
+/// saying more is not a failure (c477a rwire2 L2). Anything but exit 0 is an error, and so
+/// is the time running out (its whole process group is then killed). Standard error is not
+/// read at all.
+#[allow(clippy::disallowed_methods)] // the same short poll as wait_with_timeout
+pub(crate) fn run_capture_tail(
+    cmd: &mut Command,
+    timeout: Duration,
+    keep: usize,
+) -> Result<String, String> {
+    let mut child = own_group(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        if let Some(mut p) = pipe {
+            let mut chunk = [0u8; 16 * 1024];
+            while let Ok(n @ 1..) = p.read(&mut chunk) {
+                tail.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                // drop the front only now and then, not on every read
+                if tail.len() > keep.saturating_mul(2) {
+                    let cut = tail.len().saturating_sub(keep);
+                    tail.drain(..cut);
+                }
+            }
+        }
+        let cut = tail.len().saturating_sub(keep);
+        tail.drain(..cut);
+        tail
+    });
+    let t0 = Instant::now();
+    while !reader.is_finished() && t0.elapsed() <= timeout {
+        crate::opstop::tick(); // E11: run_capture_tail
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let kill_group = |id: u32| {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+    if !reader.is_finished() {
+        kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{:?}: timeout", cmd.get_program()));
+    }
+    let tail = reader.join().unwrap_or_default();
+    let left = timeout.saturating_sub(t0.elapsed());
+    let status =
+        wait_with_timeout(&mut child, left).map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    kill_group(child.id());
+    if !status.success() {
+        return Err(format!("{:?} exited {status}", cmd.get_program()));
+    }
+    Ok(String::from_utf8_lossy(&tail).into_owned())
 }
 
 /// [`run_capture_bounded`] that also hands the child `input` on its standard input (and
@@ -438,6 +509,8 @@ pub(crate) fn run_bounded_input(
     });
     let t0 = Instant::now();
     while !reader.is_finished() && t0.elapsed() <= timeout {
+        // E11: a long step (an install, an import) still says it is alive
+        crate::opstop::tick(); // E11: run_bounded_input
         std::thread::sleep(Duration::from_millis(20));
     }
     let finished = reader.is_finished();
@@ -1195,6 +1268,28 @@ fn switch_confirmed(code: &str, yes: Option<&str>) -> bool {
     yes == Some(code)
 }
 
+/// The site record after `site restore --switch` moved the site to CT `new_ct` at
+/// `new_ip` (`now`: seconds since the epoch); whether the site has customer ssh, whose port
+/// follows the CT. `ct_since` is set to `now`: dumps of that CT number from before the move
+/// belong to whatever had the number before, so they are not this site's backup (ebb36,
+/// pre-update backup incr. L1).
+fn switched_record(rec: &mut Value, new_ct: u32, new_ip: &str, now: u64) -> Result<bool, String> {
+    rec["ct"] = json!(new_ct);
+    rec["ip"] = json!(new_ip);
+    rec["ct_since"] = json!(aib_cloud::fresh::utc_stamp(now));
+    let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
+    if had_ssh {
+        let port = 2000u64 + u64::from(new_ct);
+        if port > 65535 {
+            return Err(format!(
+                "new ct {new_ct}: customer ssh port 2000+ct would be {port}; not switching"
+            ));
+        }
+        rec["ssh_port"] = json!(port);
+    }
+    Ok(had_ssh)
+}
+
 /// `site restore <code> --backup <vzdump> --ct <new id> --ip <last octet> [--switch --yes-<code>]`:
 /// blue-green — restore the backup as a new CT beside the live one, apply the site's limits,
 /// start it, check it answers 200 locally; with `--switch`, point the Edge at it. The old CT
@@ -1289,6 +1384,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 if step.id == "verify" {
                     break;
                 }
+                crate::opstop::step(step.id);
                 let mut cmd = Command::new(&step.argv[0]);
                 cmd.args(&step.argv[1..]);
                 eprintln!("→ {}", step.argv.join(" "));
@@ -1307,6 +1403,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 .iter()
                 .find(|s| s.id == "verify")
                 .ok_or("no verify step")?;
+            crate::opstop::step("verify");
             let mut code_seen = String::new();
             for _ in 0..30 {
                 let mut cmd = Command::new(&verify.argv[0]);
@@ -1341,18 +1438,7 @@ fn cmd_site_restore(args: &[String]) -> Result<u8, String> {
                 let mut rec: Value =
                     serde_json::from_str(&text).map_err(|e| format!("{rec_path}: {e}"))?;
                 let new_ct_n = ct.unwrap_or(0);
-                rec["ct"] = json!(new_ct_n);
-                rec["ip"] = json!(new_ip);
-                let had_ssh = rec.get("ssh_port").is_some_and(|v| !v.is_null());
-                if had_ssh {
-                    let port = 2000u64 + u64::from(new_ct_n);
-                    if port > 65535 {
-                        return Err(format!(
-                    "new ct {new_ct_n}: customer ssh port 2000+ct would be {port}; not switching"
-                ));
-                    }
-                    rec["ssh_port"] = json!(port);
-                }
+                let had_ssh = switched_record(&mut rec, new_ct_n, &new_ip, unix_now())?;
                 aib_cloud::site::spec_from_record(&rec)
                     .map_err(|e| format!("new record invalid, not switching: {e}"))?;
                 let new_text = serde_json::to_string(&rec).map_err(|e| e.to_string())?;
@@ -1389,10 +1475,16 @@ pub fn main(args: &[String]) -> Result<u8, String> {
         Some("site") => match args.get(1).map(String::as_str) {
             Some("drift") => cmd_site_drift(&args[2..]),
             Some("verify") => crate::siteverify::cmd(&args[2..]),
+            Some("scan") => crate::sitescancmd::cmd(&args[2..]),
             Some("usage") => crate::usagecmd::cmd(&args[2..]),
+            Some("notices") => crate::noticecmd::cmd(&args[2..]),
             Some("create") => crate::sitecreatecmd::cmd(&args[2..]),
             Some("remove") => crate::siteremovecmd::cmd(&args[2..]),
+            Some("mask") => crate::sitemaskcmd::cmd(&args[2..]),
+            Some("leakcheck") => crate::leakcheckcmd::cmd(&args[2..]),
+            Some("dns") => crate::sitednscmd::cmd(&args[2..]),
             Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
+            Some("login-link") => crate::loginlink::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
             }
@@ -1405,17 +1497,20 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("suspend") => cmd_site_suspend(&args[2..], true),
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | usage [--json] | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | scan <domain> | usage [--json] | notices --usage <file> [--state <file>] [--write] | mask <code> --plan | leakcheck <code> --out <file> | dns --adopt <code> --plan|--apply|--check | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | login-link <domain> [--login <user>] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
         Some("roster") => crate::rostercmd::cmd(&args[1..]),
         Some("leak-words") => crate::leakwordscmd::cmd(&args[1..]),
+        Some("ct") => crate::maskcmd::cmd(&args[1..]),
         Some("edge") => crate::edgecmd::cmd(&args[1..]),
         Some("backup") => match args.get(1).map(String::as_str) {
             Some("check") => crate::backupcmd::cmd(&args[2..]),
-            _ => Err("backup needs check [--remote <name>:<path>] [--records dir] [--json]".to_owned()),
+            Some("fresh") => crate::backupcmd::fresh_cmd(&args[2..]),
+            _ => Err("backup needs check [--remote <name>:<path>] [--records dir] [--json] | fresh <code> [--max-minutes N]".to_owned()),
         },
+        Some("restore") => crate::restorecmd::cmd(&args[1..]),
         Some("spec") => crate::speccmd::cmd(&args[1..]),
         Some("op") => crate::opstore::cmd(&args[1..]),
         Some("probe") => match args.get(1).map(String::as_str) {
@@ -1437,7 +1532,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", crate::update::BUILD_INFO);
             Ok(0)
         }
-        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | leak-words --out <file> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | build-info | --version".to_owned()),
+        _ => Err("usage: aib-cloud-host probe run <plan.json> --host <ip> [--out f] [--external] | probe merge <a> <b>… --out f | root-password apply <file> | site drift [--records dir] [--json] | site verify [<code>] [--records dir] [--thin vg/pool] [--json] | site suspend|resume <code> | site restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan | backup check [--remote <name>:<path>] [--json] | backup fresh <code> [--max-minutes N] | restore expect <file.wpress> | restore verify <code> <file.wpress> [--users-extra N] [--records dir] | op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>] | spec lint <file> | spec plan <file> [--from <step>] [--json] | leak-words --out <file> | self-update <version> [--dest f] [--allow-downgrade] [--base-url file:///d] | build-info | --version".to_owned()),
     }
 }
 
@@ -1445,6 +1540,27 @@ pub fn main(args: &[String]) -> Result<u8, String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_writes_when_the_site_took_the_ct_number() {
+        let now = 1_794_195_191;
+        let mut rec = json!({ "site": "site2", "ct": 112, "ip": "10.77.0.12",
+            "created": "2026-01-01T00:00:00Z", "ssh_port": 2112 });
+        assert_eq!(switched_record(&mut rec, 119, "10.77.0.19", now), Ok(true));
+        assert_eq!(rec["ct"], 119);
+        assert_eq!(rec["ip"], "10.77.0.19");
+        assert_eq!(rec["ssh_port"], 2119);
+        assert_eq!(rec["ct_since"], "2026-11-09T03:33:11Z");
+        // the backup check now counts only dumps of CT 119 from the switch on
+        assert_eq!(aib_cloud::fresh::record_floor(&rec), Ok(now));
+        let mut no_ssh = json!({ "site": "site3", "ct": 113, "created": "2026-01-01T00:00:00Z" });
+        assert_eq!(
+            switched_record(&mut no_ssh, 120, "10.77.0.20", now),
+            Ok(false)
+        );
+        assert_eq!(no_ssh["ct_since"], "2026-11-09T03:33:11Z");
+        assert!(switched_record(&mut rec, 70_000, "10.77.0.21", now).is_err());
+    }
     use std::net::TcpListener;
 
     /// 4542e 11-10 condition c: --switch has no inverse, so the site code is typed.
@@ -1486,42 +1602,42 @@ mod tests {
 
     #[test]
     fn h1_whitelist_refuses_each_defect() {
-        let good = cell("host-egress-dns", "host", "dns", "1.1.1.1", 53, "open");
+        let good = cell("host-egress-dns", "host", "dns", "192.0.2.53", 53, "open");
         assert_eq!(validate_plan(&json!([good.clone()])).unwrap().len(), 1);
         let bad = [
             ("empty", json!([])),
             ("not array", json!({})),
             (
                 "id uppercase",
-                json!([cell("X", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("X", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "id leading dash",
-                json!([cell("-a", "host", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("-a", "host", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct:0",
-                json!([cell("a", "ct:0", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:0", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct leading zero",
-                json!([cell("a", "ct:010", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:010", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ct too long",
-                json!([cell("a", "ct:1234567890", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "ct:1234567890", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "from garbage",
-                json!([cell("a", "host;id", "tcp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host;id", "tcp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "kind",
-                json!([cell("a", "host", "udp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "udp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "ip shell",
-                json!([cell("a", "host", "tcp", "1.1.1.1; rm -rf /", 80, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53; rm -rf /", 80, "open")]),
             ),
             (
                 "ip hostname",
@@ -1529,27 +1645,27 @@ mod tests {
             ),
             (
                 "port range",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 70000, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 70000, "open")]),
             ),
             (
                 "port string",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": "80", "expect": "open"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": "80", "expect": "open"}]),
             ),
             (
                 "icmp with port",
-                json!([cell("a", "host", "icmp", "1.1.1.1", 80, "open")]),
+                json!([cell("a", "host", "icmp", "192.0.2.53", 80, "open")]),
             ),
             (
                 "tcp port 0",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 0, "open")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 0, "open")]),
             ),
             (
                 "expect",
-                json!([cell("a", "host", "tcp", "1.1.1.1", 80, "maybe")]),
+                json!([cell("a", "host", "tcp", "192.0.2.53", 80, "maybe")]),
             ),
             (
                 "unknown key",
-                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "1.1.1.1", "port": 80, "expect": "open", "cmd": "x"}]),
+                json!([{"id": "a", "from": "host", "kind": "tcp", "ip": "192.0.2.53", "port": 80, "expect": "open", "cmd": "x"}]),
             ),
             ("duplicate", json!([good.clone(), good.clone()])),
         ];
@@ -1571,7 +1687,7 @@ mod tests {
             "v6",
             "ct:101",
             "tcp",
-            "2606:4700:4700::1111",
+            "2001:db8::443",
             443,
             "blocked"
         )]))
@@ -1585,9 +1701,9 @@ mod tests {
             {"port": 22, "id": "public-host-22", "expect": "open", "kind": "tcp", "ip": "203.0.113.90", "from": "external"},
             {"id": "public-host-443", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 443, "expect": "open"},
             {"id": "public-host-8006", "from": "external", "kind": "tcp", "ip": "203.0.113.90", "port": 8006, "expect": "blocked"},
-            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "1.1.1.1", "port": 53, "expect": "open"}
+            {"id": "host-egress-dns", "from": "host", "kind": "dns", "ip": "192.0.2.53", "port": 53, "expect": "open"}
         ]);
-        assert_eq!(plan_fingerprint(&plan), "e75b1af045774800");
+        assert_eq!(plan_fingerprint(&plan), "473e1dd2dde568f2");
     }
 
     #[test]
@@ -1710,7 +1826,7 @@ mod tests {
             "host must be an ip"
         );
         assert!(
-            parse_run(&["--host".into(), "1.1.1.1".into()]).is_err(),
+            parse_run(&["--host".into(), "192.0.2.53".into()]).is_err(),
             "plan required"
         );
     }
