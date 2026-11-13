@@ -1446,6 +1446,36 @@ jobs:
           # DQ7 a dm leaving the active states stays in order.json
           dk transition.rs '        leaves_order: !to.is_active(),' '        leaves_order: true,' \
              spec_fixture every_cell_matches_the_python_queue
+      - name: aib-dmq-store knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sk() { python3 -I scripts/knife.py "crates/aib-dmq-store/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-dmq-store --locked --test store "$4"; }
+          # DS1 the lock never waits on the OS lock
+          sk locks.rs '    match lock_ex(&f, timeout) {' '    match { let _ = timeout; lock_ex(&f, Duration::ZERO).or(Ok::<(), LockWait>(())) } {' \
+             the_folder_lock_keeps_a_second_opener_out
+          # DS2 holding one seat's lock may lock another seat
+          sk locks.rs '        .map_err(LockError::Order)?;' '        .unwrap_or(Enter::Acquire);' \
+             holding_one_seat_may_not_lock_another
+          # DS3 re-entry takes the OS lock again (and waits on itself)
+          sk locks.rs '    if enter == Enter::Reentered {' '    if enter == Enter::Reentered && false {' \
+             a_move_inside_the_same_seats_transition_lock_reenters
+          # DS4 the Unix folder lock is not the folder Python atomic_json flocks
+          sk locks.rs '        Level::Directory if cfg!(unix) => dir.to_path_buf(),' \
+             '        Level::Directory if cfg!(unix) && false => dir.to_path_buf(),' \
+             the_folder_lock_keeps_a_second_opener_out
+          # DS5 the rev check is skipped
+          sk store.rs '        let (ok, reason, cur) = rev_check(read.presence(), mv.if_rev, mv.no_rev_check);' \
+             '        let (ok, reason, cur) = rev_check(read.presence(), mv.if_rev, true);' \
+             no_rev_and_a_wrong_rev_are_refused
+          # DS6 a dm leaving the active states stays in order.json
+          sk store.rs '                if o.leaves_order {' '                if false && o.leaves_order {' \
+             a_move_writes_the_item_leaves_the_order_and_audits
+          # DS7 a transition-lock timeout is an error, not lock_timeout (rc 10)
+          sk store.rs '            Err(LockError::Timeout { .. }) => {' '            Err(LockError::Timeout { .. }) if false => {' \
+             a_timed_out_transition_lock_is_lock_timeout_and_changes_nothing
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
