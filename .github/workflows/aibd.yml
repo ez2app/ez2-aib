@@ -453,6 +453,8 @@ jobs:
       # binding used (`&& false`, not `if false`).
       # D4 (043dd DECISION-d4-insert-043dd-1110): the insert slot. Each knife takes
       # one guard out and must turn its own test in crates/aib-lease/tests/insert.rs red.
+      # I1 keeps the call (`.filter(|_| false)`): replacing it left exclusive_blocked
+      # unused, a dead-code error under -D warnings, so the knife missed with no test run (11-10).
       - name: aib-lease insert knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -463,7 +465,7 @@ jobs:
           # I1 an exclusive acquire does not look at a running insert
           ik crates/aib-lease/src/lib.rs \
             '        if let Some(o) = insert::exclusive_blocked(paths, p) {' \
-            '        if let Some(o) = None::<Outcome> { // knife' \
+            '        if let Some(o) = insert::exclusive_blocked(paths, p).filter(|_| false) { // knife' \
             an_exclusive_acquire_waits_for_a_running_insert
           # I2 a 30-minute waiter does not keep the next turn
           ik crates/aib-lease/src/insert.rs \
