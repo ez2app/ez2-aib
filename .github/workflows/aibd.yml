@@ -286,6 +286,69 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+      # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
+      # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
+      - name: aib-public-leak knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pl() { python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --lib "$3"; }
+          # PL1 the denylist is matched case-sensitively
+          pl '        let low = text.to_lowercase();' '        let low = text.to_string(); // knife' \
+             denylist_skips_comments_and_ignores_case
+          # PL2 a documentation range (203.0.113/24) is reported as public
+          pl '        || (a == 203 && b == 0 && c == 113)' '        || false // knife' \
+             documentation_and_private_ranges_pass_public_ones_do_not
+          # PL3 a five-part version (1.2.3.4.5) is read as an address
+          pl '    if digit_after || part_after {' '    if digit_after || (part_after && false) { // knife' \
+             addresses_are_found_but_longer_dotted_runs_are_not
+          # PL4 a path that hits is printed in the line findings of that file
+          pl '        let path = path_rules.is_empty().then(|| f.path.clone());' \
+             '        let path = Some(f.path.clone()); // knife' \
+             a_path_that_hits_is_withheld_from_every_line_of_that_file
+          # PL5 removed lines are checked as if added
+          pl "        if let Some(text) = l.strip_prefix('+') {" \
+             "        if let Some(text) = l.strip_prefix('+').or_else(|| l.strip_prefix('-')) { // knife" \
+             a_removed_line_is_not_a_finding
+          # PL6 (a63ab 11-10 22:00) scope: lines already on the base (context) are checked as if added
+          pl "        } else if l.starts_with(' ') {" \
+             "        } else if let Some(text) = l.strip_prefix(' ') { if let Some(f) = files.last_mut() { f.lines.push((next_line, text.to_string())); } next_line += 1; } else if false { // knife" \
+             an_existing_hit_with_nothing_new_is_clean
+          # PL7 (043dd #636 L2) a file with no `+++` line (new empty file, mode change) has no path checked
+          pl '            if let Some(p) = header_path(rest) {' \
+             '            if let Some(p) = header_path(rest).filter(|_| false) { // knife' \
+             a_new_empty_file_or_a_mode_change_still_has_its_path_checked
+          # PL8 a deleted file's path is checked as if it were added
+          pl '                    files.pop(); // a removed path adds nothing' \
+             '                    // knife: the removed path stays' \
+             a_new_empty_file_or_a_mode_change_still_has_its_path_checked
+          pm() { python3 -I scripts/knife.py crates/aib-public-leak/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --test leak "$3"; }
+          # PL9 (043dd #636 L1) the PR's own .gitattributes decide what is read. Needs a git
+          # with the global --attr-source (2.41+); an older git takes the read-everything path,
+          # so this knife cannot bite there: named SKIP decided by capability (DECISION-690-old-git).
+          if git --attr-source=HEAD rev-parse --git-dir >/dev/null 2>&1; then
+            python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+              '        v.push(format!("--attr-source={base}"));' \
+              '        let _ = &base; // knife' \
+              --expect-fail a_pr_cannot_hide_its_lines_with_its_own_gitattributes \
+              -- cargo test -p aib-public-leak --locked --test leak a_pr_cannot_hide_its_lines_with_its_own_gitattributes
+          else
+            echo "KNIFE PL9: SKIP (named) this git has no --attr-source; the read-everything path is knife PL11"
+          fi
+          # PL11 (DECISION-690-old-git, 043dd + Codex) the read-everything path lets a binary
+          # attribute hide lines. Runs on every git through --full-read.
+          python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+            '        v.push("--text".to_string());' \
+            '        // knife: no --text' \
+            --expect-fail full_read_reads_files_any_attributes_call_binary \
+            -- cargo test -p aib-public-leak --locked --test leak full_read_reads_files_any_attributes_call_binary
+          # PL10 (a63ab after #636) a required denylist that is absent passes
+          pm '    } else if deny.is_empty() && a.require_denylist {' \
+             '    } else if deny.is_empty() && a.require_denylist && false { // knife' \
+             a_required_denylist_that_is_absent_is_exit_3_not_a_pass
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).

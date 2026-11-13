@@ -138,6 +138,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-public-leak"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-release"
 version = "0.2.0-preview.5"
 dependencies = [
