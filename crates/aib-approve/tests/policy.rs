@@ -528,3 +528,15 @@ fn a_proof_cannot_live_longer_than_its_category_allows() {
         Err(Refusal::TooLongLived)
     );
 }
+
+#[test]
+fn a_nonce_ledger_can_ask_how_long_any_proof_may_live() {
+    let longest = proof::max_proof_lifetime_s();
+    for c in category::ALL {
+        assert!(proof::max_lifetime_s(c) <= longest, "{c:?}");
+    }
+    assert!(category::ALL
+        .iter()
+        .any(|c| proof::max_lifetime_s(*c) == longest));
+    assert_eq!(longest, category::WINDOW_CAP_S);
+}
