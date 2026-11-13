@@ -128,6 +128,18 @@ pub fn stop_done(windows: bool, session: &Value) -> bool {
     !windows && state == "stop_unconfirmed" && status == "unverified" && reason == "observed_clean"
 }
 
+/// The pids to check, each once and none zero, in first-seen order (the marker's first pid
+/// is the session's own process, already known from the API).
+pub fn distinct(pids: &[u32]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for &p in pids {
+        if p != 0 && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// Whether a pid is there. Only clear evidence is `Gone`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Live {
@@ -331,6 +343,13 @@ mod tests {
             !stop_done(true, &no_list),
             "a missing survivors list is not an empty one"
         );
+    }
+
+    #[test]
+    fn each_pid_is_checked_once_and_zero_never() {
+        assert_eq!(distinct(&[31033, 31033, 31034]), vec![31033, 31034]);
+        assert_eq!(distinct(&[0, 5, 0, 5]), vec![5]);
+        assert!(distinct(&[]).is_empty());
     }
 
     #[test]

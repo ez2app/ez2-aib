@@ -258,7 +258,8 @@ impl Drop for Daemon {
     }
 }
 
-/// Start the fixture's tree in a session of `seat`; (session, root pid, child, grandchild).
+/// Start the fixture's tree in a session of `seat`; (session, the program's own pid as its
+/// marker says, its child). The marker's first pid is the session's process itself.
 fn start_tree(
     d: &Daemon,
     seat: &str,
@@ -397,7 +398,7 @@ fn run(args: &Args, work: &Path, r: &mut Receipt) -> Result<(), String> {
     let root = sess["pid"].as_u64().unwrap_or(0) as u32;
     r.pass(
         "run.start",
-        format!("{sid} pid {root} tree {child} {grand}"),
+        format!("{sid} pid {root}, marker {child} + child {grand}"),
     );
 
     // 3. see
@@ -426,11 +427,11 @@ fn run(args: &Args, work: &Path, r: &mut Receipt) -> Result<(), String> {
             .then(|| format!("{} / {}", del.json["state"], del.json["stop"]["status"]))
             .ok_or(format!("HTTP {} {}", del.code, del.json)),
     );
-    let left = not_gone_after(&[root, child, grand], 10);
+    let left = not_gone_after(&aib_accept::distinct(&[root, child, grand]), 10);
     r.check(
         "stop.tree_gone",
         left.is_empty()
-            .then(|| "root, child, grandchild gone".to_string())
+            .then(|| "the program and its child gone".to_string())
             .ok_or(format!("not proven gone: {left:?}")),
     );
 
@@ -498,7 +499,7 @@ fn recover(
     let (sid, pids) = match started {
         Ok((s, c, g)) => (
             s["id"].as_str().unwrap_or("").to_string(),
-            vec![s["pid"].as_u64().unwrap_or(0) as u32, c, g],
+            aib_accept::distinct(&[s["pid"].as_u64().unwrap_or(0) as u32, c, g]),
         ),
         Err(e) => {
             r.fail("recover.start", e);
