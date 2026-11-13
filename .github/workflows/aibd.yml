@@ -560,9 +560,11 @@ jobs:
             '        let _ = &g; // knife: not told' \
             hooks_set_late_hear_the_current_count
           # S9 (f1fae integ) the seat route skips the M1 gate: an unlisted program starts
+          # (T81 moved the gate into start_keyed, shared with POST /sessions: the knife
+          # skips it only when a seat is given, a9136 t81fix)
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let (req, asked) = match gate(&st, req).await {' \
-            $'    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).\n    let asked = req.argv.first().cloned();\n    let (req, asked) = match Ok::<(Request, Option<String>), ApiError>((req, asked)) { // knife: no gate' \
+            '    let (req, asked) = match gate(st, req).await {' \
+            '    let (req, asked) = match if seat.is_some() { let a = req.argv.first().cloned(); Ok::<(Request, Option<String>), ApiError>((req, a)) } else { gate(st, req).await } { // knife: no gate on the seat route' \
             --expect-fail the_seat_route_refuses_an_unlisted_program_and_records_it \
             -- cargo test -p aibd --locked --test seat_sessions the_seat_route_refuses_an_unlisted_program_and_records_it
           # S6 an over-long line is not marked as cut
