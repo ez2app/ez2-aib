@@ -15,7 +15,8 @@ const ID: &str = "q_00000000000000b2";
 const ME: &str = "seat:aaaaa";
 
 struct T {
-    d: tempfile::TempDir,
+    /// Kept only so the temp folder lives as long as the test (read on no platform).
+    _d: tempfile::TempDir,
     s: Store,
     caller: Caller,
     relay: Vec<PathBuf>,
@@ -29,7 +30,7 @@ impl T {
         std::fs::create_dir_all(&pending).expect("pending");
         let relay = vec![std::fs::canonicalize(&pending).expect("canon")];
         T {
-            d,
+            _d: d,
             s,
             caller: Caller::default(),
             relay,
@@ -157,7 +158,8 @@ fn a_long_message_is_read_from_the_relay_folder_only() {
 
     // a pointer to a file outside the relay folder: not read, not marked read
     let t = T::new();
-    let other = t.d.path().join("RELAY-dm-x.txt");
+    let root = t.relay[0].parent().expect("temp root");
+    let other = root.join("RELAY-dm-x.txt");
     std::fs::write(&other, "secret").expect("other");
     t.put(
         "delivered",
