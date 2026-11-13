@@ -177,6 +177,71 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
+      # turn its own test red.
+      - name: aib-persona knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          pk() { python3 -I scripts/knife.py "crates/aib-persona/src/$1" "$2" "$3" --expect-fail "$5" \
+                   -- cargo test -p aib-persona --locked $4 "$5"; }
+          # P1 a receipt outside the allowed roots is taken
+          pk pointer.rs '        .any(|r| real.starts_with(&r));' \
+             '        .any(|r| real.starts_with(&r) || true); // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P2 the path is compared as spelled: `..` and links escape the root
+          pk pointer.rs '    let real = std::fs::canonicalize(expand(path, w))' \
+             '    let real = Ok::<_, std::io::Error>(expand(path, w)) // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P3 a dm id is taken without looking in the queue
+          pk pointer.rs '        return if (w.dm_exists)(p) {' \
+             '        return if (w.dm_exists)(p) || true { // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
+          # P4 another writer's line is voided without a dm id
+          pk lib.rs '    if owner != Some(by) {' \
+             '    if owner != Some(by) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P5 groups still count voided lines
+          pk lib.rs '        if voided.contains_key(&l.id) {' \
+             '        if voided.contains_key(&l.id) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P6 the same pointer under two lanes is two groups
+          pk lib.rs '        if !seen_ptr.insert(ptr_key) {' \
+             '        if !seen_ptr.insert(ptr_key) && false { // knife' \
+             '--lib' one_pointer_counts_once_across_lanes
+          # P7 a pinned tree with local changes is used
+          pk pin.rs '    if !dirty.is_empty() {' \
+             '    if !dirty.is_empty() && false { // knife' \
+             '--test persona' doctor_pins_a_sha_and_refuses_anything_else
+          # P8 two lines of one file are one pointer (043dd #627 M2)
+          pk lib.rs '            (Some(r), Some(n)) => format!("{r}:{n}"),' \
+             '            (Some(r), Some(_)) => r.to_string(), // knife' \
+             '--lib' two_lines_of_one_file_are_two_pointers
+          # P9 a ledger that is a link is written through (043dd #627 M3)
+          pk main.rs '    if let Ok(md) = std::fs::symlink_metadata(path) {' \
+             '    if let Ok(md) = std::fs::metadata(path) { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P10 a persona folder that leads out of the candidate root is written into (M3)
+          pk main.rs '    if !real_dir.starts_with(&real_root) {' \
+             '    if !real_dir.starts_with(&real_root) && false { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P11 a bare name.md / name.ext:N in the working folder is refused (043dd #627 M4)
+          pk pointer.rs "    if p.contains('/') || p.starts_with('~') || bare_file {" \
+             "    if p.contains('/') || p.starts_with('~') || (bare_file && false) { // knife" \
+             '--test persona' a_bare_file_name_in_the_working_folder_is_a_path
+          # P12 check() takes dm:q_X as a message without asking the queue (ebb36 #627 M1;
+          # the CLI strips the prefix first, so the library test is the one that sees it)
+          pk pointer.rs '    let p = dm_alias(p).unwrap_or(p);' \
+             '    let p = p; // knife' \
+             '--lib' a_prefixed_dm_id_is_the_dm_id
+          # P13 q_X and dm:q_X are two groups (ebb36 #627 M1)
+          pk lib.rs '            (None, _) => pointer::dm_alias(ptr).unwrap_or(ptr).to_string(),' \
+             '            (None, _) => ptr.to_string(), // knife' \
+             '--lib' a_dm_id_counts_once_with_or_without_its_prefix
+          # P14 dm:q_X is stored with its prefix (ebb36 #627 M1)
+          pk main.rs '    let ptr = pointer::dm_alias(ptr).unwrap_or(ptr).to_string();' \
+             '    let ptr = ptr.to_string(); // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives
@@ -286,6 +351,69 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+      # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
+      # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
+      - name: aib-public-leak knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pl() { python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --lib "$3"; }
+          # PL1 the denylist is matched case-sensitively
+          pl '        let low = text.to_lowercase();' '        let low = text.to_string(); // knife' \
+             denylist_skips_comments_and_ignores_case
+          # PL2 a documentation range (203.0.113/24) is reported as public
+          pl '        || (a == 203 && b == 0 && c == 113)' '        || false // knife' \
+             documentation_and_private_ranges_pass_public_ones_do_not
+          # PL3 a five-part version (1.2.3.4.5) is read as an address
+          pl '    if digit_after || part_after {' '    if digit_after || (part_after && false) { // knife' \
+             addresses_are_found_but_longer_dotted_runs_are_not
+          # PL4 a path that hits is printed in the line findings of that file
+          pl '        let path = path_rules.is_empty().then(|| f.path.clone());' \
+             '        let path = Some(f.path.clone()); // knife' \
+             a_path_that_hits_is_withheld_from_every_line_of_that_file
+          # PL5 removed lines are checked as if added
+          pl "        if let Some(text) = l.strip_prefix('+') {" \
+             "        if let Some(text) = l.strip_prefix('+').or_else(|| l.strip_prefix('-')) { // knife" \
+             a_removed_line_is_not_a_finding
+          # PL6 (a63ab 11-10 22:00) scope: lines already on the base (context) are checked as if added
+          pl "        } else if l.starts_with(' ') {" \
+             "        } else if let Some(text) = l.strip_prefix(' ') { if let Some(f) = files.last_mut() { f.lines.push((next_line, text.to_string())); } next_line += 1; } else if false { // knife" \
+             an_existing_hit_with_nothing_new_is_clean
+          # PL7 (043dd #636 L2) a file with no `+++` line (new empty file, mode change) has no path checked
+          pl '            if let Some(p) = header_path(rest) {' \
+             '            if let Some(p) = header_path(rest).filter(|_| false) { // knife' \
+             a_new_empty_file_or_a_mode_change_still_has_its_path_checked
+          # PL8 a deleted file's path is checked as if it were added
+          pl '                    files.pop(); // a removed path adds nothing' \
+             '                    // knife: the removed path stays' \
+             a_new_empty_file_or_a_mode_change_still_has_its_path_checked
+          pm() { python3 -I scripts/knife.py crates/aib-public-leak/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --test leak "$3"; }
+          # PL9 (043dd #636 L1) the PR's own .gitattributes decide what is read. Needs a git
+          # with the global --attr-source (2.41+); an older git takes the read-everything path,
+          # so this knife cannot bite there: named SKIP decided by capability (DECISION-690-old-git).
+          if git --attr-source=HEAD rev-parse --git-dir >/dev/null 2>&1; then
+            python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+              '        v.push(format!("--attr-source={base}"));' \
+              '        let _ = &base; // knife' \
+              --expect-fail a_pr_cannot_hide_its_lines_with_its_own_gitattributes \
+              -- cargo test -p aib-public-leak --locked --test leak a_pr_cannot_hide_its_lines_with_its_own_gitattributes
+          else
+            echo "KNIFE PL9: SKIP (named) this git has no --attr-source; the read-everything path is knife PL11"
+          fi
+          # PL11 (DECISION-690-old-git, 043dd + Codex) the read-everything path lets a binary
+          # attribute hide lines. Runs on every git through --full-read.
+          python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs \
+            '        v.push("--text".to_string());' \
+            '        // knife: no --text' \
+            --expect-fail full_read_reads_files_any_attributes_call_binary \
+            -- cargo test -p aib-public-leak --locked --test leak full_read_reads_files_any_attributes_call_binary
+          # PL10 (a63ab after #636) a required denylist that is absent passes
+          pm '    } else if deny.is_empty() && a.require_denylist {' \
+             '    } else if deny.is_empty() && a.require_denylist && false { // knife' \
+             a_required_denylist_that_is_absent_is_exit_3_not_a_pass
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
@@ -1423,7 +1551,7 @@ jobs:
           ek '    if t.len() as u64 > max {' \
              '    if t.len() as u64 > max && false { // knife' \
              local_files_over_their_limit_are_errors
-          # KE15 (a9136 #693) every PR the history names is read, so old PRs push the newest past MAX_PRS
+          # KE15 (a9136 #693) only the first PR the history names is read, so a newer PR is never read (old PRs must not push the newest past MAX_PRS)
           ek '            (Some(e), false) => e.pr,' \
              '            (Some(_), false) => evidence.lines.iter().find_map(|e| e.pr), // knife' \
              old_prs_never_push_the_latest_one_out
@@ -1467,6 +1595,18 @@ jobs:
           ek '        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(' \
              '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
              an_evidence_file_that_cannot_be_read_says_so
+          # KE26 (ebb36 #693 N3) a head written in capitals reads as another commit
+          ek '            Some(Some(now_head)) if now_head.eq_ignore_ascii_case(head) => {}' \
+             '            Some(Some(now_head)) if now_head == head => {} // knife' \
+             a_pass_for_an_old_head_or_an_unreadable_head_is_unverified
+          # KE27 (ebb36 #693 N4) the soft hyphen and the other added marks pass through
+          ek "                '\\u{00ad}' | '\\u{061c}' | '\\u{180e}'" \
+             "                '\\u{200b}' | '\\u{200c}' | '\\u{200d}' // knife" \
+             seat_text_is_cleaned_before_it_is_printed
+          # KE28 (ebb36 #693 L5 / L6) a flag the command does not take is ignored (event --now writes a made-up time)
+          python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
+            '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
+            -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

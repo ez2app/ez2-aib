@@ -119,7 +119,7 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   carry a per-run nonce, so a step's own output cannot pass for them. A failed write warns and
   never changes the exit code. The file is created 0600 (masking is best effort).
 * Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
-  bad rev · 73 remote unpack · 75 lease not granted (nothing ran) · 76 connection dropped, run still going there (A1).
+  bad rev · 73 remote unpack · 75 lease not granted or (`--any-host`) no machine free (nothing ran) · 76 connection dropped, run still going there (A1).
 
 ## `aib-lease classify` — short or long, light or not (D7)
 

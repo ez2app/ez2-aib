@@ -8,7 +8,7 @@
 //! platform: Done, Unsupported or NotApplicable, never a silent empty value.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-use aibd::platform::lifecycle::{Current, Lifecycle, Step, StepId, Swept};
+use aibd::platform::lifecycle::{CheckTree, Current, Lifecycle, Step, StepId, Swept};
 use std::time::{Duration, Instant};
 
 type Registered = (StepId, &'static str, fn());
@@ -75,7 +75,7 @@ mod macos {
     pub fn the_check_tree_is_the_posix_script() {
         assert_eq!(
             <Current as Lifecycle>::check_tree(),
-            Step::Done(aibd::selfcheck::CHECK_SCRIPT)
+            Step::Done(CheckTree::Shell(aibd::selfcheck::CHECK_SCRIPT))
         );
     }
 
@@ -146,16 +146,13 @@ mod windows {
         );
     }
 
-    /// No Windows check tree yet: unsupported, and selfcheck turns that into
-    /// `not_wired` without spawning (selfcheck's own test).
-    pub fn the_check_tree_is_unsupported_not_a_posix_shell() {
-        assert!(matches!(
+    /// No /bin/sh: aibd is its own check tree (tests/selfcheck_selfexec.rs
+    /// runs it through the Windows spawn).
+    pub fn the_check_tree_is_aibd_itself() {
+        assert_eq!(
             <Current as Lifecycle>::check_tree(),
-            Step::Unsupported {
-                step: StepId::CheckTree,
-                ..
-            }
-        ));
+            Step::Done(CheckTree::SelfExec)
+        );
     }
 
     pub fn child_reaping_does_not_apply() {
@@ -206,7 +203,7 @@ register! {
     Spawn => spawn_is_wired,
     StopLeftovers => the_sweep_looks_and_says_none_left,
     ShutdownSignal => shutdown_names_what_it_does_not_hear,
-    CheckTree => the_check_tree_is_unsupported_not_a_posix_shell,
+    CheckTree => the_check_tree_is_aibd_itself,
     ChildReaping => child_reaping_does_not_apply,
     KeepChildZombies => keep_child_zombies_does_not_apply,
     KillOnExit => kill_on_exit_is_j0,
