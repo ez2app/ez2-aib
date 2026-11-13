@@ -733,7 +733,11 @@ fn an_incomplete_lineage_pass_makes_a_clean_looking_cancel_unverified() {
 /// a dead, unrecorded process newer than the root: what such a ghost leaves
 /// behind. It is only in the fake table, never in the real one, so it is
 /// never signalled; the candidate check then cannot rule it out.
-fn gone_unread_cancel(session: &str, orphan: Option<u32>) -> aibd::platform::tree::Report {
+fn gone_unread_cancel(
+    session: &str,
+    orphan: Option<u32>,
+    root_readable: bool,
+) -> aibd::platform::tree::Report {
     use aib_sys::fake::FakeProcessInfo;
     let me = std::process::id();
     let f = Arc::new(FakeProcessInfo::new());
@@ -749,7 +753,9 @@ fn gone_unread_cancel(session: &str, orphan: Option<u32>) -> aibd::platform::tre
     let _ = lines(&mut h);
     h.wait_root(Duration::from_secs(10)).unwrap();
     // the root's unique id: read by the next lineage pass (it was not in the table at spawn)
-    f.add(root, me, 1000, 10, 50);
+    if root_readable {
+        f.add(root, me, 1000, 10, 50);
+    }
     let ghost = 4_000_001; // above any macOS / Linux pid: never a real process
     h.record_for_test(ghost, 60);
     if let Some(o) = orphan {
@@ -762,7 +768,7 @@ fn gone_unread_cancel(session: &str, orphan: Option<u32>) -> aibd::platform::tre
 /// this is `lineage_unavailable` again, the slot never comes back).
 #[test]
 fn a_recorded_process_gone_before_its_unique_id_was_read_is_not_lineage_unavailable() {
-    let rep = gone_unread_cancel("s-gone-unread", None);
+    let rep = gone_unread_cancel("s-gone-unread", None, true);
     assert!(!rep.lineage_unavailable, "{rep:?}");
     assert!(rep.no_recorded_survivors(), "{rep:?}");
     assert!(rep.candidates_complete, "{rep:?}");
@@ -776,11 +782,27 @@ fn a_recorded_process_gone_before_its_unique_id_was_read_is_not_lineage_unavaila
 #[test]
 fn an_orphan_of_a_process_gone_before_its_unique_id_was_read_keeps_the_cancel_from_clean() {
     let orphan = 4_000_002;
-    let rep = gone_unread_cancel("s-gone-unread-orphan", Some(orphan));
+    let rep = gone_unread_cancel("s-gone-unread-orphan", Some(orphan), true);
     assert!(!rep.lineage_unavailable, "{rep:?}");
     assert_eq!(rep.orphan_candidates_extra, 1, "{rep:?}");
     assert!(rep.candidates_unreadable.contains(&orphan), "{rep:?}");
     assert_ne!(rep.unverified_reason(), Some("observed_clean"), "{rep:?}");
+    assert_eq!(rep.clean_status(), "unverified");
+}
+
+/// a9136 (DECISION-lineage-gone-unread): the root itself never had its unique
+/// id read (gone or unreadable). Nothing can be linked to it, so the widened
+/// check cannot run: still never `observed_clean` (`candidates_incomplete`).
+#[test]
+fn a_root_whose_unique_id_was_never_read_is_never_observed_clean() {
+    let rep = gone_unread_cancel("s-gone-unread-root", None, false);
+    assert!(!rep.lineage_unavailable, "{rep:?}");
+    assert!(!rep.candidates_complete, "{rep:?}");
+    assert_eq!(
+        rep.unverified_reason(),
+        Some("candidates_incomplete"),
+        "{rep:?}"
+    );
     assert_eq!(rep.clean_status(), "unverified");
 }
 
